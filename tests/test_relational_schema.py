@@ -54,6 +54,7 @@ class RelationalSchemaTests(unittest.TestCase):
     def test_prepared_digest_parser_rejects_missing_hash(self):
         with self.assertRaisesRegex(SchemaError, "module_graph_sha256"):
             PreparedProofDigests.parse({
+                "analysis_manifest_sha256": "m",
                 "interface_manifest_sha256": "z",
                 "relation_contract_sha256": "a",
                 "proof_ir_sha256": "b",
@@ -61,9 +62,11 @@ class RelationalSchemaTests(unittest.TestCase):
                 "memory_contracts_sha256": "d",
                 "static_word_relations_sha256": "s",
                 "register_relations_sha256": "e",
+                "runtime_frame_affine_sha256": "r",
                 "stack_windows_sha256": "f",
                 "segment_diagnostics_sha256": "g",
                 "product_graph_sha256": "h",
+                "isa_requirements_sha256": "q",
                 "invariants_sha256": "i",
                 "whole_program_acceptance_sha256": "j",
                 "composition_progress_sha256": "k",

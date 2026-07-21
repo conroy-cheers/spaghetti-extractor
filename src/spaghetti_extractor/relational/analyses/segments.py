@@ -12,7 +12,10 @@ from ..diagnostics import (
     _nonzero_word_guard,
     _static_dynamic_pointer_seed_diagnostic,
 )
-from ..extraction import _relational_loader_facts
+from ..extraction import (
+    _assembled_u32_after_register_writes,
+    _relational_loader_facts,
+)
 from ..lean.analysis_source import _lean_x87_state_only_pair
 from ..schema import (
     FLAG_BITS,
@@ -27,6 +30,10 @@ from .external import (
     _semantic_external_target_identity,
     _semantic_input_register_offset,
 )
+from .predicates import (
+    bound_edge_pullback_supported,
+    state_predicate_pullback_supported,
+)
 from .control import (
     _immutable_image_u32,
     _is_nonzero_test,
@@ -37,6 +44,140 @@ from ..model import (
     _stack_window_transfer_claims,
     _target_shaped_register_output_claims,
 )
+from ..x87_profile import qualified_singleton_bytes, state_only_singleton_bytes
+
+
+_INPUT_INVARIANT_FIELDS = (
+    "input_relations",
+    "input_import_relations",
+    "input_dynamic_range_relations",
+    "input_dynamic_stack_range_relations",
+    "flag_inputs",
+    "bounds",
+    "address_separations",
+    "stack_windows",
+    "state_predicates",
+)
+
+
+def _same_input_invariant(
+    source: dict[str, Any], target: dict[str, Any]
+) -> bool:
+    return all(
+        source.get(field, []) == target.get(field, [])
+        for field in _INPUT_INVARIANT_FIELDS
+    )
+
+
+def _invariant_list(region: dict[str, Any], field: str) -> list[Any]:
+    value = region.get(field, [])
+    return value if isinstance(value, list) else []
+
+
+def _stack_window_covers(source: object, target: object) -> bool:
+    if not isinstance(source, dict) or not isinstance(target, dict):
+        return False
+    return (
+        source.get("range_id") == target.get("range_id")
+        and source.get("original_register") == target.get("original_register")
+        and source.get("candidate_register") == target.get("candidate_register")
+        and int(target.get("bytes_below", -1))
+            <= int(source.get("bytes_below", -1))
+        and int(target.get("bytes_above", -1))
+            <= int(source.get("bytes_above", -1))
+    )
+
+
+def _input_invariant_weakening_supported(
+    source: dict[str, Any], target: dict[str, Any]
+) -> bool:
+    for field in _INPUT_INVARIANT_FIELDS:
+        if field == "stack_windows":
+            continue
+        source_items = _invariant_list(source, field)
+        if any(item not in source_items for item in _invariant_list(target, field)):
+            return False
+    source_windows = _invariant_list(source, "stack_windows")
+    return all(
+        any(_stack_window_covers(source_window, target_window)
+            for source_window in source_windows)
+        for target_window in _invariant_list(target, "stack_windows")
+    )
+
+
+def _state_only_x87_singleton_pair(
+    original_bin: StageABinary | None,
+    candidate_bin: StageABinary | None,
+    source: dict[str, Any],
+) -> bool:
+    if original_bin is None or candidate_bin is None:
+        return False
+    original_span = source["original"]
+    candidate_span = source["candidate"]
+    original_bytes = bytes(original_bin.pe.get_data(
+        int(original_span["rva_start"]), int(original_span["size"])
+    ))
+    candidate_bytes = bytes(candidate_bin.pe.get_data(
+        int(candidate_span["rva_start"]), int(candidate_span["size"])
+    ))
+    return (
+        original_bytes == candidate_bytes
+        and state_only_singleton_bytes(original_bytes)
+    )
+
+
+def _x87_exact_stack_memory_claim(
+    source: dict[str, Any], target: dict[str, Any], memory: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not _input_invariant_weakening_supported(source, target):
+        return None
+    for paired_read in memory.get("reads", []):
+        original = paired_read.get("original") or {}
+        candidate = paired_read.get("candidate") or {}
+        if (
+            paired_read.get("status") != "paired_shape"
+            or original.get("required_relation") != "exact_x87_load_bytes"
+            or candidate.get("required_relation") != "exact_x87_load_bytes"
+            or original.get("width") != candidate.get("width")
+        ):
+            continue
+        read = {
+            "original_address": original.get("address"),
+            "candidate_address": candidate.get("address"),
+            "bytes": original.get("width"),
+        }
+        for predicate in source.get("state_predicates", []):
+            if read not in predicate.get("exact_memory_reads", []):
+                continue
+            original_register_offset = _semantic_input_register_offset(
+                read["original_address"]
+            )
+            candidate_register_offset = _semantic_input_register_offset(
+                read["candidate_address"]
+            )
+            if (
+                original_register_offset is None
+                or candidate_register_offset is None
+                or original_register_offset[1] != candidate_register_offset[1]
+                or original_register_offset[1] % 4
+            ):
+                continue
+            offset = original_register_offset[1]
+            for window in source.get("stack_windows", []):
+                if (
+                    window.get("original_register") == original_register_offset[0]
+                    and window.get("candidate_register")
+                        == candidate_register_offset[0]
+                    and offset + int(read["bytes"])
+                        <= int(window.get("bytes_above", -1))
+                ):
+                    return {
+                        "predicate": predicate,
+                        "read": read,
+                        "window": window,
+                        "offset": offset,
+                    }
+    return None
 
 
 def _proof_ir(original: StageABinary, candidate: StageABinary, contract: dict[str, Any]) -> dict[str, Any]:
@@ -702,6 +843,73 @@ def _paired_exact_state_expr_witness(
     allowed_flags = {
         int(index) for index in source.get("flag_inputs", list(FLAG_BITS))
     }
+    state_predicate_reads = [
+        (predicate, read)
+        for predicate in source.get("state_predicates", [])
+        if isinstance(predicate, dict)
+        for read in predicate.get("exact_memory_reads", [])
+        if isinstance(read, dict) and read.get("bytes") == 4
+    ]
+
+    def paired_stack_separated_read32(
+        original_expression: dict[str, Any],
+        candidate_expression: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        original_read = _assembled_u32_after_register_writes(original_expression)
+        candidate_read = _assembled_u32_after_register_writes(candidate_expression)
+        if original_read is None or candidate_read is None:
+            return None
+        original_address, original_writes = original_read
+        candidate_address, candidate_writes = candidate_read
+        if (
+            not original_writes
+            or len(original_writes) != len(candidate_writes)
+            or len(original_writes) > 16
+        ):
+            return None
+        slots = [
+            slot for slot in static_word_relation_slots
+            if slot.get("relation") == "exact"
+            and int(slot.get("original_address", -1)) == original_address
+            and int(slot.get("candidate_address", -1)) == candidate_address
+        ]
+        if len(slots) != 1:
+            return None
+
+        paired_writes: list[dict[str, Any]] = []
+        for original_write, candidate_write in zip(
+            original_writes, candidate_writes, strict=True
+        ):
+            original_offset = int(original_write.get("offset", -1))
+            candidate_offset = int(candidate_write.get("offset", -1))
+            if (
+                original_offset != candidate_offset
+                or original_offset < 0
+                or original_offset % 4
+            ):
+                return None
+            windows = [
+                window for window in source.get("stack_windows", [])
+                if str(window.get("original_register"))
+                    == str(original_write.get("register"))
+                and str(window.get("candidate_register"))
+                    == str(candidate_write.get("register"))
+                and original_offset + 4 <= int(window.get("bytes_above", -1))
+            ]
+            if len(windows) != 1:
+                return None
+            paired_writes.append({
+                "window": windows[0],
+                "amount": original_offset,
+                "original_value": original_write.get("value") or {},
+                "candidate_value": candidate_write.get("value") or {},
+            })
+        return {
+            "kind": "stack_separated_read32",
+            "original_address": original_address,
+            "candidate_address": candidate_address,
+            "writes": paired_writes,
+        }
 
     def paired_constant_read(
         original_expression: dict[str, Any],
@@ -741,6 +949,11 @@ def _paired_exact_state_expr_witness(
         operation = original_expression.get("op")
         if operation != candidate_expression.get("op"):
             return None
+        stack_separated_read = paired_stack_separated_read32(
+            original_expression, candidate_expression
+        )
+        if stack_separated_read is not None:
+            return stack_separated_read
         if operation == "input_reg":
             original_register = str(original_expression.get("reg"))
             candidate_register = str(candidate_expression.get("reg"))
@@ -772,9 +985,28 @@ def _paired_exact_state_expr_witness(
                 return None
             return {"kind": "undefined", "slot": original_slot}
         if operation in {"read8", "read32"}:
-            return paired_constant_read(
+            direct = paired_constant_read(
                 original_expression, candidate_expression, operation
             )
+            if direct is not None:
+                return direct
+            if operation == "read32":
+                matching_predicate_reads = [
+                    (predicate, read)
+                    for predicate, read in state_predicate_reads
+                    if read.get("original_address")
+                        == original_expression.get("address")
+                    and read.get("candidate_address")
+                        == candidate_expression.get("address")
+                ]
+                if len(matching_predicate_reads) == 1:
+                    predicate, read = matching_predicate_reads[0]
+                    return {
+                        "kind": "state_predicate_read32",
+                        "predicate": predicate,
+                        "read": read,
+                    }
+            return None
         if operation in {
             "add", "sub", "bit_and", "bit_xor", "shift_left_by",
             "shift_right_by", "shift_arithmetic_right_by", "bit_or",
@@ -845,6 +1077,134 @@ def _paired_exact_state_expr_witness(
     return paired_expression(original, candidate)
 
 
+def _state_rel_register_output_claims(
+    source_registers: dict[str, Any],
+    target_registers: dict[str, Any],
+    source_region: dict[str, Any],
+    behavior: dict[str, Any],
+    static_word_relation_slots: list[dict[str, Any]],
+) -> list[dict[str, Any]] | None:
+    """Build an exact target inventory from claims checked against ``StateRel``.
+
+    The established register-output claims remain the preferred compact proof
+    objects.  Expressions that need richer relational memory reasoning fall
+    back to ``PairedExactExprWitness``.  Returning one ordered list makes the
+    target inventory itself checkable in Lean and prevents either proof path
+    from silently omitting a register.
+    """
+    original_registers = behavior.get("original_ir", {}).get("registers", {})
+    candidate_registers = behavior.get("candidate_ir", {}).get("registers", {})
+    if not isinstance(original_registers, dict) or not isinstance(
+        candidate_registers, dict
+    ):
+        return None
+
+    claims: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for target_relation in target_registers.get("inputs", []):
+        if not isinstance(target_relation, dict):
+            return None
+        original_register = str(target_relation.get("original"))
+        candidate_register = str(target_relation.get("candidate"))
+        register_pair = (original_register, candidate_register)
+        if register_pair in seen:
+            return None
+        seen.add(register_pair)
+
+        ordinary = _target_shaped_register_output_claims(
+            source_registers, {"inputs": [target_relation]}
+        )
+        if ordinary is not None:
+            if len(ordinary) != 1:
+                return None
+            claims.append({"kind": "ordinary", "claim": ordinary[0]})
+            continue
+
+        if target_relation.get("relation") not in {"exact", "related_word"}:
+            return None
+        original_expression = original_registers.get(original_register)
+        candidate_expression = candidate_registers.get(candidate_register)
+        witness = _paired_exact_state_expr_witness(
+            source_region,
+            original_expression,
+            candidate_expression,
+            static_word_relation_slots,
+        )
+        if witness is None:
+            return None
+        claims.append({
+            "kind": "paired_exact_expression",
+            "output": target_relation,
+            "witness": witness,
+        })
+    return claims
+
+
+def _paired_stack_read32_value_claim(
+    source: dict[str, Any],
+    original_expression: dict[str, Any],
+    candidate_expression: dict[str, Any],
+) -> dict[str, Any] | None:
+    def parse(expression: dict[str, Any]) -> tuple[str, str, int] | None:
+        if expression.get("op") != "read32":
+            return None
+        address = expression.get("address") or {}
+        if address.get("op") == "input_reg":
+            return str(address.get("reg")), "identity", 0
+        if address.get("op") not in {"add", "sub"}:
+            return None
+        register = address.get("left") or {}
+        constant = address.get("right") or {}
+        if address.get("op") == "add" and register.get("op") == "constant":
+            register, constant = constant, register
+        if register.get("op") != "input_reg" or constant.get("op") != "constant":
+            return None
+        value = int(constant.get("value", -1))
+        if not 0 <= value < 2**32:
+            return None
+        if address.get("op") == "sub":
+            return str(register.get("reg")), "subtract", value
+        if value < 2**31:
+            return str(register.get("reg")), "add", value
+        return str(register.get("reg")), "subtract", 2**32 - value
+
+    original = parse(original_expression)
+    candidate = parse(candidate_expression)
+    if original is None or candidate is None or original[1:] != candidate[1:]:
+        return None
+    adjustment, amount = original[1], original[2]
+    matches = []
+    for window in source.get("stack_windows", []):
+        if (
+            str(window.get("original_register")) != original[0]
+            or str(window.get("candidate_register")) != candidate[0]
+        ):
+            continue
+        if adjustment == "identity":
+            valid = 4 <= int(window.get("bytes_above", -1))
+        elif adjustment == "add":
+            valid = amount % 4 == 0 and amount + 4 <= int(
+                window.get("bytes_above", -1)
+            )
+        else:
+            valid = (
+                4 <= amount
+                and amount % 4 == 0
+                and amount <= int(window.get("bytes_below", -1))
+            )
+        if valid:
+            matches.append(window)
+    if len(matches) != 1:
+        return None
+    return {
+        "profile": "stack_read32_v1",
+        "original": original_expression,
+        "candidate": candidate_expression,
+        "window": matches[0],
+        "adjustment": {"kind": adjustment, "amount": amount},
+    }
+
+
 def _paired_stack_word_value_claim(
     source: dict[str, Any],
     original_value: dict[str, Any],
@@ -896,6 +1256,12 @@ def _paired_stack_word_value_claim(
             "candidate": candidate_value,
             "witness": exact_witness,
         }
+
+    stack_read = _paired_stack_read32_value_claim(
+        source, original_value, candidate_value
+    )
+    if stack_read is not None:
+        return stack_read
 
     original_constant = (
         _integer(original_value.get("value"))
@@ -1179,6 +1545,37 @@ def _direct_call_stack_writes_claim(
         or int(window.get("bytes_below", 0)) < stack_amount
     ):
         return None
+    exact_word_seeds: list[dict[str, Any]] = []
+    writes = stack_writes["writes"]
+    for index, selected in enumerate(writes):
+        amount = int(selected["amount"])
+        after = writes[index + 1:]
+        if not _static_word_value_claim_compatible(
+            "exact", selected["value"]
+        ):
+            continue
+        if any(
+            not (
+                amount + 4 <= int(later["amount"])
+                or int(later["amount"]) + 4 <= amount
+            )
+            for later in after
+        ):
+            continue
+        frame_offset = stack_amount + amount
+        if frame_offset > 65532:
+            continue
+        exact_word_seeds.append({
+            "before": writes[:index],
+            "selected": selected,
+            "after": after,
+            "exact_word": {
+                "original_offset": frame_offset,
+                "candidate_offset": frame_offset,
+            },
+        })
+        if len(exact_word_seeds) == 16:
+            break
     return {
         "profile": (
             "known_indirect_call_stack_writes_v1"
@@ -1192,6 +1589,7 @@ def _direct_call_stack_writes_claim(
         "original_return_address": int(call_claim["original_return_address"]),
         "candidate_return_address": int(call_claim["candidate_return_address"]),
         "indirect": bool(call_claim.get("indirect")),
+        "exact_word_seeds": exact_word_seeds,
     }
 
 
@@ -1201,7 +1599,8 @@ def _static_word_value_claim_compatible(
     profile = value_claim.get("profile")
     if relation == "related_word":
         return profile in {
-            "exact_inputs_v1", "register_argument_v1",
+            "exact_inputs_v1", "exact_expression_v1",
+            "register_argument_v1", "stack_read32_v1",
             "mapped_code_target_v1", "mapped_data_target_v1",
             "dynamic_range_v1",
         }
@@ -1231,8 +1630,10 @@ def _dynamic_word_value_claim_compatible(
     profile = value_claim.get("profile")
     if relation == "relatedWord":
         return profile in {
-            "exact_inputs_v1", "register_argument_v1",
+            "exact_inputs_v1", "exact_expression_v1",
+            "register_argument_v1", "stack_read32_v1",
             "mapped_code_target_v1", "mapped_data_target_v1",
+            "dynamic_range_v1",
         }
     if relation == "codePointer":
         return profile == "mapped_code_target_v1"
@@ -1826,6 +2227,35 @@ def _register_zero_guard_contradiction_claim(
         "candidate_register": candidate_register,
     }
 
+
+def _single_generated_state_predicate(
+    region: dict[str, Any], source: str,
+) -> bool:
+    predicates = region.get("state_predicates", [])
+    return (
+        isinstance(predicates, list)
+        and len(predicates) == 1
+        and isinstance(predicates[0], dict)
+        and predicates[0].get("source") == source
+    )
+
+
+def _reverse_sentinel_scanner_invariant_shape_supported(
+    role: object, source: dict[str, Any], target: dict[str, Any],
+) -> bool:
+    post = "generated_reverse_sentinel_scanner_post_state"
+    finished = "generated_reverse_sentinel_scanner_finished_state"
+    if role == "body":
+        return _single_generated_state_predicate(target, post)
+    if role == "loop":
+        return _single_generated_state_predicate(source, post)
+    if role == "exit":
+        return (
+            _single_generated_state_predicate(source, post)
+            and _single_generated_state_predicate(target, finished)
+        )
+    return False
+
 def _segment_refinement_candidates(
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
@@ -1836,6 +2266,8 @@ def _segment_refinement_candidates(
     original_bin: StageABinary | None = None,
     candidate_bin: StageABinary | None = None,
     bounded_table_call_candidates: list[dict[str, Any]] | None = None,
+    *,
+    allow_deferred_guards: bool = False,
 ) -> list[dict[str, Any]]:
     by_edge: dict[int, dict[str, Any]] = {}
     reverse_scanner_claims = _reverse_sentinel_scanner_claims_by_edge(
@@ -1880,6 +2312,60 @@ def _segment_refinement_candidates(
         candidate_successors = memory.get("candidate_successors", {})
         direct_targets = successors.get("direct", [])
         candidate_direct_targets = candidate_successors.get("direct", [])
+        true_guard = {"op": "bool_constant", "value": True}
+        x87_state_only_singleton_supported = _state_only_x87_singleton_pair(
+            original_bin, candidate_bin, source
+        )
+        x87_state_only_singleton_eligible = (
+            x87_state_only_singleton_supported
+            and edge.get("kind") == "jump"
+            and source_target is not None
+            and _input_invariant_weakening_supported(source, target)
+            and not bool(edge.get("environment_barrier"))
+            and not bool(edge.get("requires_call_stack_proof"))
+            and edge.get("original_guard") == true_guard
+            and edge.get("candidate_guard") == true_guard
+            and successors.get("outcome") == "jump"
+            and candidate_successors.get("outcome") == "jump"
+            and isinstance(direct_targets, list)
+            and direct_targets == candidate_direct_targets
+            and int(target["numeric_id"]) in direct_targets
+        )
+        x87_exact_stack_memory_claim = _x87_exact_stack_memory_claim(
+            source, target, memory
+        )
+        x87_exact_stack_memory_singleton_supported = False
+        if (
+            original_bin is not None
+            and candidate_bin is not None
+            and isinstance(x87_exact_stack_memory_claim, dict)
+        ):
+            original_span = source["original"]
+            candidate_span = source["candidate"]
+            original_bytes = bytes(original_bin.pe.get_data(
+                int(original_span["rva_start"]), int(original_span["size"])
+            ))
+            candidate_bytes = bytes(candidate_bin.pe.get_data(
+                int(candidate_span["rva_start"]), int(candidate_span["size"])
+            ))
+            x87_exact_stack_memory_singleton_supported = (
+                original_bytes == candidate_bytes
+                and qualified_singleton_bytes(original_bytes)
+            )
+        x87_exact_stack_memory_singleton_eligible = (
+            x87_exact_stack_memory_singleton_supported
+            and edge.get("kind") == "jump"
+            and source_target is not None
+            and not bool(edge.get("environment_barrier"))
+            and not bool(edge.get("requires_call_stack_proof"))
+            and edge.get("original_guard") == true_guard
+            and edge.get("candidate_guard") == true_guard
+            and successors.get("outcome") == "jump"
+            and candidate_successors.get("outcome") == "jump"
+            and isinstance(direct_targets, list)
+            and direct_targets == candidate_direct_targets
+            and int(target["numeric_id"]) in direct_targets
+        )
         target_flags = target.get("flag_inputs", list(FLAG_BITS))
         import_transfer_claims = _import_register_transfer_claims(
             contract, behaviors, source_index, target_index,
@@ -1959,11 +2445,21 @@ def _segment_refinement_candidates(
             register_regions[source_index], dynamic_transfer_claims,
             behaviors[source_index], guard_relation_claim,
         )
-        target_shaped_register_output_claims = (
-            _target_shaped_register_output_claims(
-                register_regions[source_index], register_regions[target_index]
+        state_rel_register_output_claims = (
+            _state_rel_register_output_claims(
+                register_regions[source_index], register_regions[target_index],
+                source, behaviors[source_index],
+                contract.get("static_word_relation_slots", []),
             )
             if not dynamic_register_output_claims else None
+        )
+        target_shaped_register_output_claims = (
+            [
+                claim["claim"]
+                for claim in state_rel_register_output_claims
+                if claim.get("kind") == "ordinary"
+            ]
+            if state_rel_register_output_claims is not None else None
         )
         reverse_scanner_register_transfer_claim = (
             _reverse_sentinel_scanner_register_transfer_claim(
@@ -1974,7 +2470,7 @@ def _segment_refinement_candidates(
             )
         )
         ordinary_register_inventory_supported = (
-            target_shaped_register_output_claims is not None
+            state_rel_register_output_claims is not None
             if not dynamic_register_output_claims
             else source.get("output_relations", [])
                 == target.get("input_relations", [])
@@ -2006,9 +2502,21 @@ def _segment_refinement_candidates(
         )
         state_predicate_transfer_supported = (
             not target.get("state_predicates")
+            or state_predicate_pullback_supported(
+                source, target, behaviors[source_index]
+            )
             or (
                 isinstance(reverse_scanner_claim, dict)
                 and reverse_scanner_role in {"body", "exit"}
+                and _reverse_sentinel_scanner_invariant_shape_supported(
+                    reverse_scanner_role, source, target
+                )
+            )
+        )
+        bound_transfer_supported = (
+            not target.get("bounds")
+            or bound_edge_pullback_supported(
+                source, target, behaviors[source_index]
             )
         )
         common_transfer_supported = (
@@ -2027,10 +2535,7 @@ def _segment_refinement_candidates(
             and stack_transfer_claims is not None
             and flag_transfer_supported
             and state_predicate_transfer_supported
-            and (
-                not target.get("bounds")
-                or reverse_scanner_role == "loop"
-            )
+            and (bound_transfer_supported or reverse_scanner_role == "loop")
             and (
                 not target.get("address_separations")
                 or bool(target.get("stack_address_separation_claims"))
@@ -2053,6 +2558,7 @@ def _segment_refinement_candidates(
                 or (
                     edge.get("indirect_target_profile") in {
                         "immutable_relocated_function_pointer_jump_v1",
+                        "fixed_static_function_pointer_jump_v1",
                         "fixed_code_address_indirect_jump_v1",
                     }
                     and successors.get("outcome") == "indirect_jump"
@@ -2064,9 +2570,29 @@ def _segment_refinement_candidates(
             )
             and (not branch_edge or guard_relation_claim is not None)
         )
+        deferred_no_write_supported = (
+            allow_deferred_guards
+            and branch_edge
+            and guard_relation_claim is None
+            and edge.get("kind") in {"branch_taken", "branch_fallthrough"}
+            and common_transfer_supported
+            and memory.get("writes", {}).get("original_count") == 0
+            and memory.get("writes", {}).get("candidate_count") == 0
+            and successors.get("outcome") == "branch"
+            and candidate_successors.get("outcome") == "branch"
+            and isinstance(direct_targets, list)
+            and direct_targets == candidate_direct_targets
+            and int(target["numeric_id"]) in direct_targets
+            and not target.get("input_import_relations")
+            and not target.get("input_dynamic_range_relations")
+            and not target.get("input_dynamic_stack_range_relations")
+        )
         reverse_scanner_supported = (
             no_write_supported and isinstance(reverse_scanner_claim, dict)
             and reverse_scanner_role in {"body", "loop", "exit"}
+            and _reverse_sentinel_scanner_invariant_shape_supported(
+                reverse_scanner_role, source, target
+            )
         )
         direct_call_claim = edge.get("direct_call_push_claim")
         indirect_call_claim = edge.get("indirect_call_push_claim")
@@ -2210,9 +2736,12 @@ def _segment_refinement_candidates(
             edge.get("kind") in {"jump", "branch_taken", "branch_fallthrough"}
             and common_transfer_supported
             and isinstance(prepared_writes_claim, dict)
-            and any(
-                item.get("kind") != "stack"
-                for item in prepared_writes_claim["writes"]
+            and (
+                any(
+                    item.get("kind") != "stack"
+                    for item in prepared_writes_claim["writes"]
+                )
+                or not isinstance(stack_writes_claim, dict)
             )
             and memory.get("writes", {}).get("original_count")
                 == len(prepared_writes_claim["writes"])
@@ -2263,7 +2792,8 @@ def _segment_refinement_candidates(
             and (not branch_edge or guard_relation_claim is not None)
         )
         segment_supported = (
-            no_write_supported or call_supported or call_prepared_writes_supported
+            no_write_supported or deferred_no_write_supported
+            or call_supported or call_prepared_writes_supported
             or call_stack_writes_supported
             or prepared_writes_supported
             or stack_write_supported or stack_writes_supported
@@ -2279,8 +2809,12 @@ def _segment_refinement_candidates(
             and int(target["numeric_id"]) in direct_targets
         )
         certificate_eligible = (
+            x87_state_only_singleton_eligible
+            or x87_exact_stack_memory_singleton_eligible
+            or (
             segment_supported or guard_contradiction_supported
-        ) and source_target is not None
+            ) and source_target is not None
+        )
         if diagnostics is not None:
             failed_checks: list[str] = []
 
@@ -2356,7 +2890,8 @@ def _segment_refinement_candidates(
             )
             require(
                 "x87_state_transfer_unsupported",
-                _lean_x87_state_only_pair(behaviors[source_index]),
+                _lean_x87_state_only_pair(behaviors[source_index])
+                or x87_exact_stack_memory_singleton_eligible,
             )
 
             original_write_count = int(
@@ -2515,7 +3050,11 @@ def _segment_refinement_candidates(
                 "target_region_index": target_index,
                 "edge_kind": str(edge.get("kind")),
                 "attempted_profile": (
-                    "composable_register_zero_guard_contradiction_v1"
+                    "composable_x87_state_only_singleton_v1"
+                    if x87_state_only_singleton_supported
+                    else "composable_x87_exact_stack_memory_singleton_v1"
+                    if x87_exact_stack_memory_singleton_supported
+                    else "composable_register_zero_guard_contradiction_v1"
                     if guard_contradiction_supported else attempted_profile
                 ),
                 "eligible": certificate_eligible,
@@ -2526,6 +3065,7 @@ def _segment_refinement_candidates(
         by_edge[edge_index] = {
             "format": RELATIONAL_SEGMENT_CERTIFICATE_FORMAT,
             "edge_index": edge_index,
+            "edge_kind": str(edge.get("kind")),
             "source_region_index": source_index,
             "target_region_index": target_index,
             "source_target_id": int(source_target["id"]),
@@ -2537,7 +3077,11 @@ def _segment_refinement_candidates(
                 int(target["id"]) for target in source.get("values", [])
             ],
             "certificate_profile": (
-                "composable_register_zero_guard_contradiction_v1"
+                "composable_x87_state_only_singleton_v1"
+                if x87_state_only_singleton_eligible
+                else "composable_x87_exact_stack_memory_singleton_v1"
+                if x87_exact_stack_memory_singleton_eligible
+                else "composable_register_zero_guard_contradiction_v1"
                 if guard_contradiction_supported
                 else "composable_direct_call_prepared_writes_v1"
                 if call_prepared_writes_supported
@@ -2553,8 +3097,10 @@ def _segment_refinement_candidates(
                 else "composable_paired_stack_word_writes_v1"
                 if stack_writes_supported
                 else "composable_immutable_indirect_jump_v1"
-                if edge.get("indirect_target_profile") ==
-                    "immutable_relocated_function_pointer_jump_v1"
+                if edge.get("indirect_target_profile") in {
+                    "immutable_relocated_function_pointer_jump_v1",
+                    "fixed_static_function_pointer_jump_v1",
+                }
                 else "composable_fixed_code_address_indirect_jump_v1"
                 if edge.get("indirect_target_profile") ==
                     "fixed_code_address_indirect_jump_v1"
@@ -2564,10 +3110,16 @@ def _segment_refinement_candidates(
                 if reverse_scanner_supported and reverse_scanner_role == "loop"
                 else "composable_reverse_sentinel_scanner_exit_v1"
                 if reverse_scanner_supported and reverse_scanner_role == "exit"
+                else "composable_local_no_write_deferred_guard_v1"
+                if deferred_no_write_supported
                 else "composable_local_no_write_v1"
             ),
             "reverse_sentinel_scanner_claim": (
                 reverse_scanner_claim if reverse_scanner_supported else None
+            ),
+            "x87_exact_stack_memory_claim": (
+                x87_exact_stack_memory_claim
+                if x87_exact_stack_memory_singleton_eligible else None
             ),
             "register_zero_guard_contradiction_claim": (
                 guard_contradiction_claim
@@ -2587,6 +3139,9 @@ def _segment_refinement_candidates(
             "dynamic_register_output_claims": dynamic_register_output_claims or [],
             "register_output_claims": (
                 target_shaped_register_output_claims or []
+            ),
+            "state_rel_register_output_claims": (
+                state_rel_register_output_claims or []
             ),
             "original_guard": edge["original_guard"],
             "candidate_guard": edge["candidate_guard"],
@@ -2754,10 +3309,19 @@ def _dynamic_range_transfer_claims(
         ),
     )
     single_dynamic_write = None
+    dynamic_write_suffix: list[dict[str, Any]] = []
     if isinstance(prepared_writes, dict):
         writes = prepared_writes.get("writes", [])
-        if len(writes) == 1 and writes[0].get("kind") == "dynamic_word":
+        dynamic_writes = [
+            write for write in writes if write.get("kind") == "dynamic_word"
+        ]
+        if (
+            len(dynamic_writes) == 1
+            and writes
+            and writes[0].get("kind") == "dynamic_word"
+        ):
             single_dynamic_write = writes[0]
+            dynamic_write_suffix = writes[1:]
     claims: list[dict[str, Any]] = []
     for target_relation in target_relations:
         target_words = {
@@ -2840,6 +3404,7 @@ def _dynamic_range_transfer_claims(
                     "original_amount": int(single_dynamic_write["original_amount"]),
                     "candidate_amount": int(single_dynamic_write["candidate_amount"]),
                     "value": single_dynamic_write["value"],
+                    "suffix": dynamic_write_suffix,
                 })
             pointer_words = [
                 word for word in source_relation.get("active_words", [])
@@ -3240,12 +3805,19 @@ def _paired_exact_guard_claim(
     exact_registers = {
         (str(relation["original"]), str(relation["candidate"]))
         for relation in source.get("input_relations", [])
-        if relation.get("relation") == "exact"
+        if relation.get("relation") in {"exact", "fixed_word"}
     }
     allowed_flags = {
         int(index) for index in source.get("flag_inputs", list(FLAG_BITS))
     }
     static_slots = contract.get("static_word_relation_slots", [])
+    state_predicate_reads = [
+        (predicate, read)
+        for predicate in source.get("state_predicates", [])
+        if isinstance(predicate, dict)
+        for read in predicate.get("exact_memory_reads", [])
+        if isinstance(read, dict) and read.get("bytes") == 4
+    ]
 
     def paired_static_expression(
         original: Any, candidate: Any,
@@ -3264,6 +3836,24 @@ def _paired_exact_guard_claim(
                 "original": original_value,
                 "candidate": candidate_value,
             }, original_value, candidate_value)
+        if operation == "input_reg":
+            original_register = str(original.get("reg"))
+            candidate_register = str(candidate.get("reg"))
+            fixed_relations = [
+                relation for relation in source.get("input_relations", [])
+                if relation.get("relation") == "fixed_word"
+                and str(relation.get("original")) == original_register
+                and str(relation.get("candidate")) == candidate_register
+            ]
+            if len(fixed_relations) != 1:
+                return None
+            value = _integer(fixed_relations[0].get("value")) & 0xFFFFFFFF
+            return ({
+                "kind": "fixed_input_reg",
+                "original": original_register,
+                "candidate": candidate_register,
+                "value": value,
+            }, value, value)
         if operation == "read32":
             original_address = original.get("address") or {}
             candidate_address = candidate.get("address") or {}
@@ -3428,6 +4018,20 @@ def _paired_exact_guard_claim(
             direct = paired_constant_read(original, candidate, operation)
             if direct is not None:
                 return direct
+            if operation == "read32":
+                matching_predicate_reads = [
+                    (predicate, read)
+                    for predicate, read in state_predicate_reads
+                    if read.get("original_address") == original.get("address")
+                    and read.get("candidate_address") == candidate.get("address")
+                ]
+                if len(matching_predicate_reads) == 1:
+                    predicate, read = matching_predicate_reads[0]
+                    return {
+                        "kind": "state_predicate_read32",
+                        "predicate": predicate,
+                        "read": read,
+                    }
             address = paired_static_expression(
                 original.get("address"), candidate.get("address")
             )
@@ -3932,6 +4536,133 @@ def _paired_stack_relative_guard_claim(
         "not_count": original[4],
     }
 
+
+def _attach_branch_exact_memory_requirements(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Propose exact paired reads needed by otherwise-exact branch guards.
+
+    These predicates are requirements, not facts.  Lean accepts their use only
+    when StateRel contains the predicate, and graph composition must establish
+    it at every reachable predecessor or root.
+    """
+
+    def paired_read32s(original: Any, candidate: Any) -> list[dict[str, Any]]:
+        if not isinstance(original, dict) or not isinstance(candidate, dict):
+            return []
+        if original.get("op") != candidate.get("op"):
+            return []
+        if original.get("op") == "read32":
+            original_address = original.get("address")
+            candidate_address = candidate.get("address")
+            if not isinstance(original_address, dict) or not isinstance(
+                candidate_address, dict
+            ):
+                return []
+            return [{
+                "original_address": original_address,
+                "candidate_address": candidate_address,
+                "bytes": 4,
+            }]
+        reads: list[dict[str, Any]] = []
+        for key in sorted(set(original) | set(candidate)):
+            if key == "op":
+                continue
+            original_child = original.get(key)
+            candidate_child = candidate.get(key)
+            if isinstance(original_child, dict) or isinstance(candidate_child, dict):
+                reads.extend(paired_read32s(original_child, candidate_child))
+        return reads
+
+    regions = contract.get("regions", [])
+    claims: list[dict[str, Any]] = []
+    for source_index, pair in enumerate(behaviors):
+        if source_index >= len(regions):
+            break
+        original = pair.get("original_ir") or {}
+        candidate = pair.get("candidate_ir") or {}
+        original_outcome = original.get("outcome") or {}
+        candidate_outcome = candidate.get("outcome") or {}
+        if (
+            original_outcome.get("op") != "branch"
+            or candidate_outcome.get("op") != "branch"
+        ):
+            continue
+        original_guard = original_outcome.get("condition")
+        candidate_guard = candidate_outcome.get("condition")
+        if not isinstance(original_guard, dict) or not isinstance(
+            candidate_guard, dict
+        ):
+            continue
+        source = regions[source_index]
+        if any((
+            _related_word_zero_guard_claim(source, original_guard, candidate_guard),
+            _input_flags_guard_claim(source, original_guard, candidate_guard),
+            _exact_pure_guard_claim(
+                source, original_guard, candidate_guard,
+                original_bin, candidate_bin,
+            ),
+            _paired_exact_guard_claim(
+                contract, source, original_guard, candidate_guard,
+                original_bin, candidate_bin,
+            ),
+            _paired_stack_guard_claim(source, original_guard, candidate_guard),
+            _paired_stack_relative_guard_claim(
+                source, original_guard, candidate_guard
+            ),
+        )):
+            continue
+        reads: list[dict[str, Any]] = []
+        for read in paired_read32s(original_guard, candidate_guard):
+            if read not in reads:
+                reads.append(read)
+        existing_reads = [
+            read
+            for predicate in source.get("state_predicates", [])
+            if isinstance(predicate, dict)
+            for read in predicate.get("exact_memory_reads", [])
+            if isinstance(read, dict)
+        ]
+        missing_reads = [read for read in reads if read not in existing_reads]
+        if not missing_reads:
+            continue
+        true_expression = {"op": "bool_constant", "value": True}
+        requirement = {
+            "original": true_expression,
+            "candidate": dict(true_expression),
+            "exact_memory_reads": missing_reads,
+            "source": "generated_branch_exact_memory_requirement",
+        }
+        hypothetical = dict(source)
+        hypothetical["state_predicates"] = [
+            *source.get("state_predicates", []), requirement,
+        ]
+        claim = _paired_exact_guard_claim(
+            contract, hypothetical, original_guard, candidate_guard,
+            original_bin, candidate_bin,
+        )
+        if claim is None:
+            continue
+        predicates = source.setdefault("state_predicates", [])
+        if requirement not in predicates:
+            predicates.append(requirement)
+        claims.append({
+            "source_region_index": source_index,
+            "read_count": len(missing_reads),
+            "guard_profile": claim["profile"],
+        })
+    return contract, {
+        "format": "stage-a-branch-exact-memory-requirements-v1",
+        "status": "untrusted_proposal_requires_lean_replay",
+        "acceptance_authority": False,
+        "attached_region_count": len(claims),
+        "attached_read_count": sum(item["read_count"] for item in claims),
+        "claims": claims,
+    }
+
 def _stack_read32_sub_output_claim(
     region: dict[str, Any],
     output: dict[str, Any],
@@ -4019,67 +4750,16 @@ def _stack_read32_relative_output_claim(
     original_expression: dict[str, Any],
     candidate_expression: dict[str, Any],
 ) -> dict[str, Any] | None:
-    def parse(expression: dict[str, Any]) -> tuple[str, str, int] | None:
-        if expression.get("op") != "read32":
-            return None
-        address = expression.get("address") or {}
-        if address.get("op") == "input_reg":
-            return str(address.get("reg")), "identity", 0
-        if address.get("op") not in {"add", "sub"}:
-            return None
-        register = address.get("left") or {}
-        constant = address.get("right") or {}
-        if address.get("op") == "add" and register.get("op") == "constant":
-            register, constant = constant, register
-        if register.get("op") != "input_reg" or constant.get("op") != "constant":
-            return None
-        value = int(constant.get("value", -1))
-        if not 0 <= value < 2**32:
-            return None
-        if address.get("op") == "sub":
-            return str(register.get("reg")), "subtract", value
-        if value < 2**31:
-            return str(register.get("reg")), "add", value
-        return str(register.get("reg")), "subtract", 2**32 - value
-
-    original = parse(original_expression)
-    candidate = parse(candidate_expression)
-    if (
-        original is None
-        or candidate is None
-        or original[1:] != candidate[1:]
-        or output.get("relation") != "related_word"
-    ):
-        return None
-    adjustment, amount = original[1], original[2]
-    matches = []
-    for window in region.get("stack_windows", []):
-        if (
-            str(window.get("original_register")) != original[0]
-            or str(window.get("candidate_register")) != candidate[0]
-        ):
-            continue
-        if adjustment == "identity":
-            valid = 4 <= int(window.get("bytes_above", -1))
-        elif adjustment == "add":
-            valid = amount % 4 == 0 and amount + 4 <= int(
-                window.get("bytes_above", -1)
-            )
-        else:
-            valid = (
-                4 <= amount
-                and amount % 4 == 0
-                and amount <= int(window.get("bytes_below", -1))
-            )
-        if valid:
-            matches.append(window)
-    if len(matches) != 1:
+    value_claim = _paired_stack_read32_value_claim(
+        region, original_expression, candidate_expression
+    )
+    if value_claim is None or output.get("relation") != "related_word":
         return None
     return {
         "kind": "stack_read32_relative",
         "output": output,
-        "window": matches[0],
-        "adjustment": {"kind": adjustment, "amount": amount},
+        "window": value_claim["window"],
+        "adjustment": value_claim["adjustment"],
     }
 
 def _attach_stack_register_output_claims(

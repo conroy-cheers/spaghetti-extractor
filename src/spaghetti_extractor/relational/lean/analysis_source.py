@@ -17,6 +17,7 @@ from .expressions import (
     _lean_machine_import_call_contract,
     _lean_region_definition as _lean_region_definition_base,
     _lean_semantic_bool_expr,
+    _lean_semantic_expr,
 )
 
 
@@ -48,6 +49,14 @@ def _lean_region_state_predicates(region: dict[str, Any]) -> list[str] | None:
             predicate = RegionStatePredicate.parse(raw_predicate)
             original = _lean_semantic_bool_expr(predicate.original)
             candidate = _lean_semantic_bool_expr(predicate.candidate)
+            exact_memory_reads = [
+                "{ originalAddress := "
+                + _lean_semantic_expr(read["original_address"])
+                + ", candidateAddress := "
+                + _lean_semantic_expr(read["candidate_address"])
+                + ", bytes := " + str(int(read["bytes"])) + " }"
+                for read in predicate.exact_memory_reads
+            ]
         except (
             KeyError,
             SchemaError,
@@ -57,7 +66,12 @@ def _lean_region_state_predicates(region: dict[str, Any]) -> list[str] | None:
         ) as exc:
             raise StageAInputError(f"{context} is malformed: {exc}") from exc
         rows.append(
-            "{ original := " + original + ", candidate := " + candidate + " }"
+            "{ original := " + original + ", candidate := " + candidate
+            + (
+                ", exactMemoryReads := [" + ", ".join(exact_memory_reads) + "]"
+                if exact_memory_reads else ""
+            )
+            + " }"
         )
     return rows
 
@@ -126,7 +140,7 @@ def _lean_extraction_source(
             candidate_literal = "true" if side == "candidate" else "false"
             evaluations.extend((
                 f"  let some {side}Behavior{index} := "
-                f"regionBehaviorWithMachineCallContracts {side}Pe {side}Imports "
+                f"regionAnalysisBehaviorWithMachineCallContracts {side}Pe {side}Imports "
                 f"machineImportCallContracts {span_literal} | "
                 f'throw (IO.userError "{side} region {index} did not decode")',
                 f"  let some {side}Normalized{index} := normalizeSymbolicBehavior "
@@ -174,7 +188,7 @@ def _lean_side_extraction_source(
         )
         evaluations.extend((
             f"  let some behavior{index} := "
-            f"regionBehaviorWithImports pe imports {span_literal} | "
+            f"regionAnalysisBehaviorWithImports pe imports {span_literal} | "
             f'throw (IO.userError "{side} region {index} did not decode")',
             f'  IO.println ("STAGE_A_RAW_BEHAVIOR_BEGIN {side} {index}\\n" ++ '
             f'reprStr (some behavior{index}) ++ "\\nSTAGE_A_RAW_BEHAVIOR_END")',

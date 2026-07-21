@@ -1,5 +1,6 @@
 import StageA.RelationalDecode
 import StageA.RelationalLoader
+import StageA.RelationalFiniteIndex
 import Lean.Elab.Tactic.Omega
 
 namespace StageA.Relational
@@ -146,13 +147,13 @@ structure StaticCodeAddress where
 deriving Repr, DecidableEq
 
 structure StaticCodeMap where
-  entries : Array CodeTargetPair
-  originalAddresses : Array StaticCodeAddress
-  candidateAddresses : Array StaticCodeAddress
+  entries : FiniteIndex CodeTargetPair
+  originalAddresses : FiniteIndex StaticCodeAddress
+  candidateAddresses : FiniteIndex StaticCodeAddress
 deriving Repr, DecidableEq
 
 def StaticCodeMap.get? (mapping : StaticCodeMap) (targetId : Nat) : Option CodeTargetPair :=
-  mapping.entries[targetId]?
+  mapping.entries.get? targetId
 
 def StaticCodeMap.resolveIds (mapping : StaticCodeMap) :
     List Nat -> Option (List CodeTargetPair)
@@ -180,21 +181,66 @@ def staticCodeAddressRva (candidate : Bool) (mapping : StaticCodeMap)
       pure (← aliases[index]?).rva
 
 def StaticCodeMap.sideAddresses (candidate : Bool) (mapping : StaticCodeMap) :
-    Array StaticCodeAddress :=
+    FiniteIndex StaticCodeAddress :=
   if candidate then mapping.candidateAddresses else mapping.originalAddresses
 
-/-- Return every checked address-index entry matching a concrete instruction
-pointer. Retaining all matches makes ambiguous maps fail closed. -/
+/-- Search the RVA-sorted reverse index.  Generated maps use bounded leaves, so
+kernel reduction follows a logarithmic number of branches and only scans a
+small local leaf. -/
+def StaticCodeMap.findRvaAux (candidate : Bool) (mapping : StaticCodeMap)
+    (needle : Nat) : Nat -> Nat -> Nat -> Option (Nat × StaticCodeAddress)
+  | 0, _, _ => none
+  | fuel + 1, lower, upper =>
+      if lower < upper then
+        let middle := lower + (upper - lower) / 2
+        match (mapping.sideAddresses candidate).get? middle with
+        | none => none
+        | some address =>
+            match staticCodeAddressRva candidate mapping address with
+            | none => none
+            | some rva =>
+                if needle < rva then
+                  mapping.findRvaAux candidate needle fuel lower middle
+                else if rva < needle then
+                  mapping.findRvaAux candidate needle fuel (middle + 1) upper
+                else
+                  some (middle, address)
+      else
+        none
+
+def StaticCodeMap.findRva? (candidate : Bool) (mapping : StaticCodeMap)
+    (needle : Nat) : Option (Nat × StaticCodeAddress) :=
+  let addresses := mapping.sideAddresses candidate
+  mapping.findRvaAux candidate needle (addresses.size + 1) 0 addresses.size
+
+def StaticCodeMap.addressRvaAt? (candidate : Bool) (mapping : StaticCodeMap)
+    (index : Nat) : Option Nat := do
+  let address <- (mapping.sideAddresses candidate).get? index
+  staticCodeAddressRva candidate mapping address
+
+/-- Return the checked address-index entry matching a concrete instruction
+pointer. Adjacent equal RVAs are retained as an ambiguity marker. Structural
+validation rejects duplicates and unsorted indices before acceptance. -/
 def StaticCodeMap.rawEipMatches (candidate : Bool) (imageBase : Nat)
     (mapping : StaticCodeMap) (eip : Word) : List Nat :=
-  (mapping.sideAddresses candidate).toList.filterMap fun address =>
-    match staticCodeAddressRva candidate mapping address with
-    | none => none
-    | some rva =>
-        if eip == BitVec.ofNat 32 (imageBase + rva) then
-          some address.targetId
+  let absolute := eip.toNat
+  if imageBase <= absolute then
+    let needle := absolute - imageBase
+    match mapping.findRva? candidate needle with
+    | none => []
+    | some (index, address) =>
+        let priorMatches :=
+          match index with
+          | 0 => false
+          | prior + 1 => mapping.addressRvaAt? candidate prior == some needle
+        let nextMatches :=
+          mapping.addressRvaAt? candidate (index + 1) == some needle
+        if priorMatches || nextMatches then
+          [address.targetId, address.targetId]
         else
-          none
+          [address.targetId]
+  else
+    []
 
 /-- Resolve a concrete EIP only when exactly one checked canonical or alias
 address matches it. -/
@@ -240,7 +286,7 @@ theorem StaticCodeMap.canonicalRawEip_roundTrip
       mapping.canonicalRawEip? candidate imageBase targetId = some eip ∧
         mapping.resolveRawEip candidate imageBase eip = some targetId := by
   have targetBefore : targetId < mapping.entries.size :=
-    Array.getElem?_eq_some_iff.mp targetFound |>.1
+    FiniteIndex.get?_eq_some_implies_lt_size mapping.entries targetId target targetFound
   have checked := roundTrips targetId targetBefore
   simp only [StaticCodeMap.targetAddressesRoundTripAt, targetFound,
     Bool.and_eq_true, beq_iff_eq] at checked
@@ -288,7 +334,10 @@ def StaticCodeMap.addressesInExecutableImage (candidate : Bool) (pe : PE32)
     | none => false
 
 def StaticCodeMap.valid (originalPe candidatePe : PE32) (mapping : StaticCodeMap) : Bool :=
-  mapping.entriesIndexed &&
+  mapping.entries.structurallyValid 16 &&
+    mapping.originalAddresses.structurallyValid 16 &&
+    mapping.candidateAddresses.structurallyValid 16 &&
+    mapping.entriesIndexed &&
     mapping.addressesValid false && mapping.addressesValid true &&
     mapping.addressesInExecutableImage false originalPe &&
     mapping.addressesInExecutableImage true candidatePe
@@ -336,7 +385,7 @@ def StaticCodeMap.entryAtValid (mapping : StaticCodeMap) (index : Nat) : Bool :=
 def StaticCodeMap.addressAtValid (candidate : Bool) (pe : PE32)
     (mapping : StaticCodeMap) (index : Nat) : Bool :=
   let addresses := if candidate then mapping.candidateAddresses else mapping.originalAddresses
-  match addresses[index]? with
+  match addresses.get? index with
   | none => false
   | some address =>
       match staticCodeAddressRva candidate mapping address with
@@ -346,7 +395,7 @@ def StaticCodeMap.addressAtValid (candidate : Bool) (pe : PE32)
             match index with
             | 0 => true
             | prior + 1 =>
-                match addresses[prior]? with
+                match addresses.get? prior with
                 | none => false
                 | some priorAddress =>
                     match staticCodeAddressRva candidate mapping priorAddress with
@@ -355,7 +404,10 @@ def StaticCodeMap.addressAtValid (candidate : Bool) (pe : PE32)
 
 def StaticCodeMap.IndexedValid (originalPe candidatePe : PE32)
     (mapping : StaticCodeMap) : Prop :=
-  (∀ index, index < mapping.entries.size -> mapping.entryAtValid index = true) ∧
+  mapping.entries.structurallyValid 16 = true ∧
+    mapping.originalAddresses.structurallyValid 16 = true ∧
+    mapping.candidateAddresses.structurallyValid 16 = true ∧
+    (∀ index, index < mapping.entries.size -> mapping.entryAtValid index = true) ∧
     mapping.originalAddresses.size = mapping.expectedAddressCount false ∧
     mapping.candidateAddresses.size = mapping.expectedAddressCount true ∧
     (∀ index, index < mapping.originalAddresses.size ->
@@ -1022,7 +1074,11 @@ def ImportAddressPair.staticValid (context : StaticProofContext)
             context.originalPe.imageBase + context.originalPe.sizeOfImage) &&
         !(context.candidatePe.imageBase <= binding.candidateAddress.toNat &&
           binding.candidateAddress.toNat <
-            context.candidatePe.imageBase + context.candidatePe.sizeOfImage)
+            context.candidatePe.imageBase + context.candidatePe.sizeOfImage) &&
+        context.codeMap.resolveRawEip false context.originalPe.imageBase
+          binding.originalAddress == none &&
+        context.codeMap.resolveRawEip true context.candidatePe.imageBase
+          binding.candidateAddress == none
   | _, _ => false
 
 theorem ImportAddressPair.originalImportWitness
@@ -1058,6 +1114,22 @@ theorem ImportAddressPair.candidateImportWitness
           (p := fun candidate : PEImport =>
             candidate.iatRva == binding.candidateIatRva)
           (a := imported) found)
+
+theorem ImportAddressPair.originalCodeUnresolved
+    (context : StaticProofContext) (binding : ImportAddressPair)
+    (valid : binding.staticValid context = true) :
+    context.codeMap.resolveRawEip false context.originalPe.imageBase
+      binding.originalAddress = none := by
+  unfold ImportAddressPair.staticValid at valid
+  split at valid <;> simp_all
+
+theorem ImportAddressPair.candidateCodeUnresolved
+    (context : StaticProofContext) (binding : ImportAddressPair)
+    (valid : binding.staticValid context = true) :
+    context.codeMap.resolveRawEip true context.candidatePe.imageBase
+      binding.candidateAddress = none := by
+  unfold ImportAddressPair.staticValid at valid
+  split at valid <;> simp_all
 
 def importAddressIdsUnique (bindings : List ImportAddressPair) : Bool :=
   bindings.all fun binding =>

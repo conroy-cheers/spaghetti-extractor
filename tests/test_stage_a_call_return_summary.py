@@ -163,6 +163,31 @@ def _fixture() -> tuple[
 
 
 class StageACallReturnSummaryTests(unittest.TestCase):
+    def test_explicit_machine_entry_gets_a_checked_affine_return_summary(self):
+        contract, behaviors, rows, edges = _fixture()
+        edges = [edge for edge in edges if edge["source_region_index"] != 0]
+
+        analysis = _discover_direct_call_stack_return_summaries(
+            contract["regions"],
+            behaviors,
+            rows,
+            edges,
+            additional_entries=(1,),
+        )
+
+        self.assertEqual(analysis["entry_blockers"], [])
+        self.assertEqual(
+            analysis["entry_summaries"],
+            [{
+                "entry_region_index": 1,
+                "return_delta": 4,
+                "return_region_indices": [3, 4],
+                "reachable_region_indices": [1, 2, 3, 4],
+                "bytes_below": 8,
+                "bytes_above": 4,
+            }],
+        )
+
     def test_affine_multi_return_summary_propagates_the_full_stack_window(self):
         contract, behaviors, rows, edges = _fixture()
 

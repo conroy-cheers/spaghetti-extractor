@@ -601,6 +601,12 @@ def _lean_paired_static_expr_witness(witness: dict[str, Any]) -> str:
             "PairedStaticExprWitness.constant "
             f"{int(witness['original'])} {int(witness['candidate'])}"
         )
+    if kind == "fixed_input_reg":
+        return (
+            "PairedStaticExprWitness.fixedInputReg "
+            f".{witness['original']} .{witness['candidate']} "
+            f"{int(witness['value'])}"
+        )
     if kind == "read32":
         return (
             "PairedStaticExprWitness.read32 "
@@ -660,11 +666,63 @@ def _lean_paired_exact_expr_witness(witness: dict[str, Any]) -> str:
             f"{int(witness['original_address'])} "
             f"{int(witness['candidate_address'])}"
         )
+    if kind == "state_predicate_read32":
+        predicate = witness["predicate"]
+        read = witness["read"]
+        exact_reads = predicate.get("exact_memory_reads", [])
+        return (
+            "PairedExactExprWitness.statePredicateRead32 "
+            "({ original := "
+            + _lean_semantic_bool_expr(predicate["original"])
+            + ", candidate := "
+            + _lean_semantic_bool_expr(predicate["candidate"])
+            + ", exactMemoryReads := ["
+            + ", ".join(
+                "{ originalAddress := "
+                + _lean_semantic_expr(item["original_address"])
+                + ", candidateAddress := "
+                + _lean_semantic_expr(item["candidate_address"])
+                + ", bytes := "
+                + str(int(item["bytes"]))
+                + " }"
+                for item in exact_reads
+            )
+            + "] }) "
+            "({ originalAddress := "
+            + _lean_semantic_expr(read["original_address"])
+            + ", candidateAddress := "
+            + _lean_semantic_expr(read["candidate_address"])
+            + ", bytes := "
+            + str(int(read["bytes"]))
+            + " })"
+        )
     if kind in {"read8_at", "read32_at"}:
         constructor = "read8At" if kind == "read8_at" else "read32At"
         return (
             f"PairedExactExprWitness.{constructor} "
             f"({_lean_paired_static_expr_witness(witness['address'])})"
+        )
+    if kind == "stack_separated_read32":
+        writes = ", ".join(
+            "{ window := "
+            + _lean_stack_window(write["window"])
+            + ", amount := "
+            + str(int(write["amount"]))
+            + ", originalValue := "
+            + _lean_semantic_expr(write["original_value"])
+            + ", candidateValue := "
+            + _lean_semantic_expr(write["candidate_value"])
+            + " }"
+            for write in witness["writes"]
+        )
+        return (
+            "PairedExactExprWitness.stackSeparatedRead32 "
+            + str(int(witness["original_address"]))
+            + " "
+            + str(int(witness["candidate_address"]))
+            + " ["
+            + writes
+            + "]"
         )
     if kind == "binary":
         operation = {
@@ -772,6 +830,14 @@ def _lean_paired_stack_word_value_claim(claim: dict[str, Any]) -> str:
             ".registerArgument "
             + _lean_register_argument_claim(claim["claim"])
         )
+    elif profile == "stack_read32_v1":
+        witness = (
+            ".stackRead32 { window := "
+            + _lean_stack_window(claim["window"])
+            + ", adjustment := "
+            + _lean_stack_adjustment(claim["adjustment"])
+            + " }"
+        )
     elif profile == "mapped_code_target_v1":
         witness = ".mappedCodeTarget " + str(int(claim["target_id"]))
     elif profile == "mapped_data_target_v1":
@@ -798,11 +864,16 @@ def _lean_paired_stack_word_write_claim(claim: dict[str, Any]) -> str:
         + " }"
     )
 
-def _lean_paired_stack_word_writes_claim(claim: dict[str, Any]) -> str:
-    writes = ", ".join(
+def _lean_paired_stack_word_write_item(write: dict[str, Any]) -> str:
+    return (
         "{ amount := " + str(int(write["amount"]))
         + ", value := " + _lean_paired_stack_word_value_claim(write["value"])
         + " }"
+    )
+
+def _lean_paired_stack_word_writes_claim(claim: dict[str, Any]) -> str:
+    writes = ", ".join(
+        _lean_paired_stack_word_write_item(write)
         for write in claim["writes"]
     )
     return (
@@ -824,6 +895,30 @@ def _lean_direct_call_stack_writes_claim(claim: dict[str, Any]) -> str:
         + str(int(claim["candidate_return_address"]))
         + ", indirect := " + ("true" if bool(claim.get("indirect")) else "false")
         + " }"
+    )
+
+def _lean_direct_call_stack_exact_word_seed_claim(
+    seed: dict[str, Any],
+) -> str:
+    exact_word = seed["exact_word"]
+    return (
+        "{ before := ["
+        + ", ".join(
+            _lean_paired_stack_word_write_item(write)
+            for write in seed["before"]
+        )
+        + "], selected := "
+        + _lean_paired_stack_word_write_item(seed["selected"])
+        + ", after := ["
+        + ", ".join(
+            _lean_paired_stack_word_write_item(write)
+            for write in seed["after"]
+        )
+        + "], exactWord := { originalOffset := "
+        + str(int(exact_word["original_offset"]))
+        + ", candidateOffset := "
+        + str(int(exact_word["candidate_offset"]))
+        + " } }"
     )
 
 
@@ -938,6 +1033,7 @@ def _lean_state_invariant(invariant: dict[str, Any]) -> str:
         )
         + f"upperExclusive := {bound['unsigned_lt']} }}"
         for bound in invariant.get("bounds", [])
+        if bound.get("expression_source") != "checked_stack_register_bound_v1"
     )
     flags = ", ".join(str(bit) for bit in invariant.get("flag_bits", []))
     separations = ", ".join(
@@ -1263,6 +1359,7 @@ def _lean_region_definition(index: int, region: dict[str, Any]) -> str:
         )
         + f"upperExclusive := {bound['unsigned_lt']} }}"
         for bound in region.get("bounds", [])
+        if bound.get("expression_source") != "checked_stack_register_bound_v1"
     )
     target_rows = ", ".join(
         f"{{ id := {target['id']}, regionIndex := {target['region_index']}, originalRva := {target['original_rva']}, candidateRva := {target['candidate_rva']}, "

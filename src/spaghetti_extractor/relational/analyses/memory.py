@@ -35,6 +35,8 @@ def _static_word_value_relation(claim: dict[str, Any]) -> str | None:
         return "data_pointer"
     if profile == "dynamic_range_v1":
         return "related_word"
+    if profile == "stack_read32_v1":
+        return "related_word"
     if profile == "register_argument_v1":
         relation = (claim.get("claim") or {}).get("relation") or {}
         if relation.get("relation") == "exact":
@@ -55,8 +57,24 @@ def _initial_u32(binary: StageABinary, address: int) -> int | None:
     rva = address - binary.image_base
     if rva < 0:
         return None
-    raw = bytes(binary.pe.get_data(rva, 4))
-    return int.from_bytes(raw, "little") if len(raw) == 4 else None
+    sections = [
+        section for section in binary.sections
+        if section.rva_start <= rva and rva + 4 <= section.rva_end
+    ]
+    if len(sections) != 1:
+        return None
+    section = sections[0]
+    loaded = bytearray()
+    for offset in range(4):
+        section_offset = rva + offset - section.rva_start
+        if section_offset >= section.raw_size:
+            loaded.append(0)
+            continue
+        raw = bytes(binary.pe.get_data(rva + offset, 1))
+        if len(raw) != 1:
+            return None
+        loaded.extend(raw)
+    return int.from_bytes(loaded, "little")
 
 
 def _initial_file_u32(binary: StageABinary, address: int) -> int | None:
@@ -104,6 +122,16 @@ def _highlow_relocation_count(binary: StageABinary, address: int) -> int:
     return sum(
         relocation["rva"] == rva and relocation["type"] == 3
         for relocation in _raw_base_relocations(binary)
+    )
+
+
+def _static_word_overlaps_iat(binary: StageABinary, address: int) -> bool:
+    rva = address - binary.image_base
+    return any(
+        imported.thunk_rva is not None
+        and rva < imported.thunk_rva + 4
+        and imported.thunk_rva < rva + 4
+        for imported in binary.imports
     )
 
 
@@ -895,6 +923,30 @@ def _attach_static_word_relation_slots(
     }
     existing = [dict(slot) for slot in updated.get("static_word_relation_slots", [])]
 
+    def record_proposal(
+        original_address: int,
+        candidate_address: int,
+        relation: str,
+        use: dict[str, Any],
+    ) -> None:
+        key = (original_address, candidate_address)
+        if key in pointer_slots:
+            return
+        proposal = proposals.setdefault(key, {
+            "original_address": original_address,
+            "candidate_address": candidate_address,
+            "relations": set(),
+            "uses": [],
+        })
+        proposal["relations"].add(relation)
+        proposal["uses"].append(use)
+        original_to_candidate.setdefault(original_address, set()).add(
+            candidate_address
+        )
+        candidate_to_original.setdefault(candidate_address, set()).add(
+            original_address
+        )
+
     for region_index, (region, behavior) in enumerate(
         zip(updated.get("regions", []), behaviors, strict=True)
     ):
@@ -972,22 +1024,61 @@ def _attach_static_word_relation_slots(
                     ),
                 })
                 continue
-            key = (original_address, candidate_address)
-            if key in pointer_slots:
-                continue
-            proposal = proposals.setdefault(key, {
-                "original_address": original_address,
-                "candidate_address": candidate_address,
-                "relations": set(),
-                "uses": [],
-            })
-            proposal["relations"].add(relation)
-            proposal["uses"].append({**location, "relation": relation})
-            original_to_candidate.setdefault(original_address, set()).add(
-                candidate_address
+            record_proposal(
+                original_address,
+                candidate_address,
+                relation,
+                {**location, "relation": relation, "source": "paired_write"},
             )
-            candidate_to_original.setdefault(candidate_address, set()).add(
-                original_address
+
+    # A writable static word can be part of the relational invariant even when
+    # this program only reads it. Pair normalized read paths and require exact
+    # launch bytes. Loader-mutated IAT and relocation words remain owned by
+    # their dedicated proof families. Any later incompatible write still makes
+    # the generated segment or whole-program composition fail closed.
+    regions = list(updated.get("regions", []))
+    for region_index, behavior in enumerate(behaviors):
+        original_reads = _direct_constant_read32_locations(
+            behavior.get("original_ir") or {}
+        )
+        candidate_reads = _direct_constant_read32_locations(
+            behavior.get("candidate_ir") or {}
+        )
+        for path in sorted(set(original_reads) & set(candidate_reads)):
+            original_address = original_reads[path]
+            candidate_address = candidate_reads[path]
+            if not (
+                _writable_static_word(original, original_address)
+                and _writable_static_word(candidate, candidate_address)
+                and not _static_word_overlaps_iat(original, original_address)
+                and not _static_word_overlaps_iat(candidate, candidate_address)
+                and _highlow_relocation_count(original, original_address) == 0
+                and _highlow_relocation_count(candidate, candidate_address) == 0
+            ):
+                continue
+            original_initial = _initial_u32(original, original_address)
+            candidate_initial = _initial_u32(candidate, candidate_address)
+            if original_initial is None or original_initial != candidate_initial:
+                continue
+            record_proposal(
+                original_address,
+                candidate_address,
+                "exact",
+                {
+                    "region_index": region_index,
+                    "region_id": (
+                        regions[region_index].get("id")
+                        if region_index < len(regions)
+                        and isinstance(regions[region_index], dict)
+                        else None
+                    ),
+                    "semantic_path": list(path),
+                    "original_address": original_address,
+                    "candidate_address": candidate_address,
+                    "initial_value": original_initial,
+                    "relation": "exact",
+                    "source": "paired_read",
+                },
             )
 
     ambiguous = {

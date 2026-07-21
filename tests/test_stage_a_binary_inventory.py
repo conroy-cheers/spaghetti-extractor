@@ -405,12 +405,17 @@ class StageABinaryInventoryTests(StageARelationalTestBase):
                 ),
             )
             merged_path = root / "merged.json"
-            merged = stage_a_merge_side_extractions(
-                binary=binary,
-                side="original",
-                inputs=[base_path, supplement_path],
-                out=merged_path,
-            )
+            with patch(
+                "spaghetti_extractor.relational.side_extraction."
+                "_raw_extraction_semantics_sha256",
+                side_effect=AssertionError("merge must preserve input identity"),
+            ):
+                merged = stage_a_merge_side_extractions(
+                    binary=binary,
+                    side="original",
+                    inputs=[base_path, supplement_path],
+                    out=merged_path,
+                )
             self.assertEqual(merged["regions"], 3)
             merged_request, _ = parse_result_unbound(
                 json.loads(merged_path.read_text(encoding="utf-8")),

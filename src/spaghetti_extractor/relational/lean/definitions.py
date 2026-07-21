@@ -56,6 +56,19 @@ from .expressions import (
     _lean_value_target,
 )
 
+
+def _lean_finite_index(rows: list[str], *, leaf_size: int = 16) -> str:
+    """Build a balanced Lean finite-index literal with bounded local leaves."""
+    if not rows:
+        return "(.leaf [])"
+    if len(rows) <= leaf_size:
+        return "(.leaf [" + ", ".join(rows) + "])"
+    middle = len(rows) // 2
+    left = _lean_finite_index(rows[:middle], leaf_size=leaf_size)
+    right = _lean_finite_index(rows[middle:], leaf_size=leaf_size)
+    return f"(.branch {len(rows)} {middle} {left} {right})"
+
+
 def _lean_region_input_invariant(region: dict[str, Any]) -> str:
     """Serialize exactly the invariant computed by RegionRelation.inputInvariant."""
     invariant = _lean_state_invariant({
@@ -89,6 +102,8 @@ def _lean_counterexample_source(
     index: int,
     behaviors: dict[str, str],
     assignment: dict[str, int],
+    original_state: dict[str, Any] | None = None,
+    candidate_state: dict[str, Any] | None = None,
 ) -> str:
     machine_call_contract_rows = ", ".join(
         _lean_machine_import_call_contract(item)
@@ -100,6 +115,36 @@ def _lean_counterexample_source(
             for register in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
         )
         return "{ " + fields + " }"
+
+    def machine_state(side: str, state: dict[str, Any] | None) -> str:
+        if state is None:
+            return (
+                f"{{ registers := {registers(side)}, "
+                "memory := fun _ => BitVec.ofNat 8 0 }}"
+            )
+        memory_bytes: dict[int, int] = {}
+        for word in state.get("memory_words", []):
+            address = int(word["address"])
+            value = int(word["value"])
+            for offset in range(4):
+                byte_address = (address + offset) % (2**32)
+                byte_value = (value >> (offset * 8)) & 0xFF
+                previous = memory_bytes.get(byte_address)
+                if previous is not None and previous != byte_value:
+                    raise StageAInputError(
+                        "counterexample memory words overlap with conflicting bytes"
+                    )
+                memory_bytes[byte_address] = byte_value
+        memory = "BitVec.ofNat 8 0"
+        for address, value in sorted(memory_bytes.items(), reverse=True):
+            memory = (
+                f"if address == BitVec.ofNat 32 {address} then "
+                f"BitVec.ofNat 8 {value} else ({memory})"
+            )
+        return (
+            f"{{ registers := {registers(side)}, memory := fun address => {memory}, "
+            f"eflags := BitVec.ofNat 32 {int(state.get('eflags', 0))} }}"
+        )
 
     return (
         "import StageA.Relational\n\n"
@@ -128,15 +173,15 @@ def _lean_counterexample_source(
         + "\n\n"
         + f"def originalBehavior : SymbolicBehavior := {behaviors['original']}\n\n"
         + f"def candidateBehavior : SymbolicBehavior := {behaviors['candidate']}\n\n"
-        + f"def originalState : MachineState := {{ registers := {registers('o')}, memory := fun _ => BitVec.ofNat 8 0 }}\n\n"
-        + f"def candidateState : MachineState := {{ registers := {registers('c')}, memory := fun _ => BitVec.ofNat 8 0 }}\n\n"
+        + f"def originalState : MachineState := {machine_state('o', original_state)}\n\n"
+        + f"def candidateState : MachineState := {machine_state('c', candidate_state)}\n\n"
         + f"theorem originalBehaviorCachedDecoded : regionBehaviorWithMachineCallContracts originalPe originalImports machineImportCallContracts region{index}.original = some originalBehavior := by decide\n\n"
         + f"theorem candidateBehaviorCachedDecoded : regionBehaviorWithMachineCallContracts candidatePe candidateImports machineImportCallContracts region{index}.candidate = some candidateBehavior := by decide\n\n"
         + f"theorem inputsRelated : statesRelated originalPe.imageBase candidatePe.imageBase "
         + f"region{index}.targets region{index}.flagInputs region{index}.bounds "
         + f"region{index}.addressSeparations region{index}.values region{index}.inputs "
         + "originalState candidateState := by\n"
-        + "  constructor\n  · decide\n  · constructor\n    · decide\n    · constructor\n      · decide\n      · exact ⟨rfl, rfl, rfl, rfl, rfl⟩\n\n"
+        + "  constructor\n  · decide\n  · constructor\n    · decide\n    · constructor\n      · decide\n      · exact ⟨rfl, rfl, ⟨rfl, rfl, rfl⟩, by decide, rfl⟩\n\n"
         + "def outputsMatch : Bool :=\n"
         + f"  match evalBehavior false region{index}.targets originalState originalBehavior,\n"
         + f"      evalBehavior true region{index}.targets candidateState candidateBehavior with\n"
@@ -196,18 +241,18 @@ def _lean_bounded_immutable_relocation_table_jump_claim(
     )
 
 def _lean_global_mapping_context_source(contract: dict[str, Any]) -> str:
-    target_rows = ", ".join(
+    target_rows = [
         f"{{ id := {target['id']}, regionIndex := {target['region_index']}, "
         f"originalRva := {target['original_rva']}, candidateRva := {target['candidate_rva']}, "
         f"originalAliases := {_lean_code_aliases(target, 'original')}, "
         f"candidateAliases := {_lean_code_aliases(target, 'candidate')} }}"
         for target in contract.get("code_targets", [])
-    )
+    ]
     value_rows = ", ".join(
         _lean_value_target(target) for target in contract.get("value_targets", [])
     )
 
-    def code_addresses(side: str) -> str:
+    def code_addresses(side: str) -> list[str]:
         addresses: list[tuple[int, str]] = []
         for target in contract.get("code_targets", []):
             target_id = int(target["id"])
@@ -224,7 +269,7 @@ def _lean_global_mapping_context_source(contract: dict[str, Any]) -> str:
                     target.get(f"{side}_aliases", [])
                 )
             )
-        return ", ".join(row for _, row in sorted(addresses))
+        return [row for _, row in sorted(addresses)]
 
     original_value_order = ", ".join(
         str(target["id"])
@@ -245,14 +290,17 @@ def _lean_global_mapping_context_source(contract: dict[str, Any]) -> str:
         "namespace StageA.GeneratedRelational\n\n"
         "open StageA.Formal StageA.Relational\n\n"
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
-        f"def globalCodeTargetIndex : Array CodeTargetPair := #[{target_rows}]\n\n"
+        "def globalCodeTargetIndex : FiniteIndex CodeTargetPair :=\n  "
+        f"{_lean_finite_index(target_rows)}\n\n"
         "def globalCodeTargets : List CodeTargetPair := globalCodeTargetIndex.toList\n\n"
         f"def globalValueTargetIndex : Array ValueTargetPair := #[{value_rows}]\n\n"
         "def globalValueTargets : List ValueTargetPair := globalValueTargetIndex.toList\n\n"
         "def globalCodeMap : StaticCodeMap := {\n"
         "  entries := globalCodeTargetIndex\n"
-        f"  originalAddresses := #[{code_addresses('original')}]\n"
-        f"  candidateAddresses := #[{code_addresses('candidate')}]\n"
+        "  originalAddresses :=\n    "
+        f"{_lean_finite_index(code_addresses('original'))}\n"
+        "  candidateAddresses :=\n    "
+        f"{_lean_finite_index(code_addresses('candidate'))}\n"
         "}\n\n"
         "def globalDataMap : StaticDataMap := {\n"
         "  entries := globalValueTargetIndex\n"
@@ -807,9 +855,24 @@ def _write_relational_static_context_modules(
             "    staticCandidateExpectedAddressCountChecked.symm"
         ),
         (
+            "theorem staticCodeTargetIndexStructurallyChecked :\n"
+            "    globalCodeMap.entries.structurallyValid 16 = true := by decide"
+        ),
+        (
+            "theorem staticOriginalAddressIndexStructurallyChecked :\n"
+            "    globalCodeMap.originalAddresses.structurallyValid 16 = true := by decide"
+        ),
+        (
+            "theorem staticCandidateAddressIndexStructurallyChecked :\n"
+            "    globalCodeMap.candidateAddresses.structurallyValid 16 = true := by decide"
+        ),
+        (
             "theorem staticCodeMapChecked :\n"
             "    globalCodeMap.IndexedValid originalPe candidatePe :=\n"
-            f"  ⟨{holds_names['Entry']}, staticOriginalAddressCountChecked,\n"
+            "  ⟨staticCodeTargetIndexStructurallyChecked,\n"
+            "    staticOriginalAddressIndexStructurallyChecked,\n"
+            "    staticCandidateAddressIndexStructurallyChecked,\n"
+            f"    {holds_names['Entry']}, staticOriginalAddressCountChecked,\n"
             "    staticCandidateAddressCountChecked, "
             f"{holds_names['OriginalAddress']}, {holds_names['CandidateAddress']},\n"
             f"    {holds_names['OriginalAddressRoundTrip']}, "
@@ -1007,6 +1070,31 @@ def _normalized_behavior_fast_path(
         region.get("flag_inputs", all_flag_bits) == all_flag_bits
         and region.get("flag_outputs", all_flag_bits) == all_flag_bits
         and _normalized_behavior_structure_matches(region, behaviors)
+    )
+
+
+def _compact_compositional_normalized_path(
+    region: dict[str, Any], behaviors: dict[str, Any]
+) -> bool:
+    return (
+        isinstance(behaviors.get("original_ir"), dict)
+        and isinstance(behaviors.get("candidate_ir"), dict)
+        and "flags := some" in behaviors.get("original", "")
+        and all(bit in FLAG_BITS for bit in region.get("flag_inputs", FLAG_BITS))
+        and all(bit in FLAG_BITS for bit in region.get("flag_outputs", FLAG_BITS))
+        and _normalized_behavior_structure_matches(region, behaviors)
+        and _lean_normalized_static_outcome(region, behaviors) is not None
+    )
+
+
+def _has_compositional_normalized_support(
+    region: dict[str, Any], behaviors: dict[str, Any]
+) -> bool:
+    """Whether one definitions shard can own the checked normalized behavior."""
+
+    return (
+        _normalized_behavior_fast_path(region, behaviors)
+        or _compact_compositional_normalized_path(region, behaviors)
     )
 
 def _lean_behavior_fields_memory_free(
@@ -1349,16 +1437,16 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
             "  intro originalState candidateState related\n"
             "  unfold statesRelated StateRelCore at related\n"
             "  simp only [registerRelationsHold_exactRegisterRelations] at related\n"
-            "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, oebp, oesp⟩, originalMemory, originalUndefined, originalX87, originalFlags, originalFsBase⟩\n"
-            "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, cebp, cesp⟩, candidateMemory, candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
+            "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, oebp, oesp⟩, originalMemory, originalUndefined, originalX87, originalX87Physical, originalX87Semantics, originalFlags, originalFsBase⟩\n"
+            "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, cebp, cesp⟩, candidateMemory, candidateUndefined, candidateX87, candidateX87Physical, candidateX87Semantics, candidateFlags, candidateFsBase⟩\n"
             "  rcases related with ⟨related, boundsSatisfied, separationsSatisfied, memoryRelated, undefinedRelated, x87Related, flagsRelated, fsBaseRelated⟩\n"
             + _lean_region_memory_setup(
                 index, region, "originalPe.imageBase", "candidatePe.imageBase",
             )
             + "  change originalUndefined = candidateUndefined at undefinedRelated\n"
             "  subst candidateUndefined\n"
-            "  change originalX87 = candidateX87 at x87Related\n"
-            "  subst candidateX87\n"
+            "  change originalX87 = candidateX87 ∧ originalX87Physical = candidateX87Physical ∧ originalX87Semantics = candidateX87Semantics at x87Related\n"
+            "  rcases x87Related with ⟨rfl, rfl, rfl⟩\n"
             + flag_setup
             + "  change originalFsBase = candidateFsBase at fsBaseRelated\n"
             "  subst candidateFsBase\n"

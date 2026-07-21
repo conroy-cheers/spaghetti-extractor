@@ -160,11 +160,16 @@ def stage_a_merge_side_extractions(
     if not inputs:
         raise StageAInputError("side extraction merge requires inputs")
     parsed_binary = _parse_stage_a_pe(Path(binary))
-    decoder_semantics_sha256 = _raw_extraction_semantics_sha256()
+    input_payloads = [
+        read_json_object(input_path) for input_path in map(Path, inputs)
+    ]
+    decoder_semantics_sha256 = input_payloads[0].get(
+        "decoder_semantics_sha256"
+    )
     terms_by_span: dict[tuple[int, int], tuple[str, str]] = {}
-    for input_path in map(Path, inputs):
+    for input_payload in input_payloads:
         request, terms = parse_result_unbound(
-            read_json_object(input_path),
+            input_payload,
             expected_side=side,
             expected_binary_sha256=parsed_binary.sha256,
             expected_decoder_semantics_sha256=decoder_semantics_sha256,

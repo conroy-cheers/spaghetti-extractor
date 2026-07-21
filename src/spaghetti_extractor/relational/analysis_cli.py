@@ -50,6 +50,19 @@ def _validate_analysis(path: Path) -> dict[str, Any]:
     }
 
 
+def _validate_proposal(path: Path) -> dict[str, Any]:
+    from .proposal_artifact import validate_relational_proposal
+
+    manifest = validate_relational_proposal(path)
+    return {
+        "format": "stage-a-relational-proposal-validation-v1",
+        "status": "validated",
+        "original_sha256": manifest.original_sha256,
+        "candidate_sha256": manifest.candidate_sha256,
+        "closure_sha256": manifest.closure_sha256,
+    }
+
+
 def _analyze_relational(args: argparse.Namespace) -> dict[str, Any]:
     from .analysis import stage_a_analyze_relational
 
@@ -63,6 +76,34 @@ def _analyze_relational(args: argparse.Namespace) -> dict[str, Any]:
         original_isa=args.original_isa,
         candidate_isa=args.candidate_isa,
         region_facts=args.region_facts,
+        out=args.out,
+    )
+
+
+def _discover_proposals(args: argparse.Namespace) -> dict[str, Any]:
+    from .analysis import stage_a_discover_relational_proposals
+
+    return stage_a_discover_relational_proposals(
+        original=args.original,
+        candidate=args.candidate,
+        relation_contract=args.relation_contract,
+        original_extraction=args.original_extraction,
+        candidate_extraction=args.candidate_extraction,
+        normalized_behaviors=args.normalized_behaviors,
+        region_facts=args.region_facts,
+        out=args.out,
+    )
+
+
+def _assemble_relational(args: argparse.Namespace) -> dict[str, Any]:
+    from .analysis import stage_a_assemble_relational_analysis
+
+    return stage_a_assemble_relational_analysis(
+        proposal=args.proposal,
+        register_replay=args.register_replay,
+        semantic_products=args.semantic_products,
+        memory_products=args.memory_products,
+        composition_products=args.composition_products,
         out=args.out,
     )
 
@@ -99,6 +140,26 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--region-facts", type=Path)
     analyze.add_argument("--out", type=Path, required=True)
     analyze.set_defaults(handler=_analyze_relational)
+
+    proposals = commands.add_parser("discover-proposals")
+    proposals.add_argument("--original", type=Path, required=True)
+    proposals.add_argument("--candidate", type=Path, required=True)
+    proposals.add_argument("--relation-contract", type=Path, required=True)
+    proposals.add_argument("--original-extraction", type=Path)
+    proposals.add_argument("--candidate-extraction", type=Path)
+    proposals.add_argument("--normalized-behaviors", type=Path)
+    proposals.add_argument("--region-facts", type=Path)
+    proposals.add_argument("--out", type=Path, required=True)
+    proposals.set_defaults(handler=_discover_proposals)
+
+    assemble = commands.add_parser("assemble-relational")
+    assemble.add_argument("--proposal", type=Path, required=True)
+    assemble.add_argument("--register-replay", type=Path, required=True)
+    assemble.add_argument("--semantic-products", type=Path, required=True)
+    assemble.add_argument("--memory-products", type=Path, required=True)
+    assemble.add_argument("--composition-products", type=Path, required=True)
+    assemble.add_argument("--out", type=Path, required=True)
+    assemble.set_defaults(handler=_assemble_relational)
 
     analyze_facts = commands.add_parser("analyze-region-facts")
     analyze_facts.add_argument("--original", type=Path, required=True)
@@ -165,6 +226,12 @@ def _build_parser() -> argparse.ArgumentParser:
     validate = commands.add_parser("validate-analysis")
     validate.add_argument("--analysis", type=Path, required=True)
     validate.set_defaults(handler=lambda args: _validate_analysis(args.analysis))
+
+    validate_proposal = commands.add_parser("validate-proposal")
+    validate_proposal.add_argument("--proposal", type=Path, required=True)
+    validate_proposal.set_defaults(
+        handler=lambda args: _validate_proposal(args.proposal)
+    )
 
     inventory_binary = commands.add_parser("inventory-binary")
     inventory_binary.add_argument("--binary", type=Path, required=True)
@@ -295,6 +362,8 @@ def main(argv: list[str] | None = None) -> int:
         "extracted",
         "generated",
         "prepared",
+        "untrusted_proposal_requires_lean_replay",
+        "validated",
         "pass",
     } else 1
 

@@ -7835,18 +7835,24 @@ def _normalize_jq_late_option_error_stream_calls(code: str) -> str:
 
 
 def _render_skeleton_readme(target_name: str, source_language: str, implementation_mode: str) -> str:
-    mode_description = (
-        "This directory contains decompiler-derived C source generated from private reverse-engineering evidence."
-        if implementation_mode == "decompiled-c"
-        else "This directory is generated from Windows PE reverse-engineering inputs. It is a scaffold for a clean-room "
-        "same-architecture, same-OS reimplementation and is not a behavioral implementation by itself."
-    )
+    if implementation_mode == "decompiled-c":
+        mode_description = "This directory contains decompiler-derived C source generated from private reverse-engineering evidence."
+    elif implementation_mode == "contract-guided-c":
+        mode_description = (
+            "This directory contains semantic C generated from the Stage A state machine. "
+            "The implementation manifest and transfer hashes are authoritative; copied-byte source is bootstrap only."
+        )
+    else:
+        mode_description = (
+            "This directory is generated from Windows PE reverse-engineering inputs. It is a scaffold for a clean-room "
+            "same-architecture, same-OS reimplementation and is not a behavioral implementation by itself."
+        )
     return (
         f"# Stage B Skeleton: {target_name}\n\n"
         f"{mode_description}\n\n"
-        "A candidate may be accepted by `stage-b-validate-candidate` only when its provenance manifest points "
-        "back to this skeleton, records no upstream source access, records no manual behavioral fixups, includes "
-        "passing upstream integration test evidence, and then passes Stage A binary validation.\n\n"
+        "Candidate provenance must point back to this skeleton and record no upstream source access. Contract-guided "
+        "human or LLM repairs are untrusted inputs. Stage A binary validation runs first and is the only equivalence "
+        "authority; candidate-only integration tests run afterward as a red-flag check.\n\n"
         f"Generated source language: `{source_language}`.\n"
         f"Implementation mode: `{implementation_mode}`.\n"
     )
@@ -7889,8 +7895,9 @@ def _stage_b_provenance_issues(
         )
     if provenance_payload.get("upstream_source_access") is not False:
         issues.append(_issue("upstream_source_access", "candidate provenance must explicitly set upstream_source_access to false"))
-    if provenance_payload.get("manual_behavioral_fixups") != []:
-        issues.append(_issue("manual_behavioral_fixups", "candidate provenance must record an empty manual_behavioral_fixups list"))
+    manual_fixups = provenance_payload.get("manual_behavioral_fixups")
+    if not isinstance(manual_fixups, list):
+        issues.append(_issue("invalid_manual_behavioral_fixups", "candidate provenance manual_behavioral_fixups must be a list"))
 
     source_roots = provenance_payload.get("source_roots")
     if not isinstance(source_roots, list) or not source_roots:
@@ -7899,6 +7906,7 @@ def _stage_b_provenance_issues(
         issues.append(_issue("missing_generated_skeleton_root", "candidate source roots must include the generated Stage B skeleton"))
     else:
         issues.extend(_generated_skeleton_source_issues(skeleton_payload, source_roots))
+        issues.extend(_generated_state_machine_implementation_issues(skeleton_payload, source_roots))
         issues.extend(_fixed_up_source_issues(skeleton_payload, source_roots))
     issues.extend(_candidate_build_artifact_issues(provenance_payload, candidate))
     issues.extend(_candidate_build_source_dependency_issues(provenance_payload))
@@ -8021,16 +8029,20 @@ def _generated_skeleton_source_issues(skeleton_payload: dict[str, Any], source_r
 
 def _fixed_up_source_issues(skeleton_payload: dict[str, Any], source_roots: list[Any]) -> list[dict[str, Any]]:
     expected = _skeleton_source_output(skeleton_payload)
-    if expected is None:
+    state_machine = _skeleton_state_machine_output(skeleton_payload)
+    implementation = _skeleton_implementation_output(skeleton_payload)
+    if expected is None or state_machine is None:
         return []
     issues: list[dict[str, Any]] = []
     roots = [item for item in source_roots if isinstance(item, dict) and item.get("kind") == "stage_b_fixed_up_source"]
     for root in roots:
         missing = [
             key
-            for key in ("path", "source", "source_sha256", "derived_from", "derived_from_sha256", "fixup_policy", "behavioral_fixups")
+            for key in ("path", "source", "source_sha256", "derived_from", "derived_from_sha256", "state_machine", "fixup_policy", "behavioral_fixups")
             if key not in root
         ]
+        if implementation is not None and "implementation_manifest" not in root:
+            missing.append("implementation_manifest")
         if missing:
             issues.append(
                 _issue(
@@ -8056,22 +8068,32 @@ def _fixed_up_source_issues(skeleton_payload: dict[str, Any], source_roots: list
                     details={"expected": expected, "actual": root},
                 )
             )
-        if root.get("fixup_policy") != "compile_and_structure_only":
+        if root.get("state_machine") != state_machine:
+            issues.append(
+                _issue(
+                    "fixed_up_source_state_machine_mismatch",
+                    "fixed-up source roots must bind the exact Stage A state-machine artifact",
+                    details={"expected": state_machine, "actual": root.get("state_machine")},
+                )
+            )
+        if implementation is not None and root.get("implementation_manifest") != implementation:
+            issues.append(
+                _issue(
+                    "fixed_up_source_implementation_mismatch",
+                    "fixed-up source roots must bind the exact generated state-machine implementation manifest",
+                    details={"expected": implementation, "actual": root.get("implementation_manifest")},
+                )
+            )
+        if root.get("fixup_policy") != "state_machine_contract_guided":
             issues.append(
                 _issue(
                     "invalid_fixed_up_source_policy",
-                    "fixed-up source roots may only declare compile_and_structure_only fixups",
+                    "fixed-up source roots must declare state_machine_contract_guided repairs",
                     details=root,
                 )
             )
-        if root.get("behavioral_fixups") != []:
-            issues.append(
-                _issue(
-                    "fixed_up_source_behavioral_fixups",
-                    "fixed-up source roots must not record behavioral fixups",
-                    details=root,
-                )
-            )
+        if not isinstance(root.get("behavioral_fixups"), list):
+            issues.append(_issue("invalid_fixed_up_source_fixups", "fixed-up source behavioral_fixups must be a list", details=root))
     return issues
 
 
@@ -8082,6 +8104,66 @@ def _skeleton_source_output(skeleton_payload: dict[str, Any]) -> dict[str, str] 
         return None
     path = source.get("path")
     digest = source.get("sha256")
+    if not isinstance(path, str) or not isinstance(digest, str):
+        return None
+    return {"path": path, "sha256": digest}
+
+
+def _skeleton_implementation_output(skeleton_payload: dict[str, Any]) -> dict[str, str] | None:
+    if skeleton_payload.get("implementation_mode") != "contract-guided-c":
+        return None
+    outputs = skeleton_payload.get("outputs")
+    implementation = outputs.get("implementation") if isinstance(outputs, dict) else None
+    manifest = implementation.get("manifest") if isinstance(implementation, dict) else None
+    if not isinstance(manifest, dict):
+        return None
+    path = manifest.get("path")
+    digest = manifest.get("sha256")
+    if not isinstance(path, str) or not isinstance(digest, str):
+        return None
+    return {"path": path, "sha256": digest}
+
+
+def _generated_state_machine_implementation_issues(
+    skeleton_payload: dict[str, Any],
+    source_roots: list[Any],
+) -> list[dict[str, Any]]:
+    expected = _skeleton_implementation_output(skeleton_payload)
+    if expected is None:
+        return []
+    roots = [
+        item
+        for item in source_roots
+        if isinstance(item, dict)
+        and item.get("kind") in {
+            "stage_b_generated_state_machine_implementation",
+            "stage_b_generated_skeleton",
+        }
+    ]
+    state_machine = _skeleton_state_machine_output(skeleton_payload)
+    for root in roots:
+        actual = {
+            "path": root.get("implementation_manifest"),
+            "sha256": root.get("implementation_manifest_sha256"),
+        }
+        if actual == expected and root.get("state_machine") == state_machine:
+            return []
+    return [
+        _issue(
+            "missing_generated_state_machine_implementation_root",
+            "contract-guided candidate provenance must bind the generated semantic-C implementation manifest",
+            details={"expected": expected, "actual": roots},
+        )
+    ]
+
+
+def _skeleton_state_machine_output(skeleton_payload: dict[str, Any]) -> dict[str, str] | None:
+    outputs = skeleton_payload.get("outputs")
+    state_machine = outputs.get("state_machine") if isinstance(outputs, dict) else None
+    if not isinstance(state_machine, dict):
+        return None
+    path = state_machine.get("path")
+    digest = state_machine.get("sha256")
     if not isinstance(path, str) or not isinstance(digest, str):
         return None
     return {"path": path, "sha256": digest}

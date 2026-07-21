@@ -1,7 +1,102 @@
 from tests.stage_a_relational_support import *
+from spaghetti_extractor.relational.lean.acceptance import (
+    _paired_frame_expression_witness,
+    _lean_preserved_input_flags_proof,
+)
 
 
 class StageARuntimeFrameRegisterAcceptanceTests(StageARelationalTestBase):
+    def test_linked_return_replays_preserved_df_claim(self):
+        proof = _lean_preserved_input_flags_proof(
+            claim={"profile": "preserved_input_flags_v1", "bits": [10]},
+            source_region_index=7,
+            original_behavior="originalReturn",
+            candidate_behavior="candidateReturn",
+        )
+
+        self.assertIn("apply flagsRelated_cons_of_eq", proof)
+        self.assertIn(
+            "rw [evalNormalizedFlags_extract_df, "
+            "evalNormalizedFlags_extract_df]",
+            proof,
+        )
+        self.assertIn("region7.flagInputs", proof)
+
+    def test_linked_return_replays_multiple_preserved_flags(self):
+        proof = _lean_preserved_input_flags_proof(
+            claim={"profile": "preserved_input_flags_v1", "bits": [0, 4, 11]},
+            source_region_index=3,
+            original_behavior="originalReturn",
+            candidate_behavior="candidateReturn",
+        )
+
+        self.assertEqual(proof.count("apply flagsRelated_cons_of_eq"), 3)
+        self.assertIn("evalNormalizedFlags_extract_cf_input_of_checked", proof)
+        self.assertIn("evalNormalizedFlags_extract_af_input_of_checked", proof)
+        self.assertIn("evalNormalizedFlags_extract_of_input_of_checked", proof)
+
+    def test_affine_frame_expression_has_replayable_witness(self):
+        expression = {
+            "op": "sub",
+            "left": {"op": "input_reg", "reg": "esp"},
+            "right": {"op": "constant", "value": 48},
+        }
+        witness = _paired_frame_expression_witness(
+            expression,
+            expression,
+            ({
+                "original": "esp",
+                "candidate": "esp",
+                "relation": "exact",
+            },),
+        )
+
+        self.assertEqual(witness, {
+            "kind": "binary",
+            "operation": "sub",
+            "left": {
+                "kind": "input_reg",
+                "original": "esp",
+                "candidate": "esp",
+            },
+            "right": {"kind": "constant", "value": 48},
+        })
+
+    def test_affine_frame_expression_rejects_different_delta(self):
+        original = {
+            "op": "sub",
+            "left": {"op": "input_reg", "reg": "esp"},
+            "right": {"op": "constant", "value": 48},
+        }
+        candidate = {
+            "op": "sub",
+            "left": {"op": "input_reg", "reg": "esp"},
+            "right": {"op": "constant", "value": 44},
+        }
+
+        self.assertIsNone(_paired_frame_expression_witness(
+            original,
+            candidate,
+            ({
+                "original": "esp",
+                "candidate": "esp",
+                "relation": "exact",
+            },),
+        ))
+
+    def test_frame_expression_rejects_non_exact_input_relation(self):
+        expression = {"op": "input_reg", "reg": "eax"}
+
+        self.assertIsNone(_paired_frame_expression_witness(
+            expression,
+            expression,
+            ({
+                "original": "eax",
+                "candidate": "eax",
+                "relation": "related_word",
+            },),
+        ))
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
     def test_shared_external_callee_keeps_caller_local_register_fact(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -190,8 +285,7 @@ class StageARuntimeFrameRegisterAcceptanceTests(StageARelationalTestBase):
                     "RelationalAcceptance*.lean"
                 ))
             )
-            self.assertIn("seedsPreservedRelationsFromOutputClaims", acceptance_source)
-            self.assertIn("RelationalRuntimeCallFactsHold.afterExternal", acceptance_source)
+            self.assertIn("LinkedWholeProgramCertificate", acceptance_source)
             self.assertIn("pe32ProgramsEquivalent", acceptance_source)
 
             lean = _run_lean_relational(

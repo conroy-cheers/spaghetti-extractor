@@ -8,6 +8,7 @@ from typing import Any, Iterable
 
 import capstone
 
+from .stage_b_c_backend import write_stage_b_semantic_c_backend
 from .stage_binary import (
     BlockSide,
     StageABinary,
@@ -19,6 +20,16 @@ from .stage_binary import (
     _linker_function_match_key,
     _parse_linker_map_functions,
     _parse_stage_a_pe,
+)
+from .stage_b_state_machine import (
+    function_state_machine_binding,
+    normalize_stage_a_semantic_transfer,
+    normalize_stage_a_semantic_transfers,
+    stage_b_state_machine_coverage,
+    stage_b_state_machine_source_coverage,
+    state_machine_binding_from_rows,
+    state_machine_rows_from_functions,
+    write_stage_b_state_machine,
 )
 from .util import sha256_bytes, sha256_file, utc_now, write_json
 
@@ -126,6 +137,8 @@ _DECOMPILED_C_MINGWEX_C_SYMBOL_ALIASES = {
 _DECOMPILED_C_MINGWEX_C_SYMBOL_ALIAS_TARGETS = frozenset(_DECOMPILED_C_MINGWEX_C_SYMBOL_ALIASES.values())
 _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES = frozenset(
     {
+        "__getmainargs",
+        "__msvcrt_getmainargs",
         "_DllMainCRTStartup@12",
         "_DllMainCRTStartup_12",
         "_FindPESection",
@@ -549,7 +562,7 @@ def _runtime_crt_missing_root(missing_item: dict[str, Any]) -> dict[str, Any] | 
     if _has_linker_stdcall_suffix(contract_function):
         return None
     object_symbol = _DECOMPILED_C_MINGW_CRT_FORCED_ROOT_OBJECT_SYMBOLS.get(source_name, source_name)
-    return {
+    result = {
         "contract_function": contract_function,
         "source_function": source_name,
         "object_symbol": object_symbol,
@@ -768,6 +781,14 @@ def stage_b_generate_skeleton(
         item.symbol for item in binary.imports if isinstance(item.symbol, str) and item.symbol
     ]
     functions = function_filter["functions"]
+    semantic_transfer_sidecar = reference_contract_sidecars.get("semantic_transfer_contracts")
+    sidecar_rows = semantic_transfer_sidecar.get("rows") if isinstance(semantic_transfer_sidecar, dict) else None
+    state_machine_rows = (
+        normalize_stage_a_semantic_transfers(row for row in sidecar_rows if isinstance(row, dict))
+        if isinstance(sidecar_rows, list)
+        else state_machine_rows_from_functions(functions)
+    )
+    state_machine_coverage = stage_b_state_machine_coverage(functions, state_machine_rows)
     implementation_recovery = _skeleton_implementation_recovery(
         functions,
         source_language,
@@ -797,10 +818,46 @@ def stage_b_generate_skeleton(
     target_id = _artifact_name(target_name)
     source_rel = Path("src") / f"{target_id}_stage_b_skeleton.{_source_extension(source_language)}"
     functions_rel = Path("functions.json")
+    state_machine_rel = Path("state-machine.jsonl")
+    semantic_c_rel = Path("semantic-c")
     readme_rel = Path("README.md")
     manifest_path = out_dir / "manifest.json"
 
-    write_json(out_dir / functions_rel, {"format": "stage-b-functions-v1", "target_name": target_name, "functions": functions})
+    write_json(
+        out_dir / functions_rel,
+        {
+            "format": "stage-b-functions-v1",
+            "target_name": target_name,
+            "functions": _skeleton_functions_artifact(functions),
+        },
+    )
+    write_stage_b_state_machine(out_dir / state_machine_rel, state_machine_rows)
+    semantic_c_backend = write_stage_b_semantic_c_backend(
+        out_dir / semantic_c_rel,
+        state_machine_rows,
+        state_machine_binding={
+            "path": state_machine_rel.as_posix(),
+            "sha256": sha256_file(out_dir / state_machine_rel),
+        },
+    )
+    semantic_c_implementation = _semantic_c_implementation_output(
+        semantic_c_rel,
+        semantic_c_backend,
+        state_machine={
+            "path": state_machine_rel.as_posix(),
+            "sha256": sha256_file(out_dir / state_machine_rel),
+        },
+    )
+    semantic_c_source_map_path = semantic_c_implementation.get("source_map")
+    semantic_c_source_map = (
+        json.loads((out_dir / str(semantic_c_source_map_path["path"])).read_text(encoding="utf-8"))
+        if isinstance(semantic_c_source_map_path, dict)
+        else {"format": "stage-b-semantic-c-source-map-v1", "transfers": []}
+    )
+    bootstrap_source_output = {
+        "path": source_rel.as_posix(),
+        "sha256": None,
+    }
     (out_dir / source_rel.parent).mkdir(parents=True, exist_ok=True)
     source_text = _render_skeleton_source(
         target_name=target_name,
@@ -814,6 +871,7 @@ def stage_b_generate_skeleton(
         reference_contract_sidecars=reference_contract_sidecars,
     )
     (out_dir / source_rel).write_text(source_text, encoding="utf-8")
+    bootstrap_source_output["sha256"] = sha256_file(out_dir / source_rel)
     (out_dir / readme_rel).write_text(_render_skeleton_readme(target_name, source_language, implementation_mode), encoding="utf-8")
 
     inputs: dict[str, Any] = {
@@ -832,7 +890,11 @@ def stage_b_generate_skeleton(
     if decompiler_export is not None:
         inputs["decompiler_export"] = _decompiler_export_summary(Path(decompiler_export))
 
-    allowed_inputs = [_pe_input_kind(binary), "linker-map", "decompiler-export", "capstone-disassembly"]
+    allowed_inputs = [_pe_input_kind(binary), "capstone-disassembly"]
+    if linker_map is not None:
+        allowed_inputs.append("linker-map")
+    if decompiler_export is not None:
+        allowed_inputs.append("decompiler-export")
     if reference_contract is not None or coverage_reference_contract_path is not None:
         allowed_inputs.append("stage-a-reference-contract")
     if reference_contract_sidecars:
@@ -841,6 +903,31 @@ def stage_b_generate_skeleton(
         _parse_decompiler_export_functions(Path(decompiler_export), binary, include_decompiler_code=False)
         if decompiler_export is not None and reference_contract_payload is not None
         else []
+    )
+
+    source_map = _skeleton_source_map(
+        source_text,
+        source_rel=source_rel,
+        functions=functions,
+        source_language=source_language,
+        implementation_mode=implementation_mode,
+        runtime_entry_policy=runtime_entry_policy,
+        reference_contract_payload=reference_contract_payload,
+        decompiler_functions=source_map_decompiler_functions,
+        external_function_names=external_function_names,
+        state_machine_rows=state_machine_rows,
+    )
+    state_machine_coverage = stage_b_state_machine_source_coverage(
+        state_machine_coverage,
+        state_machine_rows,
+        semantic_c_source_map if implementation_mode == "contract-guided-c" else source_map,
+    )
+    implementation_recovery = _skeleton_implementation_recovery_with_state_machine(
+        implementation_recovery,
+        state_machine_coverage,
+        semantic_c_source_map if implementation_mode == "contract-guided-c" else source_map,
+        semantic_c_backend=semantic_c_backend,
+        bootstrap_source_map=source_map,
     )
 
     manifest: dict[str, Any] = {
@@ -852,14 +939,31 @@ def stage_b_generate_skeleton(
         "source_language": source_language,
         "implementation_mode": implementation_mode,
         "runtime_entry_policy": runtime_entry_policy,
+        "build_profile": _skeleton_build_profile(
+            binary,
+            source_language=source_language,
+            implementation_mode=implementation_mode,
+            runtime_entry_policy=runtime_entry_policy,
+        ),
         "source_policy": {
             "upstream_source_read": False,
-            "manual_behavioral_fixups": False,
+            "manual_behavioral_fixups": implementation_mode == "contract-guided-c",
+            "manual_fixup_policy": (
+                "state_machine_contract_guided"
+                if implementation_mode == "contract-guided-c"
+                else "not_applicable"
+            ),
             "allowed_inputs": allowed_inputs,
             "runtime_entry_policy": runtime_entry_policy,
+            "original_instruction_byte_fallbacks": "bootstrap_only_and_incomplete",
         },
         "reverse_engineering": {
             "tools": ["pefile", "capstone"],
+            "generation_authority": (
+                "stage-a-semantic-transfer-contracts"
+                if implementation_mode == "contract-guided-c"
+                else "decompiler-export" if implementation_mode == "decompiled-c" else "binary-disassembly"
+            ),
             "function_source": _function_source_kind(
                 linker_map=linker_map,
                 decompiler_export=decompiler_export,
@@ -871,21 +975,39 @@ def stage_b_generate_skeleton(
         "original": _binary_summary(binary),
         "inputs": inputs,
         "outputs": {
-            "source": {"path": source_rel.as_posix(), "sha256": sha256_file(out_dir / source_rel)},
+            "source": (
+                {
+                    **semantic_c_implementation["manifest"],
+                    "kind": "semantic_c_implementation_manifest",
+                    "authority": "stage-a-semantic-transfer-contracts",
+                }
+                if implementation_mode == "contract-guided-c"
+                and isinstance(semantic_c_implementation.get("manifest"), dict)
+                else bootstrap_source_output
+            ),
+            "bootstrap_source": {
+                **bootstrap_source_output,
+                "authority": "non_acceptance_bootstrap_only",
+            },
             "functions": {"path": functions_rel.as_posix(), "sha256": sha256_file(out_dir / functions_rel)},
+            "state_machine": {
+                "path": state_machine_rel.as_posix(),
+                "sha256": sha256_file(out_dir / state_machine_rel),
+                "format": "stage-b-state-machine-transfer-v1",
+                "transfers": len(state_machine_rows),
+            },
+            "semantic_c_backend": {
+                "path": semantic_c_rel.as_posix(),
+                "format": semantic_c_backend["format"],
+                "status": semantic_c_backend["status"],
+                "counts": semantic_c_backend["counts"],
+                "report": semantic_c_backend["report"],
+                "artifacts": semantic_c_backend["artifacts"],
+            },
+            "implementation": semantic_c_implementation,
             "readme": {"path": readme_rel.as_posix(), "sha256": sha256_file(out_dir / readme_rel)},
         },
-        "source_map": _skeleton_source_map(
-            source_text,
-            source_rel=source_rel,
-            functions=functions,
-            source_language=source_language,
-            implementation_mode=implementation_mode,
-            runtime_entry_policy=runtime_entry_policy,
-            reference_contract_payload=reference_contract_payload,
-            decompiler_functions=source_map_decompiler_functions,
-            external_function_names=external_function_names,
-        ),
+        "source_map": source_map,
         "counts": {
             "functions": len(functions),
             "executable_sections": sum(1 for section in binary.sections if section.executable),
@@ -893,6 +1015,8 @@ def stage_b_generate_skeleton(
             "instructions": sum(int(item["instruction_count"]) for item in functions),
         },
         "implementation_recovery": implementation_recovery,
+        "state_machine_coverage": state_machine_coverage,
+        "semantic_c_backend": semantic_c_backend,
         "reference_contract_function_coverage": reference_contract_function_coverage,
         "behavior_recovery": behavior_recovery,
         "completion": {
@@ -987,6 +1111,25 @@ def _skeleton_functions(
         results.append(entry)
     return results
 
+
+def _skeleton_functions_artifact(functions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for function in functions:
+        item = dict(function)
+        reference = item.get("reference_contract")
+        if isinstance(reference, dict):
+            reference = dict(reference)
+            bytecode = reference.get("semantic_transfer_bytecode")
+            if isinstance(bytecode, dict):
+                bytecode = {key: value for key, value in bytecode.items() if key != "transfers"}
+                binding = function_state_machine_binding(function)
+                if binding is not None:
+                    bytecode["state_machine"] = binding
+                reference["semantic_transfer_bytecode"] = bytecode
+            item["reference_contract"] = reference
+        compact.append(item)
+    return compact
+
 def _load_reference_contract(path: Path, binary: StageABinary) -> dict[str, Any]:
     payload = _load_json(path)
     if not isinstance(payload, dict) or payload.get("format") != "stage-a-reference-contract-v1":
@@ -1019,6 +1162,7 @@ def _load_reference_contract_sidecars(path: Path, payload: dict[str, Any]) -> di
         "semantic_transfer_contracts": {
             "path": str(semantic_transfer_path) if semantic_transfer_path is not None else None,
             "count": len(semantic_transfers),
+            "rows": semantic_transfers,
             "by_function": _reference_contract_semantic_transfers_by_function(semantic_transfers),
         },
     }
@@ -1065,25 +1209,12 @@ def _reference_contract_semantic_transfers_by_function(rows: list[dict[str, Any]
 
 def _semantic_transfer_bytecode_summary(row: dict[str, Any]) -> dict[str, Any]:
     original = row.get("original") if isinstance(row.get("original"), dict) else {}
-    outcome = row.get("outcome") if isinstance(row.get("outcome"), dict) else {}
-    instructions = [
-        {
-            key: instruction.get(key)
-            for key in ("bytes", "mnemonic", "op_str", "rva", "size")
-            if key in instruction
-        }
-        for instruction in row.get("instructions", [])
-        if isinstance(instruction, dict)
-    ]
-    return {
-        "id": row.get("id"),
-        "function": row.get("function"),
-        "block_id": row.get("block_id"),
-        "rva_start": _optional_int(original.get("rva_start")),
-        "rva_end": _optional_int(original.get("rva_end")),
-        "outcome": outcome,
-        "instructions": instructions,
-    }
+    normalized = normalize_stage_a_semantic_transfer(row)
+    # Keep these aliases while existing renderers migrate to the canonical
+    # nested original range carried by the state-machine transfer.
+    normalized["rva_start"] = _optional_int(original.get("rva_start"))
+    normalized["rva_end"] = _optional_int(original.get("rva_end"))
+    return normalized
 
 
 def _attach_reference_contract_sidecar_evidence(function: dict[str, Any], sidecars: dict[str, Any] | None) -> None:
@@ -1983,6 +2114,156 @@ def _skeleton_implementation_recovery_with_contract_placeholders(
     return updated
 
 
+def _skeleton_implementation_recovery_with_state_machine(
+    recovery: dict[str, Any],
+    coverage: dict[str, Any],
+    source_map: dict[str, Any],
+    *,
+    semantic_c_backend: dict[str, Any],
+    bootstrap_source_map: dict[str, Any],
+) -> dict[str, Any]:
+    updated = dict(recovery)
+    updated["state_machine_coverage"] = {
+        "status": coverage.get("status"),
+        "authority": coverage.get("authority"),
+        "expression_model": coverage.get("expression_model"),
+        "counts": coverage.get("counts"),
+        "status_counts": coverage.get("status_counts"),
+        "expression_model_counts": coverage.get("expression_model_counts"),
+    }
+    updated["semantic_c_backend"] = {
+        "status": semantic_c_backend.get("status"),
+        "counts": semantic_c_backend.get("counts"),
+        "repair_stub_count": semantic_c_backend.get("repair_stub_count"),
+        "reason_counts": semantic_c_backend.get("reason_counts"),
+        "dispatch": semantic_c_backend.get("dispatch"),
+    }
+    if recovery.get("implementation_mode") != "contract-guided-c":
+        return updated
+
+    source_functions = source_map.get("functions") if isinstance(source_map.get("functions"), list) else []
+    source_transfers = source_map.get("transfers") if isinstance(source_map.get("transfers"), list) else []
+    representation_counts: dict[str, int] = {}
+    for item in source_functions:
+        if not isinstance(item, dict):
+            continue
+        source_kind = str(item.get("source_kind") or "unclassified")
+        representation_counts[source_kind] = representation_counts.get(source_kind, 0) + 1
+    for item in source_transfers:
+        if not isinstance(item, dict):
+            continue
+        source_kind = str(item.get("implementation") or "unclassified")
+        representation_counts[source_kind] = representation_counts.get(source_kind, 0) + 1
+    placeholder_count = sum(
+        count
+        for source_kind, count in representation_counts.items()
+        if source_kind.startswith("generated_contract_placeholder")
+    )
+    original_byte_fallback_count = sum(
+        count
+        for source_kind, count in representation_counts.items()
+        if source_kind in {
+            "generated_contract_guided_bytecode",
+            "generated_contract_guided_raw_flow",
+        }
+    )
+
+    blockers = [
+        blocker
+        for blocker in list(updated.get("blockers") or [])
+        if blocker
+        not in {
+            "missing_decompiler_exports",
+            "incomplete_decompiler_coverage",
+            "contract_section_gap_placeholders",
+            "generated_contract_placeholders",
+            "original_instruction_byte_fallbacks_require_semantic_c_repair",
+        }
+    ]
+    for blocker in coverage.get("blockers") if isinstance(coverage.get("blockers"), list) else []:
+        if blocker not in blockers:
+            blockers.append(str(blocker))
+    if semantic_c_backend.get("status") != "complete" and "semantic_c_backend_incomplete" not in blockers:
+        blockers.append("semantic_c_backend_incomplete")
+
+    bootstrap_representation_counts: dict[str, int] = {}
+    for item in bootstrap_source_map.get("functions") if isinstance(bootstrap_source_map.get("functions"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        source_kind = str(item.get("source_kind") or "unclassified")
+        bootstrap_representation_counts[source_kind] = bootstrap_representation_counts.get(source_kind, 0) + 1
+    bootstrap_original_byte_fallback_count = sum(
+        count
+        for source_kind, count in bootstrap_representation_counts.items()
+        if source_kind in {
+            "generated_contract_guided_bytecode",
+            "generated_contract_guided_raw_flow",
+        }
+    )
+
+    updated["status"] = "incomplete"
+    updated["source_implements_behavior"] = False
+    updated["generated_source_kind"] = (
+        "stage_a_state_machine_generated_c"
+        if semantic_c_backend.get("status") == "complete"
+        else "stage_a_state_machine_generated_c_partial"
+    )
+    updated["blockers"] = blockers
+    updated["source_generation"] = {
+        "format": "stage-b-state-machine-source-generation-v1",
+        "authority": "stage-a-semantic-transfer-contracts",
+        "representation_counts": dict(sorted(representation_counts.items())),
+        "placeholder_count": placeholder_count,
+        "original_instruction_byte_fallback_count": original_byte_fallback_count,
+        "bootstrap_diagnostics": {
+            "representation_counts": dict(sorted(bootstrap_representation_counts.items())),
+            "original_instruction_byte_fallback_count": bootstrap_original_byte_fallback_count,
+            "acceptance_role": "none",
+        },
+        "primary_implementation": "outputs.implementation",
+        "bootstrap_source": "outputs.bootstrap_source",
+        "semantic_c_backend": "outputs.semantic_c_backend",
+        "completion_rule": "Stage A whole-program validation is required after compilation",
+    }
+    return updated
+
+
+def _semantic_c_implementation_output(
+    directory: Path,
+    backend: dict[str, Any],
+    *,
+    state_machine: dict[str, str],
+) -> dict[str, Any]:
+    artifacts = backend.get("artifacts") if isinstance(backend.get("artifacts"), dict) else {}
+
+    def artifact(name: str) -> dict[str, str] | None:
+        value = artifacts.get(name)
+        if not isinstance(value, dict):
+            return None
+        path = value.get("path")
+        digest = value.get("sha256")
+        if not isinstance(path, str) or not isinstance(digest, str):
+            return None
+        return {"path": (directory / path).as_posix(), "sha256": digest}
+
+    return {
+        "format": "stage-b-semantic-c-implementation-v1",
+        "authority": "stage-a-semantic-transfer-contracts",
+        "status": backend.get("status"),
+        "state_machine": state_machine,
+        "manifest": artifact("implementation_manifest"),
+        "generated_source": artifact("source"),
+        "repair_source": artifact("repairs"),
+        "dispatch_source": artifact("dispatch_source"),
+        "source_map": artifact("source_map"),
+        "report": {
+            "path": (directory / str(backend["report"]["path"])).as_posix(),
+            "sha256": str(backend["report"]["sha256"]),
+        },
+        "completion_rule": "all repair stubs replaced and resulting PE accepted by Stage A",
+    }
+
+
 def _match_skeleton_contract_function(
     contract: dict[str, Any],
     *,
@@ -2541,14 +2822,10 @@ def _skeleton_implementation_recovery(
         blockers = ["stage_a_validation_required"]
         if not functions:
             blockers.append("missing_functions")
-        if len(decompiler_functions) != len(functions):
-            blockers.append("missing_decompiler_exports")
-        if decompiler_successes and len(decompiler_successes) < len(functions):
-            blockers.append("incomplete_decompiler_coverage")
         if duplicate_names:
-            blockers.append("duplicate_decompiler_function_names")
+            blockers.append("duplicate_contract_function_names")
         status = "incomplete"
-        generated_source_kind = "contract_guided_c_partial"
+        generated_source_kind = "stage_a_state_machine_generated_c_partial"
     else:
         blockers = ["generated_source_is_scaffold"]
         if not decompiler_successes:
@@ -2558,7 +2835,7 @@ def _skeleton_implementation_recovery(
         status = "incomplete"
         generated_source_kind = "scaffold"
 
-    return {
+    result = {
         "format": "stage-b-skeleton-recovery-v1",
         "status": status,
         "implementation_mode": implementation_mode,
@@ -2599,6 +2876,20 @@ def _skeleton_implementation_recovery(
         },
         "blockers": blockers,
     }
+    if implementation_mode == "contract-guided-c":
+        result["decompiler_coverage"] = {
+            "status": "not_applicable",
+            "reason": "contract-guided source authority is the Stage A semantic state machine",
+            "requires_decompiler_code": False,
+            "counts": {
+                "decompiler_required_functions": 0,
+                "policy_omitted_functions": len(policy_omitted_coverage_functions),
+                "missing_decompiler_functions": 0,
+                "incomplete_decompiler_functions": 0,
+                "missing_decompiler_code_functions": 0,
+            },
+        }
+    return result
 
 def _decompiler_coverage_function(function: dict[str, Any], *, reason: str) -> dict[str, Any]:
     return {
@@ -2805,6 +3096,7 @@ def _skeleton_source_map(
     reference_contract_payload: dict[str, Any] | None = None,
     decompiler_functions: list[dict[str, Any]] | None = None,
     external_function_names: list[str] | tuple[str, ...] = (),
+    state_machine_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     lines = source_text.splitlines()
     anchors: list[dict[str, Any]] = []
@@ -2830,18 +3122,20 @@ def _skeleton_source_map(
         if generated_identifier and generated_identifier != name:
             aliases.append(generated_identifier)
         aliases = list(dict.fromkeys(aliases))
-        anchors.append(
-            {
-                "function": name,
-                "aliases": aliases,
-                "file": source_rel.as_posix(),
-                "line_start": line,
-                "line_end": line,
-                "source_kind": source_kind,
-                "rva_start": function.get("rva_start"),
-                "rva_end": function.get("rva_end"),
-            }
-        )
+        anchor = {
+            "function": name,
+            "aliases": aliases,
+            "file": source_rel.as_posix(),
+            "line_start": line,
+            "line_end": line,
+            "source_kind": source_kind,
+            "rva_start": function.get("rva_start"),
+            "rva_end": function.get("rva_end"),
+        }
+        state_machine_binding = function_state_machine_binding(function)
+        if state_machine_binding is not None:
+            anchor["state_machine"] = state_machine_binding
+        anchors.append(anchor)
     anchors.extend(
         _skeleton_generated_helper_source_anchors(
             lines,
@@ -2867,6 +3161,7 @@ def _skeleton_source_map(
         )
     )
     anchors.sort(key=lambda item: (str(item["file"]), int(item["line_start"]), str(item["function"])))
+    _bind_source_map_state_machine_rows(anchors, state_machine_rows or [])
     for index, anchor in enumerate(anchors):
         next_line = anchors[index + 1]["line_start"] if index + 1 < len(anchors) else len(lines) + 1
         anchor["line_end"] = max(int(anchor["line_start"]), int(next_line) - 1)
@@ -2879,6 +3174,63 @@ def _skeleton_source_map(
         "functions": anchors,
         "counts": {"functions": len(anchors)},
     }
+
+
+def _bind_source_map_state_machine_rows(
+    anchors: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+) -> None:
+    if not rows:
+        return
+    rows_by_identifier: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        for identifier in (row.get("function"), row.get("block_id"), row.get("id")):
+            if isinstance(identifier, str) and identifier:
+                rows_by_identifier.setdefault(identifier, []).append(row)
+    for anchor in anchors:
+        identifiers = {
+            str(anchor.get("function") or ""),
+            *[str(alias) for alias in anchor.get("aliases", []) if isinstance(alias, str)],
+        }
+        gap = anchor.get("reference_section_gap")
+        if isinstance(gap, dict):
+            identifiers.add(str(gap.get("name") or ""))
+            identifiers.update(str(item) for item in gap.get("block_ids", []) if isinstance(item, str))
+        candidates: dict[str, dict[str, Any]] = {}
+        for identifier in identifiers:
+            for row in rows_by_identifier.get(identifier, []):
+                candidates[str(row.get("id") or row.get("contract_sha256") or id(row))] = row
+        anchor_start = _optional_int(anchor.get("rva_start"))
+        anchor_end = _optional_int(anchor.get("rva_end"))
+        matching = [
+            row
+            for row in candidates.values()
+            if _state_machine_row_within_source_anchor(row, anchor_start=anchor_start, anchor_end=anchor_end)
+        ]
+        binding = state_machine_binding_from_rows(
+            sorted(matching, key=lambda row: (_state_machine_transfer_rva(row), str(row.get("id") or "")))
+        )
+        if binding is not None:
+            anchor["state_machine"] = binding
+
+
+def _state_machine_row_within_source_anchor(
+    row: dict[str, Any],
+    *,
+    anchor_start: int | None,
+    anchor_end: int | None,
+) -> bool:
+    if anchor_start is None or anchor_end is None:
+        return True
+    original = row.get("original") if isinstance(row.get("original"), dict) else {}
+    start = _optional_int(original.get("rva_start", row.get("rva_start")))
+    end = _optional_int(original.get("rva_end", row.get("rva_end")))
+    return start is not None and end is not None and anchor_start <= start and end <= anchor_end
+
+
+def _state_machine_transfer_rva(row: dict[str, Any]) -> int:
+    original = row.get("original") if isinstance(row.get("original"), dict) else {}
+    return _optional_int(original.get("rva_start", row.get("rva_start"))) or 0
 
 
 def _skeleton_generated_helper_source_anchors(
@@ -3452,10 +3804,16 @@ def _render_decompiled_c_source(
 ) -> str:
     if runtime_entry_policy not in _DECOMPILED_C_RUNTIME_ENTRY_POLICIES:
         raise StageAInputError(f"unsupported Stage B runtime entry policy {runtime_entry_policy!r}")
+    implementation_mode = "contract-guided-c" if allow_contract_bytecode else "decompiled-c"
+    source_authority = (
+        "Stage A semantic transfer contracts and exact PE bytes."
+        if allow_contract_bytecode
+        else "the supplied private decompiler export."
+    )
     lines = [
         "/* Generated by spaghetti-extractor stage-b-generate-skeleton.",
-        " * Implementation mode: decompiled-c.",
-        " * Source bodies come from the supplied private decompiler export.",
+        f" * Implementation mode: {implementation_mode}.",
+        f" * Source bodies come from {source_authority}",
         " */",
         "#include <stdarg.h>",
         "#include <stddef.h>",
@@ -3546,7 +3904,7 @@ def _render_decompiled_c_source(
         "typedef struct _stage_b_exception { int type; char *name; double arg1; double arg2; double retval; } _exception;",
         "typedef struct _stage_b_startupinfo { int newmode; } _startupinfo;",
         "typedef void (__attribute__((cdecl)) *_invalid_parameter_handler)(const wchar_t *, const wchar_t *, const wchar_t *, unsigned int, uintptr_t);",
-        "typedef struct _stage_b_jv { uint32_t word[4]; } stage_b_jv;",
+        *(["typedef struct _stage_b_jv { uint32_t word[4]; } stage_b_jv;"] if target_name == "jq" else []),
         "typedef struct stageb_x86_state {",
         "    uint32_t eax;",
         "    uint32_t ebx;",
@@ -3638,6 +3996,7 @@ def _render_decompiled_c_source(
         "#define STAGE_B_SET_PART(value, offset, size, replacement) \\",
         "    do { (value) = (__typeof__(value))stage_b_part_set_u64((uint64_t)(value), (offset), (size), (uint64_t)(uintptr_t)(replacement)); } while (0)",
         "#define STAGE_B_PART_LVALUE(value, offset, type) (*((type *)((unsigned char *)&(value) + (offset))))",
+        *([
         "#define STAGE_B_JQ_CALL_IOB_SLOT(slot, stream) \\",
         "    ({ FILE *stage_b_result; \\",
         "       __asm__ __volatile__(\"movl %1, (%%esp)\\n\\tcall *%2\" \\",
@@ -3787,6 +4146,7 @@ def _render_decompiled_c_source(
         "    return 0;",
         "}",
         "",
+        ] if target_name == "jq" else []),
     ]
     implemented_functions = [
         function
@@ -3943,7 +4303,11 @@ def _render_decompiled_c_source(
         synthetic_section_gap_placeholders=synthetic_section_gap_placeholders,
         allow_contract_bytecode=allow_contract_bytecode,
     )
-    import_thunk_wrappers = _decompiled_c_import_thunk_wrapper_lines(functions)
+    import_thunk_wrappers = (
+        []
+        if allow_contract_bytecode and runtime_entry_policy == "mingw-crt"
+        else _decompiled_c_import_thunk_wrapper_lines(functions)
+    )
     import_aliases = _decompiled_c_import_thunk_alias_lines(functions)
     if runtime_helper_aliases:
         lines.extend(runtime_helper_aliases)
@@ -9004,6 +9368,7 @@ _DECOMPILED_C_STDCALL_PROTOTYPES = {
     "AreFileApisANSI": "extern BOOL __attribute__((stdcall, dllimport)) AreFileApisANSI(void);",
     "DeleteCriticalSection": "extern void __attribute__((stdcall, dllimport)) DeleteCriticalSection(LPCRITICAL_SECTION);",
     "EnterCriticalSection": "extern void __attribute__((stdcall, dllimport)) EnterCriticalSection(LPCRITICAL_SECTION);",
+    "GetACP": "extern UINT __attribute__((stdcall, dllimport)) GetACP(void);",
     "GetConsoleMode": "extern BOOL __attribute__((stdcall, dllimport)) GetConsoleMode(HANDLE, LPDWORD);",
     "GetLastError": "extern DWORD __attribute__((stdcall, dllimport)) GetLastError(void);",
     "GetModuleHandleA": "extern HMODULE __attribute__((stdcall, dllimport)) GetModuleHandleA(LPCSTR);",
@@ -9909,8 +10274,11 @@ def _render_skeleton_readme(target_name: str, source_language: str, implementati
         mode_description = "This directory contains decompiler-derived C source generated from private reverse-engineering evidence."
     elif implementation_mode == "contract-guided-c":
         mode_description = (
-            "This directory contains contract-guided C anchors generated from Stage A reverse-engineering evidence. "
-            "It is expected to need repair before Stage A can prove the candidate binary."
+            "This directory contains compiler-consumable semantic C plus bootstrap C/assembly generated from the "
+            "Stage A contracts recorded in `state-machine.jsonl`. The `semantic-c/` transition library embeds no "
+            "original instruction bytes. `outputs.implementation` is authoritative; raw-byte wrappers under "
+            "`outputs.bootstrap_source` are explicit incomplete fallbacks. Human or LLM repair must preserve the "
+            "semantic-C symbols and their transfer ID/hash bindings before Stage A proves the candidate binary."
         )
     else:
         mode_description = (
@@ -9920,9 +10288,9 @@ def _render_skeleton_readme(target_name: str, source_language: str, implementati
     return (
         f"# Stage B Skeleton: {target_name}\n\n"
         f"{mode_description}\n\n"
-        "A candidate may be accepted by `stage-b-validate-candidate` only when its provenance manifest points "
-        "back to this skeleton, records no upstream source access, records no manual behavioral fixups, includes "
-        "passing upstream integration test evidence, and then passes Stage A binary validation.\n\n"
+        "Candidate provenance must point back to this package and record no upstream source access. Contract-guided "
+        "human or LLM fixups are allowed and remain untrusted. Stage A binary validation runs first and is the only "
+        "equivalence authority; candidate-only integration tests run afterward as a red-flag check.\n\n"
         f"Generated source language: `{source_language}`.\n"
         f"Implementation mode: `{implementation_mode}`.\n"
     )
@@ -9950,6 +10318,33 @@ def _binary_summary(binary: StageABinary) -> dict[str, Any]:
             {"dll": item.dll, "symbol": item.symbol, "ordinal": item.ordinal, "thunk_rva": item.thunk_rva}
             for item in binary.imports
         ],
+    }
+
+
+def _skeleton_build_profile(
+    binary: StageABinary,
+    *,
+    source_language: str,
+    implementation_mode: str,
+    runtime_entry_policy: str,
+) -> dict[str, Any]:
+    if source_language != "c" or implementation_mode not in {"decompiled-c", "contract-guided-c"}:
+        return {
+            "format": "stage-b-proof-build-profile-v1",
+            "status": "not_applicable",
+            "source_language": source_language,
+        }
+    return {
+        "format": "stage-b-proof-build-profile-v1",
+        "status": "required",
+        "target": "i686-w64-mingw32" if binary.bitness == 32 else "unsupported",
+        "language": "c",
+        "c_standard": "gnu17",
+        "compile_flags": ["-O0", "-fno-inline", "-fno-omit-frame-pointer"],
+        "link_flags": ["-Wl,-Map,<candidate.map>"],
+        "runtime_entry_policy": runtime_entry_policy,
+        "compiler_provenance": "pin compiler, binutils, CRT, headers, and libraries through Nix",
+        "acceptance": "this profile only builds a candidate; Stage A pe32ProgramsEquivalent decides acceptance",
     }
 
 def _pe_input_kind(binary: StageABinary) -> str:

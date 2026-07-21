@@ -3,7 +3,12 @@ from spaghetti_extractor.relational.analyses.memory import (
     _dynamic_flow_edge_candidates,
 )
 from spaghetti_extractor.relational.analyses.segments import (
+    _paired_exact_guard_claim,
     _paired_stack_relative_guard_claim,
+    _state_rel_register_output_claims,
+)
+from spaghetti_extractor.relational.lean.expressions import (
+    _lean_paired_static_expr_witness,
 )
 from spaghetti_extractor.relational.lean.generation import (
     _compact_compositional_normalized_path,
@@ -16,11 +21,114 @@ from spaghetti_extractor.relational.lean.expressions import (
     _lean_paired_stack_word_value_claim,
 )
 from spaghetti_extractor.relational.lean.segments import (
+    _lean_state_rel_register_output_claim,
     _write_relational_invariant_modules,
 )
 
 
 class StageARelationalStateTests(StageARelationalTestBase):
+    def test_register_output_reuses_checked_state_predicate_read32(self):
+        address = {
+            "op": "add",
+            "left": {"op": "input_reg", "reg": "esp"},
+            "right": {"op": "constant", "value": 12},
+        }
+        read = {"op": "read32", "address": address}
+        predicate = {
+            "original": {"op": "bool_constant", "value": True},
+            "candidate": {"op": "bool_constant", "value": True},
+            "exact_memory_reads": [{
+                "original_address": address,
+                "candidate_address": address,
+                "bytes": 4,
+            }],
+            "source": "fixture",
+        }
+        output_relation = {
+            "original": "eax",
+            "candidate": "eax",
+            "relation": "related_word",
+        }
+        behavior = {
+            "original_ir": {"registers": {"eax": read}},
+            "candidate_ir": {"registers": {"eax": read}},
+        }
+
+        claims = _state_rel_register_output_claims(
+            {"outputs": [output_relation], "output_claims": []},
+            {"inputs": [output_relation]},
+            {
+                "input_relations": [],
+                "flag_inputs": [],
+                "state_predicates": [predicate],
+            },
+            behavior,
+            [],
+        )
+
+        self.assertIsNotNone(claims)
+        self.assertEqual(claims[0]["kind"], "paired_exact_expression")
+        self.assertEqual(claims[0]["witness"], {
+            "kind": "state_predicate_read32",
+            "predicate": predicate,
+            "read": predicate["exact_memory_reads"][0],
+        })
+        rendered = _lean_state_rel_register_output_claim(claims[0])
+        self.assertIn(
+            "PairedExactExprWitness.statePredicateRead32", rendered
+        )
+
+    def test_fixed_register_immutable_read_guard_has_checked_address_witness(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original_path = root / "original.exe"
+            candidate_path = root / "candidate.exe"
+            original_path.write_bytes(_pe32_image(b"\xeb\xfe"))
+            candidate_path.write_bytes(_pe32_image(b"\xeb\xfe"))
+            original = _parse_stage_a_pe(original_path)
+            candidate = _parse_stage_a_pe(candidate_path)
+
+            source = {"input_relations": [{
+                "original": "edx", "candidate": "edx",
+                "relation": "fixed_word", "value": 0x80,
+            }]}
+            address = {
+                "op": "add",
+                "left": {"op": "input_reg", "reg": "edx"},
+                "right": {"op": "constant", "value": 0x400008},
+            }
+            guard = {
+                "op": "equal",
+                "left": {"op": "read8", "address": address},
+                "right": {"op": "constant", "value": 0},
+            }
+
+            claim = _paired_exact_guard_claim(
+                {}, source, guard, guard, original, candidate
+            )
+
+            self.assertIsNotNone(claim)
+            self.assertEqual(claim["profile"], "paired_exact_guard_v1")
+            fixed = claim["witness"]["left"]["address"]["left"]
+            self.assertEqual(fixed, {
+                "kind": "fixed_input_reg",
+                "original": "edx", "candidate": "edx", "value": 0x80,
+            })
+            self.assertEqual(
+                _lean_paired_static_expr_witness(fixed),
+                "PairedStaticExprWitness.fixedInputReg .edx .edx 128",
+            )
+
+            ambiguous = {
+                "input_relations": source["input_relations"] * 2,
+            }
+            self.assertIsNone(_paired_exact_guard_claim(
+                {}, ambiguous, guard, guard, original, candidate
+            ))
+            self.assertIsNone(_paired_exact_guard_claim(
+                {}, {"input_relations": []}, guard, guard, original, candidate
+            ))
+
     def test_prepared_static_cursor_update_uses_exact_expression_witness(self):
         slot = {
             "id": 0,
@@ -80,6 +188,120 @@ class StageARelationalStateTests(StageARelationalTestBase):
         )
         self.assertIn(".exactExpression (PairedExactExprWitness.binary", rendered)
         self.assertIn("(PairedExactExprWitness.constant 4)) }", rendered)
+
+    def test_static_read_after_stack_write_uses_checked_disjointness_witness(self):
+        stack_window = {
+            "range_id": 0,
+            "original_register": "esp",
+            "candidate_register": "esp",
+            "bytes_below": 4,
+            "bytes_above": 32,
+        }
+        stack_address = {
+            "op": "add",
+            "left": {"op": "input_reg", "reg": "esp"},
+            "right": {"op": "constant", "value": 4},
+        }
+        first_value = {
+            "op": "read32",
+            "address": {"op": "constant", "value": 0x402000},
+        }
+        def byte_after_write(address):
+            constant = {"op": "constant", "value": address}
+            return {
+                "op": "read8_after_write",
+                "address": constant,
+                "write_address": stack_address,
+                "write_value": first_value,
+                "prior": {"op": "read8", "address": constant},
+            }
+
+        bytes_after_write = [
+            byte_after_write(0x402004 + offset) for offset in range(4)
+        ]
+        assembled = {
+            "op": "bit_or",
+            "left": {
+                "op": "bit_or",
+                "left": bytes_after_write[0],
+                "right": {"op": "shift_left", "amount": 8,
+                          "value": bytes_after_write[1]},
+            },
+            "right": {
+                "op": "bit_or",
+                "left": {"op": "shift_left", "amount": 16,
+                         "value": bytes_after_write[2]},
+                "right": {"op": "shift_left", "amount": 24,
+                          "value": bytes_after_write[3]},
+            },
+        }
+        behavior = {
+            "original_ir": {"registers": {"eax": assembled}, "writes": [
+                {"address": stack_address, "value": first_value},
+                {"address": {"op": "input_reg", "reg": "esp"},
+                 "value": assembled},
+            ]},
+            "candidate_ir": {"registers": {"eax": assembled}, "writes": [
+                {"address": stack_address, "value": first_value},
+                {"address": {"op": "input_reg", "reg": "esp"},
+                 "value": assembled},
+            ]},
+        }
+        slots = [
+            {"id": 0, "original_address": 0x402000,
+             "candidate_address": 0x402000, "relation": "exact"},
+            {"id": 1, "original_address": 0x402004,
+             "candidate_address": 0x402004, "relation": "exact"},
+        ]
+
+        claim = _paired_prepared_word_writes_claim(
+            {"input_relations": [], "stack_windows": [stack_window]},
+            behavior,
+            slots,
+        )
+
+        self.assertIsNotNone(claim)
+        value = claim["writes"][1]["value"]
+        self.assertEqual(value["profile"], "exact_expression_v1")
+        self.assertEqual(value["witness"], {
+            "kind": "stack_separated_read32",
+            "original_address": 0x402004,
+            "candidate_address": 0x402004,
+            "writes": [{
+                "window": stack_window,
+                "amount": 4,
+                "original_value": first_value,
+                "candidate_value": first_value,
+            }],
+        })
+        rendered = _lean_paired_stack_word_value_claim(value)
+        self.assertIn("PairedExactExprWitness.stackSeparatedRead32", rendered)
+        self.assertIn("amount := 4", rendered)
+
+        source = {"input_relations": [], "stack_windows": [stack_window]}
+        output_relation = {
+            "original": "eax", "candidate": "eax",
+            "relation": "related_word",
+        }
+        register_claims = _state_rel_register_output_claims(
+            {"outputs": [output_relation], "output_claims": []},
+            {"inputs": [output_relation]}, source, behavior, slots,
+        )
+        self.assertIsNotNone(register_claims)
+        self.assertEqual(len(register_claims), 1)
+        self.assertEqual(register_claims[0]["kind"], "paired_exact_expression")
+        self.assertEqual(register_claims[0]["witness"], value["witness"])
+        rendered_register = _lean_state_rel_register_output_claim(
+            register_claims[0]
+        )
+        self.assertIn(
+            "StateRelRegisterOutputClaim.pairedExactExpression",
+            rendered_register,
+        )
+        self.assertIn(
+            "PairedExactExprWitness.stackSeparatedRead32",
+            rendered_register,
+        )
 
     def test_dynamic_range_flow_does_not_cross_call_frames(self):
         relation = {
@@ -188,6 +410,118 @@ class StageARelationalStateTests(StageARelationalTestBase):
         self.assertIsNone(
             _paired_prepared_word_writes_claim(ambiguous_source, behavior, [])
         )
+
+        static_read = {
+            "op": "read32",
+            "address": {"op": "constant", "value": 0x402000},
+        }
+        exact_static_behavior = {
+            "original_ir": {"registers": {
+                "edx": {"op": "input_reg", "reg": "eax"},
+            }, "writes": [
+                {"address": stack_address, "value": static_read},
+                {"address": {"op": "input_reg", "reg": "eax"},
+                 "value": static_read},
+            ]},
+            "candidate_ir": {"registers": {
+                "edx": {"op": "input_reg", "reg": "eax"},
+            }, "writes": [
+                {"address": stack_address, "value": static_read},
+                {"address": {"op": "input_reg", "reg": "eax"},
+                 "value": static_read},
+            ]},
+        }
+        exact_static = _paired_prepared_word_writes_claim(
+            source,
+            exact_static_behavior,
+            [{
+                "id": 0,
+                "original_address": 0x402000,
+                "candidate_address": 0x402000,
+                "relation": "exact",
+            }],
+        )
+        self.assertIsNotNone(exact_static)
+        self.assertEqual(
+            [write["kind"] for write in exact_static["writes"]],
+            ["stack", "dynamic_word"],
+        )
+        self.assertTrue(all(
+            write["value"]["profile"] == "exact_expression_v1"
+            for write in exact_static["writes"]
+        ))
+        source_activation_relation = {
+            **dynamic_relation,
+            "active_words": [],
+        }
+        source_activation = {
+            **source,
+            "input_dynamic_range_relations": [source_activation_relation],
+        }
+        target_dynamic_relation = {
+            **source_activation_relation,
+            "original": "edx",
+            "candidate": "edx",
+            "active_words": [{"offset": 0, "kind": "relatedWord"}],
+        }
+        activation_behavior = {
+            "original_ir": {
+                **exact_static_behavior["original_ir"],
+                "writes": list(reversed(exact_static_behavior["original_ir"]["writes"])),
+            },
+            "candidate_ir": {
+                **exact_static_behavior["candidate_ir"],
+                "writes": list(reversed(exact_static_behavior["candidate_ir"]["writes"])),
+            },
+        }
+        dynamic_claims = _dynamic_range_transfer_claims(
+            {
+                "static_word_relation_slots": [{
+                    "id": 0,
+                    "original_address": 0x402000,
+                    "candidate_address": 0x402000,
+                    "relation": "exact",
+                }],
+                "regions": [
+                    source_activation,
+                    {"input_dynamic_range_relations": [target_dynamic_relation]},
+                ],
+            },
+            [activation_behavior],
+            0,
+            1,
+            {"op": "bool_constant", "value": True},
+            {"op": "bool_constant", "value": True},
+        )
+        self.assertEqual(len(dynamic_claims), 1)
+        self.assertEqual(dynamic_claims[0]["kind"], "activate")
+        self.assertEqual(
+            dynamic_claims[0]["target_relation"], target_dynamic_relation
+        )
+        self.assertEqual(
+            [write["kind"] for write in dynamic_claims[0]["suffix"]],
+            ["stack"],
+        )
+
+        self.assertIsNone(_dynamic_range_transfer_claims(
+            {
+                "static_word_relation_slots": [{
+                    "id": 0,
+                    "original_address": 0x402000,
+                    "candidate_address": 0x402000,
+                    "relation": "exact",
+                }],
+                "regions": [
+                    source_activation,
+                    {"input_dynamic_range_relations": [target_dynamic_relation]},
+                ],
+            },
+            [exact_static_behavior],
+            0,
+            1,
+            {"op": "bool_constant", "value": True},
+            {"op": "bool_constant", "value": True},
+        ))
 
         dynamic_base = {"op": "input_reg", "reg": "eax"}
         spill_behavior = {

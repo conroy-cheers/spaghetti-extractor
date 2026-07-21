@@ -281,6 +281,15 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
             if (out / "relational-register-relations.json").is_file()
             else None
         ),
+        "runtime_frame_affine_sha256": (
+            sha256_file(
+                out / "relational-runtime-frame-affine-viability.json"
+            )
+            if (
+                out / "relational-runtime-frame-affine-viability.json"
+            ).is_file()
+            else None
+        ),
         "product_graph_sha256": (
             sha256_file(out / "relational-product-graph.json")
             if (out / "relational-product-graph.json").is_file()

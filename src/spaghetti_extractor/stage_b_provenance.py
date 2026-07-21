@@ -39,6 +39,18 @@ def stage_b_generate_candidate_provenance(
     source = _skeleton_source_output(payload)
     if source is None:
         raise StageBProvenanceInputError("Stage B skeleton manifest must include outputs.source path and sha256")
+    state_machine = _skeleton_state_machine_output(payload)
+    if state_machine is None:
+        raise StageBProvenanceInputError("Stage B skeleton manifest must include outputs.state_machine path and sha256")
+    implementation = (
+        _skeleton_implementation_output(payload)
+        if payload.get("implementation_mode") == "contract-guided-c"
+        else None
+    )
+    if payload.get("implementation_mode") == "contract-guided-c" and implementation is None:
+        raise StageBProvenanceInputError(
+            "contract-guided Stage B provenance requires the generated state-machine implementation manifest"
+        )
     if not build_target:
         raise StageBProvenanceInputError("Stage B candidate provenance requires a non-empty build target")
     if not build_compiler:
@@ -62,7 +74,27 @@ def stage_b_generate_candidate_provenance(
             "source_sha256": source["sha256"],
         }
     ]
-    source_roots.extend(_fixed_up_source_roots(fixed_up_sources or (), source))
+    if implementation is not None:
+        source_roots[0]["implementation_manifest"] = implementation["path"]
+        source_roots[0]["implementation_manifest_sha256"] = implementation["sha256"]
+        source_roots[0]["state_machine"] = state_machine
+        source_roots.append(
+            {
+                "kind": "stage_b_generated_state_machine_implementation",
+                "path": str(skeleton_manifest),
+                "implementation_manifest": implementation["path"],
+                "implementation_manifest_sha256": implementation["sha256"],
+                "state_machine": state_machine,
+            }
+        )
+    source_roots.extend(
+        _fixed_up_source_roots(
+            fixed_up_sources or (),
+            source,
+            state_machine,
+            implementation=implementation,
+        )
+    )
     build = {
         "target": build_target,
         "compiler": build_compiler,
@@ -89,6 +121,11 @@ def stage_b_generate_candidate_provenance(
         "skeleton_manifest_sha256": sha256_file(skeleton_manifest),
         "upstream_source_access": False,
         "manual_behavioral_fixups": [],
+        "generation_authority": (
+            "stage-a-semantic-transfer-contracts"
+            if implementation is not None
+            else "stage-b-generated-skeleton"
+        ),
         "source_roots": source_roots,
         "build": build,
         "functional_tests": _candidate_functional_tests_from_report(functional_report),
@@ -100,25 +137,55 @@ def stage_b_generate_candidate_provenance(
 def _fixed_up_source_roots(
     fixed_up_sources: list[Path] | tuple[Path, ...],
     generated_source: dict[str, str],
+    state_machine: dict[str, str],
+    *,
+    implementation: dict[str, str] | None,
 ) -> list[dict[str, Any]]:
     roots: list[dict[str, Any]] = []
     for path in fixed_up_sources:
         item = Path(path)
         if not item.is_file():
             raise StageBProvenanceInputError(f"Stage B fixed-up source is not available: {item}")
-        roots.append(
-            {
-                "kind": "stage_b_fixed_up_source",
-                "path": str(item),
-                "source": str(item),
-                "source_sha256": sha256_file(item),
-                "derived_from": generated_source["path"],
-                "derived_from_sha256": generated_source["sha256"],
-                "fixup_policy": "compile_and_structure_only",
-                "behavioral_fixups": [],
-            }
-        )
+        root = {
+            "kind": "stage_b_fixed_up_source",
+            "path": str(item),
+            "source": str(item),
+            "source_sha256": sha256_file(item),
+            "derived_from": generated_source["path"],
+            "derived_from_sha256": generated_source["sha256"],
+            "state_machine": state_machine,
+            "fixup_policy": "state_machine_contract_guided",
+            "behavioral_fixups": [],
+        }
+        if implementation is not None:
+            root["implementation_manifest"] = implementation
+        roots.append(root)
     return roots
+
+
+def _skeleton_state_machine_output(payload: dict[str, Any]) -> dict[str, str] | None:
+    outputs = payload.get("outputs")
+    state_machine = outputs.get("state_machine") if isinstance(outputs, dict) else None
+    if not isinstance(state_machine, dict):
+        return None
+    path = state_machine.get("path")
+    digest = state_machine.get("sha256")
+    if not isinstance(path, str) or not isinstance(digest, str):
+        return None
+    return {"path": path, "sha256": digest}
+
+
+def _skeleton_implementation_output(payload: dict[str, Any]) -> dict[str, str] | None:
+    outputs = payload.get("outputs")
+    implementation = outputs.get("implementation") if isinstance(outputs, dict) else None
+    manifest = implementation.get("manifest") if isinstance(implementation, dict) else None
+    if not isinstance(manifest, dict):
+        return None
+    path = manifest.get("path")
+    digest = manifest.get("sha256")
+    if not isinstance(path, str) or not isinstance(digest, str):
+        return None
+    return {"path": path, "sha256": digest}
 
 
 def _candidate_functional_tests_from_report(functional_report: Path | None) -> dict[str, Any]:

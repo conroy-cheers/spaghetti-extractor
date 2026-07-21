@@ -229,6 +229,313 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "none"
+    },
+    {
+      "id": 14,
+      "import": {"dll": "msvcrt.dll", "symbol": "__p___initenv"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 0,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {"kind": "fixed", "bytes": 4},
+          "minimum_size": 4,
+          "required_words": [
+            {"offset": 0, "relation": "related_word"}
+          ],
+          "nullable": false
+        }
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "id": 15,
+      "import": {"dll": "msvcrt.dll", "symbol": "_errno"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 0,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {"kind": "fixed", "bytes": 4},
+          "minimum_size": 4,
+          "required_words": [
+            {"offset": 0, "relation": "related_word"}
+          ],
+          "nullable": false
+        }
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "id": 16,
+      "import": {"dll": "msvcrt.dll", "symbol": "iswctype"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 2,
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "id": 17,
+      "import": {"dll": "msvcrt.dll", "symbol": "__p___argv"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 0,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {"kind": "fixed", "bytes": 4},
+          "minimum_size": 4,
+          "required_words": [
+            {"offset": 0, "relation": "related_word"}
+          ],
+          "nullable": false
+        }
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "id": 18,
+      "import": {"dll": "msvcrt.dll", "symbol": "__p___mb_cur_max"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 0,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {"kind": "fixed", "bytes": 4},
+          "minimum_size": 4,
+          "required_words": [
+            {"offset": 0, "relation": "related_word"}
+          ],
+          "nullable": false
+        }
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "id": 19,
+      "import": {"dll": "msvcrt.dll", "symbol": "_lock"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 1,
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "id": 20,
+      "import": {"dll": "msvcrt.dll", "symbol": "memchr"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 3,
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {
+          "access": "read",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {"kind": "argument", "argument": 2, "scale": 1},
+          "nullable": false
+        }
+      ],
+      "world_effect": "none"
+    },
+    {
+      "id": 21,
+      "import": {"dll": "msvcrt.dll", "symbol": "memcmp"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 3,
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {
+          "access": "read",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {"kind": "argument", "argument": 2, "scale": 1},
+          "nullable": false
+        },
+        {
+          "access": "read",
+          "base_argument": 1,
+          "offset": 0,
+          "size": {"kind": "argument", "argument": 2, "scale": 1},
+          "nullable": false
+        }
+      ],
+      "world_effect": "none"
+    },
+    {
+      "id": 22,
+      "import": {"dll": "msvcrt.dll", "symbol": "memset"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 3,
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {
+          "access": "write",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {"kind": "argument", "argument": 2, "scale": 1},
+          "nullable": false
+        }
+      ],
+      "world_effect": "none"
+    },
+    {
+      "id": 23,
+      "import": {"dll": "msvcrt.dll", "symbol": "strchr"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 2,
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {
+          "access": "read",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {
+            "kind": "bounded_terminated",
+            "source_argument": 0,
+            "source_offset": 0,
+            "unit_bytes": 1,
+            "sentinel": [0],
+            "max_units": 1048576
+          },
+          "nullable": false
+        }
+      ],
+      "world_effect": "none"
+    },
+    {
+      "id": 24,
+      "import": {"dll": "msvcrt.dll", "symbol": "strlen"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 1,
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {
+          "access": "read",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {
+            "kind": "bounded_terminated",
+            "source_argument": 0,
+            "source_offset": 0,
+            "unit_bytes": 1,
+            "sentinel": [0],
+            "max_units": 1048576
+          },
+          "nullable": false
+        }
+      ],
+      "world_effect": "none"
+    },
+    {
+      "id": 25,
+      "import": {"dll": "msvcrt.dll", "symbol": "strncmp"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 3,
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {
+          "access": "read",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {"kind": "argument", "argument": 2, "scale": 1},
+          "nullable": false
+        },
+        {
+          "access": "read",
+          "base_argument": 1,
+          "offset": 0,
+          "size": {"kind": "argument", "argument": 2, "scale": 1},
+          "nullable": false
+        }
+      ],
+      "world_effect": "none"
+    },
+    {
+      "id": 26,
+      "import": {"dll": "msvcrt.dll", "symbol": "strrchr"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 2,
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {
+          "access": "read",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {
+            "kind": "bounded_terminated",
+            "source_argument": 0,
+            "source_offset": 0,
+            "unit_bytes": 1,
+            "sentinel": [0],
+            "max_units": 1048576
+          },
+          "nullable": false
+        }
+      ],
+      "world_effect": "none"
+    },
+    {
+      "id": 27,
+      "import": {"dll": "msvcrt.dll", "symbol": "wcslen"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 1,
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {
+          "access": "read",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {
+            "kind": "bounded_terminated",
+            "source_argument": 0,
+            "source_offset": 0,
+            "unit_bytes": 2,
+            "sentinel": [0, 0],
+            "max_units": 524288
+          },
+          "nullable": false
+        }
+      ],
+      "world_effect": "none"
     }
   ]
 }

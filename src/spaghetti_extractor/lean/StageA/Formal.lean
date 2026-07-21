@@ -1,4 +1,5 @@
 import Std
+import StageA.X87
 
 namespace StageA.Formal
 
@@ -1162,6 +1163,8 @@ structure MachineState where
   memory : Memory
   undefinedValue : Nat -> Word := fun _ => BitVec.ofNat 32 0
   x87 : X87MachineState := {}
+  x87Physical : StageA.X87.PhysicalState := StageA.X87.initialPhysicalState
+  x87Semantics : StageA.X87.Semantics := StageA.X87.defaultSemantics
   eflags : Word := BitVec.ofNat 32 0
   fsBase : Word := BitVec.ofNat 32 0
 
@@ -1404,6 +1407,47 @@ theorem BoolExpr.eval_eq_of_flagsWithin (allowed : List Nat)
     have evaluated := evalExpr (.divisionValidValue high low divisor) (by
       simp [Expr.flagsWithin, *])
     exact congrArg (fun value => value == BitVec.ofNat 32 1) evaluated
+
+/-- Agreement on every machine projection consumed by the symbolic expression
+language. Physical x87 metadata and the parametric x87 command semantics are
+deliberately absent because legacy expressions cannot observe them. -/
+structure MachineExpressionAgreement (original candidate : MachineState) : Prop where
+  registers : original.registers = candidate.registers
+  memory : original.memory = candidate.memory
+  undefinedValue : original.undefinedValue = candidate.undefinedValue
+  x87 : original.x87 = candidate.x87
+  eflags : original.eflags = candidate.eflags
+  fsBase : original.fsBase = candidate.fsBase
+
+theorem Expr.eval_eq_of_expressionAgreement (original candidate : MachineState)
+    (agreement : MachineExpressionAgreement original candidate) :
+    ∀ expression : Expr, expression.eval original = expression.eval candidate := by
+  rcases agreement with ⟨registers, memory, undefinedValue, x87, eflags, fsBase⟩
+  intro expression
+  apply Expr.rec
+    (motive_1 := fun item => item.eval original = item.eval candidate)
+    (motive_2 := fun item => item.eval original = item.eval candidate) <;>
+    simp_all [Expr.eval, X87Expr.eval, MachineState.read32,
+      MachineState.readX87Word]
+
+theorem X87Expr.eval_eq_of_expressionAgreement (original candidate : MachineState)
+    (agreement : MachineExpressionAgreement original candidate) :
+    ∀ expression : X87Expr, expression.eval original = expression.eval candidate := by
+  rcases agreement with ⟨registers, memory, undefinedValue, x87, eflags, fsBase⟩
+  intro expression
+  apply X87Expr.rec
+    (motive_1 := fun item => item.eval original = item.eval candidate)
+    (motive_2 := fun item => item.eval original = item.eval candidate) <;>
+    simp_all [Expr.eval, X87Expr.eval, MachineState.read32,
+      MachineState.readX87Word]
+
+theorem BoolExpr.eval_eq_of_expressionAgreement (original candidate : MachineState)
+    (agreement : MachineExpressionAgreement original candidate) :
+    ∀ expression : BoolExpr, expression.eval original = expression.eval candidate := by
+  have evalExpr := Expr.eval_eq_of_expressionAgreement original candidate agreement
+  have eflags := agreement.eflags
+  intro expression
+  induction expression <;> simp_all [BoolExpr.eval]
 
 structure FlagsExpr where
   zero : Option BoolExpr
@@ -2116,12 +2160,14 @@ inductive Instruction where
   | x87StoreStack (index : Nat) (pop : Bool)
   | x87Unary (operation : X87UnaryOperation)
   | x87BinaryStack (operation : X87BinaryOperation) (destination source : Nat) (pop : Bool)
-  | x87CompareStack (index : Nat) (pop : Bool)
+  | x87CompareStack (mode : StageA.X87.CompareMode)
+      (destination : StageA.X87.CompareDestination) (index : Nat) (pop : Bool)
   | x87LoadMemory (format : X87LoadFormat) (source : Addressing)
   | x87StoreMemory (format : X87StoreFormat) (destination : Addressing) (pop : Bool)
   | x87BinaryMemory (operation : X87BinaryOperation) (format : X87LoadFormat) (source : Addressing)
   | x87LoadControl (source : Addressing)
   | x87StoreControl (destination : Addressing)
+  | x87Wait
   | x87Initialize
   | x87StoreStatusAx
   | x87Examine
@@ -2375,10 +2421,22 @@ def decodeX87RegisterInstruction : Bytes -> Option DecodedInstruction
         decoded (.x87BinaryStack .reverseSubtract (modrm - 0xe0) 0 true)
       else if opcode == 0xde && 0xe8 <= modrm && modrm <= 0xef then
         decoded (.x87BinaryStack .subtract (modrm - 0xe8) 0 true)
-      else if opcode == 0xdb && 0xe8 <= modrm && modrm <= 0xf7 then
-        decoded (.x87CompareStack (modrm % 8) false)
-      else if opcode == 0xdf && 0xe8 <= modrm && modrm <= 0xf7 then
-        decoded (.x87CompareStack (modrm % 8) true)
+      else if opcode == 0xd8 && 0xd0 <= modrm && modrm <= 0xd7 then
+        decoded (.x87CompareStack .ordered .status (modrm % 8) false)
+      else if opcode == 0xd8 && 0xd8 <= modrm && modrm <= 0xdf then
+        decoded (.x87CompareStack .ordered .status (modrm % 8) true)
+      else if opcode == 0xdd && 0xe0 <= modrm && modrm <= 0xe7 then
+        decoded (.x87CompareStack .unordered .status (modrm % 8) false)
+      else if opcode == 0xdd && 0xe8 <= modrm && modrm <= 0xef then
+        decoded (.x87CompareStack .unordered .status (modrm % 8) true)
+      else if opcode == 0xdb && 0xe8 <= modrm && modrm <= 0xef then
+        decoded (.x87CompareStack .unordered .eflags (modrm % 8) false)
+      else if opcode == 0xdb && 0xf0 <= modrm && modrm <= 0xf7 then
+        decoded (.x87CompareStack .ordered .eflags (modrm % 8) false)
+      else if opcode == 0xdf && 0xe8 <= modrm && modrm <= 0xef then
+        decoded (.x87CompareStack .unordered .eflags (modrm % 8) true)
+      else if opcode == 0xdf && 0xf0 <= modrm && modrm <= 0xf7 then
+        decoded (.x87CompareStack .ordered .eflags (modrm % 8) true)
       else if opcode == 0xdb && modrm == 0xe3 then
         decoded .x87Initialize
       else if opcode == 0xdf && modrm == 0xe0 then
@@ -2728,7 +2786,7 @@ def decodeGenericInstruction : Bytes -> Option DecodedInstruction
 
 def decodeInstruction : Bytes -> Option DecodedInstruction
   | 0x90 :: tail => some { instruction := .nop, size := 1, trailing := tail }
-  | 0x9b :: tail => some { instruction := .nop, size := 1, trailing := tail }
+  | 0x9b :: tail => some { instruction := .x87Wait, size := 1, trailing := tail }
   | 0xf3 :: 0xa5 :: tail => some { instruction := .moveDwords true, size := 2, trailing := tail }
   | 0xa5 :: tail => some { instruction := .moveDwords false, size := 1, trailing := tail }
   | 0x64 :: 0x8b :: tail => do
@@ -3642,7 +3700,8 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
       let updated <- state.x87.set destination value
       let nextX87 <- if pop then updated.pop else some updated
       some (.next { state with x87 := nextX87 })
-  | .x87CompareStack index pop => do
+  | .x87CompareStack _ .status _ _ => none
+  | .x87CompareStack _ .eflags index pop => do
       let left <- state.x87.get 0
       let right <- state.x87.get index
       let nextX87 <- if pop then state.x87.pop else some state.x87
@@ -3696,6 +3755,7 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
   | .x87StoreControl destination => do
       let next <- writeOperandWidth .word state (.memory destination) state.x87.control
       some (.next next)
+  | .x87Wait => none
   | .x87Initialize =>
       some (.next { state with x87 := {
         stack := []
@@ -3819,12 +3879,13 @@ def executeCode (pe : PE32) (imports : List PEImport) :
       | .stop finalState => pure (finalState, decoded.trailing)
 
 def paddingByte (byte : Byte) : Bool :=
-  byte == 0 || byte == 0x90
+  byte == 0 || byte == 0x90 || byte == 0xcc
 
 def paddingBytes : Bytes -> Bool
   | [] => true
   | 0x00 :: tail => paddingBytes tail
   | 0x90 :: tail => paddingBytes tail
+  | 0xcc :: tail => paddingBytes tail
   | 0x66 :: 0x90 :: tail => paddingBytes tail
   | 0x8d :: 0x74 :: 0x26 :: 0x00 :: tail => paddingBytes tail
   | 0x8d :: 0x76 :: 0x00 :: tail => paddingBytes tail
@@ -4199,6 +4260,8 @@ def stepExecution (environment : Environment) (behaviors : List (Option LogicalB
               control := concrete.x87.control
               status := concrete.x87.status
             }
+            x87Physical := state.x87Physical
+            x87Semantics := state.x87Semantics
             eflags := concrete.eflags
             fsBase := state.fsBase
           }

@@ -2,6 +2,200 @@ from tests.stage_a_relational_support import *
 
 
 class StageARuntimeFrameImportAcceptanceTests(StageARelationalTestBase):
+    def _returning_thunk_then_register_call_contract(
+        self, root: Path, *, preserve_esi: bool,
+    ) -> tuple[Path, Path, Path]:
+        iat_address = 0x400000 + 0x2000 + 0x40
+        code = (
+            b"\x8b\x35" + struct.pack("<I", iat_address)
+            + b"\xe8\x25\x00\x00\x00"
+            + b"\xff\xd6"
+            + b"\x31\xf6"
+            + b"\xe8\x1c\x00\x00\x00"
+            + b"\xeb\xfe"
+            + b"\x90" * 0x1A
+            + b"\xff\x25" + struct.pack("<I", iat_address)
+        )
+        original = root / "original.exe"
+        candidate = root / "candidate.exe"
+        original.write_bytes(_pe32_import_image(code, symbol="GetTickCount"))
+        candidate.write_bytes(original.read_bytes())
+        pairs = [
+            {"original": register, "candidate": register}
+            for register in (
+                "eax", "ebx", "ecx", "edx", "edi", "ebp"
+            )
+        ]
+        region_rows = (
+            ("iat-seed", 0x1000, 6),
+            ("call-import-thunk-with-fact", 0x1006, 5),
+            ("call-preserved-import-register", 0x100B, 2),
+            ("clear-import-register", 0x100D, 2),
+            ("call-import-thunk-without-fact", 0x100F, 5),
+            ("plain-continuation-loop", 0x1014, 2),
+            ("get-tick-count-import-thunk", 0x1030, 6),
+        )
+        machine_contract = {
+            "id": 0,
+            "import": {"dll": "kernel32.dll", "symbol": "GetTickCount"},
+            "memory_effect": "none",
+            "memory_footprints": [],
+            "world_effect": "none",
+        }
+        if preserve_esi:
+            machine_contract.update({
+                "abi_template": "pe32-stdcall-v1",
+                "argument_words": 0,
+            })
+        else:
+            machine_contract.update({
+                "stack_argument_offsets": [],
+                "stack_result_delta": 0,
+                "preserved_registers": ["ebx", "edi", "ebp"],
+                "clobbered_registers": ["eax", "ecx", "edx", "esi"],
+            })
+        relation = root / "relation.json"
+        relation.write_text(json.dumps({
+            "format": "stage-a-relation-contract-v1",
+            "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+            "observations": RELATIONAL_OBSERVATIONS,
+            "code_targets": [
+                {"id": index, "original_rva": rva, "candidate_rva": rva}
+                for index, (_, rva, _) in enumerate(region_rows)
+            ],
+            "regions": [
+                {
+                    "id": name,
+                    "root": index == 0,
+                    "original": {"rva": rva, "size": size},
+                    "candidate": {"rva": rva, "size": size},
+                    "inputs": pairs,
+                    "outputs": pairs,
+                }
+                for index, (name, rva, size) in enumerate(region_rows)
+            ],
+            "machine_import_call_contracts": [machine_contract],
+            "padding": [
+                {"id": "second-path-padding", "side": "both",
+                 "rva": 0x1016, "size": 0x1A},
+            ],
+            "memory_relation": {"mode": "identity"},
+        }), encoding="utf-8")
+        return original, candidate, relation
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
+    def test_returning_import_thunk_preserves_active_import_fact_to_continuation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original, candidate, contract = (
+                self._returning_thunk_then_register_call_contract(
+                    root, preserve_esi=True,
+                )
+            )
+            prepared = root / "prepared"
+
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            self.assertEqual(result.get("status"), "prepared", result)
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            normalized = json.loads(
+                (prepared / "relation-contract.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                [relation["original"] for relation in
+                 normalized["regions"][2]["input_import_relations"]],
+                ["esi"],
+            )
+            self.assertEqual(
+                normalized["regions"][6]["input_import_relations"], []
+            )
+            sites = json.loads(
+                (prepared / "relational-external-call-sites.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            thunk_site = next(
+                site for site in sites["candidates"]
+                if site.get("site_kind") == "direct_import_thunk"
+                and site["target_region_index"] == 2
+            )
+            self.assertEqual(
+                [relation["original"] for relation in
+                 thunk_site["target_import_relations_from_active_frame"]],
+                ["esi"],
+            )
+            thunk_step = next(
+                step for step in result["acceptance"]["node_steps"]
+                if step["kind"] == "external_jump"
+            )
+            thunk_case = next(
+                case for case in thunk_step["cases"]
+                if case["target_region_index"] == 2
+            )
+            self.assertEqual(
+                [relation["original"] for relation in
+                 thunk_case["control_state"]["frame_offsets"][0][
+                     "preserved_imports"
+                 ]],
+                ["esi"],
+            )
+            acceptance_source = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted((prepared / "lean" / "StageA").glob(
+                    "RelationalAcceptance*.lean"
+                ))
+            )
+            self.assertIn(
+                "withAdditionalImportRegisterRelations", acceptance_source
+            )
+            self.assertIn("activeImportsNext", acceptance_source)
+            self.assertIn(
+                "resolveWorldImportCall_zeroArguments_of_binding",
+                acceptance_source,
+            )
+            self.assertIn(
+                "normalizeImportReturnSlotState_nextMachineState_eq_of_compatible",
+                acceptance_source,
+            )
+            self.assertIn("originalCodeMissing", acceptance_source)
+
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertNotIn("sorryAx", lean["stdout"])
+            self.assertNotIn("._native.", lean["stdout"])
+
+    def test_returning_import_thunk_clobber_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original, candidate, contract = (
+                self._returning_thunk_then_register_call_contract(
+                    root, preserve_esi=False,
+                )
+            )
+
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=root / "prepared",
+            )
+
+            self.assertEqual(result["acceptance"]["status"], "incomplete", result)
+            self.assertIn(
+                2,
+                result["composition_progress"]["frontiers"][
+                    "decoded_control_node_ids"
+                ],
+                result,
+            )
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
     def test_shared_callee_keeps_callsite_import_relation_on_its_own_frame(self):
         with tempfile.TemporaryDirectory() as temporary:

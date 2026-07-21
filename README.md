@@ -1,13 +1,18 @@
 # Spaghetti Extractor
 
 Spaghetti Extractor is a binary reimplementation and equivalence-proof toolkit.
-Its current validation target is `jq.exe` for 32-bit MinGW Windows.
+Its immediate validation target is a generated GNU `hello.exe` reimplementation
+for 32-bit MinGW Windows, followed by the full `jq.exe` benchmark.
 
 The active workflow is whole-program-proof-first:
 
 1. Stage A consumes the original binary statically and emits
    `reference_contract.json` plus sidecars.
-2. Stage B generates or repairs candidate source from that contract.
+2. Stage B converts the complete `stage-a-semantic-ir-v1` transfer inventory
+   into `state-machine.jsonl`, compiler-consumable semantic C, bootstrap source,
+   and exact source-map
+   bindings. Human or LLM repair may use those contracts, but upstream source
+   and original runtime traces are not generation inputs.
 3. Local iteration rebuilds and checks candidate slices outside the Nix sandbox.
 4. Acceptance is decided only by the relational Stage A whole-program theorem.
    Public candidate-only behavior tests are a final backstop after Stage A
@@ -16,6 +21,28 @@ The active workflow is whole-program-proof-first:
 Stage B must not execute or trace the original binary during repair iteration.
 Original runtime output is not an oracle. If a candidate satisfies Stage A but
 fails public behavior checks, that is a Stage A/toolchain problem to investigate.
+
+For `contract-guided-c`, `state-machine.jsonl` is the canonical generation
+authority. It preserves each block pre-state, symbolic register and flag
+writes, memory and external events, edge guards, control outcome, stack delta,
+instruction bytes, status, and deterministic hash. `functions.json` and the
+manifest contain compact references to those transfer IDs and hashes rather
+than a second semantic model. Missing, unsupported, or source-unbound transfers
+remain explicit completion blockers. The generated manifest also records the
+proof-oriented `gnu17`, `-O0` MinGW build profile; a successful compile or link
+does not imply equivalence.
+
+Each contract-guided package also contains `semantic-c/state-machine-transfers.c`.
+Those transition functions are generated from symbolic effects, not copied
+instruction bytes, and form the implementation substrate for opaque binaries.
+`semantic-c/state-machine-dispatch.c` composes the transitions by semantic RVA,
+while `semantic-c/state-machine-repairs.c` contains compile-safe, fail-closed
+stubs for contracts that still require human or LLM repair. The source map binds
+every generated or repaired C symbol to the exact Stage A transfer ID and hash.
+`outputs.implementation` is the authoritative contract-guided source bundle;
+`outputs.bootstrap_source` is not candidate implementation evidence. The
+accompanying report fails closed on external-event sequencing, x87, ambiguous
+memory ordering, unsupported expressions, and ambiguous dispatch RVAs.
 
 ## Commands
 
@@ -50,6 +77,25 @@ static kernel to every case:
 nix build .#stage-a-relational-tests --no-link \
   --builders "$(cat nix/stage-a-builders)" --max-jobs 0
 ```
+
+GNU hello uses content-addressed preparation followed by a dynamically generated
+Lean derivation graph. Run the two cached Nix phases through the coordinator:
+
+```sh
+nix run .#stage-a-gnu-hello-proof
+```
+
+The first phase is also a normal flake check and can be built independently:
+
+```sh
+nix build .#stage-a-gnu-hello-preflight --no-link \
+  --builders "$(cat nix/stage-a-builders)" --max-jobs 0
+```
+
+The proof app realizes that CA output, validates its prepared-proof hashes, and
+then asks Nix to build the focused Lean launch-certificate graph remotely. GNU
+hello remains incomplete, so this checks an intermediate launch certificate and
+the truthful whole-program frontier; it does not claim final equivalence.
 
 Build and validate the full Windows x86 jq alignment-pair contract:
 
@@ -90,6 +136,27 @@ Bootstrap a jq skeleton from the Stage A contract:
 ```sh
 nix build .#stage-b-jq-skeleton --no-link
 ```
+
+After the state machine has been exported once, regenerate only the semantic-C
+implementation and repair queue without repeating PE extraction, Ghidra, or
+Lean work:
+
+```sh
+spaghetti-extractor stage-b-generate-semantic-c \
+  --state-machine stage-b/state-machine.jsonl \
+  --machine-call-catalog stage-a/relation-contract.json \
+  --out-dir stage-b/semantic-c
+```
+
+The command verifies every transfer hash before writing C. It generates nested
+internal-call execution automatically and can generate direct x86 import
+adapters from checked machine-call contracts. The adapter catalog is an
+untrusted code-generation input: final acceptance still comes only from Stage
+A validating the compiled PE. The command exits incomplete while any repair
+stub, unresolved indirect target, unmatched API signature, or other runtime
+binding remains. `state-machine-implementation.json` exposes a separate
+`strict_candidate` status; scaffolding may compile with repair slots, but a
+strict candidate may contain none.
 
 Prepare a local slice workspace from the canonical jq Stage A contract:
 

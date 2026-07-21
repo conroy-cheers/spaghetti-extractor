@@ -1,8 +1,13 @@
+import copy
 import unittest
 
 from spaghetti_extractor.relational.analyses.dataflow import (
+    parse_stable_dataflow_graph,
     stable_dataflow_graph,
     strongly_connected_components,
+)
+from spaghetti_extractor.relational.analyses.dataflow_schedule import (
+    stable_dataflow_schedule,
 )
 
 
@@ -99,6 +104,31 @@ class StageADataflowAnalysisTests(unittest.TestCase):
             },
         )
 
+        first_schedule = stable_dataflow_schedule(first)
+        reordered_schedule = stable_dataflow_schedule(reordered)
+        self.assertEqual(
+            first_schedule.topological_pack_ids,
+            reordered_schedule.topological_pack_ids,
+        )
+        self.assertEqual(
+            {
+                pack.id: (
+                    pack.component_ids,
+                    pack.predecessor_ids,
+                    pack.local_semantics_sha256,
+                )
+                for pack in first_schedule.packs
+            },
+            {
+                pack.id: (
+                    pack.component_ids,
+                    pack.predecessor_ids,
+                    pack.local_semantics_sha256,
+                )
+                for pack in reordered_schedule.packs
+            },
+        )
+
     def test_unrelated_transfer_change_invalidates_only_its_component(self) -> None:
         baseline = stable_dataflow_graph(
             [[1], [], []],
@@ -172,6 +202,31 @@ class StageADataflowAnalysisTests(unittest.TestCase):
                     pack_position[predecessor_id], pack_position[pack.id]
                 )
 
+    def test_linear_components_share_bounded_solver_packs(self) -> None:
+        region_count = 257
+        graph = stable_dataflow_graph(
+            [
+                [index + 1] if index + 1 < region_count else []
+                for index in range(region_count)
+            ],
+            region_ids=[f"region-{index}" for index in range(region_count)],
+            transfer_semantics_sha256=[
+                f"{index + 1:064x}" for index in range(region_count)
+            ],
+        )
+
+        schedule = stable_dataflow_schedule(graph)
+        self.assertEqual(len(graph.components), region_count)
+        self.assertLessEqual(len(schedule.packs), 6)
+        self.assertTrue(all(
+            pack.region_count <= 128 for pack in schedule.packs
+        ))
+        self.assertEqual(
+            sum(pack.region_count for pack in schedule.packs), region_count
+        )
+        reparsed = parse_stable_dataflow_graph(graph.to_payload())
+        self.assertEqual(reparsed, graph)
+
     def test_large_scc_is_isolated_and_pack_resources_use_region_count(self) -> None:
         large_count = 65
         graph = stable_dataflow_graph(
@@ -209,6 +264,25 @@ class StageADataflowAnalysisTests(unittest.TestCase):
                 region_ids=["region"],
                 transfer_semantics_sha256=["not-a-digest"],
             )
+
+    def test_serialized_graph_is_strictly_reconstructed(self) -> None:
+        graph = stable_dataflow_graph(
+            [[1], [2], [1]],
+            region_ids=["entry", "loop", "backedge"],
+            transfer_semantics_sha256=["a" * 64, "b" * 64, "c" * 64],
+        )
+        parsed = parse_stable_dataflow_graph(graph.to_payload())
+        self.assertEqual(parsed, graph)
+
+        tampered = copy.deepcopy(graph.to_payload())
+        tampered["packs"][0]["local_semantics_sha256"] = "d" * 64
+        with self.assertRaisesRegex(ValueError, "semantics"):
+            parse_stable_dataflow_graph(tampered)
+
+        tampered = copy.deepcopy(graph.to_payload())
+        tampered["topological_component_ids"].reverse()
+        with self.assertRaisesRegex(ValueError, "topological"):
+            parse_stable_dataflow_graph(tampered)
 
 
 if __name__ == "__main__":

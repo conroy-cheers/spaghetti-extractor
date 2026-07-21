@@ -197,14 +197,21 @@ waiver.
 
 The ergonomic target is therefore assisted convergence:
 
-1. Stage A emits one bounded, source-mapped proof frontier with explicit input,
-   output, control, memory, and boundary requirements.
-2. A human or LLM chooses an implementation or annotation that is likely to
+1. Stage A emits one bounded proof frontier and a complete
+   `stage-a-semantic-ir-v1` transfer inventory with explicit input, output,
+   control, memory, and boundary requirements.
+2. Stage B serializes that inventory as canonical `state-machine.jsonl` and
+   generates a compiler-consumable C transition library from symbolic effects.
+   Every generated source region binds to transfer IDs and hashes; a transfer
+   without a source binding is a blocker. Original instruction-byte wrappers may
+   bootstrap layout experiments, but they remain explicit incomplete fallbacks
+   and do not count as semantic-C reimplementation coverage.
+3. A human or LLM chooses an implementation or annotation that is likely to
    satisfy that contract.
-3. Stage B rebuilds the affected candidate objects.
-4. Incremental Stage A checks accept the proposal or return a more precise
+4. Stage B rebuilds the affected candidate objects.
+5. Incremental Stage A checks accept the proposal or return a more precise
    frontier.
-5. The complete final proof remains reproducible without trusting the repair
+6. The complete final proof remains reproducible without trusting the repair
    conversation or its author.
 
 Manual assistance should improve synthesis, not replace scalable proof. The
@@ -441,6 +448,50 @@ configuration. Focused target-node builds support iteration; the complete
 remote Nix graph and trust-zero final audit remain the release gate.
 
 ### A11. Stage B Feedback And Candidate Build Profile
+
+The initial ugly-C implementation must be generated from, or repaired directly
+against, the Stage A state-machine artifact. A decompiler export may be an
+untrusted optional hint, but it is not required by `contract-guided-c` and its
+absence is not a completeness blocker. The generated package must preserve the
+complete transfer inventory separately from compact function metadata, bind
+source regions to deterministic transfer hashes, and report unsupported,
+unbound, raw-byte, or placeholder representations independently.
+
+The generic semantic-C backend must preserve the proof IR as executable state
+transitions over explicit registers, flags, memory callbacks, faults, and control
+outcomes. It must not embed original instruction bytes. When the transfer summary
+lacks ordering or boundary information needed to emit sound C, generation returns
+`incomplete` with a reason code; Stage A must enrich the proof-derived IR rather
+than allowing Stage B to guess. Human or LLM repair may replace transition
+functions with lower-level C, but the source map retains the governing transfer
+IDs and the compiled result still requires the final Stage A theorem.
+
+The generated semantic-C implementation is the Stage B work surface for unknown
+binaries. It includes a complete transfer descriptor inventory, a fail-closed RVA
+dispatcher, a nested-frame engine for direct internal calls, generated transition
+bodies, and one stable repair stub for every unsupported contract. Repair stubs
+are scaffolding only: `strict_candidate` remains incomplete until all have been
+replaced and all runtime bindings are closed. `state-machine-implementation.json`
+hashes that source bundle and each transfer contract. Candidate provenance must
+bind both this implementation manifest and `state-machine.jsonl`; copied
+instruction-byte or inline-assembly source remains non-authoritative bootstrap
+material and cannot be used to claim implementation coverage.
+
+Imported calls use the same checked machine-call contract format consumed by
+Stage A. Given an exact DLL/symbol identity, unambiguous cdecl or stdcall
+convention, complete stack-word inventory, and supported callback/resource
+shape, Stage B may generate a direct imported-call adapter automatically. The
+catalog supplies code-generation data, not proof authority. Missing signatures,
+zero-argument convention ambiguity, callbacks without generated thunks, ordinal
+imports, or unsupported argument layouts remain explicit runtime obligations.
+The generated adapter must preserve the original one-for-one external event;
+the compiled adapter is accepted only when the final Stage A theorem checks it.
+
+Once `state-machine.jsonl` exists, ordinary Stage B repair iterations use
+`stage-b-generate-semantic-c` directly. The command revalidates each contract
+hash and regenerates only the C implementation, dispatch, nested-frame engine,
+API adapters, repair stubs, source map, and implementation manifest. It must not
+repeat PE extraction, decompiler work, relational analysis, or Lean compilation.
 
 Stage A should convert each proof frontier into a deterministic, source-mapped
 repair item containing:

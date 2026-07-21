@@ -105,12 +105,36 @@ class StageAReachableAcceptanceTests(unittest.TestCase):
             launch_profile={
                 "original_tls_directory": {"rva": 0xF594, "size": 24},
                 "candidate_tls_directory": {"rva": 0xF59C, "size": 24},
+                "original_tls_callback_rvas": [],
+                "candidate_tls_callback_rvas": [],
             },
         )
 
         self.assertEqual(plan["status"], "incomplete")
         self.assertIn(
             "pre_entry_tls_profile_unmet",
+            {blocker["code"] for blocker in plan["blockers"]},
+        )
+
+    def test_pre_entry_tls_inventory_must_be_explicit(self) -> None:
+        contract, behaviors, product_graph, register_relations = self._inputs()
+
+        plan = _whole_program_acceptance_plan(
+            contract,
+            behaviors,
+            product_graph,
+            register_relations,
+            [],
+            [],
+            launch_profile={
+                "original_tls_directory": {"rva": 0xF594, "size": 24},
+                "candidate_tls_directory": {"rva": 0xF59C, "size": 24},
+            },
+        )
+
+        self.assertEqual(plan["status"], "incomplete")
+        self.assertIn(
+            "pre_entry_tls_inventory_missing",
             {blocker["code"] for blocker in plan["blockers"]},
         )
 

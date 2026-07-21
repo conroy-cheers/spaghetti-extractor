@@ -114,7 +114,10 @@ class StageBTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "generated")
             self.assertEqual(result["implementation_mode"], "contract-guided-c")
-            self.assertEqual(result["implementation_recovery"]["generated_source_kind"], "contract_guided_c_partial")
+            self.assertEqual(
+                result["implementation_recovery"]["generated_source_kind"],
+                "stage_a_state_machine_generated_c_partial",
+            )
             self.assertFalse(result["implementation_recovery"]["source_implements_behavior"])
             source = (out / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
             self.assertIn("Stage B contract placeholder", source)
@@ -130,7 +133,33 @@ class StageBTests(unittest.TestCase):
                 "id": "semantic-transfer:arg_echo-0000",
                 "function": "arg_echo",
                 "block_id": "arg_echo-0000",
+                "status": "reimplementable",
+                "expression_model": "stage-a-semantic-ir-v1",
                 "original": {"rva_start": 0x1000, "rva_end": 0x1005, "size": 5},
+                "pre_state": {
+                    "registers": {"eax": {"op": "reg", "name": "eax", "width": 32}},
+                    "memory": {"op": "memory", "name": "mem0", "address_width": 32, "value_width": 8},
+                },
+                "register_writes": [
+                    {
+                        "register": "eax",
+                        "value": {
+                            "op": "load",
+                            "memory": {"op": "memory", "name": "mem0", "address_width": 32, "value_width": 8},
+                            "address": {
+                                "op": "add32",
+                                "left": {"op": "reg", "name": "esp", "width": 32},
+                                "right": {"op": "const", "value": 4, "width": 32},
+                            },
+                            "width": 32,
+                        },
+                    }
+                ],
+                "flag_writes": [],
+                "memory_events": [],
+                "external_events": [],
+                "edge_conditions": [],
+                "stack_delta": {"status": "derived", "net_bytes": 0},
                 "outcome": {"kind": "return"},
                 "instructions": [
                     {
@@ -186,9 +215,171 @@ class StageBTests(unittest.TestCase):
             self.assertIn('".byte 0x8b, 0x44, 0x24, 0x04, 0xc3"', source)
             functions = json.loads((root / "skeleton" / "functions.json").read_text(encoding="utf-8"))["functions"]
             self.assertEqual(functions[0]["reference_contract"]["contract_bytecode"]["status"], "reimplementable")
+            compact_binding = functions[0]["reference_contract"]["semantic_transfer_bytecode"]["state_machine"]
+            self.assertEqual(compact_binding["transfer_ids"], ["semantic-transfer:arg_echo-0000"])
+            self.assertNotIn("transfers", functions[0]["reference_contract"]["semantic_transfer_bytecode"])
             by_function = {item["function"]: item for item in result["source_map"]["functions"]}
             self.assertEqual(by_function["arg_echo"]["source_kind"], "generated_contract_guided_bytecode")
+            self.assertEqual(
+                by_function["arg_echo"]["state_machine"]["transfer_ids"],
+                ["semantic-transfer:arg_echo-0000"],
+            )
             self.assertIn("stage-a-unit-contract-sidecars", result["source_policy"]["allowed_inputs"])
+            state_machine = [
+                json.loads(line)
+                for line in (root / "skeleton" / "state-machine.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(state_machine[0]["pre_state"]["memory"]["name"], "mem0")
+            self.assertEqual(state_machine[0]["register_writes"][0]["register"], "eax")
+            self.assertEqual(result["state_machine_coverage"]["status"], "complete")
+
+    def test_contract_guided_unknown_target_has_only_binary_state_machine_authority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "unknown.exe", b"\xc3")
+            transfer = {
+                "format": "stage-a-semantic-transfer-contract-v1",
+                "id": "semantic-transfer:unknown_entry-0000",
+                "function": "unknown_entry",
+                "block_id": "unknown_entry-0000",
+                "unit_kind": "basic_block",
+                "status": "reimplementable",
+                "reachable": True,
+                "expression_model": "stage-a-semantic-ir-v1",
+                "original": {"rva_start": 0x1000, "rva_end": 0x1001, "size": 1},
+                "pre_state": {"registers": {}, "flags": {}, "memory": {"op": "memory", "name": "mem0"}},
+                "register_writes": [],
+                "flag_writes": [],
+                "memory_events": [],
+                "external_events": [],
+                "edge_conditions": [],
+                "outcome": {"kind": "return"},
+                "stack_delta": {"status": "derived", "net_bytes": 0},
+                "instructions": [
+                    {"bytes": "c3", "mnemonic": "ret", "op_str": "", "rva": 0x1000, "size": 1}
+                ],
+            }
+            (root / "semantic-transfer-contracts.jsonl").write_text(json.dumps(transfer) + "\n", encoding="utf-8")
+            reference_contract = {
+                "format": "stage-a-reference-contract-v1",
+                "status": "pass",
+                "model": "x86-pe32-env-v1",
+                "original": {"sha256": sha256_file(original)},
+                "constraints": {
+                    "function_ranges": {
+                        "status": "satisfied",
+                        "functions": [
+                            {
+                                "name": "unknown_entry",
+                                "original": {"rva_start": 0x1000, "rva_end": 0x1001, "size": 1},
+                                "candidate": {"rva_start": 0x1000, "rva_end": 0x1001, "size": 1},
+                                "block_ids": ["unknown_entry-0000"],
+                            }
+                        ],
+                    }
+                },
+                "sidecars": {
+                    "unit_contracts": {
+                        "directory": ".",
+                        "semantic_transfer_contracts": {"path": "semantic-transfer-contracts.jsonl"},
+                    }
+                },
+            }
+            reference_path = root / "reference-contract.json"
+            reference_path.write_text(json.dumps(reference_contract), encoding="utf-8")
+
+            result = stage_b_generate_skeleton(
+                original=original,
+                reference_contract=reference_path,
+                target_name="unknown-program",
+                source_language="c",
+                implementation_mode="contract-guided-c",
+                out_dir=root / "skeleton",
+            )
+
+            source = (root / "skeleton" / "src" / "unknown-program_stage_b_skeleton.c").read_text(encoding="utf-8")
+            self.assertIn("Implementation mode: contract-guided-c", source)
+            self.assertIn("Stage A semantic transfer contracts and exact PE bytes", source)
+            self.assertNotIn("stage_b_jq_", source)
+            self.assertNotIn("stage_b_jv", source)
+            self.assertNotIn("STAGE_B_JQ", source)
+            self.assertNotIn("jv_mem_alloc", source)
+            self.assertNotIn("decompiler-export", result["source_policy"]["allowed_inputs"])
+            self.assertTrue(result["source_policy"]["manual_behavioral_fixups"])
+            self.assertEqual(result["source_policy"]["manual_fixup_policy"], "state_machine_contract_guided")
+            self.assertNotIn("missing_decompiler_exports", result["implementation_recovery"]["blockers"])
+            self.assertEqual(result["reverse_engineering"]["generation_authority"], "stage-a-semantic-transfer-contracts")
+            self.assertEqual(result["state_machine_coverage"]["status"], "complete")
+            self.assertEqual(result["outputs"]["state_machine"]["transfers"], 1)
+            implementation = result["outputs"]["implementation"]
+            self.assertEqual(implementation["authority"], "stage-a-semantic-transfer-contracts")
+            self.assertEqual(result["outputs"]["source"]["path"], implementation["manifest"]["path"])
+            self.assertEqual(result["outputs"]["source"]["sha256"], implementation["manifest"]["sha256"])
+            self.assertEqual(result["outputs"]["source"]["kind"], "semantic_c_implementation_manifest")
+            self.assertEqual(result["outputs"]["bootstrap_source"]["authority"], "non_acceptance_bootstrap_only")
+            self.assertEqual(
+                implementation["state_machine"],
+                {
+                    "path": result["outputs"]["state_machine"]["path"],
+                    "sha256": result["outputs"]["state_machine"]["sha256"],
+                },
+            )
+            self.assertTrue((root / "skeleton" / implementation["manifest"]["path"]).is_file())
+            self.assertTrue((root / "skeleton" / implementation["source_map"]["path"]).is_file())
+            self.assertEqual(
+                result["implementation_recovery"]["source_generation"]["primary_implementation"],
+                "outputs.implementation",
+            )
+            self.assertEqual(result["build_profile"]["target"], "i686-w64-mingw32")
+            self.assertEqual(result["build_profile"]["c_standard"], "gnu17")
+            self.assertIn("-O0", result["build_profile"]["compile_flags"])
+            self.assertEqual(result["implementation_recovery"]["decompiler_coverage"]["status"], "not_applicable")
+
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            provenance = stage_b_generate_candidate_provenance(
+                target_name="unknown-program",
+                skeleton_manifest=root / "skeleton" / "manifest.json",
+                candidate=candidate,
+                build_target="i686-w64-mingw32",
+                build_compiler="i686-w64-mingw32-gcc",
+                out=root / "provenance",
+            )
+            implementation_root = next(
+                item
+                for item in provenance["source_roots"]
+                if item["kind"] == "stage_b_generated_state_machine_implementation"
+            )
+            self.assertEqual(provenance["generation_authority"], "stage-a-semantic-transfer-contracts")
+            self.assertEqual(implementation_root["implementation_manifest"], implementation["manifest"]["path"])
+            self.assertEqual(
+                implementation_root["implementation_manifest_sha256"],
+                implementation["manifest"]["sha256"],
+            )
+
+    def test_contract_guided_mingw_profile_links_imports_instead_of_redefining_thunks(self):
+        source = _render_skeleton_decompiled_c_source(
+            target_name="unknown-program",
+            functions=[
+                {
+                    "name": "malloc",
+                    "rva_start": 0x1000,
+                    "rva_end": 0x1006,
+                    "size": 6,
+                    "instruction_count": 1,
+                    "linkage": {
+                        "kind": "import_thunk",
+                        "symbol": "malloc",
+                        "original_symbol": "malloc",
+                    },
+                }
+            ],
+            runtime_entry_policy="mingw-crt",
+            allow_contract_bytecode=True,
+        )
+
+        self.assertNotIn(".text$stage_b_import_thunks", source)
+        self.assertNotIn("jmp *__imp__malloc", source)
+        self.assertIn("import thunk for malloc; body omitted", source)
 
     def test_contract_guided_c_embeds_internal_section_gap_transfers_in_owner_flow(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -8884,7 +9075,7 @@ class StageBTests(unittest.TestCase):
             categories = {issue["category"] for issue in result["issues"]}
             self.assertIn("skeleton_hash_mismatch", categories)
             self.assertIn("upstream_source_access", categories)
-            self.assertIn("manual_behavioral_fixups", categories)
+            self.assertNotIn("manual_behavioral_fixups", categories)
             self.assertNotIn("missing_functional_tests", categories)
             self.assertFalse((root / "report" / "stage-a").exists())
 
@@ -9463,7 +9654,7 @@ class StageBTests(unittest.TestCase):
             self.assertIn("generated_skeleton_source_hash_mismatch", categories)
             self.assertFalse((root / "report" / "stage-a").exists())
 
-    def test_validate_candidate_rejects_behavioral_fixed_up_source_root(self):
+    def test_validate_candidate_accepts_recorded_behavioral_fixups_but_rejects_unbound_policy(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             original = self._write_pe(root / "original.exe", b"\xc3")
@@ -9526,7 +9717,7 @@ class StageBTests(unittest.TestCase):
             categories = {issue["category"] for issue in result["issues"]}
             self.assertEqual(result["status"], "incomplete")
             self.assertIn("invalid_fixed_up_source_policy", categories)
-            self.assertIn("fixed_up_source_behavioral_fixups", categories)
+            self.assertNotIn("fixed_up_source_behavioral_fixups", categories)
             self.assertFalse((root / "report" / "stage-a").exists())
 
     def test_validate_candidate_delegates_to_stage_a_with_stage_b_proof_rule(self):
@@ -12345,29 +12536,50 @@ class StageBTests(unittest.TestCase):
                 return obligation
         self.fail(f"missing obligation {obligation_id}")
 
-    def _generated_source_root(self, skeleton_dir: Path) -> dict[str, str]:
+    def _generated_source_root(self, skeleton_dir: Path) -> dict[str, object]:
         manifest = json.loads((skeleton_dir / "manifest.json").read_text(encoding="utf-8"))
         source = manifest["outputs"]["source"]
-        return {
+        root = {
             "kind": "stage_b_generated_skeleton",
             "path": str(skeleton_dir / "manifest.json"),
             "source": source["path"],
             "source_sha256": source["sha256"],
         }
+        implementation = manifest["outputs"].get("implementation")
+        if manifest.get("implementation_mode") == "contract-guided-c" and isinstance(implementation, dict):
+            implementation_manifest = implementation.get("manifest")
+            state_machine = manifest["outputs"].get("state_machine")
+            if isinstance(implementation_manifest, dict) and isinstance(state_machine, dict):
+                root["implementation_manifest"] = implementation_manifest["path"]
+                root["implementation_manifest_sha256"] = implementation_manifest["sha256"]
+                root["state_machine"] = {
+                    "path": state_machine["path"],
+                    "sha256": state_machine["sha256"],
+                }
+        return root
 
     def _fixed_up_source_root(self, skeleton_dir: Path, source_path: Path) -> dict[str, object]:
         manifest = json.loads((skeleton_dir / "manifest.json").read_text(encoding="utf-8"))
         source = manifest["outputs"]["source"]
-        return {
+        state_machine = manifest["outputs"]["state_machine"]
+        root = {
             "kind": "stage_b_fixed_up_source",
             "path": str(source_path),
             "source": str(source_path),
             "source_sha256": sha256_file(source_path),
             "derived_from": source["path"],
             "derived_from_sha256": source["sha256"],
-            "fixup_policy": "compile_and_structure_only",
+            "state_machine": {
+                "path": state_machine["path"],
+                "sha256": state_machine["sha256"],
+            },
+            "fixup_policy": "state_machine_contract_guided",
             "behavioral_fixups": [],
         }
+        implementation = manifest["outputs"].get("implementation")
+        if manifest.get("implementation_mode") == "contract-guided-c" and isinstance(implementation, dict):
+            root["implementation_manifest"] = implementation["manifest"]
+        return root
 
     def _candidate_build(self, candidate: Path) -> dict[str, str]:
         return {

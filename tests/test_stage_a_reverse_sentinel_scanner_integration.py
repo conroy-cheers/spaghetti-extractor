@@ -392,10 +392,16 @@ class StageAReverseSentinelScannerIntegrationTests(unittest.TestCase):
                 if item["source_region_index"] == 7
                 and item["target_region_index"] == 8
             )
-            self.assertFalse(bridge_diagnostic["eligible"])
-            self.assertIn(
-                "target_state_predicate_transfer_unsupported",
-                bridge_diagnostic["failed_checks"],
+            self.assertTrue(bridge_diagnostic["eligible"], bridge_diagnostic)
+            bridge_candidate = next(
+                item
+                for item in candidates
+                if item["source_region_index"] == 7
+                and item["target_region_index"] == 8
+            )
+            self.assertEqual(
+                bridge_candidate["certificate_profile"],
+                "composable_local_no_write_v1",
             )
 
             segment_modules = sorted(

@@ -1,10 +1,25 @@
 import StageA.Formal
+import StageA.RelationalX87Decode
 import Lean.Data.Json
 import Std.Tactic.BVDecide
 
 namespace StageA.Relational
 
 open StageA.Formal
+
+/-- Side extraction is untrusted proposal generation. The legacy symbolic
+executor cannot represent physical x87 faults, so a checked state-only x87
+singleton contributes only its fallthrough control proposal here. Acceptance
+never uses this fallback as instruction semantics: x87 segment certificates
+re-decode the exact PE bytes and execute the physical x87 model. -/
+def regionAnalysisBehaviorWithImports (pe : PE32) (imports : List PEImport)
+    (span : Span) : Option SymbolicBehavior :=
+  match regionBehaviorWithImports pe imports span with
+  | some behavior => some behavior
+  | none =>
+      if StageA.Relational.X87.stateOnlySingletonCommandChecked pe span then
+        some { initialSymbolic with outcome := some (.jump span.stop) }
+      else none
 
 abbrev PureState := Registers Word
 
@@ -482,8 +497,9 @@ def callPushBase? : Expr -> Option Expr
 def externalizeRegisterImportCall (contract : MachineImportCallContract)
     (dispatchRegister : Reg) (behavior : SymbolicBehavior) : Option SymbolicBehavior :=
   match behavior.outcome with
-  | some (.indirectCall (.inputReg targetRegister) continuation returnAddress) =>
-      if targetRegister != dispatchRegister then none else
+  | some (.indirectCall target continuation returnAddress) =>
+      if target != .inputReg dispatchRegister &&
+          target != behavior.registers.get dispatchRegister then none else
       match behavior.writes.reverse with
       | [] => none
       | (returnSlot, returnValue) :: priorWrites =>
@@ -499,7 +515,11 @@ def externalizeRegisterImportCall (contract : MachineImportCallContract)
                 outcome := none
               }
               some {
-                restored with outcome := some (.externalCall contract.imported.syntheticImport
+                restored with
+                -- The return address is outside the restored active stack, but it
+                -- remains a concrete architectural memory write.
+                writes := behavior.writes
+                outcome := some (.externalCall contract.imported.syntheticImport
                   (contract.arguments restored) continuation)
               }
   | _ => none
@@ -526,6 +546,12 @@ def applyMachineImportCallContracts
           }
       | _ => none
   | _ => some behavior
+
+def regionAnalysisBehaviorWithMachineCallContracts
+    (pe : PE32) (imports : List PEImport)
+    (contracts : List MachineImportCallContract) (span : Span) : Option SymbolicBehavior := do
+  let behavior <- regionAnalysisBehaviorWithImports pe imports span
+  applyMachineImportCallContracts contracts behavior
 
 def regionBehaviorWithMachineCallContracts (pe : PE32) (imports : List PEImport)
     (contracts : List MachineImportCallContract) (span : Span) : Option SymbolicBehavior := do
@@ -555,6 +581,8 @@ deriving Repr, DecidableEq
 structure RelationalBehavior where
   registers : PureState
   x87 : ConcreteX87State
+  x87Effect : Option StageA.X87.MachineEffect := none
+  x87Fault : Option StageA.X87.Fault := none
   writes : List (Word × Word)
   eflags : Word
   outcome : PureOutcome
@@ -563,19 +591,63 @@ deriving Repr, DecidableEq
 def applyConcreteWrites (memory : Memory) (writes : List (Word × Word)) : Memory :=
   writes.foldl (fun current write => current.write32 write.1 write.2) memory
 
+def Memory.write8 (memory : Memory) (address : Word) (value : BitVec 8) : Memory :=
+  fun query => if query = address then value else memory query
+
+def Memory.writeX87Bits (memory : Memory) (address : Word)
+    (bits : BitVec 80) : Nat -> Memory
+  | 0 => memory
+  | count + 1 =>
+      Memory.write8 (Memory.writeX87Bits memory address bits count)
+        (address + BitVec.ofNat 32 count) (bits.extractLsb' (count * 8) 8)
+
+def applyX87MemoryEffect (memory : Memory)
+    (effect : StageA.X87.MachineEffect) : Memory :=
+  match effect.response.store, effect.memoryAddress with
+  | some store, some address =>
+      Memory.writeX87Bits memory address store.bits store.kind.byteWidth
+  | _, _ => memory
+
+def applyX87RegisterEffect (registers : PureState)
+    (response : StageA.X87.Response) : PureState :=
+  match response.register with
+  | none => registers
+  | some result =>
+      match result.target with
+      | .ax => registers.set .eax
+          ((registers.eax &&& BitVec.ofNat 32 0xffff0000) |||
+            (result.value &&& BitVec.ofNat 32 0x0000ffff))
+
+def applyX87FlagsEffect (eflags : Word) (response : StageA.X87.Response) : Word :=
+  (eflags &&& ~~~response.eflagsWriteMask) |||
+    (response.eflagsValue &&& response.eflagsWriteMask)
+
 def RelationalBehavior.nextMachineState
     (behavior : RelationalBehavior) (input : MachineState) : MachineState := {
-  registers := behavior.registers
-  memory := applyConcreteWrites input.memory behavior.writes
+  registers := match behavior.x87Effect with
+    | none => behavior.registers
+    | some effect => applyX87RegisterEffect behavior.registers effect.response
+  memory := match behavior.x87Effect with
+    | none => applyConcreteWrites input.memory behavior.writes
+    | some effect => applyX87MemoryEffect
+        (applyConcreteWrites input.memory behavior.writes) effect
   undefinedValue := input.undefinedValue
-  x87 := {
-    stack := fun index =>
-      (behavior.x87.stack.drop index).head?.getD (BitVec.ofNat 80 0)
-    control := behavior.x87.control
-    status := behavior.x87.status
-    semantics := input.x87.semantics
-  }
-  eflags := behavior.eflags
+  x87 := match behavior.x87Effect with
+    | none => {
+        stack := fun index =>
+          (behavior.x87.stack.drop index).head?.getD (BitVec.ofNat 80 0)
+        control := behavior.x87.control
+        status := behavior.x87.status
+        semantics := input.x87.semantics
+      }
+    | some _ => input.x87
+  x87Physical := match behavior.x87Effect with
+    | none => input.x87Physical
+    | some effect => effect.response.nextState
+  x87Semantics := input.x87Semantics
+  eflags := match behavior.x87Effect with
+    | none => behavior.eflags
+    | some effect => applyX87FlagsEffect behavior.eflags effect.response
   fsBase := input.fsBase
 }
 

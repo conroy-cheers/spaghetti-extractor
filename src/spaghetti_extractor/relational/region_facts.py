@@ -43,10 +43,10 @@ _REGION_FACTS_SEMANTICS_FILES = (
     "schema.py",
     "analyses/control.py",
     "analyses/external.py",
-    "analyses/invariants.py",
     "analyses/memory.py",
     "analyses/region_local.py",
     "analyses/register_static.py",
+    "analyses/semantic_control.py",
     "analyses/segments.py",
     "analyses/stack.py",
 )

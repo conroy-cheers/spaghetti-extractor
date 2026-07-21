@@ -1,4 +1,4 @@
-import StageA.RelationalCallbacks
+import StageA.RelationalAffineFrames
 import StageA.RelationalExecution
 import StageA.RelationalISAQualification
 import StageA.RelationalImage
@@ -11,6 +11,7 @@ open StageA.Formal
 
 inductive ModeledFault where
   | checkedContinue
+  | x87FloatingPoint
 deriving Repr, DecidableEq
 
 /-- A fail-closed proof frontier. These cases mean that Stage A cannot model
@@ -79,9 +80,13 @@ def decodedWorldRegionBehavior (program : DecodedWorldProgram)
     program.context.candidateImports
   else
     program.context.originalImports
-  let behavior <- regionBehaviorWithMachineCallContracts pe imports
-    program.context.machineImportCallContracts span
-  evalBehavior program.candidate region.targets state behavior
+  if StageA.Relational.X87.spanStartsWithX87Command pe span then
+    StageA.Relational.X87.executeSingletonCommand program.candidate pe span
+      region.targets state
+  else do
+    let behavior <- regionBehaviorWithMachineCallContracts pe imports
+      program.context.machineImportCallContracts span
+    evalBehavior program.candidate region.targets state behavior
 
 /-- Execute a cutpoint region by independently fetching each instruction from
 the exact PE image, then apply the same machine-level import contract layer as
@@ -98,10 +103,14 @@ def pe32WorldRegionBehavior (program : DecodedWorldProgram)
     program.context.candidateImports
   else
     program.context.originalImports
-  let behavior <- executePE32SymbolicSpan pe imports span
-  let behavior <- applyMachineImportCallContracts
-    program.context.machineImportCallContracts behavior
-  evalBehavior program.candidate region.targets state behavior
+  if StageA.Relational.X87.spanStartsWithX87Command pe span then
+    StageA.Relational.X87.executeSingletonCommand program.candidate pe span
+      region.targets state
+  else do
+    let behavior <- executePE32SymbolicSpan pe imports span
+    let behavior <- applyMachineImportCallContracts
+      program.context.machineImportCallContracts behavior
+    evalBehavior program.candidate region.targets state behavior
 
 /-- The generated cutpoint model may be used in acceptance only when it agrees
 pointwise with exact PE instruction fetching for every target and machine
@@ -123,7 +132,7 @@ def DecodedWorldProgram.instructionSemanticsAdequateChecked
   else
     program.context.originalImports
   program.regions.all fun region =>
-    regionInstructionAdequateChecked pe imports
+    regionInstructionAdequateWithX87Checked pe imports
       (if program.candidate then region.candidate else region.original)
 
 theorem DecodedWorldProgram.instructionSemanticsAdequate_of_checked
@@ -140,16 +149,58 @@ theorem DecodedWorldProgram.instructionSemanticsAdequate_of_checked
         unfold regionById at found
         exact List.mem_of_find?_eq_some found
       cases candidateValue : program.candidate
-      all_goals
+      case false =>
         have allChecked := checked
         simp only [DecodedWorldProgram.instructionSemanticsAdequateChecked,
           candidateValue, Bool.false_eq_true, if_false, if_true,
           List.all_eq_true] at allChecked
-        have regionChecked := allChecked region regionMember
-        have adequate := regionInstructionAdequate_of_checked _ _ _ regionChecked
-        rcases adequate with ⟨symbolic, executed, decoded⟩
-        simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
-          candidateValue, regionBehaviorWithMachineCallContracts, executed, decoded]
+        have regionChecked :
+            regionInstructionAdequateWithX87Checked program.context.originalPe
+              program.context.originalImports region.original = true :=
+          allChecked region regionMember
+        by_cases isX87 :
+            StageA.Relational.X87.spanStartsWithX87Command
+              program.context.originalPe region.original = true
+        · simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
+            candidateValue, isX87]
+        · have ordinaryChecked :
+              regionInstructionAdequateChecked program.context.originalPe
+                program.context.originalImports region.original = true := by
+            simpa [regionInstructionAdequateWithX87Checked, isX87] using
+              regionChecked
+          have adequate := regionInstructionAdequate_of_checked
+            program.context.originalPe program.context.originalImports
+            region.original ordinaryChecked
+          rcases adequate with ⟨symbolic, executed, decoded⟩
+          simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
+            candidateValue, isX87,
+            regionBehaviorWithMachineCallContracts, executed, decoded]
+      case true =>
+        have allChecked := checked
+        simp only [DecodedWorldProgram.instructionSemanticsAdequateChecked,
+          candidateValue, Bool.false_eq_true, if_false, if_true,
+          List.all_eq_true] at allChecked
+        have regionChecked :
+            regionInstructionAdequateWithX87Checked program.context.candidatePe
+              program.context.candidateImports region.candidate = true :=
+          allChecked region regionMember
+        by_cases isX87 :
+            StageA.Relational.X87.spanStartsWithX87Command
+              program.context.candidatePe region.candidate = true
+        · simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
+            candidateValue, isX87]
+        · have ordinaryChecked :
+              regionInstructionAdequateChecked program.context.candidatePe
+                program.context.candidateImports region.candidate = true := by
+            simpa [regionInstructionAdequateWithX87Checked, isX87] using
+              regionChecked
+          have adequate := regionInstructionAdequate_of_checked
+            program.context.candidatePe program.context.candidateImports
+            region.candidate ordinaryChecked
+          rcases adequate with ⟨symbolic, executed, decoded⟩
+          simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
+            candidateValue, isX87,
+            regionBehaviorWithMachineCallContracts, executed, decoded]
 
 theorem DecodedWorldProgram.instructionSemanticsAdequate_of_regions
     (program : DecodedWorldProgram)
@@ -175,9 +226,30 @@ theorem DecodedWorldProgram.instructionSemanticsAdequate_of_regions
         (if program.candidate then program.context.candidateImports
           else program.context.originalImports)
         program.candidate program.regions region adequate regionMember
-      rcases regionAdequate with ⟨symbolic, executed, decoded⟩
-      simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
-        regionBehaviorWithMachineCallContracts, executed, decoded]
+      let pe := if program.candidate then
+        program.context.candidatePe
+      else
+        program.context.originalPe
+      let imports := if program.candidate then
+        program.context.candidateImports
+      else
+        program.context.originalImports
+      let span := if program.candidate then region.candidate else region.original
+      by_cases isX87 :
+          StageA.Relational.X87.spanStartsWithX87Command pe span = true
+      · have decoded :
+            (StageA.Relational.X87.decodeSingletonCommand pe span).isSome = true := by
+          simpa [pe, imports, span, RegionInstructionAdequateWithX87,
+            isX87] using regionAdequate
+        simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
+          pe, span, isX87, decoded]
+      · have ordinaryAdequate : RegionInstructionAdequate pe imports span := by
+          simpa [pe, imports, span, RegionInstructionAdequateWithX87,
+            isX87] using regionAdequate
+        rcases ordinaryAdequate with ⟨symbolic, executed, decoded⟩
+        simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
+          pe, imports, span, isX87,
+          regionBehaviorWithMachineCallContracts, executed, decoded]
 
 def machineImportArgumentsAtState (contract : MachineImportCallContract)
     (state : MachineState) : List Word :=
@@ -203,6 +275,60 @@ def resolveWorldImportCall (candidate : Bool) (context : StaticProofContext)
     contract.imported == binding.imported
   let arguments <- machineImportThunkArgumentsAtState? contract state
   pure (binding.imported, arguments)
+
+theorem resolveWorldImportCall_zeroArguments_of_binding
+    (candidate : Bool) (context : StaticProofContext) (world : RelationalWorld)
+    (state : MachineState) (binding : ImportAddressPair)
+    (importsStatic : world.importAddressesStaticValid context = true)
+    (bindingMember : binding ∈ world.importAddresses)
+    (contract : MachineImportCallContract)
+    (contractFound : context.machineImportCallContracts.find? (fun candidate =>
+      candidate.imported == binding.imported) = some contract)
+    (noArguments : contract.stackArgumentOffsets = []) :
+    resolveWorldImportCall candidate context world
+        (if candidate then binding.candidateAddress else binding.originalAddress)
+        state = some (binding.imported, []) := by
+  unfold resolveWorldImportCall
+  have bindingMatches :
+      ((if candidate then binding.candidateAddress else binding.originalAddress) ==
+        (if candidate then binding.candidateAddress else binding.originalAddress)) = true := by
+    simp
+  cases bindingFound : world.importAddresses.find? (fun candidateBinding =>
+      (if candidate then candidateBinding.candidateAddress
+       else candidateBinding.originalAddress) ==
+        (if candidate then binding.candidateAddress else binding.originalAddress)) with
+  | none =>
+      have absent := List.find?_eq_none.mp bindingFound binding bindingMember
+      exact (absent bindingMatches).elim
+  | some selected =>
+      have selectedMember := List.mem_of_find?_eq_some bindingFound
+      have selectedMatches := List.find?_some bindingFound
+      simp only [RelationalWorld.importAddressesStaticValid, Bool.and_eq_true]
+        at importsStatic
+      rcases importsStatic with
+        ⟨⟨⟨_idsUnique, _iatPairsUnique⟩, identitiesConsistent⟩,
+          _bindingsStatic⟩
+      simp only [importAddressIdentitiesConsistent, List.all_eq_true]
+        at identitiesConsistent
+      have consistency := identitiesConsistent binding bindingMember
+        selected selectedMember
+      have selectedImported : selected.imported = binding.imported := by
+        by_cases same : selected.imported = binding.imported
+        · exact same
+        · have addressesDifferent :
+              selected.originalAddress ≠ binding.originalAddress ∧
+                selected.candidateAddress ≠ binding.candidateAddress := by
+            simpa [same] using consistency
+          cases candidate
+          · exact (addressesDifferent.1 (beq_iff_eq.mp selectedMatches)).elim
+          · exact (addressesDifferent.2 (beq_iff_eq.mp selectedMatches)).elim
+      change (do
+        let selectedContract <- context.machineImportCallContracts.find? (fun candidate =>
+          candidate.imported == selected.imported)
+        let arguments <- machineImportThunkArgumentsAtState? selectedContract state
+        pure (selected.imported, arguments)) = some (binding.imported, [])
+      rw [selectedImported, contractFound]
+      simp [machineImportThunkArgumentsAtState?, noArguments]
 
 def resolveExternalCallSite (context : StaticProofContext)
     (sites : List ExternalCallSiteContract) (sourceTargetId : Nat)
@@ -422,10 +548,9 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
           eventIndex world,
         observation := none }
   | .indirectCall target continuation =>
-      match resolveMappedCodeTarget program.candidate
+      match program.context.codeMap.resolveRawEip program.candidate
           (if program.candidate then program.context.candidatePe.imageBase
-           else program.context.originalPe.imageBase)
-          program.context.codeMap.entries.toList target with
+           else program.context.originalPe.imageBase) target with
       | some resolved =>
           { next := resumeWorldExecution callbacks resolved state (continuation :: calls)
               eventIndex world,
@@ -464,10 +589,9 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                                 (eventIndex + 1) result.world,
                             observation := some (.external world imported arguments) }
   | .indirectJump target =>
-      match resolveMappedCodeTarget program.candidate
+      match program.context.codeMap.resolveRawEip program.candidate
           (if program.candidate then program.context.candidatePe.imageBase
-           else program.context.originalPe.imageBase)
-          program.context.codeMap.entries.toList target with
+           else program.context.originalPe.imageBase) target with
       | some resolved =>
           { next := resumeWorldExecution callbacks resolved state calls eventIndex world,
             observation := none }
@@ -520,6 +644,21 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
           eventIndex world,
         observation := none }
 
+def transitionFromWorldBehavior (program : DecodedWorldProgram)
+    (sourceTargetId : Nat) (inputState : MachineState) (calls : List Nat)
+    (eventIndex : Nat) (world : RelationalWorld)
+    (callbacks : List WorldExternalCallbackRuntime)
+    (behavior : RelationalBehavior) :
+    RelatedTransition WorldExecution WorldRelationalObservable :=
+  match behavior.x87Fault with
+  | some .floatingPoint =>
+      { next := .fault .x87FloatingPoint,
+        observation := some (.fault .x87FloatingPoint) }
+  | none =>
+      transitionFromWorldOutcome program sourceTargetId
+        (behavior.nextMachineState inputState) calls eventIndex world callbacks
+        behavior.outcome
+
 def stepWorldExternalSuspension (program : DecodedWorldProgram)
     (suspension : WorldExternalSuspension)
     (callbacks : List WorldExternalCallbackRuntime) :
@@ -542,8 +681,7 @@ def stepWorldExecution (program : DecodedWorldProgram) :
       match decodedWorldRegionBehavior program targetId state with
       | none => blockedWorldTransition (.missingRegionBehavior targetId)
       | some behavior =>
-          transitionFromWorldOutcome program targetId
-            (behavior.nextMachineState state) calls eventIndex world [] behavior.outcome
+          transitionFromWorldBehavior program targetId state calls eventIndex world [] behavior
   | .returned state world =>
       { next := .returned state world, observation := none }
   | .terminated world => { next := .terminated world, observation := none }
@@ -553,9 +691,8 @@ def stepWorldExecution (program : DecodedWorldProgram) :
       match decodedWorldRegionBehavior program targetId state with
       | none => blockedWorldTransition (.missingRegionBehavior targetId)
       | some behavior =>
-          transitionFromWorldOutcome program targetId
-            (behavior.nextMachineState state) calls eventIndex world callbacks
-            behavior.outcome
+          transitionFromWorldBehavior program targetId state calls eventIndex world callbacks
+            behavior
   | .fault cause => { next := .fault cause, observation := none }
   | .blocked reason => { next := .blocked reason, observation := none }
 
@@ -568,8 +705,7 @@ def stepPE32WorldExecution (program : DecodedWorldProgram) :
       match pe32WorldRegionBehavior program targetId state with
       | none => blockedWorldTransition (.missingRegionBehavior targetId)
       | some behavior =>
-          transitionFromWorldOutcome program targetId
-            (behavior.nextMachineState state) calls eventIndex world [] behavior.outcome
+          transitionFromWorldBehavior program targetId state calls eventIndex world [] behavior
   | .returned state world =>
       { next := .returned state world, observation := none }
   | .terminated world => { next := .terminated world, observation := none }
@@ -579,9 +715,8 @@ def stepPE32WorldExecution (program : DecodedWorldProgram) :
       match pe32WorldRegionBehavior program targetId state with
       | none => blockedWorldTransition (.missingRegionBehavior targetId)
       | some behavior =>
-          transitionFromWorldOutcome program targetId
-            (behavior.nextMachineState state) calls eventIndex world callbacks
-            behavior.outcome
+          transitionFromWorldBehavior program targetId state calls eventIndex world callbacks
+            behavior
   | .fault cause => { next := .fault cause, observation := none }
   | .blocked reason => { next := .blocked reason, observation := none }
 
@@ -627,13 +762,27 @@ def RelationalRuntimeCallStackHolds (context : StaticProofContext)
   | [], [], [] => True
   | frame :: frames, continuation :: continuations, offsets :: remainingOffsets =>
       frame.continuationTargetId = continuation ∧
-        frame.toRelationalCallFrame.valid context = true ∧
+        frame.valid context = true ∧
         frame.toRelationalCallFrame.resolves context = true ∧
         frame.memoryHolds original.memory candidate.memory ∧
         offsets.holds frame original.registers candidate.registers ∧
+        offsets.boundedExactWordsHold frame original.memory candidate.memory ∧
         RelationalRuntimeCallStackHolds context original candidate frames
           continuations remainingOffsets
   | _, _, _ => False
+
+/-- An empty runtime-call inventory carries no machine-state facts.  Keeping
+this structural case separate from `afterInternal` avoids replaying behavior
+and memory-transfer checks when there is no active call frame to preserve. -/
+theorem RelationalRuntimeCallStackHolds.emptyInventoryTransition
+    (context : StaticProofContext)
+    (beforeOriginal beforeCandidate afterOriginal afterCandidate : MachineState)
+    (frames : List RelationalRuntimeCallFrame)
+    (holds : RelationalRuntimeCallStackHolds context beforeOriginal beforeCandidate
+      frames [] []) :
+    RelationalRuntimeCallStackHolds context afterOriginal afterCandidate
+      frames [] [] := by
+  cases frames <;> simp_all [RelationalRuntimeCallStackHolds]
 
 /-- Preserved import relations carried by every checked runtime call-frame
 inventory.  The concrete frame shape is checked by
@@ -825,6 +974,9 @@ remain valid across an internal paired step. -/
 structure RelationalRuntimeCallImportTransferClaim where
   source : ReturnSlotOffsetInventory
   target : ReturnSlotOffsetInventory
+  /-- `none` retains the legacy all-relations-preserved rule. `some carried`
+  is used only by the checked frame-word refresh rule. -/
+  carriedRelations : Option (List RegisterRelationPair) := none
 deriving Repr, DecidableEq
 
 def RelationalRuntimeCallImportTransferClaim.checked
@@ -941,10 +1093,19 @@ theorem RelationalRuntimeCallFactsHold.afterInternal
     RelationalRuntimeCallRelationsHold.afterInternal context world originalBehavior
       candidateBehavior claims originalState candidateState checked holds.2⟩
 
+def ReturnSlotOffsetInventory.preservesImportsAcrossExternal
+    (contract : MachineImportCallContract)
+    (inventory : ReturnSlotOffsetInventory) : Bool :=
+  inventory.preservedImports.all fun relation =>
+    ExternalImportRegisterPreservationClaim.checked contract {
+      source := relation
+      target := relation
+    }
+
 def ReturnSlotOffsetInventory.preservesFactsAcrossExternal
     (context : StaticProofContext) (contract : MachineImportCallContract)
     (inventory : ReturnSlotOffsetInventory) : Bool :=
-  inventory.preservedImports.isEmpty &&
+  inventory.preservesImportsAcrossExternal contract &&
     inventory.preservedRelationsChecked context &&
     inventory.preservedRelations.all fun relation =>
       (ExternalRegisterRelationPreservationClaim.checked context contract {
@@ -975,6 +1136,55 @@ theorem ReturnSlotOffsetInventory.preservedRelationsHold_afterExternal
     originalEvent candidateEvent originalResult candidateResult
     (checked.2 relation relationMember) (sourceHolds relation relationMember)
     pairConforms
+
+theorem ReturnSlotOffsetInventory.preservedImportsHold_afterExternal
+    (context : StaticProofContext) (contract : MachineImportCallContract)
+    (inventory : ReturnSlotOffsetInventory)
+    (originalEvent candidateEvent : WorldExternalEvent)
+    (originalResult candidateResult : WorldExternalResult)
+    (checked : inventory.preservesImportsAcrossExternal contract = true)
+    (sourceHolds : inventory.preservedImportsHold originalEvent.world
+      originalEvent.state.registers candidateEvent.state.registers = true)
+    (pairConforms : ExactExternalCallPairConforms context contract
+      originalEvent candidateEvent originalResult candidateResult) :
+    inventory.preservedImportsHold originalResult.world
+      originalResult.state.registers candidateResult.state.registers = true := by
+  simp only [ReturnSlotOffsetInventory.preservesImportsAcrossExternal,
+    List.all_eq_true] at checked
+  unfold ReturnSlotOffsetInventory.preservedImportsHold
+    importRegisterRelationsHold at sourceHolds ⊢
+  simp only [List.all_eq_true] at sourceHolds ⊢
+  intro relation relationMember
+  exact externalImportRegisterPreservationHolds_of_checked context contract
+    { source := relation, target := relation }
+    originalEvent candidateEvent originalResult candidateResult
+    (checked relation relationMember) (sourceHolds relation relationMember)
+    pairConforms
+
+theorem ReturnSlotOffsetInventory.preservedImportsHold_normalizeImportReturnSlot
+    (context : StaticProofContext) (contract : MachineImportCallContract)
+    (inventory : ReturnSlotOffsetInventory) (world : RelationalWorld)
+    (original candidate : MachineState)
+    (checked : inventory.preservesImportsAcrossExternal contract = true)
+    (holds : inventory.preservedImportsHold world original.registers
+      candidate.registers = true) :
+    inventory.preservedImportsHold world
+      (normalizeImportReturnSlotState original).registers
+      (normalizeImportReturnSlotState candidate).registers = true := by
+  simp only [ReturnSlotOffsetInventory.preservesImportsAcrossExternal,
+    List.all_eq_true] at checked
+  unfold ReturnSlotOffsetInventory.preservedImportsHold
+    importRegisterRelationsHold at holds ⊢
+  simp only [List.all_eq_true] at holds ⊢
+  intro relation relationMember
+  have relationChecked := checked relation relationMember
+  simp only [ExternalImportRegisterPreservationClaim.checked,
+    Bool.and_eq_true, beq_iff_eq] at relationChecked
+  have relationHolds := holds relation relationMember
+  cases originalRegister : relation.original <;>
+    cases candidateRegister : relation.candidate <;>
+    simp_all [ImportRegisterRelation.holds, normalizeImportReturnSlotState,
+      StageA.Formal.Registers.get, StageA.Formal.Registers.set]
 
 theorem ReturnSlotOffsetInventory.preservedRelationsHold_normalizeImportReturnSlot
     (context : StaticProofContext) (contract : MachineImportCallContract)
@@ -1021,10 +1231,11 @@ theorem RelationalRuntimeCallFactsHold.afterExternal
   | cons inventory inventories ih =>
       simp only [List.all_cons, Bool.and_eq_true] at checked
       have headChecked := checked.1
-      have importsEmpty : inventory.preservedImports = [] := by
-        simp only [ReturnSlotOffsetInventory.preservesFactsAcrossExternal,
-          Bool.and_eq_true] at headChecked
-        simpa using headChecked.1.1
+      simp only [ReturnSlotOffsetInventory.preservesFactsAcrossExternal,
+        Bool.and_eq_true, List.all_eq_true] at headChecked
+      have headImports := inventory.preservedImportsHold_afterExternal
+        context contract originalEvent candidateEvent originalResult candidateResult
+        headChecked.1.1 holds.1.1 pairConforms
       have headRelations :=
         inventory.preservedRelationsHold_afterExternal context contract
           originalEvent candidateEvent originalResult candidateResult
@@ -1032,8 +1243,7 @@ theorem RelationalRuntimeCallFactsHold.afterExternal
       have tailFacts := ih checked.2 ⟨holds.1.2, holds.2.2⟩
       exact RelationalRuntimeCallFactsHold.cons context originalResult.world
         inventory inventories _ _
-        (by simp [ReturnSlotOffsetInventory.preservedImportsHold,
-          importRegisterRelationsHold, importsEmpty])
+        headImports
         headRelations tailFacts
 
 theorem RelationalRuntimeCallFactsHold.normalizeImportReturnSlot
@@ -1052,16 +1262,15 @@ theorem RelationalRuntimeCallFactsHold.normalizeImportReturnSlot
   | cons inventory inventories ih =>
       simp only [List.all_cons, Bool.and_eq_true] at checked
       have headChecked := checked.1
-      have importsEmpty : inventory.preservedImports = [] := by
-        simp only [ReturnSlotOffsetInventory.preservesFactsAcrossExternal,
-          Bool.and_eq_true] at headChecked
-        simpa using headChecked.1.1
+      simp only [ReturnSlotOffsetInventory.preservesFactsAcrossExternal,
+        Bool.and_eq_true, List.all_eq_true] at headChecked
+      have headImports := inventory.preservedImportsHold_normalizeImportReturnSlot
+        context contract world original candidate headChecked.1.1 holds.1.1
       have headRelations := inventory.preservedRelationsHold_normalizeImportReturnSlot
         context contract world original candidate checked.1 holds.2.1
       have tailFacts := ih checked.2 ⟨holds.1.2, holds.2.2⟩
       exact RelationalRuntimeCallFactsHold.cons context world inventory inventories _ _
-        (by simp [ReturnSlotOffsetInventory.preservedImportsHold,
-          importRegisterRelationsHold, importsEmpty])
+        headImports
         headRelations tailFacts
 
 theorem RelationalRuntimeCallStackHolds.toMixed
@@ -1091,11 +1300,14 @@ theorem RelationalRuntimeCallStackHolds.toMixed
                 RelationalRuntimeFrame.continuationMatches,
                 RelationalRuntimeFrame.valid, RelationalRuntimeFrame.memoryHolds,
                 ReturnSlotOffsetPair.holdsRuntimeFrame_internal, Bool.and_eq_true]
-              exact ⟨by simpa using holds.1, ⟨holds.2.1, holds.2.2.1⟩,
+              have frameValid := holds.2.1
+              simp only [RelationalRuntimeCallFrame.valid,
+                Bool.and_eq_true] at frameValid
+              exact ⟨by simpa using holds.1, ⟨frameValid.1, holds.2.2.1⟩,
                 holds.2.2.2.1,
                 ReturnSlotOffsetInventory.representative_holds offset frame
                   original.registers candidate.registers holds.2.2.2.2.1,
-                ih continuations offsets holds.2.2.2.2.2⟩
+                ih continuations offsets holds.2.2.2.2.2.2⟩
 
 theorem RelationalRuntimeCallStackHolds.afterInternal
     (context : StaticProofContext) (world : RelationalWorld)
@@ -1130,20 +1342,27 @@ theorem RelationalRuntimeCallStackHolds.afterInternal
               have transferred := returnSlotFrameInventoryTransferHolds_of_checked
                 context world sourceInvariant originalBehavior candidateBehavior claim
                 frame originalState candidateState checked.1 holds.2.2.2.2.1
-                holds.2.2.2.1 related
-              exact ⟨holds.1, holds.2.1, holds.2.2.1, transferred.2,
+                holds.2.2.2.1 holds.2.2.2.2.2.1
+                (by
+                  have valid := holds.2.1
+                  simp only [RelationalRuntimeCallFrame.valid,
+                    Bool.and_eq_true] at valid
+                  exact valid.2) related
+              exact ⟨holds.1, holds.2.1, holds.2.2.1, transferred.2.1,
                 transferred.1,
-                ih frames continuations checked.2 holds.2.2.2.2.2⟩
+                transferred.2.2,
+                ih frames continuations checked.2 holds.2.2.2.2.2.2⟩
 
 theorem RelationalRuntimeCallStackHolds.afterExternalCall
-    (context : StaticProofContext)
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
     (contract : MachineImportCallContract)
     (claims : List ExternalReturnSlotInventoryTransferClaim)
     (frames : List RelationalRuntimeCallFrame) (continuations : List Nat)
     (originalState candidateState originalResult candidateResult : MachineState)
     (checked : claims.all fun claim =>
-      claim.checked originalBehavior candidateBehavior contract)
+      claim.checked context sourceInvariant originalBehavior candidateBehavior contract)
     (holds : RelationalRuntimeCallStackHolds context originalState candidateState
       frames continuations (claims.map (fun claim => claim.source)))
     (originalAbi : machineCallAbiResultHolds contract
@@ -1152,11 +1371,17 @@ theorem RelationalRuntimeCallStackHolds.afterExternalCall
     (candidateAbi : machineCallAbiResultHolds contract
       ((candidateBehavior.eval candidateState).nextMachineState candidateState)
       candidateResult = true)
-    (framesPreserved : ∀ frame : RelationalRuntimeCallFrame,
+    (related : StateRel context world sourceInvariant originalState candidateState)
+    (framesPreserved : ∀ (frame : RelationalRuntimeCallFrame)
+        (inventory : ReturnSlotOffsetInventory),
       frame.memoryHolds
           ((originalBehavior.eval originalState).nextMachineState originalState).memory
           ((candidateBehavior.eval candidateState).nextMachineState candidateState).memory →
-        frame.memoryHolds originalResult.memory candidateResult.memory) :
+      inventory.exactWordsHold frame
+          ((originalBehavior.eval originalState).nextMachineState originalState).memory
+          ((candidateBehavior.eval candidateState).nextMachineState candidateState).memory →
+        frame.memoryHolds originalResult.memory candidateResult.memory ∧
+          inventory.exactWordsHold frame originalResult.memory candidateResult.memory) :
     RelationalRuntimeCallStackHolds context originalResult candidateResult
       frames continuations (claims.map (fun claim => claim.target)) := by
   induction claims generalizing frames continuations with
@@ -1174,23 +1399,31 @@ theorem RelationalRuntimeCallStackHolds.afterExternalCall
               simp only [List.all_cons, Bool.and_eq_true] at checked
               simp only [List.map_cons, RelationalRuntimeCallStackHolds] at holds ⊢
               have transferred := externalReturnSlotInventoryTransferHolds_of_checked
-                originalBehavior candidateBehavior contract claim frame originalState
-                candidateState originalResult candidateResult checked.1
-                holds.2.2.2.2.1 holds.2.2.2.1 originalAbi candidateAbi
-                (framesPreserved frame)
-              exact ⟨holds.1, holds.2.1, holds.2.2.1, transferred.2,
+                context world sourceInvariant originalBehavior candidateBehavior
+                contract claim frame originalState candidateState originalResult
+                candidateResult checked.1 holds.2.2.2.2.1 holds.2.2.2.1
+                holds.2.2.2.2.2.1 (by
+                  have valid := holds.2.1
+                  simp only [RelationalRuntimeCallFrame.valid,
+                    Bool.and_eq_true] at valid
+                  exact valid.2)
+                related originalAbi candidateAbi
+                (framesPreserved frame claim.target)
+              exact ⟨holds.1, holds.2.1, holds.2.2.1, transferred.2.1,
                 transferred.1,
-                ih frames continuations checked.2 holds.2.2.2.2.2⟩
+                transferred.2.2,
+                ih frames continuations checked.2 holds.2.2.2.2.2.2⟩
 
 theorem RelationalRuntimeCallStackHolds.afterExternalJump
-    (context : StaticProofContext)
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
     (contract : MachineImportCallContract)
     (claims : List ExternalJumpReturnSlotInventoryTransferClaim)
     (frames : List RelationalRuntimeCallFrame) (continuations : List Nat)
     (originalState candidateState originalResult candidateResult : MachineState)
     (checked : claims.all fun claim =>
-      claim.checked originalBehavior candidateBehavior contract)
+      claim.checked context sourceInvariant originalBehavior candidateBehavior contract)
     (holds : RelationalRuntimeCallStackHolds context originalState candidateState
       frames continuations (claims.map (fun claim => claim.source)))
     (originalAbi : machineCallAbiResultHolds contract
@@ -1201,13 +1434,21 @@ theorem RelationalRuntimeCallStackHolds.afterExternalJump
       (normalizeImportReturnSlotState
         ((candidateBehavior.eval candidateState).nextMachineState candidateState))
       candidateResult = true)
-    (framesPreserved : ∀ frame : RelationalRuntimeCallFrame,
+    (related : StateRel context world sourceInvariant originalState candidateState)
+    (framesPreserved : ∀ (frame : RelationalRuntimeCallFrame)
+        (inventory : ReturnSlotOffsetInventory),
       frame.memoryHolds
           (normalizeImportReturnSlotState
             ((originalBehavior.eval originalState).nextMachineState originalState)).memory
           (normalizeImportReturnSlotState
+          ((candidateBehavior.eval candidateState).nextMachineState candidateState)).memory →
+      inventory.exactWordsHold frame
+          (normalizeImportReturnSlotState
+            ((originalBehavior.eval originalState).nextMachineState originalState)).memory
+          (normalizeImportReturnSlotState
             ((candidateBehavior.eval candidateState).nextMachineState candidateState)).memory →
-        frame.memoryHolds originalResult.memory candidateResult.memory) :
+        frame.memoryHolds originalResult.memory candidateResult.memory ∧
+          inventory.exactWordsHold frame originalResult.memory candidateResult.memory) :
     RelationalRuntimeCallStackHolds context originalResult candidateResult
       frames continuations (claims.map (fun claim => claim.target)) := by
   induction claims generalizing frames continuations with
@@ -1225,13 +1466,20 @@ theorem RelationalRuntimeCallStackHolds.afterExternalJump
               simp only [List.all_cons, Bool.and_eq_true] at checked
               simp only [List.map_cons, RelationalRuntimeCallStackHolds] at holds ⊢
               have transferred := externalJumpReturnSlotInventoryTransferHolds_of_checked
-                originalBehavior candidateBehavior contract claim frame originalState
-                candidateState originalResult candidateResult checked.1
-                holds.2.2.2.2.1 holds.2.2.2.1 originalAbi candidateAbi
-                (framesPreserved frame)
-              exact ⟨holds.1, holds.2.1, holds.2.2.1, transferred.2,
+                context world sourceInvariant originalBehavior candidateBehavior
+                contract claim frame originalState candidateState originalResult
+                candidateResult checked.1 holds.2.2.2.2.1 holds.2.2.2.1
+                holds.2.2.2.2.2.1 (by
+                  have valid := holds.2.1
+                  simp only [RelationalRuntimeCallFrame.valid,
+                    Bool.and_eq_true] at valid
+                  exact valid.2)
+                related originalAbi candidateAbi
+                (framesPreserved frame claim.target)
+              exact ⟨holds.1, holds.2.1, holds.2.2.1, transferred.2.1,
                 transferred.1,
-                ih frames continuations checked.2 holds.2.2.2.2.2⟩
+                transferred.2.2,
+                ih frames continuations checked.2 holds.2.2.2.2.2.2⟩
 
 /-- Runtime return addresses must remain canonical mapped code targets. Whether
 they are behaviorally reachable is checked when a return transition actually
@@ -1326,7 +1574,13 @@ theorem RelationalRuntimeCallStackHolds.of_memory_eq
                   rw [originalRegisters location.originalRegister,
                     candidateRegisters location.candidateRegister]
                   exact holds.2.2.2.2.1.2 location member,
-                ih continuations offsets holds.2.2.2.2.2⟩
+                by
+                  refine ⟨holds.2.2.2.2.2.1.1, ?_⟩
+                  intro word member
+                  simpa [ReturnSlotExactWordPair.holds, originalMemory,
+                    candidateMemory] using
+                    holds.2.2.2.2.2.1.2 word member,
+                ih continuations offsets holds.2.2.2.2.2.2⟩
 
 structure ProductControlState where
   nodeId : Nat
@@ -2149,6 +2403,24 @@ theorem allListedProductExecutionEdgesRefined_of_mem
       cases member with
       | inl same => simpa [same] using headRefined
       | inr inTail => exact ih tailRefined edgeId inTail
+
+theorem allListedProductExecutionEdgesRefined_of_contains
+    (context : StaticProofContext) (graph : RelationalProductGraph)
+    (regions : List RegionRelation) (invariants : ProductInvariantTable)
+    (source target : List Nat)
+    (listed : AllListedProductExecutionEdgesRefined context graph regions
+      invariants source)
+    (covered : target.all source.contains = true) :
+    AllListedProductExecutionEdgesRefined context graph regions invariants
+      target := by
+  induction target with
+  | nil => trivial
+  | cons edgeId edgeIds ih =>
+      simp only [List.all_cons, Bool.and_eq_true] at covered
+      exact ⟨allListedProductExecutionEdgesRefined_of_mem context graph regions
+          invariants source listed edgeId
+          (List.contains_iff_mem.mp covered.1),
+        ih covered.2⟩
 
 theorem reachableProductExecutionEdgesRefined_of_complete_evidence
     (context : StaticProofContext) (graph : RelationalProductGraph)
@@ -3413,8 +3685,11 @@ theorem candidateAlignedImmutableImageWordCoveredAt_sound
 def candidateProjectionImageAddressExcludedAt
     (context : StaticProofContext) (world : RelationalWorld) (rva : Nat) : Bool :=
   candidateAlignedImmutableImageWordCoveredAt context rva ||
-    ordinaryMemoryAddressExcludedIdentityNonImmutable context world
-      (BitVec.ofNat 32 (context.candidatePe.imageBase + rva))
+    (immutableImageByteCoveredByWordWithImports context.candidatePe
+      context.candidateImports
+      (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)) ||
+      ordinaryMemoryAddressExcludedIdentityNonImmutable context world
+        (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)))
 
 theorem candidateProjectionImageAddressExcludedAt_sound
     (context : StaticProofContext) (world : RelationalWorld)
@@ -3429,10 +3704,12 @@ theorem candidateProjectionImageAddressExcludedAt_sound
     ordinaryMemoryAddressExcluded context world values
       (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)) = true := by
   simp only [candidateProjectionImageAddressExcludedAt, Bool.or_eq_true] at excluded
-  rcases excluded with immutable | nonImmutable
-  · have coveredWithImports :=
-      candidateAlignedImmutableImageWordCoveredAt_sound context rva rvaBefore
-        candidateImageBounded immutable
+  have immutableExcluded
+      (coveredWithImports : immutableImageByteCoveredByWordWithImports
+        context.candidatePe context.candidateImports
+        (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)) = true) :
+      ordinaryMemoryAddressExcluded context world values
+        (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)) = true := by
     have covered : immutableImageByteCoveredByWord context.candidatePe
         (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)) = true := by
       simpa [immutableImageByteCoveredByWord,
@@ -3442,17 +3719,24 @@ theorem candidateProjectionImageAddressExcludedAt_sound
         (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)) = true := by
       simp [pairedImmutableImageByteCovered, covered]
     simp [ordinaryMemoryAddressExcluded, paired, Bool.or_assoc]
-  · have widened :
+  rcases excluded with alignedImmutable | fallback
+  · have coveredWithImports :=
+      candidateAlignedImmutableImageWordCoveredAt_sound context rva rvaBefore
+        candidateImageBounded alignedImmutable
+    exact immutableExcluded coveredWithImports
+  · rcases fallback with immutable | nonImmutable
+    · exact immutableExcluded immutable
+    · have widened :
         (ordinaryMemoryAddressExcludedIdentityNonImmutable context world
           (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)) ||
           pairedImmutableImageByteCovered context values
             (BitVec.ofNat 32 (context.candidatePe.imageBase + rva))) = true := by
-      simp [nonImmutable]
-    simpa [ordinaryMemoryAddressExcluded,
-      ordinaryMemoryAddressExcludedIdentityNonImmutable,
-      normalizeDataAddress_eq_self_of_mapped_identity values
-        (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)) identity,
-      Bool.or_assoc, Bool.or_comm, Bool.or_left_comm] using widened
+        simp [nonImmutable]
+      simpa [ordinaryMemoryAddressExcluded,
+        ordinaryMemoryAddressExcludedIdentityNonImmutable,
+        normalizeDataAddress_eq_self_of_mapped_identity values
+          (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)) identity,
+        Bool.or_assoc, Bool.or_comm, Bool.or_left_comm] using widened
 
 /-- Static side condition for reusing the canonical ordinary-memory projection
 at launch. Candidate bytes selected from side-specific memory need no cross-image

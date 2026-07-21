@@ -24,6 +24,44 @@ def normalizeImportReturnSlotState (state : MachineState) : MachineState := {
     (state.registers.esp + BitVec.ofNat 32 4)
 }
 
+/-- Checked field equality between a decoded register-indirect call and its
+externalized API-call form.  The decoded call has already pushed its return
+slot; normalization restores ESP while retaining that concrete memory write. -/
+structure ImportReturnStateCompatible
+    (decoded externalized : NormalizedSymbolicBehavior) : Prop where
+  eax : decoded.registers.eax = externalized.registers.eax
+  ebx : decoded.registers.ebx = externalized.registers.ebx
+  ecx : decoded.registers.ecx = externalized.registers.ecx
+  edx : decoded.registers.edx = externalized.registers.edx
+  esi : decoded.registers.esi = externalized.registers.esi
+  edi : decoded.registers.edi = externalized.registers.edi
+  ebp : decoded.registers.ebp = externalized.registers.ebp
+  decodedEsp : decoded.registers.esp =
+    .add (.inputReg .esp) (.constant (2 ^ 32 - 4))
+  externalizedEsp : externalized.registers.esp = .inputReg .esp
+  x87 : decoded.x87 = externalized.x87
+  writes : decoded.writes = externalized.writes
+  flags : decoded.flags = externalized.flags
+
+theorem normalizeImportReturnSlotState_nextMachineState_eq_of_compatible
+    (decoded externalized : NormalizedSymbolicBehavior) (state : MachineState)
+    (compatible : ImportReturnStateCompatible decoded externalized) :
+    normalizeImportReturnSlotState
+        ((decoded.eval state).nextMachineState state) =
+      (externalized.eval state).nextMachineState state := by
+  rcases compatible with
+    ⟨eax, ebx, ecx, edx, esi, edi, ebp, decodedEsp, externalizedEsp,
+      x87, writes, flags⟩
+  have espEval : decoded.registers.esp.eval state + BitVec.ofNat 32 4 =
+      externalized.registers.esp.eval state := by
+    rw [decodedEsp, externalizedEsp]
+    simp [Expr.eval]
+    rw [BitVec.sub_add_cancel]
+  simp [normalizeImportReturnSlotState, RelationalBehavior.nextMachineState,
+    NormalizedSymbolicBehavior.eval, evalNormalizedRegisters,
+    StageA.Formal.Registers.set, eax, ebx, ecx, edx, esi, edi, ebp,
+    espEval, x87, writes, flags]
+
 def ReturnSlotOffsetPair.afterImportReturnSlot
     (source : ReturnSlotOffsetPair) : ReturnSlotOffsetPair := {
   originalRegister := source.originalRegister
@@ -235,6 +273,9 @@ theorem externalReturnSlotTransferHolds_of_checked
       frame.memoryHolds originalResult.memory candidateResult.memory) :
     claim.resultRule.target.holds frame originalResult.registers
         candidateResult.registers ∧
+      frame.memoryHolds
+        ((originalBehavior.eval originalState).nextMachineState originalState).memory
+        ((candidateBehavior.eval candidateState).nextMachineState candidateState).memory ∧
       frame.memoryHolds originalResult.memory candidateResult.memory := by
   simp only [ExternalReturnSlotTransferClaim.checked, Bool.and_eq_true,
     beq_iff_eq] at checked
@@ -255,16 +296,21 @@ theorem externalReturnSlotTransferHolds_of_checked
     candidateAbi (by
       rw [resultSource]
       simpa [RelationalBehavior.nextMachineState] using internalOffsets)
-  refine ⟨resultOffsets, framesPreserved ?_⟩
-  simpa [RelationalBehavior.nextMachineState] using internalMemory
+  have boundaryMemory : frame.memoryHolds
+      ((originalBehavior.eval originalState).nextMachineState originalState).memory
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState).memory := by
+    simpa [RelationalBehavior.nextMachineState] using internalMemory
+  exact ⟨resultOffsets, boundaryMemory, framesPreserved boundaryMemory⟩
 
 structure ExternalReturnSlotInventoryTransferClaim where
   source : ReturnSlotOffsetInventory
   target : ReturnSlotOffsetInventory
   transfers : List ExternalReturnSlotTransferClaim
+  exactWordTransfers : List ReturnSlotExactWordTransferClaim := []
 deriving Repr, DecidableEq
 
 def ExternalReturnSlotInventoryTransferClaim.checked
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
     (contract : MachineImportCallContract)
     (claim : ExternalReturnSlotInventoryTransferClaim) : Bool :=
@@ -274,18 +320,31 @@ def ExternalReturnSlotInventoryTransferClaim.checked
     claim.transfers.map (fun transfer => transfer.resultRule.target) ==
       claim.target.locations &&
     claim.transfers.all (fun transfer =>
-      transfer.checked originalBehavior candidateBehavior contract)
+      transfer.checked originalBehavior candidateBehavior contract) &&
+    claim.exactWordTransfers.map (fun transfer => transfer.word) ==
+      claim.target.exactWords &&
+    claim.exactWordTransfers.all (fun transfer =>
+      transfer.checked context sourceInvariant originalBehavior candidateBehavior
+        claim.source claim.target
+        (claim.transfers.map fun location => location.internalTarget))
 
 theorem externalReturnSlotInventoryTransferHolds_of_checked
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
     (contract : MachineImportCallContract)
     (claim : ExternalReturnSlotInventoryTransferClaim)
     (frame : RelationalRuntimeCallFrame) (originalState candidateState : MachineState)
     (originalResult candidateResult : MachineState)
-    (checked : claim.checked originalBehavior candidateBehavior contract = true)
+    (checked : claim.checked context sourceInvariant originalBehavior
+      candidateBehavior contract = true)
     (sourceOffsets : claim.source.holds frame originalState.registers
       candidateState.registers)
     (sourceMemory : frame.memoryHolds originalState.memory candidateState.memory)
+    (sourceExactWords : claim.source.boundedExactWordsHold frame
+      originalState.memory candidateState.memory)
+    (sourceProtected : frame.protectedSpanValid context = true)
+    (related : StateRel context world sourceInvariant originalState candidateState)
     (originalAbi : machineCallAbiResultHolds contract
       ((originalBehavior.eval originalState).nextMachineState originalState)
       originalResult = true)
@@ -293,20 +352,61 @@ theorem externalReturnSlotInventoryTransferHolds_of_checked
       ((candidateBehavior.eval candidateState).nextMachineState candidateState)
       candidateResult = true)
     (framesPreserved : frame.memoryHolds
-        ((originalBehavior.eval originalState).nextMachineState originalState).memory
-        ((candidateBehavior.eval candidateState).nextMachineState candidateState).memory →
-      frame.memoryHolds originalResult.memory candidateResult.memory) :
+          ((originalBehavior.eval originalState).nextMachineState originalState).memory
+          ((candidateBehavior.eval candidateState).nextMachineState candidateState).memory →
+        claim.target.exactWordsHold frame
+          ((originalBehavior.eval originalState).nextMachineState originalState).memory
+          ((candidateBehavior.eval candidateState).nextMachineState candidateState).memory →
+        frame.memoryHolds originalResult.memory candidateResult.memory ∧
+          claim.target.exactWordsHold frame originalResult.memory candidateResult.memory) :
     claim.target.holds frame originalResult.registers candidateResult.registers ∧
-      frame.memoryHolds originalResult.memory candidateResult.memory := by
+      frame.memoryHolds originalResult.memory candidateResult.memory ∧
+      claim.target.boundedExactWordsHold frame originalResult.memory
+        candidateResult.memory := by
   simp only [ExternalReturnSlotInventoryTransferClaim.checked, Bool.and_eq_true,
     beq_iff_eq] at checked
   rcases checked with
-    ⟨⟨⟨⟨_sourceChecked, targetChecked⟩, sourcesListed⟩, targetsExact⟩,
-      transfersChecked⟩
+    ⟨⟨⟨⟨⟨⟨_sourceChecked, targetChecked⟩, sourcesListed⟩, targetsExact⟩,
+      transfersChecked⟩, exactWordsExact⟩, exactTransfersChecked⟩
+  have boundaryExact : claim.target.exactWordsHold frame
+      ((originalBehavior.eval originalState).nextMachineState originalState).memory
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState).memory := by
+    intro word wordMember
+    have mappedMember : word ∈
+        claim.exactWordTransfers.map (fun transfer => transfer.word) := by
+      rw [exactWordsExact]
+      exact wordMember
+    rcases List.mem_map.mp mappedMember with ⟨transfer, member, wordEqual⟩
+    have transferred := returnSlotExactWordTransferHolds_of_checked context world
+      sourceInvariant originalBehavior candidateBehavior claim.source claim.target
+      (claim.transfers.map fun location => location.internalTarget) transfer frame
+      originalState candidateState
+      (List.all_eq_true.mp exactTransfersChecked transfer member)
+      sourceOffsets sourceExactWords.2 sourceProtected sourceExactWords.1 related
+    simpa [wordEqual] using transferred
+  have boundaryFit : claim.target.exactWordsFit frame = true := by
+    simp only [ReturnSlotOffsetInventory.exactWordsFit, List.all_eq_true,
+      Bool.and_eq_true, decide_eq_true_eq]
+    intro word wordMember
+    have mappedMember : word ∈
+        claim.exactWordTransfers.map (fun transfer => transfer.word) := by
+      rw [exactWordsExact]
+      exact wordMember
+    rcases List.mem_map.mp mappedMember with ⟨transfer, member, wordEqual⟩
+    have transferChecked := List.all_eq_true.mp exactTransfersChecked transfer member
+    simp only [ReturnSlotExactWordTransferClaim.checked, Bool.and_eq_true,
+      List.contains_iff_mem] at transferChecked
+    have sourceMember := transferChecked.1.1.1.1.1.1
+    simpa [wordEqual] using
+      (claim.source.exactWordFits_of_bounded frame originalState.memory
+        candidateState.memory transfer.word sourceExactWords sourceMember)
   have transferResult (transfer : ExternalReturnSlotTransferClaim)
       (member : transfer ∈ claim.transfers) :
       transfer.resultRule.target.holds frame originalResult.registers
           candidateResult.registers ∧
+        frame.memoryHolds
+          ((originalBehavior.eval originalState).nextMachineState originalState).memory
+          ((candidateBehavior.eval candidateState).nextMachineState candidateState).memory ∧
         frame.memoryHolds originalResult.memory candidateResult.memory := by
     have sourceMember : transfer.source ∈ claim.source.locations :=
       List.contains_iff_mem.mp
@@ -317,8 +417,9 @@ theorem externalReturnSlotInventoryTransferHolds_of_checked
       (List.all_eq_true.mp transfersChecked transfer member)
       (claim.source.holds_member frame originalState.registers candidateState.registers
         transfer.source sourceOffsets sourceMember)
-      sourceMemory originalAbi candidateAbi framesPreserved
-  constructor
+      sourceMemory originalAbi candidateAbi (fun memory =>
+          (framesPreserved memory boundaryExact).1)
+  refine ⟨?_, ?_⟩
   · refine ⟨claim.target.checked_nonempty targetChecked, ?_⟩
     intro target targetMember
     have mappedMember : target ∈
@@ -335,7 +436,9 @@ theorem externalReturnSlotInventoryTransferHolds_of_checked
         exact False.elim
           (claim.target.checked_nonempty targetChecked targetEmpty)
     | cons transfer transfers =>
-        exact (transferResult transfer (by simp [transfersResult])).2
+        have transferred := transferResult transfer (by simp [transfersResult])
+        exact ⟨transferred.2.2,
+          ⟨boundaryFit, (framesPreserved transferred.2.1 boundaryExact).2⟩⟩
 
 structure ExternalJumpReturnSlotTransferClaim where
   source : ReturnSlotOffsetPair
@@ -384,6 +487,11 @@ theorem externalJumpReturnSlotTransferHolds_of_checked
       frame.memoryHolds originalResult.memory candidateResult.memory) :
     claim.resultRule.target.holds frame originalResult.registers
         candidateResult.registers ∧
+      frame.memoryHolds
+        (normalizeImportReturnSlotState
+          ((originalBehavior.eval originalState).nextMachineState originalState)).memory
+        (normalizeImportReturnSlotState
+          ((candidateBehavior.eval candidateState).nextMachineState candidateState)).memory ∧
       frame.memoryHolds originalResult.memory candidateResult.memory := by
   simp only [ExternalJumpReturnSlotTransferClaim.checked, Bool.and_eq_true,
     beq_iff_eq] at checked
@@ -410,17 +518,93 @@ theorem externalJumpReturnSlotTransferHolds_of_checked
     candidateAbi (by
       rw [resultSource, boundaryTarget]
       exact boundaryOffsets)
-  refine ⟨resultOffsets, framesPreserved ?_⟩
-  simpa [normalizeImportReturnSlotState, RelationalBehavior.nextMachineState]
-    using internalMemory
+  have boundaryMemory : frame.memoryHolds
+      (normalizeImportReturnSlotState
+        ((originalBehavior.eval originalState).nextMachineState originalState)).memory
+      (normalizeImportReturnSlotState
+        ((candidateBehavior.eval candidateState).nextMachineState candidateState)).memory := by
+    simpa [normalizeImportReturnSlotState, RelationalBehavior.nextMachineState]
+      using internalMemory
+  exact ⟨resultOffsets, boundaryMemory, framesPreserved boundaryMemory⟩
+
+/-- A caller-to-continuation stack-location summary for a direct call through
+an import thunk.  The embedded thunk transfer checks the thunk's actual
+register and memory behavior before return-slot normalization and ABI effects. -/
+structure ExternalReturnSlotCallSummaryClaim where
+  source : ReturnSlotOffsetPair
+  suspended : ReturnSlotOffsetPair
+  target : ReturnSlotOffsetPair
+  originalCallEsp : RegisterOffsetWitness
+  candidateCallEsp : RegisterOffsetWitness
+  thunkTransfer : ExternalJumpReturnSlotTransferClaim
+deriving Repr, DecidableEq
+
+def ExternalReturnSlotCallSummaryClaim.checked
+    (originalCall candidateCall originalThunk candidateThunk :
+      NormalizedSymbolicBehavior)
+    (callStack : CallPushStackClaim) (contract : MachineImportCallContract)
+    (claim : ExternalReturnSlotCallSummaryClaim) : Bool :=
+  contract.disposition == .returns &&
+    claim.source.originalRegister == .esp &&
+    claim.source.candidateRegister == .esp &&
+    claim.suspended.originalRegister == .esp &&
+    claim.suspended.candidateRegister == .esp &&
+    claim.originalCallEsp.expression .esp == callStack.originalStackAddress &&
+    claim.candidateCallEsp.expression .esp == callStack.candidateStackAddress &&
+    originalCall.registers.esp == callStack.originalStackAddress &&
+    candidateCall.registers.esp == callStack.candidateStackAddress &&
+    claim.suspended.originalOffset ==
+      claim.source.originalOffset - claim.originalCallEsp.offset &&
+    claim.suspended.candidateOffset ==
+      claim.source.candidateOffset - claim.candidateCallEsp.offset &&
+    claim.thunkTransfer.source == claim.suspended &&
+    claim.thunkTransfer.resultRule.target == claim.target &&
+    claim.thunkTransfer.checked originalThunk candidateThunk contract
+
+def ExternalReturnSlotCallSummaryClosed
+    (originalCall candidateCall originalThunk candidateThunk :
+      NormalizedSymbolicBehavior)
+    (callStack : CallPushStackClaim) (contract : MachineImportCallContract)
+    (claim : ExternalReturnSlotCallSummaryClaim) : Prop :=
+  contract.disposition = .returns ∧
+    claim.source.originalRegister = .esp ∧
+    claim.source.candidateRegister = .esp ∧
+    claim.suspended.originalRegister = .esp ∧
+    claim.suspended.candidateRegister = .esp ∧
+    claim.originalCallEsp.expression .esp = callStack.originalStackAddress ∧
+    claim.candidateCallEsp.expression .esp = callStack.candidateStackAddress ∧
+    originalCall.registers.esp = callStack.originalStackAddress ∧
+    candidateCall.registers.esp = callStack.candidateStackAddress ∧
+    claim.suspended.originalOffset =
+      claim.source.originalOffset - claim.originalCallEsp.offset ∧
+    claim.suspended.candidateOffset =
+      claim.source.candidateOffset - claim.candidateCallEsp.offset ∧
+    claim.thunkTransfer.source = claim.suspended ∧
+    claim.thunkTransfer.resultRule.target = claim.target ∧
+    claim.thunkTransfer.checked originalThunk candidateThunk contract = true
+
+theorem externalReturnSlotCallSummaryClosed_of_checked
+    (originalCall candidateCall originalThunk candidateThunk :
+      NormalizedSymbolicBehavior)
+    (callStack : CallPushStackClaim) (contract : MachineImportCallContract)
+    (claim : ExternalReturnSlotCallSummaryClaim)
+    (checked : claim.checked originalCall candidateCall originalThunk
+      candidateThunk callStack contract = true) :
+    ExternalReturnSlotCallSummaryClosed originalCall candidateCall originalThunk
+      candidateThunk callStack contract claim := by
+  unfold ExternalReturnSlotCallSummaryClaim.checked at checked
+  unfold ExternalReturnSlotCallSummaryClosed
+  simpa only [Bool.and_eq_true, beq_iff_eq, and_assoc] using checked
 
 structure ExternalJumpReturnSlotInventoryTransferClaim where
   source : ReturnSlotOffsetInventory
   target : ReturnSlotOffsetInventory
   transfers : List ExternalJumpReturnSlotTransferClaim
+  exactWordTransfers : List ReturnSlotExactWordTransferClaim := []
 deriving Repr, DecidableEq
 
 def ExternalJumpReturnSlotInventoryTransferClaim.checked
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
     (contract : MachineImportCallContract)
     (claim : ExternalJumpReturnSlotInventoryTransferClaim) : Bool :=
@@ -430,18 +614,31 @@ def ExternalJumpReturnSlotInventoryTransferClaim.checked
     claim.transfers.map (fun transfer => transfer.resultRule.target) ==
       claim.target.locations &&
     claim.transfers.all (fun transfer =>
-      transfer.checked originalBehavior candidateBehavior contract)
+      transfer.checked originalBehavior candidateBehavior contract) &&
+    claim.exactWordTransfers.map (fun transfer => transfer.word) ==
+      claim.target.exactWords &&
+    claim.exactWordTransfers.all (fun transfer =>
+      transfer.checked context sourceInvariant originalBehavior candidateBehavior
+        claim.source claim.target
+        (claim.transfers.map fun location => location.internalTarget))
 
 theorem externalJumpReturnSlotInventoryTransferHolds_of_checked
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
     (contract : MachineImportCallContract)
     (claim : ExternalJumpReturnSlotInventoryTransferClaim)
     (frame : RelationalRuntimeCallFrame) (originalState candidateState : MachineState)
     (originalResult candidateResult : MachineState)
-    (checked : claim.checked originalBehavior candidateBehavior contract = true)
+    (checked : claim.checked context sourceInvariant originalBehavior
+      candidateBehavior contract = true)
     (sourceOffsets : claim.source.holds frame originalState.registers
       candidateState.registers)
     (sourceMemory : frame.memoryHolds originalState.memory candidateState.memory)
+    (sourceExactWords : claim.source.boundedExactWordsHold frame
+      originalState.memory candidateState.memory)
+    (sourceProtected : frame.protectedSpanValid context = true)
+    (related : StateRel context world sourceInvariant originalState candidateState)
     (originalAbi : machineCallAbiResultHolds contract
       (normalizeImportReturnSlotState
         ((originalBehavior.eval originalState).nextMachineState originalState))
@@ -451,22 +648,69 @@ theorem externalJumpReturnSlotInventoryTransferHolds_of_checked
         ((candidateBehavior.eval candidateState).nextMachineState candidateState))
       candidateResult = true)
     (framesPreserved : frame.memoryHolds
-        (normalizeImportReturnSlotState
-          ((originalBehavior.eval originalState).nextMachineState originalState)).memory
-        (normalizeImportReturnSlotState
-          ((candidateBehavior.eval candidateState).nextMachineState candidateState)).memory →
-      frame.memoryHolds originalResult.memory candidateResult.memory) :
+          (normalizeImportReturnSlotState
+            ((originalBehavior.eval originalState).nextMachineState originalState)).memory
+          (normalizeImportReturnSlotState
+            ((candidateBehavior.eval candidateState).nextMachineState candidateState)).memory →
+        claim.target.exactWordsHold frame
+          (normalizeImportReturnSlotState
+            ((originalBehavior.eval originalState).nextMachineState originalState)).memory
+          (normalizeImportReturnSlotState
+            ((candidateBehavior.eval candidateState).nextMachineState candidateState)).memory →
+        frame.memoryHolds originalResult.memory candidateResult.memory ∧
+          claim.target.exactWordsHold frame originalResult.memory candidateResult.memory) :
     claim.target.holds frame originalResult.registers candidateResult.registers ∧
-      frame.memoryHolds originalResult.memory candidateResult.memory := by
+      frame.memoryHolds originalResult.memory candidateResult.memory ∧
+      claim.target.boundedExactWordsHold frame originalResult.memory
+        candidateResult.memory := by
   simp only [ExternalJumpReturnSlotInventoryTransferClaim.checked, Bool.and_eq_true,
     beq_iff_eq] at checked
   rcases checked with
-    ⟨⟨⟨⟨_sourceChecked, targetChecked⟩, sourcesListed⟩, targetsExact⟩,
-      transfersChecked⟩
+    ⟨⟨⟨⟨⟨⟨_sourceChecked, targetChecked⟩, sourcesListed⟩, targetsExact⟩,
+      transfersChecked⟩, exactWordsExact⟩, exactTransfersChecked⟩
+  have boundaryExact : claim.target.exactWordsHold frame
+      (normalizeImportReturnSlotState
+        ((originalBehavior.eval originalState).nextMachineState originalState)).memory
+      (normalizeImportReturnSlotState
+        ((candidateBehavior.eval candidateState).nextMachineState candidateState)).memory := by
+    intro word wordMember
+    have mappedMember : word ∈
+        claim.exactWordTransfers.map (fun transfer => transfer.word) := by
+      rw [exactWordsExact]
+      exact wordMember
+    rcases List.mem_map.mp mappedMember with ⟨transfer, member, wordEqual⟩
+    have transferred := returnSlotExactWordTransferHolds_of_checked context world
+      sourceInvariant originalBehavior candidateBehavior claim.source claim.target
+      (claim.transfers.map fun location => location.internalTarget) transfer frame
+      originalState candidateState
+      (List.all_eq_true.mp exactTransfersChecked transfer member)
+      sourceOffsets sourceExactWords.2 sourceProtected sourceExactWords.1 related
+    simpa [normalizeImportReturnSlotState, wordEqual] using transferred
+  have boundaryFit : claim.target.exactWordsFit frame = true := by
+    simp only [ReturnSlotOffsetInventory.exactWordsFit, List.all_eq_true,
+      Bool.and_eq_true, decide_eq_true_eq]
+    intro word wordMember
+    have mappedMember : word ∈
+        claim.exactWordTransfers.map (fun transfer => transfer.word) := by
+      rw [exactWordsExact]
+      exact wordMember
+    rcases List.mem_map.mp mappedMember with ⟨transfer, member, wordEqual⟩
+    have transferChecked := List.all_eq_true.mp exactTransfersChecked transfer member
+    simp only [ReturnSlotExactWordTransferClaim.checked, Bool.and_eq_true,
+      List.contains_iff_mem] at transferChecked
+    have sourceMember := transferChecked.1.1.1.1.1.1
+    simpa [wordEqual] using
+      (claim.source.exactWordFits_of_bounded frame originalState.memory
+        candidateState.memory transfer.word sourceExactWords sourceMember)
   have transferResult (transfer : ExternalJumpReturnSlotTransferClaim)
       (member : transfer ∈ claim.transfers) :
       transfer.resultRule.target.holds frame originalResult.registers
           candidateResult.registers ∧
+        frame.memoryHolds
+          (normalizeImportReturnSlotState
+            ((originalBehavior.eval originalState).nextMachineState originalState)).memory
+          (normalizeImportReturnSlotState
+            ((candidateBehavior.eval candidateState).nextMachineState candidateState)).memory ∧
         frame.memoryHolds originalResult.memory candidateResult.memory := by
     have sourceMember : transfer.source ∈ claim.source.locations :=
       List.contains_iff_mem.mp
@@ -477,8 +721,9 @@ theorem externalJumpReturnSlotInventoryTransferHolds_of_checked
       (List.all_eq_true.mp transfersChecked transfer member)
       (claim.source.holds_member frame originalState.registers candidateState.registers
         transfer.source sourceOffsets sourceMember)
-      sourceMemory originalAbi candidateAbi framesPreserved
-  constructor
+      sourceMemory originalAbi candidateAbi (fun memory =>
+        (framesPreserved memory boundaryExact).1)
+  refine ⟨?_, ?_⟩
   · refine ⟨claim.target.checked_nonempty targetChecked, ?_⟩
     intro target targetMember
     have mappedMember : target ∈
@@ -495,7 +740,9 @@ theorem externalJumpReturnSlotInventoryTransferHolds_of_checked
         exact False.elim
           (claim.target.checked_nonempty targetChecked targetEmpty)
     | cons transfer transfers =>
-        exact (transferResult transfer (by simp [transfersResult])).2
+        have transferred := transferResult transfer (by simp [transfersResult])
+        exact ⟨transferred.2.2,
+          ⟨boundaryFit, (framesPreserved transferred.2.1 boundaryExact).2⟩⟩
 
 def MachineCallMemorySize.bytes? (arguments : List Word) :
     MachineCallMemorySize -> Option Nat
@@ -819,7 +1066,9 @@ def ExternalImportRegisterPreservationClaim.checked
     contract.disposition == .returns &&
     claim.source == claim.target &&
     contract.preservedRegisters.contains claim.source.original &&
-    contract.preservedRegisters.contains claim.source.candidate
+    contract.preservedRegisters.contains claim.source.candidate &&
+    claim.source.original != .esp &&
+    claim.source.candidate != .esp
 
 /-- The lower-layer contract for one original call and one candidate call to
 the same import.  Full result conformance keeps register and world effects tied
@@ -853,8 +1102,8 @@ theorem externalImportRegisterPreservationHolds_of_checked
   simp only [ExternalImportRegisterPreservationClaim.checked, Bool.and_eq_true,
     beq_iff_eq] at checked
   rcases checked with
-    ⟨⟨⟨⟨_contractValid, _returns⟩, sourceTarget⟩, originalPreserved⟩,
-      candidatePreserved⟩
+    ⟨⟨⟨⟨⟨⟨_contractValid, _returns⟩, sourceTarget⟩, originalPreserved⟩,
+      candidatePreserved⟩, _originalNotEsp⟩, _candidateNotEsp⟩
   have originalRegister := pairConforms.originalConforms.2.1
   simp only [machineCallAbiResultHolds, Bool.and_eq_true,
     machineCallPreservedRegistersHold, List.all_eq_true, beq_iff_eq]
@@ -1019,7 +1268,7 @@ def ExternalBoundaryStateRel (context : StaticProofContext)
     stackWindowsRelated world invariant.stackWindows
       original.registers candidate.registers = true ∧
     original.undefinedValue = candidate.undefinedValue ∧
-    original.x87 = candidate.x87 ∧
+    MachineX87Related context world original candidate ∧
     flagsRelated invariant.flagBits original.eflags candidate.eflags = true ∧
     original.fsBase = candidate.fsBase ∧
     importRegisterRelationsHold world invariant.importRegisterRelations
@@ -1044,9 +1293,14 @@ def ExternalCallBoundaryRelated (context : StaticProofContext)
 def ExternalRuntimeFramesPreserved
     (originalEvent candidateEvent : WorldExternalEvent)
     (originalResult candidateResult : WorldExternalResult) : Prop :=
-  ∀ frame : RelationalRuntimeCallFrame,
+  ∀ (frame : RelationalRuntimeCallFrame)
+      (inventory : ReturnSlotOffsetInventory),
     frame.memoryHolds originalEvent.state.memory candidateEvent.state.memory →
-      frame.memoryHolds originalResult.state.memory candidateResult.state.memory
+    inventory.exactWordsHold frame originalEvent.state.memory
+      candidateEvent.state.memory →
+      frame.memoryHolds originalResult.state.memory candidateResult.state.memory ∧
+        inventory.exactWordsHold frame originalResult.state.memory
+          candidateResult.state.memory
 
 def ExternalEnvironmentRefinesAt (context : StaticProofContext)
     (site : ExternalCallSiteContract) (contract : MachineImportCallContract)
@@ -1255,7 +1509,7 @@ def RelationalRegisterExternalCallRefinement (context : StaticProofContext)
           some originalNormalized ∧
         normalizeSymbolicBehavior true localCodeTargets decodedCandidate =
           some candidateNormalized ∧
-        ImportRegisterIndirectCallTargetsClosed sourceInvariant originalNormalized
+        ImportRegisterIndirectCallTargetsClosed context sourceInvariant originalNormalized
           candidateNormalized claim ∧
         externalizeRegisterImportCall contract claim.originalRegister decodedOriginal =
           some originalExternalized ∧

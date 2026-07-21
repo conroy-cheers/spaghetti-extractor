@@ -70,6 +70,40 @@ spaghetti-extractor stage-a-build-relational \
   --out report/
 ```
 
+When preparation is itself a floating content-addressed Nix derivation, use the
+same command as a two-phase coordinator:
+
+```sh
+spaghetti-extractor stage-a-build-relational \
+  --prepared-nix-ref .#stage-a-gnu-hello-preflight \
+  --prepared-subpath report/relational-v3 \
+  --executor nix \
+  --builders-file nix/stage-a-builders \
+  --target-node relationallaunchrealizabilitycertificate \
+  --out build/stage-a-gnu-hello-launch-proof
+```
+
+The coordinator first realizes the named preparation target and then evaluates
+the generated Lean DAG from its concrete store path. This is an explicit Nix
+evaluation boundary, not a local compilation fallback: extraction, analysis,
+Lean modules, dependency closures, and OLean outputs remain cached Nix
+derivations and remote builders remain authoritative. A single pure flake
+evaluation cannot read a floating CA output through IFD because evaluation sees
+an unresolved output placeholder. `prepared-nix-realization.json` records the
+flake reference, concrete output and prepared paths, builder policy, and timing.
+
+The GNU hello shortcut is:
+
+```sh
+nix run .#stage-a-gnu-hello-proof
+```
+
+`stage-a-gnu-hello-preflight` remains in `checks`; the dynamic Lean phase is an
+app because `nix flake check` builds derivations but cannot execute a second Nix
+evaluation from inside a sandbox. Final acceptance still requires building and
+auditing the graph node containing `pe32ProgramsEquivalent`; a focused launch
+certificate is explicitly intermediate evidence.
+
 Preparation emits source only: exact PE artifacts, normalized proof IR,
 generated Lean modules, their direct import graph, source hashes, estimated
 resource classes, the expected final theorem, and the approved axiom set. It

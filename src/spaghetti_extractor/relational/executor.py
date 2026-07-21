@@ -60,44 +60,11 @@ def _compile_relational_kernel(lean_dir: Path) -> dict[str, Any]:
     )
 
 def _compile_formal_kernel(lean_dir: Path) -> dict[str, Any]:
-    source = lean_dir / "StageA" / "Formal.lean"
-    output = lean_dir / "StageA" / "Formal.olean"
-    if _lean_output_current(source, output):
-        return {"status": "checked", "source": "current_olean"}
-    cached_output = _persistent_olean_path(lean_dir, "Formal", source, [])
-    if cached_output is not None and cached_output.exists():
-        shutil.copyfile(cached_output, output)
-        os.utime(output, None)
-        return {"status": "checked", "source": "persistent_olean_cache"}
-    lean = shutil.which("lean")
-    if lean is None:
-        return {"status": "unavailable", "returncode": None, "stdout": "", "stderr": ""}
-    try:
-        completed = subprocess.run(
-            [lean, "-o", "StageA/Formal.olean", "StageA/Formal.lean"],
-            cwd=lean_dir,
-            env={**os.environ, "LEAN_PATH": "."},
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=300,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "status": "timeout", "returncode": None,
-            "stdout": exc.stdout.decode() if isinstance(exc.stdout, bytes) else exc.stdout or "",
-            "stderr": exc.stderr.decode() if isinstance(exc.stderr, bytes) else exc.stderr or "",
-        }
-    result = {
-        "status": "checked" if completed.returncode == 0 else "failed",
-        "returncode": completed.returncode,
-        "stdout": completed.stdout,
-        "stderr": completed.stderr,
-    }
-    if result["status"] == "checked" and cached_output is not None:
-        _publish_persistent_olean(output, cached_output)
-    return result
+    # Formal now imports independently cached semantic modules.  The generic
+    # graph runner must restore that entire closure before reusing Formal.olean.
+    return _run_lean_relational(
+        lean_dir, bundle="Formal", reuse_bundle_cache=True
+    )
 
 
 def _run_lean_relational_cached(

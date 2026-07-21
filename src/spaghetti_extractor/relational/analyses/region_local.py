@@ -92,9 +92,54 @@ def _exact_index_expression(
             expression = _semantic_index_from_address(address, base, element_size)
             if (
                 expression is not None
-                and register in _semantic_expr_registers(expression)
+                and (
+                    register in _semantic_expr_registers(expression)
+                    or (behavior.get("registers") or {}).get(register) == expression
+                )
                 and _semantic_expr_is_pure(expression)
             ):
+                matches[_semantic_hash(expression)] = expression
+    if len(matches) != 1:
+        return None
+    return next(iter(matches.values()))
+
+
+def _stack_index_expression(
+    region: dict[str, Any],
+    behavior: dict[str, Any],
+    bound: dict[str, Any],
+    side: str,
+) -> dict[str, Any] | None:
+    """Find a table index loaded into the bounded register from one stack word.
+
+    This is only a request for later stack-window validation.  In particular,
+    finding the table and its decoded index does not establish the runtime
+    bound and must not make the table candidate usable by itself.
+    """
+    upper = bound.get("unsigned_lt")
+    register = bound.get(side)
+    if (
+        not isinstance(upper, int)
+        or isinstance(upper, bool)
+        or upper <= 0
+        or not isinstance(register, str)
+    ):
+        return None
+    register_output = (behavior.get("registers") or {}).get(register)
+    if not isinstance(register_output, dict) or register_output.get("op") != "read32":
+        return None
+    matches: dict[str, dict[str, Any]] = {}
+    for target in region.get("values", []):
+        mapped_size = int(target.get("mapped_size", 0))
+        if mapped_size <= 0 or mapped_size % upper != 0:
+            continue
+        element_size = mapped_size // upper
+        if element_size not in {1, 2, 4, 8}:
+            continue
+        base = int(target[f"{side}_value"])
+        for address in _semantic_read_addresses(behavior):
+            expression = _semantic_index_from_address(address, base, element_size)
+            if expression == register_output:
                 matches[_semantic_hash(expression)] = expression
     if len(matches) != 1:
         return None
@@ -107,6 +152,7 @@ def _refine_contract_bounds(
     refined = json.loads(json.dumps(contract))
     for region, behavior_pair in zip(refined["regions"], behaviors, strict=True):
         for bound in region.get("bounds", []):
+            bound.pop("stack_bound_request", None)
             found = True
             for side in ("original", "candidate"):
                 expression = _exact_index_expression(
@@ -122,6 +168,18 @@ def _refine_contract_bounds(
                 bound.pop("original_expression", None)
                 bound.pop("candidate_expression", None)
                 bound.pop("expression_source", None)
+                stack_expressions = {
+                    side: _stack_index_expression(
+                        region, behavior_pair[f"{side}_ir"], bound, side
+                    )
+                    for side in ("original", "candidate")
+                }
+                if all(stack_expressions.values()):
+                    bound["stack_bound_request"] = {
+                        "profile": "decoded_stack_register_bound_request_v1",
+                        "original_expression": stack_expressions["original"],
+                        "candidate_expression": stack_expressions["candidate"],
+                    }
     return refined
 
 
@@ -335,6 +393,49 @@ def _attach_assembled_immutable_read_address_separations(
                 candidate_address,
                 candidate_writes,
             ))
+        original_outcome = behavior_pair["original_ir"].get("outcome") or {}
+        candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
+        if (
+            original_outcome.get("op") in {"indirect_call", "indirect_jump"}
+            and candidate_outcome.get("op") == original_outcome.get("op")
+        ):
+            original_read = _immutable_image_word_read(
+                original_outcome.get("target") or {}, original_bin
+            )
+            candidate_read = _immutable_image_word_read(
+                candidate_outcome.get("target") or {}, candidate_bin
+            )
+            if original_read is not None and candidate_read is not None:
+                (
+                    original_address,
+                    original_writes,
+                    original_assembled,
+                    original_value,
+                ) = original_read
+                (
+                    candidate_address,
+                    candidate_writes,
+                    candidate_assembled,
+                    candidate_value,
+                ) = candidate_read
+                if (
+                    original_assembled
+                    and candidate_assembled
+                    and len(original_writes) == len(candidate_writes)
+                    and _paired_constant_relation(
+                        {"op": "constant", "value": original_value},
+                        {"op": "constant", "value": candidate_value},
+                        refined,
+                        original_bin.image_base,
+                        candidate_bin.image_base,
+                    ) is not None
+                ):
+                    read_pairs.append((
+                        original_address,
+                        original_writes,
+                        candidate_address,
+                        candidate_writes,
+                    ))
         if not read_pairs:
             continue
         rows = region.setdefault("address_separations", [])

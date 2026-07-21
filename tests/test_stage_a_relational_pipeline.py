@@ -9,10 +9,71 @@ from spaghetti_extractor.relational.lean.common import (
 )
 from spaghetti_extractor.relational.model import _semantic_hash
 from spaghetti_extractor.relational.pipeline import _extraction_failure_blocker
+from spaghetti_extractor.relational.preflight import side_diagnostics
 from spaghetti_extractor.relational.verdict import _lean_diagnostic
+from spaghetti_extractor.relational.x87_profile import (
+    qualified_singleton_bytes,
+    state_only_singleton_bytes,
+)
 
 
 class StageARelationalPipelineTests(StageARelationalTestBase):
+    def test_x87_memory_effect_is_semantically_qualified_before_composition(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = self._write_pe(root / "x87.exe", bytes.fromhex("dd0424ebfb"))
+            mapping = {
+                "blocks": [{
+                    "id": "x87-loop",
+                    "kind": "code",
+                    "original": {"rva_start": 0x1000, "rva_end": 0x1005},
+                }]
+            }
+
+            issues = side_diagnostics("original", binary, mapping)
+
+            self.assertEqual(issues, [])
+
+    def test_x87_state_only_singleton_proposal_is_deliberately_bounded(self):
+        for encoded in (
+            "9b",       # wait
+            "d9e8",     # fld1
+            "d9ee",     # fldz
+            "d9c9",     # fxch st(1)
+            "dec1",     # faddp st(1), st
+            "ddd8",     # fstp st(0)
+            "dbe3",     # fninit
+        ):
+            self.assertTrue(state_only_singleton_bytes(bytes.fromhex(encoded)), encoded)
+
+        for encoded in (
+            "dd0424",   # fld qword ptr [esp]
+            "dd5c2408", # fstp qword ptr [esp + 8]
+            "dfe0",     # fnstsw ax
+            "dbf1",     # fcomi st, st(1), writes EFLAGS
+            "9bd9e8",   # wait prefix plus another command is not one singleton
+        ):
+            self.assertFalse(state_only_singleton_bytes(bytes.fromhex(encoded)), encoded)
+
+    def test_x87_qualified_singleton_proposal_matches_reviewed_memory_forms(self):
+        for encoded in (
+            "dd0424",       # fld qword ptr [esp]
+            "dd5c2408",     # fstp qword ptr [esp + 8]
+            "dc4018",       # fadd qword ptr [eax + 0x18]
+            "d93d00104000", # fnstcw word ptr [0x401000]
+            "dbe9",         # fucomi st, st(1)
+            "dfe0",         # fnstsw ax
+        ):
+            self.assertTrue(qualified_singleton_bytes(bytes.fromhex(encoded)), encoded)
+
+        for encoded in (
+            "9bd9e8", # wait prefix plus another command is not one singleton
+            "da00",   # unsupported integer-memory arithmetic family
+            "d9d0",   # unsupported register encoding
+            "66dd0424", # unsupported prefix form
+        ):
+            self.assertFalse(qualified_singleton_bytes(bytes.fromhex(encoded)), encoded)
+
     def test_extraction_normalization_failure_is_not_reported_as_decode_failure(self):
         extraction = {
             "status": "failed",
@@ -938,7 +999,7 @@ end StageA.FlagsCompose
             self.assertLess(len(bundle), 300_000)
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for x87 relational proofs")
-    def test_x87_stack_and_arithmetic_state_is_part_of_the_checked_relation(self):
+    def test_x87_stack_and_arithmetic_wait_for_the_qualified_physical_model(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             code = bytes.fromhex("d9e8d9eed9c9dec1ddd8ebf4")
@@ -953,9 +1014,12 @@ end StageA.FlagsCompose
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "pass")
-            self.assertEqual(result["proof"]["lean"]["status"], "checked")
-            self.assertTrue(
+            self.assertEqual(result["verdict"], "incomplete")
+            self.assertEqual(
+                result["proof"]["lean"]["status"],
+                "semantic_preflight_incomplete",
+            )
+            self.assertFalse(
                 result["claim_scope"]["whole_program_observational_equivalence"]
             )
 
@@ -976,7 +1040,10 @@ end StageA.FlagsCompose
             )
 
             self.assertEqual(result["verdict"], "incomplete")
-            self.assertEqual(result["proof"]["lean"]["status"], "checked")
+            self.assertEqual(
+                result["proof"]["lean"]["status"],
+                "semantic_preflight_incomplete",
+            )
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for mapped static-data proofs")
     def test_relocated_x87_static_data_uses_checked_memory_mapping(self):
@@ -1016,7 +1083,10 @@ end StageA.FlagsCompose
                 out=root / "report",
             )
             self.assertEqual(result["verdict"], "incomplete")
-            self.assertEqual(result["proof"]["lean"]["status"], "checked")
+            self.assertEqual(
+                result["proof"]["lean"]["status"],
+                "semantic_preflight_incomplete",
+            )
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for immutable image-data proofs")
     def test_relocated_readonly_x87_data_is_decoded_from_exact_pe_bytes(self):
@@ -1046,9 +1116,12 @@ end StageA.FlagsCompose
                 original=original, candidate=candidate,
                 relation_contract=contract, out=root / "report",
             )
-            self.assertEqual(result["verdict"], "pass")
-            self.assertEqual(result["proof"]["lean"]["status"], "checked")
-            self.assertTrue(
+            self.assertEqual(result["verdict"], "incomplete")
+            self.assertEqual(
+                result["proof"]["lean"]["status"],
+                "semantic_preflight_incomplete",
+            )
+            self.assertFalse(
                 result["claim_scope"]["whole_program_observational_equivalence"]
             )
 

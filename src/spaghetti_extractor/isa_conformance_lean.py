@@ -70,7 +70,7 @@ def lean_semantic_form_classifier_sha256() -> str:
     source = Path(__file__).parent / "lean" / "StageA"
     hashes = {
         name: hashlib.sha256((source / name).read_bytes()).hexdigest()
-        for name in ("Formal.lean", "ISAQualification.lean")
+        for name in ("X87.lean", "Formal.lean", "ISAQualification.lean")
     }
     return hashlib.sha256(
         json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode("ascii")
@@ -259,6 +259,7 @@ def _copy_lean_sources(destination: Path) -> None:
     stage_a = destination / "StageA"
     stage_a.mkdir(parents=True)
     for module in (
+        "X87",
         "Formal",
         "ISAQualification",
         "ISAConformance",

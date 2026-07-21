@@ -1,13 +1,226 @@
 from tests.stage_a_relational_support import *
 from spaghetti_extractor.relational.schema import PROTOCOL_CALLBACK_CONTROL_FORMAT
 from spaghetti_extractor.relational.lean.acceptance import (
+    _acceptance_segment_imports,
+    _frame_relations_requiring_internal_preservation,
+    _lean_frame_exact_word_register_output_claim,
+    _lean_acceptance_linked_shallow_lift,
+    _lean_acceptance_linked_shallow_node,
+    _lean_return_slot_frame_transfer_claim,
+    _lean_runtime_call_import_transfer_claim,
     _launch_check_ranges,
+    _launch_state_predicates_structurally_true,
     _launch_structural_image_ranges,
+    _runtime_frame_protected_bytes,
+    _segment_module_ownership,
+    _semantic_bool_is_structural_tautology,
 )
 from typing import Any
 
 
 class StageARelationalAcceptanceTests(StageARelationalTestBase):
+    def test_acceptance_chunks_import_only_their_owned_segment_modules(self):
+        ownership = _segment_module_ownership([
+            {"module": "RelationalSegmentRefinementChunk0", "edge_ids": [0, 1]},
+            {"module": "RelationalSegmentRefinementChunk1", "edge_ids": [2]},
+        ])
+
+        imports = _acceptance_segment_imports(
+            [{"edges": [{"edge_id": 2}], "cases": [{"edge_id": 0}]}],
+            ownership,
+        )
+
+        self.assertEqual(
+            imports,
+            "import StageA.RelationalSegmentRefinementChunk0\n"
+            "import StageA.RelationalSegmentRefinementChunk1\n",
+        )
+
+    def test_acceptance_segment_imports_fail_closed_on_missing_or_duplicate_owner(self):
+        with self.assertRaisesRegex(StageAInputError, "without generated Lean owners"):
+            _acceptance_segment_imports([{"edge_id": 3}], {0: "Chunk0"})
+        with self.assertRaisesRegex(StageAInputError, "owned by both"):
+            _segment_module_ownership([
+                {"module": "Chunk0", "edge_ids": [3]},
+                {"module": "Chunk1", "edge_ids": [3]},
+            ])
+
+    def test_launch_predicate_gate_accepts_only_memory_free_structural_tautologies(self):
+        condition = {
+            "op": "unsigned_less",
+            "left": {"op": "input_reg", "reg": "eax"},
+            "right": {"op": "constant", "value": 4},
+        }
+        tautology = {
+            "op": "or",
+            "left": {"op": "not", "value": condition},
+            "right": condition,
+        }
+        self.assertTrue(_semantic_bool_is_structural_tautology(tautology))
+        self.assertTrue(_launch_state_predicates_structurally_true([{
+            "original": tautology,
+            "candidate": tautology,
+            "exact_memory_reads": [],
+        }]))
+        self.assertFalse(_launch_state_predicates_structurally_true([{
+            "original": condition,
+            "candidate": condition,
+            "exact_memory_reads": [],
+        }]))
+        self.assertFalse(_launch_state_predicates_structurally_true([{
+            "original": tautology,
+            "candidate": tautology,
+            "exact_memory_reads": [{"bytes": 4}],
+        }]))
+
+    def test_runtime_frame_protected_span_covers_all_exact_words(self):
+        self.assertEqual(_runtime_frame_protected_bytes({}), 4)
+        self.assertEqual(
+            _runtime_frame_protected_bytes({
+                "exact_words": [
+                    {"original": 4, "candidate": 12},
+                    {"original": 28, "candidate": 20},
+                ],
+            }),
+            32,
+        )
+
+    def test_protected_frame_memory_claim_serializes_checked_witnesses(self):
+        claim = {
+            "transfer": {
+                "source": {
+                    "original_register": "esp", "original": 0,
+                    "candidate_register": "esp", "candidate": 0,
+                },
+                "target": {
+                    "original_register": "ebp", "original": 4,
+                    "candidate_register": "ebp", "candidate": 4,
+                },
+                "original_output_witness": {
+                    "kind": "sub_right", "prior": {"kind": "input"},
+                    "value": 4,
+                },
+                "candidate_output_witness": {
+                    "kind": "sub_right", "prior": {"kind": "input"},
+                    "value": 4,
+                },
+            },
+            "memory": {
+                "profile": "protected_frame_span_v1",
+                "offsets": {
+                    "original_register": "esp", "original": 0,
+                    "candidate_register": "esp", "candidate": 0,
+                },
+                "writes": [
+                    {
+                        "kind": "static_word",
+                        "slot_id": 7,
+                    },
+                ],
+            },
+        }
+
+        source = _lean_return_slot_frame_transfer_claim(claim)
+
+        self.assertIn("memory := .protectedSpan", source)
+        self.assertIn("writes := [.staticWord 7]", source)
+
+    def test_return_pop_does_not_require_the_removed_frame_relations(self):
+        frame_relations = (("active-eax",), ("outer-ebx",), ("tail-esi",))
+
+        self.assertEqual(
+            _frame_relations_requiring_internal_preservation(
+                frame_relations, "return_pop"
+            ),
+            (("outer-ebx",), ("tail-esi",)),
+        )
+        self.assertEqual(
+            _frame_relations_requiring_internal_preservation(
+                frame_relations, "transfer"
+            ),
+            frame_relations,
+        )
+
+    def test_frame_fact_claim_serializes_explicit_carried_relations(self):
+        inventory = {
+            "locations": [{
+                "original_register": "esp",
+                "original": 0,
+                "candidate_register": "esp",
+                "candidate": 0,
+            }],
+            "preserved_relations": [{
+                "original": "eax", "candidate": "eax", "relation": "exact",
+            }],
+        }
+        carried = [{
+            "original": "ebx", "candidate": "ebx", "relation": "exact",
+        }]
+
+        legacy = _lean_runtime_call_import_transfer_claim(inventory, inventory)
+        refreshed = _lean_runtime_call_import_transfer_claim(
+            inventory, inventory, carried
+        )
+
+        self.assertNotIn("carriedRelations", legacy)
+        self.assertIn("carriedRelations := some", refreshed)
+        self.assertIn("original := .ebx", refreshed)
+
+    def test_frame_word_claim_serializes_input_byte_assembly_profile(self):
+        claim = {
+            "profile": "active_frame_exact_word_register_output_v1",
+            "source_location": {
+                "original_register": "esp", "original": 28,
+                "candidate_register": "esp", "candidate": 28,
+            },
+            "word": {"original": 4, "candidate": 4},
+            "output": {
+                "original": "eax", "candidate": "eax", "relation": "exact",
+            },
+            "original_address_witness": {
+                "kind": "add_right",
+                "prior": {"kind": "input"},
+                "value": 32,
+            },
+            "candidate_address_witness": {
+                "kind": "add_right",
+                "prior": {"kind": "input"},
+                "value": 32,
+            },
+            "original_input_assembled_read": True,
+            "candidate_input_assembled_read": True,
+            "original_write_witnesses": [],
+            "candidate_write_witnesses": [],
+        }
+
+        source = _lean_frame_exact_word_register_output_claim(claim)
+
+        self.assertIn("originalInputAssembledRead := true", source)
+        self.assertIn("candidateInputAssembledRead := true", source)
+        self.assertIn("originalAssembledRead := false", source)
+        self.assertIn("candidateAssembledRead := false", source)
+
+    def test_linked_shallow_wrapper_applies_parameterized_environment(self):
+        source = _lean_acceptance_linked_shallow_node(
+            {"node_id": 2}, parameterized_environment=True
+        )
+
+        self.assertIn(
+            "exact acceptanceLinkedRunningNodeRefinedOfShallow",
+            source,
+        )
+        self.assertIn(
+            "(acceptanceRunningNode2Refined originalEnvironment "
+            "candidateEnvironment environmentRefines)",
+            source,
+        )
+        lift = _lean_acceptance_linked_shallow_lift(
+            parameterized_environment=True
+        )
+        self.assertEqual(
+            lift.count("LinkedRunningProductNodeStepRefined.of_shallow"), 1
+        )
+
     def test_launch_check_ranges_are_exact_and_reject_invalid_width(self):
         self.assertEqual(
             _launch_check_ranges(2500, 1024),
@@ -81,6 +294,11 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 )
 
             self.assertEqual(result["acceptance"]["status"], "ready", result)
+            self.assertEqual(
+                result["acceptance"]["linked_acceptance"]["status"],
+                "ready",
+                result,
+            )
             self.assertEqual(
                 result["expected_final_theorem"], RELATIONAL_ACCEPTANCE_THEOREM
             )
@@ -433,6 +651,20 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertEqual(
                 normalized["launch"]["tls_callback_target_ids"], [2, 1]
             )
+            callback_windows = {
+                region_index: [
+                    window for window in normalized["regions"][region_index].get(
+                        "stack_windows", []
+                    )
+                    if window["original_register"] == "esp"
+                    and window["candidate_register"] == "esp"
+                ]
+                for region_index in (1, 2)
+            }
+            self.assertEqual(len(callback_windows[2]), 1)
+            self.assertEqual(len(callback_windows[1]), 1)
+            self.assertGreaterEqual(callback_windows[2][0]["bytes_above"], 32)
+            self.assertGreaterEqual(callback_windows[1][0]["bytes_above"], 16)
             graph = json.loads(
                 (prepared / "relational-product-graph.json").read_text(
                     encoding="utf-8"
@@ -445,6 +677,23 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertIn("tlsCallbackTargetIds := [2, 1]", static_context)
             self.assertIn("targetId := 1, kind := .tlsInitializer", static_context)
             self.assertIn("targetId := 2, kind := .tlsInitializer", static_context)
+            launch_definition = (
+                prepared / "lean" / "StageA" / "RelationalLaunchDefinition.lean"
+            ).read_text(encoding="utf-8")
+            for offset in (4, 8, 12):
+                self.assertIn(
+                    f"originalOffset := {offset}, candidateOffset := {offset}",
+                    launch_definition,
+                )
+            acceptance_source = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted(
+                    (prepared / "lean" / "StageA").glob(
+                        "RelationalAcceptanceChunk*.lean"
+                    )
+                )
+            )
+            self.assertIn("exactWordTransfers := [", acceptance_source)
 
             checked = _run_lean_relational(
                 prepared / "lean", bundle="RelationalStaticContext"
@@ -1095,6 +1344,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                     "potential_reachable_nodes": 1,
                     "potential_reachable_feasible_edges": 1,
                     "potential_unrepresented_control_edges": 0,
+                    "terminating_call_continuations": 0,
                     "reachability_truncated_by_control_frontier": False,
                     "reachable_decoded_control_frontier_nodes": 0,
                     "reachable_feasible_edges": 1,
@@ -1526,6 +1776,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             ))
             self.assertIn("RelationalLaunchContext", graph["modules"])
             self.assertIn("RelationalLaunchCheckCertificate", graph["modules"])
+            self.assertIn("RelationalLinkedControlProfile", graph["modules"])
             self.assertIn(
                 "RelationalInstructionAdequacyCertificate", graph["modules"]
             )
@@ -1545,12 +1796,34 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 "theorem allCandidateRegionsInstructionAdequate", adequacy_source
             )
             self.assertIn(
-                "regionInstructionAdequate_of_checked", original_adequacy_chunk
+                "regionInstructionAdequateWithX87_of_checked",
+                original_adequacy_chunk,
+            )
+            linked_control_source = (
+                prepared / "lean" / "StageA" /
+                "RelationalLinkedControlProfile.lean"
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                "def linkedProductControlProfile", linked_control_source
+            )
+            self.assertIn(
+                "theorem linkedRuntimeCallFrameLinkCandidatesChecked",
+                linked_control_source,
             )
             acceptance_source = (
                 prepared / "lean" / "StageA" / "RelationalAcceptance.lean"
             ).read_text(encoding="utf-8")
             self.assertIn("theorem candidatePE32ProgramsEquivalent", acceptance_source)
+            self.assertIn(
+                "theorem candidatePE32ProgramsEquivalentLinked", acceptance_source
+            )
+            self.assertIn(
+                "def linkedWholeProgramCertificate : LinkedWholeProgramCertificate",
+                acceptance_source,
+            )
+            self.assertIn(
+                "pe32ProgramsEquivalentLinked_raw", acceptance_source
+            )
             self.assertIn("originalInstructionSemanticsAdequate", acceptance_source)
             self.assertIn("candidateInstructionSemanticsAdequate", acceptance_source)
             self.assertIn("launchRealizable := consoleLaunchRealizable", acceptance_source)
@@ -1570,6 +1843,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 "RelationalLaunchRealizabilityCertificate.lean"
             ).read_text(encoding="utf-8")
             self.assertIn("theorem consoleLaunchRealizable", launch_source)
+            self.assertIn("theorem consoleLaunchLinkedRealizable", launch_source)
             self.assertIn(
                 "import StageA.RelationalLaunchCheckCertificate", launch_source
             )
@@ -1638,6 +1912,10 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertEqual(lean["status"], "checked", lean)
             self.assertIn(
                 "candidatePE32ProgramsEquivalent' depends on axioms",
+                lean["stdout"],
+            )
+            self.assertIn(
+                "candidatePE32ProgramsEquivalentLinked' depends on axioms",
                 lean["stdout"],
             )
             self.assertNotIn("._native.", lean["stdout"])
@@ -1994,15 +2272,13 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
     def test_tls_directory_is_parsed_and_rejected_by_console_launch_v1(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            original = self._write_pe(root / "original.exe", b"\xeb\xfe")
-            candidate = self._write_pe(root / "candidate.exe", b"\xeb\xfe")
-            for image_path in (original, candidate):
-                image = bytearray(image_path.read_bytes())
-                struct.pack_into("<II", image, 0x140, 0x1000, 24)
-                image_path.write_bytes(image)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(_pe32_tls_image(()))
+            candidate.write_bytes(_pe32_tls_image(()))
 
             contract = self._write_contract(
-                root / "relation.json", region_size=2
+                root / "relation.json", region_size=1
             )
             prepared = root / "prepared"
             result = stage_a_prepare_relational(
@@ -2027,7 +2303,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             original_source = (
                 prepared / "lean" / "StageA" / "RelationalProofOriginal.lean"
             ).read_text(encoding="utf-8")
-            self.assertIn("tlsDirectoryRva := 4096", original_source)
+            self.assertIn("tlsDirectoryRva := 8192", original_source)
             self.assertIn("tlsDirectorySize := 24", original_source)
 
             negative = (
@@ -2039,7 +2315,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 "namespace StageA.GeneratedRelational\n\n"
                 "open StageA.Relational\n\n"
                 "theorem tlsDirectoryParsedFromPeBytes :\n"
-                "    originalPe.tlsDirectoryRva = 4096 ∧\n"
+                "    originalPe.tlsDirectoryRva = 8192 ∧\n"
                 "      originalPe.tlsDirectorySize = 24 := by decide\n\n"
                 "theorem tlsConsoleLaunchV1Rejected :\n"
                 "    PE32ConsoleLaunchV1.preEntryTlsAbsent staticProofContext = false :=\n"
@@ -2050,11 +2326,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             checked = _run_lean_relational(
                 prepared / "lean", bundle="RelationalTlsLaunchNegative"
             )
-            self.assertEqual(checked["status"], "failed", checked)
-            self.assertIn(
-                "tlsLaunchInventoryValid staticProofContext = true",
-                checked["stdout"],
-            )
+            self.assertEqual(checked["status"], "checked", checked)
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for memory-write proofs")
     def test_paired_stack_word_write_loop_closes_whole_program_theorem(self):
@@ -2193,14 +2465,18 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 candidate_region_size=len(candidate_code),
             )
             contract_payload = json.loads(contract.read_text(encoding="utf-8"))
-            for field in ("inputs", "outputs"):
-                pairs = contract_payload["regions"][0][field]
-                contract_payload["regions"][0][field] = [
-                    ({**pair, "candidate": "ecx"}
-                     if pair["original"] == "eax" else pair)
-                    for pair in pairs
-                    if pair["original"] != "ecx"
-                ]
+            input_pairs = contract_payload["regions"][0]["inputs"]
+            contract_payload["regions"][0]["inputs"] = [
+                pair for pair in input_pairs
+                if pair["original"] not in {"eax", "ecx"}
+            ]
+            output_pairs = contract_payload["regions"][0]["outputs"]
+            contract_payload["regions"][0]["outputs"] = [
+                ({**pair, "candidate": "ecx"}
+                 if pair["original"] == "eax" else pair)
+                for pair in output_pairs
+                if pair["original"] != "ecx"
+            ]
             contract.write_text(json.dumps(contract_payload), encoding="utf-8")
             prepared = root / "prepared"
 
@@ -2365,7 +2641,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             )
             self.assertEqual(lean["status"], "checked", lean)
             self.assertIn(
-                "candidatePE32ProgramsEquivalent' depends on axioms",
+                "candidatePE32ProgramsEquivalentLinked' depends on axioms",
                 lean["stdout"],
             )
             self.assertNotIn("sorryAx", lean["stdout"])
@@ -2424,14 +2700,37 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 out=root / "mismatched",
             )
             self.assertEqual(mismatched["acceptance"]["status"], "incomplete")
-            mismatch_diagnostics = json.loads(
-                (root / "mismatched" / "relational-segment-diagnostics.json")
+            self.assertIn(
+                "launch_realizability_certificate_unsupported",
+                {
+                    blocker["code"]
+                    for blocker in mismatched["acceptance"]["blockers"]
+                },
+            )
+            mismatch_segments = json.loads(
+                (root / "mismatched" / "relational-segment-candidates.json")
                 .read_text(encoding="utf-8")
             )
-            self.assertTrue(any(
-                "branch_guard_relation_unsupported" in edge["failed_checks"]
-                for edge in mismatch_diagnostics["edges"]
+            mismatch_guards = [
+                edge["guard_relation_claim"]
+                for edge in mismatch_segments["candidates"]
                 if edge["source_region_index"] == 1
+            ]
+            self.assertEqual(len(mismatch_guards), 2)
+            self.assertTrue(all(
+                guard["profile"] == "paired_exact_guard_v1"
+                for guard in mismatch_guards
+            ))
+            exact_reads = [
+                guard["witness"]["left"]["read"]
+                if guard["witness"]["left"]["kind"]
+                    == "state_predicate_read32"
+                else guard["witness"]["left"]["left"]["read"]
+                for guard in mismatch_guards
+            ]
+            self.assertTrue(all(
+                read["original_address"] != read["candidate_address"]
+                for read in exact_reads
             ))
 
             candidate.write_bytes(_pe32_image(candidate_code))
@@ -2589,6 +2888,18 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertEqual(result["status"], "prepared")
             self.assertEqual(result["acceptance"]["status"], "ready", result)
             self.assertEqual(result["acceptance"]["profile"], "finite-call-return-v1")
+            self.assertEqual(
+                result["acceptance"]["linked_acceptance"],
+                {
+                    "status": "ready",
+                    "profile": "lean-checked-shallow-profile-compatibility-v1",
+                    "theorem": (
+                        "StageA.GeneratedRelational."
+                        "candidatePE32ProgramsEquivalentLinked"
+                    ),
+                    "blockers": [],
+                },
+            )
             progress = json.loads(
                 (prepared / "composition-progress.json").read_text(encoding="utf-8")
             )
@@ -2674,7 +2985,257 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 "candidatePE32ProgramsEquivalent' depends on axioms",
                 lean["stdout"],
             )
+            self.assertIn(
+                "candidatePE32ProgramsEquivalentLinked' depends on axioms",
+                lean["stdout"],
+            )
             self.assertNotIn("._native.", lean["stdout"])
+            self.assertNotIn("sorryAx", lean["stdout"])
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
+    def test_internal_callee_jump_uses_linked_active_frame_transfer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            code = (
+                b"\xe8\x01\x00\x00\x00"  # call callee-entry
+                b"\xc3"                  # top-level continuation: ret
+                b"\xeb\x00"              # callee-entry: jump to return
+                b"\xc3"                  # callee-return: ret
+            )
+            original = self._write_pe(root / "original.exe", code)
+            candidate_image = bytearray(_pe32_image(b"\x90" + code))
+            struct.pack_into("<I", candidate_image, 0xA8, 0x1001)
+            candidate = root / "candidate.exe"
+            candidate.write_bytes(candidate_image)
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in (
+                    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+                )
+            ]
+            contract = root / "relation.json"
+            contract.write_text(json.dumps({
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": 0, "original_rva": 0x1000, "candidate_rva": 0x1001},
+                    {"id": 1, "original_rva": 0x1005, "candidate_rva": 0x1006},
+                    {"id": 2, "original_rva": 0x1006, "candidate_rva": 0x1007},
+                    {"id": 3, "original_rva": 0x1008, "candidate_rva": 0x1009},
+                ],
+                "regions": [
+                    {
+                        "id": "caller", "root": True,
+                        "original": {"rva": 0x1000, "size": 5},
+                        "candidate": {"rva": 0x1001, "size": 5},
+                        "inputs": pairs, "outputs": pairs,
+                        "stack_windows": [{
+                            "range_id": 0,
+                            "original_register": "esp",
+                            "candidate_register": "esp",
+                            "bytes_below": 4, "bytes_above": 4,
+                        }],
+                    },
+                    {
+                        "id": "continuation", "root": False,
+                        "original": {"rva": 0x1005, "size": 1},
+                        "candidate": {"rva": 0x1006, "size": 1},
+                        "inputs": pairs, "outputs": pairs,
+                        "stack_windows": [{
+                            "range_id": 0,
+                            "original_register": "esp",
+                            "candidate_register": "esp",
+                            "bytes_below": 0, "bytes_above": 4,
+                        }],
+                    },
+                    {
+                        "id": "callee-entry", "root": False,
+                        "original": {"rva": 0x1006, "size": 2},
+                        "candidate": {"rva": 0x1007, "size": 2},
+                        "inputs": pairs, "outputs": pairs,
+                        "stack_windows": [{
+                            "range_id": 0,
+                            "original_register": "esp",
+                            "candidate_register": "esp",
+                            "bytes_below": 0, "bytes_above": 8,
+                        }],
+                    },
+                    {
+                        "id": "callee-return", "root": False,
+                        "original": {"rva": 0x1008, "size": 1},
+                        "candidate": {"rva": 0x1009, "size": 1},
+                        "inputs": pairs, "outputs": pairs,
+                        "stack_windows": [{
+                            "range_id": 0,
+                            "original_register": "esp",
+                            "candidate_register": "esp",
+                            "bytes_below": 0, "bytes_above": 8,
+                        }],
+                    },
+                ],
+                "padding": [{
+                    "id": "candidate-entry-padding",
+                    "side": "candidate", "rva": 0x1000, "size": 1,
+                }],
+                "memory_relation": {"mode": "identity"},
+            }), encoding="utf-8")
+            prepared = root / "prepared"
+
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            self.assertEqual(
+                result["acceptance"]["linked_acceptance"]["status"], "ready"
+            )
+            node_sources = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted(
+                    (prepared / "lean" / "StageA").glob(
+                        "RelationalAcceptanceChunk*.lean"
+                    )
+                )
+            )
+            self.assertIn(
+                "RelationalLinkedRuntimeCallStackHolds.afterActiveTransfer",
+                node_sources,
+            )
+            self.assertIn(
+                "RelationalLinkedRuntimeCallFactsHold.afterInternal", node_sources
+            )
+
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertIn(
+                "candidatePE32ProgramsEquivalentLinked' depends on axioms",
+                lean["stdout"],
+            )
+            self.assertNotIn("._native.", lean["stdout"])
+            self.assertNotIn("sorryAx", lean["stdout"])
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
+    def test_nested_direct_calls_require_native_linked_frame_acceptance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            code = (
+                b"\xe8\x01\x00\x00\x00"  # call first callee
+                b"\xc3"                  # top-level continuation
+                b"\xe8\x01\x00\x00\x00"  # first callee calls second
+                b"\xc3"                  # first-callee continuation
+                b"\xc3"                  # second callee
+            )
+            original = self._write_pe(root / "original.exe", code)
+            candidate_image = bytearray(_pe32_image(b"\x90" + code))
+            struct.pack_into("<I", candidate_image, 0xA8, 0x1001)
+            candidate = root / "candidate.exe"
+            candidate.write_bytes(candidate_image)
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in (
+                    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+                )
+            ]
+            contract = root / "relation.json"
+            contract.write_text(json.dumps({
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": 0, "original_rva": 0x1000, "candidate_rva": 0x1001},
+                    {"id": 1, "original_rva": 0x1005, "candidate_rva": 0x1006},
+                    {"id": 2, "original_rva": 0x1006, "candidate_rva": 0x1007},
+                    {"id": 3, "original_rva": 0x100B, "candidate_rva": 0x100C},
+                    {"id": 4, "original_rva": 0x100C, "candidate_rva": 0x100D},
+                ],
+                "regions": [
+                    {
+                        "id": "caller", "root": True,
+                        "original": {"rva": 0x1000, "size": 5},
+                        "candidate": {"rva": 0x1001, "size": 5},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "top-continuation", "root": False,
+                        "original": {"rva": 0x1005, "size": 1},
+                        "candidate": {"rva": 0x1006, "size": 1},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "first-callee", "root": False,
+                        "original": {"rva": 0x1006, "size": 5},
+                        "candidate": {"rva": 0x1007, "size": 5},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "first-callee-continuation", "root": False,
+                        "original": {"rva": 0x100B, "size": 1},
+                        "candidate": {"rva": 0x100C, "size": 1},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "second-callee", "root": False,
+                        "original": {"rva": 0x100C, "size": 1},
+                        "candidate": {"rva": 0x100D, "size": 1},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                ],
+                "padding": [{
+                    "id": "candidate-entry-padding",
+                    "side": "candidate", "rva": 0x1000, "size": 1,
+                }],
+                "memory_relation": {"mode": "identity"},
+            }), encoding="utf-8")
+            prepared = root / "prepared"
+
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            linked = result["acceptance"]["linked_acceptance"]
+            self.assertEqual(linked["status"], "ready", result)
+            self.assertEqual(
+                linked["profile"], "native-linked-call-return-v1", result
+            )
+            linked_control = result["acceptance"]["linked_control"]
+            self.assertEqual(linked_control["counts"]["link_candidates"], 1)
+            self.assertEqual(linked_control["counts"]["link_gaps"], 0)
+            self.assertTrue(any(
+                2 in state["representative_depths"]
+                for state in linked_control["states"]
+            ))
+            node_sources = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted(
+                    (prepared / "lean" / "StageA").glob(
+                        "RelationalAcceptanceChunk*.lean"
+                    )
+                )
+            )
+            self.assertIn("pushNestedAfterSingletonWrite", node_sources)
+            self.assertIn("popNestedAfterNoWriteTransfer", node_sources)
+            self.assertIn("popLastAfter", node_sources)
+
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertIn(
+                "candidatePE32ProgramsEquivalentLinked' depends on axioms",
+                lean["stdout"],
+            )
+            self.assertNotIn("._native.", lean["stdout"])
+            self.assertNotIn("sorryAx", lean["stdout"])
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
     def test_known_indirect_call_checks_whole_program_theorem(self):
@@ -3172,6 +3733,10 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             ]["writes"][0]["value"]
             self.assertEqual(prepared_value["profile"], "mapped_code_target_v1")
             self.assertEqual(prepared_value["target_id"], 2)
+            self.assertEqual(
+                direct_call["direct_call_stack_writes_claim"]["exact_word_seeds"],
+                [],
+            )
             lean = _run_lean_relational(
                 prepared / "lean", bundle="RelationalAcceptance"
             )
@@ -3192,6 +3757,128 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertEqual(mutated["acceptance"]["status"], "incomplete")
             self.assertGreater(
                 mutated["composition_progress"]["counts"][
+                    "rooted_segment_refinement_frontier_edges"
+                ],
+                0,
+            )
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
+    def test_direct_call_seeds_checked_exact_scalar_word_in_callee_frame(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            code = (
+                b"\xc7\x44\x24\x04\x2a\x00\x00\x00"
+                b"\xc7\x44\x24\x08\x2b\x00\x00\x00"
+                b"\xe8\x02\x00\x00\x00"
+                b"\xeb\xe9"
+                b"\xc3"
+            )
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(_pe32_image(code))
+            candidate.write_bytes(_pe32_image(code))
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in (
+                    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+                )
+            ]
+            contract = root / "relation.json"
+            contract.write_text(json.dumps({
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": 0, "original_rva": 0x1000, "candidate_rva": 0x1000},
+                    {"id": 1, "original_rva": 0x1015, "candidate_rva": 0x1015},
+                    {"id": 2, "original_rva": 0x1017, "candidate_rva": 0x1017},
+                ],
+                "regions": [
+                    {
+                        "id": "caller", "root": True,
+                        "original": {"rva": 0x1000, "size": 21},
+                        "candidate": {"rva": 0x1000, "size": 21},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "continuation", "root": False,
+                        "original": {"rva": 0x1015, "size": 2},
+                        "candidate": {"rva": 0x1015, "size": 2},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "callee-return", "root": False,
+                        "original": {"rva": 0x1017, "size": 1},
+                        "candidate": {"rva": 0x1017, "size": 1},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                ],
+                "padding": [],
+                "memory_relation": {"mode": "identity"},
+            }), encoding="utf-8")
+            prepared = root / "prepared"
+
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            self.assertEqual(result["status"], "prepared", result)
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            proof_ir = json.loads(
+                (prepared / "relational-proof-ir.json").read_text(encoding="utf-8")
+            )
+            direct_call = next(
+                obligation["analysis"]["certificate"]
+                for obligation in proof_ir["obligations"]
+                if obligation.get("kind") == "relational_segment_refinement"
+                and obligation.get("analysis", {}).get("certificate", {}).get(
+                    "certificate_profile"
+                ) == "composable_direct_call_stack_writes_v1"
+            )
+            exact_seeds = direct_call["direct_call_stack_writes_claim"][
+                "exact_word_seeds"
+            ]
+            self.assertEqual(len(exact_seeds), 2)
+            self.assertEqual(
+                [seed["exact_word"] for seed in exact_seeds],
+                [
+                    {"original_offset": 8, "candidate_offset": 8},
+                    {"original_offset": 12, "candidate_offset": 12},
+                ],
+            )
+            callee_states = [
+                state for state in result["acceptance"]["control_states"]
+                if state["node_id"] == 2 and state["calls"] == [1]
+            ]
+            self.assertEqual(len(callee_states), 1)
+            self.assertEqual(
+                callee_states[0]["frame_offsets"][0]["exact_words"],
+                [
+                    {"original": 8, "candidate": 8},
+                    {"original": 12, "candidate": 12},
+                ],
+            )
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertNotIn("sorryAx", lean["stdout"])
+
+            mismatched_code = bytearray(code)
+            mismatched_code[4] = 0x2B
+            candidate.write_bytes(_pe32_image(bytes(mismatched_code)))
+            mismatched = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=root / "mismatched",
+            )
+            self.assertEqual(mismatched["acceptance"]["status"], "incomplete")
+            self.assertGreater(
+                mismatched["composition_progress"]["counts"][
                     "rooted_segment_refinement_frontier_edges"
                 ],
                 0,
@@ -3941,6 +4628,19 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
 
             self.assertEqual(result["acceptance"]["status"], "ready", result)
             self.assertEqual(
+                result["acceptance"]["linked_acceptance"],
+                {
+                    "status": "ready",
+                    "profile": "lean-checked-shallow-profile-compatibility-v1",
+                    "theorem": (
+                        "StageA.GeneratedRelational."
+                        "candidatePE32ProgramsEquivalentLinked"
+                    ),
+                    "blockers": [],
+                },
+                result,
+            )
+            self.assertEqual(
                 [step["kind"] for step in result["acceptance"]["node_steps"]],
                 ["call", "jump", "external_jump"],
             )
@@ -3958,6 +4658,10 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 prepared / "lean", bundle="RelationalAcceptance"
             )
             self.assertEqual(lean["status"], "checked", lean)
+            self.assertIn(
+                "candidatePE32ProgramsEquivalentLinked' depends on axioms",
+                lean["stdout"],
+            )
             self.assertNotIn("sorryAx", lean["stdout"])
             self.assertNotIn("._native.", lean["stdout"])
 
@@ -4386,6 +5090,91 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertEqual(lean["status"], "checked", lean)
             self.assertNotIn("sorryAx", lean["stdout"])
 
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for bound proofs")
+    def test_branch_guard_establishes_successor_bound_in_whole_program_theorem(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            # cmp eax, 4; jb taken; fallthrough: jmp fallthrough; taken: ret
+            code = b"\x83\xf8\x04\x72\x02\xeb\xfe\xc3"
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in (
+                    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+                )
+            ]
+            expression = {"op": "input_reg", "reg": "eax"}
+            regions = [
+                {
+                    "id": "condition",
+                    "root": True,
+                    "original": {"rva": 0x1000, "size": 5},
+                    "candidate": {"rva": 0x1000, "size": 5},
+                    "inputs": pairs,
+                    "outputs": pairs,
+                },
+                {
+                    "id": "fallthrough",
+                    "root": False,
+                    "original": {"rva": 0x1005, "size": 2},
+                    "candidate": {"rva": 0x1005, "size": 2},
+                    "inputs": pairs,
+                    "outputs": pairs,
+                },
+                {
+                    "id": "taken",
+                    "root": False,
+                    "original": {"rva": 0x1007, "size": 1},
+                    "candidate": {"rva": 0x1007, "size": 1},
+                    "inputs": pairs,
+                    "outputs": pairs,
+                    "bounds": [{
+                        "original": "eax",
+                        "candidate": "eax",
+                        "original_expression": expression,
+                        "candidate_expression": expression,
+                        "unsigned_lt": 4,
+                    }],
+                },
+            ]
+            relation = {
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": index, "original_rva": rva, "candidate_rva": rva}
+                    for index, rva in enumerate((0x1000, 0x1005, 0x1007))
+                ],
+                "regions": regions,
+                "padding": [],
+                "memory_relation": {"mode": "identity"},
+            }
+            contract = root / "relation.json"
+            contract.write_text(json.dumps(relation), encoding="utf-8")
+            prepared = root / "prepared"
+
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            normalized = json.loads(
+                (prepared / "relation-contract.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                normalized["regions"][0]["state_predicates"][0]["source"],
+                "no_write_state_predicate_edge_pullback",
+            )
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertNotIn("sorryAx", lean["stdout"])
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for input-flag proofs")
     def test_input_flag_guard_closes_only_for_the_same_checked_flag(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -4550,7 +5339,10 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             )
             condition_inputs = register_relations["regions"][1]["inputs"]
             self.assertIn({
-                "original": "eax", "candidate": "eax", "relation": "exact",
+                "original": "eax",
+                "candidate": "eax",
+                "relation": "fixed_word",
+                "value": 7,
             }, condition_inputs)
             segment_source = "\n".join(
                 path.read_text(encoding="utf-8")
@@ -4795,7 +5587,10 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 )
             )
             self.assertIn({
-                "original": "edx", "candidate": "edx", "relation": "exact",
+                "original": "edx",
+                "candidate": "edx",
+                "relation": "fixed_word",
+                "value": 7,
             }, register_relations["regions"][2]["outputs"])
             self.assertIn({
                 "original": "edx", "candidate": "edx", "relation": "related_word",
@@ -5471,7 +6266,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             candidate = root / "candidate.exe"
             original.write_bytes(_pe32_representative_control_image(0x3000))
             candidate.write_bytes(
-                _pe32_representative_control_image(0x4000, terminal_rva=0x1030)
+                _pe32_representative_control_image(0x3000, terminal_rva=0x1030)
             )
             mapping = root / "mapping.json"
             mapping.write_text(json.dumps({"blocks": [
@@ -5616,7 +6411,8 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             )
             self.assertEqual(graph["acceptance"]["blockers"][0]["count"], 1)
             self.assertEqual(
-                graph["modules"]["RelationalDecode"]["imports"], ["Formal"]
+                graph["modules"]["RelationalDecode"]["imports"],
+                ["Formal", "RelationalX87Decode"],
             )
             self.assertIn(
                 "RelationalDecode", graph["modules"]["RelationalMachine"]["imports"]
@@ -5897,13 +6693,72 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 )
             )
             self.assertEqual(
-                dataflow_graph, register_relations["dataflow_graph"]
-            )
-            self.assertEqual(
                 dataflow_graph["format"],
                 "stage-a-register-dataflow-graph-v1",
             )
             self.assertFalse(dataflow_graph["acceptance_authority"])
+            transfer_table = json.loads(
+                (prepared / "relational-register-transfer-table.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                transfer_table["format"],
+                "stage-a-register-transfer-table-v1",
+            )
+            self.assertEqual(
+                transfer_table["graph_sha256"], dataflow_graph["graph_sha256"]
+            )
+            self.assertFalse(transfer_table["acceptance_authority"])
+            program_graph = json.loads(
+                (
+                    prepared
+                    / "relational-register-program-dataflow-graph.json"
+                ).read_text(encoding="utf-8")
+            )
+            transfer_programs = json.loads(
+                (
+                    prepared / "relational-register-transfer-programs.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                transfer_programs["format"],
+                "stage-a-register-transfer-programs-v1",
+            )
+            self.assertEqual(
+                transfer_programs["graph_sha256"],
+                program_graph["graph_sha256"],
+            )
+            self.assertEqual(
+                program_graph, register_relations["dataflow_graph"]
+            )
+            self.assertEqual(transfer_programs["region_count"], 1)
+            self.assertEqual(
+                len(transfer_programs["propagation"]["regions"]), 1,
+            )
+            self.assertFalse(transfer_programs["acceptance_authority"])
+            self.assertFalse(
+                (prepared / "relational-register-dataflow-problem.json").exists()
+            )
+            dataflow_problem_seed = json.loads(
+                (
+                    prepared
+                    / "relational-register-dataflow-problem-seed.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                dataflow_problem_seed["format"],
+                "stage-a-register-dataflow-problem-seed-v2",
+            )
+            self.assertEqual(
+                dataflow_problem_seed["original_sha256"],
+                transfer_programs["original_sha256"],
+            )
+            self.assertEqual(
+                dataflow_problem_seed["candidate_sha256"],
+                transfer_programs["candidate_sha256"],
+            )
+            self.assertFalse(dataflow_problem_seed["acceptance_authority"])
             self.assertEqual(
                 register_relations["trust"]["role"],
                 "analysis_and_proof_proposal_only",

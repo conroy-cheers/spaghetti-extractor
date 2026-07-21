@@ -15,13 +15,226 @@ REGISTER_NAMES = frozenset({
 })
 
 
+def _stack_read32_adjustment(
+    expression: object,
+) -> tuple[str, str, int, dict[str, Any]] | None:
+    if not isinstance(expression, dict) or expression.get("op") != "read32":
+        return None
+    address = expression.get("address")
+    if not isinstance(address, dict):
+        return None
+    if address.get("op") == "input_reg":
+        register = address.get("reg")
+        if isinstance(register, str):
+            return register, "identity", 0, address
+        return None
+    operation = address.get("op")
+    if operation not in {"add", "sub"}:
+        return None
+    register = address.get("left")
+    constant = address.get("right")
+    if operation == "add" and isinstance(register, dict) and register.get(
+        "op"
+    ) == "constant":
+        register, constant = constant, register
+    if (
+        not isinstance(register, dict)
+        or register.get("op") != "input_reg"
+        or not isinstance(register.get("reg"), str)
+        or not isinstance(constant, dict)
+        or constant.get("op") != "constant"
+    ):
+        return None
+    value = constant.get("value")
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value < 2**32:
+        return None
+    if operation == "sub":
+        return str(register["reg"]), "subtract", value, address
+    if value < 2**31:
+        return str(register["reg"]), "add", value, address
+    return str(register["reg"]), "subtract", 2**32 - value, address
+
+
+def _stack_bound_window_matches(
+    window: dict[str, Any],
+    original: tuple[str, str, int, dict[str, Any]],
+    candidate: tuple[str, str, int, dict[str, Any]],
+) -> bool:
+    if (
+        original[1:3] != candidate[1:3]
+        or window.get("original_register") != original[0]
+        or window.get("candidate_register") != candidate[0]
+    ):
+        return False
+    kind, amount = original[1], original[2]
+    above = int(window.get("bytes_above", -1))
+    below = int(window.get("bytes_below", -1))
+    if kind == "identity":
+        return 4 <= above
+    if kind == "add":
+        return amount % 4 == 0 and amount + 4 <= above
+    return 4 <= amount and amount % 4 == 0 and amount <= below
+
+
+def _attach_checked_stack_index_bounds(
+    regions: list[dict[str, Any]], behaviors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for region_index, region in enumerate(regions):
+        behavior_pair = behaviors[region_index] if region_index < len(behaviors) else {}
+        region["stack_index_bound_claims"] = []
+        requests = [
+            (bound_index, bound, bound.get("stack_bound_request"))
+            for bound_index, bound in enumerate(region.get("bounds", []))
+            if isinstance(bound, dict)
+            and isinstance(bound.get("stack_bound_request"), dict)
+        ]
+        request_keys = Counter(
+            json.dumps(request, sort_keys=True, separators=(",", ":"))
+            for _, _, request in requests
+        )
+        for bound_index, bound, request in requests:
+            assert isinstance(request, dict)
+
+            def reject(reason: str) -> None:
+                bound.pop("original_expression", None)
+                bound.pop("candidate_expression", None)
+                bound.pop("expression_source", None)
+                bound.pop("stack_bound_predicate", None)
+                rejected.append({
+                    "region_index": region_index,
+                    "bound_index": bound_index,
+                    "reason": reason,
+                })
+
+            request_key = json.dumps(
+                request, sort_keys=True, separators=(",", ":")
+            )
+            if request_keys[request_key] != 1:
+                reject("ambiguous_stack_bound_request")
+                continue
+            original_expression = request.get("original_expression")
+            candidate_expression = request.get("candidate_expression")
+            original = _stack_read32_adjustment(original_expression)
+            candidate = _stack_read32_adjustment(candidate_expression)
+            if original is None or candidate is None or original[1:3] != candidate[1:3]:
+                reject("stack_read32_shape_mismatch")
+                continue
+            original_behavior = behavior_pair.get("original_ir")
+            candidate_behavior = behavior_pair.get("candidate_ir")
+            if not isinstance(original_behavior, dict) or not isinstance(
+                candidate_behavior, dict
+            ):
+                reject("decoded_behavior_missing")
+                continue
+            if original_behavior.get("writes") != [] or candidate_behavior.get(
+                "writes"
+            ) != []:
+                reject("decoded_write_clobber")
+                continue
+            original_register = bound.get("original")
+            candidate_register = bound.get("candidate")
+            if (
+                not isinstance(original_register, str)
+                or not isinstance(candidate_register, str)
+                or (original_behavior.get("registers") or {}).get(original_register)
+                != original_expression
+                or (candidate_behavior.get("registers") or {}).get(candidate_register)
+                != candidate_expression
+            ):
+                reject("decoded_register_load_mismatch")
+                continue
+            matches = [
+                window
+                for window in region.get("stack_windows", [])
+                if isinstance(window, dict)
+                and _stack_bound_window_matches(window, original, candidate)
+            ]
+            if len(matches) != 1:
+                reject(
+                    "stack_window_missing"
+                    if not matches
+                    else "stack_window_ambiguous"
+                )
+                continue
+            upper = bound.get("unsigned_lt")
+            if (
+                not isinstance(upper, int)
+                or isinstance(upper, bool)
+                or not 0 < upper < 2**32
+            ):
+                reject("runtime_upper_bound_invalid")
+                continue
+            predicate = {
+                "original": {
+                    "op": "unsigned_less",
+                    "left": original_expression,
+                    "right": {"op": "constant", "value": upper},
+                },
+                "candidate": {
+                    "op": "unsigned_less",
+                    "left": candidate_expression,
+                    "right": {"op": "constant", "value": upper},
+                },
+                "exact_memory_reads": [{
+                    "original_address": original[3],
+                    "candidate_address": candidate[3],
+                    "bytes": 4,
+                }],
+                "source": "checked_stack_register_bound_v1",
+            }
+            predicates = region.setdefault("state_predicates", [])
+            if predicate not in predicates:
+                predicates.append(predicate)
+            adjustment = {"kind": original[1], "amount": original[2]}
+            claim = {
+                "profile": "checked_stack_register_bound_v1",
+                "original_register": original_register,
+                "candidate_register": candidate_register,
+                "upper_exclusive": upper,
+                "original_index_expression": original_expression,
+                "candidate_index_expression": candidate_expression,
+                "window": matches[0],
+                "adjustment": adjustment,
+                "predicate": predicate,
+            }
+            region["stack_index_bound_claims"].append(claim)
+            bound["original_expression"] = original_expression
+            bound["candidate_expression"] = candidate_expression
+            bound["expression_source"] = "checked_stack_register_bound_v1"
+            bound["stack_bound_predicate"] = predicate
+            accepted.append({
+                "region_index": region_index,
+                "bound_index": bound_index,
+                "adjustment": adjustment,
+            })
+    return {
+        "format": "stage-a-checked-stack-register-bounds-v1",
+        "status": "proposal_requires_generated_lean_replay",
+        "acceptance_authority": False,
+        "accepted_count": len(accepted),
+        "rejected_count": len(rejected),
+        "accepted": accepted,
+        "rejected": rejected,
+    }
+
+
 def _discover_direct_call_stack_return_summaries(
     regions: list[dict[str, Any]],
     behaviors: list[dict[str, Any]],
     relation_rows: list[dict[str, Any]],
     edges: list[dict[str, Any]],
+    *,
+    additional_entries: tuple[int, ...] = (),
 ) -> dict[str, Any]:
-    """Propose reusable direct-call summaries from closed decoded paths."""
+    """Propose reusable affine-return summaries from closed decoded paths.
+
+    Direct-call destinations are discovered from the edge inventory. Other
+    machine entry surfaces, such as loader callbacks, may request the same
+    checked summary through ``additional_entries`` without manufacturing a
+    synthetic call edge.
+    """
     region_count = len(regions)
     outgoing: dict[int, list[dict[str, Any]]] = defaultdict(list)
     direct_edges_by_source: dict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -385,6 +598,9 @@ def _discover_direct_call_stack_return_summaries(
         for source_edges in direct_edges_by_source.values()
         for edge in source_edges
         if 0 <= int(edge.get("target_region_index", -1)) < region_count
+    } | {
+        int(entry) for entry in additional_entries
+        if 0 <= int(entry) < region_count
     })
     rounds = 0
     for _ in range(len(callee_entries) + 1):
@@ -445,6 +661,15 @@ def _discover_direct_call_stack_return_summaries(
         "profile": "decoded_affine_stack_return_summary_v1",
         "rounds": rounds,
         "complete_callee_entries": len(complete_entries),
+        "entry_summaries": [
+            {"entry_region_index": entry, **summary}
+            for entry, summary in sorted(complete_entries.items())
+        ],
+        "entry_blockers": [
+            {"entry_region_index": entry, "blocker": blocker}
+            for entry, blocker in sorted(entry_blockers.items())
+            if entry not in complete_entries
+        ],
         "complete_summaries": sum(
             summary.get("status") == "candidate_requires_local_lean_replay"
             for summary in summaries
@@ -648,6 +873,18 @@ def _attach_stack_window_invariants(
     regions = refined.get("regions", [])
     requirements: dict[tuple[int, str, str], tuple[int, int]] = {}
     seed_sources: dict[tuple[int, str, str], set[str]] = {}
+    tls_callback_target_ids = [
+        int(target_id)
+        for target_id in (refined.get("launch") or {}).get(
+            "tls_callback_target_ids", []
+        )
+    ]
+    # pe32-console-launch-v2 materializes a return address followed by the
+    # three machine-level TLS callback arguments.  Exact-word preservation
+    # checks may need any of those words even when an earlier local analysis
+    # only requested the frame base itself.
+    tls_launch_frame_span = 16 if tls_callback_target_ids else 4
+    image_separation_span = 16 if tls_callback_target_ids else 1
 
     def inside_image(binary: StageABinary, address: int) -> bool:
         return binary.image_base <= address < binary.image_base + binary.pe.OPTIONAL_HEADER.SizeOfImage
@@ -753,9 +990,16 @@ def _attach_stack_window_invariants(
             prior_below, prior_above = requirements.get(key, (0, 0))
             requirements[key] = (
                 prior_below,
-                max(prior_above, original_offset + 1, candidate_offset + 1),
+                max(
+                    prior_above,
+                    original_offset + image_separation_span,
+                    candidate_offset + image_separation_span,
+                ),
             )
-            seed_sources.setdefault(key, set()).add("address_separation_seed")
+            seed_sources.setdefault(key, set()).add(
+                "tls_launch_frame_address_separation_seed"
+                if tls_callback_target_ids else "address_separation_seed"
+            )
 
     relation_rows = register_relations.get("regions", [])
     for region_index, behavior in enumerate(behaviors):
@@ -772,8 +1016,12 @@ def _attach_stack_window_invariants(
             candidate_register = str(
                 location.get("candidate_register", "esp")
             )
-            original_window = access_window(int(location["original"]), 4)
-            candidate_window = access_window(int(location["candidate"]), 4)
+            original_window = access_window(
+                int(location["original"]), tls_launch_frame_span
+            )
+            candidate_window = access_window(
+                int(location["candidate"]), tls_launch_frame_span
+            )
             if original_window is None or candidate_window is None:
                 continue
             add_requirement(
@@ -1030,6 +1278,11 @@ def _attach_stack_window_invariants(
         int(region.get("numeric_id", index)): index
         for index, region in enumerate(regions)
     }
+    tls_callback_region_indices = tuple(
+        region_index_by_target_id[target_id]
+        for target_id in tls_callback_target_ids
+        if target_id in region_index_by_target_id
+    )
     checked_call_continuations: dict[int, list[dict[str, Any]]] = defaultdict(list)
     checked_call_edges_by_source = {
         int(edge["source_region_index"]): edge
@@ -1062,12 +1315,19 @@ def _attach_stack_window_invariants(
             behaviors,
             relation_rows,
             register_relations.get("edges", []),
+            additional_entries=tls_callback_region_indices,
         )
     )
     direct_call_return_summary_by_source = {
         int(summary["callsite_region_index"]): summary
         for summary in direct_call_return_summary_analysis["summaries"]
         if summary.get("status") == "candidate_requires_local_lean_replay"
+    }
+    affine_return_summary_by_entry = {
+        int(summary["entry_region_index"]): summary
+        for summary in direct_call_return_summary_analysis.get(
+            "entry_summaries", []
+        )
     }
     for source_index, behavior in enumerate(behaviors):
         original_outcome = behavior["original_ir"].get("outcome") or {}
@@ -1190,6 +1450,27 @@ def _attach_stack_window_invariants(
                 if direct_return_summary is not None
                 else 0
             ),
+            "return_predecessors": (
+                [
+                    {
+                        "region_index": return_index,
+                        "stack_delta": stack_delta(
+                            (
+                                behaviors[return_index]["original_ir"].get(
+                                    "registers"
+                                )
+                                or {}
+                            ).get("esp"),
+                            "esp",
+                        ),
+                    }
+                    for return_index in direct_return_summary.get(
+                        "return_region_indices", []
+                    )
+                ]
+                if direct_return_summary is not None
+                else []
+            ),
         })
     call_window_adjacency = {
         continuation: {
@@ -1217,12 +1498,6 @@ def _attach_stack_window_invariants(
                 int(call["callee_region_index"]), continuation,
             ))
 
-    tls_callback_target_ids = [
-        int(target_id)
-        for target_id in (refined.get("launch") or {}).get(
-            "tls_callback_target_ids", []
-        )
-    ]
     entry_region_indices = [
         index for index, region in enumerate(regions)
         if bool(region.get("root"))
@@ -1234,35 +1509,57 @@ def _attach_stack_window_invariants(
                 "numeric_id", entry_region_indices[0]
             )),
         ]
-        for callback_target_id, continuation_target_id in zip(
+        for callback_position, (
+            callback_target_id, continuation_target_id,
+        ) in enumerate(zip(
             tls_callback_target_ids, continuation_target_ids, strict=True
-        ):
+        )):
             callback_index = region_index_by_target_id.get(callback_target_id)
             continuation_index = region_index_by_target_id.get(
                 continuation_target_id
             )
             if callback_index is None or continuation_index is None:
                 continue
-            original_outcome = behaviors[callback_index]["original_ir"].get(
-                "outcome"
-            ) or {}
-            candidate_outcome = behaviors[callback_index]["candidate_ir"].get(
-                "outcome"
-            ) or {}
-            return_claim = relation_rows[callback_index].get("return_pop_claim")
-            if (
-                original_outcome.get("op") != "returned"
-                or candidate_outcome.get("op") != "returned"
-                or not isinstance(return_claim, dict)
-            ):
+            # The bounded console launch profile materializes one 16-byte
+            # frame for this callback and every remaining continuation. Keep
+            # their complete return slot and three loader arguments inside the
+            # proved stack range while the callback executes.
+            add_requirement(
+                callback_index, "esp", "esp",
+                16 * (len(tls_callback_target_ids) - callback_position),
+                "pe32_tls_launch_frame_span",
+            )
+            return_summary = affine_return_summary_by_entry.get(callback_index)
+            if return_summary is None:
                 continue
             checked_call_continuations[continuation_index].append({
                 "source_region_index": callback_index,
                 "callee_region_index": callback_index,
                 "entry_stack_delta": 0,
-                "return_stack_delta": 4 + int(return_claim["pop_bytes"]),
-                "return_summary_bytes_below": 0,
-                "return_summary_bytes_above": 0,
+                "return_stack_delta": int(return_summary["return_delta"]),
+                "return_summary_bytes_below": int(
+                    return_summary["bytes_below"]
+                ),
+                "return_summary_bytes_above": int(
+                    return_summary["bytes_above"]
+                ),
+                "return_predecessors": [
+                    {
+                        "region_index": int(return_index),
+                        "stack_delta": stack_delta(
+                            (
+                                behaviors[int(return_index)]["original_ir"].get(
+                                    "registers"
+                                )
+                                or {}
+                            ).get("esp"),
+                            "esp",
+                        ),
+                    }
+                    for return_index in return_summary[
+                        "return_region_indices"
+                    ]
+                ],
                 "recursive": 0,
                 "source": "pe32_tls_launch_continuation",
             })
@@ -1357,6 +1654,18 @@ def _attach_stack_window_invariants(
                     ))
                     if source_key not in transfer_seen:
                         transfer_pending.append(source_key)
+                    for predecessor in call.get("return_predecessors", []):
+                        predecessor_delta = predecessor.get("stack_delta")
+                        if not isinstance(predecessor_delta, int):
+                            continue
+                        predecessor_key = (
+                            int(predecessor["region_index"]), "esp", "esp",
+                        )
+                        transfer_adjacency[target_key].append((
+                            predecessor_key, predecessor_delta,
+                        ))
+                        if predecessor_key not in transfer_seen:
+                            transfer_pending.append(predecessor_key)
     for transfers in transfer_adjacency.values():
         transfers.sort()
     unbounded_cycle_nodes = _reachable_weighted_nonzero_cycle_nodes(
@@ -1488,6 +1797,46 @@ def _attach_stack_window_invariants(
                     if callee_key not in queued:
                         queue.append(callee_key)
                         queued.add(callee_key)
+                for predecessor in call.get("return_predecessors", []):
+                    predecessor_delta = predecessor.get("stack_delta")
+                    if not isinstance(predecessor_delta, int):
+                        add_frontier({
+                            "region_index": target_index,
+                            "source_region_index": int(call["source_region_index"]),
+                            "callee_region_index": int(call["callee_region_index"]),
+                            "return_region_index": int(predecessor["region_index"]),
+                            "original_register": original_register,
+                            "candidate_register": candidate_register,
+                            "bytes_below": bytes_below,
+                            "bytes_above": bytes_above,
+                            "reason": "return_predecessor_stack_delta_unsupported",
+                        })
+                        continue
+                    predecessor_key = (
+                        int(predecessor["region_index"]),
+                        original_register,
+                        candidate_register,
+                    )
+                    predecessor_required = (
+                        max(bytes_below - predecessor_delta, 0),
+                        max(bytes_above + predecessor_delta, 1),
+                    )
+                    prior_below, prior_above = requirements.get(
+                        predecessor_key, (0, 0)
+                    )
+                    required = (
+                        max(prior_below, predecessor_required[0]),
+                        max(prior_above, predecessor_required[1]),
+                    )
+                    if required != (prior_below, prior_above):
+                        requirements[predecessor_key] = required
+                        seed_sources.setdefault(predecessor_key, set()).add(
+                            "direct_call_return_predecessor_window"
+                        )
+                        requirement_updates += 1
+                        if predecessor_key not in queued:
+                            queue.append(predecessor_key)
+                            queued.add(predecessor_key)
         edges = incoming.get(target_index, [])
         if not edges:
             if has_checked_return_predecessor:
@@ -1579,6 +1928,10 @@ def _attach_stack_window_invariants(
                 claims.append({"window": matches[0], "separation": separation})
         region["stack_address_separation_claims"] = claims
 
+    stack_index_bound_analysis = _attach_checked_stack_index_bounds(
+        regions, behaviors
+    )
+
     return refined, {
         "format": "stage-a-relational-stack-windows-v1",
         "status": "proposal_requires_lean_replay",
@@ -1596,6 +1949,7 @@ def _attach_stack_window_invariants(
         "unproven_stack_address_seeds": len(unproven_stack_seeds),
         "duplicate_frontier_observations": duplicate_frontier_observations,
         "direct_call_return_summary_analysis": direct_call_return_summary_analysis,
+        "stack_index_bounds": stack_index_bound_analysis,
         "frontier": frontier,
     }
 
@@ -2129,6 +2483,7 @@ def _attach_return_slot_contracts(
         edge["return_slot_transfer_claims"] = []
         edge["return_slot_frame_transfer_claims"] = []
         edge["return_slot_call_summary_claims"] = []
+        edge["return_slot_external_call_summary_claims"] = []
         push_claim = (
             edge.get("direct_call_push_claim")
             or edge.get("indirect_call_push_claim")
@@ -2552,6 +2907,219 @@ def _attach_return_slot_contracts(
         )
     }
 
+    machine_contracts_by_id: dict[int, dict[str, Any]] = {}
+    ambiguous_machine_contract_ids: set[int] = set()
+    for contract in machine_import_call_contracts or []:
+        contract_id = contract.get("id") if isinstance(contract, dict) else None
+        if not isinstance(contract_id, int) or isinstance(contract_id, bool):
+            continue
+        if contract_id in machine_contracts_by_id:
+            ambiguous_machine_contract_ids.add(contract_id)
+            machine_contracts_by_id.pop(contract_id, None)
+        elif contract_id not in ambiguous_machine_contract_ids:
+            machine_contracts_by_id[contract_id] = contract
+
+    def external_call_summary_basis(
+        call_edge: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Return exact evidence for a checked returning import-thunk call.
+
+        This is proposal generation only.  The generated Lean checker replays
+        the direct call, thunk decode, import identity, contract selection, and
+        offset arithmetic before the summary can participate in composition.
+        """
+
+        call_push = call_edge.get("direct_call_push_claim")
+        contract_id = call_edge.get("returning_external_thunk_contract_id")
+        if (
+            not isinstance(call_push, dict)
+            or not isinstance(contract_id, int)
+            or isinstance(contract_id, bool)
+            or contract_id in ambiguous_machine_contract_ids
+        ):
+            return None
+        contract = machine_contracts_by_id.get(contract_id)
+        if contract is None or contract.get("disposition") != "returns":
+            return None
+        thunk_index = int(call_edge["target_region_index"])
+        if not 0 <= thunk_index < len(behaviors):
+            return None
+        original_thunk = behaviors[thunk_index].get("original_ir") or {}
+        candidate_thunk = behaviors[thunk_index].get("candidate_ir") or {}
+        original_outcome = original_thunk.get("outcome") or {}
+        candidate_outcome = candidate_thunk.get("outcome") or {}
+        original_identity = _semantic_external_target_identity(
+            original_outcome.get("import")
+        )
+        candidate_identity = _semantic_external_target_identity(
+            candidate_outcome.get("import")
+        )
+        imported = contract.get("import") or {}
+        contract_identity = (
+            str(imported.get("dll", "")).lower(),
+            "symbol" if "symbol" in imported else "ordinal",
+            imported.get("symbol", imported.get("ordinal")),
+        )
+        if (
+            original_outcome.get("op") != "external_jump"
+            or candidate_outcome.get("op") != "external_jump"
+            or original_identity is None
+            or original_identity != candidate_identity
+            or original_identity != contract_identity
+        ):
+            return None
+        callsite = int(call_edge["source_region_index"])
+        original_call = behaviors[callsite].get("original_ir") or {}
+        candidate_call = behaviors[callsite].get("candidate_ir") or {}
+        original_result = _register_offset_witness(
+            (original_call.get("registers") or {}).get("esp"), "esp"
+        )
+        candidate_result = _register_offset_witness(
+            (candidate_call.get("registers") or {}).get("esp"), "esp"
+        )
+        if original_result is None or candidate_result is None:
+            return None
+        original_witness, original_delta = original_result
+        candidate_witness, candidate_delta = candidate_result
+        original_thunk_result = _register_offset_witness(
+            (original_thunk.get("registers") or {}).get("esp"), "esp"
+        )
+        candidate_thunk_result = _register_offset_witness(
+            (candidate_thunk.get("registers") or {}).get("esp"), "esp"
+        )
+        if original_thunk_result is None or candidate_thunk_result is None:
+            return None
+        original_thunk_witness, original_thunk_delta = original_thunk_result
+        candidate_thunk_witness, candidate_thunk_delta = candidate_thunk_result
+        stack_delta = contract.get("stack_result_delta")
+        if (
+            not isinstance(stack_delta, int)
+            or isinstance(stack_delta, bool)
+            or not 0 <= stack_delta < 2**32
+        ):
+            return None
+        continuation = call_push.get("continuation_region_index")
+        if (
+            not isinstance(continuation, int)
+            or isinstance(continuation, bool)
+            or not 0 <= continuation < len(relation_rows)
+        ):
+            return None
+        return {
+            "machine_contract_id": contract_id,
+            "thunk_region_index": thunk_index,
+            "continuation_region_index": continuation,
+            "original_call_witness": original_witness,
+            "candidate_call_witness": candidate_witness,
+            "original_call_delta": int(original_delta),
+            "candidate_call_delta": int(candidate_delta),
+            "original_thunk_witness": original_thunk_witness,
+            "candidate_thunk_witness": candidate_thunk_witness,
+            "original_thunk_delta": int(original_thunk_delta),
+            "candidate_thunk_delta": int(candidate_thunk_delta),
+            "stack_result_delta": stack_delta,
+        }
+
+    def external_call_summary_claim(
+        call_edge: dict[str, Any], source_location: FrameLocation,
+    ) -> dict[str, Any] | None:
+        basis = external_call_summary_basis(call_edge)
+        if basis is None:
+            return None
+        if source_location[0] != "esp" or source_location[2] != "esp":
+            return None
+        suspended_location: FrameLocation = (
+            "esp",
+            (source_location[1] - int(basis["original_call_delta"])) % 2**32,
+            "esp",
+            (source_location[3] - int(basis["candidate_call_delta"])) % 2**32,
+        )
+        internal_location: FrameLocation = (
+            "esp",
+            (
+                suspended_location[1] - int(basis["original_thunk_delta"])
+            ) % 2**32,
+            "esp",
+            (
+                suspended_location[3] - int(basis["candidate_thunk_delta"])
+            ) % 2**32,
+        )
+        boundary_location: FrameLocation = (
+            "esp",
+            (internal_location[1] - 4) % 2**32,
+            "esp",
+            (internal_location[3] - 4) % 2**32,
+        )
+        target_location: FrameLocation = (
+            "esp",
+            (
+                boundary_location[1] - int(basis["stack_result_delta"])
+            ) % 2**32,
+            "esp",
+            (
+                boundary_location[3] - int(basis["stack_result_delta"])
+            ) % 2**32,
+        )
+        thunk_index = int(basis["thunk_region_index"])
+        original_write_witnesses = write_address_witnesses(
+            behaviors[thunk_index].get("original_ir") or {},
+            "esp",
+            suspended_location[1],
+        )
+        candidate_write_witnesses = write_address_witnesses(
+            behaviors[thunk_index].get("candidate_ir") or {},
+            "esp",
+            suspended_location[3],
+        )
+        if (
+            original_write_witnesses is None
+            or candidate_write_witnesses is None
+        ):
+            return None
+        return {
+            "profile": "external_return_slot_call_summary_v1",
+            "machine_contract_id": int(basis["machine_contract_id"]),
+            "thunk_region_index": int(basis["thunk_region_index"]),
+            "continuation_region_index": int(
+                basis["continuation_region_index"]
+            ),
+            "source": location_payload(source_location),
+            "suspended": location_payload(suspended_location),
+            "target": location_payload(target_location),
+            "original_call_witness": basis["original_call_witness"],
+            "candidate_call_witness": basis["candidate_call_witness"],
+            "thunk_transfer": {
+                "source": location_payload(suspended_location),
+                "internal_target": location_payload(internal_location),
+                "boundary_target": location_payload(boundary_location),
+                "internal_rule": {
+                    "original_source_register": "esp",
+                    "candidate_source_register": "esp",
+                    "original_target_register": "esp",
+                    "candidate_target_register": "esp",
+                    "original_output_witness": basis[
+                        "original_thunk_witness"
+                    ],
+                    "candidate_output_witness": basis[
+                        "candidate_thunk_witness"
+                    ],
+                    "original_delta": int(basis["original_thunk_delta"]),
+                    "candidate_delta": int(basis["candidate_thunk_delta"]),
+                },
+                "result_rule": {
+                    "source": location_payload(boundary_location),
+                    "target": location_payload(target_location),
+                    "original_delta": int(basis["stack_result_delta"]),
+                    "candidate_delta": int(basis["stack_result_delta"]),
+                },
+                "memory_claim": {
+                    "offsets": location_payload(suspended_location),
+                    "original_write_witnesses": original_write_witnesses,
+                    "candidate_write_witnesses": candidate_write_witnesses,
+                },
+            },
+        }
+
     def replayable_call_summary(summary: dict[str, Any]) -> dict[str, Any] | None:
         if not summary["closed"] or not summary["return_region_indices"]:
             return None
@@ -2677,6 +3245,31 @@ def _attach_return_slot_contracts(
             if joined != locations[continuation]:
                 locations[continuation] = joined
                 summary_changed = True
+        for call_edge in checked_call_edge_by_source.values():
+            basis = external_call_summary_basis(call_edge)
+            if basis is None:
+                continue
+            callsite = int(call_edge["source_region_index"])
+            continuation = int(basis["continuation_region_index"])
+            proposed = {
+                location_key
+                for source_location in locations[callsite]
+                for claim in [external_call_summary_claim(call_edge, source_location)]
+                if claim is not None
+                for location_key in [(
+                    str(claim["target"]["original_register"]),
+                    int(claim["target"]["original"]),
+                    str(claim["target"]["candidate_register"]),
+                    int(claim["target"]["candidate"]),
+                )]
+            }
+            joined = locations[continuation] | proposed
+            if len(joined) > disjunction_budget:
+                overflow_regions.add(continuation)
+                continue
+            if joined != locations[continuation]:
+                locations[continuation] = joined
+                summary_changed = True
         if not summary_changed:
             break
         for ordinary_iteration in range(max_iterations):
@@ -2686,6 +3279,7 @@ def _attach_return_slot_contracts(
                 break
 
     call_summary_claim_count = 0
+    external_call_summary_claim_count = 0
     replayable_call_summaries = 0
     for summary in call_summary_analysis["summaries"]:
         replay = replayable_call_summary(summary)
@@ -2743,6 +3337,18 @@ def _attach_return_slot_contracts(
             call_edge["return_slot_call_summary_claims"].extend(claims)
             call_summary_claim_count += len(claims)
             replayable_call_summaries += 1
+
+    for call_edge in checked_call_edge_by_source.values():
+        claims = [
+            claim
+            for source_location in sorted(
+                locations[int(call_edge["source_region_index"])]
+            )
+            for claim in [external_call_summary_claim(call_edge, source_location)]
+            if claim is not None
+        ]
+        call_edge["return_slot_external_call_summary_claims"] = claims
+        external_call_summary_claim_count += len(claims)
 
     transfer_claim_count = 0
     frame_transfer_claim_count = 0
@@ -2941,6 +3547,7 @@ def _attach_return_slot_contracts(
         "call_summary_rounds": summary_rounds,
         "replayable_call_summaries": replayable_call_summaries,
         "call_summary_claims": call_summary_claim_count,
+        "external_call_summary_claims": external_call_summary_claim_count,
         "stack_window_return_summaries": stack_window_return_summaries,
         "call_summary_analysis": call_summary_analysis,
         "trust": {

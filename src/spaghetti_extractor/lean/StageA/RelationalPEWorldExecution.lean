@@ -1,4 +1,4 @@
-import StageA.RelationalCertificates
+import StageA.RelationalLinkedExecution
 
 namespace StageA.Relational
 
@@ -156,6 +156,191 @@ theorem RelationalProductGraph.nodeCodeTargetFound
   | none => simp [targetResult] at nodeValid
   | some target => exact ⟨target, rfl⟩
 
+/-- Stack representation is irrelevant to raw-EIP lifting.  This compact
+frontier relation records exactly the constructor agreement and mapped logical
+target needed to obtain canonical concrete EIPs. -/
+def ExecutionFrontiersMapped (graph : RelationalProductGraph) :
+    WorldExecution -> WorldExecution -> Prop
+  | .running originalTarget _ _ _ _, .running candidateTarget _ _ _ _ =>
+      originalTarget = candidateTarget ∧
+        ∃ nodeId node, graph.getNode? nodeId = some node ∧
+          node.targetId = originalTarget
+  | .returned _ _, .returned _ _ => True
+  | .terminated _, .terminated _ => True
+  | .awaitingExternal _ _, .awaitingExternal _ _ => True
+  | .callbackRunning originalTarget _ _ _ _ _,
+      .callbackRunning candidateTarget _ _ _ _ _ =>
+      originalTarget = candidateTarget ∧
+        ∃ nodeId node, graph.getNode? nodeId = some node ∧
+          node.targetId = originalTarget
+  | .fault _, .fault _ => True
+  | .blocked _, .blocked _ => True
+  | _, _ => False
+
+theorem executionFrontiersMapped_rawEipPairBridgeClosed
+    (context : StaticProofContext) (graph : RelationalProductGraph)
+    (original candidate : DecodedWorldProgram)
+    (executionRelation : WorldExecution -> WorldExecution -> Prop)
+    (frontiers : ∀ originalExecution candidateExecution,
+      executionRelation originalExecution candidateExecution →
+        ExecutionFrontiersMapped graph originalExecution candidateExecution)
+    (originalContext : original.context = context)
+    (candidateContext : candidate.context = context)
+    (originalSide : original.candidate = false)
+    (candidateSide : candidate.candidate = true)
+    (contextValid : context.StructurallyValid)
+    (graphValid : graph.IndexedValid context) :
+    RawEipPairBridgeClosed original candidate executionRelation := by
+  rcases contextValid with
+    ⟨_, _, _, _, _, _, codeMapValid, _, _, _, _, _, _, _, _, _, _⟩
+  rcases codeMapValid with
+    ⟨_, _, _, _, _, _, _, _, originalRoundTrips, candidateRoundTrips⟩
+  intro originalExecution candidateExecution related
+  have mapped := frontiers originalExecution candidateExecution related
+  cases originalExecution <;> cases candidateExecution
+  case running.running originalTarget originalState originalCalls originalEventIndex
+      originalWorld candidateTarget candidateState candidateCalls candidateEventIndex
+      candidateWorld =>
+      rcases mapped with
+        ⟨targetEqual, nodeId, node, nodeFound, nodeTarget⟩
+      subst candidateTarget
+      subst originalTarget
+      rcases graph.nodeCodeTargetFound context graphValid nodeId node nodeFound with
+        ⟨target, targetFound⟩
+      rcases context.codeMap.canonicalRawEip_roundTrip false
+          context.originalPe.imageBase originalRoundTrips node.targetId target
+          targetFound with ⟨originalEip, originalCanonical, originalResolved⟩
+      rcases context.codeMap.canonicalRawEip_roundTrip true
+          context.candidatePe.imageBase candidateRoundTrips node.targetId target
+          targetFound with ⟨candidateEip, candidateCanonical, candidateResolved⟩
+      refine ⟨.running originalEip originalState originalCalls originalEventIndex
+          originalWorld,
+        .running candidateEip candidateState candidateCalls candidateEventIndex
+          candidateWorld, ?_, ?_⟩
+      · constructor
+        · simp [WorldExecution.concretizeRawEip?,
+            DecodedWorldProgram.canonicalRawEip?, DecodedWorldProgram.sideImageBase,
+            originalContext, originalSide, originalCanonical]
+        · simp [RawEipWorldExecution.ProjectsTo,
+            RawEipWorldExecution.project?, DecodedWorldProgram.resolveRawEip,
+            DecodedWorldProgram.sideImageBase, originalContext, originalSide,
+            originalResolved]
+      · constructor
+        · simp [WorldExecution.concretizeRawEip?,
+            DecodedWorldProgram.canonicalRawEip?, DecodedWorldProgram.sideImageBase,
+            candidateContext, candidateSide, candidateCanonical]
+        · simp [RawEipWorldExecution.ProjectsTo,
+            RawEipWorldExecution.project?, DecodedWorldProgram.resolveRawEip,
+            DecodedWorldProgram.sideImageBase, candidateContext, candidateSide,
+            candidateResolved]
+  case returned.returned originalState originalWorld candidateState candidateWorld =>
+      exact ⟨.returned originalState originalWorld,
+        .returned candidateState candidateWorld,
+        by simp [WorldExecution.ConcretizesToRawEip,
+          WorldExecution.concretizeRawEip?, RawEipWorldExecution.ProjectsTo,
+          RawEipWorldExecution.project?],
+        by simp [WorldExecution.ConcretizesToRawEip,
+          WorldExecution.concretizeRawEip?, RawEipWorldExecution.ProjectsTo,
+          RawEipWorldExecution.project?]⟩
+  case terminated.terminated originalWorld candidateWorld =>
+      exact ⟨.terminated originalWorld, .terminated candidateWorld,
+        by simp [WorldExecution.ConcretizesToRawEip,
+          WorldExecution.concretizeRawEip?, RawEipWorldExecution.ProjectsTo,
+          RawEipWorldExecution.project?],
+        by simp [WorldExecution.ConcretizesToRawEip,
+          WorldExecution.concretizeRawEip?, RawEipWorldExecution.ProjectsTo,
+          RawEipWorldExecution.project?]⟩
+  case awaitingExternal.awaitingExternal originalSuspension originalCallbacks
+      candidateSuspension candidateCallbacks =>
+      exact ⟨.awaitingExternal originalSuspension originalCallbacks,
+        .awaitingExternal candidateSuspension candidateCallbacks,
+        by simp [WorldExecution.ConcretizesToRawEip,
+          WorldExecution.concretizeRawEip?, RawEipWorldExecution.ProjectsTo,
+          RawEipWorldExecution.project?],
+        by simp [WorldExecution.ConcretizesToRawEip,
+          WorldExecution.concretizeRawEip?, RawEipWorldExecution.ProjectsTo,
+          RawEipWorldExecution.project?]⟩
+  case callbackRunning.callbackRunning originalTarget originalState originalCalls
+      originalEventIndex originalWorld originalCallbacks candidateTarget candidateState
+      candidateCalls candidateEventIndex candidateWorld candidateCallbacks =>
+      rcases mapped with
+        ⟨targetEqual, nodeId, node, nodeFound, nodeTarget⟩
+      subst candidateTarget
+      subst originalTarget
+      rcases graph.nodeCodeTargetFound context graphValid nodeId node nodeFound with
+        ⟨target, targetFound⟩
+      rcases context.codeMap.canonicalRawEip_roundTrip false
+          context.originalPe.imageBase originalRoundTrips node.targetId target
+          targetFound with ⟨originalEip, originalCanonical, originalResolved⟩
+      rcases context.codeMap.canonicalRawEip_roundTrip true
+          context.candidatePe.imageBase candidateRoundTrips node.targetId target
+          targetFound with ⟨candidateEip, candidateCanonical, candidateResolved⟩
+      refine ⟨.callbackRunning originalEip originalState originalCalls
+          originalEventIndex originalWorld originalCallbacks,
+        .callbackRunning candidateEip candidateState candidateCalls candidateEventIndex
+          candidateWorld candidateCallbacks, ?_, ?_⟩
+      · constructor
+        · simp [WorldExecution.concretizeRawEip?,
+            DecodedWorldProgram.canonicalRawEip?, DecodedWorldProgram.sideImageBase,
+            originalContext, originalSide, originalCanonical]
+        · simp [RawEipWorldExecution.ProjectsTo,
+            RawEipWorldExecution.project?, DecodedWorldProgram.resolveRawEip,
+            DecodedWorldProgram.sideImageBase, originalContext, originalSide,
+            originalResolved]
+      · constructor
+        · simp [WorldExecution.concretizeRawEip?,
+            DecodedWorldProgram.canonicalRawEip?, DecodedWorldProgram.sideImageBase,
+            candidateContext, candidateSide, candidateCanonical]
+        · simp [RawEipWorldExecution.ProjectsTo,
+            RawEipWorldExecution.project?, DecodedWorldProgram.resolveRawEip,
+            DecodedWorldProgram.sideImageBase, candidateContext, candidateSide,
+            candidateResolved]
+  case fault.fault originalCause candidateCause =>
+      exact ⟨.fault originalCause, .fault candidateCause,
+        by simp [WorldExecution.ConcretizesToRawEip,
+          WorldExecution.concretizeRawEip?, RawEipWorldExecution.ProjectsTo,
+          RawEipWorldExecution.project?],
+        by simp [WorldExecution.ConcretizesToRawEip,
+          WorldExecution.concretizeRawEip?, RawEipWorldExecution.ProjectsTo,
+          RawEipWorldExecution.project?]⟩
+  case blocked.blocked originalReason candidateReason =>
+      exact ⟨.blocked originalReason, .blocked candidateReason,
+        by simp [WorldExecution.ConcretizesToRawEip,
+          WorldExecution.concretizeRawEip?, RawEipWorldExecution.ProjectsTo,
+          RawEipWorldExecution.project?],
+        by simp [WorldExecution.ConcretizesToRawEip,
+          WorldExecution.concretizeRawEip?, RawEipWorldExecution.ProjectsTo,
+          RawEipWorldExecution.project?]⟩
+  all_goals simp [ExecutionFrontiersMapped] at mapped
+
+theorem linkedWorldExecutionsRelated_frontiersMapped
+    (context : StaticProofContext) (graph : RelationalProductGraph)
+    (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : LinkedControlAuthority)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (sites : List ExternalCallSiteContract) :
+    ∀ originalExecution candidateExecution,
+      LinkedWorldExecutionsRelated context graph invariants reachability control
+          callbackTargets sites originalExecution candidateExecution →
+        ExecutionFrontiersMapped graph originalExecution candidateExecution := by
+  intro originalExecution candidateExecution related
+  cases originalExecution <;> cases candidateExecution
+  case running.running =>
+      rcases related with
+        ⟨targetEqual, _, _, _, nodeId, node, _, _, _, _, nodeFound, nodeTarget, _⟩
+      exact ⟨targetEqual, nodeId, node, nodeFound, nodeTarget⟩
+  case callbackRunning.callbackRunning =>
+      rcases related with
+        ⟨targetEqual, _, _, _, _, nodeId, node, _, _, _, _, nodeFound, _,
+          nodeTarget, _⟩
+      exact ⟨targetEqual, nodeId, node, nodeFound, nodeTarget⟩
+  case returned.returned => trivial
+  case terminated.terminated => trivial
+  case awaitingExternal.awaitingExternal => trivial
+  case fault.fault => trivial
+  all_goals simp [LinkedWorldExecutionsRelated] at related
+
 theorem worldExecutionsRelated_rawEipPairBridgeClosed
     (context : StaticProofContext) (graph : RelationalProductGraph)
     (invariants : ProductInvariantTable)
@@ -176,7 +361,7 @@ theorem worldExecutionsRelated_rawEipPairBridgeClosed
   rcases contextValid with
     ⟨_, _, _, _, _, _, codeMapValid, _, _, _, _, _, _, _, _, _, _⟩
   rcases codeMapValid with
-    ⟨_, _, _, _, _, originalRoundTrips, candidateRoundTrips⟩
+    ⟨_, _, _, _, _, _, _, _, originalRoundTrips, candidateRoundTrips⟩
   intro originalExecution candidateExecution related
   cases originalExecution <;> cases candidateExecution
   case running.running originalTarget originalState originalCalls originalEventIndex
@@ -581,6 +766,158 @@ theorem pe32ProgramsEquivalent_raw (context : StaticProofContext)
     worldExecutionsRelated_rawEipPairBridgeClosed context graph invariants reachability
       control callbackTargets externalCallSites original candidate rfl rfl rfl rfl
       certificate.staticContextValid certificate.productGraphValid
+  refine ⟨certificate.launchRealizable,
+    RawEipLiftedExecutionRelation original candidate executionRelation, ?_,
+    relationalWeakBisimulation_rawEip_of_logical original candidate executionRelation
+      logicalBisimulation bridge⟩
+  intro world originalState candidateState statesRelated
+  have logicalInitial := initialRelated world originalState candidateState statesRelated
+  rcases bridge
+      (.running launch.rootTargetId originalState launch.continuationTargetIds 0 world)
+      (.running launch.rootTargetId candidateState launch.continuationTargetIds 0 world)
+      logicalInitial with
+    ⟨originalRaw, candidateRaw, originalConcrete, candidateConcrete⟩
+  rcases originalConcrete with ⟨originalCanonical, originalProjects⟩
+  rcases candidateConcrete with ⟨candidateCanonical, candidateProjects⟩
+  cases originalRoot : original.canonicalRawEip? launch.rootTargetId with
+  | none => simp [WorldExecution.concretizeRawEip?, originalRoot] at originalCanonical
+  | some originalEip =>
+      cases candidateRoot : candidate.canonicalRawEip? launch.rootTargetId with
+      | none => simp [WorldExecution.concretizeRawEip?, candidateRoot] at candidateCanonical
+      | some candidateEip =>
+          simp [WorldExecution.concretizeRawEip?, originalRoot] at originalCanonical
+          simp [WorldExecution.concretizeRawEip?, candidateRoot] at candidateCanonical
+          subst originalRaw
+          subst candidateRaw
+          change RawEipLiftedExecutionRelation original candidate executionRelation
+            (.running originalEip originalState launch.continuationTargetIds 0 world)
+            (.running candidateEip candidateState launch.continuationTargetIds 0 world)
+          refine ⟨.running launch.rootTargetId originalState
+              launch.continuationTargetIds 0 world,
+            .running launch.rootTargetId candidateState
+              launch.continuationTargetIds 0 world, ?_, ?_, logicalInitial⟩
+          · exact ⟨by simp [WorldExecution.concretizeRawEip?, originalRoot],
+              originalProjects⟩
+          · exact ⟨by simp [WorldExecution.concretizeRawEip?, candidateRoot],
+              candidateProjects⟩
+
+def PE32RawProgramsLinkedObservationallyEquivalent (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : LinkedControlAuthority)
+    (launch : PE32ConsoleLaunchV2)
+    (original candidate : DecodedWorldProgram) : Prop :=
+  launch.LinkedRealizable context graph reachability control ∧
+    exists executionRelation : RawEipWorldExecution -> RawEipWorldExecution -> Prop,
+      (forall world originalState candidateState,
+        launch.LinkedStatesRelated context graph reachability control world
+          originalState candidateState ->
+        match original.canonicalRawEip? launch.rootTargetId,
+            candidate.canonicalRawEip? launch.rootTargetId with
+        | some originalEip, some candidateEip =>
+            executionRelation
+              (.running originalEip originalState launch.continuationTargetIds 0 world)
+              (.running candidateEip candidateState launch.continuationTargetIds 0 world)
+        | _, _ => False) ∧
+      RelationalWeakBisimulation original.pe32RawEipTransitionSystem
+        candidate.pe32RawEipTransitionSystem executionRelation
+        (worldRelationalObservationsRelated context)
+
+/-- Acceptance-facing linked theorem over concrete EIPs.  No finite inventory
+of complete call stacks occurs in its statement or proof. -/
+theorem pe32ProgramsEquivalentLinked_raw (context : StaticProofContext)
+    (graph : RelationalProductGraph) (regions : List RegionRelation)
+    (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : LinkedControlAuthority)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (externalCallSites : List ExternalCallSiteContract)
+    (launch : PE32ConsoleLaunchV2)
+    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)
+    (originalProtocolEnvironment candidateProtocolEnvironment :
+      WorldExternalProtocolEnvironment)
+    (certificate : LinkedWholeProgramCertificate context graph regions invariants
+      reachability control callbackTargets externalCallSites launch originalEnvironment
+      candidateEnvironment originalProtocolEnvironment candidateProtocolEnvironment) :
+    PE32RawProgramsLinkedObservationallyEquivalent context graph invariants reachability
+      control launch
+      {
+        candidate := false
+        context
+        regions
+        externalCallSites
+        environment := originalEnvironment
+        protocolEnvironment := originalProtocolEnvironment
+      }
+      {
+        candidate := true
+        context
+        regions
+        externalCallSites
+        environment := candidateEnvironment
+        protocolEnvironment := candidateProtocolEnvironment
+      } := by
+  let original : DecodedWorldProgram := {
+    candidate := false
+    context
+    regions
+    externalCallSites
+    environment := originalEnvironment
+    protocolEnvironment := originalProtocolEnvironment
+  }
+  let candidate : DecodedWorldProgram := {
+    candidate := true
+    context
+    regions
+    externalCallSites
+    environment := candidateEnvironment
+    protocolEnvironment := candidateProtocolEnvironment
+  }
+  let executionRelation := LinkedWorldExecutionsRelated context graph invariants
+    reachability control callbackTargets externalCallSites
+  have initialRelated : forall world originalState candidateState,
+      launch.LinkedStatesRelated context graph reachability control world
+          originalState candidateState ->
+      executionRelation
+        (.running launch.rootTargetId originalState launch.continuationTargetIds 0 world)
+        (.running launch.rootTargetId candidateState launch.continuationTargetIds 0 world) := by
+    intro world originalState candidateState related
+    rcases related with
+      ⟨frames, links, _worldValid, _originalImageMapped, _candidateImageMapped,
+        stackHolds, linksAllowed, frameFactsHold, frameTargetsReachable,
+        _processAttachArgumentsHold, statesRelated⟩
+    rcases certificate.launchValid.2.2.2.2.2.2.2.2.1 with
+      ⟨node, nodeFound, targetFound, rootFound, rootListed, invariantFound⟩
+    refine ⟨rfl, rfl, rfl, rfl, launch.rootNodeId, node,
+      launch.rootInvariant, frames, launch.frameOffsets.head?, links, nodeFound,
+      targetFound, ?_, invariantFound, certificate.launchControlAllowed, stackHolds,
+      linksAllowed, frameFactsHold, frameTargetsReachable, statesRelated⟩
+    have allRoots := certificate.reachabilityClosed.2.1.2.1
+    unfold RelationalProductReachabilityEvidence.rootsIncluded at allRoots
+    exact List.all_eq_true.mp allRoots launch.rootNodeId
+      (List.contains_iff_mem.mp rootListed)
+  have logicalBisimulation :
+      RelationalWeakBisimulation original.pe32TransitionSystem
+        candidate.pe32TransitionSystem executionRelation
+        (worldRelationalObservationsRelated context) := by
+    have decodedBisimulation := linkedProductStepRefinement_of_reachable_nodes context
+      graph invariants reachability control callbackTargets original candidate
+      certificate.environmentsRefined certificate.protocolEnvironmentsRefined
+      certificate.runningProductNodesRefined
+      certificate.callbackRunningProductNodesRefined
+    have originalAdequate : original.InstructionSemanticsAdequate := by
+      simpa [original] using certificate.originalInstructionSemanticsAdequate
+    have candidateAdequate : candidate.InstructionSemanticsAdequate := by
+      simpa [candidate] using certificate.candidateInstructionSemanticsAdequate
+    rw [original.pe32TransitionSystem_eq_transitionSystem originalAdequate,
+      candidate.pe32TransitionSystem_eq_transitionSystem candidateAdequate]
+    exact decodedBisimulation
+  have bridge : RawEipPairBridgeClosed original candidate executionRelation :=
+    executionFrontiersMapped_rawEipPairBridgeClosed context graph original candidate
+      executionRelation
+      (linkedWorldExecutionsRelated_frontiersMapped context graph invariants reachability
+        control callbackTargets externalCallSites)
+      rfl rfl rfl rfl certificate.staticContextValid certificate.productGraphValid
   refine ⟨certificate.launchRealizable,
     RawEipLiftedExecutionRelation original candidate executionRelation, ?_,
     relationalWeakBisimulation_rawEip_of_logical original candidate executionRelation

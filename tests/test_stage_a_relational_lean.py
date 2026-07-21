@@ -2,6 +2,185 @@ from tests.stage_a_relational_support import *
 
 
 class StageARelationalLeanTests(StageARelationalTestBase):
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for frame-guard proofs")
+    def test_active_frame_exact_register_guard_is_checked_by_lean(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lean_dir = Path(temporary)
+            stage_a = lean_dir / "StageA"
+            stage_a.mkdir()
+            source_root = (
+                Path(__file__).parents[1]
+                / "src" / "spaghetti_extractor" / "lean" / "StageA"
+            )
+            for module in RELATIONAL_KERNEL_MODULES:
+                shutil.copyfile(
+                    source_root / f"{module}.lean",
+                    stage_a / f"{module}.lean",
+                )
+            (stage_a / "ActiveFrameGuard.lean").write_text(
+                """import StageA.RelationalLinkedExecution
+
+namespace StageA.ActiveFrameGuard
+
+open StageA.Formal StageA.Relational
+
+def inventory : ReturnSlotOffsetInventory := {
+  locations := [{
+    originalRegister := .esp
+    originalOffset := 28
+    candidateRegister := .esp
+    candidateOffset := 28
+  }]
+  preservedRelations := [{
+    original := .eax
+    candidate := .eax
+    relation := .exact
+  }]
+}
+
+def arithmeticGuard : BoolExpr :=
+  .equal (.sub (.inputReg .eax) (.constant 2)) (.constant 0)
+
+def arithmeticWitness : PairedExactExprWitness :=
+  .ifEqual
+    (.binary .sub (.inputReg .eax .eax) (.constant 2))
+    (.constant 0) (.constant 1) (.constant 0)
+
+def arithmeticClaim : FrameExactGuardClaim := {
+  originalGuard := arithmeticGuard
+  candidateGuard := arithmeticGuard
+  witness := arithmeticWitness
+}
+
+def memoryGuard : BoolExpr :=
+  .equal (.read32 (.inputReg .eax)) (.constant 0)
+
+def memoryWitness : PairedExactExprWitness :=
+  .ifEqual (.read32At (.fixedInputReg .eax .eax 0))
+    (.constant 0) (.constant 1) (.constant 0)
+
+example : arithmeticClaim.checked inventory arithmeticGuard arithmeticGuard = true := by
+  decide
+
+example : memoryWitness.registerFactsChecked inventory = false := by
+  decide
+
+example (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : MachineState)
+    (facts : RelationalLinkedRuntimeCallFactsHold context world (some inventory)
+      original.registers candidate.registers) :
+    arithmeticGuard.eval original = arithmeticGuard.eval candidate := by
+  exact RelationalLinkedRuntimeCallFactsHold.guardEvalEqual_of_frameExact
+    context world inventory arithmeticGuard arithmeticGuard arithmeticClaim
+    original candidate (by decide) facts
+
+end StageA.ActiveFrameGuard
+""",
+                encoding="utf-8",
+            )
+            result = _run_lean_relational(lean_dir, bundle="ActiveFrameGuard")
+            self.assertEqual(result["status"], "checked", result)
+            self.assertNotIn("sorryAx", result["stdout"])
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for linked-execution proofs")
+    def test_linked_execution_step_accepts_an_arbitrary_dormant_tail(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lean_dir = Path(temporary)
+            stage_a = lean_dir / "StageA"
+            stage_a.mkdir()
+            source_root = (
+                Path(__file__).parents[1]
+                / "src" / "spaghetti_extractor" / "lean" / "StageA"
+            )
+            for module in RELATIONAL_KERNEL_MODULES:
+                shutil.copyfile(
+                    source_root / f"{module}.lean",
+                    stage_a / f"{module}.lean",
+                )
+            (stage_a / "LinkedExecutionRelation.lean").write_text(
+                """import StageA.RelationalPEWorldExecution
+
+namespace StageA.LinkedExecutionRelation
+
+open StageA.Formal StageA.Relational
+
+example (context : StaticProofContext) (world : RelationalWorld)
+    (inventory : ReturnSlotOffsetInventory)
+    (originalRegisters candidateRegisters : Registers Word)
+    (holds : RelationalRuntimeCallFactsHold context world [inventory]
+      originalRegisters candidateRegisters) :
+    RelationalLinkedRuntimeCallFactsHold context world (some inventory)
+      originalRegisters candidateRegisters := by
+  exact RelationalLinkedRuntimeCallFactsHold.some_of_singleton context world
+    inventory originalRegisters candidateRegisters holds
+
+example (context : StaticProofContext) (graph : RelationalProductGraph)
+    (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : LinkedProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (original candidate : DecodedWorldProgram)
+    (nodeId : Nat) (node : RelationalProductNode) (invariant : StateInvariant)
+    (frames : List RelationalRuntimeCallFrame) (calls : List Nat)
+    (active : Option ReturnSlotOffsetInventory)
+    (links : List RelationalRuntimeCallFrameLink)
+    (eventIndex : Nat) (world : RelationalWorld)
+    (originalState candidateState : MachineState)
+    (nodeFound : graph.getNode? nodeId = some node)
+    (invariantFound : invariants.nodeInvariants[nodeId]? = some invariant)
+    (refined : LinkedRunningProductNodeStepRefined context graph invariants
+      reachability control callbackTargets original candidate nodeId)
+    (controlAllowed : control.Allows nodeId calls active = true)
+    (stackHolds : RelationalLinkedRuntimeCallStackHolds context originalState
+      candidateState frames calls active links)
+    (linksAllowed : control.LinksAllowed links)
+    (frameFacts : RelationalLinkedRuntimeCallFactsHold context world active
+      originalState.registers candidateState.registers)
+    (targetsMapped : RelationalRuntimeCallTargetsMapped graph reachability calls)
+    (statesRelated : StateRel context world invariant originalState candidateState) :
+    worldRelationalObservationsRelated context
+        (original.transitionSystem.step
+          (.running node.targetId originalState calls eventIndex world)).observation
+        (candidate.transitionSystem.step
+          (.running node.targetId candidateState calls eventIndex world)).observation /\\
+      LinkedWorldExecutionsRelated context graph invariants reachability control
+        callbackTargets original.externalCallSites
+        (original.transitionSystem.step
+          (.running node.targetId originalState calls eventIndex world)).next
+        (candidate.transitionSystem.step
+          (.running node.targetId candidateState calls eventIndex world)).next := by
+  unfold LinkedRunningProductNodeStepRefined at refined
+  rw [nodeFound, invariantFound] at refined
+  exact refined frames calls active links eventIndex world originalState candidateState
+    controlAllowed stackHolds linksAllowed frameFacts targetsMapped statesRelated
+
+example (context : StaticProofContext) (graph : RelationalProductGraph)
+    (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : LinkedProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (sites : List ExternalCallSiteContract)
+    (original candidate : WorldExternalProtocolEnvironment)
+    (noProtocol : externalCallSitesExcludeProtocol context sites = true) :
+    LinkedWorldExternalProtocolEnvironmentsRefine context graph invariants
+      reachability control callbackTargets sites original candidate := by
+  exact LinkedWorldExternalProtocolEnvironmentsRefine.of_no_protocol_sites
+    context graph invariants reachability control callbackTargets sites
+    original candidate noProtocol
+
+#print axioms pe32ProgramsEquivalentLinked
+#print axioms pe32ProgramsEquivalentLinked_raw
+
+end StageA.LinkedExecutionRelation
+""",
+                encoding="utf-8",
+            )
+            result = _run_lean_relational(
+                lean_dir, bundle="LinkedExecutionRelation"
+            )
+            self.assertEqual(result["status"], "checked", result)
+            self.assertNotIn("sorryAx", result["stdout"])
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for linked-frame proofs")
     def test_linked_runtime_frames_support_an_arbitrary_dormant_tail(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -37,6 +216,7 @@ def recursiveProfile : LinkedProductControlProfile := {
     nodeId := 4
     continuation := some 7
     active := some ReturnSlotOffsetInventory.zero
+    minimumDepth := 1
   }]
 }
 
@@ -48,6 +228,75 @@ example : recursiveProfile.Allows 4 [7, 8, 7, 8, 7]
 
 example : recursiveProfile.Allows 4 [8, 7]
     (some ReturnSlotOffsetInventory.zero) = false := by decide
+
+def dormantArgumentInventory : ReturnSlotOffsetInventory := {
+  locations := [ReturnSlotOffsetPair.zero]
+  exactWords := [{ originalOffset := 4, candidateOffset := 4 }]
+}
+
+def dormantSuspendedInventory : ReturnSlotOffsetInventory := {
+  locations := [{
+    originalOffset := BitVec.ofNat 32 16
+    candidateOffset := BitVec.ofNat 32 16
+  }]
+  exactWords := [{ originalOffset := 4, candidateOffset := 4 }]
+}
+
+def dormantArgumentLink : RelationalRuntimeCallFrameLink := {
+  callSourceTargetId := 4
+  resumeNodeId := 5
+  resumeTargetId := 9
+  resumeContinuation := 7
+  suspendedInventory := dormantSuspendedInventory
+  resumeInventory := dormantArgumentInventory
+  originalGap := 16
+  candidateGap := 16
+}
+
+example : dormantArgumentLink.checked = true := by decide
+
+def linkedProfileWithDormantArgument : LinkedProductControlProfile := {
+  states := recursiveProfile.states ++ [{
+    nodeId := 5
+    continuation := some 7
+    active := some dormantArgumentInventory
+    minimumDepth := 1
+  }]
+  links := [dormantArgumentLink]
+}
+
+example : linkedProfileWithDormantArgument.LinkAllowed dormantArgumentLink = true := by
+  decide
+
+def linkedProfileMissingResumeState : LinkedProductControlProfile := {
+  states := recursiveProfile.states
+  links := [dormantArgumentLink]
+}
+
+example : linkedProfileMissingResumeState.checked = false := by decide
+
+example : recursiveProfile.LinkAllowed dormantArgumentLink = false := by decide
+
+example (context : StaticProofContext) (original candidate : MachineState)
+    (frame outer : RelationalRuntimeCallFrame)
+    (frames : List RelationalRuntimeCallFrame)
+    (continuation outerContinuation : Nat) (continuations : List Nat)
+    (active : ReturnSlotOffsetInventory)
+    (links : List RelationalRuntimeCallFrameLink)
+    (holds : RelationalLinkedRuntimeCallStackHolds context original candidate
+      (frame :: outer :: frames)
+      (continuation :: outerContinuation :: continuations)
+      (some active) (dormantArgumentLink :: links))
+    (resumeHolds : dormantArgumentInventory.holds outer original.registers
+      candidate.registers)
+    (resumeExactWords : dormantArgumentInventory.boundedExactWordsHold outer
+      original.memory candidate.memory) :
+    RelationalLinkedRuntimeCallStackHolds context original candidate
+      (outer :: frames) (outerContinuation :: continuations)
+      (some dormantArgumentInventory) links := by
+  exact RelationalLinkedRuntimeCallStackHolds.popNested context original candidate
+    frame outer frames continuation outerContinuation continuations active
+    dormantArgumentLink links holds resumeHolds resumeExactWords
 
 example (context : StaticProofContext) (original candidate : MachineState)
     (frame outer : RelationalRuntimeCallFrame)
@@ -61,10 +310,13 @@ example (context : StaticProofContext) (original candidate : MachineState)
       (some outerActive) links)
     (activeChecked : active.checked = true)
     (activeHolds : active.holds frame original.registers candidate.registers)
+    (activeExactWords : active.boundedExactWordsHold frame original.memory candidate.memory)
     (continuationMatches : frame.continuationTargetId = continuation)
-    (frameValid : frame.toRelationalCallFrame.valid context = true)
+    (frameValid : frame.valid context = true)
     (frameResolves : frame.toRelationalCallFrame.resolves context = true)
     (frameMemory : frame.memoryHolds original.memory candidate.memory)
+    (suspendedExactWords : link.suspendedInventory.boundedExactWordsHold outer
+      original.memory candidate.memory)
     (linkHolds : link.holds frame outer) :
     RelationalLinkedRuntimeCallStackHolds context original candidate
       (frame :: outer :: frames)
@@ -73,7 +325,8 @@ example (context : StaticProofContext) (original candidate : MachineState)
   exact RelationalLinkedRuntimeCallStackHolds.pushNested context original candidate
     frame outer frames continuation outerContinuation continuations active
     outerActive link links outerHolds activeChecked activeHolds
-    continuationMatches frameValid frameResolves frameMemory linkHolds
+    activeExactWords continuationMatches frameValid frameResolves frameMemory
+    suspendedExactWords linkHolds
 
 example (context : StaticProofContext) (original candidate : MachineState)
     (frames : List RelationalRuntimeCallFrame) (continuations : List Nat)
@@ -624,7 +877,13 @@ end StageA.MixedCallbackFrame
             source_root = (
                 Path(__file__).parents[1] / "src" / "spaghetti_extractor" / "lean" / "StageA"
             )
-            for name in ("Formal.lean", "RelationalDecode.lean"):
+            for name in (
+                "X87.lean",
+                "RelationalX87.lean",
+                "Formal.lean",
+                "RelationalX87Decode.lean",
+                "RelationalDecode.lean",
+            ):
                 shutil.copyfile(source_root / name, stage_a / name)
             (stage_a / "MachineCallBoundary.lean").write_text(
                 """import StageA.RelationalDecode
@@ -720,7 +979,7 @@ def indirectCallExternalized : Bool :=
   match externalizeRegisterImportCall contract .ebp indirectBehavior with
   | some externalized =>
       externalized.registers.esp == .inputReg .esp &&
-        externalized.writes == [(Expr.inputReg .esp, Expr.constant 7)] &&
+      externalized.writes == indirectBehavior.writes &&
         externalized.outcome == some (.externalCall contract.imported.syntheticImport
           [.constant 7] 8192)
   | none => false
@@ -1578,10 +1837,11 @@ def preserveClaim : ImportRegisterPreserveClaim := {
 
     example : claim.checked invariant originalBehavior candidateBehavior = true := by decide
 
-example : ImportRegisterIndirectCallTargetsClosed invariant originalBehavior
-    candidateBehavior claim :=
-  importRegisterIndirectCallTargetsClosed_of_checked invariant originalBehavior
-    candidateBehavior claim (by decide)
+example (context : StaticProofContext) :
+    ImportRegisterIndirectCallTargetsClosed context invariant originalBehavior
+      candidateBehavior claim :=
+  importRegisterIndirectCallTargetsClosed_of_checked context invariant
+    originalBehavior candidateBehavior claim (by decide)
 
 example : preserveClaim.checked invariant invariant originalBehavior
     candidateBehavior = true := by decide
@@ -1737,6 +1997,7 @@ example (context : StaticProofContext) (world : RelationalWorld)
     (sourceOffsets : ReturnSlotOffsetInventory.zero.holds frame
       originalState.registers candidateState.registers)
     (sourceMemory : frame.memoryHolds originalState.memory candidateState.memory)
+    (sourceProtected : frame.protectedSpanValid context = true)
     (related : StateRel context world aliasInvariant originalState candidateState) :
     And
       (twoAliasInventory.holds frame
@@ -1745,9 +2006,116 @@ example (context : StaticProofContext) (world : RelationalWorld)
       (frame.memoryHolds
         ((aliasBehavior.eval originalState).nextMachineState originalState).memory
         ((aliasBehavior.eval candidateState).nextMachineState candidateState).memory) :=
-  returnSlotFrameInventoryTransferHolds_of_checked context world aliasInvariant
-    aliasBehavior aliasBehavior twoAliasTransfer frame originalState candidateState
-    (by rfl) sourceOffsets sourceMemory related
+  let transferred := returnSlotFrameInventoryTransferHolds_of_checked context world
+    aliasInvariant aliasBehavior aliasBehavior twoAliasTransfer frame originalState
+    candidateState (by rfl) sourceOffsets sourceMemory
+    (by
+      simp [twoAliasTransfer, ReturnSlotOffsetInventory.boundedExactWordsHold,
+        ReturnSlotOffsetInventory.exactWordsFit,
+        ReturnSlotOffsetInventory.exactWordsHold,
+        ReturnSlotOffsetInventory.zero, ReturnSlotOffsetInventory.singleton])
+    sourceProtected related
+  ⟨transferred.1, transferred.2.1⟩
+
+def exactArgumentWord : ReturnSlotExactWordPair := {
+  originalOffset := 4
+  candidateOffset := 4
+}
+
+def exactArgumentInventory : ReturnSlotOffsetInventory := {
+  locations := [ReturnSlotOffsetPair.zero]
+  exactWords := [exactArgumentWord]
+}
+
+def disjointWriteBehavior : NormalizedSymbolicBehavior := {
+  originalBehavior with
+  writes := [((Expr.inputReg .esp).offset 8, .constant 1)]
+}
+
+def overlappingWriteBehavior : NormalizedSymbolicBehavior := {
+  originalBehavior with
+  writes := [((Expr.inputReg .esp).offset 4, .constant 1)]
+}
+
+def exactArgumentBaseTransfer : ReturnSlotFrameTransferClaim := {
+  transfer := {
+    source := ReturnSlotOffsetPair.zero
+    target := ReturnSlotOffsetPair.zero
+    originalOutput := .input
+    candidateOutput := .input
+  }
+  memory := .affine {
+    offsets := ReturnSlotOffsetPair.zero
+    originalWrites := [.addRight .input 8]
+    candidateWrites := [.addRight .input 8]
+  }
+}
+
+def exactArgumentWordTransfer : ReturnSlotExactWordTransferClaim := {
+  word := exactArgumentWord
+  sourceBase := ReturnSlotOffsetPair.zero
+  targetBase := ReturnSlotOffsetPair.zero
+  transfer := {
+    transfer := {
+      source := ReturnSlotOffsetPair.zero.shiftExactWord exactArgumentWord
+      target := ReturnSlotOffsetPair.zero.shiftExactWord exactArgumentWord
+      originalOutput := .input
+      candidateOutput := .input
+    }
+    memory := .affine {
+      offsets := ReturnSlotOffsetPair.zero.shiftExactWord exactArgumentWord
+      originalWrites := [.addRight .input 8]
+      candidateWrites := [.addRight .input 8]
+    }
+  }
+}
+
+def exactArgumentInventoryTransfer : ReturnSlotFrameInventoryTransferClaim := {
+  source := exactArgumentInventory
+  target := exactArgumentInventory
+  transfers := [exactArgumentBaseTransfer]
+  exactWordTransfers := [exactArgumentWordTransfer]
+}
+
+example (context : StaticProofContext) :
+    exactArgumentInventoryTransfer.checked context aliasInvariant
+      disjointWriteBehavior disjointWriteBehavior = true := by
+  rfl
+
+def overlappingArgumentWordTransfer : ReturnSlotExactWordTransferClaim := {
+  exactArgumentWordTransfer with
+  transfer := {
+    exactArgumentWordTransfer.transfer with
+    memory := .affine {
+      offsets := ReturnSlotOffsetPair.zero.shiftExactWord exactArgumentWord
+      originalWrites := [.addRight .input 4]
+      candidateWrites := [.addRight .input 4]
+    }
+  }
+}
+
+def overlappingArgumentInventoryTransfer : ReturnSlotFrameInventoryTransferClaim := {
+  exactArgumentInventoryTransfer with
+  exactWordTransfers := [overlappingArgumentWordTransfer]
+}
+
+example (context : StaticProofContext) :
+    overlappingArgumentInventoryTransfer.checked context aliasInvariant
+      overlappingWriteBehavior overlappingWriteBehavior = false := by
+  rfl
+
+example (originalEvent candidateEvent : WorldExternalEvent)
+    (originalResult candidateResult : WorldExternalResult)
+    (preserved : ExternalRuntimeFramesPreserved originalEvent candidateEvent
+      originalResult candidateResult)
+    (frame : RelationalRuntimeCallFrame)
+    (sourceMemory : frame.memoryHolds originalEvent.state.memory
+      candidateEvent.state.memory)
+    (sourceExact : exactArgumentInventory.exactWordsHold frame
+      originalEvent.state.memory candidateEvent.state.memory) :
+    exactArgumentInventory.exactWordsHold frame originalResult.state.memory
+      candidateResult.state.memory :=
+  (preserved frame exactArgumentInventory sourceMemory sourceExact).2
 
 def returnPopClaim : ReturnPopClaim := {
   originalStackAddress := .add (.inputReg .esp) (.constant 8)

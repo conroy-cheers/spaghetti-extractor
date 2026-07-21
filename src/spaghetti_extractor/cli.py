@@ -21,6 +21,8 @@ from .isa_conformance_bochs import run_bochs_corpus
 from .isa_conformance_80386 import import_singlestep_80386_json
 from .relational.mapping import stage_a_generate_map
 from .relational.interfaces import stage_a_export_interface_manifest
+from .roundtrip_fuzz.phase0 import generate_phase0_corpus
+from .roundtrip_fuzz.runner import run_roundtrip_corpus
 from .relational.isa_requirements import write_isa_requirement_inventory
 from .relational.isa_qualification import write_isa_semantic_qualification
 from .relational.reference_contract import (
@@ -42,6 +44,7 @@ from .util import sha256_file, write_json
 from .stage_a_relational import (
     stage_a_analyze_relational,
     stage_a_build_relational,
+    stage_a_build_relational_from_nix,
     stage_a_check_relational_proof,
     stage_a_generate_relational,
     stage_a_generate_relation_contract,
@@ -61,6 +64,7 @@ from .stage_b_functional import (
     stage_b_run_functional_suite,
 )
 from .stage_b_provenance import StageBProvenanceInputError, stage_b_generate_candidate_provenance
+from .stage_b_c_backend import stage_b_generate_semantic_c_from_state_machine
 from .stage_b_skeleton import stage_b_generate_link_roots, stage_b_generate_skeleton
 from .workspace import workspace_prune
 
@@ -112,6 +116,50 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     interfaces.set_defaults(
         func=lambda args: stage_a_export_interface_manifest(out=args.out)
     )
+
+    fuzz_generate = subcommands.add_parser(
+        "stage-a-fuzz-generate",
+        help="generate a deterministic real-PE round-trip qualification corpus",
+    )
+    fuzz_generate.add_argument("--seed", type=int, default=0)
+    fuzz_generate.add_argument("--count", type=int, default=1)
+    fuzz_generate.add_argument(
+        "--profile",
+        default="phase0-winapi-lockstep-v1",
+        choices=["phase0-winapi-lockstep-v1"],
+    )
+    fuzz_generate.add_argument("--external-profile", type=Path, required=True)
+    fuzz_generate.add_argument(
+        "--toolchain",
+        choices=["gnu", "llvm-msvc"],
+        default="gnu",
+    )
+    fuzz_generate.add_argument("--compiler")
+    fuzz_generate.add_argument("--linker")
+    fuzz_generate.add_argument("--force", action="store_true")
+    fuzz_generate.add_argument("--out", type=Path, required=True)
+    fuzz_generate.set_defaults(func=_cmd_stage_a_fuzz_generate)
+
+    fuzz_run = subcommands.add_parser(
+        "stage-a-fuzz-run",
+        help="run round-trip cases through public Stage A proof interfaces",
+    )
+    fuzz_run.add_argument("--corpus", type=Path, required=True)
+    fuzz_run.add_argument(
+        "--mode",
+        choices=["proof-core", "discovery", "stage-b-roundtrip"],
+        default="proof-core",
+    )
+    fuzz_run.add_argument("--case", action="append", default=[], dest="case_ids")
+    fuzz_run.add_argument("--flake", type=Path)
+    fuzz_run.add_argument("--builders-file", type=Path)
+    fuzz_run.add_argument(
+        "--stop-after-static-preflight",
+        action="store_true",
+        help="stop after static proof preparation without running Lean proof or violation replay",
+    )
+    fuzz_run.add_argument("--out", type=Path, required=True)
+    fuzz_run.set_defaults(func=_cmd_stage_a_fuzz_run)
 
     isa_conformance = subcommands.add_parser(
         "stage-a-check-isa-conformance",
@@ -258,7 +306,21 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         "stage-a-build-relational",
         help="build and trust-0 audit a prepared v3 Lean proof graph",
     )
-    build_relational.add_argument("--prepared", type=Path, required=True)
+    prepared_input = build_relational.add_mutually_exclusive_group(required=True)
+    prepared_input.add_argument("--prepared", type=Path)
+    prepared_input.add_argument(
+        "--prepared-nix-ref",
+        help=(
+            "Nix flake reference producing the prepared proof; it is realized "
+            "before evaluating the dynamic Lean module graph"
+        ),
+    )
+    build_relational.add_argument(
+        "--prepared-subpath",
+        type=Path,
+        default=Path("."),
+        help="prepared-proof directory below --prepared-nix-ref output",
+    )
     build_relational.add_argument("--executor", choices=["nix"], default="nix")
     build_relational.add_argument("--flake", type=Path)
     build_relational.add_argument(
@@ -277,16 +339,7 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         ),
     )
     build_relational.add_argument("--out", type=Path, required=True)
-    build_relational.set_defaults(
-        func=lambda args: stage_a_build_relational(
-            prepared=args.prepared,
-            executor=args.executor,
-            flake=args.flake,
-            builders_file=args.builders_file,
-            target_nodes=args.target_node,
-            out=args.out,
-        )
-    )
+    build_relational.set_defaults(func=_cmd_stage_a_build_relational)
 
     check_proof = subcommands.add_parser(
         "stage-a-check-proof",
@@ -452,6 +505,19 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     skeleton.add_argument("--function-name", action="append", dest="function_names")
     skeleton.set_defaults(func=_cmd_stage_b_generate_skeleton)
 
+    semantic_c = subcommands.add_parser(
+        "stage-b-generate-semantic-c",
+        help="regenerate the contract-guided C work package from canonical state-machine JSONL",
+    )
+    semantic_c.add_argument("--state-machine", type=Path, required=True)
+    semantic_c.add_argument("--out-dir", type=Path, required=True)
+    semantic_c.add_argument(
+        "--machine-call-catalog",
+        type=Path,
+        help="checked relation contract or stage-b-machine-call-catalog-v1 JSON used to emit exact import adapters",
+    )
+    semantic_c.set_defaults(func=_cmd_stage_b_generate_semantic_c)
+
     roots = subcommands.add_parser("stage-b-generate-link-roots", help="generate linker root flags for a candidate object")
     roots.add_argument("--original", type=Path, required=True)
     roots.add_argument("--object-file", type=Path, required=True)
@@ -549,6 +615,56 @@ def _cmd_stage_a_prove(args: Any) -> dict[str, Any]:
         relation_contract=args.relation_contract,
         out=args.out,
     )
+
+
+def _cmd_stage_a_fuzz_generate(args: Any) -> dict[str, Any]:
+    if args.profile != "phase0-winapi-lockstep-v1":
+        raise StageAInputError(f"unsupported round-trip profile {args.profile!r}")
+    if args.seed != 0 or args.count != 1:
+        raise StageAInputError(
+            "the Phase 0 canary currently requires --seed 0 --count 1"
+        )
+    return generate_phase0_corpus(
+        out=args.out,
+        external_profile=args.external_profile,
+        toolchain=args.toolchain,
+        compiler=args.compiler,
+        linker=args.linker,
+        force=args.force,
+    )
+
+
+def _cmd_stage_a_fuzz_run(args: Any) -> dict[str, Any]:
+    return run_roundtrip_corpus(
+        corpus=args.corpus,
+        mode=args.mode,
+        out=args.out,
+        flake=args.flake,
+        builders_file=args.builders_file,
+        case_ids=args.case_ids,
+        stop_after_static_preflight=args.stop_after_static_preflight,
+    )
+
+
+def _cmd_stage_a_build_relational(args: Any) -> dict[str, Any]:
+    common = {
+        "executor": args.executor,
+        "flake": args.flake,
+        "builders_file": args.builders_file,
+        "target_nodes": args.target_node,
+        "out": args.out,
+    }
+    if args.prepared_nix_ref is not None:
+        return stage_a_build_relational_from_nix(
+            prepared_nix_ref=args.prepared_nix_ref,
+            prepared_subpath=args.prepared_subpath,
+            **common,
+        )
+    if args.prepared_subpath != Path("."):
+        raise StageAInputError(
+            "--prepared-subpath is valid only with --prepared-nix-ref"
+        )
+    return stage_a_build_relational(prepared=args.prepared, **common)
 
 
 def _cmd_stage_a_check_isa_conformance(args: Any) -> dict[str, Any]:
@@ -795,6 +911,28 @@ def _cmd_stage_b_generate_skeleton(args: Any) -> dict[str, Any]:
         runtime_entry_policy=args.runtime_entry_policy,
         function_names=args.function_names,
     )
+
+
+def _cmd_stage_b_generate_semantic_c(args: Any) -> dict[str, Any]:
+    report = stage_b_generate_semantic_c_from_state_machine(
+        state_machine=args.state_machine,
+        out_dir=args.out_dir,
+        machine_call_catalog=args.machine_call_catalog,
+    )
+    return {
+        "format": "stage-b-semantic-c-generation-v1",
+        "status": report.get("status"),
+        "state_machine": report.get("state_machine"),
+        "counts": report.get("counts"),
+        "repair_stub_count": report.get("repair_stub_count"),
+        "runtime_obligation_count": report.get("runtime_obligation_count"),
+        "api_adapters": report.get("api_adapters"),
+        "strict_candidate": report.get("strict_candidate"),
+        "reason_counts": report.get("reason_counts"),
+        "dispatch": report.get("dispatch"),
+        "report": report.get("report"),
+        "artifacts": report.get("artifacts"),
+    }
 
 
 def _cmd_stage_b_generate_link_roots(args: Any) -> dict[str, Any]:

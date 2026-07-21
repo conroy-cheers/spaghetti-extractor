@@ -111,10 +111,9 @@ def _persistent_olean_path(
     key = sha256_bytes(
         json.dumps(
             {
-                "format": "stage-a-relational-olean-cache-v4",
+                "format": "stage-a-relational-olean-cache-v5",
                 "bundle": bundle,
                 "source_sha256": sha256_file(source),
-                "formal_sha256": sha256_file(lean_dir / "StageA" / "Formal.lean"),
                 "dependency_source_closure": _lean_dependency_source_closure(source),
                 "dependencies": [
                     {

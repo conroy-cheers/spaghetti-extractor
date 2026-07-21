@@ -43,6 +43,7 @@ from .relational.build import (
     _validate_relational_module_graph,
     _write_relational_module_graph,
     stage_a_build_relational,
+    stage_a_build_relational_from_nix,
 )
 from .relational.analyses.control import (
     _attach_dynamic_indirect_call_analysis,
@@ -84,7 +85,6 @@ from .relational.analyses.invariants import (
     _local_invariant_seeds,
     _semantic_add,
     _semantic_constant,
-    _semantic_edges,
     _semantic_equal,
     _semantic_input_flag,
     _semantic_input_register,
@@ -99,6 +99,7 @@ from .relational.analyses.invariants import (
     _substitute_semantic_flag,
     _synthesize_relational_invariants,
 )
+from .relational.analyses.semantic_control import _semantic_edges
 from .relational.analyses.segments import (
     _attach_memory_transition_analysis,
     _attach_register_relation_analysis,

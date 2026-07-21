@@ -36,8 +36,10 @@ from .expressions import (
     _lean_machine_import_call_contract,
     _lean_masked_successor_tautology_proof,
     _lean_direct_call_prepared_writes_claim,
+    _lean_direct_call_stack_exact_word_seed_claim,
     _lean_direct_call_stack_writes_claim,
     _lean_paired_prepared_word_writes_claim,
+    _lean_paired_prepared_word_write_item,
     _lean_paired_exact_expr_witness,
     _lean_paired_stack_word_value_claim,
     _lean_paired_stack_word_write_claim,
@@ -60,9 +62,98 @@ from .expressions import (
     _lean_symbolic_x87_state,
 )
 from .definitions import (
+    _has_compositional_normalized_support,
     _normalized_behavior_fast_path,
 )
 from .scanner import _lean_reverse_sentinel_scanner_claim
+
+
+def _lean_paired_exact_memory_read(read: dict[str, Any]) -> str:
+    return (
+        "{ originalAddress := "
+        + _lean_semantic_expr(read["original_address"])
+        + ", candidateAddress := "
+        + _lean_semantic_expr(read["candidate_address"])
+        + ", bytes := "
+        + str(int(read["bytes"]))
+        + " }"
+    )
+
+
+def _lean_state_rel_register_output_claim(claim: dict[str, Any]) -> str:
+    kind = claim.get("kind")
+    if kind == "ordinary":
+        ordinary = claim.get("claim")
+        if not isinstance(ordinary, dict):
+            raise StageAInputError(
+                "StateRel ordinary register-output claim lacks its proof object"
+            )
+        return (
+            "StateRelRegisterOutputClaim.ordinary ("
+            + _lean_register_output_claim(ordinary)
+            + ")"
+        )
+    if kind == "paired_exact_expression":
+        output = claim.get("output")
+        witness = claim.get("witness")
+        if not isinstance(output, dict) or not isinstance(witness, dict):
+            raise StageAInputError(
+                "StateRel paired exact register-output claim is incomplete"
+            )
+        return (
+            "StateRelRegisterOutputClaim.pairedExactExpression { output := "
+            + _lean_register_relation_pair(output)
+            + ", witness := "
+            + _lean_paired_exact_expr_witness(witness)
+            + " }"
+        )
+    raise StageAInputError(
+        f"unsupported StateRel register-output claim kind: {kind!r}"
+    )
+
+
+def _lean_paired_state_predicate(predicate: dict[str, Any]) -> str:
+    reads = predicate.get("exact_memory_reads", [])
+    if not isinstance(reads, list):
+        raise StageAInputError("paired state predicate exact reads must be a list")
+    return (
+        "{ original := "
+        + _lean_semantic_bool_expr(predicate["original"])
+        + ", candidate := "
+        + _lean_semantic_bool_expr(predicate["candidate"])
+        + ", exactMemoryReads := ["
+        + ", ".join(_lean_paired_exact_memory_read(read) for read in reads)
+        + "] }"
+    )
+
+
+def _lean_stack_register_bound_claim(claim: dict[str, Any]) -> str:
+    return (
+        "{ originalRegister := ." + str(claim["original_register"])
+        + ", candidateRegister := ." + str(claim["candidate_register"])
+        + ", upperExclusive := " + str(int(claim["upper_exclusive"]))
+        + ", stackRead := { window := " + _lean_stack_window(claim["window"])
+        + ", adjustment := " + _lean_stack_adjustment(claim["adjustment"])
+        + " } }"
+    )
+
+
+def _lean_state_invariant_weakening(
+    name: str, source: str, target: str,
+) -> str:
+    return (
+        f"theorem {name} : StateInvariantWeakening {source} {target} := {{\n"
+        "  registerRelations := by decide\n"
+        "  importRegisterRelations := by decide\n"
+        "  dynamicRegisterRangeRelations := by decide\n"
+        "  dynamicStackRangeRelations := by decide\n"
+        "  flagBits := by decide\n"
+        "  bounds := by decide\n"
+        "  addressSeparations := by decide\n"
+        "  stackWindows := by decide\n"
+        "  predicates := by decide\n"
+        "}"
+    )
 
 
 def _write_relational_invariant_modules(
@@ -714,6 +805,7 @@ def _write_relational_register_relation_modules(
             index for index in region_indices
             if relation_by_region[index]["output_claims"]
             or relation_by_region[index].get("return_pop_claim") is not None
+            or contract["regions"][index].get("stack_index_bound_claims")
         ) | {
             int(edge["source_region_index"]) for edge in environment_edges
         } | {
@@ -788,6 +880,33 @@ def _write_relational_register_relation_modules(
                 f"  (normalizeSymbolicBehavior true region{index}.targets "
                 f"candidateBehavior{index}).get (by decide)",
             ])
+            for claim_index, stack_bound_claim in enumerate(
+                contract["regions"][index].get("stack_index_bound_claims", [])
+            ):
+                claim_name = (
+                    f"registerRelationChunk{chunk_index}Region{index}"
+                    f"StackBoundClaim{claim_index}"
+                )
+                stack_proposition_name = claim_name + "Closed"
+                stack_theorem_name = claim_name + "Checked"
+                definitions.extend([
+                    f"def {claim_name} : StackRegisterBoundClaim :=\n  "
+                    + _lean_stack_register_bound_claim(stack_bound_claim),
+                    f"def {stack_proposition_name} : Prop :=\n"
+                    "  ∀ (context : StaticProofContext) (world : RelationalWorld) "
+                    "(original candidate : MachineState),\n"
+                    f"    StateRel context world region{index}.inputInvariant "
+                    "original candidate →\n"
+                    f"    {claim_name}.Holds context world {original_name} "
+                    f"{candidate_name} original candidate",
+                    f"theorem {stack_theorem_name} : {stack_proposition_name} := by\n"
+                    "  intro context world original candidate related\n"
+                    "  exact StackRegisterBoundClaim.holds_of_checked context world "
+                    f"region{index}.inputInvariant {original_name} {candidate_name} "
+                    f"{claim_name} (by decide) original candidate related",
+                ])
+                theorem_names.append(stack_theorem_name)
+                proposition_names.append(stack_proposition_name)
             return_claim = row.get("return_pop_claim")
             if return_claim is not None:
                 return_claim_name = (
@@ -1611,8 +1730,10 @@ def _write_relational_segment_refinement_modules(
     decode_chunk_regions: list[list[int]],
     import_register_seeds: list[dict[str, Any]],
     segment_candidates: list[dict[str, Any]],
+    *,
+    deferred_guard_candidates: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    candidates = segment_candidates
+    candidates = segment_candidates + list(deferred_guard_candidates or [])
     chunk_by_region = {
         region_index: chunk_index
         for chunk_index, region_indices in enumerate(decode_chunk_regions)
@@ -1775,8 +1896,427 @@ def _write_relational_segment_refinement_modules(
                 proposition_names.append(proposition_name)
                 theorem_names.append(theorem_name)
                 continue
+            if candidate["certificate_profile"] == (
+                "composable_x87_state_only_singleton_v1"
+            ):
+                decoded_pair_name = f"{prefix}DecodedPair"
+                command_checked_name = f"{prefix}CommandChecked"
+                original_continuation_name = f"{prefix}OriginalContinuation"
+                candidate_continuation_name = f"{prefix}CandidateContinuation"
+                invariant_weakening_name = f"{prefix}InvariantWeakening"
+                source_addresses_name = f"{prefix}SourceAddressesMatch"
+                instruction_pointers_name = f"{prefix}InstructionPointersRelated"
+                definitions.extend([
+                    (
+                        f"def {edge_name} : RelationalSegmentEdge := {{\n"
+                        f"  sourceTargetId := {source_target_id}\n"
+                        f"  exit := .internal {target_id}\n"
+                        f"  originalSpan := region{source_index}.original\n"
+                        f"  candidateSpan := region{source_index}.candidate\n"
+                        "  localCodeTargetIds := ["
+                        + ", ".join(
+                            str(item)
+                            for item in candidate["local_code_target_ids"]
+                        )
+                        + "]\n  localValueTargetIds := ["
+                        + ", ".join(
+                            str(item)
+                            for item in candidate["local_value_target_ids"]
+                        )
+                        + "]\n"
+                        f"  originalGuard := {_lean_semantic_bool_expr(candidate['original_guard'])}\n"
+                        f"  candidateGuard := {_lean_semantic_bool_expr(candidate['candidate_guard'])}\n"
+                        "}"
+                    ),
+                    (
+                        f"theorem {local_code_targets_name} :\n"
+                        f"    staticProofContext.codeMap.resolveIds "
+                        f"{edge_name}.localCodeTargetIds = "
+                        f"some region{source_index}.targets := by decide"
+                    ),
+                    (
+                        f"theorem {local_values_name} :\n"
+                        f"    staticProofContext.dataMap.resolveIds "
+                        f"{edge_name}.localValueTargetIds = "
+                        f"some region{source_index}.values := by decide"
+                    ),
+                    (
+                        f"theorem {decoded_pair_name} :\n"
+                        "    StageA.Relational.X87.decodeSingletonCommand "
+                        f"staticProofContext.originalPe {edge_name}.originalSpan =\n"
+                        "      StageA.Relational.X87.decodeSingletonCommand "
+                        f"staticProofContext.candidatePe {edge_name}.candidateSpan := by decide"
+                    ),
+                    (
+                        f"theorem {command_checked_name} :\n"
+                        "    StageA.Relational.X87.stateOnlySingletonCommandChecked "
+                        f"staticProofContext.originalPe {edge_name}.originalSpan = true := by decide"
+                    ),
+                    (
+                        f"theorem {original_continuation_name} :\n"
+                        f"    normalizeCodeTarget false region{source_index}.targets "
+                        f"{edge_name}.originalSpan.stop = some {target_id} := by decide"
+                    ),
+                    (
+                        f"theorem {candidate_continuation_name} :\n"
+                        f"    normalizeCodeTarget true region{source_index}.targets "
+                        f"{edge_name}.candidateSpan.stop = some {target_id} := by decide"
+                    ),
+                    _lean_state_invariant_weakening(
+                        invariant_weakening_name,
+                        f"region{source_index}.inputInvariant",
+                        f"region{target_index}.inputInvariant",
+                    ),
+                    (
+                        f"theorem {source_addresses_name} :\n"
+                        f"    codeTargetAddressPairMatches staticProofContext {source_target_id}\n"
+                        "      (BitVec.ofNat 32 (staticProofContext.originalPe.imageBase + "
+                        f"{edge_name}.originalSpan.start))\n"
+                        "      (BitVec.ofNat 32 (staticProofContext.candidatePe.imageBase + "
+                        f"{edge_name}.candidateSpan.start)) = true := by decide"
+                    ),
+                    (
+                        f"theorem {instruction_pointers_name} : ∀ world,\n"
+                        "    (x87AddressRelation staticProofContext world).code\n"
+                        "      (BitVec.ofNat 32 (staticProofContext.originalPe.imageBase + "
+                        f"{edge_name}.originalSpan.start))\n"
+                        "      (BitVec.ofNat 32 (staticProofContext.candidatePe.imageBase + "
+                        f"{edge_name}.candidateSpan.start)) := by\n"
+                        "  intro world\n"
+                        "  right\n"
+                        "  exact codeTargetIdAddresses_codePointerRelated staticProofContext "
+                        f"{source_target_id} _ _ {source_addresses_name}"
+                    ),
+                    (
+                        f"theorem {transition_name} :\n"
+                        f"    X87SegmentTransitionClosed staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant :=\n"
+                        "  x87SegmentTransitionClosed_of_checked_state_only_singleton\n"
+                        f"    staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"    region{source_index}.targets region{source_index}.values "
+                        f"{target_id}\n"
+                        f"    {local_code_targets_name} {local_values_name} "
+                        f"{decoded_pair_name}\n"
+                        f"    {command_checked_name} {original_continuation_name} "
+                        f"{candidate_continuation_name}\n"
+                        f"    (by decide) {invariant_weakening_name} "
+                        "(by decide) (by decide)\n"
+                        f"    {instruction_pointers_name}"
+                    ),
+                    (
+                        f"def {proposition_name} : Prop :=\n"
+                        f"  RelationalSegmentRefinement staticProofContext "
+                        f"{edge_name} region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant"
+                    ),
+                    (
+                        f"theorem {theorem_name} : {proposition_name} :=\n"
+                        "  relationalSegmentRefinement_of_x87_singleton "
+                        f"staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant {transition_name}"
+                    ),
+                ])
+                proposition_names.append(proposition_name)
+                theorem_names.append(theorem_name)
+                continue
+            if candidate["certificate_profile"] == (
+                "composable_x87_exact_stack_memory_singleton_v1"
+            ):
+                raw_claim = candidate.get("x87_exact_stack_memory_claim")
+                if not isinstance(raw_claim, dict):
+                    raise StageAInputError(
+                        "x87 exact-stack-memory segment lacks its checked claim"
+                    )
+                raw_predicate = raw_claim.get("predicate")
+                raw_read = raw_claim.get("read")
+                raw_window = raw_claim.get("window")
+                if not all(isinstance(item, dict) for item in (
+                    raw_predicate, raw_read, raw_window
+                )):
+                    raise StageAInputError(
+                        "x87 exact-stack-memory segment claim is malformed"
+                    )
+                assert isinstance(raw_predicate, dict)
+                assert isinstance(raw_read, dict)
+                assert isinstance(raw_window, dict)
+                offset = int(raw_claim["offset"])
+                byte_count = int(raw_read["bytes"])
+                descriptor_name = f"{prefix}Descriptor"
+                original_decoded_name = f"{prefix}OriginalDecoded"
+                candidate_decoded_name = f"{prefix}CandidateDecoded"
+                predicate_name = f"{prefix}Predicate"
+                read_name = f"{prefix}Read"
+                window_name = f"{prefix}Window"
+                operand_bytes_name = f"{prefix}OperandBytes"
+                address_expression_name = f"{prefix}AddressExpression"
+                wait_mode_checked_name = f"{prefix}WaitModeChecked"
+                original_data_address_name = f"{prefix}OriginalDataAddress"
+                candidate_data_address_name = f"{prefix}CandidateDataAddress"
+                original_address_shape_name = f"{prefix}OriginalAddressShape"
+                candidate_address_shape_name = f"{prefix}CandidateAddressShape"
+                inputs_related_name = f"{prefix}InputsRelated"
+                original_input_valid_name = f"{prefix}OriginalInputValid"
+                candidate_input_valid_name = f"{prefix}CandidateInputValid"
+                original_continuation_name = f"{prefix}OriginalContinuation"
+                candidate_continuation_name = f"{prefix}CandidateContinuation"
+                invariant_weakening_name = f"{prefix}InvariantWeakening"
+                source_addresses_name = f"{prefix}SourceAddressesMatch"
+                instruction_pointers_name = f"{prefix}InstructionPointersRelated"
+                original_address = _lean_semantic_expr(
+                    raw_read["original_address"]
+                )
+                candidate_address = _lean_semantic_expr(
+                    raw_read["candidate_address"]
+                )
+                definitions.extend([
+                    (
+                        f"def {edge_name} : RelationalSegmentEdge := {{\n"
+                        f"  sourceTargetId := {source_target_id}\n"
+                        f"  exit := .internal {target_id}\n"
+                        f"  originalSpan := region{source_index}.original\n"
+                        f"  candidateSpan := region{source_index}.candidate\n"
+                        "  localCodeTargetIds := ["
+                        + ", ".join(
+                            str(item)
+                            for item in candidate["local_code_target_ids"]
+                        )
+                        + "]\n  localValueTargetIds := ["
+                        + ", ".join(
+                            str(item)
+                            for item in candidate["local_value_target_ids"]
+                        )
+                        + "]\n"
+                        f"  originalGuard := {_lean_semantic_bool_expr(candidate['original_guard'])}\n"
+                        f"  candidateGuard := {_lean_semantic_bool_expr(candidate['candidate_guard'])}\n"
+                        "}"
+                    ),
+                    (
+                        f"theorem {local_code_targets_name} :\n"
+                        f"    staticProofContext.codeMap.resolveIds "
+                        f"{edge_name}.localCodeTargetIds = "
+                        f"some region{source_index}.targets := by decide"
+                    ),
+                    (
+                        f"theorem {local_values_name} :\n"
+                        f"    staticProofContext.dataMap.resolveIds "
+                        f"{edge_name}.localValueTargetIds = "
+                        f"some region{source_index}.values := by decide"
+                    ),
+                    (
+                        f"def {descriptor_name} : StageA.Relational.X87.DecodedCommand :=\n"
+                        "  (StageA.Relational.X87.decodeSingletonCommand "
+                        f"staticProofContext.originalPe {edge_name}.originalSpan).get "
+                        "(by decide)"
+                    ),
+                    (
+                        f"theorem {original_decoded_name} :\n"
+                        "    StageA.Relational.X87.decodeSingletonCommand "
+                        f"staticProofContext.originalPe {edge_name}.originalSpan =\n"
+                        f"      some {descriptor_name} := by decide"
+                    ),
+                    (
+                        f"theorem {candidate_decoded_name} :\n"
+                        "    StageA.Relational.X87.decodeSingletonCommand "
+                        f"staticProofContext.candidatePe {edge_name}.candidateSpan =\n"
+                        f"      some {descriptor_name} := by decide"
+                    ),
+                    (
+                        f"def {predicate_name} : PairedStatePredicate :=\n"
+                        f"  {_lean_paired_state_predicate(raw_predicate)}"
+                    ),
+                    (
+                        f"def {read_name} : PairedExactMemoryRead :=\n"
+                        f"  {_lean_paired_exact_memory_read(raw_read)}"
+                    ),
+                    (
+                        f"def {window_name} : StackWindowPair :=\n"
+                        f"  {_lean_stack_window(raw_window)}"
+                    ),
+                    (
+                        f"theorem {operand_bytes_name} :\n"
+                        f"    {descriptor_name}.command.expectedOperandBytes = "
+                        f"some {byte_count} := by decide"
+                    ),
+                    (
+                        f"theorem {address_expression_name} :\n"
+                        f"    {descriptor_name}.memoryOperand.map "
+                        "(fun addressing => addressing.expression "
+                        "initialSymbolic.registers) =\n"
+                        f"      some ({original_address}) := by decide"
+                    ),
+                    (
+                        f"theorem {wait_mode_checked_name} :\n"
+                        f"    {descriptor_name}.command.waitModeChecked "
+                        f"{descriptor_name}.waitMode = true := by decide"
+                    ),
+                    (
+                        f"theorem {original_data_address_name} : \u2200 state,\n"
+                        "    StageA.Relational.X87.commandDataAddress "
+                        f"{descriptor_name} state =\n"
+                        f"      some (({original_address}).eval state) := by\n"
+                        "  intro state\n"
+                        "  exact StageA.Relational.X87.commandDataAddress_of_expression "
+                        f"{descriptor_name} ({original_address}) state\n"
+                        f"    {address_expression_name}"
+                    ),
+                    (
+                        f"theorem {candidate_data_address_name} : \u2200 state,\n"
+                        "    StageA.Relational.X87.commandDataAddress "
+                        f"{descriptor_name} state =\n"
+                        f"      some (({candidate_address}).eval state) := by\n"
+                        "  intro state\n"
+                        "  exact StageA.Relational.X87.commandDataAddress_of_expression "
+                        f"{descriptor_name} ({candidate_address}) state\n"
+                        f"    {address_expression_name}"
+                    ),
+                    (
+                        f"theorem {original_address_shape_name} : \u2200 state,\n"
+                        f"    ({original_address}).eval state =\n"
+                        f"      state.registers.get {window_name}.originalRegister + "
+                        f"BitVec.ofNat 32 {offset} := by\n"
+                        "  intro state\n"
+                        f"  simp [{window_name}, Expr.eval]"
+                    ),
+                    (
+                        f"theorem {candidate_address_shape_name} : \u2200 state,\n"
+                        f"    ({candidate_address}).eval state =\n"
+                        f"      state.registers.get {window_name}.candidateRegister + "
+                        f"BitVec.ofNat 32 {offset} := by\n"
+                        "  intro state\n"
+                        f"  simp [{window_name}, Expr.eval]"
+                    ),
+                    (
+                        f"theorem {source_addresses_name} :\n"
+                        f"    codeTargetAddressPairMatches staticProofContext {source_target_id}\n"
+                        "      (BitVec.ofNat 32 (staticProofContext.originalPe.imageBase + "
+                        f"{edge_name}.originalSpan.start))\n"
+                        "      (BitVec.ofNat 32 (staticProofContext.candidatePe.imageBase + "
+                        f"{edge_name}.candidateSpan.start)) = true := by decide"
+                    ),
+                    (
+                        f"theorem {instruction_pointers_name} : ∀ world,\n"
+                        "    (x87AddressRelation staticProofContext world).code\n"
+                        "      (BitVec.ofNat 32 (staticProofContext.originalPe.imageBase + "
+                        f"{edge_name}.originalSpan.start))\n"
+                        "      (BitVec.ofNat 32 (staticProofContext.candidatePe.imageBase + "
+                        f"{edge_name}.candidateSpan.start)) := by\n"
+                        "  intro world\n"
+                        "  right\n"
+                        "  exact codeTargetIdAddresses_codePointerRelated staticProofContext "
+                        f"{source_target_id} _ _ {source_addresses_name}"
+                    ),
+                    (
+                        f"theorem {inputs_related_name} : \u2200 world originalState candidateState,\n"
+                        f"    StateRel staticProofContext world region{source_index}.inputInvariant\n"
+                        "      originalState candidateState \u2192\n"
+                        "    StageA.Relational.X87.InputRelated\n"
+                        "      (x87AddressRelation staticProofContext world)\n"
+                        "      (StageA.Relational.X87.commandStepInput "
+                        f"staticProofContext.originalPe {edge_name}.originalSpan.start\n"
+                        f"        {descriptor_name} originalState)\n"
+                        "      (StageA.Relational.X87.commandStepInput "
+                        f"staticProofContext.candidatePe {edge_name}.candidateSpan.start\n"
+                        f"        {descriptor_name} candidateState) := by\n"
+                        "  intro world originalState candidateState related\n"
+                        "  exact StageA.Relational.X87."
+                        "commandStepInput_related_of_exact_stack_memory\n"
+                        "    staticProofContext world "
+                        f"region{source_index}.inputInvariant {descriptor_name}\n"
+                        f"    {edge_name}.originalSpan.start {edge_name}.candidateSpan.start\n"
+                        f"    originalState candidateState {predicate_name} {read_name}\n"
+                        f"    {window_name} {offset} {byte_count} related\n"
+                        "    (by decide) (by decide) (by decide) "
+                        f"{operand_bytes_name} (by decide)\n"
+                        f"    ({original_data_address_name} originalState)\n"
+                        f"    ({candidate_data_address_name} candidateState)\n"
+                        f"    ({original_address_shape_name} originalState)\n"
+                        f"    ({candidate_address_shape_name} candidateState)\n"
+                        "    (by decide) (by decide) (by decide)\n"
+                        f"    ({instruction_pointers_name} world)"
+                    ),
+                    (
+                        f"theorem {original_input_valid_name} : \u2200 state,\n"
+                        "    (StageA.Relational.X87.commandStepInput "
+                        f"staticProofContext.originalPe {edge_name}.originalSpan.start\n"
+                        f"      {descriptor_name} state).validFor "
+                        f"{descriptor_name}.command := by\n"
+                        "  intro state\n"
+                        "  exact StageA.Relational.X87."
+                        "commandStepInput_valid_of_operand_bytes _ _ _ _ _\n"
+                        f"    {operand_bytes_name} (by decide) (by decide)"
+                    ),
+                    (
+                        f"theorem {candidate_input_valid_name} : \u2200 state,\n"
+                        "    (StageA.Relational.X87.commandStepInput "
+                        f"staticProofContext.candidatePe {edge_name}.candidateSpan.start\n"
+                        f"      {descriptor_name} state).validFor "
+                        f"{descriptor_name}.command := by\n"
+                        "  intro state\n"
+                        "  exact StageA.Relational.X87."
+                        "commandStepInput_valid_of_operand_bytes _ _ _ _ _\n"
+                        f"    {operand_bytes_name} (by decide) (by decide)"
+                    ),
+                    (
+                        f"theorem {original_continuation_name} :\n"
+                        f"    normalizeCodeTarget false region{source_index}.targets "
+                        f"{edge_name}.originalSpan.stop = some {target_id} := by decide"
+                    ),
+                    (
+                        f"theorem {candidate_continuation_name} :\n"
+                        f"    normalizeCodeTarget true region{source_index}.targets "
+                        f"{edge_name}.candidateSpan.stop = some {target_id} := by decide"
+                    ),
+                    _lean_state_invariant_weakening(
+                        invariant_weakening_name,
+                        f"region{source_index}.inputInvariant",
+                        f"region{target_index}.inputInvariant",
+                    ),
+                    (
+                        f"theorem {transition_name} :\n"
+                        f"    X87SegmentTransitionClosed staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant :=\n"
+                        "  x87SegmentTransitionClosed_of_nonstoring_singleton\n"
+                        f"    staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"    {descriptor_name} region{source_index}.targets "
+                        f"region{source_index}.values {target_id}\n"
+                        f"    {local_code_targets_name} {local_values_name}\n"
+                        f"    {original_decoded_name} {candidate_decoded_name}\n"
+                        "    (by decide) (by decide) (by decide)\n"
+                        f"    ({descriptor_name}.command.waitModeValid_of_checked "
+                        f"{descriptor_name}.waitMode {wait_mode_checked_name})\n"
+                        f"    {inputs_related_name} {original_input_valid_name} "
+                        f"{candidate_input_valid_name}\n"
+                        f"    {original_continuation_name} {candidate_continuation_name}\n"
+                        f"    (by decide) {invariant_weakening_name} "
+                        "(by decide) (by decide)"
+                    ),
+                    (
+                        f"def {proposition_name} : Prop :=\n"
+                        f"  RelationalSegmentRefinement staticProofContext "
+                        f"{edge_name} region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant"
+                    ),
+                    (
+                        f"theorem {theorem_name} : {proposition_name} :=\n"
+                        "  relationalSegmentRefinement_of_x87_singleton "
+                        f"staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant {transition_name}"
+                    ),
+                ])
+                proposition_names.append(proposition_name)
+                theorem_names.append(theorem_name)
+                continue
             if candidate["certificate_profile"] in {
                 "composable_local_no_write_v1", "composable_direct_call_v1",
+                "composable_local_no_write_deferred_guard_v1",
                 "composable_known_indirect_call_v1",
                 "composable_direct_call_prepared_writes_v1",
                 "composable_direct_call_stack_writes_v1",
@@ -1791,6 +2331,10 @@ def _write_relational_segment_refinement_modules(
             }:
                 direct_call = (
                     candidate["certificate_profile"] == "composable_direct_call_v1"
+                )
+                deferred_guard = (
+                    candidate["certificate_profile"]
+                    == "composable_local_no_write_deferred_guard_v1"
                 )
                 known_indirect_call = candidate["certificate_profile"] in {
                     "composable_known_indirect_call_v1",
@@ -1842,9 +2386,51 @@ def _write_relational_segment_refinement_modules(
                     or reverse_sentinel_scanner_loop
                     or reverse_sentinel_scanner_exit
                 )
+                branch_state_predicate_pullback = (
+                    candidate.get("edge_kind")
+                        in {"branch_taken", "branch_fallthrough"}
+                    and bool(
+                        contract["regions"][target_index].get("state_predicates")
+                        or contract["regions"][target_index].get("bounds")
+                    )
+                    and not reverse_sentinel_scanner_body
+                    and not reverse_sentinel_scanner_exit
+                )
+                original_outcome_ir = behaviors[source_index]["original_ir"].get(
+                    "outcome", {}
+                )
+                candidate_outcome_ir = behaviors[source_index]["candidate_ir"].get(
+                    "outcome", {}
+                )
+                same_target_branch = (
+                    branch_state_predicate_pullback
+                    and original_outcome_ir.get("op") == "branch"
+                    and candidate_outcome_ir.get("op") == "branch"
+                    and original_outcome_ir.get("taken")
+                        == original_outcome_ir.get("fallthrough")
+                    and candidate_outcome_ir.get("taken")
+                        == candidate_outcome_ir.get("fallthrough")
+                    and original_outcome_ir.get("taken") == target_id
+                    and candidate_outcome_ir.get("taken") == target_id
+                )
+                original_outcome_condition = (
+                    _lean_semantic_bool_expr(original_outcome_ir["condition"])
+                    if original_outcome_ir.get("op") == "branch" else ""
+                )
+                candidate_outcome_condition = (
+                    _lean_semantic_bool_expr(candidate_outcome_ir["condition"])
+                    if candidate_outcome_ir.get("op") == "branch" else ""
+                )
                 normalized_behavior_definitions: list[str] = []
-                normalized_fast_path = _normalized_behavior_fast_path(
+                strict_normalized_fast_path = _normalized_behavior_fast_path(
                     contract["regions"][source_index], behaviors[source_index]
+                )
+                normalized_fast_path = strict_normalized_fast_path or (
+                    candidate["certificate_profile"]
+                        == "composable_paired_stack_word_writes_v1"
+                    and _has_compositional_normalized_support(
+                        contract["regions"][source_index], behaviors[source_index]
+                    )
                 )
                 if (
                     immutable_indirect_jump
@@ -1884,16 +2470,43 @@ def _write_relational_segment_refinement_modules(
                     candidate_normalized_checked = (
                         f"region{source_index}CandidateNormalized"
                     )
-                    normalized_x87_rewrites = (
-                        f"region{source_index}NormalizedX87"
-                    )
-                    normalized_register_rewrites = (
-                        f"region{source_index}NormalizedRegisters"
-                    )
-                    normalized_shape_rewrites = (
-                        f"region{source_index}NormalizedWrites, "
-                        f"region{source_index}NormalizedOutcome"
-                    )
+                    if strict_normalized_fast_path:
+                        normalized_x87_rewrites = (
+                            f"region{source_index}NormalizedX87"
+                        )
+                        normalized_register_rewrites = (
+                            f"region{source_index}NormalizedRegisters"
+                        )
+                        normalized_shape_rewrites = (
+                            f"region{source_index}NormalizedWrites, "
+                            f"region{source_index}NormalizedOutcome"
+                        )
+                    else:
+                        normalized_x87_rewrites = (
+                            f"region{source_index}OriginalNormalizedX87, "
+                            f"region{source_index}CandidateNormalizedX87"
+                        )
+                        normalized_register_rewrites = (
+                            f"region{source_index}OriginalNormalizedRegisters, "
+                            f"region{source_index}CandidateNormalizedRegisters"
+                        )
+                        normalized_shape_rewrites = (
+                            f"region{source_index}OriginalNormalizedWrites, "
+                            f"region{source_index}CandidateNormalizedWrites, "
+                            f"region{source_index}NormalizedOutcome"
+                        )
+                    normalized_behavior_definitions.extend([
+                        (
+                            f"abbrev {prefix}OriginalNormalizedBehavior : "
+                            "NormalizedSymbolicBehavior := "
+                            f"{original_normalized_behavior}"
+                        ),
+                        (
+                            f"abbrev {prefix}CandidateNormalizedBehavior : "
+                            "NormalizedSymbolicBehavior := "
+                            f"{candidate_normalized_behavior}"
+                        ),
+                    ])
                 else:
                     original_normalized_behavior = (
                         f"{prefix}OriginalNormalizedBehavior"
@@ -2201,6 +2814,12 @@ def _write_relational_segment_refinement_modules(
                             f"  originalAmount := {int(claim['original_amount'])}\n"
                             f"  candidateAmount := {int(claim['candidate_amount'])}\n"
                             f"  value := {_lean_paired_stack_word_value_claim(claim['value'])}\n"
+                            "  suffix := ["
+                            + ", ".join(
+                                _lean_paired_prepared_word_write_item(item)
+                                for item in claim.get("suffix", [])
+                            )
+                            + "]\n"
                             "}"
                         )
                         dynamic_transfer_facts.append(
@@ -2211,7 +2830,7 @@ def _write_relational_segment_refinement_modules(
                             f"{prefix}PairedPreparedWritesClaim\n"
                             f"    {original_normalized_behavior} "
                             f"{candidate_normalized_behavior} {claim_name} (by decide)\n"
-                            "    originalState candidateState related"
+                            "    staticProofContextChecked originalState candidateState related"
                         )
                     else:
                         dynamic_claim_definitions.append(
@@ -2238,7 +2857,10 @@ def _write_relational_segment_refinement_modules(
                 candidate_outcome = behaviors[source_index]["candidate_ir"].get(
                     "outcome"
                 ) or {}
-                if guard_claim is not None and candidate_outcome.get("op") == "branch":
+                if (
+                    (guard_claim is not None or deferred_guard)
+                    and candidate_outcome.get("op") == "branch"
+                ):
                     candidate_outcome_condition_name = (
                         f"{prefix}CandidateOutcomeCondition"
                     )
@@ -2447,14 +3069,123 @@ def _write_relational_segment_refinement_modules(
                         f"    {dynamic_guard_claim_name} (by decide) originalState "
                         "candidateState related\n"
                     )
+                if (
+                    branch_state_predicate_pullback
+                    and guard_claim is None
+                    and not deferred_guard
+                ):
+                    raise ValueError(
+                        "branch predicate pullback requires checked guard agreement"
+                    )
                 guard_expected = (
                     "true" if candidate.get("original_guard") is not None
-                    and candidate.get("guard_relation_claim") is not None
                     and register_relations["edges"][edge_index].get("kind")
                         == "branch_taken"
                     else "false"
                 )
-                if guard_claim is None:
+                selected_simp = (
+                    "NormalizedSymbolicBehavior.eval, "
+                    f"{normalized_shape_rewrites}, NormalizedOutcomeExpr.eval, "
+                    f"region{source_index}OutcomeCondition, "
+                    f"{candidate_outcome_condition_name}, "
+                    "PureOutcome.nextLogicalTarget"
+                )
+                if same_target_branch:
+                    state_predicate_guard_setup = (
+                        "  have originalPredicateSelected :\n"
+                        f"      ({original_normalized_behavior}.eval originalState).outcome."
+                        f"nextLogicalTarget = some {target_id} := by\n"
+                        f"    simp [{selected_simp}]\n"
+                        "  have candidatePredicateSelected :\n"
+                        f"      ({candidate_normalized_behavior}.eval candidateState).outcome."
+                        f"nextLogicalTarget = some {target_id} := by\n"
+                        f"    simp [{selected_simp}]\n"
+                    )
+                elif branch_state_predicate_pullback:
+                    state_predicate_guard_setup = (
+                        guard_agreement_setup
+                        + "  have candidatePredicateGuard : "
+                        f"{edge_name}.candidateGuard.eval candidateState = true := by\n"
+                        + "    rw [← guardAgreement]\n"
+                        + "    exact guardTrue\n"
+                        + "  have originalPredicateCondition : "
+                        f"region{source_index}OutcomeCondition.eval originalState = "
+                        f"{guard_expected} := by\n"
+                        + "    exact normalizedBranchCondition_eval_of_guard_true "
+                        f"region{source_index}OutcomeCondition {edge_name}.originalGuard "
+                        f"{guard_expected} originalState (by decide) guardTrue\n"
+                        + "  have candidatePredicateCondition : "
+                        f"{candidate_outcome_condition_name}.eval candidateState = "
+                        f"{guard_expected} := by\n"
+                        + "    exact normalizedBranchCondition_eval_of_guard_true "
+                        f"{candidate_outcome_condition_name} {edge_name}.candidateGuard "
+                        f"{guard_expected} candidateState (by decide) "
+                        "candidatePredicateGuard\n"
+                        + "  have originalPredicateNormalizedCondition : "
+                        f"({original_outcome_condition}).eval originalState = "
+                        f"{guard_expected} := by\n"
+                        f"    simpa [region{source_index}OutcomeCondition] using "
+                        "originalPredicateCondition\n"
+                        + "  have candidatePredicateNormalizedCondition : "
+                        f"({candidate_outcome_condition}).eval candidateState = "
+                        f"{guard_expected} := by\n"
+                        f"    simpa [{candidate_outcome_condition_name}] using "
+                        "candidatePredicateCondition\n"
+                        + "  have originalPredicateSelected :\n"
+                        f"      ({original_normalized_behavior}.eval originalState).outcome."
+                        f"nextLogicalTarget = some {target_id} := by\n"
+                        f"    simp [{selected_simp}, "
+                        "originalPredicateNormalizedCondition]\n"
+                        + "  have candidatePredicateSelected :\n"
+                        f"      ({candidate_normalized_behavior}.eval candidateState).outcome."
+                        f"nextLogicalTarget = some {target_id} := by\n"
+                        f"    simp [{selected_simp}, "
+                        "candidatePredicateNormalizedCondition]\n"
+                    )
+                else:
+                    state_predicate_guard_setup = ""
+                if contract["regions"][target_index].get("bounds"):
+                    if branch_state_predicate_pullback:
+                        state_predicate_guard_setup += (
+                            "  have originalBoundSelected := originalPredicateSelected\n"
+                            "  have candidateBoundSelected := candidatePredicateSelected\n"
+                        )
+                    elif candidate.get("edge_kind") == "jump":
+                        state_predicate_guard_setup += (
+                            "  have originalBoundSelected :\n"
+                            f"      ({original_normalized_behavior}.eval originalState).outcome."
+                            f"nextLogicalTarget = some {target_id} := by\n"
+                            f"    simp [{selected_simp}]\n"
+                            "  have candidateBoundSelected :\n"
+                            f"      ({candidate_normalized_behavior}.eval candidateState).outcome."
+                            f"nextLogicalTarget = some {target_id} := by\n"
+                            f"    simp [{selected_simp}]\n"
+                        )
+                if deferred_guard:
+                    guard_shape_setup = (
+                        "  intro guardAgreement guard\n"
+                        "  have candidateGuard : "
+                        f"{edge_name}.candidateGuard.eval candidateState = true := by\n"
+                        "    rw [← guardAgreement]\n"
+                        "    exact guard\n"
+                        "  have originalCondition : "
+                        f"region{source_index}OutcomeCondition.eval originalState = "
+                        f"{guard_expected} := by\n"
+                        "    exact normalizedBranchCondition_eval_of_guard_true "
+                        f"region{source_index}OutcomeCondition {edge_name}.originalGuard "
+                        f"{guard_expected} originalState (by decide) guard\n"
+                        "  have candidateCondition : "
+                        f"{candidate_outcome_condition_name}.eval candidateState = "
+                        f"{guard_expected} := by\n"
+                        "    exact normalizedBranchCondition_eval_of_guard_true "
+                        f"{candidate_outcome_condition_name} {edge_name}.candidateGuard "
+                        f"{guard_expected} candidateState (by decide) candidateGuard\n"
+                    )
+                    guard_shape_finish = (
+                        "\n  exact ⟨originalCondition, candidateCondition, "
+                        "originalCondition.trans candidateCondition.symm⟩"
+                    )
+                elif guard_claim is None:
                     guard_shape_setup = (
                         "  refine ⟨rfl, ?_⟩\n"
                         "  intro guard\n"
@@ -2622,6 +3353,14 @@ def _write_relational_segment_refinement_modules(
                 )
                 target_output_claims_name = f"{prefix}TargetRegisterOutputClaims"
                 target_output_claims = candidate.get("register_output_claims", [])
+                state_rel_output_claims = candidate.get(
+                    "state_rel_register_output_claims"
+                )
+                if not isinstance(state_rel_output_claims, list):
+                    state_rel_output_claims = [
+                        {"kind": "ordinary", "claim": claim}
+                        for claim in target_output_claims
+                    ]
                 if reverse_sentinel_scanner_body and isinstance(
                     scanner_register_output, dict
                 ):
@@ -2639,17 +3378,17 @@ def _write_relational_segment_refinement_modules(
                     )
                 else:
                     target_output_claim_literals = ", ".join(
-                        _lean_register_output_claim(claim)
-                        for claim in target_output_claims
+                        _lean_state_rel_register_output_claim(claim)
+                        for claim in state_rel_output_claims
                     )
                     register_inventory_definition = (
                         f"def {target_output_claims_name} : "
-                        "List InvariantWP.RegisterOutputClaim := "
+                        "List StateRelRegisterOutputClaim := "
                         f"[{target_output_claim_literals}]"
                     )
                     register_inventory_statement = (
                         f"{target_output_claims_name}.map "
-                        "InvariantWP.RegisterOutputClaim.output = "
+                        "StateRelRegisterOutputClaim.output = "
                         f"region{target_index}.inputRelations"
                     )
                 if reverse_sentinel_scanner_body and isinstance(
@@ -2726,7 +3465,7 @@ def _write_relational_segment_refinement_modules(
                 elif not dynamic_register_outputs:
                     register_transfer_proof = (
                         f"  · rw [RegionRelation.inputInvariant, ← {composition_name}]\n"
-                        "    exact InvariantWP.registerRelationsHold_of_nonMemoryOutputClaims "
+                        "    exact registerRelationsHold_of_stateRelOutputClaims "
                         f"staticProofContext world region{source_index} "
                         f"{original_normalized_behavior} "
                         f"{candidate_normalized_behavior} "
@@ -2950,10 +3689,19 @@ def _write_relational_segment_refinement_modules(
                     assert isinstance(stack_claim, dict)
                     stack_amount = int(stack_claim["stack_amount"])
                     stack_amount_twos_complement = 2**32 - stack_amount
+                    exact_seed_definitions = "".join(
+                        f"def {prefix}DirectCallExactWordSeed{seed_index} : "
+                        "DirectCallStackExactWordSeedClaim := "
+                        f"{_lean_direct_call_stack_exact_word_seed_claim(seed)}\n\n"
+                        for seed_index, seed in enumerate(
+                            stack_claim.get("exact_word_seeds", [])
+                        )
+                    )
                     direct_call_shape_definition = (
                         f"def {stack_claim_name} : DirectCallStackWritesClaim := "
                         f"{_lean_direct_call_stack_writes_claim(stack_claim)}\n\n"
-                        f"theorem {shape_name} :\n"
+                        + exact_seed_definitions
+                        + f"theorem {shape_name} :\n"
                         "    DirectCallStackWritesSegmentShapeClosed staticProofContext "
                         f"{edge_name} region{source_index}.inputInvariant "
                         f"{stack_claim_name}\n"
@@ -3525,10 +4273,11 @@ def _write_relational_segment_refinement_modules(
                     or immutable_indirect_jump_shape_definition
                     or (
                         f"theorem {shape_name} :\n"
-                        f"    NoWriteSegmentShapeClosed staticProofContext {edge_name} "
+                        f"    {'NoWriteSegmentShapeBodyClosed' if deferred_guard else 'NoWriteSegmentShapeClosed'} "
+                        f"staticProofContext {edge_name} "
                         f"region{source_index}.inputInvariant\n"
                         f"      originalBehavior{source_index} candidateBehavior{source_index} := by\n"
-                        "  unfold NoWriteSegmentShapeClosed\n"
+                        f"  unfold {'NoWriteSegmentShapeBodyClosed' if deferred_guard else 'NoWriteSegmentShapeClosed'}\n"
                         f"  rw [{local_code_targets_name}, {local_values_name}]\n"
                         "  intro world originalState candidateState related\n"
                         + guard_shape_setup
@@ -3556,13 +4305,20 @@ def _write_relational_segment_refinement_modules(
                     ),
                     (
                         f"theorem {state_name} :\n"
-                        f"    NoWriteSegmentStateTransferClosed staticProofContext {edge_name} "
+                        f"    {'NoWriteSegmentStateTransferBodyClosed' if deferred_guard else 'NoWriteSegmentStateTransferClosed'} "
+                        f"staticProofContext {edge_name} "
                         f"region{source_index}.inputInvariant region{target_index}.inputInvariant\n"
                         f"      originalBehavior{source_index} candidateBehavior{source_index} := by\n"
-                        "  unfold NoWriteSegmentStateTransferClosed\n"
+                        f"  unfold {'NoWriteSegmentStateTransferBodyClosed' if deferred_guard else 'NoWriteSegmentStateTransferClosed'}\n"
                         f"  rw [{local_code_targets_name}]\n"
                         "  intro world originalState candidateState originalResult candidateResult related\n"
-                        "    originalEval candidateEval guardTrue\n"
+                        + (
+                            "    originalEval candidateEval guardAgreement guardTrue\n"
+                            if deferred_guard else
+                            "    originalEval candidateEval guardTrue\n"
+                        )
+                        + state_predicate_guard_setup
+                        +
                         f"  simp [evalBehavior, {original_normalized_checked}] at originalEval\n"
                         f"  simp [evalBehavior, {candidate_normalized_checked}] at candidateEval\n"
                         "  subst originalResult\n"
@@ -3578,6 +4334,21 @@ def _write_relational_segment_refinement_modules(
                         + "  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩\n"
                         + register_transfer_proof
                         + (
+                            "  · exact InvariantWP."
+                            "boundsRelated_after_no_writes_of_edge_pullback_checked\n"
+                            f"      region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"      {original_normalized_behavior} "
+                            f"{candidate_normalized_behavior} {target_id}\n"
+                            "      originalState candidateState (by decide)\n"
+                            "      originalBoundSelected candidateBoundSelected\n"
+                            "      (relatedForRegisterTransfer.predicatesHold "
+                            "staticProofContext world\n"
+                            f"        region{source_index}.inputInvariant originalState "
+                            "candidateState)\n"
+                            if contract["regions"][target_index].get("bounds")
+                            and not reverse_sentinel_scanner_loop
+                            else
                             "  · exact reverseSentinelScannerLoopBoundClosed_of_checked\n"
                             f"      staticProofContext region{source_index}.inputInvariant\n"
                             f"      region{target_index}.inputInvariant "
@@ -3600,11 +4371,13 @@ def _write_relational_segment_refinement_modules(
                         f"{normalized_x87_rewrites}]\n"
                         "    rcases originalState with "
                         "⟨originalRegisters, originalMemory, originalUndefined, originalX87, "
-                        "originalFlags, originalFsBase⟩\n"
+                        "originalX87Physical, originalX87Semantics, originalFlags, "
+                        "originalFsBase⟩\n"
                         "    rcases candidateState with "
                         "⟨candidateRegisters, candidateMemory, candidateUndefined, candidateX87, "
-                        "candidateFlags, candidateFsBase⟩\n"
-                        "    change originalX87 = candidateX87 at inputX87\n"
+                        "candidateX87Physical, candidateX87Semantics, candidateFlags, "
+                        "candidateFsBase⟩\n"
+                        "    have legacyX87 : originalX87 = candidateX87 := inputX87.1\n"
                         "    subst candidateX87\n"
                         f"    simp [evalNormalizedX87, "
                         f"originalBehavior{source_index}, candidateBehavior{source_index}, "
@@ -3635,6 +4408,31 @@ def _write_relational_segment_refinement_modules(
                             "candidateState\n"
                             "      relatedForRegisterTransfer guardTrue\n"
                             if reverse_sentinel_scanner_exit
+                            else
+                            "  · exact "
+                            "InvariantWP.pairedStatePredicatesHold_after_no_writes_of_edge_pullback_checked\n"
+                            "      staticProofContext world\n"
+                            f"      region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"      {original_normalized_behavior} "
+                            f"{candidate_normalized_behavior} {target_id}\n"
+                            "      originalState candidateState (by decide)\n"
+                            "      originalPredicateSelected candidatePredicateSelected\n"
+                            "      relatedForRegisterTransfer\n"
+                            if branch_state_predicate_pullback
+                            else
+                            "  · exact "
+                            "InvariantWP.pairedStatePredicatesHold_after_no_writes_of_pullback_checked\n"
+                            f"      region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"      {original_normalized_behavior} "
+                            f"{candidate_normalized_behavior} originalState candidateState\n"
+                            "      (by decide)\n"
+                            "      (relatedForRegisterTransfer.predicatesHold "
+                            "staticProofContext world\n"
+                            f"        region{source_index}.inputInvariant originalState "
+                            "candidateState)\n"
+                            if contract["regions"][target_index].get("state_predicates")
                             else
                             f"  · simp [RegionRelation.inputInvariant, region{target_index}, "
                             "pairedStatePredicatesHold, PairedStatePredicate.holds]\n"
@@ -3696,6 +4494,24 @@ def _write_relational_segment_refinement_modules(
                     or paired_prepared_write_transition_definition
                     or paired_stack_write_transition_definition
                     or (
+                        (
+                            f"theorem {transition_name} :\n"
+                            f"    SegmentTransitionBodyClosed staticProofContext {edge_name} "
+                            f"region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"      originalBehavior{source_index} "
+                            f"candidateBehavior{source_index} :=\n"
+                            "  segmentTransitionBodyClosed_of_no_write staticProofContext "
+                            f"{edge_name} region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"    originalBehavior{source_index} "
+                            f"candidateBehavior{source_index} "
+                            f"region{source_index}.targets region{source_index}.values\n"
+                            f"    {local_code_targets_name} {local_values_name} "
+                            "(by decide) (by decide) (by decide) "
+                            f"{shape_name} {state_name}"
+                        )
+                        if deferred_guard else
                         f"theorem {transition_name} :\n"
                         f"    SegmentTransitionClosed staticProofContext {edge_name} "
                         f"region{source_index}.inputInvariant region{target_index}.inputInvariant\n"
@@ -3728,12 +4544,11 @@ def _write_relational_segment_refinement_modules(
                             f"{shape_name} {state_name}"
                         )
                     ),
-                    (
+                    *([] if deferred_guard else [(
                         f"def {proposition_name} : Prop :=\n"
                         f"  RelationalSegmentRefinement staticProofContext {edge_name} "
                         f"region{source_index}.inputInvariant region{target_index}.inputInvariant"
-                    ),
-                    (
+                    ), (
                         f"theorem {theorem_name} : {proposition_name} :=\n"
                         "  relationalSegmentRefinement_of_decoded staticProofContext "
                         f"{edge_name} region{source_index}.inputInvariant "
@@ -3741,10 +4556,11 @@ def _write_relational_segment_refinement_modules(
                         f"    originalBehavior{source_index} candidateBehavior{source_index}\n"
                         f"    originalBehavior{source_index}CheckedDecoded "
                         f"candidateBehavior{source_index}CheckedDecoded {transition_name}"
-                    ),
+                    )]),
                 ])
-                proposition_names.append(proposition_name)
-                theorem_names.append(theorem_name)
+                if not deferred_guard:
+                    proposition_names.append(proposition_name)
+                    theorem_names.append(theorem_name)
                 continue
             raise StageAInputError(
                 f"unsupported segment certificate profile: "
@@ -3899,6 +4715,10 @@ def _write_relational_external_call_refinement_modules(
         product_resolved_name = f"{prefix}ProductResolved"
         product_name = f"{prefix}ProductRefinementChecked"
         register_dispatch = site["dispatch_profile"] == "checked_import_register"
+        dispatch_seed = site.get("dispatch_seed")
+        seeded_register_dispatch = register_dispatch and isinstance(
+            dispatch_seed, dict
+        )
         original_behavior_name = f"originalBehavior{source_index}"
         candidate_behavior_name = f"candidateBehavior{source_index}"
         original_decoded_normalized = f"{prefix}OriginalDecodedNormalized"
@@ -3977,6 +4797,25 @@ def _write_relational_external_call_refinement_modules(
         if register_dispatch:
             dispatch_registers = site["dispatch_registers"]
             assert dispatch_registers is not None
+            seed_definition = ""
+            target_closed_proof = (
+                "  importRegisterIndirectCallTargetsClosed_of_checked "
+                f"staticProofContext region{source_index}.inputInvariant "
+                f"{original_decoded_normalized} "
+                f"{candidate_decoded_normalized} {dispatch_claim_name} (by decide)\n\n"
+            )
+            if seeded_register_dispatch:
+                dispatch_seed_name = f"{prefix}DispatchSeedClaim"
+                seed_definition = (
+                    f"def {dispatch_seed_name} : ImportRegisterSeedClaim := "
+                    f"{_lean_import_register_seed_claim(dispatch_seed)}\n\n"
+                )
+                target_closed_proof = (
+                    "  importRegisterIndirectCallTargetsClosed_of_seed_checked "
+                    f"staticProofContext region{source_index}.inputInvariant "
+                    f"{original_decoded_normalized} {candidate_decoded_normalized} "
+                    f"{dispatch_claim_name} {dispatch_seed_name} (by decide)\n\n"
+                )
             dispatch_definitions = (
                 f"def {dispatch_claim_name} : ImportRegisterIndirectCallClaim := {{\n"
                 f"  imported := {contract_name}.imported\n"
@@ -3984,6 +4823,8 @@ def _write_relational_external_call_refinement_modules(
                 f"  candidateRegister := .{dispatch_registers['candidate']}\n"
                 f"  continuationTargetId := {int(site['continuation_target_id'])}\n"
                 "}\n\n"
+                + seed_definition
+                +
                 f"def {original_decoded_normalized} : NormalizedSymbolicBehavior :=\n"
                 f"  (normalizeSymbolicBehavior false region{source_index}.targets "
                 f"{original_behavior_name}).get (by decide)\n\n"
@@ -4008,11 +4849,11 @@ def _write_relational_external_call_refinement_modules(
                 f"{candidate_behavior_name} = some {candidate_decoded_normalized} := by decide\n\n"
                 f"theorem {target_closed_name} :\n"
                 f"    ImportRegisterIndirectCallTargetsClosed "
-                f"region{source_index}.inputInvariant {original_decoded_normalized} "
+                f"staticProofContext region{source_index}.inputInvariant "
+                f"{original_decoded_normalized} "
                 f"{candidate_decoded_normalized} {dispatch_claim_name} :=\n"
-                "  importRegisterIndirectCallTargetsClosed_of_checked "
-                f"region{source_index}.inputInvariant {original_decoded_normalized} "
-                f"{candidate_decoded_normalized} {dispatch_claim_name} (by decide)\n\n"
+                + target_closed_proof
+                +
                 f"theorem {original_externalized_checked} :\n"
                 f"    externalizeRegisterImportCall {contract_name} "
                 f".{dispatch_registers['original']} {original_behavior_name} = "
@@ -4348,14 +5189,22 @@ def _write_relational_external_call_refinement_modules(
             "  · exact outputStackWindows\n"
             "  · simpa [RelationalBehavior.nextMachineState] using inputUndefined\n"
             "  · rcases originalState with \u27e8originalRegisters, originalMemory, "
-            "originalUndefined, originalX87, originalFlags, originalFsBase\u27e9\n"
+            "originalUndefined, originalX87, originalX87Physical, "
+            "originalX87Semantics, originalFlags, originalFsBase\u27e9\n"
             "    rcases candidateState with \u27e8candidateRegisters, candidateMemory, "
-            "candidateUndefined, candidateX87, candidateFlags, candidateFsBase\u27e9\n"
-            "    change originalX87 = candidateX87 at inputX87\n"
+            "candidateUndefined, candidateX87, candidateX87Physical, "
+            "candidateX87Semantics, candidateFlags, candidateFsBase\u27e9\n"
+            "    have legacyX87 : originalX87 = candidateX87 := inputX87.1\n"
             "    subst candidateX87\n"
-            f"    simp [RelationalBehavior.nextMachineState, {original_x87_checked}, "
-            f"{candidate_x87_checked}, evalNormalizedX87, "
+            "    refine ⟨?_, ?_, ?_⟩\n"
+            "    · simp only [RelationalBehavior.nextMachineState, "
+            "NormalizedSymbolicBehavior.eval_x87, "
+            f"{original_x87_checked}, {candidate_x87_checked}]\n"
+            f"      simp [evalNormalizedX87, {proof_original_behavior}, "
+            f"{proof_candidate_behavior}, "
             "StageA.Formal.X87Expr.eval, StageA.Formal.Expr.eval]\n"
+            "    · simpa only [RelationalBehavior.nextMachineState] using inputX87.2.1\n"
+            "    · simpa only [RelationalBehavior.nextMachineState] using inputX87.2.2\n"
             + flag_proof
             + "  · simpa [RelationalBehavior.nextMachineState] using inputFsBase\n"
             + import_boundary_proof
@@ -4745,17 +5594,24 @@ def _write_relational_external_jump_refinement_modules(
             "  · simpa [normalizeImportReturnSlotState, "
             "RelationalBehavior.nextMachineState] using inputUndefined\n"
             "  · rcases originalState with ⟨originalRegisters, originalMemory, "
-            "originalUndefined, originalX87, originalFlags, originalFsBase⟩\n"
+            "originalUndefined, originalX87, originalX87Physical, "
+            "originalX87Semantics, originalFlags, originalFsBase⟩\n"
             "    rcases candidateState with ⟨candidateRegisters, candidateMemory, "
-            "candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
-            "    change originalX87 = candidateX87 at inputX87\n"
+            "candidateUndefined, candidateX87, candidateX87Physical, "
+            "candidateX87Semantics, candidateFlags, candidateFsBase⟩\n"
+            "    have legacyX87 : originalX87 = candidateX87 := inputX87.1\n"
             "    subst candidateX87\n"
-            "    simp only [normalizeImportReturnSlotState, "
+            "    refine ⟨?_, ?_, ?_⟩\n"
+            "    · simp only [normalizeImportReturnSlotState, "
             "RelationalBehavior.nextMachineState, NormalizedSymbolicBehavior.eval_x87, "
             f"{original_x87_checked}, {candidate_x87_checked}]\n"
-            f"    simp [evalNormalizedX87, originalBehavior{source_index}, "
+            f"      simp [evalNormalizedX87, originalBehavior{source_index}, "
             f"candidateBehavior{source_index}, "
             "StageA.Formal.X87Expr.eval, StageA.Formal.Expr.eval]\n"
+            "    · simpa only [normalizeImportReturnSlotState, "
+            "RelationalBehavior.nextMachineState] using inputX87.2.1\n"
+            "    · simpa only [normalizeImportReturnSlotState, "
+            "RelationalBehavior.nextMachineState] using inputX87.2.2\n"
             + flag_proof
             + "  · simpa [normalizeImportReturnSlotState, "
             "RelationalBehavior.nextMachineState] using inputFsBase\n"

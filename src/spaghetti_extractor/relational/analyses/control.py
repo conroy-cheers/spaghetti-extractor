@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
-from typing import Any
+from typing import Any, Mapping
 
 from ...stage_binary import StageABinary, StageAInputError
 from ...util import sha256_bytes
@@ -14,7 +14,7 @@ from .external import (
     _select_machine_import_call_contract,
     _semantic_external_target_identity,
 )
-from .invariants import _semantic_edges
+from .semantic_control import _semantic_edges
 
 
 def _relational_product_graph(
@@ -507,6 +507,7 @@ def _relational_product_graph(
             and indirect_candidate is not None
             and indirect_candidate["profile"] in {
                 "immutable_relocated_function_pointer_jump_v1",
+                "fixed_static_function_pointer_jump_v1",
                 "fixed_code_address_indirect_jump_v1",
             }
         ):
@@ -595,7 +596,7 @@ def _relational_product_graph(
                 }
                 for target in node_targets
             ]
-        if operation in {"indirect_call", "indirect_jump", "checked_continue"}:
+        if operation in {"indirect_call", "indirect_jump"}:
             return None
         if operation in {"returned", "external_jump"}:
             return []
@@ -617,11 +618,19 @@ def _relational_product_graph(
             "call_unmapped_return",
             "external_call",
             "bulk_copy",
+            "checked_continue",
             "atomic_compare_exchange",
         }:
             return None
         return decoded
 
+    x87_singleton_sources = {
+        int(candidate["source_region_index"])
+        for candidate in segment_candidates
+        if str(candidate.get("certificate_profile", "")).startswith(
+            "composable_x87_"
+        )
+    }
     decoded_control_candidates: list[dict[str, int]] = []
     for node_id, (node, behavior_pair) in enumerate(
         zip(nodes, behaviors, strict=True)
@@ -666,7 +675,11 @@ def _relational_product_graph(
             decoded_candidate = {
                 "node_id": node_id,
                 "region_index": node_id,
-                "profile": "direct_decoded_control_v1",
+                "profile": (
+                    "x87_singleton_decoded_control_v1"
+                    if node_id in x87_singleton_sources
+                    else "direct_decoded_control_v1"
+                ),
             }
             if indirect_candidate is not None:
                 decoded_candidate.update(indirect_candidate)
@@ -934,7 +947,7 @@ def _relational_product_graph(
         added_targets: set[int] = set()
         provenance: list[str] = []
         if any(
-            operation in {"indirect_call", "indirect_jump", "checked_continue"}
+            operation in {"indirect_call", "indirect_jump"}
             for operation in operations
         ):
             added_targets.update(range(len(nodes)))
@@ -1509,6 +1522,266 @@ def _checked_product_reachability_inventories(
     }
 
 
+def _affine_linked_composition_progress(
+    product_graph: Mapping[str, Any],
+    acceptance: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Project affine linked-control certificates into non-authoritative metrics."""
+    affine = acceptance.get("affine_linked_control")
+    if not isinstance(affine, Mapping):
+        return None
+    states = affine.get("minimal_active_states")
+    no_write = affine.get("minimal_transition_bindings")
+    paired_write = affine.get("minimal_memory_transition_bindings")
+    gaps = affine.get("minimal_transition_binding_gaps")
+    links = affine.get("links")
+    coverage_gaps = affine.get("coverage_gaps")
+    graph_nodes = product_graph.get("nodes")
+    graph_edges = product_graph.get("edges")
+    graph_evidence = product_graph.get("evidence")
+    if not all(isinstance(value, list) for value in (
+        states, no_write, paired_write, gaps, links, graph_nodes, graph_edges,
+    )) or not isinstance(coverage_gaps, Mapping) or not isinstance(
+        graph_evidence, Mapping
+    ):
+        return None
+
+    state_node_by_id = {
+        int(state["id"]): int(state["node_id"])
+        for state in states
+        if isinstance(state, Mapping)
+        and isinstance(state.get("id"), int)
+        and isinstance(state.get("node_id"), int)
+    }
+    bindings = [
+        binding for binding in [*no_write, *paired_write]
+        if isinstance(binding, Mapping)
+        and isinstance(binding.get("source_control_state_id"), int)
+        and isinstance(binding.get("edge_id"), int)
+    ]
+    binding_context_keys = {
+        (int(binding["source_control_state_id"]), int(binding["edge_id"]))
+        for binding in bindings
+        if int(binding["source_control_state_id"]) in state_node_by_id
+    }
+    state_ids_by_node: dict[int, set[int]] = defaultdict(set)
+    for state_id, node_id in state_node_by_id.items():
+        state_ids_by_node[node_id].add(state_id)
+    candidate_dispatch_keys = {
+        (state_node_by_id[state_id], edge_id)
+        for state_id, edge_id in binding_context_keys
+    }
+    dispatch_keys = {
+        (node_id, edge_id)
+        for node_id, edge_id in candidate_dispatch_keys
+        if all(
+            (state_id, edge_id) in binding_context_keys
+            for state_id in state_ids_by_node[node_id]
+        )
+    }
+    locally_refined_edge_ids = {
+        int(edge_id)
+        for edge_id in graph_evidence.get("locally_refined_edge_ids", [])
+        if isinstance(edge_id, int)
+    }
+    reachable_node_ids = {
+        int(node_id)
+        for node_id in graph_evidence.get("declared_reachable_node_ids", [])
+        if isinstance(node_id, int)
+    }
+    reachable_edge_ids = {
+        int(edge_id)
+        for edge_id in graph_evidence.get("reachable_feasible_edge_ids", [])
+        if isinstance(edge_id, int)
+    }
+    composition_ready_dispatch_keys = {
+        (node_id, edge_id) for node_id, edge_id in dispatch_keys
+        if edge_id in locally_refined_edge_ids
+    }
+    affine_segment_frontier_edge_ids = sorted({
+        edge_id for _node_id, edge_id in dispatch_keys
+        if edge_id not in locally_refined_edge_ids
+    })
+    rooted_dispatch_keys = {
+        (node_id, edge_id) for node_id, edge_id in dispatch_keys
+        if node_id in reachable_node_ids and edge_id in reachable_edge_ids
+    }
+    rooted_composition_ready_dispatch_keys = {
+        (node_id, edge_id) for node_id, edge_id in rooted_dispatch_keys
+        if edge_id in locally_refined_edge_ids
+    }
+    rooted_affine_segment_frontier_edge_ids = sorted({
+        edge_id for _node_id, edge_id in rooted_dispatch_keys
+        if edge_id not in locally_refined_edge_ids
+    })
+    ordinary_kinds = {"jump", "branchTaken", "branchFallthrough"}
+    ordinary_edges_by_node: dict[int, set[int]] = defaultdict(set)
+    rooted_ordinary_edges_by_node: dict[int, set[int]] = defaultdict(set)
+    for edge in graph_edges:
+        if (
+            isinstance(edge, Mapping)
+            and edge.get("kind") in ordinary_kinds
+            and not bool(edge.get("infeasible"))
+            and isinstance(edge.get("source_node_id"), int)
+            and isinstance(edge.get("id"), int)
+        ):
+            ordinary_edges_by_node[int(edge["source_node_id"])].add(
+                int(edge["id"])
+            )
+            if int(edge["id"]) in reachable_edge_ids:
+                rooted_ordinary_edges_by_node[int(edge["source_node_id"])].add(
+                    int(edge["id"])
+                )
+    active_node_ids = set(state_node_by_id.values())
+    ordinary_control_complete_node_ids = sorted(
+        node_id for node_id in active_node_ids
+        if ordinary_edges_by_node.get(node_id)
+        and all(
+            (node_id, edge_id) in dispatch_keys
+            for edge_id in ordinary_edges_by_node[node_id]
+        )
+    )
+    ordinary_composition_ready_node_ids = sorted(
+        node_id for node_id in active_node_ids
+        if ordinary_edges_by_node.get(node_id)
+        and all(
+            (node_id, edge_id) in composition_ready_dispatch_keys
+            for edge_id in ordinary_edges_by_node[node_id]
+        )
+    )
+    rooted_active_node_ids = active_node_ids.intersection(reachable_node_ids)
+    rooted_ordinary_control_complete_node_ids = sorted(
+        node_id for node_id in rooted_active_node_ids
+        if rooted_ordinary_edges_by_node.get(node_id)
+        and all(
+            (node_id, edge_id) in rooted_dispatch_keys
+            for edge_id in rooted_ordinary_edges_by_node[node_id]
+        )
+    )
+    rooted_ordinary_composition_ready_node_ids = sorted(
+        node_id for node_id in rooted_active_node_ids
+        if rooted_ordinary_edges_by_node.get(node_id)
+        and all(
+            (node_id, edge_id) in rooted_composition_ready_dispatch_keys
+            for edge_id in rooted_ordinary_edges_by_node[node_id]
+        )
+    )
+    unbound_calls = coverage_gaps.get("unbound_call_transition_ids", [])
+    if not isinstance(unbound_calls, list):
+        unbound_calls = []
+    unbound_call_rows = coverage_gaps.get("unbound_call_transitions", [])
+    if not isinstance(unbound_call_rows, list):
+        unbound_call_rows = []
+    unbound_call_context_rows = coverage_gaps.get(
+        "unbound_active_call_contexts", []
+    )
+    if not isinstance(unbound_call_context_rows, list):
+        unbound_call_context_rows = []
+    rooted_unbound_call_rows = [
+        row for row in unbound_call_rows
+        if isinstance(row, Mapping)
+        and isinstance(row.get("transition_id"), int)
+        and isinstance(row.get("source_node_id"), int)
+        and isinstance(row.get("edge_id"), int)
+        and int(row["source_node_id"]) in reachable_node_ids
+        and int(row["edge_id"]) in reachable_edge_ids
+    ]
+    valid_unbound_call_context_rows = [
+        row for row in unbound_call_context_rows
+        if isinstance(row, Mapping)
+        and isinstance(row.get("transition_id"), int)
+        and isinstance(row.get("source_control_state_id"), int)
+        and isinstance(row.get("edge_id"), int)
+        and isinstance(row.get("reason"), str)
+        and int(row["source_control_state_id"]) in state_node_by_id
+    ]
+    rooted_unbound_call_context_rows = [
+        row for row in valid_unbound_call_context_rows
+        if state_node_by_id[int(row["source_control_state_id"])]
+        in reachable_node_ids
+        and int(row["edge_id"]) in reachable_edge_ids
+    ]
+    unbound_call_context_reason_counts = dict(sorted(Counter(
+        str(row["reason"]) for row in valid_unbound_call_context_rows
+    ).items()))
+    rooted_unbound_call_context_reason_counts = dict(sorted(Counter(
+        str(row["reason"]) for row in rooted_unbound_call_context_rows
+    ).items()))
+    return {
+        "status": (
+            "acceptance_ready"
+            if affine.get("acceptance_authority") is True
+            else "proofs_not_connected_to_acceptance"
+        ),
+        "acceptance_authority": affine.get("acceptance_authority") is True,
+        "analyzed_control_states": len(states),
+        "rooted_control_states": sum(
+            node_id in reachable_node_ids
+            for node_id in state_node_by_id.values()
+        ),
+        "ordinary_no_write_contexts": len(no_write),
+        "ordinary_paired_write_contexts": len(paired_write),
+        "ordinary_dispatch_node_edges": len(dispatch_keys),
+        "rooted_ordinary_dispatch_node_edges": len(rooted_dispatch_keys),
+        "ordinary_control_complete_node_ids": ordinary_control_complete_node_ids,
+        "ordinary_control_complete_nodes": len(
+            ordinary_control_complete_node_ids
+        ),
+        "ordinary_composition_ready_node_ids": (
+            ordinary_composition_ready_node_ids
+        ),
+        "ordinary_composition_ready_nodes": len(
+            ordinary_composition_ready_node_ids
+        ),
+        "ordinary_segment_refined_dispatch_node_edges": len(
+            composition_ready_dispatch_keys
+        ),
+        "ordinary_segment_frontier_edge_ids": affine_segment_frontier_edge_ids,
+        "rooted_ordinary_control_complete_node_ids": (
+            rooted_ordinary_control_complete_node_ids
+        ),
+        "rooted_ordinary_control_complete_nodes": len(
+            rooted_ordinary_control_complete_node_ids
+        ),
+        "rooted_ordinary_composition_ready_node_ids": (
+            rooted_ordinary_composition_ready_node_ids
+        ),
+        "rooted_ordinary_composition_ready_nodes": len(
+            rooted_ordinary_composition_ready_node_ids
+        ),
+        "rooted_ordinary_segment_refined_dispatch_node_edges": len(
+            rooted_composition_ready_dispatch_keys
+        ),
+        "rooted_ordinary_segment_frontier_edge_ids": (
+            rooted_affine_segment_frontier_edge_ids
+        ),
+        "ordinary_binding_gaps": len(gaps),
+        "unbound_call_transition_ids": [
+            int(value) for value in unbound_calls if isinstance(value, int)
+        ],
+        "rooted_unbound_call_transition_ids": [
+            int(row["transition_id"]) for row in rooted_unbound_call_rows
+        ],
+        "unbound_active_call_contexts": len(valid_unbound_call_context_rows),
+        "unbound_active_call_context_reason_counts": (
+            unbound_call_context_reason_counts
+        ),
+        "rooted_unbound_active_call_contexts": len(
+            rooted_unbound_call_context_rows
+        ),
+        "rooted_unbound_active_call_context_reason_counts": (
+            rooted_unbound_call_context_reason_counts
+        ),
+        "nested_link_shapes": len(links),
+        "next_action": (
+            "compose affine call pushes, return resumes, and external cutpoints "
+            "through the same LinkedControlAuthority, then make that authority "
+            "the whole-program acceptance input"
+        ),
+        "trust": "diagnostic_projection_of_generated_lean_certificate_inventory",
+    }
+
+
 def _composition_progress(
     product_graph: dict[str, Any],
     semantic_preflight: dict[str, Any],
@@ -1575,6 +1848,9 @@ def _composition_progress(
     acceptance_blockers = list(acceptance.get("blockers", []))
     acceptance_blocker_count = sum(
         int(blocker.get("count", 1)) for blocker in acceptance_blockers
+    )
+    affine_progress = _affine_linked_composition_progress(
+        product_graph, acceptance
     )
     local_frontier_edge_ids = [
         int(edge_id)
@@ -1755,6 +2031,36 @@ def _composition_progress(
     )
 
     next_work: list[dict[str, Any]] = []
+    if (
+        affine_progress is not None
+        and not affine_progress["acceptance_authority"]
+    ):
+        if affine_progress["rooted_ordinary_segment_frontier_edge_ids"]:
+            next_work.append({
+                "category": "affine_ordinary_segment_refinement",
+                "count": len(
+                    affine_progress[
+                        "rooted_ordinary_segment_frontier_edge_ids"
+                    ]
+                ),
+                "example_ids": affine_progress[
+                    "rooted_ordinary_segment_frontier_edge_ids"
+                ][:10],
+                "next_action": (
+                    "close the target StateRel segment refinement for each "
+                    "affine-dispatched ordinary edge"
+                ),
+            })
+        next_work.append({
+            "category": "affine_linked_acceptance_composition",
+            "count": len(
+                affine_progress["rooted_unbound_call_transition_ids"]
+            ),
+            "example_ids": affine_progress[
+                "rooted_unbound_call_transition_ids"
+            ][:10],
+            "next_action": affine_progress["next_action"],
+        })
     if unresolved_indirect_control_cuts:
         next_work.append({
             "category": "unresolved_indirect_control",
@@ -1914,6 +2220,50 @@ def _composition_progress(
             ),
             "acceptance_blockers": acceptance_blocker_count,
             "acceptance_blocker_categories": len(acceptance_blockers),
+            **({
+                "affine_linked_control_states": (
+                    affine_progress["analyzed_control_states"]
+                ),
+                "affine_rooted_linked_control_states": (
+                    affine_progress["rooted_control_states"]
+                ),
+                "affine_ordinary_no_write_contexts": (
+                    affine_progress["ordinary_no_write_contexts"]
+                ),
+                "affine_ordinary_paired_write_contexts": (
+                    affine_progress["ordinary_paired_write_contexts"]
+                ),
+                "affine_ordinary_dispatch_node_edges": (
+                    affine_progress["ordinary_dispatch_node_edges"]
+                ),
+                "affine_rooted_ordinary_dispatch_node_edges": (
+                    affine_progress["rooted_ordinary_dispatch_node_edges"]
+                ),
+                "affine_rooted_ordinary_control_complete_nodes": (
+                    affine_progress[
+                        "rooted_ordinary_control_complete_nodes"
+                    ]
+                ),
+                "affine_rooted_ordinary_composition_ready_nodes": (
+                    affine_progress[
+                        "rooted_ordinary_composition_ready_nodes"
+                    ]
+                ),
+                "affine_rooted_ordinary_segment_refined_dispatch_node_edges": (
+                    affine_progress[
+                        "rooted_ordinary_segment_refined_dispatch_node_edges"
+                    ]
+                ),
+                "affine_rooted_ordinary_segment_frontier_edges": len(
+                    affine_progress[
+                        "rooted_ordinary_segment_frontier_edge_ids"
+                    ]
+                ),
+                "affine_rooted_unbound_call_transitions": len(
+                    affine_progress["rooted_unbound_call_transition_ids"]
+                ),
+                "affine_nested_link_shapes": affine_progress["nested_link_shapes"],
+            } if affine_progress is not None else {}),
         },
         "reachability": {
             "rooted_node_ids": reachable_node_ids,
@@ -1924,6 +2274,8 @@ def _composition_progress(
         },
         "reachability_assurance": reachability_assurance,
         "frontiers": {
+            **({"affine_linked_control": affine_progress}
+               if affine_progress is not None else {}),
             "decoded_control_node_ids": decoded_frontier_node_ids,
             "segment_edge_ids": local_frontier_edge_ids,
             "stack_invariant": stack_invariant_frontier,
@@ -2651,7 +3003,9 @@ def _immutable_indirect_call_candidates(
             }
             if len(mapped_word_keys) != 1:
                 continue
-            mapped_word = min(mapped_words, key=lambda value: int(value["id"]))
+            mapped_word = min(
+                mapped_words, key=lambda value: int(value["id"])
+            )
             value_target_id = int(mapped_word["id"])
             profile = (
                 "immutable_relocated_function_pointer_call_v1"
@@ -2659,8 +3013,6 @@ def _immutable_indirect_call_candidates(
                 else "immutable_relocated_function_pointer_jump_v1"
             )
         else:
-            if operation != "indirect_call":
-                continue
             if len(fixed_slots) != 1:
                 continue
             fixed_slot = fixed_slots[0]
@@ -2672,7 +3024,21 @@ def _immutable_indirect_call_candidates(
             if len(matching_targets) != 1:
                 continue
             target = matching_targets[0]
-            profile = "fixed_static_function_pointer_call_v1"
+            if (
+                operation == "indirect_jump"
+                and (
+                    target.get("original_aliases")
+                    or target.get("candidate_aliases")
+                )
+            ):
+                # The current exact-target execution theorem cannot yet consume
+                # a runtime choice among code aliases. Keep that case explicit.
+                continue
+            profile = (
+                "fixed_static_function_pointer_call_v1"
+                if operation == "indirect_call"
+                else "fixed_static_function_pointer_jump_v1"
+            )
         available_target_ids = {
             int(item["id"]) for item in region.get("code_targets", [])
         }
@@ -4872,7 +5238,8 @@ def _bounded_immutable_relocation_table_jump_candidate(
             matching_bounds.append(bound)
     if len(matching_bounds) != 1:
         return None
-    upper_exclusive = int(matching_bounds[0]["unsigned_lt"])
+    matched_bound = matching_bounds[0]
+    upper_exclusive = int(matched_bound["unsigned_lt"])
 
     matching_values = []
     for value in contract.get("value_targets", []):
@@ -4892,6 +5259,11 @@ def _bounded_immutable_relocation_table_jump_candidate(
         }):
             continue
         matching_values.append((value, original_offset))
+    exact_start_values = [
+        (value, offset) for value, offset in matching_values if offset == 0
+    ]
+    if exact_start_values:
+        matching_values = exact_start_values
     matching_value_keys = {
         (int(value["id"]), offset) for value, offset in matching_values
     }
@@ -4939,6 +5311,8 @@ def _bounded_immutable_relocation_table_jump_candidate(
         "candidate_base": candidate_base,
         "original_index_expression": original_index,
         "candidate_index_expression": candidate_index,
+        "original_index_register": str(matched_bound["original"]),
+        "candidate_index_register": str(matched_bound["candidate"]),
         "upper_exclusive": upper_exclusive,
         "entry_target_ids": entry_target_ids,
         "target_ids": target_ids,

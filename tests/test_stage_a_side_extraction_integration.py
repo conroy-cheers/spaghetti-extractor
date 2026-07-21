@@ -20,6 +20,8 @@ from spaghetti_extractor.relational.pair_normalization import (
 )
 from spaghetti_extractor.relational.schema import (
     RELATIONAL_ANALYSIS_KERNEL_MODULES,
+    STAGE_A_RELATIONAL_MODEL_ID,
+    STAGE_A_RELATIONAL_PROFILE_ID,
 )
 from spaghetti_extractor.relational.side_extraction import (
     stage_a_extract_side,
@@ -140,6 +142,62 @@ class StageASideExtractionIntegrationTests(StageARelationalTestBase):
             ):
                 changed = _raw_extraction_semantics_sha256(**arguments)
             self.assertNotEqual(changed, initial)
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for extraction")
+    def test_state_only_x87_singleton_has_analysis_only_control_proposal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = self._write_pe(root / "wait.exe", b"\x9b\xc3")
+            parsed = _parse_stage_a_pe(binary)
+
+            def extract(name: str, size: int) -> dict[str, object]:
+                request = root / f"{name}-request.json"
+                output = root / f"{name}-extraction.json"
+                write_json(request, {
+                    "format": "stage-a-relational-side-extraction-request-v1",
+                    "profile": STAGE_A_RELATIONAL_PROFILE_ID,
+                    "model": STAGE_A_RELATIONAL_MODEL_ID,
+                    "side": "original",
+                    "binary_sha256": parsed.sha256,
+                    "regions": [{
+                        "index": 0,
+                        "id": name,
+                        "numeric_id": 0,
+                        "span": {"rva_start": 0x1000, "size": size},
+                    }],
+                })
+                result = stage_a_extract_side(
+                    binary=binary, request=request, out=output,
+                )
+                self.assertEqual(result["status"], "extracted")
+                return json.loads(output.read_text(encoding="utf-8"))
+
+            singleton = extract("wait-singleton", 1)
+            term = singleton["regions"][0]["behavior_term"]
+            self.assertIn(
+                "outcome := some (StageA.Formal.OutcomeExpr.jump 4097)", term
+            )
+
+            request = root / "combined-request.json"
+            write_json(request, {
+                "format": "stage-a-relational-side-extraction-request-v1",
+                "profile": STAGE_A_RELATIONAL_PROFILE_ID,
+                "model": STAGE_A_RELATIONAL_MODEL_ID,
+                "side": "original",
+                "binary_sha256": parsed.sha256,
+                "regions": [{
+                    "index": 0,
+                    "id": "wait-plus-command",
+                    "numeric_id": 0,
+                    "span": {"rva_start": 0x1000, "size": 2},
+                }],
+            })
+            with self.assertRaisesRegex(StageAInputError, "did not decode"):
+                stage_a_extract_side(
+                    binary=binary,
+                    request=request,
+                    out=root / "combined-extraction.json",
+                )
 
     def test_normalization_pack_output_rejects_duplicate_and_missing_rows(self):
         def marker(side: str, index: int) -> str:

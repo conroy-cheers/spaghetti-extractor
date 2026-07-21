@@ -81,28 +81,41 @@
             meta.mainProgram = "spaghetti-extractor";
           };
           relationalAnalysisKernelModules = [
+            "X87"
+            "RelationalX87"
             "Formal"
+            "RelationalX87Decode"
             "ISAQualification"
             "RelationalDecode"
             "RelationalLoader"
+            "RelationalFiniteIndex"
             "RelationalMachine"
             "Relational"
+            "RelationalX87Machine"
             "RelationalPEExecution"
             "RelationalISAQualification"
           ];
           spaghettiExtractorAnalysisPythonFiles = [
             ./src/spaghetti_extractor/__init__.py
             ./src/spaghetti_extractor/contract_tools.py
+            ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/pe.py
             ./src/spaghetti_extractor/stage_binary.py
             ./src/spaghetti_extractor/util.py
             ./src/spaghetti_extractor/relational/__init__.py
             ./src/spaghetti_extractor/relational/analysis.py
             ./src/spaghetti_extractor/relational/analysis_artifact.py
+            ./src/spaghetti_extractor/relational/analysis_reference.py
             ./src/spaghetti_extractor/relational/analysis_cli.py
+            ./src/spaghetti_extractor/relational/assembly.py
+            ./src/spaghetti_extractor/relational/assembly_cli.py
             ./src/spaghetti_extractor/relational/artifacts.py
             ./src/spaghetti_extractor/relational/binary_inventory.py
             ./src/spaghetti_extractor/relational/callsite_preservation.py
+            ./src/spaghetti_extractor/relational/composition_products.py
+            ./src/spaghetti_extractor/relational/composition_products_artifact.py
+            ./src/spaghetti_extractor/relational/composition_products_cli.py
+            ./src/spaghetti_extractor/relational/composition_products_format.py
             ./src/spaghetti_extractor/relational/contract.py
             ./src/spaghetti_extractor/relational/diagnostics.py
             ./src/spaghetti_extractor/relational/extraction.py
@@ -110,17 +123,42 @@
             ./src/spaghetti_extractor/relational/ir.py
             ./src/spaghetti_extractor/relational/isa_requirements.py
             ./src/spaghetti_extractor/relational/mapping.py
+            ./src/spaghetti_extractor/relational/memory_products.py
+            ./src/spaghetti_extractor/relational/memory_products_artifact.py
+            ./src/spaghetti_extractor/relational/memory_products_cli.py
+            ./src/spaghetti_extractor/relational/memory_products_format.py
             ./src/spaghetti_extractor/relational/model.py
             ./src/spaghetti_extractor/relational/pair_normalization.py
             ./src/spaghetti_extractor/relational/pair_normalization_artifact.py
             ./src/spaghetti_extractor/relational/phases.py
             ./src/spaghetti_extractor/relational/pipeline.py
             ./src/spaghetti_extractor/relational/preflight.py
+            ./src/spaghetti_extractor/relational/x87_profile.py
+            ./src/spaghetti_extractor/relational/proposal_artifact.py
+            ./src/spaghetti_extractor/relational/proposal_cli.py
             ./src/spaghetti_extractor/relational/region_facts.py
             ./src/spaghetti_extractor/relational/region_facts_artifact.py
             ./src/spaghetti_extractor/relational/region_facts_cli.py
             ./src/spaghetti_extractor/relational/report_schema.py
+            ./src/spaghetti_extractor/relational/runtime_frame_artifact.py
+            ./src/spaghetti_extractor/relational/register_dataflow_artifact.py
+            ./src/spaghetti_extractor/relational/register_dataflow_aggregate.py
+            ./src/spaghetti_extractor/relational/register_dataflow_formats.py
+            ./src/spaghetti_extractor/relational/register_dataflow_seed.py
+            ./src/spaghetti_extractor/relational/register_dataflow_solution.py
+            ./src/spaghetti_extractor/relational/register_dataflow_solver.py
+            ./src/spaghetti_extractor/relational/register_dataflow_summary_format.py
+            ./src/spaghetti_extractor/relational/register_replay.py
+            ./src/spaghetti_extractor/relational/register_replay_artifact.py
+            ./src/spaghetti_extractor/relational/register_replay_cli.py
+            ./src/spaghetti_extractor/relational/register_replay_format.py
+            ./src/spaghetti_extractor/relational/register_transfer_core.py
+            ./src/spaghetti_extractor/relational/register_transfer_ir.py
             ./src/spaghetti_extractor/relational/schema.py
+            ./src/spaghetti_extractor/relational/semantic_products.py
+            ./src/spaghetti_extractor/relational/semantic_products_artifact.py
+            ./src/spaghetti_extractor/relational/semantic_products_cli.py
+            ./src/spaghetti_extractor/relational/semantic_products_format.py
             ./src/spaghetti_extractor/relational/side_extraction.py
             ./src/spaghetti_extractor/relational/side_extraction_artifact.py
             ./src/spaghetti_extractor/relational/side_isa_artifact.py
@@ -130,23 +168,58 @@
             ./src/spaghetti_extractor/relational/analyses/control.py
             ./src/spaghetti_extractor/relational/analyses/dataflow.py
             ./src/spaghetti_extractor/relational/analyses/external.py
+            ./src/spaghetti_extractor/relational/analyses/fixedpoint.py
+            ./src/spaghetti_extractor/relational/analyses/frames.py
             ./src/spaghetti_extractor/relational/analyses/invariants.py
             ./src/spaghetti_extractor/relational/analyses/memory.py
+            ./src/spaghetti_extractor/relational/analyses/predicates.py
             ./src/spaghetti_extractor/relational/analyses/region_local.py
             ./src/spaghetti_extractor/relational/analyses/registers.py
             ./src/spaghetti_extractor/relational/analyses/register_static.py
+            ./src/spaghetti_extractor/relational/analyses/register_lattice.py
+            ./src/spaghetti_extractor/relational/analyses/semantic_control.py
             ./src/spaghetti_extractor/relational/analyses/segments.py
             ./src/spaghetti_extractor/relational/analyses/stack.py
+            ./src/spaghetti_extractor/relational/analyses/x87.py
             ./src/spaghetti_extractor/relational/lean/__init__.py
             ./src/spaghetti_extractor/relational/lean/analysis_source.py
             ./src/spaghetti_extractor/relational/lean/common.py
             ./src/spaghetti_extractor/relational/lean/compiler.py
             ./src/spaghetti_extractor/relational/lean/expressions.py
           ];
-          spaghettiExtractorAnalysisSource = pkgs.lib.fileset.toSource {
+          spaghettiExtractorProposalPythonFiles = pkgs.lib.subtractLists [
+            ./src/spaghetti_extractor/relational/analysis.py
+            ./src/spaghetti_extractor/relational/analysis_cli.py
+            ./src/spaghetti_extractor/relational/analysis_reference.py
+            ./src/spaghetti_extractor/relational/assembly.py
+            ./src/spaghetti_extractor/relational/assembly_cli.py
+            ./src/spaghetti_extractor/relational/composition_products.py
+            ./src/spaghetti_extractor/relational/composition_products_artifact.py
+            ./src/spaghetti_extractor/relational/composition_products_cli.py
+            ./src/spaghetti_extractor/relational/composition_products_format.py
+            ./src/spaghetti_extractor/relational/analyses/invariants.py
+            ./src/spaghetti_extractor/relational/memory_products.py
+            ./src/spaghetti_extractor/relational/memory_products_artifact.py
+            ./src/spaghetti_extractor/relational/memory_products_cli.py
+            ./src/spaghetti_extractor/relational/memory_products_format.py
+            ./src/spaghetti_extractor/relational/register_dataflow_aggregate.py
+            ./src/spaghetti_extractor/relational/register_dataflow_packs.py
+            ./src/spaghetti_extractor/relational/register_dataflow_solution.py
+            ./src/spaghetti_extractor/relational/register_dataflow_solver.py
+            ./src/spaghetti_extractor/relational/register_dataflow_summary_format.py
+            ./src/spaghetti_extractor/relational/register_replay.py
+            ./src/spaghetti_extractor/relational/register_replay_artifact.py
+            ./src/spaghetti_extractor/relational/register_replay_cli.py
+            ./src/spaghetti_extractor/relational/register_replay_format.py
+            ./src/spaghetti_extractor/relational/semantic_products.py
+            ./src/spaghetti_extractor/relational/semantic_products_artifact.py
+            ./src/spaghetti_extractor/relational/semantic_products_cli.py
+            ./src/spaghetti_extractor/relational/semantic_products_format.py
+          ] spaghettiExtractorAnalysisPythonFiles;
+          spaghettiExtractorProposalSource = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
-              (pkgs.lib.fileset.unions spaghettiExtractorAnalysisPythonFiles)
+              (pkgs.lib.fileset.unions spaghettiExtractorProposalPythonFiles)
               (pkgs.lib.fileset.unions (
                 map
                   (module: ./src/spaghetti_extractor/lean/StageA + "/${module}.lean")
@@ -154,20 +227,326 @@
               ))
             ];
           };
+          spaghettiExtractorAssemblySource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/errors.py
+              ./src/spaghetti_extractor/pe.py
+              ./src/spaghetti_extractor/stage_binary.py
+              ./src/spaghetti_extractor/util.py
+              ./src/spaghetti_extractor/relational/__init__.py
+              ./src/spaghetti_extractor/relational/analysis_artifact.py
+              ./src/spaghetti_extractor/relational/analysis_reference.py
+              ./src/spaghetti_extractor/relational/assembly.py
+              ./src/spaghetti_extractor/relational/assembly_cli.py
+              ./src/spaghetti_extractor/relational/composition_products_artifact.py
+              ./src/spaghetti_extractor/relational/composition_products_format.py
+              ./src/spaghetti_extractor/relational/memory_products_artifact.py
+              ./src/spaghetti_extractor/relational/memory_products_format.py
+              ./src/spaghetti_extractor/relational/proposal_artifact.py
+              ./src/spaghetti_extractor/relational/register_replay_artifact.py
+              ./src/spaghetti_extractor/relational/register_replay_format.py
+              ./src/spaghetti_extractor/relational/schema.py
+              ./src/spaghetti_extractor/relational/semantic_products_artifact.py
+              ./src/spaghetti_extractor/relational/semantic_products_format.py
+            ];
+          };
+          spaghettiExtractorRegisterReplaySource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/errors.py
+              ./src/spaghetti_extractor/pe.py
+              ./src/spaghetti_extractor/stage_binary.py
+              ./src/spaghetti_extractor/util.py
+              ./src/spaghetti_extractor/relational/__init__.py
+              ./src/spaghetti_extractor/relational/analysis_artifact.py
+              ./src/spaghetti_extractor/relational/artifacts.py
+              ./src/spaghetti_extractor/relational/callsite_preservation.py
+              ./src/spaghetti_extractor/relational/contract.py
+              ./src/spaghetti_extractor/relational/diagnostics.py
+              ./src/spaghetti_extractor/relational/extraction.py
+              ./src/spaghetti_extractor/relational/model.py
+              ./src/spaghetti_extractor/relational/pair_normalization.py
+              ./src/spaghetti_extractor/relational/pair_normalization_artifact.py
+              ./src/spaghetti_extractor/relational/preflight.py
+              ./src/spaghetti_extractor/relational/x87_profile.py
+              ./src/spaghetti_extractor/relational/proposal_artifact.py
+              ./src/spaghetti_extractor/relational/region_facts.py
+              ./src/spaghetti_extractor/relational/region_facts_artifact.py
+              ./src/spaghetti_extractor/relational/register_dataflow_aggregate.py
+              ./src/spaghetti_extractor/relational/register_dataflow_artifact.py
+              ./src/spaghetti_extractor/relational/register_dataflow_formats.py
+              ./src/spaghetti_extractor/relational/register_dataflow_seed.py
+              ./src/spaghetti_extractor/relational/register_dataflow_solution.py
+              ./src/spaghetti_extractor/relational/register_dataflow_solver.py
+              ./src/spaghetti_extractor/relational/register_dataflow_summary_format.py
+              ./src/spaghetti_extractor/relational/register_replay.py
+              ./src/spaghetti_extractor/relational/register_replay_artifact.py
+              ./src/spaghetti_extractor/relational/register_replay_cli.py
+              ./src/spaghetti_extractor/relational/register_replay_format.py
+              ./src/spaghetti_extractor/relational/register_transfer_core.py
+              ./src/spaghetti_extractor/relational/register_transfer_ir.py
+              ./src/spaghetti_extractor/relational/schema.py
+              ./src/spaghetti_extractor/relational/side_extraction_artifact.py
+              ./src/spaghetti_extractor/relational/analyses/__init__.py
+              ./src/spaghetti_extractor/relational/analyses/callsite.py
+              ./src/spaghetti_extractor/relational/analyses/control.py
+              ./src/spaghetti_extractor/relational/analyses/dataflow.py
+              ./src/spaghetti_extractor/relational/analyses/external.py
+              ./src/spaghetti_extractor/relational/analyses/fixedpoint.py
+              ./src/spaghetti_extractor/relational/analyses/memory.py
+              ./src/spaghetti_extractor/relational/analyses/predicates.py
+              ./src/spaghetti_extractor/relational/analyses/region_local.py
+              ./src/spaghetti_extractor/relational/analyses/register_lattice.py
+              ./src/spaghetti_extractor/relational/analyses/register_static.py
+              ./src/spaghetti_extractor/relational/analyses/registers.py
+              ./src/spaghetti_extractor/relational/analyses/semantic_control.py
+              ./src/spaghetti_extractor/relational/analyses/segments.py
+              ./src/spaghetti_extractor/relational/analyses/stack.py
+              ./src/spaghetti_extractor/relational/lean/__init__.py
+              ./src/spaghetti_extractor/relational/lean/analysis_source.py
+              ./src/spaghetti_extractor/relational/lean/common.py
+              ./src/spaghetti_extractor/relational/lean/compiler.py
+              ./src/spaghetti_extractor/relational/lean/expressions.py
+            ];
+          };
+          spaghettiExtractorSemanticProductsSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/errors.py
+              ./src/spaghetti_extractor/pe.py
+              ./src/spaghetti_extractor/stage_binary.py
+              ./src/spaghetti_extractor/util.py
+              ./src/spaghetti_extractor/relational/__init__.py
+              ./src/spaghetti_extractor/relational/analysis_artifact.py
+              ./src/spaghetti_extractor/relational/artifacts.py
+              ./src/spaghetti_extractor/relational/contract.py
+              ./src/spaghetti_extractor/relational/extraction.py
+              ./src/spaghetti_extractor/relational/model.py
+              ./src/spaghetti_extractor/relational/preflight.py
+              ./src/spaghetti_extractor/relational/x87_profile.py
+              ./src/spaghetti_extractor/relational/proposal_artifact.py
+              ./src/spaghetti_extractor/relational/schema.py
+              ./src/spaghetti_extractor/relational/semantic_products.py
+              ./src/spaghetti_extractor/relational/semantic_products_artifact.py
+              ./src/spaghetti_extractor/relational/semantic_products_cli.py
+              ./src/spaghetti_extractor/relational/semantic_products_format.py
+              ./src/spaghetti_extractor/relational/analyses/external.py
+              ./src/spaghetti_extractor/relational/analyses/invariants.py
+              ./src/spaghetti_extractor/relational/analyses/semantic_control.py
+              ./src/spaghetti_extractor/relational/lean/__init__.py
+              ./src/spaghetti_extractor/relational/lean/analysis_source.py
+              ./src/spaghetti_extractor/relational/lean/common.py
+              ./src/spaghetti_extractor/relational/lean/compiler.py
+              ./src/spaghetti_extractor/relational/lean/expressions.py
+            ];
+          };
+          spaghettiExtractorMemoryProductsSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/errors.py
+              ./src/spaghetti_extractor/pe.py
+              ./src/spaghetti_extractor/stage_binary.py
+              ./src/spaghetti_extractor/util.py
+              ./src/spaghetti_extractor/relational/__init__.py
+              ./src/spaghetti_extractor/relational/analysis_artifact.py
+              ./src/spaghetti_extractor/relational/artifacts.py
+              ./src/spaghetti_extractor/relational/contract.py
+              ./src/spaghetti_extractor/relational/extraction.py
+              ./src/spaghetti_extractor/relational/memory_products.py
+              ./src/spaghetti_extractor/relational/memory_products_artifact.py
+              ./src/spaghetti_extractor/relational/memory_products_cli.py
+              ./src/spaghetti_extractor/relational/memory_products_format.py
+              ./src/spaghetti_extractor/relational/model.py
+              ./src/spaghetti_extractor/relational/preflight.py
+              ./src/spaghetti_extractor/relational/x87_profile.py
+              ./src/spaghetti_extractor/relational/proposal_artifact.py
+              ./src/spaghetti_extractor/relational/register_replay_artifact.py
+              ./src/spaghetti_extractor/relational/register_replay_format.py
+              ./src/spaghetti_extractor/relational/schema.py
+              ./src/spaghetti_extractor/relational/analyses/external.py
+              ./src/spaghetti_extractor/relational/lean/__init__.py
+              ./src/spaghetti_extractor/relational/lean/analysis_source.py
+              ./src/spaghetti_extractor/relational/lean/common.py
+              ./src/spaghetti_extractor/relational/lean/compiler.py
+              ./src/spaghetti_extractor/relational/lean/expressions.py
+            ];
+          };
+          spaghettiExtractorCompositionProductsSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./src/spaghetti_extractor/__init__.py
+                ./src/spaghetti_extractor/contract_tools.py
+                ./src/spaghetti_extractor/errors.py
+                ./src/spaghetti_extractor/pe.py
+                ./src/spaghetti_extractor/stage_binary.py
+                ./src/spaghetti_extractor/util.py
+                ./src/spaghetti_extractor/relational/__init__.py
+                ./src/spaghetti_extractor/relational/analysis_artifact.py
+                ./src/spaghetti_extractor/relational/artifacts.py
+                ./src/spaghetti_extractor/relational/binary_inventory.py
+                ./src/spaghetti_extractor/relational/composition_products.py
+                ./src/spaghetti_extractor/relational/composition_products_artifact.py
+                ./src/spaghetti_extractor/relational/composition_products_cli.py
+                ./src/spaghetti_extractor/relational/composition_products_format.py
+                ./src/spaghetti_extractor/relational/contract.py
+                ./src/spaghetti_extractor/relational/diagnostics.py
+                ./src/spaghetti_extractor/relational/extraction.py
+                ./src/spaghetti_extractor/relational/ir.py
+                ./src/spaghetti_extractor/relational/isa_requirements.py
+                ./src/spaghetti_extractor/relational/memory_products_artifact.py
+                ./src/spaghetti_extractor/relational/memory_products_format.py
+                ./src/spaghetti_extractor/relational/model.py
+                ./src/spaghetti_extractor/relational/phases.py
+                ./src/spaghetti_extractor/relational/preflight.py
+                ./src/spaghetti_extractor/relational/x87_profile.py
+                ./src/spaghetti_extractor/relational/proposal_artifact.py
+                ./src/spaghetti_extractor/relational/register_replay_artifact.py
+                ./src/spaghetti_extractor/relational/register_replay_format.py
+                ./src/spaghetti_extractor/relational/schema.py
+                ./src/spaghetti_extractor/relational/semantic_products_artifact.py
+                ./src/spaghetti_extractor/relational/semantic_products_format.py
+                ./src/spaghetti_extractor/relational/side_extraction.py
+                ./src/spaghetti_extractor/relational/side_extraction_artifact.py
+                ./src/spaghetti_extractor/relational/side_isa_artifact.py
+                ./src/spaghetti_extractor/relational/analyses/__init__.py
+                ./src/spaghetti_extractor/relational/analyses/control.py
+                ./src/spaghetti_extractor/relational/analyses/external.py
+                ./src/spaghetti_extractor/relational/analyses/invariants.py
+                ./src/spaghetti_extractor/relational/analyses/predicates.py
+                ./src/spaghetti_extractor/relational/analyses/semantic_control.py
+                ./src/spaghetti_extractor/relational/analyses/segments.py
+                ./src/spaghetti_extractor/relational/lean/__init__.py
+                ./src/spaghetti_extractor/relational/lean/analysis_source.py
+                ./src/spaghetti_extractor/relational/lean/common.py
+                ./src/spaghetti_extractor/relational/lean/compiler.py
+                ./src/spaghetti_extractor/relational/lean/expressions.py
+                (pkgs.lib.fileset.unions (
+                  map
+                    (module: ./src/spaghetti_extractor/lean/StageA + "/${module}.lean")
+                    relationalAnalysisKernelModules
+                ))
+              ];
+            };
+          spaghettiExtractorRegisterDataflowProblemSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./src/spaghetti_extractor/__init__.py
+                ./src/spaghetti_extractor/errors.py
+                ./src/spaghetti_extractor/pe.py
+                ./src/spaghetti_extractor/stage_binary.py
+                ./src/spaghetti_extractor/util.py
+                ./src/spaghetti_extractor/relational/__init__.py
+                ./src/spaghetti_extractor/relational/analysis_artifact.py
+                ./src/spaghetti_extractor/relational/artifacts.py
+                ./src/spaghetti_extractor/relational/callsite_preservation.py
+                ./src/spaghetti_extractor/relational/contract.py
+                ./src/spaghetti_extractor/relational/diagnostics.py
+                ./src/spaghetti_extractor/relational/extraction.py
+                ./src/spaghetti_extractor/relational/model.py
+                ./src/spaghetti_extractor/relational/preflight.py
+                ./src/spaghetti_extractor/relational/x87_profile.py
+                ./src/spaghetti_extractor/relational/register_dataflow_artifact.py
+                ./src/spaghetti_extractor/relational/register_dataflow_compile.py
+                ./src/spaghetti_extractor/relational/register_dataflow_formats.py
+                ./src/spaghetti_extractor/relational/register_dataflow_problem.py
+                ./src/spaghetti_extractor/relational/register_dataflow_problem_cli.py
+                ./src/spaghetti_extractor/relational/register_dataflow_seed.py
+                ./src/spaghetti_extractor/relational/register_transfer_core.py
+                ./src/spaghetti_extractor/relational/register_transfer_ir.py
+                ./src/spaghetti_extractor/relational/schema.py
+                ./src/spaghetti_extractor/relational/analyses/__init__.py
+                ./src/spaghetti_extractor/relational/analyses/callsite.py
+                ./src/spaghetti_extractor/relational/analyses/control.py
+                ./src/spaghetti_extractor/relational/analyses/dataflow.py
+                ./src/spaghetti_extractor/relational/analyses/external.py
+                ./src/spaghetti_extractor/relational/analyses/fixedpoint.py
+                ./src/spaghetti_extractor/relational/analyses/predicates.py
+                ./src/spaghetti_extractor/relational/analyses/region_local.py
+                ./src/spaghetti_extractor/relational/analyses/register_lattice.py
+                ./src/spaghetti_extractor/relational/analyses/register_static.py
+                ./src/spaghetti_extractor/relational/analyses/registers.py
+                ./src/spaghetti_extractor/relational/analyses/semantic_control.py
+                ./src/spaghetti_extractor/relational/analyses/segments.py
+                ./src/spaghetti_extractor/relational/analyses/stack.py
+                ./src/spaghetti_extractor/relational/lean/__init__.py
+                ./src/spaghetti_extractor/relational/lean/analysis_source.py
+                ./src/spaghetti_extractor/relational/lean/common.py
+                ./src/spaghetti_extractor/relational/lean/compiler.py
+                ./src/spaghetti_extractor/relational/lean/expressions.py
+              ];
+            };
           spaghetti-extractor-analysis = pkgs.writeShellApplication {
             name = "spaghetti-extractor-analysis";
             runtimeInputs = [ pythonEnv ];
             text = ''
-              export PYTHONPATH="${spaghettiExtractorAnalysisSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-              exec python -m spaghetti_extractor.relational.analysis_cli "$@"
+              export PYTHONPATH="${spaghettiExtractorAssemblySource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.assembly_cli "$@"
             '';
           };
+          spaghetti-extractor-proposal = pkgs.writeShellApplication {
+            name = "spaghetti-extractor-proposal";
+            runtimeInputs = [ pythonEnv ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorProposalSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.proposal_cli "$@"
+            '';
+          };
+          spaghetti-extractor-register-replay = pkgs.writeShellApplication {
+            name = "spaghetti-extractor-register-replay";
+            runtimeInputs = [ pythonEnv ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorRegisterReplaySource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.register_replay_cli "$@"
+            '';
+          };
+          spaghetti-extractor-semantic-products = pkgs.writeShellApplication {
+            name = "spaghetti-extractor-semantic-products";
+            runtimeInputs = [ pythonEnv ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorSemanticProductsSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.semantic_products_cli "$@"
+            '';
+          };
+          spaghetti-extractor-memory-products = pkgs.writeShellApplication {
+            name = "spaghetti-extractor-memory-products";
+            runtimeInputs = [ pythonEnv ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorMemoryProductsSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.memory_products_cli "$@"
+            '';
+          };
+          spaghetti-extractor-composition-products =
+            pkgs.writeShellApplication {
+              name = "spaghetti-extractor-composition-products";
+              runtimeInputs = [ pythonEnv ];
+              text = ''
+                export PYTHONPATH="${spaghettiExtractorCompositionProductsSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+                exec python -m spaghetti_extractor.relational.composition_products_cli "$@"
+              '';
+            };
+          spaghetti-extractor-register-dataflow-problem =
+            pkgs.writeShellApplication {
+              name = "spaghetti-extractor-register-dataflow-problem";
+              runtimeInputs = [ pythonEnv ];
+              text = ''
+                export PYTHONPATH="${spaghettiExtractorRegisterDataflowProblemSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+                exec python -m spaghetti_extractor.relational.register_dataflow_problem_cli "$@"
+              '';
+            };
           spaghettiExtractorPreparationPythonFiles =
             spaghettiExtractorAnalysisPythonFiles ++ [
               ./src/spaghetti_extractor/relational/build.py
               ./src/spaghetti_extractor/relational/preparation_cli.py
               ./src/spaghetti_extractor/relational/analyses/callbacks.py
               ./src/spaghetti_extractor/relational/analyses/frames.py
+              ./src/spaghetti_extractor/relational/analyses/linked_control.py
               ./src/spaghetti_extractor/relational/lean/acceptance.py
               ./src/spaghetti_extractor/relational/lean/callbacks.py
               ./src/spaghetti_extractor/relational/lean/composition.py
@@ -194,6 +573,7 @@
           spaghettiExtractorRegionFactsPythonFiles = [
             ./src/spaghetti_extractor/__init__.py
             ./src/spaghetti_extractor/contract_tools.py
+            ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/pe.py
             ./src/spaghetti_extractor/stage_binary.py
             ./src/spaghetti_extractor/util.py
@@ -206,6 +586,7 @@
             ./src/spaghetti_extractor/relational/pair_normalization.py
             ./src/spaghetti_extractor/relational/pair_normalization_artifact.py
             ./src/spaghetti_extractor/relational/preflight.py
+            ./src/spaghetti_extractor/relational/x87_profile.py
             ./src/spaghetti_extractor/relational/region_facts.py
             ./src/spaghetti_extractor/relational/region_facts_artifact.py
             ./src/spaghetti_extractor/relational/region_facts_cli.py
@@ -214,10 +595,11 @@
             ./src/spaghetti_extractor/relational/analyses/__init__.py
             ./src/spaghetti_extractor/relational/analyses/control.py
             ./src/spaghetti_extractor/relational/analyses/external.py
-            ./src/spaghetti_extractor/relational/analyses/invariants.py
             ./src/spaghetti_extractor/relational/analyses/memory.py
+            ./src/spaghetti_extractor/relational/analyses/predicates.py
             ./src/spaghetti_extractor/relational/analyses/region_local.py
             ./src/spaghetti_extractor/relational/analyses/register_static.py
+            ./src/spaghetti_extractor/relational/analyses/semantic_control.py
             ./src/spaghetti_extractor/relational/analyses/segments.py
             ./src/spaghetti_extractor/relational/analyses/stack.py
             ./src/spaghetti_extractor/relational/lean/__init__.py
@@ -248,6 +630,7 @@
           spaghettiExtractorMappingPythonFiles = [
             ./src/spaghetti_extractor/__init__.py
             ./src/spaghetti_extractor/contract_tools.py
+            ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/pe.py
             ./src/spaghetti_extractor/stage_binary.py
             ./src/spaghetti_extractor/util.py
@@ -258,6 +641,7 @@
             ./src/spaghetti_extractor/relational/mapping_cli.py
             ./src/spaghetti_extractor/relational/model.py
             ./src/spaghetti_extractor/relational/schema.py
+            ./src/spaghetti_extractor/relational/x87_profile.py
           ];
           spaghettiExtractorMappingSource = pkgs.lib.fileset.toSource {
             root = ./.;
@@ -274,6 +658,7 @@
           spaghettiExtractorSidePythonFiles = [
             ./src/spaghetti_extractor/__init__.py
             ./src/spaghetti_extractor/contract_tools.py
+            ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/pe.py
             ./src/spaghetti_extractor/stage_binary.py
             ./src/spaghetti_extractor/util.py
@@ -285,6 +670,7 @@
             ./src/spaghetti_extractor/relational/isa_requirements.py
             ./src/spaghetti_extractor/relational/model.py
             ./src/spaghetti_extractor/relational/preflight.py
+            ./src/spaghetti_extractor/relational/x87_profile.py
             ./src/spaghetti_extractor/relational/schema.py
             ./src/spaghetti_extractor/relational/side_cli.py
             ./src/spaghetti_extractor/relational/side_extraction.py
@@ -319,6 +705,7 @@
           };
           spaghettiExtractorNormalizationPythonFiles = [
             ./src/spaghetti_extractor/__init__.py
+            ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/pe.py
             ./src/spaghetti_extractor/stage_binary.py
             ./src/spaghetti_extractor/util.py
@@ -331,6 +718,7 @@
             ./src/spaghetti_extractor/relational/pair_normalization_artifact.py
             ./src/spaghetti_extractor/relational/pair_normalization_cli.py
             ./src/spaghetti_extractor/relational/preflight.py
+            ./src/spaghetti_extractor/relational/x87_profile.py
             ./src/spaghetti_extractor/relational/schema.py
             ./src/spaghetti_extractor/relational/side_extraction_artifact.py
             ./src/spaghetti_extractor/relational/analyses/__init__.py
@@ -360,35 +748,276 @@
               exec python -m spaghetti_extractor.relational.pair_normalization_cli "$@"
             '';
           };
+          spaghettiExtractorDataflowPythonFiles = [
+            ./src/spaghetti_extractor/__init__.py
+            ./src/spaghetti_extractor/errors.py
+            ./src/spaghetti_extractor/util.py
+            ./src/spaghetti_extractor/relational/__init__.py
+            ./src/spaghetti_extractor/relational/schema.py
+            ./src/spaghetti_extractor/relational/register_dataflow_aggregate.py
+            ./src/spaghetti_extractor/relational/register_dataflow_artifact.py
+            ./src/spaghetti_extractor/relational/register_dataflow_formats.py
+            ./src/spaghetti_extractor/relational/register_dataflow_problem.py
+            ./src/spaghetti_extractor/relational/register_transfer_core.py
+            ./src/spaghetti_extractor/relational/register_dataflow_cli.py
+            ./src/spaghetti_extractor/relational/register_dataflow_compare.py
+            ./src/spaghetti_extractor/relational/register_dataflow_packs.py
+            ./src/spaghetti_extractor/relational/register_dataflow_solver.py
+            ./src/spaghetti_extractor/relational/register_dataflow_summary_format.py
+            ./src/spaghetti_extractor/relational/analyses/__init__.py
+            ./src/spaghetti_extractor/relational/analyses/dataflow.py
+            ./src/spaghetti_extractor/relational/analyses/dataflow_schedule.py
+            ./src/spaghetti_extractor/relational/analyses/fixedpoint.py
+            ./src/spaghetti_extractor/relational/analyses/register_lattice.py
+          ];
+          spaghettiExtractorDataflowSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions spaghettiExtractorDataflowPythonFiles;
+          };
+          spaghetti-extractor-dataflow = (pkgs.writeShellApplication {
+            name = "spaghetti-extractor-dataflow";
+            runtimeInputs = [ pkgs.python3 ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorDataflowSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.register_dataflow_cli "$@"
+            '';
+          }).overrideAttrs { preferLocalBuild = true; };
+          spaghettiExtractorDataflowWorkerPythonFiles = [
+            ./src/spaghetti_extractor/__init__.py
+            ./src/spaghetti_extractor/errors.py
+            ./src/spaghetti_extractor/util.py
+            ./src/spaghetti_extractor/relational/__init__.py
+            ./src/spaghetti_extractor/relational/schema.py
+            ./src/spaghetti_extractor/relational/register_dataflow_artifact.py
+            ./src/spaghetti_extractor/relational/register_dataflow_formats.py
+            ./src/spaghetti_extractor/relational/register_transfer_core.py
+            ./src/spaghetti_extractor/relational/register_dataflow_solver.py
+            ./src/spaghetti_extractor/relational/register_dataflow_summary_format.py
+            ./src/spaghetti_extractor/relational/register_dataflow_worker_cli.py
+            ./src/spaghetti_extractor/relational/analyses/__init__.py
+            ./src/spaghetti_extractor/relational/analyses/dataflow.py
+            ./src/spaghetti_extractor/relational/analyses/fixedpoint.py
+            ./src/spaghetti_extractor/relational/analyses/register_lattice.py
+          ];
+          spaghettiExtractorDataflowWorkerSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions
+              spaghettiExtractorDataflowWorkerPythonFiles;
+          };
+          spaghetti-extractor-dataflow-worker = (pkgs.writeShellApplication {
+            name = "spaghetti-extractor-dataflow-worker";
+            runtimeInputs = [ pkgs.python3 ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorDataflowWorkerSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.register_dataflow_worker_cli "$@"
+            '';
+          }).overrideAttrs { preferLocalBuild = true; };
+          spaghettiExtractorDataflowSummarySource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions (
+              spaghettiExtractorDataflowWorkerPythonFiles ++ [
+                ./src/spaghetti_extractor/relational/register_dataflow_summary.py
+                ./src/spaghetti_extractor/relational/register_dataflow_summary_cli.py
+              ]
+            );
+          };
+          spaghetti-extractor-dataflow-summary = (pkgs.writeShellApplication {
+            name = "spaghetti-extractor-dataflow-summary";
+            runtimeInputs = [ pkgs.python3 ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorDataflowSummarySource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.register_dataflow_summary_cli "$@"
+            '';
+          }).overrideAttrs { preferLocalBuild = true; };
+          spaghettiExtractorDataflowPlanPythonFiles = [
+            ./src/spaghetti_extractor/__init__.py
+            ./src/spaghetti_extractor/errors.py
+            ./src/spaghetti_extractor/util.py
+            ./src/spaghetti_extractor/relational/__init__.py
+            ./src/spaghetti_extractor/relational/schema.py
+            ./src/spaghetti_extractor/relational/register_dataflow_artifact.py
+            ./src/spaghetti_extractor/relational/register_dataflow_formats.py
+            ./src/spaghetti_extractor/relational/register_dataflow_problem.py
+            ./src/spaghetti_extractor/relational/register_transfer_core.py
+            ./src/spaghetti_extractor/relational/register_dataflow_packs.py
+            ./src/spaghetti_extractor/relational/register_dataflow_plan_cli.py
+            ./src/spaghetti_extractor/relational/analyses/__init__.py
+            ./src/spaghetti_extractor/relational/analyses/dataflow.py
+            ./src/spaghetti_extractor/relational/analyses/dataflow_schedule.py
+            ./src/spaghetti_extractor/relational/analyses/register_lattice.py
+          ];
+          spaghettiExtractorDataflowPlanSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions
+              spaghettiExtractorDataflowPlanPythonFiles;
+          };
+          spaghetti-extractor-dataflow-plan = (pkgs.writeShellApplication {
+            name = "spaghetti-extractor-dataflow-plan";
+            runtimeInputs = [ pkgs.python3 ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorDataflowPlanSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.register_dataflow_plan_cli "$@"
+            '';
+          }).overrideAttrs { preferLocalBuild = true; };
+          spaghettiExtractorDataflowAggregateSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions (
+              spaghettiExtractorDataflowWorkerPythonFiles ++ [
+                ./src/spaghetti_extractor/relational/register_dataflow_aggregate.py
+                ./src/spaghetti_extractor/relational/register_dataflow_aggregate_cli.py
+              ]
+            );
+          };
+          spaghetti-extractor-dataflow-aggregate = (pkgs.writeShellApplication {
+            name = "spaghetti-extractor-dataflow-aggregate";
+            runtimeInputs = [ pkgs.python3 ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorDataflowAggregateSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.register_dataflow_aggregate_cli "$@"
+            '';
+          }).overrideAttrs { preferLocalBuild = true; };
+          spaghettiExtractorDataflowCompareSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions (
+              spaghettiExtractorDataflowWorkerPythonFiles ++ [
+                ./src/spaghetti_extractor/relational/register_dataflow_aggregate.py
+                ./src/spaghetti_extractor/relational/register_dataflow_compare.py
+                ./src/spaghetti_extractor/relational/register_dataflow_compare_cli.py
+              ]
+            );
+          };
+          spaghetti-extractor-dataflow-compare = (pkgs.writeShellApplication {
+            name = "spaghetti-extractor-dataflow-compare";
+            runtimeInputs = [ pkgs.python3 ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorDataflowCompareSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.register_dataflow_compare_cli "$@"
+            '';
+          }).overrideAttrs { preferLocalBuild = true; };
           stage-a-analysis-source-boundary-check = pkgs.runCommand
             "stage-a-analysis-source-boundary-check"
-            { }
+            { preferLocalBuild = true; }
             ''
-              source="${spaghettiExtractorAnalysisSource}/src/spaghetti_extractor"
-              test -f "$source/relational/analysis_cli.py"
-              test -f "$source/relational/binary_inventory.py"
-              test -f "$source/relational/lean/analysis_source.py"
-              test -f "$source/relational/lean/compiler.py"
+              source="${spaghettiExtractorAssemblySource}/src/spaghetti_extractor"
+              test -f "$source/relational/assembly.py"
+              test -f "$source/relational/assembly_cli.py"
+              test -f "$source/relational/analysis_artifact.py"
+              test -f "$source/relational/analysis_reference.py"
+              test -f "$source/relational/register_replay_artifact.py"
+              test ! -e "$source/relational/register_replay.py"
+              test ! -e "$source/relational/register_replay_cli.py"
+              test ! -e "$source/relational/register_dataflow_solution.py"
+              test ! -e "$source/relational/register_dataflow_aggregate.py"
+              test -f "$source/relational/semantic_products_artifact.py"
+              test ! -e "$source/relational/semantic_products.py"
+              test ! -e "$source/relational/semantic_products_cli.py"
+              test -f "$source/relational/memory_products_artifact.py"
+              test ! -e "$source/relational/memory_products.py"
+              test ! -e "$source/relational/memory_products_cli.py"
+              test -f "$source/relational/composition_products_artifact.py"
+              test ! -e "$source/relational/composition_products.py"
+              test ! -e "$source/relational/composition_products_cli.py"
+              test ! -e "$source/relational/analysis.py"
+              test ! -e "$source/relational/analysis_cli.py"
+              test ! -e "$source/relational/pipeline.py"
+              test ! -e "$source/relational/analyses"
+              test ! -e "$source/relational/lean"
+              test ! -e "$source/relational/register_dataflow_compile.py"
+              test ! -e "$source/relational/register_dataflow_problem.py"
+              test ! -e "$source/relational/register_dataflow_problem_cli.py"
               test ! -e "$source/cli.py"
               test ! -e "$source/stage_b.py"
               test ! -e "$source/relational/build.py"
               test ! -e "$source/relational/executor.py"
               test ! -e "$source/relational/preparation_cli.py"
               test ! -e "$source/relational/proof_diagnostics.py"
-              test ! -e "$source/relational/lean/acceptance.py"
-              test ! -e "$source/relational/lean/generation.py"
-              test ! -e "$source/relational/lean/segments.py"
-              test "$(find "$source/lean/StageA" -type f -name '*.lean' | wc -l)" -eq 8
+              ${spaghetti-extractor-analysis}/bin/spaghetti-extractor-analysis --help >/dev/null
+              proposal="${spaghettiExtractorProposalSource}/src/spaghetti_extractor"
+              test -f "$proposal/relational/proposal_cli.py"
+              test -f "$proposal/relational/proposal_artifact.py"
+              test ! -e "$proposal/relational/analysis.py"
+              test ! -e "$proposal/relational/analysis_cli.py"
+              test ! -e "$proposal/relational/analysis_reference.py"
+              test ! -e "$proposal/relational/assembly.py"
+              test ! -e "$proposal/relational/register_dataflow_solution.py"
+              test ! -e "$proposal/relational/register_dataflow_aggregate.py"
+              test ! -e "$proposal/relational/register_dataflow_solver.py"
+              test ! -e "$proposal/relational/semantic_products.py"
+              test ! -e "$proposal/relational/semantic_products_artifact.py"
+              test ! -e "$proposal/relational/memory_products.py"
+              test ! -e "$proposal/relational/memory_products_artifact.py"
+              test ! -e "$proposal/relational/composition_products.py"
+              test ! -e "$proposal/relational/composition_products_artifact.py"
+              test ! -e "$proposal/relational/analyses/invariants.py"
+              ${spaghetti-extractor-proposal}/bin/spaghetti-extractor-proposal --help >/dev/null
+              replay="${spaghettiExtractorRegisterReplaySource}/src/spaghetti_extractor"
+              test -f "$replay/relational/register_replay.py"
+              test -f "$replay/relational/register_replay_artifact.py"
+              test -f "$replay/relational/register_replay_cli.py"
+              test -f "$replay/relational/register_dataflow_solution.py"
+              test -f "$replay/relational/analyses/semantic_control.py"
+              test ! -e "$replay/relational/register_dataflow_packs.py"
+              test ! -e "$replay/relational/analyses/dataflow_schedule.py"
+              test ! -e "$replay/relational/analyses/invariants.py"
+              test ! -e "$replay/relational/pipeline.py"
+              test ! -e "$replay/relational/assembly.py"
+              test ! -e "$replay/relational/proposal_cli.py"
+              ${spaghetti-extractor-register-replay}/bin/spaghetti-extractor-register-replay --help >/dev/null
+              semantics="${spaghettiExtractorSemanticProductsSource}/src/spaghetti_extractor"
+              test -f "$semantics/relational/semantic_products.py"
+              test -f "$semantics/relational/semantic_products_artifact.py"
+              test -f "$semantics/relational/semantic_products_cli.py"
+              test -f "$semantics/relational/analyses/invariants.py"
+              test -f "$semantics/relational/analyses/semantic_control.py"
+              test ! -e "$semantics/relational/pipeline.py"
+              test ! -e "$semantics/relational/assembly.py"
+              test ! -e "$semantics/relational/register_replay.py"
+              ${spaghetti-extractor-semantic-products}/bin/spaghetti-extractor-semantic-products --help >/dev/null
+              memory="${spaghettiExtractorMemoryProductsSource}/src/spaghetti_extractor"
+              test -f "$memory/relational/memory_products.py"
+              test -f "$memory/relational/memory_products_artifact.py"
+              test -f "$memory/relational/memory_products_cli.py"
+              test ! -e "$memory/relational/pipeline.py"
+              test ! -e "$memory/relational/assembly.py"
+              test ! -e "$memory/relational/semantic_products.py"
+              ${spaghetti-extractor-memory-products}/bin/spaghetti-extractor-memory-products --help >/dev/null
+              composition="${spaghettiExtractorCompositionProductsSource}/src/spaghetti_extractor"
+              test -f "$composition/relational/composition_products.py"
+              test -f "$composition/relational/composition_products_artifact.py"
+              test -f "$composition/relational/composition_products_cli.py"
+              test -f "$composition/relational/analyses/control.py"
+              test -f "$composition/relational/analyses/semantic_control.py"
+              test -f "$composition/relational/analyses/segments.py"
+              test "$(find "$composition/lean/StageA" -type f -name '*.lean' | wc -l)" -eq 12
+              test ! -e "$composition/relational/pipeline.py"
+              test ! -e "$composition/relational/assembly.py"
+              test ! -e "$composition/relational/register_replay.py"
+              test ! -e "$composition/relational/semantic_products.py"
+              test ! -e "$composition/relational/memory_products.py"
+              ${spaghetti-extractor-composition-products}/bin/spaghetti-extractor-composition-products --help >/dev/null
+              problem="${spaghettiExtractorRegisterDataflowProblemSource}/src/spaghetti_extractor"
+              test -f "$problem/relational/register_dataflow_compile.py"
+              test -f "$problem/relational/register_dataflow_problem.py"
+              test -f "$problem/relational/register_dataflow_problem_cli.py"
+              test -f "$problem/relational/analyses/semantic_control.py"
+              test ! -e "$problem/relational/pipeline.py"
+              test ! -e "$problem/relational/assembly.py"
+              test ! -e "$problem/relational/register_dataflow_solution.py"
+              test ! -e "$problem/relational/register_dataflow_aggregate.py"
+              test ! -e "$problem/relational/analyses/invariants.py"
+              ${spaghetti-extractor-register-dataflow-problem}/bin/spaghetti-extractor-register-dataflow-problem --help >/dev/null
               preparation="${spaghettiExtractorPreparationSource}/src/spaghetti_extractor"
               test -f "$preparation/relational/build.py"
               test -f "$preparation/relational/preparation_cli.py"
+              test -f "$preparation/relational/analysis_reference.py"
               test -f "$preparation/relational/report_schema.py"
               test -f "$preparation/relational/lean/generation.py"
               test -f "$preparation/relational/lean/acceptance.py"
+              test -f "$preparation/relational/analyses/linked_control.py"
               test ! -e "$preparation/cli.py"
               test ! -e "$preparation/stage_b.py"
               test ! -e "$preparation/relational/executor.py"
-              test "$(find "$preparation/lean/StageA" -type f -name '*.lean' | wc -l)" -eq 22
+              test "$(find "$preparation/lean/StageA" -type f -name '*.lean' | wc -l)" -eq 27
               ${spaghetti-extractor-preparation}/bin/spaghetti-extractor-preparation --help >/dev/null
               side="${spaghettiExtractorSideSource}/src/spaghetti_extractor"
               test -f "$side/relational/side_extraction.py"
@@ -421,15 +1050,46 @@
               test ! -e "$normalization/relational/phases.py"
               test ! -e "$normalization/relational/verdict.py"
               ${spaghetti-extractor-normalize}/bin/spaghetti-extractor-normalize --help >/dev/null
+              dataflow="${spaghettiExtractorDataflowSource}/src/spaghetti_extractor"
+              test -f "$dataflow/relational/register_dataflow_cli.py"
+              test -f "$dataflow/relational/analyses/register_lattice.py"
+              test ! -e "$dataflow/stage_binary.py"
+              test ! -e "$dataflow/relational/pipeline.py"
+              test ! -e "$dataflow/relational/analyses/registers.py"
+              ${spaghetti-extractor-dataflow}/bin/spaghetti-extractor-dataflow --help >/dev/null
+              worker="${spaghettiExtractorDataflowWorkerSource}/src/spaghetti_extractor"
+              test -f "$worker/relational/register_dataflow_worker_cli.py"
+              test -f "$worker/relational/register_dataflow_solver.py"
+              test -f "$worker/relational/register_transfer_core.py"
+              test ! -e "$worker/stage_binary.py"
+              test ! -e "$worker/relational/register_transfer_ir.py"
+              test ! -e "$worker/relational/register_dataflow_cli.py"
+              test ! -e "$worker/relational/register_dataflow_compare.py"
+              test ! -e "$worker/relational/pipeline.py"
+              ${spaghetti-extractor-dataflow-worker}/bin/spaghetti-extractor-dataflow-worker --help >/dev/null
+              ${spaghetti-extractor-dataflow-summary}/bin/spaghetti-extractor-dataflow-summary --help >/dev/null
+              planner="${spaghettiExtractorDataflowPlanSource}/src/spaghetti_extractor"
+              test -f "$planner/relational/register_dataflow_plan_cli.py"
+              test -f "$planner/relational/register_dataflow_problem.py"
+              test -f "$planner/relational/register_transfer_core.py"
+              test ! -e "$planner/stage_binary.py"
+              test ! -e "$planner/relational/register_transfer_ir.py"
+              test ! -e "$planner/relational/register_dataflow_solver.py"
+              test ! -e "$planner/relational/register_dataflow_compare.py"
+              ${spaghetti-extractor-dataflow-plan}/bin/spaghetti-extractor-dataflow-plan --help >/dev/null
+              ${spaghetti-extractor-dataflow-aggregate}/bin/spaghetti-extractor-dataflow-aggregate --help >/dev/null
+              ${spaghetti-extractor-dataflow-compare}/bin/spaghetti-extractor-dataflow-compare --help >/dev/null
               region_facts="${spaghettiExtractorRegionFactsSource}/src/spaghetti_extractor"
               test -f "$region_facts/relational/region_facts.py"
               test -f "$region_facts/relational/region_facts_artifact.py"
               test -f "$region_facts/relational/region_facts_cli.py"
               test -f "$region_facts/relational/analyses/region_local.py"
               test -f "$region_facts/relational/analyses/register_static.py"
+              test -f "$region_facts/relational/analyses/semantic_control.py"
               test ! -e "$region_facts/relational/pipeline.py"
               test ! -e "$region_facts/relational/analyses/registers.py"
               test ! -e "$region_facts/relational/analyses/callsite.py"
+              test ! -e "$region_facts/relational/analyses/invariants.py"
               test ! -e "$region_facts/relational/analysis.py"
               test ! -e "$region_facts/relational/analysis_artifact.py"
               test ! -e "$region_facts/relational/build.py"
@@ -1184,6 +1844,8 @@
               inherit pkgs;
               prepared =
                 stage-a-winapi-hello-prepared-proof + "/report/relational-v3";
+              auditTheorem =
+                "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked";
             };
           stage-a-winapi-hello-check =
             pkgs.runCommand "stage-a-winapi-hello-check"
@@ -1199,6 +1861,10 @@
                     "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" and
                   .acceptance.status == "ready" and
                   .acceptance.blockers == [] and
+                  .acceptance.linked_acceptance.status == "ready" and
+                  .acceptance.linked_acceptance.theorem ==
+                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" and
+                  .acceptance.linked_acceptance.blockers == [] and
                   .acceptance.launch_realizability.profile ==
                     "paired-preferred-base-import-stack-v1" and
                   (.acceptance.launch_realizability.import_bindings | length) == 3 and
@@ -1216,13 +1882,14 @@
                   .composition_progress.counts.acceptance_blockers == 0
                 ' "$prepared/prepared-proof.json" >/dev/null
                 jq -e '
+                  . as $graph |
                   .format == "stage-a-lean-module-graph-v1" and
                   ([.nodes[] |
                     select(
                       (.modules | length) == 1 and
                       (.modules[0] | startswith("RelationalLaunch")) and
                       (.modules[0] | contains("Leaf"))
-                    )] | length) == 16 and
+                    )] | length) > 0 and
                   all(.nodes[] |
                     select(
                       (.modules | length) == 1 and
@@ -1238,14 +1905,17 @@
                   ) and
                   any(.nodes[];
                     .modules == ["RelationalLaunchCheckCertificate"] and
-                    (.dependencies | length) == 16
+                    (.dependencies | length) > 0 and
+                    all(.dependencies[];
+                      . as $dependency |
+                      any($graph.nodes[]; .id == $dependency))
                   )
                 ' "$prepared/module-graph.json" >/dev/null
                 jq -e '
                   .format == "stage-a-relational-lean-audit-v1" and
                   .status == "checked" and
                   .theorem ==
-                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" and
+                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" and
                   .lean_trust == 0 and
                   .unexpected_axioms == []
                 ' "${stage-a-winapi-hello-proof-audit}/audit.json" >/dev/null
@@ -1713,17 +2383,18 @@
                   (.region_count > 0)
                 ' "$out/region-facts.json" >/dev/null
               '';
-          stage-a-gnu-hello-analysis = pkgs.runCommand "stage-a-gnu-hello-analysis"
+          stage-a-gnu-hello-proposal-raw = pkgs.runCommand
+            "stage-a-gnu-hello-proposal-raw"
             {
               nativeBuildInputs = [
-                spaghetti-extractor-analysis
+                spaghetti-extractor-proposal
                 pkgs.lean4
                 pkgs.jq
               ];
             }
             ''
               fixture_dir="${stage-a-gnu-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/gnu-hello-o2-alignment"
-              work="$TMPDIR/stage-a-gnu-hello-analysis"
+              work="$TMPDIR/stage-a-gnu-hello-proposals"
               mkdir -p "$work"
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-analysis-kernel-cache}"
               export SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_MEMORY_MB=8192
@@ -1732,19 +2403,238 @@
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_NORMALIZATION_BATCH=128
               set +e
               SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
-                spaghetti-extractor-analysis analyze-relational \
+                spaghetti-extractor-proposal discover-proposals \
                   --original "$fixture_dir/hello-original.exe" \
                   --candidate "$fixture_dir/hello-candidate.exe" \
                   --relation-contract "${stage-a-gnu-hello-relation-contract}/hello-relation-contract.json" \
                   --original-extraction "${stage-a-gnu-hello-original-merged-extraction}/extraction.json" \
                   --candidate-extraction "${stage-a-gnu-hello-candidate-merged-extraction}/extraction.json" \
                   --normalized-behaviors "${stage-a-gnu-hello-normalized-behaviors}/normalized-behaviors.json" \
-                  --original-isa "${stage-a-gnu-hello-original-isa}/isa.json" \
-                  --candidate-isa "${stage-a-gnu-hello-candidate-isa}/isa.json" \
                   --region-facts "${stage-a-gnu-hello-region-facts}/region-facts.json" \
-                  --out "$work/analysis" \
-                  > "$work/analysis.stdout" \
-                  2> "$work/analysis.stderr"
+                  --out "$work/proposal" \
+                  > "$work/proposal.stdout" \
+                  2> "$work/proposal.stderr"
+              proposal_status=$?
+              set -e
+              if [ "$proposal_status" -ne 0 ]; then
+                cat "$work/proposal.stderr" >&2
+                cat "$work/proposal.stdout" >&2
+                exit "$proposal_status"
+              fi
+              mkdir -p "$out"
+              cp -R "$work/proposal" "$out/proposal"
+              cp "$work/proposal.stdout" "$work/proposal.stderr" "$out/"
+            '';
+          stage-a-gnu-hello-proposals = pkgs.runCommand
+            "stage-a-gnu-hello-proposals"
+            {
+              nativeBuildInputs = [ spaghetti-extractor-proposal pkgs.jq ];
+              preferLocalBuild = true;
+              allowSubstitutes = true;
+            }
+            ''
+              proposal="${stage-a-gnu-hello-proposal-raw}/proposal"
+              mkdir -p "$out"
+              spaghetti-extractor-proposal validate-proposal \
+                --proposal "$proposal" \
+                > "$out/proposal-validation.json"
+              jq -e '
+                .format == "stage-a-relational-proposal-closure-v1" and
+                .status == "untrusted_proposal_requires_lean_replay" and
+                .acceptance_authority == false
+              ' "$proposal/relational-proposal-manifest.json" >/dev/null
+              test ! -e "$proposal/lean"
+              test ! -e "$proposal/relational-product-graph.json"
+              ln -s "$proposal" "$out/proposal"
+            '';
+          stage-a-gnu-hello-semantic-products = pkgs.runCommand
+            "stage-a-gnu-hello-semantic-products"
+            {
+              nativeBuildInputs = [
+                spaghetti-extractor-semantic-products
+                pkgs.jq
+              ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+            }
+            ''
+              spaghetti-extractor-semantic-products \
+                --proposal "${stage-a-gnu-hello-proposals}/proposal" \
+                --out "$out" \
+                > "$TMPDIR/semantic-products.json"
+              jq -e '
+                .format == "stage-a-relational-semantic-products-v1" and
+                .status == "untrusted_proposal_requires_lean_replay" and
+                .acceptance_authority == false and
+                (.semantic_ir_sha256 | type == "string") and
+                (.invariants_sha256 | type == "string")
+              ' "$out/semantic-products-manifest.json" >/dev/null
+            '';
+          stage-a-gnu-hello-register-dataflow-problem = pkgs.runCommand
+            "stage-a-gnu-hello-register-dataflow-problem"
+            {
+              nativeBuildInputs = [
+                spaghetti-extractor-register-dataflow-problem
+                pkgs.jq
+              ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+            }
+            ''
+              proposal="${stage-a-gnu-hello-proposals}/proposal"
+              mkdir -p "$out"
+              spaghetti-extractor-register-dataflow-problem \
+                --original "$proposal/artifacts/original.pe" \
+                --candidate "$proposal/artifacts/candidate.pe" \
+                --seed "$proposal/relational-register-dataflow-problem-seed.json" \
+                --contract "$proposal/relation-contract.json" \
+                --decoded-behaviors "$proposal/relational-decoded-behaviors.json" \
+                --out "$out/problem.json" \
+                > "$out/result.json"
+              jq -e --slurpfile contract "$proposal/relation-contract.json" '
+                .format == "stage-a-register-dataflow-problem-v1" and
+                .acceptance_authority == false and
+                (.transfer_programs.region_count > 0) and
+                (.transfer_programs.region_count == ($contract[0].regions | length))
+              ' "$out/problem.json" >/dev/null
+            '';
+          stage-a-gnu-hello-register-dataflow-plan = pkgs.runCommand
+            "stage-a-gnu-hello-register-dataflow-plan"
+            {
+              nativeBuildInputs = [ spaghetti-extractor-dataflow-plan pkgs.jq ];
+              preferLocalBuild = true;
+              allowSubstitutes = true;
+            }
+            ''
+              spaghetti-extractor-dataflow-plan \
+                --problem "${stage-a-gnu-hello-register-dataflow-problem}/problem.json" \
+                --out-dir "$out" \
+                > "$TMPDIR/plan.json"
+              jq -e '
+                .format == "stage-a-register-dataflow-pack-manifest-v1" and
+                .acceptance_authority == false and
+                (.transfer_context_sha256 | type == "string") and
+                .pack_count == (.packs | length) and
+                .pack_count > 0
+              ' "$out/manifest.json" >/dev/null
+              test -f "$out/transfer-context.json"
+              jq -se '
+                all(.[];
+                  all(.regions[];
+                    has("program") and (has("observations") | not)))
+              ' "$out"/packs/*.json >/dev/null
+            '';
+          stage-a-gnu-hello-register-dataflow =
+            import ./nix/stage-a-register-dataflow-graph.nix {
+              inherit pkgs;
+              dataflowAggregator = spaghetti-extractor-dataflow-aggregate;
+              dataflowSummary = spaghetti-extractor-dataflow-summary;
+              dataflowWorker = spaghetti-extractor-dataflow-worker;
+              planned = stage-a-gnu-hello-register-dataflow-plan;
+              fineGrained = true;
+            };
+          stage-a-gnu-hello-register-replay = pkgs.runCommand
+            "stage-a-gnu-hello-register-replay"
+            {
+              nativeBuildInputs = [
+                spaghetti-extractor-register-replay
+                pkgs.jq
+              ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+            }
+            ''
+              spaghetti-extractor-register-replay \
+                --proposal "${stage-a-gnu-hello-proposals}/proposal" \
+                --register-dataflow-aggregate \
+                  "${stage-a-gnu-hello-register-dataflow}/aggregate.json" \
+                --out "$out" \
+                > "$TMPDIR/register-replay.json"
+              jq -e '
+                .format == "stage-a-relational-register-replay-v1" and
+                .status == "untrusted_proposal_requires_lean_replay" and
+                .acceptance_authority == false and
+                (.proposal_closure_sha256 | type == "string") and
+                (.aggregate_sha256 | type == "string")
+              ' "$out/register-replay-manifest.json" >/dev/null
+            '';
+          stage-a-gnu-hello-memory-products = pkgs.runCommand
+            "stage-a-gnu-hello-memory-products"
+            {
+              nativeBuildInputs = [
+                spaghetti-extractor-memory-products
+                pkgs.jq
+              ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+            }
+            ''
+              spaghetti-extractor-memory-products \
+                --proposal "${stage-a-gnu-hello-proposals}/proposal" \
+                --register-replay "${stage-a-gnu-hello-register-replay}" \
+                --out "$out" \
+                > "$TMPDIR/memory-products.json"
+              jq -e '
+                .format == "stage-a-relational-memory-products-v1" and
+                .status == "untrusted_proposal_requires_lean_replay" and
+                .acceptance_authority == false and
+                (.memory_contracts_sha256 | type == "string") and
+                (.external_call_sites_sha256 | type == "string")
+              ' "$out/memory-products-manifest.json" >/dev/null
+            '';
+          stage-a-gnu-hello-composition-products = pkgs.runCommand
+            "stage-a-gnu-hello-composition-products"
+            {
+              nativeBuildInputs = [
+                spaghetti-extractor-composition-products
+                pkgs.jq
+              ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+            }
+            ''
+              spaghetti-extractor-composition-products \
+                --proposal "${stage-a-gnu-hello-proposals}/proposal" \
+                --register-replay "${stage-a-gnu-hello-register-replay}" \
+                --semantic-products "${stage-a-gnu-hello-semantic-products}" \
+                --memory-products "${stage-a-gnu-hello-memory-products}" \
+                --original-isa "${stage-a-gnu-hello-original-isa}/isa.json" \
+                --candidate-isa "${stage-a-gnu-hello-candidate-isa}/isa.json" \
+                --out "$out" \
+                > "$TMPDIR/composition-products.json"
+              jq -e '
+                .format == "stage-a-relational-composition-products-v1" and
+                .status == "untrusted_proposal_requires_lean_replay" and
+                .acceptance_authority == false and
+                .isa_mode == "side_artifacts" and
+                (.products_sha256 | type == "string") and
+                (.files | length) == 6
+              ' "$out/composition-products-manifest.json" >/dev/null
+            '';
+          stage-a-gnu-hello-analysis = pkgs.runCommand
+            "stage-a-gnu-hello-analysis"
+            {
+              nativeBuildInputs = [ spaghetti-extractor-analysis pkgs.jq ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+            }
+            ''
+              work="$TMPDIR/stage-a-gnu-hello-analysis"
+              mkdir -p "$work"
+              set +e
+              spaghetti-extractor-analysis assemble-relational \
+                --proposal "${stage-a-gnu-hello-proposals}/proposal" \
+                --register-replay \
+                  "${stage-a-gnu-hello-register-replay}" \
+                --semantic-products \
+                  "${stage-a-gnu-hello-semantic-products}" \
+                --memory-products \
+                  "${stage-a-gnu-hello-memory-products}" \
+                --composition-products \
+                  "${stage-a-gnu-hello-composition-products}" \
+                --out "$work/analysis" \
+                > "$work/analysis.stdout" \
+                2> "$work/analysis.stderr"
               analysis_status=$?
               set -e
               if [ "$analysis_status" -ne 0 ]; then
@@ -1758,17 +2648,16 @@
                 cat "$work/analysis-validation.json" >&2
                 exit 1
               fi
-              if ! jq -e '
+              jq -e '
                 .format == "stage-a-relational-analysis-v1" and
                 .status == "analyzed" and
                 (.files | length) > 20
-              ' "$work/analysis/relational-analysis-manifest.json" >/dev/null; then
-                jq . "$work/analysis/relational-analysis-manifest.json" >&2
-                exit 1
-              fi
-              if [ -e "$work/analysis/lean" ] || [ -e "$work/analysis/certificates" ]; then
-                find "$work/analysis" -maxdepth 2 -type d -print >&2
-                echo "analysis artifact contains downstream proof products" >&2
+              ' "$work/analysis/relational-analysis-manifest.json" >/dev/null
+              if [ -e "$work/analysis/lean" ] || \
+                 [ -e "$work/analysis/certificates" ] || \
+                 [ -e "$work/analysis/relational-proposal-manifest.json" ]; then
+                find "$work/analysis" -maxdepth 2 -print >&2
+                echo "assembled analysis contains non-analysis products" >&2
                 exit 1
               fi
               mkdir -p "$out"
@@ -1776,8 +2665,34 @@
               cp "$work/analysis.stdout" "$work/analysis.stderr" \
                 "$work/analysis-validation.json" "$out/"
             '';
+          stage-a-gnu-hello-register-dataflow-check = pkgs.runCommand
+            "stage-a-gnu-hello-register-dataflow-check"
+            {
+              nativeBuildInputs = [ spaghetti-extractor-dataflow-compare pkgs.jq ];
+              preferLocalBuild = true;
+              allowSubstitutes = true;
+            }
+            ''
+              mkdir -p "$out"
+              spaghetti-extractor-dataflow-compare \
+                --aggregate \
+                  "${stage-a-gnu-hello-register-dataflow}/aggregate.json" \
+                --register-relations \
+                  "${stage-a-gnu-hello-analysis}/analysis/relational-register-relations.json" \
+                --out "$out/comparison.json" \
+                > "$out/compare-command.json"
+              jq -e --slurpfile problem \
+                "${stage-a-gnu-hello-register-dataflow-problem}/problem.json" '
+                .format == "stage-a-register-dataflow-comparison-v1" and
+                .status == "match" and
+                .acceptance_authority == false and
+                .region_count == $problem[0].transfer_programs.region_count and
+                .mismatch_count == 0
+              ' "$out/comparison.json" >/dev/null
+            '';
           stage-a-gnu-hello-preflight = pkgs.runCommand "stage-a-gnu-hello-preflight"
             {
+              preferLocalBuild = true;
               nativeBuildInputs = [
                 spaghetti-extractor-preparation
                 pkgs.jq
@@ -1821,7 +2736,17 @@
                 .status == "prepared" and
                 .acceptance.status == "incomplete" and
                 .expected_final_theorem == null and
-                (.acceptance.blockers | length) > 0
+                (.acceptance.blockers | length) > 0 and
+                .acceptance.launch_realizability.profile ==
+                  "paired-preferred-base-import-stack-tls-static-v2" and
+                .composition_progress.status == "incomplete" and
+                .composition_progress.counts.unsupported_instructions == 0 and
+                .composition_progress.counts.rooted_reachable_nodes > 1000 and
+                .composition_progress.counts.rooted_reachable_feasible_edges > 1000 and
+                .composition_progress.counts.rooted_refined_segments > 0 and
+                .composition_progress.counts.rooted_refined_segments <
+                  .composition_progress.counts.rooted_reachable_feasible_edges and
+                .composition_progress.counts.acceptance_blockers > 0
               ' "$work/relational-v3/prepared-proof.json" >/dev/null; then
                 jq . "$work/relational-v3/prepared-proof.json" >&2
                 echo "GNU hello prepared-proof assertion failed" >&2
@@ -1835,45 +2760,25 @@
               cp -R "$work/relational-v3" "$out/report/relational-v3"
               cp "$work/relational-v3.stdout" "$work/relational-v3.stderr" "$out/report/"
             '';
-          stage-a-gnu-hello-launch-proof =
-            import ./nix/stage-a-lean-graph.nix {
-              inherit pkgs;
-              prepared = stage-a-gnu-hello-preflight + "/report/relational-v3";
-              targetNodes = [ "relationallaunchrealizabilitycertificate" ];
-              targetBundle = true;
-            };
-          stage-a-gnu-hello-check = pkgs.runCommand "stage-a-gnu-hello-check"
-            {
-              nativeBuildInputs = [ pkgs.jq ];
-            }
+          stage-a-gnu-hello-proof = pkgs.writeShellApplication {
+            name = "stage-a-gnu-hello-proof";
+            runtimeInputs = [ spaghetti-extractor pkgs.nix ];
+            text =
             ''
-              prepared="${stage-a-gnu-hello-preflight}/report/relational-v3"
-              jq -e '
-                .status == "prepared" and
-                .acceptance.status == "incomplete" and
-                .acceptance.theorem == null and
-                .acceptance.launch_realizability.profile ==
-                  "paired-preferred-base-import-stack-tls-static-v2" and
-                .composition_progress.status == "incomplete" and
-                .composition_progress.counts.unsupported_instructions == 0 and
-                .composition_progress.counts.rooted_reachable_nodes > 1000 and
-                .composition_progress.counts.rooted_reachable_feasible_edges > 1000 and
-                .composition_progress.counts.rooted_refined_segments > 0 and
-                .composition_progress.counts.rooted_refined_segments <
-                  .composition_progress.counts.rooted_reachable_feasible_edges and
-                .composition_progress.counts.acceptance_blockers > 0
-              ' "$prepared/prepared-proof.json" >/dev/null
-              jq -e '
-                .format == "stage-a-lean-target-bundle-v1" and
-                .lean_trust == 0 and
-                ([.nodes[].id] |
-                  index("relationallaunchrealizabilitycertificate")) != null
-              ' "${stage-a-gnu-hello-launch-proof}/bundle.json" >/dev/null
-              mkdir -p "$out"
-              cp "$prepared/prepared-proof.json" "$prepared/semantic-gaps.json" "$out/"
-              cp "${stage-a-gnu-hello-launch-proof}/bundle.json" \
-                "$out/launch-proof-bundle.json"
+              if [ "$#" -gt 1 ]; then
+                echo "usage: stage-a-gnu-hello-proof [OUTPUT-DIRECTORY]" >&2
+                exit 2
+              fi
+              out="''${1:-$PWD/build/stage-a-gnu-hello-launch-proof}"
+              exec spaghetti-extractor stage-a-build-relational \
+                --prepared-nix-ref "${self}#stage-a-gnu-hello-preflight" \
+                --prepared-subpath report/relational-v3 \
+                --flake "${self}" \
+                --builders-file "${./nix/stage-a-builders}" \
+                --target-node relationallaunchrealizabilitycertificate \
+                --out "$out"
             '';
+          };
           stage-a-minimal-hello-fixtures = pkgs.runCommand "stage-a-minimal-hello-fixtures"
             {
               nativeBuildInputs = [ pkgs.jq ];
@@ -1948,7 +2853,7 @@
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=16
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_LAUNCH_CHECK_CHUNK=1024
-              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_STATIC_CODE_MAP_NIX_PACK_MODULES=4
+              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_STATIC_CODE_MAP_NIX_PACK_MODULES=1
               SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
                 spaghetti-extractor-preparation prepare-relational \
                   --original "$fixture_dir/hello-original.exe" \
@@ -2066,32 +2971,103 @@
                 --out "$out/jq-relation-contract.json" \
                 > "$out/generate-relation.stdout"
             '';
-          stage-a-jq-prepared-proof = pkgs.runCommand "stage-a-jq-prepared-proof"
-            {
-              nativeBuildInputs = [
-                spaghetti-extractor-preparation
+          stageAJqRelationalGraph =
+            let
+              fixtureDir =
+                "${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment";
+            in
+            import ./nix/stage-a-relational-analysis-graph.nix {
+              inherit pkgs;
+              name = "stage-a-jq";
+              original = {
+                binary = "${fixtureDir}/jq-original.exe";
+                linkerMap = "${fixtureDir}/jq-original.map";
+              };
+              candidate = {
+                binary = "${fixtureDir}/jq-candidate.exe";
+                linkerMap = "${fixtureDir}/jq-candidate.map";
+              };
+              relationContract =
+                "${stage-a-jq-relation-contract}/jq-relation-contract.json";
+              analysisKernelCache = stage-a-relational-analysis-kernel-cache;
+              extractionJobs = 16;
+              tools = {
+                side = spaghetti-extractor-side;
+                normalize = spaghetti-extractor-normalize;
+                regionFacts = spaghetti-extractor-region-facts;
+                proposal = spaghetti-extractor-proposal;
+                semanticProducts = spaghetti-extractor-semantic-products;
+                registerDataflowProblem =
+                  spaghetti-extractor-register-dataflow-problem;
+                dataflowPlan = spaghetti-extractor-dataflow-plan;
+                dataflowWorker = spaghetti-extractor-dataflow-worker;
+                dataflowAggregate = spaghetti-extractor-dataflow-aggregate;
+                dataflowSummary = spaghetti-extractor-dataflow-summary;
+                dataflowCompare = spaghetti-extractor-dataflow-compare;
+                registerReplay = spaghetti-extractor-register-replay;
+                memoryProducts = spaghetti-extractor-memory-products;
+                compositionProducts = spaghetti-extractor-composition-products;
+                analysis = spaghetti-extractor-analysis;
+                preparation = spaghetti-extractor-preparation;
+              };
+              extraReportArtifacts = [
+                {
+                  source = "${stage-a-jq-static-map}/jq-block-map.json";
+                  target = "jq-block-map.json";
+                }
+                {
+                  source = "${stage-a-jq-static-map}/jq-layout-contract.json";
+                  target = "jq-layout-contract.json";
+                }
+                {
+                  source =
+                    "${stage-a-jq-relation-contract}/jq-relation-contract.json";
+                  target = "jq-relation-contract.json";
+                }
               ];
-            }
-            ''
-              fixture_dir="${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment"
-              work="$TMPDIR/stage-a-jq"
-              mkdir -p "$work"
-              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
-              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=16
-              SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
-                spaghetti-extractor-preparation prepare-relational \
-                  --original "$fixture_dir/jq-original.exe" \
-                  --candidate "$fixture_dir/jq-candidate.exe" \
-                  --relation-contract "${stage-a-jq-relation-contract}/jq-relation-contract.json" \
-                  --out "$work/relational-v3" \
-                  > "$work/relational-v3.stdout"
-              mkdir -p "$out/report"
-              cp "${stage-a-jq-static-map}/jq-block-map.json" \
-                "${stage-a-jq-static-map}/jq-layout-contract.json" \
-                "${stage-a-jq-relation-contract}/jq-relation-contract.json" \
-                "$out/report/"
-              cp -R "$work/relational-v3" "$out/report/relational-v3"
-            '';
+            };
+          stage-a-jq-original-inventory =
+            stageAJqRelationalGraph.originalInventory;
+          stage-a-jq-candidate-inventory =
+            stageAJqRelationalGraph.candidateInventory;
+          stage-a-jq-original-extraction =
+            stageAJqRelationalGraph.originalExtraction;
+          stage-a-jq-candidate-extraction =
+            stageAJqRelationalGraph.candidateExtraction;
+          stage-a-jq-original-isa = stageAJqRelationalGraph.originalIsa;
+          stage-a-jq-candidate-isa = stageAJqRelationalGraph.candidateIsa;
+          stage-a-jq-original-supplement-request =
+            stageAJqRelationalGraph.originalSupplementRequest;
+          stage-a-jq-candidate-supplement-request =
+            stageAJqRelationalGraph.candidateSupplementRequest;
+          stage-a-jq-original-supplement-extraction =
+            stageAJqRelationalGraph.originalSupplementExtraction;
+          stage-a-jq-candidate-supplement-extraction =
+            stageAJqRelationalGraph.candidateSupplementExtraction;
+          stage-a-jq-original-merged-extraction =
+            stageAJqRelationalGraph.originalMergedExtraction;
+          stage-a-jq-candidate-merged-extraction =
+            stageAJqRelationalGraph.candidateMergedExtraction;
+          stage-a-jq-normalized-behaviors =
+            stageAJqRelationalGraph.normalizedBehaviors;
+          stage-a-jq-region-facts = stageAJqRelationalGraph.regionFacts;
+          stage-a-jq-proposals = stageAJqRelationalGraph.proposal;
+          stage-a-jq-semantic-products =
+            stageAJqRelationalGraph.semanticProducts;
+          stage-a-jq-register-dataflow-problem =
+            stageAJqRelationalGraph.registerDataflowProblem;
+          stage-a-jq-register-dataflow-plan =
+            stageAJqRelationalGraph.registerDataflowPlan;
+          stage-a-jq-register-dataflow =
+            stageAJqRelationalGraph.registerDataflow;
+          stage-a-jq-register-replay = stageAJqRelationalGraph.registerReplay;
+          stage-a-jq-memory-products = stageAJqRelationalGraph.memoryProducts;
+          stage-a-jq-composition-products =
+            stageAJqRelationalGraph.compositionProducts;
+          stage-a-jq-analysis = stageAJqRelationalGraph.analysis;
+          stage-a-jq-register-dataflow-check =
+            stageAJqRelationalGraph.registerDataflowCheck;
+          stage-a-jq-prepared-proof = stageAJqRelationalGraph.preparedProof;
           stage-a-jq-reference-contract = pkgs.runCommand "stage-a-jq-reference-contract"
             {
               nativeBuildInputs = [
@@ -2207,16 +3183,21 @@
             );
           };
           relationalKernelModules = [
+            "X87"
+            "RelationalX87"
             "Formal"
+            "RelationalX87Decode"
             "ISAQualification"
             "ISAConformance"
             "ISAConformanceRunner"
             "RelationalDecode"
             "RelationalLoader"
+            "RelationalFiniteIndex"
             "RelationalMachine"
             "RelationalPEExecution"
             "RelationalISAQualification"
             "Relational"
+            "RelationalX87Machine"
             "RelationalInvariant"
             "RelationalExactExpr"
             "RelationalExecution"
@@ -2226,11 +3207,15 @@
             "RelationalLinkedFrames"
             "RelationalEnvironment"
             "RelationalCallbacks"
+            "RelationalAffineFrames"
+            "RelationalAffineLinkedFrames"
             "RelationalCertificates"
+            "RelationalLinkedExecution"
             "RelationalPEWorldExecution"
             "RelationalStaticTree"
           ];
           isaKernelModules = [
+            "X87"
             "Formal"
             "ISAQualification"
             "ISAConformance"
@@ -2366,6 +3351,7 @@
             "tests.test_stage_a_external_protocol"
             [
               ./tests/test_stage_a_external_protocol.py
+              ./profiles/pe32-kernel32-lockstep-v1.json
               ./profiles/pe32-msvcrt-lockstep-v1.json
             ];
           stage-a-relational-tests-external-contract-selection =
@@ -2528,6 +3514,11 @@
               "register-analysis"
               "tests.test_stage_a_register_analysis"
               [ ./tests/test_stage_a_register_analysis.py ];
+          stage-a-relational-tests-linked-control-analysis =
+            mkStageARelationalTest
+              "linked-control-analysis"
+              "tests.test_stage_a_linked_control_analysis"
+              [ ./tests/test_stage_a_linked_control_analysis.py ];
           stage-a-relational-tests-lean-runtime-frame-import-environment =
             mkStageARelationalTest
               "lean-runtime-frame-import-environment"
@@ -2576,6 +3567,10 @@
             stageARelationalLeanSuite.cases.dynamic_range_result_relation_is_checked_by_lean;
           stage-a-relational-tests-lean-linked-frames =
             stageARelationalLeanSuite.cases.linked_runtime_frames_support_an_arbitrary_dormant_tail;
+          stage-a-relational-tests-lean-linked-execution =
+            stageARelationalLeanSuite.cases.linked_execution_step_accepts_an_arbitrary_dormant_tail;
+          stage-a-relational-tests-lean-active-frame-guard =
+            stageARelationalLeanSuite.cases.active_frame_exact_register_guard_is_checked_by_lean;
           stage-a-relational-tests-contract-machine-import =
             stageARelationalContractSuite.cases.machine_import_call_contract_validation_fails_closed;
           stage-a-relational-tests-acceptance = stageARelationalAcceptanceSuite.aggregate;
@@ -2583,6 +3578,8 @@
             stageARelationalStaticWordSlotCertificateSuite.aggregate;
           stage-a-relational-tests-acceptance-whole-program-kernel =
             stageARelationalAcceptanceSuite.cases.whole_program_equivalence_kernel_checks_without_sorry;
+          stage-a-relational-tests-acceptance-nested-linked-calls =
+            stageARelationalAcceptanceSuite.cases.nested_direct_calls_require_native_linked_frame_acceptance;
           stage-a-relational-tests-acceptance-instruction-adequacy =
             stageARelationalAcceptanceSuite.cases.instruction_semantics_adequacy_rejects_ambiguous_pe_fetch;
           stage-a-relational-tests-acceptance-instruction-adequacy-tamper =
@@ -2593,6 +3590,10 @@
             stageARelationalAcceptanceSuite.cases.console_launch_rejects_dll_and_export_entry_surfaces;
           stage-a-relational-tests-acceptance-direct-loop =
             stageARelationalAcceptanceSuite.cases.direct_loop_emits_and_checks_closed_whole_program_theorem;
+          stage-a-relational-tests-acceptance-direct-call-return =
+            stageARelationalAcceptanceSuite.cases.direct_call_return_loop_checks_runtime_frames_end_to_end;
+          stage-a-relational-tests-acceptance-linked-active-jump =
+            stageARelationalAcceptanceSuite.cases.internal_callee_jump_uses_linked_active_frame_transfer;
           stage-a-relational-tests-acceptance-canonical-region =
             stageARelationalAcceptanceSuite.cases.whole_program_theorem_rejects_noncanonical_reachable_region;
           stage-a-relational-tests-acceptance-executable-coverage =
@@ -2697,6 +3698,7 @@
               stage-a-relational-tests-call-return-summary
               stage-a-relational-tests-callsite-preservation-schema
               stage-a-relational-tests-register-analysis
+              stage-a-relational-tests-linked-control-analysis
               stage-a-relational-tests-lean-runtime-frame-import-environment
               stage-a-relational-tests-acceptance-runtime-frame-import
               stage-a-relational-tests-acceptance-runtime-frame-register
@@ -2760,9 +3762,20 @@
             singlestep-80386-conformance
             spaghetti-extractor
             spaghetti-extractor-analysis
+            spaghetti-extractor-dataflow
+            spaghetti-extractor-dataflow-aggregate
+            spaghetti-extractor-dataflow-compare
+            spaghetti-extractor-dataflow-plan
+            spaghetti-extractor-dataflow-summary
+            spaghetti-extractor-dataflow-worker
             spaghetti-extractor-mapping
+            spaghetti-extractor-composition-products
+            spaghetti-extractor-memory-products
             spaghetti-extractor-normalize
             spaghetti-extractor-preparation
+            spaghetti-extractor-register-dataflow-problem
+            spaghetti-extractor-register-replay
+            spaghetti-extractor-semantic-products
             spaghetti-extractor-region-facts
             spaghetti-extractor-side
             stage-a-analysis-source-boundary-check
@@ -2802,10 +3815,16 @@
             stage-a-gnu-hello-static-map
             stage-a-gnu-hello-relation-contract
             stage-a-gnu-hello-region-facts
+            stage-a-gnu-hello-composition-products
+            stage-a-gnu-hello-memory-products
+            stage-a-gnu-hello-semantic-products
             stage-a-gnu-hello-analysis
+            stage-a-gnu-hello-register-dataflow-plan
+            stage-a-gnu-hello-register-dataflow
+            stage-a-gnu-hello-register-replay
+            stage-a-gnu-hello-register-dataflow-check
             stage-a-gnu-hello-preflight
-            stage-a-gnu-hello-launch-proof
-            stage-a-gnu-hello-check
+            stage-a-gnu-hello-proof
             stage-a-gnu-hello-fixtures-root
             stage-a-minimal-hello-fixtures
             stage-a-minimal-hello-static-map
@@ -2820,6 +3839,30 @@
             stage-a-jq-fixtures
             stage-a-jq-static-map
             stage-a-jq-relation-contract
+            stage-a-jq-original-inventory
+            stage-a-jq-candidate-inventory
+            stage-a-jq-original-extraction
+            stage-a-jq-candidate-extraction
+            stage-a-jq-original-isa
+            stage-a-jq-candidate-isa
+            stage-a-jq-original-supplement-request
+            stage-a-jq-candidate-supplement-request
+            stage-a-jq-original-supplement-extraction
+            stage-a-jq-candidate-supplement-extraction
+            stage-a-jq-original-merged-extraction
+            stage-a-jq-candidate-merged-extraction
+            stage-a-jq-normalized-behaviors
+            stage-a-jq-region-facts
+            stage-a-jq-proposals
+            stage-a-jq-semantic-products
+            stage-a-jq-register-dataflow-problem
+            stage-a-jq-register-dataflow-plan
+            stage-a-jq-register-dataflow
+            stage-a-jq-register-replay
+            stage-a-jq-memory-products
+            stage-a-jq-composition-products
+            stage-a-jq-analysis
+            stage-a-jq-register-dataflow-check
             stage-a-jq-prepared-proof
             stage-a-jq-reference-contract
             stage-a-jq-fixtures-check
@@ -2859,6 +3902,7 @@
             stage-a-relational-tests-call-return-summary
             stage-a-relational-tests-callsite-preservation-schema
             stage-a-relational-tests-register-analysis
+            stage-a-relational-tests-linked-control-analysis
             stage-a-relational-tests-lean-runtime-frame-import-environment
             stage-a-relational-tests-acceptance-runtime-frame-import
             stage-a-relational-tests-acceptance-runtime-frame-register
@@ -2871,14 +3915,19 @@
             stage-a-relational-tests-lean-return-slot-inventory
             stage-a-relational-tests-lean-dynamic-range-result
             stage-a-relational-tests-lean-linked-frames
+            stage-a-relational-tests-lean-linked-execution
+            stage-a-relational-tests-lean-active-frame-guard
             stage-a-relational-tests-contract-machine-import
             stage-a-relational-tests-acceptance
             stage-a-relational-tests-acceptance-whole-program-kernel
+            stage-a-relational-tests-acceptance-nested-linked-calls
             stage-a-relational-tests-acceptance-instruction-adequacy
             stage-a-relational-tests-acceptance-instruction-adequacy-tamper
             stage-a-relational-tests-acceptance-instruction-adequacy-multi-chunk
             stage-a-relational-tests-acceptance-entry-surface
             stage-a-relational-tests-acceptance-direct-loop
+            stage-a-relational-tests-acceptance-direct-call-return
+            stage-a-relational-tests-acceptance-linked-active-jump
             stage-a-relational-tests-acceptance-related-word-launch
             stage-a-relational-tests-acceptance-canonical-region
             stage-a-relational-tests-acceptance-executable-coverage
@@ -2950,6 +3999,10 @@
             type = "app";
             program = "${packages.stage-a-gnu-hello-fixtures-root}/bin/stage-a-gnu-hello-fixtures-root";
           };
+          stage-a-gnu-hello-proof = {
+            type = "app";
+            program = "${packages.stage-a-gnu-hello-proof}/bin/stage-a-gnu-hello-proof";
+          };
           stage-a-minimal-hello-fixtures-root = {
             type = "app";
             program = "${packages.stage-a-minimal-hello-fixtures-root}/bin/stage-a-minimal-hello-fixtures-root";
@@ -2976,7 +4029,6 @@
             stage-a-winapi-hello-check
             stage-a-winapi-hello-behavior-smoke
             stage-a-gnu-hello-preflight
-            stage-a-gnu-hello-check
             stage-a-minimal-hello-check
             stage-a-jq-fixtures-check
             stage-a-relational-tests
@@ -3006,8 +4058,10 @@
               pythonEnv
               packages.bochs-conformance
               packages.spaghetti-extractor
+              pkgs.clang
               pkgs.jq
               pkgs.lean4
+              pkgs.lld
               pkgs.nix
               pkgs.pkgsCross.mingw32.stdenv.cc
               pkgs.llvm

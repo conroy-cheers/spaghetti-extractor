@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import json
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +35,7 @@ from .schema import (
     STAGE_A_RELATIONAL_MODEL_ID,
     integer as _integer,
 )
+from .x87_profile import instruction_is_x87
 
 
 def _raw_base_relocations(binary: StageABinary) -> list[dict[str, int]]:
@@ -74,9 +77,12 @@ def _decode_semantic_cutpoint_span(
     binary: StageABinary,
     span: dict[str, int],
     block_id: str,
+    *,
+    detail: bool = False,
 ) -> list[Any]:
     data = binary.pe.get_data(span["rva_start"], span["size"])
     disassembler = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    disassembler.detail = detail
     decoded = list(disassembler.disasm(data, binary.image_base + span["rva_start"]))
     if not decoded or sum(int(instruction.size) for instruction in decoded) != len(data):
         raise StageAInputError(
@@ -95,6 +101,16 @@ def _semantic_cutpoint_spans_for_side(
     decoded = _decode_semantic_cutpoint_span(binary, span, block_id)
     boundaries = [0]
     for instruction_index, instruction in enumerate(decoded, start=1):
+        instruction_start = int(
+            instruction.address - binary.image_base - span["rva_start"]
+        )
+        instruction_stop = instruction_start + int(instruction.size)
+        if instruction_is_x87(instruction):
+            if instruction_start > boundaries[-1]:
+                boundaries.append(instruction_start)
+            if instruction_stop < span["size"]:
+                boundaries.append(instruction_stop)
+            continue
         semantic = instruction.mnemonic in {
             "rep movsd",
             "movsd",
@@ -103,12 +119,7 @@ def _semantic_cutpoint_spans_for_side(
             "lock cmpxchg",
         }
         if semantic or (periodic and instruction_index % 4 == 0):
-            offset = int(
-                instruction.address
-                - binary.image_base
-                - span["rva_start"]
-                + instruction.size
-            )
+            offset = instruction_stop
             if offset < span["size"] and offset != boundaries[-1]:
                 boundaries.append(offset)
     boundaries.append(span["size"])
@@ -152,6 +163,279 @@ def _semantic_cutpoint_spans(
             f"original={len(original_boundaries) - 2}, candidate={len(candidate_boundaries) - 2}"
         )
     return list(zip(original_spans, candidate_spans, strict=True))
+
+
+def _split_relocation_backed_internal_cutpoints(
+    regions: list[dict[str, Any]],
+    original: StageABinary,
+    candidate: StageABinary,
+) -> list[dict[str, Any]]:
+    """Promote unambiguous paired relocated instruction starts to regions."""
+    binaries = {"original": original, "candidate": candidate}
+    interior_regions: dict[str, dict[int, set[int]]] = {
+        side: defaultdict(set) for side in binaries
+    }
+    decoded_by_region: dict[str, list[list[Any]]] = {
+        side: [] for side in binaries
+    }
+    for region_index, region in enumerate(regions):
+        for side, binary in binaries.items():
+            span = region[side]
+            decoded = _decode_semantic_cutpoint_span(
+                binary,
+                {
+                    "rva_start": int(span["rva"]),
+                    "size": int(span["size"]),
+                },
+                str(region.get("id", region_index)),
+                detail=True,
+            )
+            decoded_by_region[side].append(decoded)
+            for instruction in decoded[1:]:
+                rva = int(instruction.address) - binary.image_base
+                interior_regions[side][rva].add(region_index)
+
+    relocation_counts = {
+        side: Counter(
+            int(relocation["rva"])
+            for relocation in _raw_base_relocations(binary)
+            if int(relocation["type"]) == 3
+        )
+        for side, binary in binaries.items()
+    }
+
+    def immutable_slot(binary: StageABinary, rva: int) -> bool:
+        if any(
+            imported.thunk_rva is not None
+            and rva < int(imported.thunk_rva) + 4
+            and int(imported.thunk_rva) < rva + 4
+            for imported in binary.imports
+        ):
+            return False
+        return any(
+            not section.writable
+            and section.rva_start <= rva
+            and rva + 4 <= section.rva_end
+            for section in binary.sections
+        )
+
+    def relocated_indirect_table_operands(
+        side: str,
+        binary: StageABinary,
+        instruction: Any,
+    ) -> dict[int, tuple[int, tuple[int, str | None, str | None, int]]]:
+        if instruction.mnemonic not in {"call", "jmp"}:
+            return {}
+        displacement_offset = int(instruction.disp_offset)
+        if displacement_offset <= 0:
+            return {}
+        relocation_rva = (
+            int(instruction.address) - binary.image_base + displacement_offset
+        )
+        if relocation_counts[side].get(relocation_rva, 0) != 1:
+            return {}
+        result = {}
+        for operand_index, operand in enumerate(instruction.operands):
+            if (
+                operand.type != capstone.x86.X86_OP_MEM
+                or int(operand.size) != 4
+                or not operand.mem.index
+            ):
+                continue
+            table_rva = (
+                (int(operand.mem.disp) & 0xFFFFFFFF) - binary.image_base
+            )
+            if not immutable_slot(binary, table_rva):
+                continue
+            shape = (
+                int(operand.size),
+                (
+                    instruction.reg_name(operand.mem.base)
+                    if operand.mem.base
+                    else None
+                ),
+                instruction.reg_name(operand.mem.index),
+                int(operand.mem.scale),
+            )
+            result[operand_index] = (table_rva, shape)
+        return result
+
+    # Paired decoded operands prove how row offsets correspond when a table moves.
+    table_base_pairs: set[tuple[int, int]] = set()
+    for region_index in range(len(regions)):
+        original_decoded = decoded_by_region["original"][region_index]
+        candidate_decoded = decoded_by_region["candidate"][region_index]
+        if len(original_decoded) != len(candidate_decoded):
+            continue
+        for original_instruction, candidate_instruction in zip(
+            original_decoded, candidate_decoded, strict=True
+        ):
+            if original_instruction.mnemonic != candidate_instruction.mnemonic:
+                continue
+            original_operands = relocated_indirect_table_operands(
+                "original", original, original_instruction
+            )
+            candidate_operands = relocated_indirect_table_operands(
+                "candidate", candidate, candidate_instruction
+            )
+            paired_operand_indices = (
+                original_operands.keys() & candidate_operands.keys()
+            )
+            for operand_index in paired_operand_indices:
+                original_base, original_shape = original_operands[operand_index]
+                candidate_base, candidate_shape = candidate_operands[operand_index]
+                if original_shape == candidate_shape:
+                    table_base_pairs.add((original_base, candidate_base))
+
+    original_base_pairs: dict[int, set[int]] = defaultdict(set)
+    candidate_base_pairs: dict[int, set[int]] = defaultdict(set)
+    for original_base, candidate_base in table_base_pairs:
+        original_base_pairs[original_base].add(candidate_base)
+        candidate_base_pairs[candidate_base].add(original_base)
+    table_base_pairs = {
+        (original_base, candidate_base)
+        for original_base, candidate_base in table_base_pairs
+        if len(original_base_pairs[original_base]) == 1
+        and len(candidate_base_pairs[candidate_base]) == 1
+    }
+
+    # Equal-RVA cells are paired by identity; referenced table rows may move.
+    slot_pairs: set[tuple[int, int]] = {
+        (slot_rva, slot_rva)
+        for slot_rva in (
+            relocation_counts["original"].keys()
+            & relocation_counts["candidate"].keys()
+        )
+    }
+    for original_base, candidate_base in table_base_pairs:
+        offset = 0
+        while True:
+            original_slot = original_base + offset
+            candidate_slot = candidate_base + offset
+            if (
+                relocation_counts["original"].get(original_slot, 0) != 1
+                or relocation_counts["candidate"].get(candidate_slot, 0) != 1
+                or not immutable_slot(original, original_slot)
+                or not immutable_slot(candidate, candidate_slot)
+            ):
+                break
+            slot_pairs.add((original_slot, candidate_slot))
+            offset += 4
+
+    original_slot_pairs: dict[int, set[int]] = defaultdict(set)
+    candidate_slot_pairs: dict[int, set[int]] = defaultdict(set)
+    for original_slot, candidate_slot in slot_pairs:
+        original_slot_pairs[original_slot].add(candidate_slot)
+        candidate_slot_pairs[candidate_slot].add(original_slot)
+
+    proposed_by_region: dict[int, set[tuple[int, int]]] = defaultdict(set)
+    for original_slot, candidate_slot in sorted(slot_pairs):
+        if (
+            len(original_slot_pairs[original_slot]) != 1
+            or len(candidate_slot_pairs[candidate_slot]) != 1
+            or relocation_counts["original"].get(original_slot, 0) != 1
+            or relocation_counts["candidate"].get(candidate_slot, 0) != 1
+            or not immutable_slot(original, original_slot)
+            or not immutable_slot(candidate, candidate_slot)
+        ):
+            continue
+        pointed_rvas: dict[str, int] = {}
+        pointed_regions: dict[str, set[int]] = {}
+        for side, binary, slot_rva in (
+            ("original", original, original_slot),
+            ("candidate", candidate, candidate_slot),
+        ):
+            data = binary.pe.get_data(slot_rva, 4)
+            if len(data) != 4:
+                break
+            pointed_rva = int.from_bytes(data, "little") - binary.image_base
+            pointed_rvas[side] = pointed_rva
+            pointed_regions[side] = interior_regions[side].get(
+                pointed_rva, set()
+            )
+        if set(pointed_rvas) != set(binaries):
+            continue
+        if (
+            len(pointed_regions["original"]) != 1
+            or pointed_regions["original"] != pointed_regions["candidate"]
+        ):
+            continue
+        region_index = next(iter(pointed_regions["original"]))
+        proposed_by_region[region_index].add((
+            pointed_rvas["original"], pointed_rvas["candidate"]
+        ))
+
+    accepted_by_region: dict[int, list[tuple[int, int]]] = {}
+    for region_index, pairs in proposed_by_region.items():
+        candidates_by_original: dict[int, set[int]] = defaultdict(set)
+        originals_by_candidate: dict[int, set[int]] = defaultdict(set)
+        for original_rva, candidate_rva in pairs:
+            candidates_by_original[original_rva].add(candidate_rva)
+            originals_by_candidate[candidate_rva].add(original_rva)
+        if (
+            any(len(values) != 1 for values in candidates_by_original.values())
+            or any(len(values) != 1 for values in originals_by_candidate.values())
+        ):
+            continue
+        ordered = sorted(pairs)
+        if [candidate_rva for _original_rva, candidate_rva in ordered] != sorted(
+            candidate_rva for _original_rva, candidate_rva in ordered
+        ):
+            continue
+        accepted_by_region[region_index] = ordered
+
+    split_regions: list[dict[str, Any]] = []
+    for region_index, region in enumerate(regions):
+        pairs = accepted_by_region.get(region_index, [])
+        if not pairs:
+            split_regions.append(region)
+            continue
+        original_boundaries = [
+            int(region["original"]["rva"]),
+            *(original_rva for original_rva, _candidate_rva in pairs),
+            int(region["original"]["rva"]) + int(region["original"]["size"]),
+        ]
+        candidate_boundaries = [
+            int(region["candidate"]["rva"]),
+            *(candidate_rva for _original_rva, candidate_rva in pairs),
+            int(region["candidate"]["rva"]) + int(region["candidate"]["size"]),
+        ]
+        for cut_index in range(len(original_boundaries) - 1):
+            split = copy.deepcopy(region)
+            if cut_index:
+                split["id"] = (
+                    f"{region.get('id', region_index)}~reloc-cut-{cut_index}"
+                )
+                split["root"] = False
+                split.pop("function_entry", None)
+                split.pop("function_root_kind", None)
+                split.pop("function_root_symbol", None)
+            split["original"] = {
+                "rva": original_boundaries[cut_index],
+                "size": (
+                    original_boundaries[cut_index + 1]
+                    - original_boundaries[cut_index]
+                ),
+            }
+            split["candidate"] = {
+                "rva": candidate_boundaries[cut_index],
+                "size": (
+                    candidate_boundaries[cut_index + 1]
+                    - candidate_boundaries[cut_index]
+                ),
+            }
+            split_regions.append(split)
+
+    function_cut_indices: dict[tuple[str, int], int] = defaultdict(int)
+    for region in split_regions:
+        function_block_index = _integer(region.get("function_block_index"))
+        if function_block_index is None or "function_cut_index" not in region:
+            continue
+        key = (str(region.get("function_id", "")), function_block_index)
+        region["function_cut_index"] = function_cut_indices[key]
+        function_cut_indices[key] += 1
+    return split_regions
+
 
 def _assign_region_targets(
     regions: list[dict[str, Any]],
@@ -213,18 +497,38 @@ def _assign_region_targets(
         )
         for side in ("original", "candidate")
     }
+    binaries_by_side = {
+        "original": original,
+        "candidate": candidate,
+    }
     relocations = {}
+    relocation_counts: dict[str, dict[int, int]] = {}
     for side, binary in (("original", original), ("candidate", candidate)):
-        relocations[side] = {
-            relocation["rva"]
+        highlow = [
+            int(relocation["rva"])
             for relocation in _raw_base_relocations(binary)
-            if relocation["type"] == 3
-        }
+            if int(relocation["type"]) == 3
+        ]
+        relocations[side] = set(highlow)
+        counts: dict[int, int] = {}
+        for rva in highlow:
+            counts[rva] = counts.get(rva, 0) + 1
+        relocation_counts[side] = counts
+
+    def overlaps_iat(binary: StageABinary, absolute: int, size: int) -> bool:
+        return any(
+            imported.thunk_rva is not None
+            and absolute < binary.image_base + int(imported.thunk_rva) + 4
+            and binary.image_base + int(imported.thunk_rva) < absolute + size
+            for imported in binary.imports
+        )
 
     def immutable_equal_span(original_value: int, candidate_value: int, size: int) -> bool:
         spans: list[bytes] = []
         for binary, absolute in ((original, original_value), (candidate, candidate_value)):
             if absolute < binary.image_base:
+                return False
+            if overlaps_iat(binary, absolute, size):
                 return False
             rva = absolute - binary.image_base
             section = next((
@@ -253,6 +557,12 @@ def _assign_region_targets(
                     break
                 cursor = padding_stop
                 if cursor == start:
+                    bridge = binaries_by_side[side].pe.get_data(rva, start - rva)
+                    if (
+                        len(bridge) != start - rva
+                        or not _padding_alias_bridge_bytes(bridge)
+                    ):
+                        return None
                     aliases = targets_by_id[target_id].setdefault(f"{side}_aliases", [])
                     if rva not in aliases:
                         aliases.append(rva)
@@ -411,6 +721,51 @@ def _assign_region_targets(
                     ) = candidate_memory[operand_index]
                     if original_size <= 0 or original_size != candidate_size:
                         continue
+                    if (
+                        original_size == 4
+                        and immutable_equal_span(
+                            original_value, candidate_value, original_size
+                        )
+                    ):
+                        original_slot_rva = original_value - original.image_base
+                        candidate_slot_rva = candidate_value - candidate.image_base
+                        if (
+                            relocation_counts["original"].get(
+                                original_slot_rva, 0
+                            ) == 1
+                            and relocation_counts["candidate"].get(
+                                candidate_slot_rva, 0
+                            ) == 1
+                        ):
+                            original_pointer = int(
+                                original.pe.get_dword_at_rva(original_slot_rva)
+                                or 0
+                            )
+                            candidate_pointer = int(
+                                candidate.pe.get_dword_at_rva(candidate_slot_rva)
+                                or 0
+                            )
+                            original_target = resolve(
+                                "original",
+                                original_pointer - original.image_base,
+                            )
+                            candidate_target = resolve(
+                                "candidate",
+                                candidate_pointer - candidate.image_base,
+                            )
+                            if (
+                                original_target is not None
+                                and original_target == candidate_target
+                            ):
+                                target_ids.add(original_target)
+                                region_value_ids.add(intern_value_target(
+                                    original_value,
+                                    candidate_value,
+                                    original_relocation_rva,
+                                    candidate_relocation_rva,
+                                    4,
+                                ))
+                                continue
                     if immutable_equal_span(original_value, candidate_value, original_size):
                         continue
                     mapped_size = original_size
@@ -626,6 +981,17 @@ def stage_a_generate_relation_contract(
             "rva": span["rva_start"],
             "size": span["size"],
         })
+    regions = _split_relocation_backed_internal_cutpoints(
+        regions, original_bin, candidate_bin
+    )
+    code_targets = [
+        {
+            "id": region_index,
+            "original_rva": int(region["original"]["rva"]),
+            "candidate_rva": int(region["candidate"]["rva"]),
+        }
+        for region_index, region in enumerate(regions)
+    ]
     _assign_region_targets(regions, code_targets, value_targets, padding, original_bin, candidate_bin)
     terminal_return_addresses = _terminal_return_address_pairs(
         regions, code_targets, padding, original_bin, candidate_bin
@@ -1158,9 +1524,15 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
                 f"{side}_expression" in bound for side in ("original", "candidate")
             ]
             if any(expressions_present):
-                if not all(expressions_present) or not all(
-                    _semantic_expr_is_pure(bound.get(f"{side}_expression"))
-                    for side in ("original", "candidate")
+                checked_stack_bound = _checked_stack_bound_expression_witness(
+                    bound, upper
+                )
+                if not all(expressions_present) or not (
+                    all(
+                        _semantic_expr_is_pure(bound.get(f"{side}_expression"))
+                        for side in ("original", "candidate")
+                    )
+                    or checked_stack_bound
                 ):
                     issues.append({
                         "category": "malformed_region_bound_expression",
@@ -1173,6 +1545,14 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
                     normalized_bound["expression_source"] = str(
                         bound.get("expression_source") or "contract"
                     )
+                    if checked_stack_bound:
+                        normalized_bound["stack_bound_predicate"] = bound[
+                            "stack_bound_predicate"
+                        ]
+                        if "stack_bound_request" in bound:
+                            normalized_bound["stack_bound_request"] = bound[
+                                "stack_bound_request"
+                            ]
         if not region_id or region_id in region_ids or original_span is None or candidate_span is None:
             issues.append({"category": "malformed_region", "index": index, "id": region_id})
             continue
@@ -1311,7 +1691,10 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
             canonical = target[f"{side}_rva"]
             alias_padding_indices: list[int] = []
             for alias in target[f"{side}_aliases"]:
-                if not _padding_bridge_valid(side, alias, canonical, normalized_padding):
+                binary = original if side == "original" else candidate
+                if not _padding_bridge_valid(
+                    side, alias, canonical, normalized_padding, binary,
+                ):
                     issues.append({
                         "category": "code_target_alias_not_verified_padding",
                         "severity": "hard",
@@ -1319,6 +1702,10 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
                         "side": side,
                         "alias_rva": alias,
                         "canonical_rva": canonical,
+                        "next_action": (
+                            "remove the alias or replace the bridge with "
+                            "state-preserving executable alignment instructions"
+                        ),
                     })
                 padding_index = padding_indices[side].get(alias)
                 if padding_index is None:
@@ -3010,6 +3397,7 @@ def _padding_bytes(data: bytes, binary: StageABinary, rva: int) -> bool:
         b"\x66\x90",
         b"\x00",
         b"\x90",
+        b"\xcc",
     )
     def checked(value: bytes) -> bool:
         offset = 0
@@ -3025,6 +3413,40 @@ def _padding_bytes(data: bytes, binary: StageABinary, rva: int) -> bool:
 
     return checked(data)
 
+
+def _padding_alias_bridge_bytes(data: bytes) -> bool:
+    """Recognize only padding that can execute without changing machine state.
+
+    Padding classification also admits traps and zero-fill because unreachable
+    executable bytes still require coverage.  Code aliases are stronger: an
+    execution beginning at the alias must reach the canonical cutpoint with
+    the initial symbolic state unchanged.  This small language mirrors the
+    reviewed Lean bridge semantics conservatively; Lean remains authoritative.
+    """
+
+    nops = (
+        b"\x8d\x74\x26\x00",
+        b"\x8d\x76\x00",
+        b"\x2e\x8d\x74\x26\x00",
+        b"\x2e\x8d\xb4\x26\x00\x00\x00\x00",
+        b"\x8d\xb6\x00\x00\x00\x00",
+        b"\x8d\xb4\x26\x00\x00\x00\x00",
+        b"\x66\x90",
+        b"\x90",
+    )
+    offset = 0
+    while offset < len(data):
+        if data[offset] == 0xEB and offset + 2 <= len(data):
+            return data[offset + 1] == len(data) - offset - 2
+        pattern = next(
+            (pattern for pattern in nops if data.startswith(pattern, offset)),
+            None,
+        )
+        if pattern is None:
+            return False
+        offset += len(pattern)
+    return True
+
 def _inside_executable(binary: StageABinary, span: dict[str, int]) -> bool:
     return any(section.executable and section.rva_start <= span["rva_start"] and span["rva_end"] <= section.rva_end for section in binary.sections)
 
@@ -3033,6 +3455,7 @@ def _padding_bridge_valid(
     alias: int,
     canonical: int,
     padding: list[dict[str, Any]],
+    binary: StageABinary,
 ) -> bool:
     if alias >= canonical:
         return False
@@ -3047,7 +3470,11 @@ def _padding_bridge_valid(
             return False
         cursor = span["rva_end"]
         if cursor == canonical:
-            return True
+            data = binary.pe.get_data(alias, canonical - alias)
+            return (
+                len(data) == canonical - alias
+                and _padding_alias_bridge_bytes(data)
+            )
         if cursor > canonical:
             return False
     return False
@@ -3091,6 +3518,45 @@ def _semantic_expr_is_pure(expression: Any) -> bool:
         ):
             return False
     return True
+
+
+def _checked_stack_bound_expression_witness(
+    bound: dict[str, Any], upper: int
+) -> bool:
+    """Recognize the exact memory-backed bound form emitted by stack analysis.
+
+    A general memory read is intentionally not accepted as a region bound.
+    This form carries one explicit paired 4-byte read and duplicates the bound
+    expression in a checked state predicate, so later Lean replay has the full
+    memory witness rather than a trusted Python classification.
+    """
+
+    if bound.get("expression_source") != "checked_stack_register_bound_v1":
+        return False
+    predicate = bound.get("stack_bound_predicate")
+    if not isinstance(predicate, dict):
+        return False
+    reads = predicate.get("exact_memory_reads")
+    if not isinstance(reads, list) or len(reads) != 1:
+        return False
+    read = reads[0]
+    if not isinstance(read, dict) or read.get("bytes") != 4:
+        return False
+    for side in ("original", "candidate"):
+        address = read.get(f"{side}_address")
+        expression = bound.get(f"{side}_expression")
+        predicate_expression = predicate.get(side)
+        if (
+            not _semantic_expr_is_pure(address)
+            or expression != {"op": "read32", "address": address}
+            or not isinstance(predicate_expression, dict)
+            or predicate_expression.get("op") != "unsigned_less"
+            or predicate_expression.get("left") != expression
+            or predicate_expression.get("right")
+                != {"op": "constant", "value": upper}
+        ):
+            return False
+    return predicate.get("source") == "checked_stack_register_bound_v1"
 
 def _import_identity(imported: Any) -> tuple[str, str, str | int] | None:
     if isinstance(imported, dict):

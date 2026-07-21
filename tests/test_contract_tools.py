@@ -7,6 +7,9 @@ from pathlib import Path
 
 from spaghetti_extractor.cli import _build_parser
 from spaghetti_extractor.contract_tools import (
+    BlockMapping,
+    _semantic_transfer_contract,
+    _symbolic_execute,
     _unit_contract_ids_for_obligation,
     _unit_contract_obligation_lookup,
 )
@@ -17,7 +20,7 @@ from spaghetti_extractor.relational.reference_contract import (
     stage_a_export_reference_contract,
     stage_a_smoke_contract,
 )
-from spaghetti_extractor.stage_binary import StageAInputError
+from spaghetti_extractor.stage_binary import BlockSide, StageAInputError, _parse_stage_a_pe
 from spaghetti_extractor.util import sha256_file
 
 from contract_fixtures import write_relational_report
@@ -25,6 +28,45 @@ from pe_fixtures import pe32_image, pe32_import_image
 
 
 class ContractToolTests(unittest.TestCase):
+    def test_relation_contract_isolates_x87_in_single_instruction_cutpoints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytes.fromhex("90d9e890ebfa")
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            mapping = root / "mapping.json"
+            mapping.write_text(
+                json.dumps({
+                    "blocks": [{
+                        "id": "mixed-loop",
+                        "kind": "code",
+                        "original": {"rva": 0x1000, "size": len(code)},
+                        "candidate": {"rva": 0x1000, "size": len(code)},
+                    }]
+                }),
+                encoding="utf-8",
+            )
+            contract = root / "relation.json"
+
+            result = stage_a_generate_relation_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                out=contract,
+            )
+
+            self.assertEqual(result["status"], "generated", result)
+            regions = json.loads(contract.read_text(encoding="utf-8"))["regions"]
+            self.assertEqual(
+                [
+                    (row["original"]["rva_start"], row["original"]["size"])
+                    for row in regions
+                ],
+                [(0x1000, 1), (0x1001, 2), (0x1003, 3)],
+            )
+            self.assertEqual(regions[1]["candidate"]["rva_start"], 0x1001)
+            self.assertEqual(regions[1]["candidate"]["size"], 2)
+
     def test_obligation_lookup_indexes_relational_location_prefixes(self):
         lookup = _unit_contract_obligation_lookup(
             [{"id": "block:source", "block_id": "source"}],
@@ -56,6 +98,8 @@ class ContractToolTests(unittest.TestCase):
         self.assertIn("stage-a-prove", subcommands)
         self.assertIn("stage-a-check-proof", subcommands)
         self.assertIn("stage-a-export-interfaces", subcommands)
+        self.assertIn("stage-a-fuzz-generate", subcommands)
+        self.assertIn("stage-a-fuzz-run", subcommands)
         self.assertIn("stage-b-check-contract", subcommands)
         self.assertIn("stage-b-audit-contract", subcommands)
         self.assertNotIn("stage-a-legacy-validate", subcommands)
@@ -264,6 +308,158 @@ class ContractToolTests(unittest.TestCase):
                 stage_a_smoke_contract(reference_contract=contract_path)["status"],
                 "incomplete",
             )
+
+    def test_semantic_transfer_models_register_bit_test(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", bytes.fromhex("0fa3c8"))
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1003)
+            mapping = BlockMapping(
+                id="bt-register",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "bt_register"},
+            )
+
+            symbolic = _symbolic_execute(
+                binary,
+                side,
+                binary.pe.get_data(side.rva_start, side.size),
+                "original",
+                mapping,
+            )
+            transfer = _semantic_transfer_contract(
+                binary,
+                mapping,
+                "bt_register",
+                {"model": REFERENCE_CONTRACT_MODEL_ID},
+            )
+
+            self.assertEqual(symbolic["status"], "ok", symbolic)
+            self.assertEqual(symbolic["observables"]["flag:cf"][0], "bool_eq")
+            self.assertEqual(transfer["status"], "reimplementable", transfer)
+            self.assertEqual(transfer["counts"]["faults"], 0)
+            carry = next(item["value"] for item in transfer["flag_writes"] if item["flag"] == "cf")
+            self.assertEqual(carry["op"], "eq_bool")
+            self.assertIn("lshr32", json.dumps(carry))
+
+    def test_semantic_transfer_exports_complete_import_call_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            original.write_bytes(
+                pe32_import_image(bytes.fromhex("ff1540204000"), symbol="WriteFile")
+            )
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1006)
+            mapping = BlockMapping(
+                id="write-file-call",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "write_file_call"},
+            )
+
+            transfer = _semantic_transfer_contract(
+                binary,
+                mapping,
+                "write_file_call",
+                {"model": REFERENCE_CONTRACT_MODEL_ID},
+            )
+
+            self.assertEqual(transfer["status"], "reimplementable", transfer)
+            self.assertEqual(len(transfer["external_events"]), 1)
+            event = transfer["external_events"][0]
+            self.assertEqual(event["kind"], "external_call")
+            self.assertEqual(event["dll"].lower(), "kernel32.dll")
+            self.assertEqual(event["symbol"], "WriteFile")
+            self.assertEqual(event["return_rva"], 0x1006)
+            self.assertEqual(event["input_model"], "captured_machine_call_boundary_v1")
+            self.assertEqual(
+                set(event["register_inputs"]),
+                {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"},
+            )
+            self.assertEqual(set(event["flag_inputs"]), {"cf", "zf", "sf", "of", "pf", "df"})
+            self.assertEqual(
+                transfer["ordered_events"][0],
+                {"family": "external", "instruction_rva": 0x1000, **event},
+            )
+
+    def test_semantic_transfer_models_signed_divide_and_fault_condition(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", bytes.fromhex("f77c2440"))
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1004)
+            mapping = BlockMapping(
+                id="idiv-memory",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "idiv_memory"},
+            )
+
+            transfer = _semantic_transfer_contract(
+                binary,
+                mapping,
+                "idiv_memory",
+                {"model": REFERENCE_CONTRACT_MODEL_ID},
+            )
+
+            self.assertEqual(transfer["status"], "reimplementable", transfer)
+            self.assertEqual(transfer["counts"]["faults"], 1)
+            self.assertEqual(transfer["faults"][0]["kind"], "divide_error")
+            self.assertEqual(transfer["faults"][0]["instruction_rva"], 0x1000)
+            self.assertEqual(
+                [(event["family"], event["instruction_rva"]) for event in transfer["ordered_events"]],
+                [("memory", 0x1000), ("fault", 0x1000)],
+            )
+            self.assertIn("udiv_valid32", json.dumps(transfer["faults"][0]))
+            register_writes = {item["register"]: item["value"] for item in transfer["register_writes"]}
+            self.assertIn("udiv_quot32", json.dumps(register_writes["eax"]))
+            self.assertIn("udiv_rem32", json.dumps(register_writes["edx"]))
+
+    def test_semantic_shift_preserves_flags_for_zero_count_and_updates_parity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", bytes.fromhex("d3e0"))
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1002)
+            mapping = BlockMapping(
+                id="shift-by-cl",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "shift_by_cl"},
+            )
+
+            transfer = _semantic_transfer_contract(
+                binary,
+                mapping,
+                "shift_by_cl",
+                {"model": REFERENCE_CONTRACT_MODEL_ID},
+            )
+
+            self.assertEqual(transfer["status"], "reimplementable", transfer)
+            flags = {item["flag"]: item["value"] for item in transfer["flag_writes"]}
+            self.assertEqual(set(flags), {"cf", "zf", "sf", "of", "pf"})
+            for name in flags:
+                self.assertEqual(flags[name]["op"], "ite")
+                self.assertIn(f'"name": "{name}"', json.dumps(flags[name], sort_keys=True))
+            self.assertIn("shift_cf", json.dumps(flags["cf"]))
+            self.assertIn("shift_of", json.dumps(flags["of"]))
+            self.assertIn("shift_overflow_undefined", json.dumps(flags["of"]))
+            self.assertIn("parity", json.dumps(flags["pf"]))
 
     @staticmethod
     def _write_pe(path: Path, code: bytes) -> Path:

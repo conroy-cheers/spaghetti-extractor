@@ -58,24 +58,34 @@ RELATIONAL_APPROVED_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}
 RELATIONAL_ENVIRONMENT_ID = "adversarial-pe32-external-v1"
 RELATIONAL_OBSERVATIONS = ["external_call", "external_jump", "return", "fault"]
 RELATIONAL_ANALYSIS_KERNEL_MODULES = (
+    "X87",
+    "RelationalX87",
     "Formal",
+    "RelationalX87Decode",
     "ISAQualification",
     "RelationalDecode",
     "RelationalLoader",
+    "RelationalFiniteIndex",
     "RelationalMachine",
     "Relational",
+    "RelationalX87Machine",
     "RelationalPEExecution",
     "RelationalISAQualification",
 )
 RELATIONAL_KERNEL_MODULES = (
+    "X87",
+    "RelationalX87",
     "Formal",
+    "RelationalX87Decode",
     "ISAQualification",
     "RelationalDecode",
     "RelationalLoader",
+    "RelationalFiniteIndex",
     "RelationalMachine",
     "RelationalPEExecution",
     "RelationalISAQualification",
     "Relational",
+    "RelationalX87Machine",
     "RelationalInvariant",
     "RelationalExecution",
     "RelationalImage",
@@ -85,7 +95,12 @@ RELATIONAL_KERNEL_MODULES = (
     "RelationalLinkedFrames",
     "RelationalEnvironment",
     "RelationalCallbacks",
+    "RelationalAffineFrames",
+    "RelationalAffineLinkedFrames",
     "RelationalCertificates",
+    "RelationalLinkedExecution",
+    "RelationalAffineLinkedExecution",
+    "RelationalAffineLinkedMemory",
     "RelationalPEWorldExecution",
     "RelationalStaticTree",
 )
@@ -107,11 +122,14 @@ class SchemaError(ValueError):
 class RegionStatePredicate:
     original: dict[str, Any]
     candidate: dict[str, Any]
+    exact_memory_reads: tuple[dict[str, Any], ...] = ()
     source: str | None = None
 
     @classmethod
     def parse(cls, payload: Mapping[str, Any]) -> RegionStatePredicate:
-        allowed_fields = {"original", "candidate", "source"}
+        allowed_fields = {
+            "original", "candidate", "exact_memory_reads", "source"
+        }
         if set(payload) - allowed_fields:
             raise SchemaError("region state predicate has unexpected fields")
         if not {"original", "candidate"}.issubset(payload):
@@ -120,6 +138,7 @@ class RegionStatePredicate:
             )
         original = payload["original"]
         candidate = payload["candidate"]
+        raw_exact_memory_reads = payload.get("exact_memory_reads", [])
         source = payload.get("source")
         if not isinstance(original, Mapping) or not isinstance(candidate, Mapping):
             raise SchemaError(
@@ -133,9 +152,47 @@ class RegionStatePredicate:
             )
         if source is not None and not isinstance(source, str):
             raise SchemaError("region state predicate source must be a string")
+        if not isinstance(raw_exact_memory_reads, list):
+            raise SchemaError("region exact memory reads must be a list")
+        exact_memory_reads: list[dict[str, Any]] = []
+        for index, raw_read in enumerate(raw_exact_memory_reads):
+            if not isinstance(raw_read, Mapping):
+                raise SchemaError(
+                    f"region exact memory read {index} must be an object"
+                )
+            if set(raw_read) != {"original_address", "candidate_address", "bytes"}:
+                raise SchemaError(
+                    f"region exact memory read {index} fields do not match"
+                )
+            original_address = raw_read["original_address"]
+            candidate_address = raw_read["candidate_address"]
+            byte_count = raw_read["bytes"]
+            if (
+                not isinstance(original_address, Mapping)
+                or not isinstance(candidate_address, Mapping)
+                or not isinstance(original_address.get("op"), str)
+                or not isinstance(candidate_address.get("op"), str)
+            ):
+                raise SchemaError(
+                    f"region exact memory read {index} addresses are malformed"
+                )
+            if (
+                not isinstance(byte_count, int)
+                or isinstance(byte_count, bool)
+                or not 0 < byte_count <= 10
+            ):
+                raise SchemaError(
+                    f"region exact memory read {index} byte count is invalid"
+                )
+            exact_memory_reads.append({
+                "original_address": dict(original_address),
+                "candidate_address": dict(candidate_address),
+                "bytes": byte_count,
+            })
         return cls(
             original=dict(original),
             candidate=dict(candidate),
+            exact_memory_reads=tuple(exact_memory_reads),
             source=source,
         )
 
@@ -144,6 +201,10 @@ class RegionStatePredicate:
             "original": self.original,
             "candidate": self.candidate,
         }
+        if self.exact_memory_reads:
+            payload["exact_memory_reads"] = [
+                dict(read) for read in self.exact_memory_reads
+            ]
         if self.source is not None:
             payload["source"] = self.source
         return payload
@@ -377,6 +438,7 @@ class PreparedProofDigests:
     memory_contracts: str
     static_word_relations: str
     register_relations: str
+    runtime_frame_affine: str
     stack_windows: str
     segment_diagnostics: str
     product_graph: str
@@ -397,6 +459,7 @@ class PreparedProofDigests:
             "memory_contracts": "memory_contracts_sha256",
             "static_word_relations": "static_word_relations_sha256",
             "register_relations": "register_relations_sha256",
+            "runtime_frame_affine": "runtime_frame_affine_sha256",
             "stack_windows": "stack_windows_sha256",
             "segment_diagnostics": "segment_diagnostics_sha256",
             "product_graph": "product_graph_sha256",

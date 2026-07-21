@@ -122,6 +122,28 @@ def _root_.StageA.Formal.Expr.pureInvariant : Expr → Bool
       .read8AfterWrite _ _ _ _ | .x87Part _ _ | .x87CompareBit _ _ _ _ |
       .x87ExamineStatus _ _ => false
 
+/-- Register-only expressions admitted in CFG bound certificates.  This is a
+strict subset of `pureInvariant`: every accepted expression is total under
+`evalExprPure`, so a generated bound cannot hide an undefined, memory, flag,
+segment, or x87 dependency. -/
+def _root_.StageA.Formal.Expr.boundInvariant : Expr → Bool
+  | .inputReg _ | .constant _ => true
+  | .add left right | .sub left right | .bitAnd left right | .bitXor left right |
+      .shiftLeftBy left right | .shiftRightBy left right |
+      .shiftArithmeticRightBy left right | .bitOr left right |
+      .unsignedLessValue left right | .multiply left right =>
+      left.boundInvariant && right.boundInvariant
+  | .bitNot value | .extractByte value _ | .shiftLeft value _ | .shiftRight value _ |
+      .bitValue value _ => value.boundInvariant
+  | _ => false
+
+theorem _root_.StageA.Formal.Expr.evalExprPure_of_boundInvariant
+    (state : MachineState) (expression : Expr)
+    (safe : expression.boundInvariant = true) :
+    evalExprPure state.registers expression = some (expression.eval state) := by
+  induction expression using Expr.rec (motive_2 := fun _ => True) <;>
+    simp_all [Expr.boundInvariant, evalExprPure, Expr.eval]
+
 def _root_.StageA.Formal.Expr.exactInputs
     (relations : List RegisterRelationPair) : Expr → Bool
   | .inputReg register => exactIdentityRegister relations register
@@ -1251,9 +1273,11 @@ theorem StaticWordRelationKind.registerValueRelation_holds_of_holds
   cases source <;> cases target <;>
     simp_all [staticWordRelationSupportsRegisterValueRelation,
       StaticWordRelationKind.holds, RegisterValueRelation.holds,
-      codeTargetAddressPairMatches, wordRelated_self]
-  exact Or.inr
-    (codeTargetIdAddresses_codePointerRelated context _ original candidate holds)
+      wordRelated_self]
+  · exact Or.inr
+      (codeTargetIdAddresses_codePointerRelated context _ original candidate holds)
+  exact codeTargetAddressPairMatches_fixedCodePointerRelated
+    context _ original candidate holds
 
 structure StaticWordSlotRegisterOutputClaim where
   output : RegisterRelationPair
@@ -2025,13 +2049,28 @@ def machineCallResultRelationAsRegisterValueRelation :
   | .relatedWord => .relatedWord
   | .dynamicRangeBase _ _ _ _ => .relatedWord
 
+def externalRegisterRelationSupports
+    (source target : RegisterValueRelation) : Bool :=
+  source == target || target == .relatedWord ||
+    (match source, target with
+    | .fixedWord _, .exact => true
+    | .fixedCodePointer _, .codePointer => true
+    | _, _ => false)
+
+def externalRegisterPairSupportedBy
+    (outputs : List RegisterRelationPair) (target : RegisterRelationPair) : Bool :=
+  outputs.any fun source =>
+    source.original == target.original &&
+      source.candidate == target.candidate &&
+      externalRegisterRelationSupports source.relation target.relation
+
 def externalRegisterInputPolicyClosed (source : RegionRelation)
     (contract : MachineImportCallContract) (input : RegisterRelationPair) : Bool :=
   if input.original == .esp && input.candidate == .esp then
-    source.outputRelations.contains input
+    externalRegisterPairSupportedBy source.outputRelations input
   else if contract.preservedRegisters.contains input.original &&
       contract.preservedRegisters.contains input.candidate then
-    source.outputRelations.contains input
+    externalRegisterPairSupportedBy source.outputRelations input
   else if contract.clobberedRegisters.contains input.original &&
       contract.clobberedRegisters.contains input.candidate then
     match contract.resultRegisterRelations.filter
@@ -2039,8 +2078,9 @@ def externalRegisterInputPolicyClosed (source : RegionRelation)
     | [] => input.relation == .relatedWord
     | [relation] =>
         input.candidate == relation.register &&
-          input.relation ==
-            machineCallResultRelationAsRegisterValueRelation relation.relation
+          externalRegisterRelationSupports
+            (machineCallResultRelationAsRegisterValueRelation relation.relation)
+            input.relation
     | _ => false
   else
     false
@@ -2642,6 +2682,163 @@ theorem _root_.StageA.Formal.Expr.eval_pullbackMemoryExpression
     simp [Expr.eval, sound pulledValue valueChecked]
   all_goals simp [Expr.pullbackMemoryExpression] at checked
 
+def _root_.StageA.Formal.BoolExpr.pullbackMemoryExpression
+    (behavior : NormalizedSymbolicBehavior) : BoolExpr → Option BoolExpr
+  | .equal left right => do
+      return .equal (← left.pullbackMemoryExpression behavior)
+        (← right.pullbackMemoryExpression behavior)
+  | .not value => return .not (← value.pullbackMemoryExpression behavior)
+  | .and left right => do
+      return .and (← left.pullbackMemoryExpression behavior)
+        (← right.pullbackMemoryExpression behavior)
+  | .or left right => do
+      return .or (← left.pullbackMemoryExpression behavior)
+        (← right.pullbackMemoryExpression behavior)
+  | .xor left right => do
+      return .xor (← left.pullbackMemoryExpression behavior)
+        (← right.pullbackMemoryExpression behavior)
+  | .unsignedLess left right => do
+      return .unsignedLess (← left.pullbackMemoryExpression behavior)
+        (← right.pullbackMemoryExpression behavior)
+  | .msb value => return .msb (← value.pullbackMemoryExpression behavior)
+  | .bit value index =>
+      return .bit (← value.pullbackMemoryExpression behavior) index
+  | .inputFlag index =>
+      if [0, 2, 4, 6, 7, 10, 11].contains index then
+        some (outputFlag behavior.flags index)
+      else none
+  | .divisionValid high low divisor => do
+      return .divisionValid (← high.pullbackMemoryExpression behavior)
+        (← low.pullbackMemoryExpression behavior)
+        (← divisor.pullbackMemoryExpression behavior)
+
+theorem _root_.StageA.Formal.BoolExpr.eval_pullbackMemoryExpression
+    (behavior : NormalizedSymbolicBehavior) (state : MachineState)
+    (predicate pulled : BoolExpr)
+    (checked : predicate.pullbackMemoryExpression behavior = some pulled) :
+    pulled.eval state =
+      predicate.eval ((behavior.eval state).nextMachineState state) := by
+  induction predicate generalizing pulled <;>
+    simp only [BoolExpr.pullbackMemoryExpression] at checked
+  case equal left right =>
+    simp [Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledLeft, leftChecked, pulledRight, rightChecked, rfl⟩
+    simp [BoolExpr.eval, Expr.eval_pullbackMemoryExpression behavior state left
+      pulledLeft leftChecked, Expr.eval_pullbackMemoryExpression behavior state right
+      pulledRight rightChecked]
+  case not value sound =>
+    simp [Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledValue, valueChecked, rfl⟩
+    simp [BoolExpr.eval, sound pulledValue valueChecked]
+  case and left right leftSound rightSound =>
+    simp [Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledLeft, leftChecked, pulledRight, rightChecked, rfl⟩
+    simp [BoolExpr.eval, leftSound pulledLeft leftChecked,
+      rightSound pulledRight rightChecked]
+  case or left right leftSound rightSound =>
+    simp [Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledLeft, leftChecked, pulledRight, rightChecked, rfl⟩
+    simp [BoolExpr.eval, leftSound pulledLeft leftChecked,
+      rightSound pulledRight rightChecked]
+  case xor left right leftSound rightSound =>
+    simp [Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledLeft, leftChecked, pulledRight, rightChecked, rfl⟩
+    simp [BoolExpr.eval, leftSound pulledLeft leftChecked,
+      rightSound pulledRight rightChecked]
+  case unsignedLess left right =>
+    simp [Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledLeft, leftChecked, pulledRight, rightChecked, rfl⟩
+    simp [BoolExpr.eval, Expr.eval_pullbackMemoryExpression behavior state left
+      pulledLeft leftChecked, Expr.eval_pullbackMemoryExpression behavior state right
+      pulledRight rightChecked]
+  case msb value =>
+    simp [Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledValue, valueChecked, rfl⟩
+    simp [BoolExpr.eval, Expr.eval_pullbackMemoryExpression behavior state value
+      pulledValue valueChecked]
+  case bit value index =>
+    simp [Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledValue, valueChecked, rfl⟩
+    simp [BoolExpr.eval, Expr.eval_pullbackMemoryExpression behavior state value
+      pulledValue valueChecked]
+  case inputFlag index =>
+    split at checked
+    · rename_i safe
+      simp at checked
+      subst pulled
+      exact outputFlag_eval behavior state index safe
+    · simp at checked
+  case divisionValid high low divisor =>
+    simp [Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledHigh, highChecked, pulledLow, lowChecked,
+      pulledDivisor, divisorChecked, rfl⟩
+    simp [BoolExpr.eval, Expr.eval, Expr.eval_pullbackMemoryExpression behavior state high
+      pulledHigh highChecked, Expr.eval_pullbackMemoryExpression behavior state low
+      pulledLow lowChecked, Expr.eval_pullbackMemoryExpression behavior state divisor
+      pulledDivisor divisorChecked]
+
+def _root_.StageA.Formal.BoolExpr.pullbackDirectRead32Bound
+    (behavior : NormalizedSymbolicBehavior) : BoolExpr → Option BoolExpr
+  | .unsignedLess (.read32 address) (.constant upper) => do
+      if behavior.writes.isEmpty then
+        return .unsignedLess (.read32 (← address.pullbackMemoryExpression behavior))
+          (.constant upper)
+      else none
+  | _ => none
+
+theorem _root_.StageA.Formal.BoolExpr.eval_pullbackDirectRead32Bound
+    (behavior : NormalizedSymbolicBehavior) (state : MachineState)
+    (predicate pulled : BoolExpr)
+    (checked : predicate.pullbackDirectRead32Bound behavior = some pulled) :
+    pulled.eval state =
+      predicate.eval ((behavior.eval state).nextMachineState state) := by
+  cases predicate <;>
+    try {simp [BoolExpr.pullbackDirectRead32Bound] at checked}
+  case unsignedLess left right =>
+    cases left <;>
+      try {simp [BoolExpr.pullbackDirectRead32Bound] at checked}
+    case read32 address =>
+      cases right <;>
+        try {simp [BoolExpr.pullbackDirectRead32Bound] at checked}
+      case constant upper =>
+        simp only [BoolExpr.pullbackDirectRead32Bound] at checked
+        split at checked
+        case isTrue writesEmpty =>
+          cases addressResult : address.pullbackMemoryExpression behavior with
+          | none => simp [addressResult] at checked
+          | some pulledAddress =>
+              simp [addressResult] at checked
+              subst pulled
+              simp [BoolExpr.eval, Expr.eval,
+                Expr.eval_pullbackMemoryExpression behavior state address pulledAddress
+                  addressResult,
+                RelationalBehavior.nextMachineState, NormalizedSymbolicBehavior.eval,
+                List.isEmpty_iff.mp writesEmpty, evalNormalizedWrites,
+                MachineState.read32, applyConcreteWrites]
+        case isFalse => simp at checked
+
+def _root_.StageA.Formal.BoolExpr.edgePullbackExpression
+    (behavior : NormalizedSymbolicBehavior) (predicate : BoolExpr) : Option BoolExpr :=
+  match predicate.pullbackDirectRead32Bound behavior with
+  | some pulled => some pulled
+  | none => predicate.pullbackMemoryExpression behavior
+
+theorem _root_.StageA.Formal.BoolExpr.eval_edgePullbackExpression
+    (behavior : NormalizedSymbolicBehavior) (state : MachineState)
+    (predicate pulled : BoolExpr)
+    (checked : predicate.edgePullbackExpression behavior = some pulled) :
+    pulled.eval state =
+      predicate.eval ((behavior.eval state).nextMachineState state) := by
+  unfold BoolExpr.edgePullbackExpression at checked
+  cases directResult : predicate.pullbackDirectRead32Bound behavior with
+  | some direct =>
+      simp [directResult] at checked
+      subst pulled
+      exact predicate.eval_pullbackDirectRead32Bound behavior state direct directResult
+  | none =>
+      simp [directResult] at checked
+      exact predicate.eval_pullbackMemoryExpression behavior state pulled checked
+
 def _root_.StageA.Formal.Expr.pullbackX87LoadControl
     (behavior : NormalizedSymbolicBehavior) : Expr → Option Expr
   | .inputX87Control => some behavior.x87.control
@@ -3124,6 +3321,183 @@ theorem BoolExpr.eval_substitute (behavior : NormalizedSymbolicBehavior)
     simpa [Expr.substituteRegisters, Expr.eval] using
       congrArg (fun value => value == (1 : Word)) h
 
+def _root_.StageA.Relational.PairedExactMemoryRead.pullback
+    (read : PairedExactMemoryRead)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) :
+    Option PairedExactMemoryRead := do
+  let originalAddress ← read.originalAddress.pullbackMemoryExpression originalBehavior
+  let candidateAddress ← read.candidateAddress.pullbackMemoryExpression candidateBehavior
+  pure {
+    originalAddress := originalAddress
+    candidateAddress := candidateAddress
+    bytes := read.bytes
+  }
+
+theorem _root_.StageA.Relational.PairedExactMemoryRead.holds_after_no_writes_of_pullback
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (originalState candidateState : MachineState)
+    (source target : PairedExactMemoryRead)
+    (originalWrites : originalBehavior.writes = [])
+    (candidateWrites : candidateBehavior.writes = [])
+    (pulled : target.pullback originalBehavior candidateBehavior = some source)
+    (sourceHolds : source.holds originalState candidateState = true) :
+    target.holds
+      ((originalBehavior.eval originalState).nextMachineState originalState)
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState) = true := by
+  cases originalAddressResult :
+      target.originalAddress.pullbackMemoryExpression originalBehavior with
+  | none => simp [PairedExactMemoryRead.pullback, originalAddressResult] at pulled
+  | some originalAddress =>
+    cases candidateAddressResult :
+        target.candidateAddress.pullbackMemoryExpression candidateBehavior with
+    | none =>
+      simp [PairedExactMemoryRead.pullback, originalAddressResult,
+        candidateAddressResult] at pulled
+    | some candidateAddress =>
+      simp [PairedExactMemoryRead.pullback, originalAddressResult,
+        candidateAddressResult] at pulled
+      subst source
+      simp only [PairedExactMemoryRead.holds, Bool.and_eq_true, beq_iff_eq]
+        at sourceHolds ⊢
+      refine ⟨sourceHolds.1, ?_⟩
+      have originalAddressSound := Expr.eval_pullbackMemoryExpression originalBehavior
+        originalState target.originalAddress originalAddress originalAddressResult
+      have candidateAddressSound := Expr.eval_pullbackMemoryExpression candidateBehavior
+        candidateState target.candidateAddress candidateAddress candidateAddressResult
+      rw [← originalAddressSound, ← candidateAddressSound]
+      simpa [RelationalBehavior.nextMachineState, NormalizedSymbolicBehavior.eval,
+        originalWrites, candidateWrites, evalNormalizedWrites, MachineState.readX87Word]
+        using sourceHolds.2
+
+def _root_.StageA.Relational.PairedStatePredicate.pullback
+    (predicate : PairedStatePredicate)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) :
+    Option PairedStatePredicate := do
+  if !predicate.original.pureInvariant || !predicate.candidate.pureInvariant then
+    none
+  else
+    let exactMemoryReads ← predicate.exactMemoryReads.mapM
+      (fun read => read.pullback originalBehavior candidateBehavior)
+    pure {
+      original := predicate.original.substitute originalBehavior.registers
+        originalBehavior.flags
+      candidate := predicate.candidate.substitute candidateBehavior.registers
+        candidateBehavior.flags
+      exactMemoryReads := exactMemoryReads
+    }
+
+theorem pairedExactMemoryReadsHold_after_no_writes_of_pullback
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (originalState candidateState : MachineState)
+    (source target : List PairedExactMemoryRead)
+    (originalWrites : originalBehavior.writes = [])
+    (candidateWrites : candidateBehavior.writes = [])
+    (pulled : target.mapM
+      (fun read => read.pullback originalBehavior candidateBehavior) = some source)
+    (sourceHolds : source.all fun read => read.holds originalState candidateState) :
+    target.all fun read => read.holds
+      ((originalBehavior.eval originalState).nextMachineState originalState)
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState) := by
+  induction target generalizing source with
+  | nil =>
+      simp at pulled
+      subst source
+      rfl
+  | cons targetRead targetReads ih =>
+      cases readResult : targetRead.pullback originalBehavior candidateBehavior with
+      | none => simp [List.mapM_cons, readResult] at pulled
+      | some sourceRead =>
+          cases readsResult : targetReads.mapM
+              (fun read => read.pullback originalBehavior candidateBehavior) with
+          | none => simp [List.mapM_cons, readResult, readsResult] at pulled
+          | some sourceReads =>
+              simp [List.mapM_cons, readResult, readsResult] at pulled
+              subst source
+              simp only [List.all_cons, Bool.and_eq_true] at sourceHolds ⊢
+              exact ⟨
+                PairedExactMemoryRead.holds_after_no_writes_of_pullback
+                  originalBehavior candidateBehavior originalState candidateState
+                  sourceRead targetRead originalWrites candidateWrites readResult
+                  sourceHolds.1,
+                ih sourceReads readsResult sourceHolds.2
+              ⟩
+
+theorem _root_.StageA.Relational.PairedStatePredicate.holds_after_no_writes_of_pullback
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (originalState candidateState : MachineState)
+    (source target : PairedStatePredicate)
+    (originalWrites : originalBehavior.writes = [])
+    (candidateWrites : candidateBehavior.writes = [])
+    (pulled : target.pullback originalBehavior candidateBehavior = some source)
+    (sourceHolds : source.holds originalState candidateState = true) :
+    target.holds
+      ((originalBehavior.eval originalState).nextMachineState originalState)
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState) = true := by
+  simp only [PairedStatePredicate.pullback] at pulled
+  split at pulled
+  · contradiction
+  · rename_i pure
+    have originalPure : target.original.pureInvariant = true := by
+      cases originalResult : target.original.pureInvariant <;>
+        simp [originalResult] at pure ⊢
+    have candidatePure : target.candidate.pureInvariant = true := by
+      cases candidateResult : target.candidate.pureInvariant <;>
+        simp [candidateResult] at pure ⊢
+    cases readsResult : target.exactMemoryReads.mapM
+        (fun read => read.pullback originalBehavior candidateBehavior) with
+    | none => simp [readsResult] at pulled
+    | some reads =>
+      simp [readsResult] at pulled
+      subst source
+      simp only [PairedStatePredicate.holds, Bool.and_eq_true]
+        at sourceHolds ⊢
+      refine ⟨⟨?_, ?_⟩, ?_⟩
+      · rw [← BoolExpr.eval_substitute originalBehavior originalState target.original
+          originalPure]
+        exact sourceHolds.1.1
+      · rw [← BoolExpr.eval_substitute candidateBehavior candidateState target.candidate
+          candidatePure]
+        exact sourceHolds.1.2
+      · exact pairedExactMemoryReadsHold_after_no_writes_of_pullback
+          originalBehavior candidateBehavior originalState candidateState reads
+          target.exactMemoryReads originalWrites candidateWrites readsResult sourceHolds.2
+
+def pairedStatePredicatePullbackChecked
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Bool :=
+  originalBehavior.writes.isEmpty && candidateBehavior.writes.isEmpty &&
+    targetInvariant.predicates.all fun target =>
+      match target.pullback originalBehavior candidateBehavior with
+      | some source => sourceInvariant.predicates.contains source
+      | none => false
+
+theorem pairedStatePredicatesHold_after_no_writes_of_pullback_checked
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (originalState candidateState : MachineState)
+    (checked : pairedStatePredicatePullbackChecked sourceInvariant targetInvariant
+      originalBehavior candidateBehavior = true)
+    (sourceHolds : pairedStatePredicatesHold sourceInvariant.predicates
+      originalState candidateState = true) :
+    pairedStatePredicatesHold targetInvariant.predicates
+      ((originalBehavior.eval originalState).nextMachineState originalState)
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState) = true := by
+  simp only [pairedStatePredicatePullbackChecked, Bool.and_eq_true] at checked
+  have originalWrites : originalBehavior.writes = [] := List.isEmpty_iff.mp checked.1.1
+  have candidateWrites : candidateBehavior.writes = [] := List.isEmpty_iff.mp checked.1.2
+  simp only [pairedStatePredicatesHold, List.all_eq_true] at sourceHolds ⊢
+  intro target targetMember
+  simp only [List.all_eq_true] at checked
+  have targetChecked := checked.2 target targetMember
+  cases pulled : target.pullback originalBehavior candidateBehavior with
+  | none => simp [pulled] at targetChecked
+  | some source =>
+      have sourceMember : source ∈ sourceInvariant.predicates := by
+        exact List.contains_iff_mem.mp (by simpa [pulled] using targetChecked)
+      exact PairedStatePredicate.holds_after_no_writes_of_pullback
+        originalBehavior candidateBehavior originalState candidateState source target
+        originalWrites candidateWrites pulled (sourceHolds source sourceMember)
+
 def _root_.StageA.Relational.NormalizedOutcomeExpr.edgeGuard
     (outcome : NormalizedOutcomeExpr)
     (target : Nat) : Option BoolExpr :=
@@ -3144,8 +3518,8 @@ def _root_.StageA.Relational.NormalizedOutcomeExpr.edgeGuard
 def edgeWeakestPrecondition (behavior : NormalizedSymbolicBehavior)
     (target : Nat) (predicate : BoolExpr) : Option BoolExpr := do
   let guard ← behavior.outcome.edgeGuard target
-  let substituted := predicate.substitute behavior.registers behavior.flags
-  pure (if guard == trueExpr then substituted else .or guard.negateNormalized substituted)
+  let pulled ← predicate.edgePullbackExpression behavior
+  pure (if guard == trueExpr then pulled else .or guard.negateNormalized pulled)
 
 theorem edgeGuard_eval_of_selected (outcome : NormalizedOutcomeExpr)
     (state : MachineState) (target : Nat) (guard : BoolExpr)
@@ -3209,7 +3583,6 @@ theorem edgeGuard_eval_of_selected (outcome : NormalizedOutcomeExpr)
 
 theorem edgeWeakestPrecondition_sound (behavior : NormalizedSymbolicBehavior)
     (state : MachineState) (target : Nat) (predicate precondition : BoolExpr)
-    (safe : predicate.pureInvariant = true)
     (computed : edgeWeakestPrecondition behavior target predicate = some precondition)
     (holds : precondition.eval state = true)
     (selected : (behavior.eval state).outcome.nextLogicalTarget = some target) :
@@ -3218,19 +3591,434 @@ theorem edgeWeakestPrecondition_sound (behavior : NormalizedSymbolicBehavior)
   cases guardFound : behavior.outcome.edgeGuard target with
   | none => simp [guardFound] at computed
   | some guard =>
-      simp [guardFound] at computed
-      split at computed
-      case isTrue always =>
-        subst precondition
-        rw [← BoolExpr.eval_substitute behavior state predicate safe]
-        exact holds
-      case isFalse conditional =>
-        subst precondition
-        have guardTrue := edgeGuard_eval_of_selected behavior.outcome state target guard
-          guardFound (by simpa using selected)
-        simp [BoolExpr.eval, guardTrue] at holds
-        rw [← BoolExpr.eval_substitute behavior state predicate safe]
-        exact holds
+      cases pulledResult : predicate.edgePullbackExpression behavior with
+      | none => simp [guardFound, pulledResult] at computed
+      | some pulled =>
+        simp [guardFound, pulledResult] at computed
+        split at computed
+        case isTrue always =>
+          subst precondition
+          rw [← BoolExpr.eval_edgePullbackExpression behavior state predicate pulled
+            pulledResult]
+          exact holds
+        case isFalse conditional =>
+          subst precondition
+          have guardTrue := edgeGuard_eval_of_selected behavior.outcome state target guard
+            guardFound (by simpa using selected)
+          simp [BoolExpr.eval, guardTrue] at holds
+          rw [← BoolExpr.eval_edgePullbackExpression behavior state predicate pulled
+            pulledResult]
+          exact holds
+
+theorem edgeWeakestPrecondition_sound_of_guard
+    (behavior : NormalizedSymbolicBehavior)
+    (state : MachineState) (target : Nat) (predicate precondition guard : BoolExpr)
+    (guardFound : behavior.outcome.edgeGuard target = some guard)
+    (guardHolds : guard.eval state = true)
+    (computed : edgeWeakestPrecondition behavior target predicate = some precondition)
+    (holds : precondition.eval state = true) :
+    predicate.eval ((behavior.eval state).nextMachineState state) = true := by
+  unfold edgeWeakestPrecondition at computed
+  cases pulledResult : predicate.edgePullbackExpression behavior with
+  | none => simp [guardFound, pulledResult] at computed
+  | some pulled =>
+    simp [guardFound, pulledResult] at computed
+    split at computed
+    case isTrue always =>
+      subst precondition
+      rw [← BoolExpr.eval_edgePullbackExpression behavior state predicate pulled
+        pulledResult]
+      exact holds
+    case isFalse conditional =>
+      subst precondition
+      simp [BoolExpr.eval, guardHolds] at holds
+      rw [← BoolExpr.eval_edgePullbackExpression behavior state predicate pulled
+        pulledResult]
+      exact holds
+
+def _root_.StageA.Formal.BoolExpr.stackStrictAboveClause? :
+    BoolExpr → Option (Expr × Nat)
+  | .and (.not (.unsignedLess value (.constant threshold)))
+      (.not (.equal (.sub equalValue (.constant equalThreshold)) (.constant 0))) =>
+      if value == equalValue && threshold == equalThreshold then
+        some (value, threshold)
+      else none
+  | _ => none
+
+def _root_.StageA.Formal.BoolExpr.stackUpperBoundTautology : BoolExpr → Bool
+  | .or above (.unsignedLess value (.constant upper)) =>
+      match above.stackStrictAboveClause? with
+      | some (aboveValue, threshold) =>
+          aboveValue == value && decide (threshold < upper) && decide (upper < 2 ^ 32)
+      | none => false
+  | _ => false
+
+theorem _root_.StageA.Formal.BoolExpr.eval_stackStrictAboveClause?
+    (predicate : BoolExpr) (value : Expr) (threshold : Nat)
+    (state : MachineState)
+    (found : predicate.stackStrictAboveClause? = some (value, threshold)) :
+    predicate.eval state =
+      ((!decide (value.eval state < BitVec.ofNat 32 threshold)) &&
+        (!decide (value.eval state - BitVec.ofNat 32 threshold =
+          BitVec.ofNat 32 0))) := by
+  have shape : predicate =
+      .and (.not (.unsignedLess value (.constant threshold)))
+        (.not (.equal (.sub value (.constant threshold)) (.constant 0))) := by
+    cases predicate <;> try {simp [BoolExpr.stackStrictAboveClause?] at found}
+    case and left right =>
+      cases left <;> try {simp [BoolExpr.stackStrictAboveClause?] at found}
+      case not leftValue =>
+        cases right <;> try {simp [BoolExpr.stackStrictAboveClause?] at found}
+        case not rightValue =>
+          cases leftValue <;> try {simp [BoolExpr.stackStrictAboveClause?] at found}
+          case unsignedLess left thresholdExpression =>
+            cases thresholdExpression <;>
+              try {simp [BoolExpr.stackStrictAboveClause?] at found}
+            case constant sourceThreshold =>
+              cases rightValue <;>
+                try {simp [BoolExpr.stackStrictAboveClause?] at found}
+              case equal subExpression zeroExpression =>
+                cases subExpression <;>
+                  try {simp [BoolExpr.stackStrictAboveClause?] at found}
+                case sub equalValue equalThresholdExpression =>
+                  cases equalThresholdExpression <;>
+                    try {simp [BoolExpr.stackStrictAboveClause?] at found}
+                  case constant equalThreshold =>
+                    cases zeroExpression <;>
+                      try {simp [BoolExpr.stackStrictAboveClause?] at found}
+                    case constant zero =>
+                      cases zero with
+                      | zero =>
+                          simp [BoolExpr.stackStrictAboveClause?] at found
+                          grind
+                      | succ zero =>
+                          simp [BoolExpr.stackStrictAboveClause?] at found
+  rw [shape]
+  rfl
+
+theorem stackStrictAbove_or_upperBound (value : Word) (threshold upper : Nat)
+    (thresholdBelow : threshold < upper) (upperFits : upper < 2 ^ 32) :
+    ((!decide (value < BitVec.ofNat 32 threshold)) &&
+        (!decide (value - BitVec.ofNat 32 threshold = BitVec.ofNat 32 0))) ||
+      decide (value < BitVec.ofNat 32 upper) = true := by
+  have thresholdFits : threshold < 2 ^ 32 := by omega
+  by_cases bounded : value < BitVec.ofNat 32 upper
+  · simp [bounded]
+  · have notBelow : ¬value < BitVec.ofNat 32 threshold := by
+      intro below
+      apply bounded
+      simp only [BitVec.lt_def, BitVec.toNat_ofNat,
+        Nat.mod_eq_of_lt thresholdFits] at below
+      simp only [BitVec.lt_def, BitVec.toNat_ofNat,
+        Nat.mod_eq_of_lt upperFits]
+      omega
+    have notEqual : value - BitVec.ofNat 32 threshold ≠ BitVec.ofNat 32 0 := by
+      intro equal
+      have thresholdLe : BitVec.ofNat 32 threshold ≤ value := by
+        simp only [BitVec.le_def, BitVec.toNat_ofNat,
+          Nat.mod_eq_of_lt thresholdFits]
+        simp only [BitVec.lt_def, BitVec.toNat_ofNat,
+          Nat.mod_eq_of_lt thresholdFits] at notBelow
+        omega
+      have equalNat := congrArg BitVec.toNat equal
+      rw [BitVec.toNat_sub_of_le thresholdLe] at equalNat
+      simp only [BitVec.toNat_ofNat, Nat.mod_eq_of_lt thresholdFits,
+        Nat.zero_mod] at equalNat
+      apply bounded
+      simp only [BitVec.lt_def, BitVec.toNat_ofNat,
+        Nat.mod_eq_of_lt upperFits]
+      omega
+    simp [bounded, notBelow, notEqual]
+
+theorem _root_.StageA.Formal.BoolExpr.eval_of_stackUpperBoundTautology
+    (predicate : BoolExpr) (state : MachineState)
+    (checked : predicate.stackUpperBoundTautology = true) :
+    predicate.eval state = true := by
+  cases predicate with
+  | or above bound =>
+      cases bound with
+      | unsignedLess value upperExpression =>
+          cases upperExpression with
+          | constant upper =>
+              cases clause : above.stackStrictAboveClause? with
+              | none => simp [BoolExpr.stackUpperBoundTautology, clause] at checked
+              | some pair =>
+                  rcases pair with ⟨aboveValue, threshold⟩
+                  simp only [BoolExpr.stackUpperBoundTautology, clause,
+                    Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at checked
+                  rcases checked with ⟨⟨valueEqual, thresholdBelow⟩, upperFits⟩
+                  subst aboveValue
+                  have aboveEval := above.eval_stackStrictAboveClause? value threshold
+                    state clause
+                  rw [BoolExpr.eval, aboveEval]
+                  simpa [BoolExpr.eval, Expr.eval] using
+                    stackStrictAbove_or_upperBound
+                      (value.eval state) threshold upper thresholdBelow upperFits
+          | _ => simp [BoolExpr.stackUpperBoundTautology] at checked
+      | _ => simp [BoolExpr.stackUpperBoundTautology] at checked
+  | _ => simp [BoolExpr.stackUpperBoundTautology] at checked
+
+def _root_.StageA.Relational.PairedStatePredicate.edgePullback
+    (predicate : PairedStatePredicate)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (target : Nat) : Option PairedStatePredicate := do
+  let original ← edgeWeakestPrecondition originalBehavior target predicate.original
+  let candidate ← edgeWeakestPrecondition candidateBehavior target predicate.candidate
+  let exactMemoryReads ← predicate.exactMemoryReads.mapM
+    (fun read => read.pullback originalBehavior candidateBehavior)
+  pure { original, candidate, exactMemoryReads }
+
+theorem _root_.StageA.Relational.PairedStatePredicate.holds_after_no_writes_of_edgePullback
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (originalState candidateState : MachineState)
+    (source targetPredicate : PairedStatePredicate)
+    (target : Nat)
+    (originalWrites : originalBehavior.writes = [])
+    (candidateWrites : candidateBehavior.writes = [])
+    (originalSelected :
+      (originalBehavior.eval originalState).outcome.nextLogicalTarget = some target)
+    (candidateSelected :
+      (candidateBehavior.eval candidateState).outcome.nextLogicalTarget = some target)
+    (pulled : targetPredicate.edgePullback originalBehavior candidateBehavior target =
+      some source)
+    (sourceHolds : source.holds originalState candidateState = true) :
+    targetPredicate.holds
+      ((originalBehavior.eval originalState).nextMachineState originalState)
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState) = true := by
+  simp only [PairedStatePredicate.edgePullback] at pulled
+  cases originalResult : edgeWeakestPrecondition originalBehavior target
+      targetPredicate.original with
+    | none => simp [originalResult] at pulled
+    | some original =>
+      cases candidateResult : edgeWeakestPrecondition candidateBehavior target
+          targetPredicate.candidate with
+      | none => simp [originalResult, candidateResult] at pulled
+      | some candidate =>
+        cases readsResult : targetPredicate.exactMemoryReads.mapM
+            (fun read => read.pullback originalBehavior candidateBehavior) with
+        | none => simp [originalResult, candidateResult, readsResult] at pulled
+        | some reads =>
+          simp [originalResult, candidateResult, readsResult] at pulled
+          subst source
+          simp only [PairedStatePredicate.holds, Bool.and_eq_true]
+            at sourceHolds ⊢
+          refine ⟨⟨?_, ?_⟩, ?_⟩
+          · exact edgeWeakestPrecondition_sound originalBehavior originalState target
+              targetPredicate.original original originalResult sourceHolds.1.1
+              originalSelected
+          · exact edgeWeakestPrecondition_sound candidateBehavior candidateState target
+              targetPredicate.candidate candidate candidateResult sourceHolds.1.2
+              candidateSelected
+          · exact pairedExactMemoryReadsHold_after_no_writes_of_pullback
+              originalBehavior candidateBehavior originalState candidateState reads
+              targetPredicate.exactMemoryReads originalWrites candidateWrites readsResult
+              sourceHolds.2
+
+def _root_.StageA.Relational.PairedExactMemoryRead.coveredBy
+    (read : PairedExactMemoryRead) (invariant : StateInvariant) : Bool :=
+  invariant.predicates.any fun predicate => predicate.exactMemoryReads.contains read
+
+def _root_.StageA.Relational.PairedStatePredicate.directStackBoundSupport
+    (predicate : PairedStatePredicate) (invariant : StateInvariant) : Bool :=
+  predicate.original.stackUpperBoundTautology &&
+    predicate.candidate.stackUpperBoundTautology &&
+    predicate.exactMemoryReads.all fun read => read.coveredBy invariant
+
+theorem _root_.StageA.Relational.PairedStatePredicate.holds_of_directStackBoundSupport
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (predicate : PairedStatePredicate)
+    (original candidate : MachineState)
+    (checked : predicate.directStackBoundSupport invariant = true)
+    (related : StateRel context world invariant original candidate) :
+    predicate.holds original candidate = true := by
+  simp only [PairedStatePredicate.directStackBoundSupport, Bool.and_eq_true]
+    at checked
+  simp only [PairedStatePredicate.holds, Bool.and_eq_true]
+  refine ⟨⟨predicate.original.eval_of_stackUpperBoundTautology original checked.1.1,
+    predicate.candidate.eval_of_stackUpperBoundTautology candidate checked.1.2⟩, ?_⟩
+  simp only [List.all_eq_true] at checked ⊢
+  intro read readMember
+  have covered := checked.2 read readMember
+  simp only [PairedExactMemoryRead.coveredBy, List.any_eq_true] at covered
+  rcases covered with ⟨sourcePredicate, predicateMember, readCovered⟩
+  have sourceHolds := pairedStatePredicatesHold_member invariant.predicates
+    sourcePredicate original candidate predicateMember
+    (related.predicatesHold context world invariant original candidate)
+  exact sourcePredicate.exactMemoryReadHolds read original candidate
+    (List.contains_iff_mem.mp readCovered) sourceHolds
+
+def pairedStatePredicateEdgePullbackChecked
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (target : Nat) : Bool :=
+  originalBehavior.writes.isEmpty && candidateBehavior.writes.isEmpty &&
+    targetInvariant.predicates.all fun targetPredicate =>
+      match targetPredicate.edgePullback originalBehavior candidateBehavior target with
+      | some source =>
+          sourceInvariant.predicates.contains source ||
+            source.directStackBoundSupport sourceInvariant
+      | none => false
+
+theorem pairedStatePredicatesHold_after_no_writes_of_edge_pullback_checked
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (target : Nat)
+    (originalState candidateState : MachineState)
+    (checked : pairedStatePredicateEdgePullbackChecked sourceInvariant targetInvariant
+      originalBehavior candidateBehavior target = true)
+    (originalSelected :
+      (originalBehavior.eval originalState).outcome.nextLogicalTarget = some target)
+    (candidateSelected :
+      (candidateBehavior.eval candidateState).outcome.nextLogicalTarget = some target)
+    (related : StateRel context world sourceInvariant
+      originalState candidateState) :
+    pairedStatePredicatesHold targetInvariant.predicates
+      ((originalBehavior.eval originalState).nextMachineState originalState)
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState) = true := by
+  simp only [pairedStatePredicateEdgePullbackChecked, Bool.and_eq_true] at checked
+  have originalWrites : originalBehavior.writes = [] := List.isEmpty_iff.mp checked.1.1
+  have candidateWrites : candidateBehavior.writes = [] := List.isEmpty_iff.mp checked.1.2
+  simp only [pairedStatePredicatesHold, List.all_eq_true] at ⊢
+  intro targetPredicate targetMember
+  simp only [List.all_eq_true] at checked
+  have targetChecked := checked.2 targetPredicate targetMember
+  cases pulled : targetPredicate.edgePullback originalBehavior candidateBehavior target with
+  | none => simp [pulled] at targetChecked
+  | some source =>
+      simp only [pulled, Bool.or_eq_true] at targetChecked
+      have sourcePredicateHolds : source.holds originalState candidateState = true := by
+        cases targetChecked with
+        | inl sourceContained =>
+            have sourceMember : source ∈ sourceInvariant.predicates :=
+              List.contains_iff_mem.mp sourceContained
+            exact pairedStatePredicatesHold_member sourceInvariant.predicates source
+              originalState candidateState sourceMember
+              (related.predicatesHold context world sourceInvariant originalState
+                candidateState)
+        | inr direct =>
+            exact source.holds_of_directStackBoundSupport context world sourceInvariant
+              originalState candidateState direct related
+      exact PairedStatePredicate.holds_after_no_writes_of_edgePullback
+        originalBehavior candidateBehavior originalState candidateState source targetPredicate
+        target originalWrites candidateWrites originalSelected candidateSelected pulled
+        sourcePredicateHolds
+
+def _root_.StageA.Relational.RegisterBoundPair.originalExpr
+    (bound : RegisterBoundPair) : Expr :=
+  bound.originalExpression.getD (.inputReg bound.original)
+
+def _root_.StageA.Relational.RegisterBoundPair.candidateExpr
+    (bound : RegisterBoundPair) : Expr :=
+  bound.candidateExpression.getD (.inputReg bound.candidate)
+
+def _root_.StageA.Relational.RegisterBoundPair.predicate
+    (bound : RegisterBoundPair) : PairedStatePredicate := {
+  original := .unsignedLess bound.originalExpr (.constant bound.upperExclusive)
+  candidate := .unsignedLess bound.candidateExpr (.constant bound.upperExclusive)
+}
+
+theorem _root_.StageA.Relational.RegisterBoundPair.originalBoundValue
+    (bound : RegisterBoundPair) (state : MachineState)
+    (safe : bound.originalExpr.boundInvariant = true) :
+    boundValue state.registers bound.original bound.originalExpression =
+      some (bound.originalExpr.eval state) := by
+  cases expression : bound.originalExpression with
+  | none => simp [RegisterBoundPair.originalExpr, expression, boundValue,
+      Expr.eval]
+  | some value =>
+      have valueSafe : value.boundInvariant = true := by
+        simpa [RegisterBoundPair.originalExpr, expression] using safe
+      simpa [RegisterBoundPair.originalExpr, expression, boundValue] using
+        Expr.evalExprPure_of_boundInvariant state value valueSafe
+
+theorem _root_.StageA.Relational.RegisterBoundPair.candidateBoundValue
+    (bound : RegisterBoundPair) (state : MachineState)
+    (safe : bound.candidateExpr.boundInvariant = true) :
+    boundValue state.registers bound.candidate bound.candidateExpression =
+      some (bound.candidateExpr.eval state) := by
+  cases expression : bound.candidateExpression with
+  | none => simp [RegisterBoundPair.candidateExpr, expression, boundValue,
+      Expr.eval]
+  | some value =>
+      have valueSafe : value.boundInvariant = true := by
+        simpa [RegisterBoundPair.candidateExpr, expression] using safe
+      simpa [RegisterBoundPair.candidateExpr, expression, boundValue] using
+        Expr.evalExprPure_of_boundInvariant state value valueSafe
+
+theorem _root_.StageA.Relational.RegisterBoundPair.predicateHolds_iff_bound
+    (bound : RegisterBoundPair) (original candidate : MachineState)
+    (originalSafe : bound.originalExpr.boundInvariant = true)
+    (candidateSafe : bound.candidateExpr.boundInvariant = true) :
+    bound.predicate.holds original candidate =
+      boundsRelated [bound] original.registers candidate.registers := by
+  rw [boundsRelated]
+  simp only [List.all_cons, List.all_nil, Bool.and_true]
+  rw [bound.originalBoundValue original originalSafe,
+    bound.candidateBoundValue candidate candidateSafe]
+  simp [RegisterBoundPair.predicate, PairedStatePredicate.holds, BoolExpr.eval,
+    Expr.eval]
+  rfl
+
+def pairedBoundEdgePullbackChecked
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (target : Nat) : Bool :=
+  originalBehavior.writes.isEmpty && candidateBehavior.writes.isEmpty &&
+    targetInvariant.bounds.all fun bound =>
+      bound.originalExpr.boundInvariant && bound.candidateExpr.boundInvariant &&
+        match bound.predicate.edgePullback originalBehavior candidateBehavior target with
+        | some source => sourceInvariant.predicates.contains source
+        | none => false
+
+theorem boundsRelated_after_no_writes_of_edge_pullback_checked
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (target : Nat) (originalState candidateState : MachineState)
+    (checked : pairedBoundEdgePullbackChecked sourceInvariant targetInvariant
+      originalBehavior candidateBehavior target = true)
+    (originalSelected :
+      (originalBehavior.eval originalState).outcome.nextLogicalTarget = some target)
+    (candidateSelected :
+      (candidateBehavior.eval candidateState).outcome.nextLogicalTarget = some target)
+    (sourceHolds : pairedStatePredicatesHold sourceInvariant.predicates
+      originalState candidateState = true) :
+    boundsRelated targetInvariant.bounds
+      (originalBehavior.eval originalState).registers
+      (candidateBehavior.eval candidateState).registers = true := by
+  simp only [pairedBoundEdgePullbackChecked, Bool.and_eq_true] at checked
+  have originalWrites : originalBehavior.writes = [] := List.isEmpty_iff.mp checked.1.1
+  have candidateWrites : candidateBehavior.writes = [] := List.isEmpty_iff.mp checked.1.2
+  simp only [boundsRelated, List.all_eq_true]
+  intro bound boundMember
+  simp only [List.all_eq_true] at checked
+  have boundChecked := checked.2 bound boundMember
+  simp only [Bool.and_eq_true] at boundChecked
+  have originalSafe := boundChecked.1.1
+  have candidateSafe := boundChecked.1.2
+  cases pulled : bound.predicate.edgePullback originalBehavior candidateBehavior target with
+  | none => simp [pulled] at boundChecked
+  | some source =>
+      have sourceMember : source ∈ sourceInvariant.predicates := by
+        exact List.contains_iff_mem.mp (by simpa [pulled] using boundChecked.2)
+      have sourcePredicateHolds := pairedStatePredicatesHold_member
+        sourceInvariant.predicates source originalState candidateState sourceMember sourceHolds
+      have targetHolds := PairedStatePredicate.holds_after_no_writes_of_edgePullback
+        originalBehavior candidateBehavior originalState candidateState source bound.predicate
+        target originalWrites candidateWrites originalSelected candidateSelected pulled
+        sourcePredicateHolds
+      have singletonBound :
+          boundsRelated [bound]
+            ((originalBehavior.eval originalState).nextMachineState
+              originalState).registers
+            ((candidateBehavior.eval candidateState).nextMachineState
+              candidateState).registers = true := by
+        rw [← bound.predicateHolds_iff_bound
+          ((originalBehavior.eval originalState).nextMachineState originalState)
+          ((candidateBehavior.eval candidateState).nextMachineState candidateState)
+          originalSafe candidateSafe]
+        exact targetHolds
+      simpa [boundsRelated, RelationalBehavior.nextMachineState] using singletonBound
 
 
 
@@ -3253,13 +4041,13 @@ theorem stateInvariantsHold_member (predicates : List BoolExpr)
 theorem invariantPredicateEdgeClosed_of_wp
     (behavior : NormalizedSymbolicBehavior) (sourceInvariant : List BoolExpr)
     (targetPredicate precondition : BoolExpr) (target : Nat)
-    (safe : targetPredicate.pureInvariant = true)
+    (_safe : targetPredicate.pureInvariant = true)
     (computed : edgeWeakestPrecondition behavior target targetPredicate = some precondition)
     (available : ∀ state, stateInvariantsHold sourceInvariant state = true →
       precondition.eval state = true) :
     NormalizedInvariantPredicateEdgeClosed behavior sourceInvariant targetPredicate target := by
   intro state source selected
-  exact edgeWeakestPrecondition_sound behavior state target targetPredicate precondition safe
+  exact edgeWeakestPrecondition_sound behavior state target targetPredicate precondition
     computed (available state source) selected
 
 theorem maskedSuccessorRangeTautology

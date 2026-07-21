@@ -69,10 +69,10 @@ theorem unknownIndirectTargetBlocks (program : DecodedWorldProgram)
     (sourceTargetId continuationTargetId : Nat) (state : MachineState)
     (calls : List Nat) (eventIndex : Nat) (world : RelationalWorld)
     (callbacks : List WorldExternalCallbackRuntime) (target : Word)
-    (codeMissing : resolveMappedCodeTarget program.candidate
+    (codeMissing : program.context.codeMap.resolveRawEip program.candidate
       (if program.candidate then program.context.candidatePe.imageBase
        else program.context.originalPe.imageBase)
-      program.context.codeMap.entries.toList target = none)
+      target = none)
     (importMissing : resolveWorldImportCall program.candidate program.context
       world target state = none) :
     transitionFromWorldOutcome program sourceTargetId state calls eventIndex world

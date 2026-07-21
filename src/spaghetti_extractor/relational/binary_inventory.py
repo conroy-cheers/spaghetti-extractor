@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,11 @@ from ..contract_tools import (
 )
 from ..stage_binary import StageAInputError, _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, write_json
-from .contract import _semantic_cutpoint_spans_for_side
+from .contract import (
+    _decode_semantic_cutpoint_span,
+    _raw_base_relocations,
+    _semantic_cutpoint_spans_for_side,
+)
 from .schema import STAGE_A_RELATIONAL_MODEL_ID, STAGE_A_RELATIONAL_PROFILE_ID
 from .side_extraction_artifact import parse_request
 
@@ -48,6 +53,68 @@ def _issue(category: str, blocker: str, **details: Any) -> dict[str, Any]:
 def _span_key(row: Mapping[str, Any]) -> tuple[int, int]:
     span = row["span"]
     return int(span["rva_start"]), int(span["rva_start"]) + int(span["size"])
+
+
+def _immutable_relocation_instruction_starts(parsed: Any) -> set[int]:
+    relocation_counts = Counter(
+        int(relocation["rva"])
+        for relocation in _raw_base_relocations(parsed)
+        if int(relocation["type"]) == 3
+    )
+    starts: set[int] = set()
+    for relocation_rva, count in relocation_counts.items():
+        if count != 1 or not any(
+            not section.writable
+            and section.rva_start <= relocation_rva
+            and relocation_rva + 4 <= section.rva_end
+            for section in parsed.sections
+        ):
+            continue
+        if any(
+            imported.thunk_rva is not None
+            and relocation_rva < int(imported.thunk_rva) + 4
+            and int(imported.thunk_rva) < relocation_rva + 4
+            for imported in parsed.imports
+        ):
+            continue
+        data = parsed.pe.get_data(relocation_rva, 4)
+        if len(data) != 4:
+            continue
+        target_rva = int.from_bytes(data, "little") - parsed.image_base
+        if any(
+            section.executable
+            and section.rva_start <= target_rva < section.rva_end
+            for section in parsed.sections
+        ):
+            starts.add(target_rva)
+    return starts
+
+
+def _relocation_split_spans(
+    parsed: Any,
+    span: dict[str, int],
+    relocation_starts: set[int],
+    block_id: str,
+) -> list[dict[str, int]]:
+    decoded = _decode_semantic_cutpoint_span(parsed, span, block_id)
+    instruction_starts = {
+        int(instruction.address) - parsed.image_base for instruction in decoded
+    }
+    boundaries = [
+        int(span["rva_start"]),
+        *sorted(
+            relocation_starts.intersection(instruction_starts)
+            - {int(span["rva_start"])}
+        ),
+        int(span["rva_start"]) + int(span["size"]),
+    ]
+    return [
+        {
+            "rva_start": boundaries[index],
+            "size": boundaries[index + 1] - boundaries[index],
+        }
+        for index in range(len(boundaries) - 1)
+    ]
 
 
 def _validate_coverage(payload: Mapping[str, Any]) -> None:
@@ -415,6 +482,7 @@ def stage_a_inventory_binary(
             })
     raw_rows = _deduplicate_code_spans(raw_rows, issues)
 
+    relocation_starts = _immutable_relocation_instruction_starts(parsed)
     cutpoints: list[dict[str, Any]] = []
     extraction_cutpoints: dict[tuple[int, int], dict[str, Any]] = {}
     for row in raw_rows:
@@ -461,6 +529,30 @@ def stage_a_inventory_binary(
                 extraction_cutpoints.setdefault(_span_key(cutpoint), cutpoint)
                 if policy == "periodic_and_semantic":
                     cutpoints.append(cutpoint)
+                relocation_spans = _relocation_split_spans(
+                    parsed,
+                    span,
+                    relocation_starts,
+                    f"{side}-{span['rva_start']:x}-relocation-split",
+                )
+                if len(relocation_spans) <= 1:
+                    continue
+                for relocation_index, relocation_span in enumerate(
+                    relocation_spans
+                ):
+                    relocation_cutpoint = {
+                        "span": relocation_span,
+                        "source": {
+                            **row["source"],
+                            "cutpoint_index": relocation_index,
+                            "cutpoint_policy": (
+                                f"{policy}_immutable_relocation_internal"
+                            ),
+                        },
+                    }
+                    extraction_cutpoints.setdefault(
+                        _span_key(relocation_cutpoint), relocation_cutpoint
+                    )
     cutpoints.sort(key=_span_key)
     extraction_rows = sorted(extraction_cutpoints.values(), key=_span_key)
 

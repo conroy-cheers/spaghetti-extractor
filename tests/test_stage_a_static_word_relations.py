@@ -4,7 +4,9 @@ from spaghetti_extractor.relational.analyses.registers import (
     _infer_register_output_relation,
     _matching_static_word_relation_slot,
 )
+from spaghetti_extractor.relational.analyses.memory import _initial_u32
 from spaghetti_extractor.relational.analyses.segments import (
+    _paired_stack_word_value_claim,
     _static_word_zero_guard_claim,
 )
 
@@ -75,6 +77,18 @@ class StageAStaticWordRelationTests(StageARelationalTestBase):
             ]},
         ))
 
+    def test_loaded_initial_word_zero_fills_virtual_section_tail(self):
+        binary = SimpleNamespace(
+            image_base=0x400000,
+            sections=(SimpleNamespace(
+                rva_start=0x3000,
+                rva_end=0x3100,
+                raw_size=0,
+            ),),
+            pe=SimpleNamespace(get_data=lambda _rva, _size: b""),
+        )
+        self.assertEqual(_initial_u32(binary, 0x40300C), 0)
+
     def test_static_slot_zero_guard_requires_relation_address_and_shape(self):
         slot = self._slot()
         contract = {"static_word_relation_slots": [slot]}
@@ -112,6 +126,115 @@ class StageAStaticWordRelationTests(StageARelationalTestBase):
             original,
             self._zero_guard(0x402000, not_count=1),
         ))
+
+    def test_stack_word_can_publish_related_value_to_static_slot(self):
+        window = {
+            "range_id": 3,
+            "original_register": "esp",
+            "candidate_register": "esp",
+            "bytes_below": 0,
+            "bytes_above": 8,
+        }
+        value = {
+            "op": "read32",
+            "address": {
+                "op": "add",
+                "left": {"op": "input_reg", "reg": "esp"},
+                "right": {"op": "constant", "value": 4},
+            },
+        }
+        claim = _paired_stack_word_value_claim(
+            {"stack_windows": [window]}, value, value
+        )
+        self.assertEqual(claim, {
+            "profile": "stack_read32_v1",
+            "original": value,
+            "candidate": value,
+            "window": window,
+            "adjustment": {"kind": "add", "amount": 4},
+        })
+        self.assertIsNone(_paired_stack_word_value_claim(
+            {"stack_windows": [window, dict(window)]}, value, value
+        ))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "fixture.exe"
+            image.write_bytes(_pe32_image_with_relocated_data(0x3000))
+            original = _parse_stage_a_pe(image)
+            candidate = _parse_stage_a_pe(image)
+            contract = {
+                "regions": [{
+                    "id": "publish-stack-word",
+                    "input_relations": [],
+                    "stack_windows": [window],
+                    "input_dynamic_range_relations": [],
+                    "code_targets": [],
+                    "values": [],
+                }],
+                "static_word_relation_slots": [],
+                "static_dynamic_pointer_slots": [],
+            }
+            behavior = {
+                "original_ir": {"writes": [{
+                    "address": {"op": "constant", "value": 0x403000},
+                    "value": value,
+                }]},
+                "candidate_ir": {"writes": [{
+                    "address": {"op": "constant", "value": 0x403000},
+                    "value": value,
+                }]},
+            }
+            inferred, analysis = _attach_static_word_relation_slots(
+                contract, [behavior], original, candidate
+            )
+            self.assertEqual(analysis["counts"], {
+                "existing": 0, "inferred": 1, "rejected": 0,
+            })
+            self.assertEqual(
+                inferred["static_word_relation_slots"][0]["relation"],
+                "related_word",
+            )
+
+    def test_untouched_writable_static_read_infers_exact_slot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "fixture.exe"
+            image.write_bytes(_pe32_image_with_writable_data(
+                b"\xa1\x00\x20\x40\x00\xeb\xf9",
+                relocation_offsets=[],
+            ))
+            binary = _parse_stage_a_pe(image)
+            contract = {
+                "regions": [{
+                    "id": "read-static-word",
+                    "input_relations": [],
+                    "stack_windows": [],
+                    "input_dynamic_range_relations": [],
+                    "code_targets": [],
+                    "values": [],
+                }],
+                "static_word_relation_slots": [],
+                "static_dynamic_pointer_slots": [],
+            }
+            read = self._read(0x402000)
+            behavior = {
+                "original_ir": {"registers": {"eax": read}, "writes": []},
+                "candidate_ir": {"registers": {"eax": read}, "writes": []},
+            }
+
+            inferred, analysis = _attach_static_word_relation_slots(
+                contract, [behavior], binary, binary
+            )
+
+            self.assertEqual(analysis["counts"], {
+                "existing": 0, "inferred": 1, "rejected": 0,
+            })
+            self.assertEqual(inferred["static_word_relation_slots"], [{
+                "id": 0,
+                "original_address": 0x402000,
+                "candidate_address": 0x402000,
+                "relation": "exact",
+            }])
+            self.assertEqual(analysis["inferred"][0]["relation"], "exact")
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for static-word proof")
     def test_related_static_word_load_and_zero_guard_close_acceptance(self):

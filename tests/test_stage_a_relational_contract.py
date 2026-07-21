@@ -1,12 +1,112 @@
 import copy
 
 from tests.stage_a_relational_support import *
-from spaghetti_extractor.relational.contract import _terminal_return_address_pairs
-from spaghetti_extractor.relational.executor import _precompiled_kernel_olean
+from spaghetti_extractor.relational.contract import (
+    _padding_alias_bridge_bytes,
+    _terminal_return_address_pairs,
+)
+from spaghetti_extractor.relational.analyses.segments import (
+    _direct_call_stack_writes_claim,
+)
+from spaghetti_extractor.relational.executor import (
+    _compile_formal_kernel,
+    _precompiled_kernel_olean,
+)
 from spaghetti_extractor.relational.schema import PROTOCOL_CALLBACK_CONTROL_FORMAT
 
 
 class StageARelationalContractTests(StageARelationalTestBase):
+    def test_padding_alias_bridge_language_excludes_traps_and_zero_fill(self):
+        self.assertTrue(_padding_alias_bridge_bytes(b"\x90\x66\x90"))
+        self.assertTrue(_padding_alias_bridge_bytes(b"\x90\xeb\x02\xcc\xcc"))
+        self.assertFalse(_padding_alias_bridge_bytes(b"\xcc\xcc"))
+        self.assertFalse(_padding_alias_bridge_bytes(b"\x00\x00"))
+
+    def test_relation_generator_only_promotes_executable_transparent_padding(self):
+        for name, bridge, expected_aliases in (
+            ("nop", b"\x90\x90", [0x1001]),
+            ("int3", b"\xcc\xcc", []),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                original = self._write_pe(
+                    root / "original.exe", b"\xc3" + bridge + b"\xeb\xfe",
+                )
+                candidate = self._write_pe(
+                    root / "candidate.exe", b"\xc3" + bridge + b"\xeb\xfe",
+                )
+                mapping = root / "mapping.json"
+                mapping.write_text(json.dumps({"blocks": [
+                    {
+                        "id": "return",
+                        "kind": "code",
+                        "original": {"rva": 0x1000, "size": 1},
+                        "candidate": {"rva": 0x1000, "size": 1},
+                    },
+                    {
+                        "id": "alignment",
+                        "kind": "padding",
+                        "original": {"rva": 0x1001, "size": 2},
+                        "candidate": {"rva": 0x1001, "size": 2},
+                    },
+                    {
+                        "id": "loop",
+                        "kind": "code",
+                        "original": {"rva": 0x1003, "size": 2},
+                        "candidate": {"rva": 0x1003, "size": 2},
+                    },
+                ]}), encoding="utf-8")
+                contract = root / "relation.json"
+
+                generated = stage_a_generate_relation_contract(
+                    original=original,
+                    candidate=candidate,
+                    mapping=mapping,
+                    out=contract,
+                )
+
+                self.assertEqual(generated["status"], "generated", generated)
+                payload = json.loads(contract.read_text(encoding="utf-8"))
+                target = next(
+                    target for target in payload["code_targets"]
+                    if target["original_rva"] == 0x1003
+                )
+                self.assertEqual(target["original_aliases"], expected_aliases)
+                self.assertEqual(target["candidate_aliases"], expected_aliases)
+
+    def test_contract_preflight_rejects_nontransparent_padding_alias(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = _parse_stage_a_pe(
+                self._write_pe(root / "original.exe", b"\xcc\xcc\xeb\xfe")
+            )
+            candidate = _parse_stage_a_pe(
+                self._write_pe(root / "candidate.exe", b"\xcc\xcc\xeb\xfe")
+            )
+            contract = json.loads(self._write_contract(
+                root / "relation.json", region_size=2, target_rva=0x1002,
+            ).read_text(encoding="utf-8"))
+            contract["code_targets"][0]["original_aliases"] = [0x1000]
+            contract["code_targets"][0]["candidate_aliases"] = [0x1000]
+            contract["regions"][0]["original"]["rva"] = 0x1002
+            contract["regions"][0]["candidate"]["rva"] = 0x1002
+            contract["padding"] = [{
+                "id": "trap-padding",
+                "side": "both",
+                "rva": 0x1000,
+                "size": 2,
+            }]
+
+            _normalized, issues = _normalize_contract(
+                contract, original, candidate,
+            )
+
+            rejected = [
+                issue for issue in issues
+                if issue["category"] == "code_target_alias_not_verified_padding"
+            ]
+            self.assertEqual(len(rejected), 2, issues)
+
     def test_terminal_return_address_pairs_require_paired_direct_calls_and_padding(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -500,6 +600,58 @@ class StageARelationalContractTests(StageARelationalTestBase):
             ambiguous_source, mapped_behavior(0x402000, 0x403000),
             0x400000, 0x400000,
         ))
+
+    def test_direct_call_exact_word_seed_uses_last_nonoverwritten_scalar(self):
+        source = {
+            "stack_windows": [{
+                "range_id": 0,
+                "original_register": "esp",
+                "candidate_register": "esp",
+                "bytes_below": 4,
+                "bytes_above": 16,
+            }],
+        }
+
+        def address(offset: int) -> dict[str, object]:
+            return {
+                "op": "add",
+                "left": {"op": "input_reg", "reg": "esp"},
+                "right": {"op": "constant", "value": offset % 2**32},
+            }
+
+        writes = [
+            {"address": address(4), "value": {"op": "constant", "value": 1}},
+            {"address": address(4), "value": {"op": "constant", "value": 2}},
+            {
+                "address": address(-4),
+                "value": {"op": "constant", "value": 0x40100D},
+            },
+        ]
+        behavior = {
+            "original_ir": {"writes": writes},
+            "candidate_ir": {"writes": writes},
+        }
+        call_claim = {
+            "original_stack_address": address(-4),
+            "candidate_stack_address": address(-4),
+            "callee_target_id": 2,
+            "continuation_target_id": 1,
+            "original_return_address": 0x40100D,
+            "candidate_return_address": 0x40100D,
+        }
+
+        claim = _direct_call_stack_writes_claim(source, behavior, call_claim)
+
+        self.assertIsNotNone(claim)
+        seeds = claim["exact_word_seeds"]
+        self.assertEqual(len(seeds), 1)
+        self.assertEqual(seeds[0]["selected"]["value"]["original"]["value"], 2)
+        self.assertEqual(len(seeds[0]["before"]), 1)
+        self.assertEqual(seeds[0]["after"], [])
+        self.assertEqual(
+            seeds[0]["exact_word"],
+            {"original_offset": 8, "candidate_offset": 8},
+        )
 
     def test_acceptance_blockers_are_compacted_without_losing_counts(self):
         compact = _compact_acceptance_blockers([
@@ -1371,6 +1523,35 @@ class StageARelationalContractTests(StageARelationalTestBase):
                     root, "Consumer", source, [dependency_olean]
                 )
                 self.assertNotEqual(third, fourth)
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for cache replay")
+    def test_formal_kernel_cache_restores_imported_oleans(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stage_a = root / "lean" / "StageA"
+            stage_a.mkdir(parents=True)
+            (stage_a / "Dependency.lean").write_text(
+                "namespace StageA\ndef dependency := 1\nend StageA\n",
+                encoding="utf-8",
+            )
+            (stage_a / "Formal.lean").write_text(
+                "import StageA.Dependency\nnamespace StageA\n"
+                "def formal := dependency\nend StageA\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE": str(root / "cache"),
+            }):
+                first = _compile_formal_kernel(root / "lean")
+                self.assertEqual(first["status"], "checked", first)
+                (stage_a / "Dependency.olean").unlink()
+                (stage_a / "Formal.olean").unlink()
+
+                second = _compile_formal_kernel(root / "lean")
+
+            self.assertEqual(second["status"], "checked", second)
+            self.assertTrue((stage_a / "Dependency.olean").is_file())
+            self.assertTrue((stage_a / "Formal.olean").is_file())
 
     def test_precompiled_kernel_cache_requires_exact_source_match(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -3189,6 +3370,67 @@ class StageARelationalContractTests(StageARelationalTestBase):
             self.assertEqual(value["relocation_offsets"], [0])
             self.assertIn(value["id"], payload["regions"][0]["value_target_ids"])
             self.assertIn(2, payload["regions"][0]["target_ids"])
+
+    def test_equal_address_readonly_relocated_code_pointer_is_mapped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(_pe32_image_with_immutable_indirect_call(
+                0x2000, callee_rva=0x1030,
+            ))
+            candidate.write_bytes(_pe32_image_with_immutable_indirect_call(
+                0x2000, callee_rva=0x1030,
+            ))
+            mapping = root / "mapping.json"
+            mapping.write_text(json.dumps({"blocks": [
+                {
+                    "id": "indirect-call",
+                    "kind": "code",
+                    "original": {"rva": 0x1000, "size": 29},
+                    "candidate": {"rva": 0x1000, "size": 29},
+                },
+                {
+                    "id": "continuation",
+                    "kind": "code",
+                    "original": {"rva": 0x101D, "size": 2},
+                    "candidate": {"rva": 0x101D, "size": 2},
+                },
+                {
+                    "id": "callee",
+                    "kind": "code",
+                    "original": {"rva": 0x1030, "size": 1},
+                    "candidate": {"rva": 0x1030, "size": 1},
+                },
+                {
+                    "id": "alignment-padding",
+                    "kind": "padding",
+                    "original": {"rva": 0x101F, "size": 17},
+                    "candidate": {"rva": 0x101F, "size": 17},
+                },
+            ]}), encoding="utf-8")
+            contract = root / "relation.json"
+
+            generated = stage_a_generate_relation_contract(
+                original=original, candidate=candidate, mapping=mapping,
+                out=contract,
+            )
+
+            self.assertEqual(generated["status"], "generated", generated)
+            payload = json.loads(contract.read_text(encoding="utf-8"))
+            self.assertEqual(len(payload["value_targets"]), 1, payload)
+            value = payload["value_targets"][0]
+            self.assertEqual(value["original_value"], 0x402000)
+            self.assertEqual(value["candidate_value"], 0x402000)
+            self.assertEqual(value["mapped_size"], 4)
+            self.assertEqual(value["relocation_offsets"], [0])
+            self.assertIn(value["id"], payload["regions"][0]["value_target_ids"])
+            callee_target = next(
+                target["id"] for target in payload["code_targets"]
+                if target["original_rva"] == 0x1030
+                and target["candidate_rva"] == 0x1030
+            )
+            self.assertIn(callee_target, payload["regions"][0]["target_ids"])
 
     def test_relocated_readonly_function_pointer_jump_closes_local_proof_only(self):
         with tempfile.TemporaryDirectory() as temporary:

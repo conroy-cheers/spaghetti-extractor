@@ -70,6 +70,15 @@ def _relational_semantic_preflight(original: Path, candidate: Path, contract: di
         if issue.get("category") == "formal_instruction_unsupported":
             issue.setdefault("cause_hint", "instruction form is outside the reviewed decoder/executor fragment")
             issue.setdefault("next_action", "add this instruction form to the reviewed Lean decoder and executor")
+        elif issue.get("category") == "formal_x87_semantics_unqualified":
+            issue.setdefault(
+                "cause_hint",
+                "the decoded x87 form is represented by an incomplete placeholder machine model",
+            )
+            issue.setdefault(
+                "next_action",
+                "qualify this form against the reviewed pe32-x87-v1 state transition model",
+            )
         elif issue.get("category") == "formal_region_does_not_terminate":
             issue.setdefault("cause_hint", "cutpoint does not end at a modeled control transfer")
             issue.setdefault("next_action", "repair the cutpoint so the region ends at a modeled control transfer")

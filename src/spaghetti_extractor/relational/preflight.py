@@ -7,6 +7,14 @@ from typing import Any
 import capstone
 
 from ..stage_binary import StageAInputError, _parse_stage_a_pe
+from .x87_profile import instruction_is_x87, qualified_singleton_bytes
+
+
+def _requires_qualified_x87_model(insn: Any) -> bool:
+    return (
+        instruction_is_x87(insn)
+        and not qualified_singleton_bytes(bytes(insn.bytes))
+    )
 
 
 def instruction_supported(insn: Any) -> bool:
@@ -174,6 +182,20 @@ def side_diagnostics(
             })
             continue
         for insn in decoded:
+            if _requires_qualified_x87_model(insn):
+                issues.append({
+                    "side": side,
+                    "category": "formal_x87_semantics_unqualified",
+                    "block": block.get("id"),
+                    "rva": int(insn.address - binary.image_base),
+                    "mnemonic": insn.mnemonic,
+                    "op_str": insn.op_str,
+                    "bytes": bytes(insn.bytes).hex(),
+                    "model": "pe32-x87-v1",
+                })
+                if issue_limit is not None and len(issues) >= issue_limit:
+                    return issues
+                continue
             if instruction_supported(insn):
                 continue
             issues.append({

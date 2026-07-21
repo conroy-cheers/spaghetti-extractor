@@ -125,6 +125,41 @@ def _semantic_add_word_offset(
         "right": {"op": "constant", "value": offset},
     }
 
+
+def _import_thunk_boundary_stack_windows(
+    source_windows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Translate stack-window anchors through the thunk's popped return slot."""
+    boundary_windows: list[dict[str, Any]] = []
+    blocker: str | None = None
+    for window in source_windows:
+        original_register = str(window["original_register"])
+        candidate_register = str(window["candidate_register"])
+        original_esp = original_register == "esp"
+        candidate_esp = candidate_register == "esp"
+        if original_esp != candidate_esp:
+            blocker = (
+                "import-thunk return-slot normalization has an asymmetric ESP "
+                "stack-window anchor"
+            )
+            continue
+        bytes_below = int(window.get("bytes_below", 0))
+        bytes_above = int(window.get("bytes_above", 0))
+        if original_esp:
+            if bytes_above < 4:
+                continue
+            bytes_below += 4
+            bytes_above -= 4
+        boundary_windows.append({
+            "range_id": int(window["range_id"]),
+            "original_register": original_register,
+            "candidate_register": candidate_register,
+            "bytes_below": bytes_below,
+            "bytes_above": bytes_above,
+            "source": "import_thunk_return_slot_normalization",
+        })
+    return boundary_windows, blocker
+
 def _semantic_call_push_base(expression: Any) -> dict[str, Any] | None:
     if not isinstance(expression, dict) or expression.get("op") not in {"add", "sub"}:
         return None
@@ -180,9 +215,11 @@ def _semantic_externalize_register_import_call(
     target = outcome.get("target") or {}
     registers = behavior.get("registers") or {}
     writes = behavior.get("writes") or []
+    input_target = {"op": "input_reg", "reg": dispatch_register}
+    output_target = registers.get(dispatch_register)
     if (
         outcome.get("op") != "indirect_call"
-        or target != {"op": "input_reg", "reg": dispatch_register}
+        or target not in (input_target, output_target)
         or not isinstance(writes, list) or not writes
         or not isinstance(registers.get("esp"), dict)
     ):
@@ -732,18 +769,10 @@ def _direct_import_thunk_call_candidates(
                 candidate_outcome.get("arguments"),
             )
 
-        boundary_windows = [
-            {
-                "range_id": int(window["range_id"]),
-                "original_register": str(window["original_register"]),
-                "candidate_register": str(window["candidate_register"]),
-                "bytes_below": int(window.get("bytes_below", 0)) + 4,
-                "bytes_above": int(window.get("bytes_above", 0)) - 4,
-                "source": "import_thunk_return_slot_normalization",
-            }
-            for window in source.get("stack_windows", [])
-            if int(window.get("bytes_above", 0)) >= 4
-        ]
+        boundary_windows, boundary_window_blocker = (
+            _import_thunk_boundary_stack_windows(source.get("stack_windows", []))
+        )
+        blocker = blocker or boundary_window_blocker
         boundary_invariant = {
             "register_relations": [
                 relation for relation in source.get("input_relations", [])
@@ -758,6 +787,9 @@ def _direct_import_thunk_call_candidates(
             "address_separations": [],
             "stack_windows": boundary_windows,
         }
+        target_import_relations = json.loads(json.dumps(
+            regions[continuation_index].get("input_import_relations", [])
+        ))
         boundary_original = json.loads(json.dumps(original))
         boundary_candidate = json.loads(json.dumps(candidate))
         for boundary in (boundary_original, boundary_candidate):
@@ -832,6 +864,7 @@ def _direct_import_thunk_call_candidates(
             "import_transfer_claims": [],
             "dynamic_transfer_claims": [],
             "boundary_invariant": boundary_invariant,
+            "target_import_relations_from_active_frame": target_import_relations,
             "register_output_claims": selected_output_claims,
             "stack_transfer_claims": stack_transfer_claims,
             "argument_values": [
@@ -881,6 +914,7 @@ def _external_call_site_candidates(
         contract_selection_reason = None
         dispatch_profile = "decoded_external_call"
         dispatch_registers = None
+        dispatch_seed = None
         argument_claims = None
         blocker = None
         paired_direct = (
@@ -942,6 +976,12 @@ def _external_call_site_candidates(
                             "original": str(indirect["original_register"]),
                             "candidate": str(indirect["candidate_register"]),
                         }
+                        if indirect.get("profile") == "seeded_iat_register_call_v1":
+                            dispatch_seed = indirect.get("seed")
+                            if not isinstance(dispatch_seed, dict):
+                                blocker = (
+                                    "same-region import call lacks its checked IAT seed"
+                                )
         elif not paired_direct:
             blocker = "external edge is not a paired returning import call"
         if blocker is None:
@@ -1212,6 +1252,7 @@ def _external_call_site_candidates(
             "machine_contract_id": int(machine_contract["id"]),
             "dispatch_profile": dispatch_profile,
             "dispatch_registers": dispatch_registers,
+            "dispatch_seed": dispatch_seed,
             "argument_relation_claims": argument_claims,
             "import_transfer_claims": import_transfer_claims,
             "dynamic_transfer_claims": dynamic_transfer_claims,

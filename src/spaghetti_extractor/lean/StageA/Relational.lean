@@ -1,5 +1,6 @@
 
 import StageA.RelationalMachine
+import StageA.RelationalX87
 import Std.Tactic.BVDecide
 
 namespace StageA.Relational
@@ -82,6 +83,7 @@ def NormalizedSymbolicBehavior.eval (state : MachineState)
     (behavior : NormalizedSymbolicBehavior) : RelationalBehavior := {
   registers := evalNormalizedRegisters state behavior.registers
   x87 := evalNormalizedX87 state behavior.x87
+  x87Fault := none
   writes := evalNormalizedWrites state behavior.writes
   eflags := evalNormalizedFlags state behavior.flags
   outcome := behavior.outcome.eval state
@@ -94,6 +96,14 @@ def NormalizedSymbolicBehavior.eval (state : MachineState)
 @[simp] theorem NormalizedSymbolicBehavior.eval_x87 (state : MachineState)
     (behavior : NormalizedSymbolicBehavior) :
     (behavior.eval state).x87 = evalNormalizedX87 state behavior.x87 := rfl
+
+@[simp] theorem NormalizedSymbolicBehavior.eval_x87Effect (state : MachineState)
+    (behavior : NormalizedSymbolicBehavior) :
+    (behavior.eval state).x87Effect = none := rfl
+
+@[simp] theorem NormalizedSymbolicBehavior.eval_x87Fault (state : MachineState)
+    (behavior : NormalizedSymbolicBehavior) :
+    (behavior.eval state).x87Fault = none := rfl
 
 @[simp] theorem NormalizedSymbolicBehavior.eval_writes (state : MachineState)
     (behavior : NormalizedSymbolicBehavior) :
@@ -260,14 +270,9 @@ theorem codeTargetAddresses_wordRelated
     wordRelated context.originalPe.imageBase context.candidatePe.imageBase
       context.codeMap.entries.toList (context.relationalValueTargets world)
       original candidate = true := by
-  have targetArrayMember : target ∈ context.codeMap.entries := by
-    have indexed := Array.getElem?_eq_some_iff.mp targetFound
-    rcases indexed with ⟨inside, indexed⟩
-    have member := Array.getElem_mem inside
-    rw [indexed] at member
-    exact member
   have targetMember : target ∈ context.codeMap.entries.toList :=
-    Array.mem_def.mp targetArrayMember
+    FiniteIndex.get?_eq_some_implies_mem_toList
+      context.codeMap.entries targetId target targetFound
   have codeRelated : codePointerRelated context.originalPe.imageBase
       context.candidatePe.imageBase context.codeMap.entries.toList
       original candidate = true := by
@@ -278,17 +283,46 @@ theorem codeTargetAddresses_wordRelated
 
 def codeTargetAddressPairMatches (context : StaticProofContext) (targetId : Nat)
     (original candidate : Word) : Bool :=
-  fixedCodePointerRelated context.originalPe.imageBase context.candidatePe.imageBase
-    context.codeMap.entries.toList targetId original candidate
+  match context.codeMap.get? targetId with
+  | none => false
+  | some target =>
+      target.id == targetId &&
+        ((codeAddressMatches context.originalPe.imageBase target.originalRva
+              target.originalAliases original &&
+            codeAddressMatches context.candidatePe.imageBase target.candidateRva
+              target.candidateAliases candidate) &&
+          fixedCodePointerRelated context.originalPe.imageBase
+            context.candidatePe.imageBase context.codeMap.entries.toList targetId
+            original candidate)
+
+theorem codeTargetAddressPairMatches_fixedCodePointerRelated
+    (context : StaticProofContext) (targetId : Nat) (original candidate : Word)
+    (matchEvidence :
+      codeTargetAddressPairMatches context targetId original candidate = true) :
+    fixedCodePointerRelated context.originalPe.imageBase
+      context.candidatePe.imageBase context.codeMap.entries.toList targetId
+      original candidate = true := by
+  cases targetResult : context.codeMap.get? targetId with
+  | none => simp [codeTargetAddressPairMatches, targetResult] at matchEvidence
+  | some target =>
+      simp only [codeTargetAddressPairMatches, targetResult, Bool.and_eq_true,
+        beq_iff_eq] at matchEvidence
+      exact matchEvidence.2.2
 
 theorem codeTargetIdAddresses_codePointerRelated
     (context : StaticProofContext) (targetId : Nat) (original candidate : Word)
     (matchEvidence : codeTargetAddressPairMatches context targetId original candidate = true) :
     codePointerRelated context.originalPe.imageBase context.candidatePe.imageBase
       context.codeMap.entries.toList original candidate = true := by
-  exact fixedCodePointerRelated_codePointerRelated context.originalPe.imageBase
-    context.candidatePe.imageBase context.codeMap.entries.toList targetId
-    original candidate matchEvidence
+  cases targetResult : context.codeMap.get? targetId with
+  | none => simp [codeTargetAddressPairMatches, targetResult] at matchEvidence
+  | some target =>
+      simp only [codeTargetAddressPairMatches, targetResult, Bool.and_eq_true,
+        beq_iff_eq] at matchEvidence
+      exact fixedCodePointerRelated_codePointerRelated
+        context.originalPe.imageBase context.candidatePe.imageBase
+        context.codeMap.entries.toList targetId original candidate
+        matchEvidence.2.2
 
 theorem codeTargetIdAddresses_wordRelated
     (context : StaticProofContext) (world : RelationalWorld)
@@ -616,6 +650,121 @@ structure PairedStackWordLocation (world : RelationalWorld) where
     originalAddress = range.originalBase + BitVec.ofNat 32 offset
   candidateAddressExact :
     candidateAddress = range.candidateBase + BitVec.ofNat 32 offset
+
+theorem DynamicAddressRangePair.offsetAddressesWordRelated
+    (context : StaticProofContext) (world : RelationalWorld)
+    (range : DynamicAddressRangePair) (offset : Nat)
+    (rangeMember : range ∈ world.stackRanges)
+    (rangeValid : range.disjointFromImages context = true)
+    (inside : offset < range.size) :
+    wordRelated context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList (context.relationalValueTargets world)
+      (range.originalBase + BitVec.ofNat 32 offset)
+      (range.candidateBase + BitVec.ofNat 32 offset) = true := by
+  simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
+    Bool.or_eq_true, decide_eq_true_eq, beq_iff_eq] at rangeValid
+  rcases rangeValid with
+    ⟨⟨⟨⟨rangeShape, originalNoWrap⟩, candidateNoWrap⟩,
+      _originalDisjoint⟩, _candidateDisjoint⟩
+  rcases rangeShape with
+    ⟨⟨rangeNonempty, originalBaseNonzero⟩, candidateBaseNonzero⟩
+  have offsetBefore : offset < 2 ^ 32 := by omega
+  have originalAddressBefore : range.originalBase.toNat + offset < 2 ^ 32 := by
+    omega
+  have candidateAddressBefore : range.candidateBase.toNat + offset < 2 ^ 32 := by
+    omega
+  have targetMember : range.valueTarget ∈ context.relationalValueTargets world := by
+    unfold StaticProofContext.relationalValueTargets
+    unfold RelationalWorld.runtimeValueTargets
+    unfold RelationalWorld.stackValueTargets
+    simp only [List.mem_append, List.mem_map]
+    exact Or.inr (Or.inr ⟨range, rangeMember, rfl⟩)
+  have candidateContained : valueTargetContainsCandidate range.valueTarget
+      (range.candidateBase + BitVec.ofNat 32 offset) = true := by
+    simp only [valueTargetContainsCandidate, DynamicAddressRangePair.valueTarget,
+      Bool.and_eq_true, decide_eq_true_eq]
+    refine ⟨⟨rangeNonempty, ?_⟩, ?_⟩
+    · simp only [BitVec.le_def, BitVec.toNat_ofNat, BitVec.toNat_add]
+      rw [Nat.mod_eq_of_lt offsetBefore,
+        Nat.mod_eq_of_lt candidateAddressBefore]
+      omega
+    · simp only [BitVec.lt_def, BitVec.toNat_ofNat, BitVec.toNat_add]
+      rw [Nat.mod_eq_of_lt (by omega : range.size < 2 ^ 32),
+        Nat.mod_eq_of_lt range.candidateBase.isLt,
+        Nat.mod_eq_of_lt candidateNoWrap,
+        Nat.mod_eq_of_lt offsetBefore,
+        Nat.mod_eq_of_lt candidateAddressBefore]
+      omega
+  have mapped : mappedValueRelated (context.relationalValueTargets world)
+      (range.originalBase + BitVec.ofNat 32 offset)
+      (range.candidateBase + BitVec.ofNat 32 offset) = true := by
+    simp only [mappedValueRelated, List.any_eq_true]
+    refine ⟨range.valueTarget, targetMember, ?_⟩
+    simp only [DynamicAddressRangePair.valueTarget,
+      if_neg (Nat.ne_of_gt rangeNonempty), Bool.or_eq_true,
+      Bool.and_eq_true, beq_iff_eq]
+    apply Or.inr
+    refine ⟨candidateContained, ?_⟩
+    have originalBaseRoundtrip :
+        BitVec.ofNat 32 range.originalBase.toNat = range.originalBase := by
+      apply BitVec.eq_of_toNat_eq
+      simp
+    have candidateBaseRoundtrip :
+        BitVec.ofNat 32 range.candidateBase.toNat = range.candidateBase := by
+      apply BitVec.eq_of_toNat_eq
+      simp
+    rw [originalBaseRoundtrip, candidateBaseRoundtrip]
+    rw [BitVec.add_comm range.candidateBase,
+      BitVec.add_sub_cancel]
+  have originalNonzero :
+      (range.originalBase + BitVec.ofNat 32 offset == BitVec.ofNat 32 0) = false := by
+    apply beq_eq_false_iff_ne.mpr
+    intro zero
+    have zeroNat := congrArg BitVec.toNat zero
+    simp only [BitVec.toNat_ofNat, BitVec.toNat_add] at zeroNat
+    rw [Nat.mod_eq_of_lt offsetBefore,
+      Nat.mod_eq_of_lt originalAddressBefore] at zeroNat
+    have baseNonzero : range.originalBase ≠ BitVec.ofNat 32 0 := by
+      apply beq_eq_false_iff_ne.mp
+      simpa using originalBaseNonzero
+    have basePositive : 0 < range.originalBase.toNat := by
+      apply Nat.pos_of_ne_zero
+      intro baseZero
+      apply baseNonzero
+      apply BitVec.eq_of_toNat_eq
+      simpa [baseZero]
+    omega
+  have candidateNonzero :
+      (range.candidateBase + BitVec.ofNat 32 offset == BitVec.ofNat 32 0) = false := by
+    apply beq_eq_false_iff_ne.mpr
+    intro zero
+    have zeroNat := congrArg BitVec.toNat zero
+    simp only [BitVec.toNat_ofNat, BitVec.toNat_add] at zeroNat
+    rw [Nat.mod_eq_of_lt offsetBefore,
+      Nat.mod_eq_of_lt candidateAddressBefore] at zeroNat
+    have baseNonzero : range.candidateBase ≠ BitVec.ofNat 32 0 := by
+      apply beq_eq_false_iff_ne.mp
+      simpa using candidateBaseNonzero
+    have basePositive : 0 < range.candidateBase.toNat := by
+      apply Nat.pos_of_ne_zero
+      intro baseZero
+      apply baseNonzero
+      apply BitVec.eq_of_toNat_eq
+      simpa [baseZero]
+    omega
+  simp [wordRelated, originalNonzero, candidateNonzero, mapped]
+
+theorem PairedStackWordLocation.addressesWordRelated
+    (context : StaticProofContext) (world : RelationalWorld)
+    (location : PairedStackWordLocation world)
+    (rangeValid : location.range.disjointFromImages context = true) :
+    wordRelated context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList (context.relationalValueTargets world)
+      location.originalAddress location.candidateAddress = true := by
+  rw [location.originalAddressExact, location.candidateAddressExact]
+  have inside := location.inside
+  exact location.range.offsetAddressesWordRelated context world location.offset
+    location.rangeMember rangeValid (by omega)
 
 structure PairedStaticWordLocation (context : StaticProofContext) where
   slot : StaticWordRelationSlotPair
@@ -4701,6 +4850,31 @@ def evalBehavior (candidate : Bool) (targets : List CodeTargetPair)
     (state : MachineState) (behavior : SymbolicBehavior) : Option RelationalBehavior := do
   return (← normalizeSymbolicBehavior candidate targets behavior).eval state
 
+/-- Replay a previously checked normalization result without asking a
+downstream proof to execute the symbolic normalizer again. -/
+theorem evalBehavior_of_normalized (candidate : Bool)
+    (targets : List CodeTargetPair) (state : MachineState)
+    (behavior : SymbolicBehavior) (normalized : NormalizedSymbolicBehavior)
+    (checked : normalizeSymbolicBehavior candidate targets behavior =
+      some normalized) :
+    evalBehavior candidate targets state behavior = some (normalized.eval state) := by
+  unfold evalBehavior
+  rw [checked]
+  rfl
+
+theorem evalBehavior_x87Effect_none (candidate : Bool)
+    (targets : List CodeTargetPair) (state : MachineState)
+    (behavior : SymbolicBehavior) (result : RelationalBehavior)
+    (evaluated : evalBehavior candidate targets state behavior = some result) :
+    result.x87Effect = none := by
+  unfold evalBehavior at evaluated
+  cases normalized : normalizeSymbolicBehavior candidate targets behavior with
+  | none => simp [normalized] at evaluated
+  | some value =>
+      simp [normalized] at evaluated
+      subst result
+      rfl
+
 def evalBehaviorRegisters (candidate : Bool) (targets : List CodeTargetPair)
     (state : MachineState) (behavior : SymbolicBehavior) : Option PureState := do
   let normalized ← normalizeSymbolicBehavior candidate targets behavior
@@ -5049,14 +5223,28 @@ structure StackWindowPair where
   bytesAbove : Nat
 deriving Repr, DecidableEq
 
+structure PairedExactMemoryRead where
+  originalAddress : Expr
+  candidateAddress : Expr
+  bytes : Nat
+deriving Repr, DecidableEq
+
+def PairedExactMemoryRead.holds (read : PairedExactMemoryRead)
+    (original candidate : MachineState) : Bool :=
+  0 < read.bytes && read.bytes <= 10 &&
+    original.readX87Word (read.originalAddress.eval original) read.bytes ==
+      candidate.readX87Word (read.candidateAddress.eval candidate) read.bytes
+
 structure PairedStatePredicate where
   original : BoolExpr
   candidate : BoolExpr
+  exactMemoryReads : List PairedExactMemoryRead := []
 deriving Repr, DecidableEq
 
 def PairedStatePredicate.holds (predicate : PairedStatePredicate)
     (original candidate : MachineState) : Bool :=
-  predicate.original.eval original && predicate.candidate.eval candidate
+  predicate.original.eval original && predicate.candidate.eval candidate &&
+    predicate.exactMemoryReads.all fun read => read.holds original candidate
 
 def pairedStatePredicatesHold (predicates : List PairedStatePredicate)
     (original candidate : MachineState) : Bool :=
@@ -5072,6 +5260,16 @@ theorem pairedStatePredicatesHold_member
     predicate.holds original candidate = true := by
   simp only [pairedStatePredicatesHold, List.all_eq_true] at holds
   exact holds predicate member
+
+theorem PairedStatePredicate.exactMemoryReadHolds
+    (predicate : PairedStatePredicate) (read : PairedExactMemoryRead)
+    (original candidate : MachineState)
+    (member : read ∈ predicate.exactMemoryReads)
+    (holds : predicate.holds original candidate = true) :
+    read.holds original candidate = true := by
+  simp only [PairedStatePredicate.holds, Bool.and_eq_true,
+    List.all_eq_true] at holds
+  exact holds.2 read member
 
 def StackWindowPair.holds (world : RelationalWorld) (window : StackWindowPair)
     (original candidate : PureState) : Bool :=
@@ -5249,6 +5447,62 @@ theorem StackWindowPair.relatedWord_of_holds
 def stackWindowsRelated (world : RelationalWorld) (windows : List StackWindowPair)
     (original candidate : PureState) : Bool :=
   windows.all fun window => window.holds world original candidate
+
+def StackWindowPair.covers (source target : StackWindowPair) : Bool :=
+  source.rangeId == target.rangeId &&
+    source.originalRegister == target.originalRegister &&
+    source.candidateRegister == target.candidateRegister &&
+    target.bytesBelow <= source.bytesBelow &&
+    target.bytesAbove <= source.bytesAbove
+
+theorem StackWindowPair.holds_of_covers
+    (world : RelationalWorld) (source target : StackWindowPair)
+    (original candidate : PureState)
+    (covered : source.covers target = true)
+    (holds : source.holds world original candidate = true) :
+    target.holds world original candidate = true := by
+  rcases source with
+    ⟨sourceRange, sourceOriginal, sourceCandidate, sourceBelow, sourceAbove⟩
+  rcases target with
+    ⟨targetRange, targetOriginal, targetCandidate, targetBelow, targetAbove⟩
+  simp only [StackWindowPair.covers, Bool.and_eq_true, beq_iff_eq,
+    decide_eq_true_eq] at covered
+  rcases covered with
+    ⟨⟨⟨⟨rangeEqual, originalEqual⟩, candidateEqual⟩, belowCovered⟩,
+      aboveCovered⟩
+  subst targetRange
+  subst targetOriginal
+  subst targetCandidate
+  cases rangeResult : world.stackRanges.find? (fun range =>
+      range.id == sourceRange) with
+  | none => simp [StackWindowPair.holds, rangeResult] at holds
+  | some range =>
+      simp only [StackWindowPair.holds, rangeResult, Bool.and_eq_true,
+        beq_iff_eq, decide_eq_true_eq] at holds ⊢
+      rcases holds with
+        ⟨⟨⟨⟨⟨originalLower, originalUpper⟩, candidateLower⟩,
+          candidateUpper⟩, pairedOffset⟩, alignment⟩
+      exact ⟨⟨⟨⟨⟨by omega, by omega⟩, by omega⟩, by omega⟩,
+        pairedOffset⟩, alignment⟩
+
+def stackWindowsWeakeningChecked (source target : List StackWindowPair) : Bool :=
+  target.all fun targetWindow =>
+    source.any fun sourceWindow => sourceWindow.covers targetWindow
+
+theorem stackWindowsRelated_of_weakening
+    (world : RelationalWorld) (source target : List StackWindowPair)
+    (original candidate : PureState)
+    (checked : stackWindowsWeakeningChecked source target = true)
+    (related : stackWindowsRelated world source original candidate = true) :
+    stackWindowsRelated world target original candidate = true := by
+  simp only [stackWindowsWeakeningChecked, List.all_eq_true] at checked
+  simp only [stackWindowsRelated, List.all_eq_true] at related ⊢
+  intro targetWindow targetMember
+  have covered := checked targetWindow targetMember
+  simp only [List.any_eq_true] at covered
+  rcases covered with ⟨sourceWindow, sourceMember, windowCovered⟩
+  exact sourceWindow.holds_of_covers world targetWindow original candidate
+    windowCovered (related sourceWindow sourceMember)
 
 structure DynamicStackRangeRelation where
   window : StackWindowPair
@@ -5818,6 +6072,36 @@ structure StateInvariant where
   stackWindows : List StackWindowPair := []
   predicates : List PairedStatePredicate := []
 deriving Repr, DecidableEq
+
+structure StateInvariantWeakening
+    (source target : StateInvariant) : Prop where
+  registerRelations :
+    target.registerRelations.all source.registerRelations.contains = true
+  importRegisterRelations :
+    target.importRegisterRelations.all source.importRegisterRelations.contains = true
+  dynamicRegisterRangeRelations :
+    target.dynamicRegisterRangeRelations.all
+      source.dynamicRegisterRangeRelations.contains = true
+  dynamicStackRangeRelations :
+    target.dynamicStackRangeRelations.all
+      source.dynamicStackRangeRelations.contains = true
+  flagBits : target.flagBits.all source.flagBits.contains = true
+  bounds : target.bounds.all source.bounds.contains = true
+  addressSeparations :
+    target.addressSeparations.all source.addressSeparations.contains = true
+  stackWindows :
+    stackWindowsWeakeningChecked source.stackWindows target.stackWindows = true
+  predicates : target.predicates.all source.predicates.contains = true
+
+theorem listAll_of_contains
+    {alpha : Type} [BEq alpha] [LawfulBEq alpha]
+    (source target : List alpha) (predicate : alpha → Bool)
+    (subset : target.all source.contains = true)
+    (sourceHolds : source.all predicate = true) :
+    target.all predicate = true := by
+  simp only [List.all_eq_true] at subset sourceHolds ⊢
+  intro value member
+  exact sourceHolds value (List.contains_iff_mem.mp (subset value member))
 
 def dynamicWordRequirementsHold (context : StaticProofContext)
     (world : RelationalWorld) (range : DynamicAddressRangePair)
@@ -7009,6 +7293,30 @@ theorem stackWindowsRelated_after_identity_of_checked
         evalNormalizedRegisters_get, originalIdentity, candidateIdentity, Expr.eval]
       simpa [StackWindowPair.holds, rangeResult] using holds
 
+def MachineX87Exact (original candidate : MachineState) : Prop :=
+  original.x87 = candidate.x87 ∧
+    original.x87Physical = candidate.x87Physical ∧
+    original.x87Semantics = candidate.x87Semantics
+
+def x87AddressRelation (context : StaticProofContext)
+    (world : RelationalWorld) : StageA.Relational.X87.AddressRelation := {
+  code := fun original candidate =>
+    original = candidate ∨
+      codePointerRelated context.originalPe.imageBase context.candidatePe.imageBase
+        context.codeMap.entries.toList original candidate = true
+  data := fun original candidate =>
+    wordRelated context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList (context.relationalValueTargets world)
+      original candidate = true
+}
+
+def MachineX87Related (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : MachineState) : Prop :=
+  original.x87 = candidate.x87 ∧
+    StageA.Relational.X87.StateRelated (x87AddressRelation context world)
+      original.x87Physical candidate.x87Physical ∧
+    original.x87Semantics = candidate.x87Semantics
+
 def StateRelCore (originalImageBase candidateImageBase : Nat)
     (targets : List CodeTargetPair) (values : List ValueTargetPair)
     (invariant : StateInvariant) (original candidate : MachineState) : Prop :=
@@ -7020,7 +7328,7 @@ def StateRelCore (originalImageBase candidateImageBase : Nat)
     memoryRelated originalImageBase candidateImageBase targets values
       original.memory candidate.memory ∧
     original.undefinedValue = candidate.undefinedValue ∧
-    original.x87 = candidate.x87 ∧
+    MachineX87Exact original candidate ∧
     flagsRelated invariant.flagBits original.eflags candidate.eflags = true ∧
     original.fsBase = candidate.fsBase
 
@@ -7039,7 +7347,7 @@ def StateRelCoreWithImportMask (context : StaticProofContext)
       (context.relationalValueTargets world) original.memory candidate.memory ∧
     RelationalDynamicMemoryHold context world invariant original candidate ∧
     original.undefinedValue = candidate.undefinedValue ∧
-    original.x87 = candidate.x87 ∧
+    MachineX87Related context world original candidate ∧
     flagsRelated invariant.flagBits original.eflags candidate.eflags = true ∧
     original.fsBase = candidate.fsBase
 
@@ -7061,6 +7369,134 @@ def StateRel (context : StaticProofContext) (world : RelationalWorld)
       dynamicStackRangeRelationsHold world invariant.dynamicStackRangeRelations
         original candidate = true ∧
       pairedStatePredicatesHold invariant.predicates original candidate = true)
+
+theorem StateRel.importAddressesStaticValid
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (related : StateRel context world invariant original candidate) :
+    world.importAddressesStaticValid context = true := by
+  exact related.2.2.2.1
+
+theorem StateRel.importAddressStaticValid
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (related : StateRel context world invariant original candidate)
+    (binding : ImportAddressPair) (member : binding ∈ world.importAddresses) :
+    binding.staticValid context = true := by
+  have importsStatic := related.importAddressesStaticValid context world invariant
+  simp only [RelationalWorld.importAddressesStaticValid, Bool.and_eq_true]
+    at importsStatic
+  exact List.all_eq_true.mp importsStatic.2 binding member
+
+theorem StateRel.weakenInvariant
+    (context : StaticProofContext) (world : RelationalWorld)
+    (source target : StateInvariant) (original candidate : MachineState)
+    (weakening : StateInvariantWeakening source target)
+    (related : StateRel context world source original candidate) :
+    StateRel context world target original candidate := by
+  rcases related with
+    ⟨worldValid, stackRangesValid, stackMemory, importsStatic, importsComplete,
+      importsMemory, originalImmutable, candidateImmutable, core, trailing⟩
+  rcases core with
+    ⟨registers, bounds, separations, stackWindows, ordinaryMemory,
+      dynamicMemory, undefinedValue, x87, flags, fsBase⟩
+  rcases trailing with
+    ⟨importRegisters, dynamicRegisters, dynamicStacks, predicates⟩
+  have targetRegisters :
+      registerRelationsHold context.originalPe.imageBase
+        context.candidatePe.imageBase context.codeMap.entries.toList
+        (context.relationalValueTargets world) target.registerRelations
+        original.registers candidate.registers = true :=
+    listAll_of_contains source.registerRelations target.registerRelations _
+      weakening.registerRelations registers
+  have targetBounds :
+      boundsRelated target.bounds original.registers candidate.registers = true :=
+    listAll_of_contains source.bounds target.bounds _ weakening.bounds bounds
+  have targetSeparations :
+      addressSeparationsRelated target.addressSeparations
+        original.registers candidate.registers = true :=
+    listAll_of_contains source.addressSeparations target.addressSeparations _
+      weakening.addressSeparations separations
+  have targetStackWindows :
+      stackWindowsRelated world target.stackWindows
+        original.registers candidate.registers = true :=
+    stackWindowsRelated_of_weakening world source.stackWindows target.stackWindows
+      original.registers candidate.registers weakening.stackWindows stackWindows
+  have targetActiveRegisters :
+      activeDynamicRegisterRangeRelationsHold context world
+        target.dynamicRegisterRangeRelations original candidate = true :=
+    listAll_of_contains source.dynamicRegisterRangeRelations
+      target.dynamicRegisterRangeRelations _ weakening.dynamicRegisterRangeRelations
+      dynamicMemory.active.registerRanges
+  have targetActiveStacks :
+      activeDynamicStackRangeRelationsHold context world
+        target.dynamicStackRangeRelations original candidate = true :=
+    listAll_of_contains source.dynamicStackRangeRelations
+      target.dynamicStackRangeRelations _ weakening.dynamicStackRangeRelations
+      dynamicMemory.active.stackRanges
+  have targetFlags :
+      flagsRelated target.flagBits original.eflags candidate.eflags = true :=
+    listAll_of_contains source.flagBits target.flagBits _ weakening.flagBits flags
+  have targetImportRegisters :
+      importRegisterRelationsHold world target.importRegisterRelations
+        original.registers candidate.registers = true :=
+    listAll_of_contains source.importRegisterRelations target.importRegisterRelations _
+      weakening.importRegisterRelations importRegisters
+  have targetDynamicRegisters :
+      dynamicRegisterRangeRelationsHold world target.dynamicRegisterRangeRelations
+        original.registers candidate.registers = true :=
+    listAll_of_contains source.dynamicRegisterRangeRelations
+      target.dynamicRegisterRangeRelations _ weakening.dynamicRegisterRangeRelations
+      dynamicRegisters
+  have targetDynamicStacks :
+      dynamicStackRangeRelationsHold world target.dynamicStackRangeRelations
+        original candidate = true :=
+    listAll_of_contains source.dynamicStackRangeRelations
+      target.dynamicStackRangeRelations _ weakening.dynamicStackRangeRelations
+      dynamicStacks
+  have targetPredicates :
+      pairedStatePredicatesHold target.predicates original candidate = true :=
+    listAll_of_contains source.predicates target.predicates _ weakening.predicates
+      predicates
+  refine ⟨worldValid, stackRangesValid, stackMemory, importsStatic,
+    importsComplete, importsMemory, originalImmutable, candidateImmutable, ?_, ?_⟩
+  · refine ⟨targetRegisters, targetBounds, targetSeparations,
+      targetStackWindows, ordinaryMemory, ?_, undefinedValue, x87, targetFlags,
+      fsBase⟩
+    exact {
+      staticPointerSlots := dynamicMemory.staticPointerSlots
+      staticWordSlots := dynamicMemory.staticWordSlots
+      active := {
+        registerRanges := targetActiveRegisters
+        stackRanges := targetActiveStacks
+      }
+    }
+  · exact ⟨targetImportRegisters, targetDynamicRegisters,
+      targetDynamicStacks, targetPredicates⟩
+
+theorem StateRel.machineX87Related
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (related : StateRel context world invariant original candidate) :
+    MachineX87Related context world original candidate := by
+  rcases related with ⟨_, _, _, _, _, _, _, _, core, _⟩
+  exact core.2.2.2.2.2.2.2.1
+
+theorem StateRel.stackWindowsHold
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (related : StateRel context world invariant original candidate) :
+    stackWindowsRelated world invariant.stackWindows
+      original.registers candidate.registers = true := by
+  rcases related with ⟨_, _, _, _, _, _, _, _, core, _⟩
+  exact core.2.2.2.1
+
+theorem StateRel.stackRangesValid
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (related : StateRel context world invariant original candidate) :
+    world.stackRangesValid context = true :=
+  related.2.1
 
 theorem StateRel.dynamicRegisterRangesHold
     (context : StaticProofContext) (world : RelationalWorld)
@@ -7084,6 +7520,23 @@ theorem StateRel.predicatesHold
     (related : StateRel context world invariant original candidate) :
     pairedStatePredicatesHold invariant.predicates original candidate = true :=
   related.2.2.2.2.2.2.2.2.2.2.2.2
+
+theorem StateRel.exactMemoryRead
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (predicate : PairedStatePredicate) (read : PairedExactMemoryRead)
+    (predicateMember : predicate ∈ invariant.predicates)
+    (readMember : read ∈ predicate.exactMemoryReads)
+    (related : StateRel context world invariant original candidate) :
+    original.readX87Word (read.originalAddress.eval original) read.bytes =
+      candidate.readX87Word (read.candidateAddress.eval candidate) read.bytes := by
+  have predicateHolds := pairedStatePredicatesHold_member invariant.predicates
+    predicate original candidate predicateMember
+    (related.predicatesHold context world invariant original candidate)
+  have readHolds := predicate.exactMemoryReadHolds read original candidate
+    readMember predicateHolds
+  simp only [PairedExactMemoryRead.holds, Bool.and_eq_true, beq_iff_eq] at readHolds
+  exact readHolds.2
 
 theorem StateRel.activeDynamicRegisterRangesHold
     (context : StaticProofContext) (world : RelationalWorld)

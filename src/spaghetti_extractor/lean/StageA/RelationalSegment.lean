@@ -1,8 +1,94 @@
 import StageA.RelationalExactExpr
+import StageA.RelationalX87Machine
 
 namespace StageA.Relational
 
 open StageA.Formal
+
+theorem StateRel.withX87Physical
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (originalPhysical candidatePhysical : StageA.X87.PhysicalState)
+    (related : StateRel context world invariant original candidate)
+    (physical : StageA.Relational.X87.StateRelated
+      (x87AddressRelation context world) originalPhysical candidatePhysical) :
+    StateRel context world invariant
+      { original with x87Physical := originalPhysical }
+      { candidate with x87Physical := candidatePhysical } := by
+  rcases related with
+    ⟨worldValid, stackRangesValid, stackMemory, importsStatic, importsComplete,
+      importsMemory, originalImmutable, candidateImmutable, core, trailing⟩
+  rcases core with
+    ⟨registers, bounds, separations, stackWindows, memory, dynamicMemory,
+      undefinedValue, x87, flags, fsBase⟩
+  have dynamicMemory' : RelationalDynamicMemoryHold context world invariant
+      { original with x87Physical := originalPhysical }
+      { candidate with x87Physical := candidatePhysical } := by
+    refine {
+      staticPointerSlots := dynamicMemory.staticPointerSlots
+      staticWordSlots := dynamicMemory.staticWordSlots
+      active := ?_
+    }
+    constructor
+    · simpa [activeDynamicRegisterRangeRelationsHold,
+        DynamicRegisterRangeRelation.activeHolds] using
+        dynamicMemory.active.registerRanges
+    · simpa [activeDynamicStackRangeRelationsHold,
+        DynamicStackRangeRelation.activeHolds] using
+        dynamicMemory.active.stackRanges
+  have trailing' :
+      importRegisterRelationsHold world invariant.importRegisterRelations
+          original.registers candidate.registers = true ∧
+        dynamicRegisterRangeRelationsHold world invariant.dynamicRegisterRangeRelations
+          original.registers candidate.registers = true ∧
+        dynamicStackRangeRelationsHold world invariant.dynamicStackRangeRelations
+          { original with x87Physical := originalPhysical }
+          { candidate with x87Physical := candidatePhysical } = true ∧
+        pairedStatePredicatesHold invariant.predicates
+          { original with x87Physical := originalPhysical }
+          { candidate with x87Physical := candidatePhysical } = true := by
+    rcases trailing with
+      ⟨importRegisters, dynamicRegisters, dynamicStacks, predicates⟩
+    refine ⟨importRegisters, dynamicRegisters, ?_, ?_⟩
+    · simpa [dynamicStackRangeRelationsHold, DynamicStackRangeRelation.holds] using
+        dynamicStacks
+    · have originalAgreement : MachineExpressionAgreement original
+          { original with x87Physical := originalPhysical } := by
+        exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
+      have candidateAgreement : MachineExpressionAgreement candidate
+          { candidate with x87Physical := candidatePhysical } := by
+        exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
+      simp only [pairedStatePredicatesHold, List.all_eq_true] at predicates ⊢
+      intro predicate member
+      have source := predicates predicate member
+      simp only [PairedStatePredicate.holds, Bool.and_eq_true,
+        List.all_eq_true] at source ⊢
+      refine ⟨?_, ?_⟩
+      · constructor
+        · rw [← BoolExpr.eval_eq_of_expressionAgreement original
+            { original with x87Physical := originalPhysical }
+            originalAgreement predicate.original]
+          exact source.1.1
+        · rw [← BoolExpr.eval_eq_of_expressionAgreement candidate
+            { candidate with x87Physical := candidatePhysical }
+            candidateAgreement predicate.candidate]
+          exact source.1.2
+      · intro read readMember
+        have sourceRead := source.2 read readMember
+        have originalAddress := Expr.eval_eq_of_expressionAgreement original
+          { original with x87Physical := originalPhysical }
+          originalAgreement read.originalAddress
+        have candidateAddress := Expr.eval_eq_of_expressionAgreement candidate
+          { candidate with x87Physical := candidatePhysical }
+          candidateAgreement read.candidateAddress
+        simp only [PairedExactMemoryRead.holds, Bool.and_eq_true,
+          beq_iff_eq] at sourceRead ⊢
+        rw [← originalAddress, ← candidateAddress]
+        simpa [MachineState.readX87Word] using sourceRead
+  refine ⟨worldValid, stackRangesValid, stackMemory, importsStatic,
+    importsComplete, importsMemory, originalImmutable, candidateImmutable, ?_, trailing'⟩
+  exact ⟨registers, bounds, separations, stackWindows, memory, dynamicMemory',
+    undefinedValue, ⟨x87.1, physical, x87.2.2⟩, flags, fsBase⟩
 
 inductive RelationalSegmentExit where
   | internal (targetId : Nat)
@@ -227,6 +313,514 @@ def SegmentTransitionClosed (context : StaticProofContext)
             | _, _ => False)
   | _, _ => False
 
+/-- The semantic body of a segment transition with guard agreement supplied by
+its composition context.  This is not a standalone refinement certificate:
+callers must prove guard equality before the body can be used. -/
+def SegmentTransitionBodyClosed (context : StaticProofContext)
+    (edge : RelationalSegmentEdge)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : SymbolicBehavior) : Prop :=
+  match context.codeMap.resolveIds edge.localCodeTargetIds,
+      context.dataMap.resolveIds edge.localValueTargetIds with
+  | some localCodeTargets, some localValues =>
+      ∀ world originalState candidateState,
+        StateRel context world sourceInvariant originalState candidateState →
+        edge.originalGuard.eval originalState =
+            edge.candidateGuard.eval candidateState →
+          edge.originalGuard.eval originalState = true →
+            match evalBehavior false localCodeTargets originalState originalBehavior,
+                evalBehavior true localCodeTargets candidateState candidateBehavior with
+            | some originalResult, some candidateResult =>
+                originalResult.outcome.segmentExitFor context false = some edge.exit ∧
+                  candidateResult.outcome.segmentExitFor context true = some edge.exit ∧
+                  outcomesRelated context.originalPe.imageBase context.candidatePe.imageBase
+                    localCodeTargets localValues originalResult.outcome
+                      candidateResult.outcome = true ∧
+                  match edge.exit with
+                  | .internal _ =>
+                      StateRel context world targetInvariant
+                        (originalResult.nextMachineState originalState)
+                        (candidateResult.nextMachineState candidateState)
+                  | .external _ | .returned | .fault => True
+            | _, _ => False
+  | _, _ => False
+
+theorem SegmentTransitionClosed.body
+    (context : StaticProofContext) (edge : RelationalSegmentEdge)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (closed : SegmentTransitionClosed context edge sourceInvariant targetInvariant
+      originalBehavior candidateBehavior) :
+    SegmentTransitionBodyClosed context edge sourceInvariant targetInvariant
+      originalBehavior candidateBehavior := by
+  unfold SegmentTransitionClosed at closed
+  unfold SegmentTransitionBodyClosed
+  cases codeTargets : context.codeMap.resolveIds edge.localCodeTargetIds with
+  | none => simp [codeTargets] at closed
+  | some localCodeTargets =>
+      cases valueTargets : context.dataMap.resolveIds edge.localValueTargetIds with
+      | none => simp [codeTargets, valueTargets] at closed
+      | some localValues =>
+          simp only [codeTargets, valueTargets] at closed ⊢
+          intro world originalState candidateState related _guardsAgree guardTrue
+          exact (closed world originalState candidateState related).2 guardTrue
+
+def X87SegmentTransitionClosed (context : StaticProofContext)
+    (edge : RelationalSegmentEdge)
+    (sourceInvariant targetInvariant : StateInvariant) : Prop :=
+  match context.codeMap.resolveIds edge.localCodeTargetIds,
+      context.dataMap.resolveIds edge.localValueTargetIds with
+  | some localCodeTargets, some localValues =>
+      ∀ world originalState candidateState,
+        StateRel context world sourceInvariant originalState candidateState →
+        edge.originalGuard.eval originalState = edge.candidateGuard.eval candidateState ∧
+          (edge.originalGuard.eval originalState = true →
+            match StageA.Relational.X87.executeSingletonCommand false
+                context.originalPe edge.originalSpan localCodeTargets originalState,
+              StageA.Relational.X87.executeSingletonCommand true
+                context.candidatePe edge.candidateSpan localCodeTargets candidateState with
+            | some originalResult, some candidateResult =>
+                originalResult.x87Fault = candidateResult.x87Fault ∧
+                  match originalResult.x87Fault, candidateResult.x87Fault with
+                  | some _, some _ => True
+                  | none, none =>
+                      originalResult.outcome.segmentExitFor context false = some edge.exit ∧
+                        candidateResult.outcome.segmentExitFor context true = some edge.exit ∧
+                        outcomesRelated context.originalPe.imageBase
+                            context.candidatePe.imageBase localCodeTargets localValues
+                            originalResult.outcome candidateResult.outcome = true ∧
+                        (match edge.exit with
+                        | .internal _ =>
+                            StateRel context world targetInvariant
+                              (originalResult.nextMachineState originalState)
+                              (candidateResult.nextMachineState candidateState)
+                        | .external _ | .returned | .fault => True) ∧
+                        (originalResult.nextMachineState originalState).registers =
+                          originalState.registers ∧
+                        (candidateResult.nextMachineState candidateState).registers =
+                          candidateState.registers ∧
+                        (originalResult.nextMachineState originalState).memory =
+                          originalState.memory ∧
+                        (candidateResult.nextMachineState candidateState).memory =
+                          candidateState.memory
+                  | _, _ => False
+            | _, _ => False)
+  | _, _ => False
+
+theorem x87SegmentTransitionClosed_of_nonstoring_singleton
+    (context : StaticProofContext) (edge : RelationalSegmentEdge)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (descriptor : StageA.Relational.X87.DecodedCommand)
+    (localCodeTargets : List CodeTargetPair)
+    (localValues : List ValueTargetPair) (targetId : Nat)
+    (localCodeTargetsResolved :
+      context.codeMap.resolveIds edge.localCodeTargetIds = some localCodeTargets)
+    (localValuesResolved :
+      context.dataMap.resolveIds edge.localValueTargetIds = some localValues)
+    (originalDecoded : StageA.Relational.X87.decodeSingletonCommand
+      context.originalPe edge.originalSpan = some descriptor)
+    (candidateDecoded : StageA.Relational.X87.decodeSingletonCommand
+      context.candidatePe edge.candidateSpan = some descriptor)
+    (noStore : descriptor.command.expectedStoreKind = none)
+    (noRegister : descriptor.command.expectedRegisterTarget = none)
+    (noFlags : descriptor.command.eflagsWriteMask = BitVec.ofNat 32 0)
+    (modeValid : descriptor.command.waitModeValid descriptor.waitMode)
+    (inputsRelated : ∀ world originalState candidateState,
+      StateRel context world sourceInvariant originalState candidateState →
+        StageA.Relational.X87.InputRelated (x87AddressRelation context world)
+          (StageA.Relational.X87.commandStepInput context.originalPe
+            edge.originalSpan.start descriptor originalState)
+          (StageA.Relational.X87.commandStepInput context.candidatePe
+            edge.candidateSpan.start descriptor candidateState))
+    (originalInputValid : ∀ state,
+      (StageA.Relational.X87.commandStepInput context.originalPe
+        edge.originalSpan.start descriptor state).validFor descriptor.command)
+    (candidateInputValid : ∀ state,
+      (StageA.Relational.X87.commandStepInput context.candidatePe
+        edge.candidateSpan.start descriptor state).validFor descriptor.command)
+    (originalContinuation : normalizeCodeTarget false localCodeTargets
+      edge.originalSpan.stop = some targetId)
+    (candidateContinuation : normalizeCodeTarget true localCodeTargets
+      edge.candidateSpan.stop = some targetId)
+    (edgeExit : edge.exit = .internal targetId)
+    (invariantWeakening : StateInvariantWeakening sourceInvariant targetInvariant)
+    (originalGuard : edge.originalGuard = .equal (.constant 0) (.constant 0))
+    (candidateGuard : edge.candidateGuard = .equal (.constant 0) (.constant 0)) :
+    X87SegmentTransitionClosed context edge sourceInvariant targetInvariant := by
+  unfold X87SegmentTransitionClosed
+  rw [localCodeTargetsResolved, localValuesResolved]
+  intro world originalState candidateState related
+  have machineX87 := related.machineX87Related context world sourceInvariant
+    originalState candidateState
+  let originalInput := StageA.Relational.X87.commandStepInput context.originalPe
+    edge.originalSpan.start descriptor originalState
+  let candidateInput := StageA.Relational.X87.commandStepInput context.candidatePe
+    edge.candidateSpan.start descriptor candidateState
+  have inputRelation : StageA.Relational.X87.InputRelated
+      (x87AddressRelation context world) originalInput candidateInput :=
+    inputsRelated world originalState candidateState related
+  let originalResponse := originalState.x87Semantics.execute descriptor.command
+    descriptor.waitMode originalState.x87Physical originalInput
+  let candidateResponse := candidateState.x87Semantics.execute descriptor.command
+    descriptor.waitMode candidateState.x87Physical candidateInput
+  have responsesRelated : StageA.Relational.X87.ResponseRelated
+      (x87AddressRelation context world) originalResponse candidateResponse := by
+    have shared := StageA.Relational.X87.execute_related originalState.x87Semantics
+      (x87AddressRelation context world) descriptor.command descriptor.waitMode
+      originalState.x87Physical candidateState.x87Physical originalInput candidateInput
+      machineX87.2.1 inputRelation
+    dsimp [originalResponse, candidateResponse]
+    rw [← machineX87.2.2]
+    exact shared
+  have originalResponseValid : originalResponse.structurallyValid
+      descriptor.command descriptor.waitMode := by
+    exact originalState.x87Semantics.execute_structurallyValid
+      originalState.x87Semantics.complies descriptor.command descriptor.waitMode
+      originalState.x87Physical originalInput modeValid
+      (originalInputValid originalState)
+  have candidateResponseValid : candidateResponse.structurallyValid
+      descriptor.command descriptor.waitMode := by
+    exact candidateState.x87Semantics.execute_structurallyValid
+      candidateState.x87Semantics.complies descriptor.command descriptor.waitMode
+      candidateState.x87Physical candidateInput modeValid
+      (candidateInputValid candidateState)
+  rcases originalResponseValid with
+    ⟨originalStoreShape, _originalStoreValid, originalRegisterShape,
+      originalFlagsMask, _originalDefinedFlags, _originalNoStoreDefined,
+      _originalNoRegisterDefined, _originalFaultMode, _originalWaitMode⟩
+  rcases candidateResponseValid with
+    ⟨candidateStoreShape, _candidateStoreValid, candidateRegisterShape,
+      candidateFlagsMask, _candidateDefinedFlags, _candidateNoStoreDefined,
+      _candidateNoRegisterDefined, _candidateFaultMode, _candidateWaitMode⟩
+  have originalNoStore : originalResponse.store = none := by
+    simpa [noStore] using originalStoreShape
+  have candidateNoStore : candidateResponse.store = none := by
+    simpa [noStore] using candidateStoreShape
+  have originalNoRegister : originalResponse.register = none := by
+    simpa [noRegister] using originalRegisterShape
+  have candidateNoRegister : candidateResponse.register = none := by
+    simpa [noRegister] using candidateRegisterShape
+  have originalNoFlags : originalResponse.eflagsWriteMask = BitVec.ofNat 32 0 :=
+    originalFlagsMask.trans noFlags
+  have candidateNoFlags : candidateResponse.eflagsWriteMask = BitVec.ofNat 32 0 :=
+    candidateFlagsMask.trans noFlags
+  have originalInputChecked : originalInput.checkedFor descriptor.command = true :=
+    originalInput.checkedFor_of_valid descriptor.command
+      (originalInputValid originalState)
+  have candidateInputChecked : candidateInput.checkedFor descriptor.command = true :=
+    candidateInput.checkedFor_of_valid descriptor.command
+      (candidateInputValid candidateState)
+  have waitChecked : descriptor.command.waitModeChecked descriptor.waitMode = true :=
+    descriptor.command.waitModeChecked_of_valid descriptor.waitMode modeValid
+  have originalResponseChecked :
+      originalResponse.checkedFor descriptor.command descriptor.waitMode = true :=
+    originalResponse.checkedFor_of_structurallyValid descriptor.command
+      descriptor.waitMode ⟨originalStoreShape, _originalStoreValid,
+        originalRegisterShape, originalFlagsMask, _originalDefinedFlags,
+        _originalNoStoreDefined, _originalNoRegisterDefined,
+        _originalFaultMode, _originalWaitMode⟩
+  have candidateResponseChecked :
+      candidateResponse.checkedFor descriptor.command descriptor.waitMode = true :=
+    candidateResponse.checkedFor_of_structurallyValid descriptor.command
+      descriptor.waitMode ⟨candidateStoreShape, _candidateStoreValid,
+        candidateRegisterShape, candidateFlagsMask, _candidateDefinedFlags,
+        _candidateNoStoreDefined, _candidateNoRegisterDefined,
+        _candidateFaultMode, _candidateWaitMode⟩
+  have originalExecuted : StageA.Relational.X87.executeSingletonCommand false
+      context.originalPe edge.originalSpan localCodeTargets originalState =
+      some (StageA.Relational.X87.singletonBehavior originalState originalResponse
+        none targetId) := by
+    simp [StageA.Relational.X87.executeSingletonCommand, originalDecoded,
+      originalContinuation, originalInput, originalResponse, originalInputChecked,
+      waitChecked, originalResponseChecked, originalNoStore]
+  have candidateExecuted : StageA.Relational.X87.executeSingletonCommand true
+      context.candidatePe edge.candidateSpan localCodeTargets candidateState =
+      some (StageA.Relational.X87.singletonBehavior candidateState candidateResponse
+        none targetId) := by
+    simp [StageA.Relational.X87.executeSingletonCommand, candidateDecoded,
+      candidateContinuation, candidateInput, candidateResponse, candidateInputChecked,
+      waitChecked, candidateResponseChecked, candidateNoStore]
+  constructor
+  · simp [originalGuard, candidateGuard, BoolExpr.eval, Expr.eval]
+  · intro _guardTrue
+    rw [originalExecuted, candidateExecuted]
+    have faultRelated := responsesRelated.2.2.2.2.2.2
+    constructor
+    · exact faultRelated
+    · rw [show (StageA.Relational.X87.singletonBehavior originalState
+                originalResponse none targetId).x87Fault = originalResponse.fault by rfl,
+          show (StageA.Relational.X87.singletonBehavior candidateState
+                candidateResponse none targetId).x87Fault = candidateResponse.fault by rfl]
+      rw [← faultRelated]
+      cases fault : originalResponse.fault with
+      | some _ => trivial
+      | none =>
+          rw [edgeExit]
+          refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+          · simp [StageA.Relational.X87.singletonBehavior,
+              PureOutcome.segmentExitFor, PureOutcome.segmentExit]
+          · simp [StageA.Relational.X87.singletonBehavior,
+              PureOutcome.segmentExitFor, PureOutcome.segmentExit]
+          · simp [StageA.Relational.X87.singletonBehavior, outcomesRelated]
+          · rw [StageA.Relational.X87.singletonBehavior_nextMachineState_of_state_only
+                originalState originalResponse targetId originalNoStore
+                originalNoRegister originalNoFlags,
+              StageA.Relational.X87.singletonBehavior_nextMachineState_of_state_only
+                candidateState candidateResponse targetId candidateNoStore
+                candidateNoRegister candidateNoFlags]
+            exact StateRel.weakenInvariant context world sourceInvariant
+              targetInvariant _ _ invariantWeakening
+              (related.withX87Physical context world sourceInvariant
+                originalState candidateState originalResponse.nextState
+                candidateResponse.nextState responsesRelated.1)
+          · rw [StageA.Relational.X87.singletonBehavior_nextMachineState_of_state_only
+                originalState originalResponse targetId originalNoStore
+                originalNoRegister originalNoFlags]
+          · rw [StageA.Relational.X87.singletonBehavior_nextMachineState_of_state_only
+                candidateState candidateResponse targetId candidateNoStore
+                candidateNoRegister candidateNoFlags]
+          · rw [StageA.Relational.X87.singletonBehavior_nextMachineState_of_state_only
+                originalState originalResponse targetId originalNoStore
+                originalNoRegister originalNoFlags]
+          · rw [StageA.Relational.X87.singletonBehavior_nextMachineState_of_state_only
+                candidateState candidateResponse targetId candidateNoStore
+                candidateNoRegister candidateNoFlags]
+
+theorem x87SegmentTransitionClosed_of_state_only_singleton
+    (context : StaticProofContext) (edge : RelationalSegmentEdge)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (descriptor : StageA.Relational.X87.DecodedCommand)
+    (localCodeTargets : List CodeTargetPair)
+    (localValues : List ValueTargetPair) (targetId : Nat)
+    (localCodeTargetsResolved :
+      context.codeMap.resolveIds edge.localCodeTargetIds = some localCodeTargets)
+    (localValuesResolved :
+      context.dataMap.resolveIds edge.localValueTargetIds = some localValues)
+    (originalDecoded : StageA.Relational.X87.decodeSingletonCommand
+      context.originalPe edge.originalSpan = some descriptor)
+    (candidateDecoded : StageA.Relational.X87.decodeSingletonCommand
+      context.candidatePe edge.candidateSpan = some descriptor)
+    (noMemory : descriptor.memoryOperand = none)
+    (noOperand : descriptor.command.expectedOperandBytes = none)
+    (noStore : descriptor.command.expectedStoreKind = none)
+    (noRegister : descriptor.command.expectedRegisterTarget = none)
+    (noFlags : descriptor.command.eflagsWriteMask = BitVec.ofNat 32 0)
+    (modeValid : descriptor.command.waitModeValid descriptor.waitMode)
+    (originalContinuation : normalizeCodeTarget false localCodeTargets
+      edge.originalSpan.stop = some targetId)
+    (candidateContinuation : normalizeCodeTarget true localCodeTargets
+      edge.candidateSpan.stop = some targetId)
+    (edgeExit : edge.exit = .internal targetId)
+    (invariantWeakening : StateInvariantWeakening sourceInvariant targetInvariant)
+    (originalGuard : edge.originalGuard = .equal (.constant 0) (.constant 0))
+    (candidateGuard : edge.candidateGuard = .equal (.constant 0) (.constant 0))
+    (instructionPointersRelated : ∀ world,
+      (x87AddressRelation context world).code
+        (BitVec.ofNat 32
+          (context.originalPe.imageBase + edge.originalSpan.start))
+        (BitVec.ofNat 32
+          (context.candidatePe.imageBase + edge.candidateSpan.start))) :
+    X87SegmentTransitionClosed context edge sourceInvariant targetInvariant := by
+  unfold X87SegmentTransitionClosed
+  rw [localCodeTargetsResolved, localValuesResolved]
+  intro world originalState candidateState related
+  have machineX87 := related.machineX87Related context world sourceInvariant
+    originalState candidateState
+  let originalInput := StageA.Relational.X87.commandStepInput context.originalPe
+    edge.originalSpan.start descriptor originalState
+  let candidateInput := StageA.Relational.X87.commandStepInput context.candidatePe
+    edge.candidateSpan.start descriptor candidateState
+  have inputsRelated : StageA.Relational.X87.InputRelated
+      (x87AddressRelation context world) originalInput candidateInput := by
+    exact StageA.Relational.X87.commandStepInput_related_of_no_memory
+      context world descriptor edge.originalSpan.start edge.candidateSpan.start
+      originalState candidateState noMemory noOperand machineX87.2.1
+      (instructionPointersRelated world)
+  have originalInputValid : originalInput.validFor descriptor.command := by
+    simp [originalInput, StageA.Relational.X87.commandStepInput,
+      StageA.Relational.X87.commandDataAddress, noMemory, noOperand,
+      StageA.X87.StepInput.validFor]
+  have candidateInputValid : candidateInput.validFor descriptor.command := by
+    simp [candidateInput, StageA.Relational.X87.commandStepInput,
+      StageA.Relational.X87.commandDataAddress, noMemory, noOperand,
+      StageA.X87.StepInput.validFor]
+  let originalResponse := originalState.x87Semantics.execute descriptor.command
+    descriptor.waitMode originalState.x87Physical originalInput
+  let candidateResponse := candidateState.x87Semantics.execute descriptor.command
+    descriptor.waitMode candidateState.x87Physical candidateInput
+  have responsesRelated : StageA.Relational.X87.ResponseRelated
+      (x87AddressRelation context world) originalResponse candidateResponse := by
+    have shared := StageA.Relational.X87.execute_related originalState.x87Semantics
+      (x87AddressRelation context world) descriptor.command descriptor.waitMode
+      originalState.x87Physical candidateState.x87Physical originalInput candidateInput
+      machineX87.2.1 inputsRelated
+    dsimp [originalResponse, candidateResponse]
+    rw [← machineX87.2.2]
+    exact shared
+  have originalResponseValid : originalResponse.structurallyValid
+      descriptor.command descriptor.waitMode := by
+    exact originalState.x87Semantics.execute_structurallyValid
+      originalState.x87Semantics.complies descriptor.command descriptor.waitMode
+      originalState.x87Physical originalInput modeValid originalInputValid
+  have candidateResponseValid : candidateResponse.structurallyValid
+      descriptor.command descriptor.waitMode := by
+    exact candidateState.x87Semantics.execute_structurallyValid
+      candidateState.x87Semantics.complies descriptor.command descriptor.waitMode
+      candidateState.x87Physical candidateInput modeValid candidateInputValid
+  rcases originalResponseValid with
+    ⟨originalStoreShape, _originalStoreValid, originalRegisterShape,
+      originalFlagsMask, _originalDefinedFlags, _originalNoStoreDefined,
+      _originalNoRegisterDefined, _originalFaultMode, _originalWaitMode⟩
+  rcases candidateResponseValid with
+    ⟨candidateStoreShape, _candidateStoreValid, candidateRegisterShape,
+      candidateFlagsMask, _candidateDefinedFlags, _candidateNoStoreDefined,
+      _candidateNoRegisterDefined, _candidateFaultMode, _candidateWaitMode⟩
+  have originalNoStore : originalResponse.store = none := by
+    simpa [noStore] using originalStoreShape
+  have candidateNoStore : candidateResponse.store = none := by
+    simpa [noStore] using candidateStoreShape
+  have originalNoRegister : originalResponse.register = none := by
+    simpa [noRegister] using originalRegisterShape
+  have candidateNoRegister : candidateResponse.register = none := by
+    simpa [noRegister] using candidateRegisterShape
+  have originalNoFlags : originalResponse.eflagsWriteMask = BitVec.ofNat 32 0 :=
+    originalFlagsMask.trans noFlags
+  have candidateNoFlags : candidateResponse.eflagsWriteMask = BitVec.ofNat 32 0 :=
+    candidateFlagsMask.trans noFlags
+  have originalInputChecked : originalInput.checkedFor descriptor.command = true :=
+    originalInput.checkedFor_of_valid descriptor.command originalInputValid
+  have candidateInputChecked : candidateInput.checkedFor descriptor.command = true :=
+    candidateInput.checkedFor_of_valid descriptor.command candidateInputValid
+  have waitChecked : descriptor.command.waitModeChecked descriptor.waitMode = true :=
+    descriptor.command.waitModeChecked_of_valid descriptor.waitMode modeValid
+  have originalResponseChecked :
+      originalResponse.checkedFor descriptor.command descriptor.waitMode = true :=
+    originalResponse.checkedFor_of_structurallyValid descriptor.command
+      descriptor.waitMode ⟨originalStoreShape, _originalStoreValid,
+        originalRegisterShape, originalFlagsMask, _originalDefinedFlags,
+        _originalNoStoreDefined, _originalNoRegisterDefined,
+        _originalFaultMode, _originalWaitMode⟩
+  have candidateResponseChecked :
+      candidateResponse.checkedFor descriptor.command descriptor.waitMode = true :=
+    candidateResponse.checkedFor_of_structurallyValid descriptor.command
+      descriptor.waitMode ⟨candidateStoreShape, _candidateStoreValid,
+        candidateRegisterShape, candidateFlagsMask, _candidateDefinedFlags,
+        _candidateNoStoreDefined, _candidateNoRegisterDefined,
+        _candidateFaultMode, _candidateWaitMode⟩
+  have originalExecuted : StageA.Relational.X87.executeSingletonCommand false
+      context.originalPe edge.originalSpan localCodeTargets originalState =
+      some (StageA.Relational.X87.singletonBehavior originalState originalResponse
+        none targetId) := by
+    simp [StageA.Relational.X87.executeSingletonCommand, originalDecoded,
+      originalContinuation, originalInput, originalResponse, originalInputChecked,
+      waitChecked, originalResponseChecked, originalNoStore]
+  have candidateExecuted : StageA.Relational.X87.executeSingletonCommand true
+      context.candidatePe edge.candidateSpan localCodeTargets candidateState =
+      some (StageA.Relational.X87.singletonBehavior candidateState candidateResponse
+        none targetId) := by
+    simp [StageA.Relational.X87.executeSingletonCommand, candidateDecoded,
+      candidateContinuation, candidateInput, candidateResponse, candidateInputChecked,
+      waitChecked, candidateResponseChecked, candidateNoStore]
+  constructor
+  · simp [originalGuard, candidateGuard, BoolExpr.eval, Expr.eval]
+  · intro _guardTrue
+    rw [originalExecuted, candidateExecuted]
+    have faultRelated := responsesRelated.2.2.2.2.2.2
+    constructor
+    · exact faultRelated
+    · rw [show (StageA.Relational.X87.singletonBehavior originalState
+                originalResponse none targetId).x87Fault = originalResponse.fault by rfl,
+          show (StageA.Relational.X87.singletonBehavior candidateState
+                candidateResponse none targetId).x87Fault = candidateResponse.fault by rfl]
+      rw [← faultRelated]
+      cases fault : originalResponse.fault with
+      | some _ => trivial
+      | none =>
+          rw [edgeExit]
+          refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+          · simp [StageA.Relational.X87.singletonBehavior,
+              PureOutcome.segmentExitFor, PureOutcome.segmentExit]
+          · simp [StageA.Relational.X87.singletonBehavior,
+              PureOutcome.segmentExitFor, PureOutcome.segmentExit]
+          · simp [StageA.Relational.X87.singletonBehavior, outcomesRelated]
+          · rw [StageA.Relational.X87.singletonBehavior_nextMachineState_of_state_only
+                originalState originalResponse targetId originalNoStore
+                originalNoRegister originalNoFlags,
+              StageA.Relational.X87.singletonBehavior_nextMachineState_of_state_only
+                candidateState candidateResponse targetId candidateNoStore
+                candidateNoRegister candidateNoFlags]
+            exact StateRel.weakenInvariant context world sourceInvariant
+              targetInvariant _ _ invariantWeakening
+              (related.withX87Physical context world sourceInvariant
+                originalState candidateState originalResponse.nextState
+                candidateResponse.nextState responsesRelated.1)
+          · rw [StageA.Relational.X87.singletonBehavior_nextMachineState_of_state_only
+                originalState originalResponse targetId originalNoStore
+                originalNoRegister originalNoFlags]
+          · rw [StageA.Relational.X87.singletonBehavior_nextMachineState_of_state_only
+                candidateState candidateResponse targetId candidateNoStore
+                candidateNoRegister candidateNoFlags]
+          · rw [StageA.Relational.X87.singletonBehavior_nextMachineState_of_state_only
+                originalState originalResponse targetId originalNoStore
+                originalNoRegister originalNoFlags]
+          · rw [StageA.Relational.X87.singletonBehavior_nextMachineState_of_state_only
+                candidateState candidateResponse targetId candidateNoStore
+                candidateNoRegister candidateNoFlags]
+
+theorem x87SegmentTransitionClosed_of_checked_state_only_singleton
+    (context : StaticProofContext) (edge : RelationalSegmentEdge)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (localCodeTargets : List CodeTargetPair)
+    (localValues : List ValueTargetPair) (targetId : Nat)
+    (localCodeTargetsResolved :
+      context.codeMap.resolveIds edge.localCodeTargetIds = some localCodeTargets)
+    (localValuesResolved :
+      context.dataMap.resolveIds edge.localValueTargetIds = some localValues)
+    (decodedPair : StageA.Relational.X87.decodeSingletonCommand
+        context.originalPe edge.originalSpan =
+      StageA.Relational.X87.decodeSingletonCommand
+        context.candidatePe edge.candidateSpan)
+    (commandChecked : StageA.Relational.X87.stateOnlySingletonCommandChecked
+      context.originalPe edge.originalSpan = true)
+    (originalContinuation : normalizeCodeTarget false localCodeTargets
+      edge.originalSpan.stop = some targetId)
+    (candidateContinuation : normalizeCodeTarget true localCodeTargets
+      edge.candidateSpan.stop = some targetId)
+    (edgeExit : edge.exit = .internal targetId)
+    (invariantWeakening : StateInvariantWeakening sourceInvariant targetInvariant)
+    (originalGuard : edge.originalGuard = .equal (.constant 0) (.constant 0))
+    (candidateGuard : edge.candidateGuard = .equal (.constant 0) (.constant 0))
+    (instructionPointersRelated : ∀ world,
+      (x87AddressRelation context world).code
+        (BitVec.ofNat 32
+          (context.originalPe.imageBase + edge.originalSpan.start))
+        (BitVec.ofNat 32
+          (context.candidatePe.imageBase + edge.candidateSpan.start))) :
+    X87SegmentTransitionClosed context edge sourceInvariant targetInvariant := by
+  cases originalDecoded : StageA.Relational.X87.decodeSingletonCommand
+      context.originalPe edge.originalSpan with
+  | none =>
+      simp [StageA.Relational.X87.stateOnlySingletonCommandChecked,
+        originalDecoded] at commandChecked
+  | some descriptor =>
+      have candidateDecoded : StageA.Relational.X87.decodeSingletonCommand
+          context.candidatePe edge.candidateSpan = some descriptor := by
+        rw [← decodedPair]
+        exact originalDecoded
+      simp only [StageA.Relational.X87.stateOnlySingletonCommandChecked,
+        originalDecoded, Bool.and_eq_true, Option.isNone_iff_eq_none,
+        beq_iff_eq] at commandChecked
+      rcases commandChecked with
+        ⟨⟨⟨⟨⟨noMemory, noOperand⟩, noStore⟩, noRegister⟩, noFlags⟩,
+          waitChecked⟩
+      exact x87SegmentTransitionClosed_of_state_only_singleton context edge
+        sourceInvariant targetInvariant descriptor localCodeTargets localValues targetId
+        localCodeTargetsResolved localValuesResolved originalDecoded candidateDecoded
+        noMemory noOperand noStore noRegister noFlags
+        (descriptor.command.waitModeValid_of_checked descriptor.waitMode waitChecked)
+        originalContinuation candidateContinuation edgeExit invariantWeakening
+        originalGuard candidateGuard instructionPointersRelated
+
 def NoWriteSegmentShapeClosed (context : StaticProofContext)
     (edge : RelationalSegmentEdge) (sourceInvariant : StateInvariant)
     (originalBehavior candidateBehavior : SymbolicBehavior) : Prop :=
@@ -248,6 +842,52 @@ def NoWriteSegmentShapeClosed (context : StaticProofContext)
                 outcomesRelated context.originalPe.imageBase context.candidatePe.imageBase
                   localCodeTargets localValues originalResult.outcome candidateResult.outcome = true)
   | _, _ => False
+
+/-- No-write decoding and exit shape with guard agreement supplied by the
+product-composition context. -/
+def NoWriteSegmentShapeBodyClosed (context : StaticProofContext)
+    (edge : RelationalSegmentEdge) (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : SymbolicBehavior) : Prop :=
+  match context.codeMap.resolveIds edge.localCodeTargetIds,
+      context.dataMap.resolveIds edge.localValueTargetIds with
+  | some localCodeTargets, some localValues =>
+      ∀ world originalState candidateState,
+        StateRel context world sourceInvariant originalState candidateState →
+        edge.originalGuard.eval originalState =
+            edge.candidateGuard.eval candidateState →
+          edge.originalGuard.eval originalState = true →
+            ∃ originalResult candidateResult,
+              evalBehavior false localCodeTargets originalState originalBehavior =
+                  some originalResult ∧
+              evalBehavior true localCodeTargets candidateState candidateBehavior =
+                  some candidateResult ∧
+              originalResult.writes = [] ∧ candidateResult.writes = [] ∧
+                originalResult.outcome.segmentExitFor context false = some edge.exit ∧
+                candidateResult.outcome.segmentExitFor context true = some edge.exit ∧
+                outcomesRelated context.originalPe.imageBase context.candidatePe.imageBase
+                  localCodeTargets localValues originalResult.outcome
+                    candidateResult.outcome = true
+  | _, _ => False
+
+theorem NoWriteSegmentShapeClosed.body
+    (context : StaticProofContext) (edge : RelationalSegmentEdge)
+    (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (closed : NoWriteSegmentShapeClosed context edge sourceInvariant
+      originalBehavior candidateBehavior) :
+    NoWriteSegmentShapeBodyClosed context edge sourceInvariant
+      originalBehavior candidateBehavior := by
+  unfold NoWriteSegmentShapeClosed at closed
+  unfold NoWriteSegmentShapeBodyClosed
+  cases codeTargets : context.codeMap.resolveIds edge.localCodeTargetIds with
+  | none => simp [codeTargets] at closed
+  | some localCodeTargets =>
+      cases valueTargets : context.dataMap.resolveIds edge.localValueTargetIds with
+      | none => simp [codeTargets, valueTargets] at closed
+      | some localValues =>
+          simp only [codeTargets, valueTargets] at closed ⊢
+          intro world originalState candidateState related _guardsAgree guardTrue
+          exact (closed world originalState candidateState related).2 guardTrue
 
 def DirectCallSegmentShapeClosed (context : StaticProofContext)
     (edge : RelationalSegmentEdge) (sourceInvariant : StateInvariant)
@@ -279,10 +919,304 @@ def DirectCallSegmentShapeClosed (context : StaticProofContext)
                   candidateResult.outcome = true)
   | _, _ => False
 
+structure PairedStackRead32ValueClaim where
+  window : StackWindowPair
+  adjustment : StackAdjustment
+deriving Repr, DecidableEq
+
+def PairedStackRead32ValueClaim.adjustmentChecked
+    (claim : PairedStackRead32ValueClaim) : Bool :=
+  match claim.adjustment with
+  | .identity => decide (4 <= claim.window.bytesAbove)
+  | .add amount =>
+      decide (amount + 4 <= claim.window.bytesAbove) && amount % 4 == 0
+  | .subtract amount =>
+      decide (4 <= amount) && decide (amount <= claim.window.bytesBelow) &&
+        amount % 4 == 0
+
+def PairedStackRead32ValueClaim.checked (sourceInvariant : StateInvariant)
+    (original candidate : Expr) (claim : PairedStackRead32ValueClaim) : Bool :=
+  sourceInvariant.stackWindows.contains claim.window && claim.adjustmentChecked &&
+    InvariantWP.stackRead32AtAdjustmentMatches claim.adjustment
+      claim.window.originalRegister original &&
+    InvariantWP.stackRead32AtAdjustmentMatches claim.adjustment
+      claim.window.candidateRegister candidate
+
+theorem PairedStackRead32ValueClaim.related_of_checked
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant) (original candidate : Expr)
+    (claim : PairedStackRead32ValueClaim)
+    (checked : claim.checked sourceInvariant original candidate = true)
+    (originalState candidateState : MachineState)
+    (related : StateRel context world sourceInvariant originalState candidateState) :
+    wordRelated context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList (context.relationalValueTargets world)
+      (original.eval originalState) (candidate.eval candidateState) = true := by
+  rcases claim with ⟨window, adjustment⟩
+  simp only [PairedStackRead32ValueClaim.checked, Bool.and_eq_true] at checked
+  rcases checked with
+    ⟨⟨⟨windowMember, adjustmentChecked⟩, originalMatches⟩,
+      candidateMatches⟩
+  have originalEval := InvariantWP.stackRead32AtAdjustment_eval_of_matches
+    adjustment window.originalRegister original originalState originalMatches
+  have candidateEval := InvariantWP.stackRead32AtAdjustment_eval_of_matches
+    adjustment window.candidateRegister candidate candidateState candidateMatches
+  have readsRelated :
+      wordRelated context.originalPe.imageBase context.candidatePe.imageBase
+        context.codeMap.entries.toList (context.relationalValueTargets world)
+        (Memory.read32 originalState.memory
+          ((adjustment.expression window.originalRegister).eval originalState))
+        (Memory.read32 candidateState.memory
+          ((adjustment.expression window.candidateRegister).eval candidateState)) =
+        true := by
+    cases adjustment with
+    | identity =>
+        simp only [PairedStackRead32ValueClaim.adjustmentChecked,
+          decide_eq_true_eq] at adjustmentChecked
+        have read := StateRel.stackMemoryRead32Related context world
+          sourceInvariant originalState candidateState window 0 related
+          (List.contains_iff_mem.mp windowMember) adjustmentChecked (by decide)
+        simpa [StackAdjustment.expression, Expr.eval] using read
+    | add amount =>
+        simp only [PairedStackRead32ValueClaim.adjustmentChecked,
+          Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq] at adjustmentChecked
+        have read := StateRel.stackMemoryRead32Related context world
+          sourceInvariant originalState candidateState window amount related
+          (List.contains_iff_mem.mp windowMember) adjustmentChecked.1
+          adjustmentChecked.2
+        simpa [StackAdjustment.expression, Expr.eval] using read
+    | subtract amount =>
+        simp only [PairedStackRead32ValueClaim.adjustmentChecked,
+          Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq] at adjustmentChecked
+        have read := StateRel.stackMemoryRead32BelowRelated context world
+          sourceInvariant originalState candidateState window amount related
+          (List.contains_iff_mem.mp windowMember) adjustmentChecked.1.1
+          adjustmentChecked.1.2 adjustmentChecked.2
+        simpa [StackAdjustment.expression, Expr.eval] using read
+  rw [originalEval, candidateEval]
+  exact readsRelated
+
+structure StackRegisterBoundClaim where
+  originalRegister : Reg
+  candidateRegister : Reg
+  upperExclusive : Nat
+  stackRead : PairedStackRead32ValueClaim
+deriving Repr, DecidableEq
+
+def StackRegisterBoundClaim.originalAddress (claim : StackRegisterBoundClaim) : Expr :=
+  claim.stackRead.adjustment.expression claim.stackRead.window.originalRegister
+
+def StackRegisterBoundClaim.candidateAddress (claim : StackRegisterBoundClaim) : Expr :=
+  claim.stackRead.adjustment.expression claim.stackRead.window.candidateRegister
+
+def StackRegisterBoundClaim.originalIndex (claim : StackRegisterBoundClaim) : Expr :=
+  .read32 claim.originalAddress
+
+def StackRegisterBoundClaim.candidateIndex (claim : StackRegisterBoundClaim) : Expr :=
+  .read32 claim.candidateAddress
+
+def StackRegisterBoundClaim.predicate (claim : StackRegisterBoundClaim) :
+    PairedStatePredicate := {
+  original := .unsignedLess claim.originalIndex (.constant claim.upperExclusive)
+  candidate := .unsignedLess claim.candidateIndex (.constant claim.upperExclusive)
+  exactMemoryReads := [{
+    originalAddress := claim.originalAddress
+    candidateAddress := claim.candidateAddress
+    bytes := 4
+  }]
+}
+
+def StackRegisterBoundClaim.checked (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : StackRegisterBoundClaim) : Bool :=
+  decide (0 < claim.upperExclusive) && decide (claim.upperExclusive < 2 ^ 32) &&
+    claim.stackRead.checked sourceInvariant claim.originalIndex claim.candidateIndex &&
+    sourceInvariant.predicates.contains claim.predicate &&
+    originalBehavior.writes.isEmpty && candidateBehavior.writes.isEmpty &&
+    originalBehavior.registers.get claim.originalRegister == claim.originalIndex &&
+    candidateBehavior.registers.get claim.candidateRegister == claim.candidateIndex
+
+def StackRegisterBoundClaim.Holds (context : StaticProofContext)
+    (world : RelationalWorld) (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : StackRegisterBoundClaim) (original candidate : MachineState) : Prop :=
+  claim.originalIndex.eval original = claim.candidateIndex.eval candidate ∧
+    decide (claim.originalIndex.eval original <
+      BitVec.ofNat 32 claim.upperExclusive) = true ∧
+    decide (claim.candidateIndex.eval candidate <
+      BitVec.ofNat 32 claim.upperExclusive) = true ∧
+    (originalBehavior.registers.get claim.originalRegister).eval original =
+      claim.originalIndex.eval original ∧
+    (candidateBehavior.registers.get claim.candidateRegister).eval candidate =
+      claim.candidateIndex.eval candidate ∧
+    wordRelated context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList (context.relationalValueTargets world)
+      (claim.originalIndex.eval original) (claim.candidateIndex.eval candidate) = true
+
+theorem StackRegisterBoundClaim.holds_of_checked
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : StackRegisterBoundClaim)
+    (checked : claim.checked sourceInvariant originalBehavior candidateBehavior = true)
+    (original candidate : MachineState)
+    (related : StateRel context world sourceInvariant original candidate) :
+    claim.Holds context world originalBehavior candidateBehavior original candidate := by
+  simp only [StackRegisterBoundClaim.checked, Bool.and_eq_true, decide_eq_true_eq,
+    beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨⟨⟨⟨positive, upperFits⟩, stackReadChecked⟩, predicateMember⟩,
+      originalWrites⟩, candidateWrites⟩, originalOutput⟩, candidateOutput⟩
+  have predicateHolds := pairedStatePredicatesHold_member sourceInvariant.predicates
+    claim.predicate original candidate (List.contains_iff_mem.mp predicateMember)
+    (related.predicatesHold context world sourceInvariant original candidate)
+  simp only [StackRegisterBoundClaim.predicate, PairedStatePredicate.holds,
+    Bool.and_eq_true, BoolExpr.eval, Expr.eval] at predicateHolds
+  have exactRead := related.exactMemoryRead context world sourceInvariant original candidate
+    claim.predicate {
+      originalAddress := claim.originalAddress
+      candidateAddress := claim.candidateAddress
+      bytes := 4
+    } (List.contains_iff_mem.mp predicateMember) (by simp [StackRegisterBoundClaim.predicate])
+  have exactIndex : claim.originalIndex.eval original = claim.candidateIndex.eval candidate := by
+    change original.readX87Word (claim.originalAddress.eval original) 4 =
+      candidate.readX87Word (claim.candidateAddress.eval candidate) 4 at exactRead
+    have lowWords := congrArg (fun value : BitVec 80 => value.extractLsb' 0 32) exactRead
+    change (original.readX87Word (claim.originalAddress.eval original) 4).extractLsb' 0 32 =
+      (candidate.readX87Word (claim.candidateAddress.eval candidate) 4).extractLsb' 0 32
+      at lowWords
+    rw [MachineState.readX87Word_four_extractLsb,
+      MachineState.readX87Word_four_extractLsb] at lowWords
+    simpa [StackRegisterBoundClaim.originalIndex,
+      StackRegisterBoundClaim.candidateIndex, Expr.eval,
+      machineStateRead32_eq_memoryRead32] using lowWords
+  have stackRelated := claim.stackRead.related_of_checked context world sourceInvariant
+    claim.originalIndex claim.candidateIndex stackReadChecked original candidate related
+  exact ⟨exactIndex, predicateHolds.1.1, predicateHolds.1.2,
+    congrArg (fun expression => expression.eval original) originalOutput,
+    congrArg (fun expression => expression.eval candidate) candidateOutput,
+    stackRelated⟩
+
+structure PairedExactRegisterOutputClaim where
+  output : RegisterRelationPair
+  witness : PairedExactExprWitness
+deriving Repr, DecidableEq
+
+def PairedExactRegisterOutputClaim.checked (context : StaticProofContext)
+    (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : PairedExactRegisterOutputClaim) : Bool :=
+  InvariantWP.registerValueRelationAcceptsEqual claim.output.relation &&
+    originalBehavior.registers.get claim.output.original ==
+      claim.witness.expression .original &&
+    candidateBehavior.registers.get claim.output.candidate ==
+      claim.witness.expression .candidate &&
+    claim.witness.checked context sourceInvariant
+
+theorem PairedExactRegisterOutputClaim.holds_output_of_stateRel
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : PairedExactRegisterOutputClaim)
+    (checked : claim.checked context sourceInvariant originalBehavior
+      candidateBehavior = true)
+    (originalState candidateState : MachineState)
+    (related : StateRel context world sourceInvariant originalState candidateState) :
+    claim.output.relation.holds context.originalPe.imageBase
+      context.candidatePe.imageBase context.codeMap.entries.toList
+      (context.relationalValueTargets world)
+      ((originalBehavior.eval originalState).registers.get claim.output.original)
+      ((candidateBehavior.eval candidateState).registers.get claim.output.candidate) = true := by
+  simp only [PairedExactRegisterOutputClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨relationAccepted, originalExpression⟩, candidateExpression⟩,
+      witnessChecked⟩
+  have valuesEqual := claim.witness.eval_equal_of_checked context world
+    sourceInvariant originalState candidateState witnessChecked related
+  simp only [NormalizedSymbolicBehavior.eval, evalNormalizedRegisters_get]
+  rw [originalExpression, candidateExpression]
+  exact InvariantWP.RegisterValueRelation.holds_of_eq
+    context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList (context.relationalValueTargets world)
+    claim.output.relation _ _ relationAccepted valuesEqual
+
+inductive StateRelRegisterOutputClaim where
+  | ordinary (claim : InvariantWP.RegisterOutputClaim)
+  | pairedExactExpression (claim : PairedExactRegisterOutputClaim)
+deriving Repr, DecidableEq
+
+def StateRelRegisterOutputClaim.output : StateRelRegisterOutputClaim →
+    RegisterRelationPair
+  | .ordinary claim => claim.output
+  | .pairedExactExpression claim => claim.output
+
+def StateRelRegisterOutputClaim.checked (context : StaticProofContext)
+    (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) :
+    StateRelRegisterOutputClaim → Bool
+  | .ordinary claim => claim.nonMemoryChecked context region originalBehavior
+      candidateBehavior
+  | .pairedExactExpression claim => claim.checked context region.inputInvariant
+      originalBehavior candidateBehavior
+
+theorem StateRelRegisterOutputClaim.holds_output_of_checked
+    (context : StaticProofContext) (world : RelationalWorld)
+    (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : StateRelRegisterOutputClaim)
+    (checked : claim.checked context region originalBehavior candidateBehavior = true)
+    (originalState candidateState : MachineState)
+    (related : StateRel context world region.inputInvariant originalState candidateState) :
+    claim.output.relation.holds context.originalPe.imageBase
+      context.candidatePe.imageBase context.codeMap.entries.toList
+      (context.relationalValueTargets world)
+      ((originalBehavior.eval originalState).registers.get claim.output.original)
+      ((candidateBehavior.eval candidateState).registers.get claim.output.candidate) = true := by
+  cases claim with
+  | ordinary claim =>
+      have allChecked : [claim].all
+          (InvariantWP.RegisterOutputClaim.nonMemoryChecked context region
+            originalBehavior candidateBehavior) = true := by
+        simpa [StateRelRegisterOutputClaim.checked] using checked
+      have allHolds := InvariantWP.registerRelationsHold_of_nonMemoryOutputClaims
+        context world region originalBehavior candidateBehavior [claim] allChecked
+        originalState candidateState related
+      simpa [StateRelRegisterOutputClaim.output, registerRelationsHold] using allHolds
+  | pairedExactExpression claim =>
+      exact claim.holds_output_of_stateRel context world region.inputInvariant
+        originalBehavior candidateBehavior
+        (by simpa [StateRelRegisterOutputClaim.checked] using checked)
+        originalState candidateState related
+
+theorem registerRelationsHold_of_stateRelOutputClaims
+    (context : StaticProofContext) (world : RelationalWorld)
+    (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claims : List StateRelRegisterOutputClaim)
+    (checked : claims.all (StateRelRegisterOutputClaim.checked context region
+      originalBehavior candidateBehavior) = true)
+    (originalState candidateState : MachineState)
+    (related : StateRel context world region.inputInvariant originalState candidateState) :
+    registerRelationsHold context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList (context.relationalValueTargets world)
+      (claims.map StateRelRegisterOutputClaim.output)
+      (originalBehavior.eval originalState).registers
+      (candidateBehavior.eval candidateState).registers = true := by
+  induction claims with
+  | nil => rfl
+  | cons claim tail induction =>
+      simp only [List.all_cons, Bool.and_eq_true] at checked
+      unfold registerRelationsHold
+      simp only [List.map_cons, List.all_cons, Bool.and_eq_true]
+      exact ⟨claim.holds_output_of_checked context world region originalBehavior
+        candidateBehavior checked.1 originalState candidateState related,
+        induction checked.2⟩
+
 inductive PairedStackWordValueWitness where
   | exactInputs
   | exactExpression (witness : PairedExactExprWitness)
   | registerArgument (claim : RegisterArgumentClaim)
+  | stackRead32 (claim : PairedStackRead32ValueClaim)
   | mappedCodeTarget (targetId : Nat)
   | mappedDataTarget (targetId : Nat)
   | dynamicRange (relation : DynamicRegisterRangeRelation)
@@ -317,6 +1251,8 @@ def PairedStackWordValueClaim.checked (context : StaticProofContext)
         witness.checked context sourceInvariant
   | .registerArgument registerClaim =>
       registerClaim.checked sourceInvariant claim.original claim.candidate
+  | .stackRead32 stackReadClaim =>
+      stackReadClaim.checked sourceInvariant claim.original claim.candidate
   | .mappedCodeTarget targetId =>
       match claim.original.constantNat?, claim.candidate.constantNat? with
       | some original, some candidate =>
@@ -381,6 +1317,9 @@ theorem PairedStackWordValueClaim.related_of_checked
   | registerArgument registerClaim =>
       exact registerArgumentWordsRelated_of_checked context world sourceInvariant
         originalValue candidateValue registerClaim checked originalState candidateState related
+  | stackRead32 stackReadClaim =>
+      exact stackReadClaim.related_of_checked context world sourceInvariant
+        originalValue candidateValue checked originalState candidateState related
   | mappedCodeTarget targetId =>
       unfold PairedStackWordValueClaim.checked at checked
       cases originalResult : originalValue.constantNat? with
@@ -493,12 +1432,15 @@ theorem PairedStackWordValueClaim.staticRelationHolds_of_checked
             context world sourceInvariant originalValue candidateValue registerClaim checked
             compatible originalState candidateState related
           simpa [StaticWordRelationKind.holds, evaluationsEqual]
+      | stackRead32 stackReadClaim =>
+          simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | mappedCodeTarget targetId =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | mappedDataTarget targetId =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | dynamicRange relation =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
+
   | codePointer =>
       cases witness with
       | exactInputs =>
@@ -506,6 +1448,8 @@ theorem PairedStackWordValueClaim.staticRelationHolds_of_checked
       | exactExpression witness =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | registerArgument registerClaim =>
+          simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
+      | stackRead32 stackReadClaim =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | mappedCodeTarget targetId =>
           unfold PairedStackWordValueClaim.checked at checked
@@ -527,6 +1471,7 @@ theorem PairedStackWordValueClaim.staticRelationHolds_of_checked
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | dynamicRange relation =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
+
   | fixedCodePointer expectedTargetId =>
       cases witness with
       | exactInputs =>
@@ -534,6 +1479,8 @@ theorem PairedStackWordValueClaim.staticRelationHolds_of_checked
       | exactExpression witness =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | registerArgument registerClaim =>
+          simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
+      | stackRead32 stackReadClaim =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | mappedCodeTarget targetId =>
           simp only [PairedStackWordValueClaim.staticRelationCompatible,
@@ -563,6 +1510,8 @@ theorem PairedStackWordValueClaim.staticRelationHolds_of_checked
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | registerArgument registerClaim =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
+      | stackRead32 stackReadClaim =>
+          simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | mappedCodeTarget targetId =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | mappedDataTarget targetId =>
@@ -583,6 +1532,18 @@ theorem PairedStackWordValueClaim.staticRelationHolds_of_checked
                     (BitVec.ofNat 32 candidateWord) checked.1)
       | dynamicRange relation =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
+
+theorem PairedStackWordValueClaim.eval_equal_of_checked_exact
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant) (claim : PairedStackWordValueClaim)
+    (checked : claim.checked context sourceInvariant = true)
+    (compatible : claim.staticRelationCompatible .exact = true)
+    (originalState candidateState : MachineState)
+    (related : StateRel context world sourceInvariant originalState candidateState) :
+    claim.original.eval originalState = claim.candidate.eval candidateState := by
+  have exactHolds := claim.staticRelationHolds_of_checked context world
+    sourceInvariant .exact checked compatible originalState candidateState related
+  simpa [StaticWordRelationKind.holds] using exactHolds
 
 def PairedStackWordValueClaim.dynamicRelationCompatible
     (claim : PairedStackWordValueClaim) (relation : DynamicWordRelationKind) : Bool :=
@@ -616,6 +1577,8 @@ theorem PairedStackWordValueClaim.dynamicRelationHolds_of_checked
           simp [PairedStackWordValueClaim.dynamicRelationCompatible] at compatible
       | registerArgument registerClaim =>
           simp [PairedStackWordValueClaim.dynamicRelationCompatible] at compatible
+      | stackRead32 stackReadClaim =>
+          simp [PairedStackWordValueClaim.dynamicRelationCompatible] at compatible
       | mappedCodeTarget targetId =>
           unfold PairedStackWordValueClaim.checked at checked
           cases originalResult : originalValue.constantNat? with
@@ -642,6 +1605,8 @@ theorem PairedStackWordValueClaim.dynamicRelationHolds_of_checked
       | exactExpression witness =>
           simp [PairedStackWordValueClaim.dynamicRelationCompatible] at compatible
       | registerArgument registerClaim =>
+          simp [PairedStackWordValueClaim.dynamicRelationCompatible] at compatible
+      | stackRead32 stackReadClaim =>
           simp [PairedStackWordValueClaim.dynamicRelationCompatible] at compatible
       | mappedCodeTarget targetId =>
           simp [PairedStackWordValueClaim.dynamicRelationCompatible] at compatible
@@ -1677,6 +2642,8 @@ theorem pairedPreparedWordWritesSpillReadsBack
     (spillClaim : PreparedDynamicStackRangeSpillClaim)
     (originalState candidateState : MachineState)
     (originalBehavior candidateBehavior : RelationalBehavior)
+    (originalNoX87 : originalBehavior.x87Effect = none)
+    (candidateNoX87 : candidateBehavior.x87Effect = none)
     (contextValid : context.StructurallyValid)
     (related : StateRel context world sourceInvariant originalState candidateState)
     (writesChecked : writesClaim.checked context sourceInvariant = true)
@@ -1814,7 +2781,8 @@ theorem pairedPreparedWordWritesSpillReadsBack
               spillUpdate.candidateValue candidateFits
           constructor
           · rw [show (originalBehavior.nextMachineState originalState).memory =
-                applyConcreteWrites originalState.memory originalBehavior.writes by rfl]
+                applyConcreteWrites originalState.memory originalBehavior.writes by
+                  simp [RelationalBehavior.nextMachineState, originalNoX87]]
             rw [originalWrites]
             unfold PairedPreparedWordWritesClaim.originalWrites
             rw [writesExact, ← originalUpdateWritesAll]
@@ -1832,7 +2800,8 @@ theorem pairedPreparedWordWritesSpillReadsBack
             rw [← originalAddressExact, ← originalValueExact]
             exact originalRead
           · rw [show (candidateBehavior.nextMachineState candidateState).memory =
-                applyConcreteWrites candidateState.memory candidateBehavior.writes by rfl]
+                applyConcreteWrites candidateState.memory candidateBehavior.writes by
+                  simp [RelationalBehavior.nextMachineState, candidateNoX87]]
             rw [candidateWrites]
             unfold PairedPreparedWordWritesClaim.candidateWrites
             rw [writesExact, ← candidateUpdateWritesAll]
@@ -1880,6 +2849,61 @@ def NoWriteSegmentStateTransferClosed (context : StaticProofContext)
               (originalResult.nextMachineState originalState)
               (candidateResult.nextMachineState candidateState) = true
   | none => False
+
+/-- State transfer whose guard agreement is supplied by a linked or otherwise
+contextual composition proof.  As with `SegmentTransitionBodyClosed`, this has
+no standalone segment-refinement authority. -/
+def NoWriteSegmentStateTransferBodyClosed (context : StaticProofContext)
+    (edge : RelationalSegmentEdge) (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : SymbolicBehavior) : Prop :=
+  match context.codeMap.resolveIds edge.localCodeTargetIds with
+  | some localCodeTargets =>
+      ∀ world originalState candidateState originalResult candidateResult,
+        StateRel context world sourceInvariant originalState candidateState →
+        evalBehavior false localCodeTargets originalState originalBehavior =
+            some originalResult →
+        evalBehavior true localCodeTargets candidateState candidateBehavior =
+            some candidateResult →
+        edge.originalGuard.eval originalState =
+            edge.candidateGuard.eval candidateState →
+        edge.originalGuard.eval originalState = true →
+        registerRelationsHold context.originalPe.imageBase context.candidatePe.imageBase
+              context.codeMap.entries.toList (context.relationalValueTargets world)
+              targetInvariant.registerRelations originalResult.registers
+              candidateResult.registers = true ∧
+          boundsRelated targetInvariant.bounds originalResult.registers
+              candidateResult.registers = true ∧
+          addressSeparationsRelated targetInvariant.addressSeparations
+              originalResult.registers candidateResult.registers = true ∧
+          stackWindowsRelated world targetInvariant.stackWindows
+              originalResult.registers candidateResult.registers = true ∧
+          (originalResult.nextMachineState originalState).x87 =
+              (candidateResult.nextMachineState candidateState).x87 ∧
+          flagsRelated targetInvariant.flagBits originalResult.eflags
+              candidateResult.eflags = true ∧
+          pairedStatePredicatesHold targetInvariant.predicates
+              (originalResult.nextMachineState originalState)
+              (candidateResult.nextMachineState candidateState) = true
+  | none => False
+
+theorem NoWriteSegmentStateTransferClosed.body
+    (context : StaticProofContext) (edge : RelationalSegmentEdge)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (closed : NoWriteSegmentStateTransferClosed context edge sourceInvariant
+      targetInvariant originalBehavior candidateBehavior) :
+    NoWriteSegmentStateTransferBodyClosed context edge sourceInvariant
+      targetInvariant originalBehavior candidateBehavior := by
+  unfold NoWriteSegmentStateTransferClosed at closed
+  unfold NoWriteSegmentStateTransferBodyClosed
+  cases targets : context.codeMap.resolveIds edge.localCodeTargetIds with
+  | none => simp [targets] at closed
+  | some localCodeTargets =>
+      simp only [targets] at closed ⊢
+      intro world originalState candidateState originalResult candidateResult related
+        originalEval candidateEval _guardsAgree guardTrue
+      exact closed world originalState candidateState originalResult candidateResult
+        related originalEval candidateEval guardTrue
 
 def NoWriteSegmentImportTransferClosed (context : StaticProofContext)
     (edge : RelationalSegmentEdge) (sourceInvariant targetInvariant : StateInvariant)
@@ -1954,6 +2978,8 @@ theorem pairedStackWordFinalWriteReadsBack_amount
     (originalPrefix candidatePrefix : List (Word × Word))
     (originalState candidateState : MachineState)
     (originalBehavior candidateBehavior : RelationalBehavior)
+    (originalNoX87 : originalBehavior.x87Effect = none)
+    (candidateNoX87 : candidateBehavior.x87Effect = none)
     (related : StateRel context world sourceInvariant originalState candidateState)
     (sourceWindowMember : sourceWindow ∈ sourceInvariant.stackWindows)
     (stackAmountAtLeastWord : 4 <= stackAmount)
@@ -2000,7 +3026,7 @@ theorem pairedStackWordFinalWriteReadsBack_amount
   have candidateFits := DynamicAddressRangePair.wordAddress_fits context true
     location.range locationValid location.offset location.inside
   constructor
-  · simp only [RelationalBehavior.nextMachineState, originalWrites,
+  · simp only [RelationalBehavior.nextMachineState, originalNoX87, originalWrites,
       applyConcreteWrites, List.foldl_append, List.foldl]
     rw [originalLocation.symm.trans location.originalAddressExact]
     exact Memory.read32_write32_same_of_fits
@@ -2009,7 +3035,7 @@ theorem pairedStackWordFinalWriteReadsBack_amount
         originalState.memory)
       (location.range.originalBase + BitVec.ofNat 32 location.offset)
       originalValue originalFits
-  · simp only [RelationalBehavior.nextMachineState, candidateWrites,
+  · simp only [RelationalBehavior.nextMachineState, candidateNoX87, candidateWrites,
       applyConcreteWrites, List.foldl_append, List.foldl]
     rw [candidateLocation.symm.trans location.candidateAddressExact]
     exact Memory.read32_write32_same_of_fits
@@ -2026,6 +3052,8 @@ theorem pairedStackWordWriteReadsBack_amount
     (originalValue candidateValue : Word)
     (originalState candidateState : MachineState)
     (originalBehavior candidateBehavior : RelationalBehavior)
+    (originalNoX87 : originalBehavior.x87Effect = none)
+    (candidateNoX87 : candidateBehavior.x87Effect = none)
     (related : StateRel context world sourceInvariant originalState candidateState)
     (sourceWindowMember : sourceWindow ∈ sourceInvariant.stackWindows)
     (stackAmountAtLeastWord : 4 <= stackAmount)
@@ -2072,13 +3100,13 @@ theorem pairedStackWordWriteReadsBack_amount
   have candidateFits := DynamicAddressRangePair.wordAddress_fits context true
     location.range locationValid location.offset location.inside
   constructor
-  · simp only [RelationalBehavior.nextMachineState, originalWrites,
+  · simp only [RelationalBehavior.nextMachineState, originalNoX87, originalWrites,
       applyConcreteWrites, List.foldl]
     rw [originalLocation.symm.trans location.originalAddressExact]
     exact Memory.read32_write32_same_of_fits originalState.memory
       (location.range.originalBase + BitVec.ofNat 32 location.offset)
       originalValue originalFits
-  · simp only [RelationalBehavior.nextMachineState, candidateWrites,
+  · simp only [RelationalBehavior.nextMachineState, candidateNoX87, candidateWrites,
       applyConcreteWrites, List.foldl]
     rw [candidateLocation.symm.trans location.candidateAddressExact]
     exact Memory.read32_write32_same_of_fits candidateState.memory
@@ -2092,6 +3120,8 @@ theorem pairedStackWordWriteReadsBack_above_amount
     (originalValue candidateValue : Word)
     (originalState candidateState : MachineState)
     (originalBehavior candidateBehavior : RelationalBehavior)
+    (originalNoX87 : originalBehavior.x87Effect = none)
+    (candidateNoX87 : candidateBehavior.x87Effect = none)
     (related : StateRel context world sourceInvariant originalState candidateState)
     (sourceWindowMember : sourceWindow ∈ sourceInvariant.stackWindows)
     (stackOffsetAligned : stackOffset % 4 = 0)
@@ -2134,18 +3164,471 @@ theorem pairedStackWordWriteReadsBack_above_amount
   have candidateFits := DynamicAddressRangePair.wordAddress_fits context true
     location.range locationValid location.offset location.inside
   constructor
-  · simp only [RelationalBehavior.nextMachineState, originalWrites,
+  · simp only [RelationalBehavior.nextMachineState, originalNoX87, originalWrites,
       applyConcreteWrites, List.foldl]
     rw [originalLocation.symm.trans location.originalAddressExact]
     exact Memory.read32_write32_same_of_fits originalState.memory
       (location.range.originalBase + BitVec.ofNat 32 location.offset)
       originalValue originalFits
-  · simp only [RelationalBehavior.nextMachineState, candidateWrites,
+  · simp only [RelationalBehavior.nextMachineState, candidateNoX87, candidateWrites,
       applyConcreteWrites, List.foldl]
     rw [candidateLocation.symm.trans location.candidateAddressExact]
     exact Memory.read32_write32_same_of_fits candidateState.memory
       (location.range.candidateBase + BitVec.ofNat 32 location.offset)
       candidateValue candidateFits
+
+theorem stackWindowAboveWordsAvoid
+    (context : StaticProofContext) (world : RelationalWorld)
+    (window : StackWindowPair) (original candidate : PureState)
+    (rangesValid : world.stackRangesValid context = true)
+    (windowHolds : window.holds world original candidate = true)
+    (left right : Nat)
+    (leftInside : left + 4 <= window.bytesAbove)
+    (rightInside : right + 4 <= window.bytesAbove)
+    (disjoint : left + 4 <= right ∨ right + 4 <= left) :
+    Write32AvoidsWord
+        (original.get window.originalRegister + BitVec.ofNat 32 left)
+        (original.get window.originalRegister + BitVec.ofNat 32 right) ∧
+      Write32AvoidsWord
+        (candidate.get window.candidateRegister + BitVec.ofNat 32 left)
+        (candidate.get window.candidateRegister + BitVec.ofNat 32 right) := by
+  cases rangeResult : world.stackRanges.find? (fun range =>
+      range.id == window.rangeId) with
+  | none => simp [StackWindowPair.holds, rangeResult] at windowHolds
+  | some range =>
+      simp only [StackWindowPair.holds, rangeResult, Bool.and_eq_true,
+        beq_iff_eq, decide_eq_true_eq] at windowHolds
+      rcases windowHolds with
+        ⟨⟨⟨⟨⟨_originalLower, originalUpper⟩, _candidateLower⟩,
+          candidateUpper⟩, _pairedOffset⟩, _alignment⟩
+      have validRows := rangesValid
+      simp only [RelationalWorld.stackRangesValid, Bool.and_eq_true,
+        List.all_eq_true] at validRows
+      have rangeMember := List.mem_of_find?_eq_some rangeResult
+      have rangeValid := validRows.1.1.2 range rangeMember
+      simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
+        Bool.or_eq_true, decide_eq_true_eq] at rangeValid
+      rcases rangeValid with
+        ⟨⟨⟨disjointFromImages, _originalAligned⟩,
+          _candidateAligned⟩, _sizeAligned⟩
+      rcases disjointFromImages with
+        ⟨⟨⟨⟨_nonempty, originalNoWrap⟩, candidateNoWrap⟩,
+          _originalDisjoint⟩, _candidateDisjoint⟩
+      have leftSmall : left < 2 ^ 32 := by omega
+      have rightSmall : right < 2 ^ 32 := by omega
+      have originalLeftBefore :
+          (original.get window.originalRegister).toNat + left < 2 ^ 32 := by
+        omega
+      have originalRightBefore :
+          (original.get window.originalRegister).toNat + right < 2 ^ 32 := by
+        omega
+      have candidateLeftBefore :
+          (candidate.get window.candidateRegister).toNat + left < 2 ^ 32 := by
+        omega
+      have candidateRightBefore :
+          (candidate.get window.candidateRegister).toNat + right < 2 ^ 32 := by
+        omega
+      have originalLeftNat :
+          (original.get window.originalRegister + BitVec.ofNat 32 left).toNat =
+            (original.get window.originalRegister).toNat + left := by
+        simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+          Nat.mod_eq_of_lt leftSmall, Nat.mod_eq_of_lt originalLeftBefore]
+      have originalRightNat :
+          (original.get window.originalRegister + BitVec.ofNat 32 right).toNat =
+            (original.get window.originalRegister).toNat + right := by
+        simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+          Nat.mod_eq_of_lt rightSmall, Nat.mod_eq_of_lt originalRightBefore]
+      have candidateLeftNat :
+          (candidate.get window.candidateRegister + BitVec.ofNat 32 left).toNat =
+            (candidate.get window.candidateRegister).toNat + left := by
+        simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+          Nat.mod_eq_of_lt leftSmall, Nat.mod_eq_of_lt candidateLeftBefore]
+      have candidateRightNat :
+          (candidate.get window.candidateRegister + BitVec.ofNat 32 right).toNat =
+            (candidate.get window.candidateRegister).toNat + right := by
+        simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+          Nat.mod_eq_of_lt rightSmall, Nat.mod_eq_of_lt candidateRightBefore]
+      constructor
+      · apply write32AvoidsWord_of_nat_disjoint
+        · rw [originalLeftNat]
+          omega
+        · rw [originalRightNat]
+          omega
+        · rw [originalLeftNat, originalRightNat]
+          omega
+      · apply write32AvoidsWord_of_nat_disjoint
+        · rw [candidateLeftNat]
+          omega
+        · rw [candidateRightNat]
+          omega
+        · rw [candidateLeftNat, candidateRightNat]
+          omega
+
+theorem stackWindowAboveWordAvoidsBelowWord
+    (context : StaticProofContext) (world : RelationalWorld)
+    (window : StackWindowPair) (original candidate : PureState)
+    (rangesValid : world.stackRangesValid context = true)
+    (windowHolds : window.holds world original candidate = true)
+    (above below : Nat)
+    (aboveInside : above + 4 <= window.bytesAbove)
+    (belowAtLeastWord : 4 <= below)
+    (belowInside : below <= window.bytesBelow) :
+    Write32AvoidsWord
+        (original.get window.originalRegister + BitVec.ofNat 32 above)
+        (original.get window.originalRegister - BitVec.ofNat 32 below) ∧
+      Write32AvoidsWord
+        (candidate.get window.candidateRegister + BitVec.ofNat 32 above)
+        (candidate.get window.candidateRegister - BitVec.ofNat 32 below) := by
+  cases rangeResult : world.stackRanges.find? (fun range =>
+      range.id == window.rangeId) with
+  | none => simp [StackWindowPair.holds, rangeResult] at windowHolds
+  | some range =>
+      simp only [StackWindowPair.holds, rangeResult, Bool.and_eq_true,
+        beq_iff_eq, decide_eq_true_eq] at windowHolds
+      rcases windowHolds with
+        ⟨⟨⟨⟨⟨originalLower, originalUpper⟩, candidateLower⟩,
+          candidateUpper⟩, _pairedOffset⟩, _alignment⟩
+      have validRows := rangesValid
+      simp only [RelationalWorld.stackRangesValid, Bool.and_eq_true,
+        List.all_eq_true] at validRows
+      have rangeMember := List.mem_of_find?_eq_some rangeResult
+      have rangeValid := validRows.1.1.2 range rangeMember
+      simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
+        Bool.or_eq_true, decide_eq_true_eq] at rangeValid
+      rcases rangeValid with
+        ⟨⟨⟨disjointFromImages, _originalAligned⟩,
+          _candidateAligned⟩, _sizeAligned⟩
+      rcases disjointFromImages with
+        ⟨⟨⟨⟨_nonempty, originalNoWrap⟩, candidateNoWrap⟩,
+          _originalDisjoint⟩, _candidateDisjoint⟩
+      have aboveSmall : above < 2 ^ 32 := by omega
+      have belowSmall : below < 2 ^ 32 := by omega
+      have originalEnough : below <=
+          (original.get window.originalRegister).toNat := by omega
+      have candidateEnough : below <=
+          (candidate.get window.candidateRegister).toNat := by omega
+      have originalAboveBefore :
+          (original.get window.originalRegister).toNat + above < 2 ^ 32 := by
+        omega
+      have candidateAboveBefore :
+          (candidate.get window.candidateRegister).toNat + above < 2 ^ 32 := by
+        omega
+      have originalAboveNat :
+          (original.get window.originalRegister + BitVec.ofNat 32 above).toNat =
+            (original.get window.originalRegister).toNat + above := by
+        simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+          Nat.mod_eq_of_lt aboveSmall, Nat.mod_eq_of_lt originalAboveBefore]
+      have candidateAboveNat :
+          (candidate.get window.candidateRegister + BitVec.ofNat 32 above).toNat =
+            (candidate.get window.candidateRegister).toNat + above := by
+        simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+          Nat.mod_eq_of_lt aboveSmall, Nat.mod_eq_of_lt candidateAboveBefore]
+      have originalBelowNat :
+          (original.get window.originalRegister - BitVec.ofNat 32 below).toNat =
+            (original.get window.originalRegister).toNat - below := by
+        rw [BitVec.toNat_sub_of_le (by
+          rw [BitVec.le_def]
+          simpa [BitVec.toNat_ofNat, Nat.mod_eq_of_lt belowSmall])]
+        simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt belowSmall]
+      have candidateBelowNat :
+          (candidate.get window.candidateRegister - BitVec.ofNat 32 below).toNat =
+            (candidate.get window.candidateRegister).toNat - below := by
+        rw [BitVec.toNat_sub_of_le (by
+          rw [BitVec.le_def]
+          simpa [BitVec.toNat_ofNat, Nat.mod_eq_of_lt belowSmall])]
+        simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt belowSmall]
+      constructor
+      · apply write32AvoidsWord_of_nat_disjoint
+        · rw [originalAboveNat]
+          omega
+        · rw [originalBelowNat]
+          omega
+        · rw [originalAboveNat, originalBelowNat]
+          right
+          omega
+      · apply write32AvoidsWord_of_nat_disjoint
+        · rw [candidateAboveNat]
+          omega
+        · rw [candidateBelowNat]
+          omega
+        · rw [candidateAboveNat, candidateBelowNat]
+          right
+          omega
+
+theorem stackWindowLaterWritesAvoidSelected
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant) (window : StackWindowPair)
+    (selected : PairedStackWordWriteItem)
+    (later : List PairedStackWordWriteItem)
+    (originalState candidateState : MachineState)
+    (rangesValid : world.stackRangesValid context = true)
+    (windowHolds : window.holds world originalState.registers
+      candidateState.registers = true)
+    (selectedInside : selected.amount + 4 <= window.bytesAbove)
+    (laterChecked : later.all
+      (PairedStackWordWriteItem.checked context sourceInvariant window) = true)
+    (laterDisjoint : later.all (fun item => decide (
+      selected.amount + 4 <= item.amount ||
+        item.amount + 4 <= selected.amount)) = true) :
+    WritesAvoidWord
+        (originalState.registers.get window.originalRegister +
+          BitVec.ofNat 32 selected.amount)
+        (later.map fun item =>
+          ((item.originalAddress window).eval originalState,
+            item.value.original.eval originalState)) ∧
+      WritesAvoidWord
+        (candidateState.registers.get window.candidateRegister +
+          BitVec.ofNat 32 selected.amount)
+        (later.map fun item =>
+          ((item.candidateAddress window).eval candidateState,
+            item.value.candidate.eval candidateState)) := by
+  induction later with
+  | nil => simp [WritesAvoidWord]
+  | cons item rest induction =>
+      simp only [List.all_cons, Bool.and_eq_true] at laterChecked laterDisjoint
+      have itemChecked := laterChecked.1
+      simp only [PairedStackWordWriteItem.checked, Bool.and_eq_true,
+        beq_iff_eq, decide_eq_true_eq] at itemChecked
+      have itemDisjoint :
+          selected.amount + 4 <= item.amount ∨
+            item.amount + 4 <= selected.amount := by
+        simpa only [decide_eq_true_eq, Bool.or_eq_true] using laterDisjoint.1
+      have headAvoids := stackWindowAboveWordsAvoid context world window
+        originalState.registers candidateState.registers rangesValid windowHolds
+        selected.amount item.amount selectedInside itemChecked.1.2 itemDisjoint
+      have tailAvoids := induction laterChecked.2 laterDisjoint.2
+      constructor
+      · intro write member
+        simp only [List.map_cons, List.mem_cons] at member
+        rcases member with rfl | member
+        · simpa [PairedStackWordWriteItem.originalAddress,
+            pairedStackWordAddress_eval] using headAvoids.1
+        · exact tailAvoids.1 write member
+      · intro write member
+        simp only [List.map_cons, List.mem_cons] at member
+        rcases member with rfl | member
+        · simpa [PairedStackWordWriteItem.candidateAddress,
+            pairedStackWordAddress_eval] using headAvoids.2
+        · exact tailAvoids.2 write member
+
+theorem Memory.read32_applyConcreteWrites_selected
+    (memory : Memory) (before after : List (Word × Word))
+    (address value : Word) (fits : address.toNat + 4 <= 2 ^ 32)
+    (afterAvoids : WritesAvoidWord address after) :
+    Memory.read32
+        (applyConcreteWrites memory (before ++ (address, value) :: after)) address =
+      value := by
+  rw [show applyConcreteWrites memory (before ++ (address, value) :: after) =
+      applyConcreteWrites
+        ((applyConcreteWrites memory before).write32 address value) after by
+    simp [applyConcreteWrites, List.foldl_append]]
+  rw [Memory.read32_applyConcreteWrites_of_avoids _ _ _ afterAvoids]
+  exact Memory.read32_write32_same_of_fits _ _ _ fits
+
+theorem DirectCallStackWritesClaim.selectedExactWriteReadsBack
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant)
+    (originalNormalized candidateNormalized : NormalizedSymbolicBehavior)
+    (claim : DirectCallStackWritesClaim)
+    (before : List PairedStackWordWriteItem)
+    (selected : PairedStackWordWriteItem)
+    (after : List PairedStackWordWriteItem)
+    (originalState candidateState : MachineState)
+    (originalBehavior candidateBehavior : RelationalBehavior)
+    (claimChecked : claim.checked context sourceInvariant originalNormalized
+      candidateNormalized = true)
+    (writesExact : claim.stackWrites.writes = before ++ selected :: after)
+    (selectedExact : selected.value.staticRelationCompatible .exact = true)
+    (afterDisjoint : after.all (fun item => decide (
+      selected.amount + 4 <= item.amount ||
+        item.amount + 4 <= selected.amount)) = true)
+    (sourceWindowMember : claim.stackWrites.window ∈ sourceInvariant.stackWindows)
+    (related : StateRel context world sourceInvariant originalState candidateState)
+    (originalNoX87 : originalBehavior.x87Effect = none)
+    (candidateNoX87 : candidateBehavior.x87Effect = none)
+    (originalWrites : originalBehavior.writes = claim.originalWrites originalState)
+    (candidateWrites : candidateBehavior.writes = claim.candidateWrites candidateState) :
+    Memory.read32 (originalBehavior.nextMachineState originalState).memory
+        (originalState.registers.get claim.stackWrites.window.originalRegister +
+          BitVec.ofNat 32 selected.amount) =
+      Memory.read32 (candidateBehavior.nextMachineState candidateState).memory
+        (candidateState.registers.get claim.stackWrites.window.candidateRegister +
+          BitVec.ofNat 32 selected.amount) := by
+  simp only [DirectCallStackWritesClaim.checked, Bool.and_eq_true] at claimChecked
+  have preparedChecked := claimChecked.1.1
+  have frameChecked := claimChecked.1.2
+  simp only [DirectCallStackWritesClaim.preparedWritesChecked,
+    Bool.and_eq_true] at preparedChecked
+  have allItemsChecked := preparedChecked.2
+  simp only [List.all_eq_true] at allItemsChecked
+  have selectedMember : selected ∈ claim.stackWrites.writes := by
+    rw [writesExact]
+    simp
+  have selectedChecked := allItemsChecked selected selectedMember
+  have afterChecked : after.all
+      (PairedStackWordWriteItem.checked context sourceInvariant
+        claim.stackWrites.window) = true := by
+    simp only [List.all_eq_true]
+    intro item member
+    exact allItemsChecked item (by rw [writesExact]; simp [member])
+  simp only [PairedStackWordWriteItem.checked, Bool.and_eq_true,
+    beq_iff_eq, decide_eq_true_eq] at selectedChecked
+  have selectedAligned := selectedChecked.1.1
+  have selectedInside := selectedChecked.1.2
+  have selectedValuesEqual := selected.value.eval_equal_of_checked_exact
+    context world sourceInvariant selectedChecked.2 selectedExact originalState
+    candidateState related
+  simp only [DirectCallStackWritesClaim.frameChecked, Bool.and_eq_true,
+    decide_eq_true_eq, beq_iff_eq] at frameChecked
+  rcases frameChecked with
+    ⟨⟨⟨⟨⟨⟨stackAtLeast, _stackAligned⟩, stackFits⟩, enoughBelow⟩,
+      _calleePresent⟩, _continuationPair⟩, _zeroAgreement⟩
+  have relatedForWindow := related
+  rcases relatedForWindow with
+    ⟨_worldValid, rangesValid, _stackMemory, _importsStatic,
+      _importsComplete, _importsMemory, _originalImmutable,
+      _candidateImmutable, relatedCore, _trailing⟩
+  rcases relatedCore with
+    ⟨_inputRegisters, _inputBounds, _inputSeparations, inputStackWindows,
+      _inputMemory, _inputDynamicMemory, _inputUndefined, _inputX87,
+      _inputFlags, _inputFsBase⟩
+  simp only [stackWindowsRelated, List.all_eq_true] at inputStackWindows
+  have windowHolds := inputStackWindows claim.stackWrites.window sourceWindowMember
+  have laterAvoids := stackWindowLaterWritesAvoidSelected context world sourceInvariant
+    claim.stackWrites.window selected after originalState candidateState rangesValid
+    windowHolds selectedInside afterChecked afterDisjoint
+  have pushAvoids := stackWindowAboveWordAvoidsBelowWord context world
+    claim.stackWrites.window originalState.registers candidateState.registers
+    rangesValid windowHolds selected.amount claim.stackAmount selectedInside
+    stackAtLeast enoughBelow
+  rcases pairedStackWordLocation_above_window context world claim.stackWrites.window
+      originalState.registers candidateState.registers rangesValid windowHolds
+      selected.amount selectedAligned selectedInside with
+    ⟨location, originalLocation, candidateLocation⟩
+  have locationValid : location.range.disjointFromImages context = true := by
+    have validRows := rangesValid
+    simp only [RelationalWorld.stackRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at validRows
+    exact (validRows.1.1.2 location.range location.rangeMember).1.1.1
+  have originalFits := DynamicAddressRangePair.wordAddress_fits context false
+    location.range locationValid location.offset location.inside
+  have candidateFits := DynamicAddressRangePair.wordAddress_fits context true
+    location.range locationValid location.offset location.inside
+  let originalBeforeWrites : List (Word × Word) := before.map fun item =>
+    ((item.originalAddress claim.stackWrites.window).eval originalState,
+      item.value.original.eval originalState)
+  let candidateBeforeWrites : List (Word × Word) := before.map fun item =>
+    ((item.candidateAddress claim.stackWrites.window).eval candidateState,
+      item.value.candidate.eval candidateState)
+  let originalAfterWrites : List (Word × Word) := after.map fun item =>
+    ((item.originalAddress claim.stackWrites.window).eval originalState,
+      item.value.original.eval originalState)
+  let candidateAfterWrites : List (Word × Word) := after.map fun item =>
+    ((item.candidateAddress claim.stackWrites.window).eval candidateState,
+      item.value.candidate.eval candidateState)
+  let originalPush : Word × Word :=
+    (claim.originalPushAddress.eval originalState,
+      BitVec.ofNat 32 claim.originalReturnAddress)
+  let candidatePush : Word × Word :=
+    (claim.candidatePushAddress.eval candidateState,
+      BitVec.ofNat 32 claim.candidateReturnAddress)
+  have originalTailAvoids : WritesAvoidWord
+      (originalState.registers.get claim.stackWrites.window.originalRegister +
+        BitVec.ofNat 32 selected.amount) (originalAfterWrites ++ [originalPush]) := by
+    intro write member
+    simp only [List.mem_append, List.mem_singleton] at member
+    rcases member with member | rfl
+    · exact laterAvoids.1 write member
+    · simpa [originalPush, DirectCallStackWritesClaim.originalPushAddress,
+        Expr.eval, word_add_ia32_twos_complement _ claim.stackAmount stackFits]
+        using pushAvoids.1
+  have candidateTailAvoids : WritesAvoidWord
+      (candidateState.registers.get claim.stackWrites.window.candidateRegister +
+        BitVec.ofNat 32 selected.amount) (candidateAfterWrites ++ [candidatePush]) := by
+    intro write member
+    simp only [List.mem_append, List.mem_singleton] at member
+    rcases member with member | rfl
+    · exact laterAvoids.2 write member
+    · simpa [candidatePush, DirectCallStackWritesClaim.candidatePushAddress,
+        Expr.eval, word_add_ia32_twos_complement _ claim.stackAmount stackFits]
+        using pushAvoids.2
+  have originalAddress :
+      (selected.originalAddress claim.stackWrites.window).eval originalState =
+        location.originalAddress := by
+    simpa [PairedStackWordWriteItem.originalAddress,
+      pairedStackWordAddress_eval] using originalLocation.symm
+  have candidateAddress :
+      (selected.candidateAddress claim.stackWrites.window).eval candidateState =
+        location.candidateAddress := by
+    simpa [PairedStackWordWriteItem.candidateAddress,
+      pairedStackWordAddress_eval] using candidateLocation.symm
+  have originalAddressFits :
+      ((selected.originalAddress claim.stackWrites.window).eval originalState).toNat +
+          4 <= 2 ^ 32 := by
+    rw [originalAddress, location.originalAddressExact]
+    exact originalFits
+  have candidateAddressFits :
+      ((selected.candidateAddress claim.stackWrites.window).eval candidateState).toNat +
+          4 <= 2 ^ 32 := by
+    rw [candidateAddress, location.candidateAddressExact]
+    exact candidateFits
+  have originalTailAvoidsSelected : WritesAvoidWord
+      ((selected.originalAddress claim.stackWrites.window).eval originalState)
+      (originalAfterWrites ++ [originalPush]) := by
+    simpa [PairedStackWordWriteItem.originalAddress,
+      pairedStackWordAddress_eval] using originalTailAvoids
+  have candidateTailAvoidsSelected : WritesAvoidWord
+      ((selected.candidateAddress claim.stackWrites.window).eval candidateState)
+      (candidateAfterWrites ++ [candidatePush]) := by
+    simpa [PairedStackWordWriteItem.candidateAddress,
+      pairedStackWordAddress_eval] using candidateTailAvoids
+  have originalWritesShape : claim.originalWrites originalState =
+      originalBeforeWrites ++
+        ((selected.originalAddress claim.stackWrites.window).eval originalState,
+          selected.value.original.eval originalState) ::
+        (originalAfterWrites ++ [originalPush]) := by
+    simp [DirectCallStackWritesClaim.originalWrites,
+      PairedStackWordWritesClaim.originalWrites, writesExact,
+      originalBeforeWrites, originalAfterWrites, originalPush]
+  have candidateWritesShape : claim.candidateWrites candidateState =
+      candidateBeforeWrites ++
+        ((selected.candidateAddress claim.stackWrites.window).eval candidateState,
+          selected.value.candidate.eval candidateState) ::
+        (candidateAfterWrites ++ [candidatePush]) := by
+    simp [DirectCallStackWritesClaim.candidateWrites,
+      PairedStackWordWritesClaim.candidateWrites, writesExact,
+      candidateBeforeWrites, candidateAfterWrites, candidatePush]
+  have originalRead :
+      Memory.read32 (originalBehavior.nextMachineState originalState).memory
+          ((selected.originalAddress claim.stackWrites.window).eval originalState) =
+        selected.value.original.eval originalState := by
+    rw [show (originalBehavior.nextMachineState originalState).memory =
+        applyConcreteWrites originalState.memory originalBehavior.writes by
+          simp [RelationalBehavior.nextMachineState, originalNoX87]]
+    rw [originalWrites, originalWritesShape]
+    exact Memory.read32_applyConcreteWrites_selected originalState.memory
+      originalBeforeWrites (originalAfterWrites ++ [originalPush])
+      ((selected.originalAddress claim.stackWrites.window).eval originalState)
+      (selected.value.original.eval originalState) originalAddressFits
+      originalTailAvoidsSelected
+  have candidateRead :
+      Memory.read32 (candidateBehavior.nextMachineState candidateState).memory
+          ((selected.candidateAddress claim.stackWrites.window).eval candidateState) =
+        selected.value.candidate.eval candidateState := by
+    rw [show (candidateBehavior.nextMachineState candidateState).memory =
+        applyConcreteWrites candidateState.memory candidateBehavior.writes by
+          simp [RelationalBehavior.nextMachineState, candidateNoX87]]
+    rw [candidateWrites, candidateWritesShape]
+    exact Memory.read32_applyConcreteWrites_selected candidateState.memory
+      candidateBeforeWrites (candidateAfterWrites ++ [candidatePush])
+      ((selected.candidateAddress claim.stackWrites.window).eval candidateState)
+      (selected.value.candidate.eval candidateState) candidateAddressFits
+      candidateTailAvoidsSelected
+  rw [← pairedStackWordAddress_eval claim.stackWrites.window.originalRegister
+      selected.amount originalState,
+    ← pairedStackWordAddress_eval claim.stackWrites.window.candidateRegister
+      selected.amount candidateState]
+  exact originalRead.trans (selectedValuesEqual.trans candidateRead.symm)
 
 theorem pairedStackWordWriteReadsBack
     (context : StaticProofContext) (world : RelationalWorld)
@@ -2153,6 +3636,8 @@ theorem pairedStackWordWriteReadsBack
     (originalValue candidateValue : Word)
     (originalState candidateState : MachineState)
     (originalBehavior candidateBehavior : RelationalBehavior)
+    (originalNoX87 : originalBehavior.x87Effect = none)
+    (candidateNoX87 : candidateBehavior.x87Effect = none)
     (related : StateRel context world sourceInvariant originalState candidateState)
     (sourceWindowMember : sourceWindow ∈ sourceInvariant.stackWindows)
     (sourceWindowEnoughBelow : 4 <= sourceWindow.bytesBelow)
@@ -2170,7 +3655,8 @@ theorem pairedStackWordWriteReadsBack
           candidateValue := by
   exact pairedStackWordWriteReadsBack_amount context world sourceInvariant sourceWindow
     4 originalValue candidateValue originalState candidateState originalBehavior
-    candidateBehavior related sourceWindowMember (by decide) (by decide)
+    candidateBehavior originalNoX87 candidateNoX87 related sourceWindowMember
+    (by decide) (by decide)
     sourceWindowEnoughBelow originalWrites candidateWrites
 
 theorem noWriteSegmentDynamicStackTransferClosed_of_spill
@@ -2235,6 +3721,18 @@ theorem noWriteSegmentDynamicStackTransferClosed_of_spill
     Option.some.inj shapeCandidateEval
   subst shapeOriginalResult
   subst shapeCandidateResult
+  have originalNoX87 := evalBehavior_x87Effect_none false localCodeTargets
+    originalState originalBehavior originalResult originalEval
+  have candidateNoX87 := evalBehavior_x87Effect_none true localCodeTargets
+    candidateState candidateBehavior candidateResult candidateEval
+  have originalRegistersExact :
+      (originalResult.nextMachineState originalState).registers =
+        originalResult.registers := by
+    simp [RelationalBehavior.nextMachineState, originalNoX87]
+  have candidateRegistersExact :
+      (candidateResult.nextMachineState candidateState).registers =
+        candidateResult.registers := by
+    simp [RelationalBehavior.nextMachineState, candidateNoX87]
   have outputBases := basePreserved originalState candidateState originalResult
     candidateResult originalEval candidateEval
   have sourceDynamic := related.activeDynamicRegisterRangesHold context world
@@ -2265,7 +3763,8 @@ theorem noWriteSegmentDynamicStackTransferClosed_of_spill
     sourceInvariant writeClaim.window writeClaim.amount
     (originalState.registers.get spillClaim.sourceRelation.original)
     (candidateState.registers.get spillClaim.sourceRelation.candidate)
-    originalState candidateState originalResult candidateResult relatedForReadback
+    originalState candidateState originalResult candidateResult originalNoX87
+    candidateNoX87 relatedForReadback
     (List.contains_iff_mem.mp sourceWindowMember) writeOffsetAligned
     sourceWindowEnoughAbove originalWrites candidateWrites
   have stackRangesValid : world.stackRangesValid context = true := related.2.1
@@ -2312,7 +3811,7 @@ theorem noWriteSegmentDynamicStackTransferClosed_of_spill
       (originalResult.nextMachineState originalState).memory
       (candidateResult.nextMachineState candidateState).memory = true := by
     simpa [RelationalBehavior.nextMachineState, originalWrites, candidateWrites,
-      applyConcreteWrites] using outputWords
+      originalNoX87, candidateNoX87, applyConcreteWrites] using outputWords
   rw [targetInventory]
   simp only [activeDynamicStackRangeRelationsHold, List.all_cons, List.all_nil,
     Bool.and_true]
@@ -2320,6 +3819,7 @@ theorem noWriteSegmentDynamicStackTransferClosed_of_spill
   simp only [Bool.and_eq_true, List.any_eq_true, beq_iff_eq]
   refine ⟨?_, range, rangeMember, ?_⟩
   · rw [targetWindowExact]
+    rw [originalRegistersExact, candidateRegistersExact]
     change writeClaim.window.holds world originalResult.registers
       candidateResult.registers = true
     unfold StackWindowPair.holds
@@ -2327,12 +3827,14 @@ theorem noWriteSegmentDynamicStackTransferClosed_of_spill
     simpa only [StackWindowPair.holds] using sourceWindowHolds
   · refine ⟨⟨⟨⟨?_, ?_⟩, ?_⟩, activeWordsSubset⟩, outputWordsExact⟩
     · rw [targetWindowExact, targetStackOffsetExact]
+      rw [originalRegistersExact]
       change Memory.read32 (originalResult.nextMachineState originalState).memory
         (originalResult.registers.get writeClaim.window.originalRegister +
           BitVec.ofNat 32 writeClaim.amount) = _
       rw [outputBases.1, readsBack.1,
         sourceOriginalValue, targetOriginalOffsetExact]
     · rw [targetWindowExact, targetStackOffsetExact]
+      rw [candidateRegistersExact]
       change Memory.read32 (candidateResult.nextMachineState candidateState).memory
         (candidateResult.registers.get writeClaim.window.candidateRegister +
           BitVec.ofNat 32 writeClaim.amount) = _
@@ -2399,6 +3901,18 @@ theorem noWriteSegmentDynamicStackTransferClosed_of_prepared_spill
     Option.some.inj shapeCandidateEval
   subst shapeOriginalResult
   subst shapeCandidateResult
+  have originalNoX87 := evalBehavior_x87Effect_none false localCodeTargets
+    originalState originalBehavior originalResult originalEval
+  have candidateNoX87 := evalBehavior_x87Effect_none true localCodeTargets
+    candidateState candidateBehavior candidateResult candidateEval
+  have originalRegistersExact :
+      (originalResult.nextMachineState originalState).registers =
+        originalResult.registers := by
+    simp [RelationalBehavior.nextMachineState, originalNoX87]
+  have candidateRegistersExact :
+      (candidateResult.nextMachineState candidateState).registers =
+        candidateResult.registers := by
+    simp [RelationalBehavior.nextMachineState, candidateNoX87]
   have outputBases := basePreserved originalState candidateState originalResult
     candidateResult originalEval candidateEval
   have sourceDynamic := related.activeDynamicRegisterRangesHold context world
@@ -2415,8 +3929,8 @@ theorem noWriteSegmentDynamicStackTransferClosed_of_prepared_spill
         sourceRequiredWords⟩, _sourceActiveWords⟩, sourceWordsHold⟩⟩
   have readsBack := pairedPreparedWordWritesSpillReadsBack context world
     sourceInvariant targetInvariant writesClaim spillClaim originalState candidateState
-    originalResult candidateResult contextValid relatedForReadback writesChecked
-    spillCheckedForReadback
+    originalResult candidateResult originalNoX87 candidateNoX87 contextValid
+    relatedForReadback writesChecked spillCheckedForReadback
     shapeOriginalWrites shapeCandidateWrites
   have writesRows := writesChecked
   simp only [PairedPreparedWordWritesClaim.checked, Bool.and_eq_true] at writesRows
@@ -2457,7 +3971,7 @@ theorem noWriteSegmentDynamicStackTransferClosed_of_prepared_spill
       (originalResult.nextMachineState originalState).memory
       (candidateResult.nextMachineState candidateState).memory = true := by
     simpa [RelationalBehavior.nextMachineState, shapeOriginalWrites,
-      shapeCandidateWrites] using outputWords
+      shapeCandidateWrites, originalNoX87, candidateNoX87] using outputWords
   rw [targetInventory]
   simp only [activeDynamicStackRangeRelationsHold, List.all_cons, List.all_nil,
     Bool.and_true]
@@ -2472,6 +3986,7 @@ theorem noWriteSegmentDynamicStackTransferClosed_of_prepared_spill
     simp only [stackWindowsRelated, List.all_eq_true] at sourceWindowRelations
     have sourceWindowHolds := sourceWindowRelations spillClaim.window
       (List.contains_iff_mem.mp sourceWindowMember)
+    rw [originalRegistersExact, candidateRegistersExact]
     change spillClaim.window.holds world originalResult.registers
       candidateResult.registers = true
     unfold StackWindowPair.holds
@@ -2479,12 +3994,14 @@ theorem noWriteSegmentDynamicStackTransferClosed_of_prepared_spill
     simpa only [StackWindowPair.holds] using sourceWindowHolds
   · refine ⟨⟨⟨⟨?_, ?_⟩, ?_⟩, activeWordsSubset⟩, outputWordsExact⟩
     · rw [targetWindowExact, targetStackOffsetExact]
+      rw [originalRegistersExact]
       change Memory.read32 (originalResult.nextMachineState originalState).memory
         (originalResult.registers.get spillClaim.window.originalRegister +
           BitVec.ofNat 32 spillClaim.amount) = _
       rw [outputBases.1, readsBack.1,
         sourceOriginalValue, targetOriginalOffsetExact]
     · rw [targetWindowExact, targetStackOffsetExact]
+      rw [candidateRegistersExact]
       change Memory.read32 (candidateResult.nextMachineState candidateState).memory
         (candidateResult.registers.get spillClaim.window.candidateRegister +
           BitVec.ofNat 32 spillClaim.amount) = _
@@ -2503,6 +4020,8 @@ theorem StateRel.afterNoWriteEvaluation
     (related : StateRel context world sourceInvariant originalState candidateState)
     (originalWrites : originalBehavior.writes = [])
     (candidateWrites : candidateBehavior.writes = [])
+    (originalNoX87 : originalBehavior.x87Effect = none)
+    (candidateNoX87 : candidateBehavior.x87Effect = none)
     (registers : registerRelationsHold context.originalPe.imageBase
       context.candidatePe.imageBase context.codeMap.entries.toList
       (context.relationalValueTargets world) targetInvariant.registerRelations
@@ -2539,18 +4058,37 @@ theorem StateRel.afterNoWriteEvaluation
       importsMemory, originalImmutable, candidateImmutable, relatedCore,
       _inputImportRegisters⟩
   rcases relatedCore with
-    ⟨_, _, _, _, inputMemory, inputDynamicWords, inputUndefined, _, _, inputFsBase⟩
+    ⟨_, _, _, _, inputMemory, inputDynamicWords, inputUndefined, inputX87, _,
+      inputFsBase⟩
+  have outputX87 : MachineX87Related context world
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) := by
+    refine ⟨x87, ?_, ?_⟩
+    · simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using inputX87.2.1
+    · simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using inputX87.2.2
   refine ⟨worldStatic, stackRangesValid, ?_, importsStatic, importsComplete,
     ?_, ?_, ?_, ?_, ?_⟩
   · simpa [RelationalBehavior.nextMachineState, originalWrites,
-      candidateWrites] using stackMemory
+      candidateWrites, originalNoX87, candidateNoX87] using stackMemory
   · simpa [RelationalBehavior.nextMachineState, originalWrites,
-      candidateWrites] using importsMemory
-  · simpa [RelationalBehavior.nextMachineState, originalWrites] using originalImmutable
-  · simpa [RelationalBehavior.nextMachineState, candidateWrites] using candidateImmutable
-  · refine ⟨registers, bounds, separations, stackWindows, ?_, ?_, ?_, x87, ?_, ?_⟩
+      candidateWrites, originalNoX87, candidateNoX87] using importsMemory
+  · simpa [RelationalBehavior.nextMachineState, originalWrites,
+      originalNoX87] using originalImmutable
+  · simpa [RelationalBehavior.nextMachineState, candidateWrites,
+      candidateNoX87] using candidateImmutable
+  · refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, outputX87, ?_, ?_⟩
+    · simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using registers
+    · simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using bounds
+    · simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using separations
+    · simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using stackWindows
     · simpa [RelationalBehavior.nextMachineState, originalWrites,
-        candidateWrites] using
+        candidateWrites, originalNoX87, candidateNoX87] using
         ordinaryMemoryRelated_after_no_writes context world
           context.codeMap.entries.toList (context.relationalValueTargets world)
           originalState.memory candidateState.memory inputMemory
@@ -2566,19 +4104,23 @@ theorem StateRel.afterNoWriteEvaluation
       exact {
         staticPointerSlots := by
           simpa [originalNext, candidateNext, RelationalBehavior.nextMachineState,
-            originalWrites, candidateWrites] using inputDynamicWords.staticPointerSlots
+            originalWrites, candidateWrites, originalNoX87, candidateNoX87] using
+            inputDynamicWords.staticPointerSlots
         staticWordSlots := by
           simpa [originalNext, candidateNext, RelationalBehavior.nextMachineState,
-            originalWrites, candidateWrites] using inputDynamicWords.staticWordSlots
+            originalWrites, candidateWrites, originalNoX87, candidateNoX87] using
+            inputDynamicWords.staticWordSlots
         active := {
           registerRanges := outputDynamicRegisters
           stackRanges := outputDynamicStacks
         }
       }
     · simpa [RelationalBehavior.nextMachineState] using inputUndefined
-    · simpa [RelationalBehavior.nextMachineState] using flags
+    · simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using flags
     · simpa [RelationalBehavior.nextMachineState] using inputFsBase
-  · exact ⟨by simpa [RelationalBehavior.nextMachineState] using importRegisters,
+  · exact ⟨by simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using importRegisters,
       dynamicRegisterRangeRelationsHold_of_active context world
         targetInvariant.dynamicRegisterRangeRelations _ _ dynamicRegisters,
       dynamicStackRangeRelationsHold_of_active context world
@@ -2594,6 +4136,8 @@ theorem StateRel.afterPairedMemoryFamiliesUpdate
     (related : StateRel context world sourceInvariant originalState candidateState)
     (originalWritesExact : originalBehavior.writes = originalWrites)
     (candidateWritesExact : candidateBehavior.writes = candidateWrites)
+    (originalNoX87 : originalBehavior.x87Effect = none)
+    (candidateNoX87 : candidateBehavior.x87Effect = none)
     (memoryFamilies : RelationalMemoryFamiliesHold context world
       (applyConcreteWrites originalState.memory originalWrites)
       (applyConcreteWrites candidateState.memory candidateWrites))
@@ -2633,21 +4177,42 @@ theorem StateRel.afterPairedMemoryFamiliesUpdate
       _importsMemory, _originalImmutable, _candidateImmutable, relatedCore,
       _inputImportRegisters⟩
   rcases relatedCore with
-    ⟨_, _, _, _, _inputMemory, _inputDynamicWords, inputUndefined, _, _,
+    ⟨_, _, _, _, _inputMemory, _inputDynamicWords, inputUndefined, inputX87, _,
       inputFsBase⟩
+  have outputX87 : MachineX87Related context world
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) := by
+    refine ⟨x87, ?_, ?_⟩
+    · simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using inputX87.2.1
+    · simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using inputX87.2.2
   refine ⟨worldStatic, stackRangesValid, ?_, importsStatic, importsComplete,
     ?_, ?_, ?_, ?_, ?_⟩
   · simpa [RelationalBehavior.nextMachineState, originalWritesExact,
-      candidateWritesExact] using memoryFamilies.stackRanges
+      candidateWritesExact, originalNoX87, candidateNoX87] using
+      memoryFamilies.stackRanges
   · simpa [RelationalBehavior.nextMachineState, originalWritesExact,
-      candidateWritesExact] using memoryFamilies.importAddresses
-  · simpa [RelationalBehavior.nextMachineState, originalWritesExact] using
+      candidateWritesExact, originalNoX87, candidateNoX87] using
+      memoryFamilies.importAddresses
+  · simpa [RelationalBehavior.nextMachineState, originalWritesExact,
+      originalNoX87] using
       memoryFamilies.originalImmutable
-  · simpa [RelationalBehavior.nextMachineState, candidateWritesExact] using
+  · simpa [RelationalBehavior.nextMachineState, candidateWritesExact,
+      candidateNoX87] using
       memoryFamilies.candidateImmutable
-  · refine ⟨registers, bounds, separations, stackWindows, ?_, ?_, ?_, x87, ?_, ?_⟩
+  · refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, outputX87, ?_, ?_⟩
+    · simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using registers
+    · simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using bounds
+    · simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using separations
+    · simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using stackWindows
     · simpa [RelationalBehavior.nextMachineState, originalWritesExact,
-        candidateWritesExact] using memoryFamilies.ordinary
+        candidateWritesExact, originalNoX87, candidateNoX87] using
+        memoryFamilies.ordinary
     · let originalNext := originalBehavior.nextMachineState originalState
       let candidateNext := candidateBehavior.nextMachineState candidateState
       have outputDynamicRegisters : activeDynamicRegisterRangeRelationsHold
@@ -2660,11 +4225,13 @@ theorem StateRel.afterPairedMemoryFamiliesUpdate
       exact {
         staticPointerSlots := by
           simpa [originalNext, candidateNext, RelationalBehavior.nextMachineState,
-            originalWritesExact, candidateWritesExact] using
+            originalWritesExact, candidateWritesExact, originalNoX87,
+            candidateNoX87] using
             memoryFamilies.staticPointerSlots
         staticWordSlots := by
           simpa [originalNext, candidateNext, RelationalBehavior.nextMachineState,
-            originalWritesExact, candidateWritesExact] using
+            originalWritesExact, candidateWritesExact, originalNoX87,
+            candidateNoX87] using
             memoryFamilies.staticWordSlots
         active := {
           registerRanges := outputDynamicRegisters
@@ -2672,9 +4239,11 @@ theorem StateRel.afterPairedMemoryFamiliesUpdate
         }
       }
     · simpa [RelationalBehavior.nextMachineState] using inputUndefined
-    · simpa [RelationalBehavior.nextMachineState] using flags
+    · simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using flags
     · simpa [RelationalBehavior.nextMachineState] using inputFsBase
-  · exact ⟨by simpa [RelationalBehavior.nextMachineState] using importRegisters,
+  · exact ⟨by simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using importRegisters,
       dynamicRegisterRangeRelationsHold_of_active context world
         targetInvariant.dynamicRegisterRangeRelations _ _ dynamicRegisters,
       dynamicStackRangeRelationsHold_of_active context world
@@ -2726,6 +4295,10 @@ theorem segmentTransitionClosed_of_no_write_with_transfers
   rcases shapeClosed guardTrue with
     ⟨originalResult, candidateResult, originalEval, candidateEval, originalWrites,
       candidateWrites, originalExit, candidateExit, outcomes⟩
+  have originalNoX87 := evalBehavior_x87Effect_none false localCodeTargets
+    originalState originalBehavior originalResult originalEval
+  have candidateNoX87 := evalBehavior_x87Effect_none true localCodeTargets
+    candidateState candidateBehavior candidateResult candidateEval
   rw [originalEval, candidateEval]
   refine ⟨originalExit, candidateExit, outcomes, ?_⟩
   cases edge.exit with
@@ -2742,8 +4315,77 @@ theorem segmentTransitionClosed_of_no_write_with_transfers
         originalResult candidateResult related originalEval candidateEval guardTrue
       exact StateRel.afterNoWriteEvaluation context world sourceInvariant
         targetInvariant originalState candidateState originalResult candidateResult
-        relatedForTransfer originalWrites candidateWrites registers bounds separations
-        stackWindows x87 flags outputImports outputDynamic outputDynamicStack predicates
+        relatedForTransfer originalWrites candidateWrites originalNoX87 candidateNoX87
+        registers bounds separations stackWindows x87 flags outputImports outputDynamic
+        outputDynamicStack predicates
+  | external imported => trivial
+  | returned => trivial
+  | fault => trivial
+
+theorem segmentTransitionBodyClosed_of_no_write_with_transfers
+    (context : StaticProofContext) (edge : RelationalSegmentEdge)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (localCodeTargets : List CodeTargetPair) (localValues : List ValueTargetPair)
+    (localCodeTargetsResolved :
+      context.codeMap.resolveIds edge.localCodeTargetIds = some localCodeTargets)
+    (localValuesResolved :
+      context.dataMap.resolveIds edge.localValueTargetIds = some localValues)
+    (shape : NoWriteSegmentShapeBodyClosed context edge sourceInvariant
+      originalBehavior candidateBehavior)
+    (stateTransfer : NoWriteSegmentStateTransferBodyClosed context edge sourceInvariant
+      targetInvariant originalBehavior candidateBehavior)
+    (importTransfer : NoWriteSegmentImportTransferClosed context edge sourceInvariant
+      targetInvariant originalBehavior candidateBehavior)
+    (dynamicTransfer : NoWriteSegmentDynamicTransferClosed context edge sourceInvariant
+      targetInvariant originalBehavior candidateBehavior)
+    (dynamicStackTransfer : NoWriteSegmentDynamicStackTransferClosed context edge
+      sourceInvariant targetInvariant originalBehavior candidateBehavior) :
+    SegmentTransitionBodyClosed context edge sourceInvariant targetInvariant
+      originalBehavior candidateBehavior := by
+  unfold SegmentTransitionBodyClosed
+  rw [localCodeTargetsResolved, localValuesResolved]
+  unfold NoWriteSegmentShapeBodyClosed at shape
+  rw [localCodeTargetsResolved, localValuesResolved] at shape
+  unfold NoWriteSegmentStateTransferBodyClosed at stateTransfer
+  rw [localCodeTargetsResolved] at stateTransfer
+  unfold NoWriteSegmentImportTransferClosed at importTransfer
+  rw [localCodeTargetsResolved] at importTransfer
+  unfold NoWriteSegmentDynamicTransferClosed at dynamicTransfer
+  rw [localCodeTargetsResolved] at dynamicTransfer
+  unfold NoWriteSegmentDynamicStackTransferClosed at dynamicStackTransfer
+  rw [localCodeTargetsResolved] at dynamicStackTransfer
+  intro world originalState candidateState related guardsAgree guardTrue
+  have relatedForShape := related
+  have relatedForTransfer := related
+  have relatedForImports := related
+  have relatedForDynamic := related
+  rcases shape world originalState candidateState relatedForShape guardsAgree guardTrue with
+    ⟨originalResult, candidateResult, originalEval, candidateEval, originalWrites,
+      candidateWrites, originalExit, candidateExit, outcomes⟩
+  have originalNoX87 := evalBehavior_x87Effect_none false localCodeTargets
+    originalState originalBehavior originalResult originalEval
+  have candidateNoX87 := evalBehavior_x87Effect_none true localCodeTargets
+    candidateState candidateBehavior candidateResult candidateEval
+  rw [originalEval, candidateEval]
+  refine ⟨originalExit, candidateExit, outcomes, ?_⟩
+  cases edge.exit with
+  | internal target =>
+      rcases stateTransfer world originalState candidateState originalResult
+          candidateResult related originalEval candidateEval guardsAgree guardTrue with
+        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
+      have outputImports := importTransfer world originalState candidateState
+        originalResult candidateResult relatedForImports originalEval candidateEval
+      have outputDynamic := dynamicTransfer world originalState candidateState
+        originalResult candidateResult relatedForDynamic originalEval candidateEval
+        guardTrue
+      have outputDynamicStack := dynamicStackTransfer world originalState candidateState
+        originalResult candidateResult related originalEval candidateEval guardTrue
+      exact StateRel.afterNoWriteEvaluation context world sourceInvariant
+        targetInvariant originalState candidateState originalResult candidateResult
+        relatedForTransfer originalWrites candidateWrites originalNoX87 candidateNoX87
+        registers bounds separations stackWindows x87 flags outputImports outputDynamic
+        outputDynamicStack predicates
   | external imported => trivial
   | returned => trivial
   | fault => trivial
@@ -2806,6 +4448,10 @@ theorem segmentTransitionClosed_of_direct_call_with_transfers
   rcases shapeClosed guardTrue with
     ⟨originalResult, candidateResult, originalEval, candidateEval,
       originalWrites, candidateWrites, originalExit, candidateExit, outcomes⟩
+  have originalNoX87 := evalBehavior_x87Effect_none false localCodeTargets
+    originalState originalBehavior originalResult originalEval
+  have candidateNoX87 := evalBehavior_x87Effect_none true localCodeTargets
+    candidateState candidateBehavior candidateResult candidateEval
   rw [originalEval, candidateEval]
   refine ⟨originalExit, candidateExit, outcomes, ?_⟩
   cases edge.exit with
@@ -2886,6 +4532,7 @@ theorem segmentTransitionClosed_of_direct_call_with_transfers
         [(candidateState.registers.get sourceWindow.candidateRegister -
             BitVec.ofNat 32 stackAmount,
           candidateReturnAddress)] related originalWrites candidateWrites
+        originalNoX87 candidateNoX87
       · simpa [applyConcreteWrites, originalWriteAddress, candidateWriteAddress] using
           outputMemoryFamilies
       · exact registers
@@ -2959,6 +4606,10 @@ theorem segmentTransitionClosed_of_paired_stack_word_write_with_transfers
   rcases shapeClosed guardTrue with
     ⟨originalResult, candidateResult, originalEval, candidateEval,
       originalWrites, candidateWrites, originalExit, candidateExit, outcomes⟩
+  have originalNoX87 := evalBehavior_x87Effect_none false localCodeTargets
+    originalState originalBehavior originalResult originalEval
+  have candidateNoX87 := evalBehavior_x87Effect_none true localCodeTargets
+    candidateState candidateBehavior candidateResult candidateEval
   rw [originalEval, candidateEval]
   refine ⟨originalExit, candidateExit, outcomes, ?_⟩
   cases edge.exit with
@@ -3040,7 +4691,7 @@ theorem segmentTransitionClosed_of_paired_stack_word_write_with_transfers
           claim.value.original.eval originalState)]
         [(claim.candidateAddress.eval candidateState,
           claim.value.candidate.eval candidateState)]
-        related originalWrites candidateWrites
+        related originalWrites candidateWrites originalNoX87 candidateNoX87
       · simpa [applyConcreteWrites, originalWriteAddress, candidateWriteAddress] using
           outputMemoryFamilies
       · exact registers
@@ -3153,6 +4804,10 @@ theorem segmentTransitionClosed_of_paired_stack_word_writes_with_transfers
   rcases shapeClosed guardTrue with
     ⟨originalResult, candidateResult, originalEval, candidateEval,
       originalWrites, candidateWrites, originalExit, candidateExit, outcomes⟩
+  have originalNoX87 := evalBehavior_x87Effect_none false localCodeTargets
+    originalState originalBehavior originalResult originalEval
+  have candidateNoX87 := evalBehavior_x87Effect_none true localCodeTargets
+    candidateState candidateBehavior candidateResult candidateEval
   rw [originalEval, candidateEval]
   refine ⟨originalExit, candidateExit, outcomes, ?_⟩
   cases edge.exit with
@@ -3211,7 +4866,8 @@ theorem segmentTransitionClosed_of_paired_stack_word_writes_with_transfers
       apply StateRel.afterPairedMemoryFamiliesUpdate context world sourceInvariant
         targetInvariant originalState candidateState originalResult candidateResult
         (claim.originalWrites originalState) (claim.candidateWrites candidateState)
-        related originalWrites candidateWrites outputMemoryFamilies registers bounds
+        related originalWrites candidateWrites originalNoX87 candidateNoX87
+        outputMemoryFamilies registers bounds
         separations stackWindows x87 flags outputImports outputDynamic
         (by simp [targetDynamicStackRelationsEmpty, activeDynamicStackRangeRelationsHold])
         predicates
@@ -3271,6 +4927,10 @@ theorem segmentTransitionClosed_of_paired_prepared_word_writes_with_transfers
   rcases shapeClosed guardTrue with
     ⟨originalResult, candidateResult, originalEval, candidateEval,
       originalWrites, candidateWrites, originalExit, candidateExit, outcomes⟩
+  have originalNoX87 := evalBehavior_x87Effect_none false localCodeTargets
+    originalState originalBehavior originalResult originalEval
+  have candidateNoX87 := evalBehavior_x87Effect_none true localCodeTargets
+    candidateState candidateBehavior candidateResult candidateEval
   rw [originalEval, candidateEval]
   refine ⟨originalExit, candidateExit, outcomes, ?_⟩
   cases edge.exit with
@@ -3328,7 +4988,8 @@ theorem segmentTransitionClosed_of_paired_prepared_word_writes_with_transfers
       apply StateRel.afterPairedMemoryFamiliesUpdate context world sourceInvariant
         targetInvariant originalState candidateState originalResult candidateResult
         (claim.originalWrites originalState) (claim.candidateWrites candidateState)
-        related originalWrites candidateWrites outputMemoryFamilies registers bounds
+        related originalWrites candidateWrites originalNoX87 candidateNoX87
+        outputMemoryFamilies registers bounds
         separations stackWindows x87 flags outputImports outputDynamic outputDynamicStack
         predicates
   | external imported => trivial
@@ -3396,6 +5057,10 @@ theorem segmentTransitionClosed_of_direct_call_stack_writes_with_transfers
   rcases shapeClosed guardTrue with
     ⟨originalResult, candidateResult, originalEval, candidateEval,
       originalWrites, candidateWrites, originalExit, candidateExit, outcomes⟩
+  have originalNoX87 := evalBehavior_x87Effect_none false localCodeTargets
+    originalState originalBehavior originalResult originalEval
+  have candidateNoX87 := evalBehavior_x87Effect_none true localCodeTargets
+    candidateState candidateBehavior candidateResult candidateEval
   rw [originalEval, candidateEval]
   refine ⟨originalExit, candidateExit, outcomes, ?_⟩
   cases edge.exit with
@@ -3500,7 +5165,8 @@ theorem segmentTransitionClosed_of_direct_call_stack_writes_with_transfers
       apply StateRel.afterPairedMemoryFamiliesUpdate context world sourceInvariant
         targetInvariant originalState candidateState originalResult candidateResult
         (claim.originalWrites originalState) (claim.candidateWrites candidateState)
-        related originalWrites candidateWrites outputMemoryFamilies registers bounds
+        related originalWrites candidateWrites originalNoX87 candidateNoX87
+        outputMemoryFamilies registers bounds
         separations stackWindows x87 flags outputImports outputDynamic
         (by simp [targetDynamicStackRelationsEmpty, activeDynamicStackRangeRelationsHold])
         predicates
@@ -3567,6 +5233,10 @@ theorem segmentTransitionClosed_of_direct_call_prepared_writes_with_transfers
   rcases shapeClosed guardTrue with
     ⟨originalResult, candidateResult, originalEval, candidateEval,
       originalWrites, candidateWrites, originalExit, candidateExit, outcomes⟩
+  have originalNoX87 := evalBehavior_x87Effect_none false localCodeTargets
+    originalState originalBehavior originalResult originalEval
+  have candidateNoX87 := evalBehavior_x87Effect_none true localCodeTargets
+    candidateState candidateBehavior candidateResult candidateEval
   rw [originalEval, candidateEval]
   refine ⟨originalExit, candidateExit, outcomes, ?_⟩
   cases edge.exit with
@@ -3677,7 +5347,8 @@ theorem segmentTransitionClosed_of_direct_call_prepared_writes_with_transfers
       apply StateRel.afterPairedMemoryFamiliesUpdate context world sourceInvariant
         targetInvariant originalState candidateState originalResult candidateResult
         (claim.originalWrites originalState) (claim.candidateWrites candidateState)
-        related originalWrites candidateWrites outputMemoryFamilies registers bounds
+        related originalWrites candidateWrites originalNoX87 candidateNoX87
+        outputMemoryFamilies registers bounds
         separations stackWindows x87 flags outputImports outputDynamic
         (by simp [targetDynamicStackRelationsEmpty, activeDynamicStackRangeRelationsHold])
         predicates
@@ -3996,6 +5667,44 @@ theorem segmentTransitionClosed_of_no_write
   exact targetDynamicRelationsEmpty
   exact targetDynamicStackRelationsEmpty
 
+theorem segmentTransitionBodyClosed_of_no_write
+    (context : StaticProofContext) (edge : RelationalSegmentEdge)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (localCodeTargets : List CodeTargetPair) (localValues : List ValueTargetPair)
+    (localCodeTargetsResolved :
+      context.codeMap.resolveIds edge.localCodeTargetIds = some localCodeTargets)
+    (localValuesResolved :
+      context.dataMap.resolveIds edge.localValueTargetIds = some localValues)
+    (targetImportRelationsEmpty : targetInvariant.importRegisterRelations = [])
+    (targetDynamicRelationsEmpty :
+      targetInvariant.dynamicRegisterRangeRelations = [])
+    (targetDynamicStackRelationsEmpty :
+      targetInvariant.dynamicStackRangeRelations = [])
+    (shape : NoWriteSegmentShapeBodyClosed context edge sourceInvariant
+      originalBehavior candidateBehavior)
+    (stateTransfer : NoWriteSegmentStateTransferBodyClosed context edge sourceInvariant
+      targetInvariant originalBehavior candidateBehavior) :
+    SegmentTransitionBodyClosed context edge sourceInvariant targetInvariant
+      originalBehavior candidateBehavior := by
+  apply segmentTransitionBodyClosed_of_no_write_with_transfers context edge
+    sourceInvariant targetInvariant originalBehavior candidateBehavior
+    localCodeTargets localValues localCodeTargetsResolved localValuesResolved shape
+    stateTransfer
+  · unfold NoWriteSegmentImportTransferClosed
+    rw [localCodeTargetsResolved]
+    intro world originalState candidateState originalResult candidateResult related
+      originalEval candidateEval
+    simp [targetImportRelationsEmpty, importRegisterRelationsHold]
+  · unfold NoWriteSegmentDynamicTransferClosed
+    rw [localCodeTargetsResolved]
+    intro world originalState candidateState originalResult candidateResult related
+      originalEval candidateEval guardTrue
+    simp [targetDynamicRelationsEmpty, activeDynamicRegisterRangeRelationsHold]
+  · exact noWriteSegmentDynamicStackTransferClosed_of_empty context edge
+      sourceInvariant targetInvariant originalBehavior candidateBehavior
+      localCodeTargets localCodeTargetsResolved targetDynamicStackRelationsEmpty
+
 theorem segmentTransitionClosed_of_paired_stack_word_write
     (context : StaticProofContext) (edge : RelationalSegmentEdge)
     (sourceInvariant targetInvariant : StateInvariant)
@@ -4249,13 +5958,14 @@ theorem segmentTransitionClosed_of_paired_prepared_word_writes_with_spill
 def RelationalSegmentRefinement (context : StaticProofContext)
     (edge : RelationalSegmentEdge)
     (sourceInvariant targetInvariant : StateInvariant) : Prop :=
-  ∃ originalBehavior candidateBehavior,
-    regionBehaviorWithMachineCallContracts context.originalPe context.originalImports
-      context.machineImportCallContracts edge.originalSpan = some originalBehavior ∧
-    regionBehaviorWithMachineCallContracts context.candidatePe context.candidateImports
-      context.machineImportCallContracts edge.candidateSpan = some candidateBehavior ∧
-    SegmentTransitionClosed context edge sourceInvariant targetInvariant
-      originalBehavior candidateBehavior
+  (∃ originalBehavior candidateBehavior,
+      regionBehaviorWithMachineCallContracts context.originalPe context.originalImports
+        context.machineImportCallContracts edge.originalSpan = some originalBehavior ∧
+      regionBehaviorWithMachineCallContracts context.candidatePe context.candidateImports
+        context.machineImportCallContracts edge.candidateSpan = some candidateBehavior ∧
+      SegmentTransitionClosed context edge sourceInvariant targetInvariant
+        originalBehavior candidateBehavior) ∨
+    X87SegmentTransitionClosed context edge sourceInvariant targetInvariant
 
 theorem relationalSegmentRefinement_of_decoded
     (context : StaticProofContext) (edge : RelationalSegmentEdge)
@@ -4270,6 +5980,14 @@ theorem relationalSegmentRefinement_of_decoded
     (transition : SegmentTransitionClosed context edge sourceInvariant targetInvariant
       originalBehavior candidateBehavior) :
     RelationalSegmentRefinement context edge sourceInvariant targetInvariant :=
-  ⟨originalBehavior, candidateBehavior, originalDecoded, candidateDecoded, transition⟩
+  Or.inl
+    ⟨originalBehavior, candidateBehavior, originalDecoded, candidateDecoded, transition⟩
+
+theorem relationalSegmentRefinement_of_x87_singleton
+    (context : StaticProofContext) (edge : RelationalSegmentEdge)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (transition : X87SegmentTransitionClosed context edge sourceInvariant targetInvariant) :
+    RelationalSegmentRefinement context edge sourceInvariant targetInvariant :=
+  Or.inr transition
 
 end StageA.Relational

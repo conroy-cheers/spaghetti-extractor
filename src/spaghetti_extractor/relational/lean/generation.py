@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from ...stage_binary import StageABinary, StageAInputError
 from ...util import sha256_bytes, write_json
 from ..analyses.external import _semantic_external_target_identity
+from ..analyses.segments import _segment_refinement_candidates
 from ..analyses.stack import _stack_window_transfer_claims
 from ..artifacts import write_text_if_changed as _write_text_if_changed
 from ..contract import _raw_base_relocations
@@ -58,6 +59,7 @@ from .expressions import (
     _lean_state_invariant,
 )
 from .definitions import (
+    _has_compositional_normalized_support,
     _lean_behavior_field,
     _lean_behavior_fields_memory_free,
     _lean_global_mapping_context_source,
@@ -86,6 +88,10 @@ from .composition import (
 )
 from .acceptance import (
     _write_relational_acceptance_modules,
+)
+from .affine_frames import (
+    write_relational_affine_frame_profile_module,
+    write_relational_affine_frame_semantic_modules,
 )
 from .common import (
     _lean_bool,
@@ -418,6 +424,7 @@ def _write_sharded_relational_proof(
     memory_contracts: dict[str, Any],
     register_relations: dict[str, Any],
     product_graph: dict[str, Any],
+    runtime_frame_affine: dict[str, Any],
     import_register_seeds: list[dict[str, Any]],
     import_register_analysis: dict[str, Any],
     external_call_sites: dict[str, Any],
@@ -427,6 +434,28 @@ def _write_sharded_relational_proof(
     certificates: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], int]:
     certificate_by_region = {entry.get("region_id"): entry for entry in certificates or []}
+    x87_region_indices = {
+        int(candidate["source_region_index"])
+        for candidate in segment_candidates
+        if str(candidate.get("certificate_profile", "")).startswith(
+            "composable_x87_"
+        )
+    }
+    standalone_fwait_regions = {
+        side: {
+            index
+            for index in x87_region_indices
+            if binary.pe.get_data(
+                int(contract["regions"][index][side]["rva_start"]),
+                int(contract["regions"][index][side]["size"]),
+            )
+            == b"\x9b"
+        }
+        for side, binary in (
+            ("original", original_bin),
+            ("candidate", candidate_bin),
+        )
+    }
 
     regions_literal = ", ".join(f"region{index}" for index in range(len(contract["regions"])))
     region_index_literal = _lean_index_tree(
@@ -545,13 +574,8 @@ def _write_sharded_relational_proof(
                 _lean_compositional_normalized_support_source(
                     index, contract["regions"][index], behaviors[index]
                 )
-                if (
-                    _normalized_behavior_fast_path(
-                        contract["regions"][index], behaviors[index]
-                    )
-                    or _compact_compositional_normalized_path(
-                        contract["regions"][index], behaviors[index]
-                    )
+                if _has_compositional_normalized_support(
+                    contract["regions"][index], behaviors[index]
                 ) else ""
             )
             if normalized_support:
@@ -634,6 +658,7 @@ def _write_sharded_relational_proof(
                 f"{contracts_name} region{index}.{side} = "
                 f"some {side}Behavior{index} := by decide"
                 for index in selected_region_indices
+                if index not in standalone_fwait_regions[side]
             )
             source = (
                 f"import StageA.RelationalProof{module_side}\n"
@@ -714,15 +739,15 @@ def _write_sharded_relational_proof(
             instruction_adequacy_theorems[side].append(chunk_theorem)
             region_theorems = "\n\n".join(
                 f"theorem {side}Region{index}InstructionAdequate :\n"
-                f"    RegionInstructionAdequate {side}Pe {side}Imports "
+                f"    RegionInstructionAdequateWithX87 {side}Pe {side}Imports "
                 f"region{index}.{side} :=\n"
-                f"  regionInstructionAdequate_of_checked {side}Pe {side}Imports "
+                f"  regionInstructionAdequateWithX87_of_checked {side}Pe {side}Imports "
                 f"region{index}.{side} (by decide)"
                 for index in region_indices
             )
             chunk_goal = " ∧ ".join(
                 [
-                    f"RegionInstructionAdequate {side}Pe {side}Imports "
+                    f"RegionInstructionAdequateWithX87 {side}Pe {side}Imports "
                     f"region{index}.{side}"
                     for index in region_indices
                 ]
@@ -815,16 +840,24 @@ def _write_sharded_relational_proof(
         )
     })
     external_site_definitions = "\n\n".join(
-        f"def externalCallSite{int(site['id'])} : ExternalCallSiteContract := {{\n"
-        f"  id := {int(site['id'])}\n"
-        f"  sourceTargetId := {int(site['source_target_id'])}\n"
-        f"  continuationTargetId := {int(site['continuation_target_id'])}\n"
-        f"  machineContractId := {int(site['machine_contract_id'])}\n"
-        f"  boundaryInvariant := "
-        f"{_lean_state_invariant(site['boundary_invariant'])}\n"
-        f"  targetInvariant := "
-        f"region{int(site['target_region_index'])}.inputInvariant\n"
-        "}"
+        (
+            f"def externalCallSite{int(site['id'])} : ExternalCallSiteContract := {{\n"
+            + f"  id := {int(site['id'])}\n"
+            + f"  sourceTargetId := {int(site['source_target_id'])}\n"
+            + f"  continuationTargetId := {int(site['continuation_target_id'])}\n"
+            + f"  machineContractId := {int(site['machine_contract_id'])}\n"
+            + "  boundaryInvariant := "
+            + f"{_lean_state_invariant(site['boundary_invariant'])}\n"
+            + "  targetInvariant := "
+            + (
+                "{ region"
+                f"{int(site['target_region_index'])}.inputInvariant with "
+                "importRegisterRelations := [] }\n"
+                if site.get("site_kind") == "direct_import_thunk"
+                else f"region{int(site['target_region_index'])}.inputInvariant\n"
+            )
+            + "}"
+        )
         for site in external_site_candidates
     )
     external_site_names = [
@@ -880,9 +913,12 @@ def _write_sharded_relational_proof(
 
     direct_modules: list[str] = []
     for chunk_index, region_indices in enumerate(decode_chunk_regions):
+        direct_region_indices = [
+            index for index in region_indices if index not in x87_region_indices
+        ]
         direct_module = f"RelationalProofDirectChunk{chunk_index}"
         direct_modules.append(direct_module)
-        direct_region_chunk = region_chunk_names[chunk_index]
+        direct_region_chunk = f"strictDirectRegionChunk{chunk_index}"
         direct_theorems = "\n\n".join(
             f"theorem region{index}CheckedDirect : regionEquivalentWithImports originalPe candidatePe "
             f"originalImports candidateImports machineImportCallContracts region{index} :=\n"
@@ -890,21 +926,22 @@ def _write_sharded_relational_proof(
             f"region{index} originalBehavior{index} candidateBehavior{index}\n"
             f"    originalBehavior{index}CheckedDecoded candidateBehavior{index}CheckedDecoded "
             f"region{index}CheckedDirectBehavior"
-            for index in region_indices
+            for index in direct_region_indices
         )
         direct_chunk_goal = " ∧ ".join(
             [
                 f"regionEquivalentWithImports originalPe candidatePe originalImports candidateImports machineImportCallContracts region{index}"
-                for index in region_indices
+                for index in direct_region_indices
             ]
             + ["True"]
         )
         direct_chunk_proof = (
             "".join(
-                f"And.intro region{index}CheckedDirect (" for index in region_indices
+                f"And.intro region{index}CheckedDirect ("
+                for index in direct_region_indices
             )
             + "True.intro"
-            + ")" * len(region_indices)
+            + ")" * len(direct_region_indices)
         )
         direct_source = (
             "import StageA.RelationalImage\n"
@@ -920,6 +957,9 @@ def _write_sharded_relational_proof(
             "open StageA.Formal StageA.Relational\n\n"
             "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
             "set_option linter.unusedSimpArgs false\n\n"
+            f"def {direct_region_chunk} : List RegionRelation := ["
+            + ", ".join(f"region{index}" for index in direct_region_indices)
+            + "]\n\n"
             + direct_theorems
             + f"\n\ntheorem directRegionChunk{chunk_index}Checked :\n"
             f"    allDirectRegionGoals originalPe candidatePe originalImports candidateImports machineImportCallContracts {direct_region_chunk} := by\n"
@@ -932,6 +972,21 @@ def _write_sharded_relational_proof(
             direct_source,
         )
 
+    deferred_guard_segment_candidates = [
+        candidate
+        for candidate in _segment_refinement_candidates(
+            contract,
+            behaviors,
+            memory_contracts,
+            register_relations,
+            import_register_seeds,
+            original_bin=original_bin,
+            candidate_bin=candidate_bin,
+            allow_deferred_guards=True,
+        )
+        if candidate.get("certificate_profile")
+            == "composable_local_no_write_deferred_guard_v1"
+    ]
     segment_refinement_modules = _write_relational_segment_refinement_modules(
         lean_dir,
         contract,
@@ -942,6 +997,7 @@ def _write_sharded_relational_proof(
         decode_chunk_regions,
         import_register_seeds,
         segment_candidates,
+        deferred_guard_candidates=deferred_guard_segment_candidates,
     )
     product_graph_modules = _write_relational_product_graph_modules(
         lean_dir,
@@ -949,6 +1005,21 @@ def _write_sharded_relational_proof(
         segment_candidates,
         segment_refinement_modules,
         decode_chunk_regions,
+        contract=contract,
+    )
+    write_relational_affine_frame_profile_module(
+        lean_dir, runtime_frame_affine
+    )
+    write_relational_affine_frame_semantic_modules(
+        lean_dir,
+        runtime_frame_affine,
+        contract=contract,
+        product_graph=product_graph,
+        decode_chunk_regions=decode_chunk_regions,
+        physical_state_only_region_indices=(
+            standalone_fwait_regions["original"] |
+            standalone_fwait_regions["candidate"]
+        ),
     )
     external_call_refinement_modules = (
         _write_relational_external_call_refinement_modules(
@@ -1502,6 +1573,7 @@ def _write_sharded_relational_proof(
         "import StageA.RelationalProofClosureBase\n"
         "import StageA.RelationalSegmentRefinementCertificate\n"
         "import StageA.RelationalStackSeparationCertificate\n"
+        "import StageA.RelationalAffineFrameSemanticProfile\n"
         "import StageA.RelationalProductNodeCoverageCertificate\n"
         "import StageA.RelationalProductReachabilityCertificate\n"
         "import StageA.RelationalProductDecodedControlCertificate\n"
@@ -1603,6 +1675,9 @@ def _write_sharded_relational_proof(
         segment_candidates,
         decode_chunk_regions,
         external_site_candidates,
+        runtime_frame_affine=runtime_frame_affine,
+        deferred_guard_segment_candidates=deferred_guard_segment_candidates,
+        segment_refinement_modules=segment_refinement_modules,
     )
     return (
         shard_modules
@@ -1699,8 +1774,8 @@ def _lean_normalized_component_setup(
         aliases
         + "  unfold statesRelated StateRelCore at related\n"
         "  simp only [registerRelationsHold_exactRegisterRelations] at related\n"
-        "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, oebp, oesp⟩, originalMemory, originalUndefined, originalX87, originalFlags, originalFsBase⟩\n"
-        "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, cebp, cesp⟩, candidateMemory, candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
+        "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, oebp, oesp⟩, originalMemory, originalUndefined, originalX87, originalX87Physical, originalX87Semantics, originalFlags, originalFsBase⟩\n"
+        "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, cebp, cesp⟩, candidateMemory, candidateUndefined, candidateX87, candidateX87Physical, candidateX87Semantics, candidateFlags, candidateFsBase⟩\n"
         "  rcases related with ⟨related, boundsSatisfied, separationsSatisfied, memoryRelated, undefinedRelated, x87Related, flagsRelated, fsBaseRelated⟩\n"
         f"  have exactMemory := memoryRelated_without_relocations {original_image_base} {candidate_image_base} "
         f"{name}.targets {name}.values originalMemory candidateMemory (by decide) memoryRelated\n"
@@ -1709,8 +1784,8 @@ def _lean_normalized_component_setup(
         + identity_memory_setup
         + "  change originalUndefined = candidateUndefined at undefinedRelated\n"
         "  subst candidateUndefined\n"
-        "  change originalX87 = candidateX87 at x87Related\n"
-        "  subst candidateX87\n"
+        "  change originalX87 = candidateX87 ∧ originalX87Physical = candidateX87Physical ∧ originalX87Semantics = candidateX87Semantics at x87Related\n"
+        "  rcases x87Related with ⟨rfl, rfl, rfl⟩\n"
         + flags_copy
         + flag_setup
         + "  change originalFsBase = candidateFsBase at fsBaseRelated\n"
@@ -1924,21 +1999,21 @@ def _lean_compositional_normalized_support_source(
         f"theorem {name}CandidateNormalized : normalizeSymbolicBehavior true "
         f"{name}.targets candidateBehavior{index} = some {name}NormalizedBehavior := "
         "by decide\n\n"
+        f"theorem {name}OriginalNormalizedRegisters : "
+        f"{name}NormalizedBehavior.registers = originalBehavior{index}.registers := "
+        "by decide\n\n"
+        f"theorem {name}CandidateNormalizedRegisters : "
+        f"{name}NormalizedBehavior.registers = candidateBehavior{index}.registers := "
+        "by decide\n\n"
+        f"theorem {name}OriginalNormalizedX87 : "
+        f"{name}NormalizedBehavior.x87 = originalBehavior{index}.x87 := by decide\n\n"
+        f"theorem {name}CandidateNormalizedX87 : "
+        f"{name}NormalizedBehavior.x87 = candidateBehavior{index}.x87 := by decide\n\n"
+        f"theorem {name}OriginalNormalizedWrites : "
+        f"{name}NormalizedBehavior.writes = originalBehavior{index}.writes := by decide\n\n"
+        f"theorem {name}CandidateNormalizedWrites : "
+        f"{name}NormalizedBehavior.writes = candidateBehavior{index}.writes := by decide\n\n"
         + empty_writes_fact
-    )
-
-
-def _compact_compositional_normalized_path(
-    region: dict[str, Any], behaviors: dict[str, Any]
-) -> bool:
-    return (
-        isinstance(behaviors.get("original_ir"), dict)
-        and isinstance(behaviors.get("candidate_ir"), dict)
-        and "flags := some" in behaviors.get("original", "")
-        and all(bit in FLAG_BITS for bit in region.get("flag_inputs", FLAG_BITS))
-        and all(bit in FLAG_BITS for bit in region.get("flag_outputs", FLAG_BITS))
-        and _normalized_behavior_structure_matches(region, behaviors)
-        and _lean_normalized_static_outcome(region, behaviors) is not None
     )
 
 
@@ -2376,10 +2451,7 @@ def _lean_region_theorem_source(
 ) -> str:
     name = f"region{index}"
     theorem_name = f"{name}Checked"
-    if (
-        _normalized_behavior_fast_path(region, behaviors)
-        or _compact_compositional_normalized_path(region, behaviors)
-    ):
+    if _has_compositional_normalized_support(region, behaviors):
         compositional = _lean_compositional_normalized_theorem_source(
             index,
             region,
@@ -2516,13 +2588,13 @@ def _lean_region_theorem_source(
     direct_state_setup = (
         "  unfold statesRelated StateRelCore at related\n"
         "  simp only [registerRelationsHold_exactRegisterRelations] at related\n"
-        "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, oebp, oesp⟩, originalMemory, originalUndefined, originalX87, originalFlags, originalFsBase⟩\n"
-        "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, cebp, cesp⟩, candidateMemory, candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
+        "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, oebp, oesp⟩, originalMemory, originalUndefined, originalX87, originalX87Physical, originalX87Semantics, originalFlags, originalFsBase⟩\n"
+        "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, cebp, cesp⟩, candidateMemory, candidateUndefined, candidateX87, candidateX87Physical, candidateX87Semantics, candidateFlags, candidateFsBase⟩\n"
         "  rcases related with ⟨related, boundsSatisfied, separationsSatisfied, memoryRelated, undefinedRelated, x87Related, flagsRelated, fsBaseRelated⟩\n"
     )
     direct_state_equalities = (
         "  change originalUndefined = candidateUndefined at undefinedRelated\n  subst candidateUndefined\n"
-        "  change originalX87 = candidateX87 at x87Related\n  subst candidateX87\n"
+        "  change originalX87 = candidateX87 ∧ originalX87Physical = candidateX87Physical ∧ originalX87Semantics = candidateX87Semantics at x87Related\n  rcases x87Related with ⟨rfl, rfl, rfl⟩\n"
         + flag_setup
         + "  change originalFsBase = candidateFsBase at fsBaseRelated\n  subst candidateFsBase\n"
         f"  simp [registersRelated, StageA.Formal.Registers.get, {name}] at related\n"
@@ -2624,15 +2696,19 @@ def _lean_region_theorem_source(
                     "  simp only [registerRelationsHold_exactRegisterRelations] at related\n"
                     "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, "
                     "oebp, oesp⟩, originalMemory, "
-                    "originalUndefined, originalX87, originalFlags, originalFsBase⟩\n"
+                    "originalUndefined, originalX87, originalX87Physical, "
+                    "originalX87Semantics, originalFlags, originalFsBase⟩\n"
                     "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, "
                     "cebp, cesp⟩, candidateMemory, "
-                    "candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
+                    "candidateUndefined, candidateX87, candidateX87Physical, "
+                    "candidateX87Semantics, candidateFlags, candidateFsBase⟩\n"
                     "  rcases related with ⟨registersRelated, boundsRelated, "
                     "separationsRelated, memoryRelated, undefinedRelated, x87Related, "
                     "flagsRelated, fsBaseRelated⟩\n"
-                    "  change originalX87 = candidateX87 at x87Related\n"
-                    "  subst candidateX87\n"
+                    "  change originalX87 = candidateX87 ∧ "
+                    "originalX87Physical = candidateX87Physical ∧ "
+                    "originalX87Semantics = candidateX87Semantics at x87Related\n"
+                    "  rcases x87Related with ⟨rfl, rfl, rfl⟩\n"
                     f"  simp [originalBehavior{index}, candidateBehavior{index}, "
                     "evalNormalizedX87, StageA.Formal.X87Expr.eval, "
                     "StageA.Formal.Expr.eval]\n"

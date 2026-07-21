@@ -152,7 +152,10 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
         )
 
         expected = {
+            "X87.lean",
+            "RelationalX87.lean",
             "Formal.lean",
+            "RelationalX87Decode.lean",
             "ISAQualification.lean",
             "Relational.lean",
             "RelationalDecode.lean",
@@ -160,6 +163,7 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
             "RelationalLoader.lean",
             "RelationalMachine.lean",
             "RelationalPEExecution.lean",
+            "RelationalX87Machine.lean",
         }
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "StageA"

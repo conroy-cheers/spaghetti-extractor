@@ -1,4 +1,4 @@
-import StageA.Relational
+import StageA.RelationalX87Machine
 
 namespace StageA.Relational
 
@@ -28,6 +28,8 @@ def concreteBehaviorNextMachineState
     status := behavior.x87.status
     semantics := input.x87.semantics
   }
+  x87Physical := input.x87Physical
+  x87Semantics := input.x87Semantics
   eflags := behavior.eflags
   fsBase := input.fsBase
 }
@@ -180,6 +182,25 @@ def regionInstructionAdequateChecked (pe : PE32) (imports : List PEImport)
   | some executed, some decoded => executed == decoded
   | _, _ => false
 
+def regionInstructionAdequateWithX87Checked (pe : PE32)
+    (imports : List PEImport) (span : Span) : Bool :=
+  if StageA.Relational.X87.spanStartsWithX87Command pe span then
+    (StageA.Relational.X87.decodeSingletonCommand pe span).isSome
+  else
+    regionInstructionAdequateChecked pe imports span
+
+/-- Acceptance-facing instruction adequacy for a cutpoint region. Ordinary
+regions retain the independently fetched symbolic-execution theorem. Exact
+singleton x87 regions instead carry a checked decode witness because both raw
+PE execution and the generated cutpoint semantics use the reviewed x87
+machine executor directly. -/
+def RegionInstructionAdequateWithX87 (pe : PE32) (imports : List PEImport)
+    (span : Span) : Prop :=
+  if StageA.Relational.X87.spanStartsWithX87Command pe span then
+    (StageA.Relational.X87.decodeSingletonCommand pe span).isSome = true
+  else
+    RegionInstructionAdequate pe imports span
+
 theorem regionInstructionAdequate_of_checked (pe : PE32)
     (imports : List PEImport) (span : Span)
     (checked : regionInstructionAdequateChecked pe imports span = true) :
@@ -191,6 +212,19 @@ theorem regionInstructionAdequate_of_checked (pe : PE32)
   subst decoded
   exact ⟨executed, executionResult, decodeResult⟩
 
+theorem regionInstructionAdequateWithX87_of_checked (pe : PE32)
+    (imports : List PEImport) (span : Span)
+    (checked : regionInstructionAdequateWithX87Checked pe imports span = true) :
+    RegionInstructionAdequateWithX87 pe imports span := by
+  by_cases isX87 : StageA.Relational.X87.spanStartsWithX87Command pe span = true
+  · simpa [RegionInstructionAdequateWithX87, isX87,
+      regionInstructionAdequateWithX87Checked] using checked
+  · have ordinaryChecked :
+        regionInstructionAdequateChecked pe imports span = true := by
+      simpa [regionInstructionAdequateWithX87Checked, isX87] using checked
+    simpa [RegionInstructionAdequateWithX87, isX87] using
+      regionInstructionAdequate_of_checked pe imports span ordinaryChecked
+
 /-- A composable inventory of region-level instruction adequacy facts. The
 candidate selector chooses the concrete side span; every item is still checked
 against the corresponding PE bytes and import table. -/
@@ -198,7 +232,7 @@ def AllRegionInstructionAdequate (pe : PE32) (imports : List PEImport)
     (candidate : Bool) : List RegionRelation -> Prop
   | [] => True
   | region :: regions =>
-      RegionInstructionAdequate pe imports
+      RegionInstructionAdequateWithX87 pe imports
           (if candidate then region.candidate else region.original) ∧
         AllRegionInstructionAdequate pe imports candidate regions
 
@@ -218,7 +252,7 @@ theorem allRegionInstructionAdequate_member (pe : PE32)
     (regions : List RegionRelation) (region : RegionRelation)
     (allAdequate : AllRegionInstructionAdequate pe imports candidate regions)
     (member : region ∈ regions) :
-    RegionInstructionAdequate pe imports
+    RegionInstructionAdequateWithX87 pe imports
       (if candidate then region.candidate else region.original) := by
   induction regions with
   | nil => simp at member

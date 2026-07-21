@@ -20,7 +20,6 @@ import z3
 from ..stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, utc_now, write_json
 from .analysis_artifact import (
-    copy_relational_analysis,
     decoded_behaviors_payload,
     parse_decoded_behaviors,
     parse_segment_candidates,
@@ -88,27 +87,6 @@ from .region_facts import (
     region_facts_semantics_sha256,
 )
 from .region_facts_artifact import RegionFactsArtifact
-from .analyses.invariants import (
-    _SemanticZ3Context,
-    _attach_invariant_synthesis,
-    _local_invariant_seeds,
-    _semantic_add,
-    _semantic_constant,
-    _semantic_edges,
-    _semantic_equal,
-    _semantic_input_flag,
-    _semantic_input_register,
-    _semantic_is_boolean,
-    _semantic_node_count,
-    _semantic_not,
-    _semantic_or,
-    _semantic_tautology,
-    _semantic_unsigned_less,
-    _substitute_semantic_bool,
-    _substitute_semantic_expr,
-    _substitute_semantic_flag,
-    _synthesize_relational_invariants,
-)
 from .analyses.memory import (
     _attach_dynamic_range_flow_invariants,
     _attach_initial_static_code_pointer_slots,
@@ -117,6 +95,7 @@ from .analyses.memory import (
 )
 from .analyses.segments import (
     _attach_memory_transition_analysis,
+    _attach_branch_exact_memory_requirements,
     _attach_register_relation_analysis,
     _attach_segment_refinement_analysis,
     _attach_static_word_register_output_claims,
@@ -140,6 +119,11 @@ from .analyses.segments import (
     _stack_read32_sub_output_claim,
     _static_dynamic_pointer_slot_guard_claim,
 )
+from .analyses.x87 import attach_x87_exact_stack_read_invariants
+from .analyses.predicates import (
+    attach_no_write_bound_edge_pullbacks,
+    attach_no_write_state_predicate_pullbacks,
+)
 from .analyses.registers import (
     _attach_assembled_immutable_read_address_separations,
     _attach_import_register_invariants,
@@ -155,6 +139,7 @@ from .analyses.registers import (
     _refine_contract_bounds,
     _register_relation_implies,
     _register_relation_join,
+    _returning_external_thunk_predecessors,
     _semantic_index_from_address,
     _semantic_read_addresses,
     _synthesize_register_relations,
@@ -251,7 +236,24 @@ from .lean.analysis_source import (
     _copy_relational_kernel_sources,
 )
 from .pair_normalization import load_pair_normalization
+from .proposal_artifact import (
+    RELATIONAL_PROPOSAL_MANIFEST,
+    copy_relational_proposal,
+    validate_relational_proposal,
+    write_relational_proposal_manifest,
+)
 from .report_schema import RELATIONAL_PREPARED_REPORT_FILES
+from .runtime_frame_artifact import (
+    RUNTIME_FRAME_AFFINE_VIABILITY_FILE,
+    runtime_frame_affine_viability_payload,
+    validate_runtime_frame_affine_viability_payload,
+)
+from .register_dataflow_artifact import register_transfer_table_payload
+from .register_dataflow_seed import (
+    parse_register_dataflow_problem_seed,
+    register_dataflow_problem_seed_payload,
+)
+from .register_transfer_ir import register_transfer_programs_payload
 from .side_extraction import load_side_extraction, load_side_isa
 from .schema import (
     FLAG_BITS,
@@ -303,6 +305,9 @@ def _stabilize_fixed_code_pointer_register_calls(
     original_bin: StageABinary,
     candidate_bin: StageABinary,
     register_transfer_cache: dict[str, Any] | None = None,
+    register_transfer_table_out: dict[str, Any] | None = None,
+    register_transfer_programs_out: dict[str, Any] | None = None,
+    register_transfer_program_cache: dict[str, Any] | None = None,
 ) -> tuple[
     dict[str, Any], dict[str, Any], list[dict[str, Any]], dict[str, Any]
 ]:
@@ -332,6 +337,9 @@ def _stabilize_fixed_code_pointer_register_calls(
             original_bin=original_bin,
             candidate_bin=candidate_bin,
             _transfer_cache=register_transfer_cache,
+            _transfer_table_out=register_transfer_table_out,
+            _transfer_programs_out=register_transfer_programs_out,
+            _transfer_program_cache=register_transfer_program_cache,
         )
         proposed = register_relations.get(
             "indirect_fixed_code_pointer_calls", []
@@ -359,6 +367,9 @@ def _stabilize_fixed_code_pointer_register_calls(
             original_bin=original_bin,
             candidate_bin=candidate_bin,
             _transfer_cache=register_transfer_cache,
+            _transfer_table_out=register_transfer_table_out,
+            _transfer_programs_out=register_transfer_programs_out,
+            _transfer_program_cache=register_transfer_program_cache,
         )
     fixed_point = {
         "status": (
@@ -435,6 +446,9 @@ def _prepared_relational_payload(
         "register_relations_sha256": sha256_file(
             out / "relational-register-relations.json"
         ),
+        "runtime_frame_affine_sha256": sha256_file(
+            out / RUNTIME_FRAME_AFFINE_VIABILITY_FILE
+        ),
         "stack_windows_sha256": sha256_file(
             out / "relational-stack-windows.json"
         ),
@@ -472,6 +486,7 @@ def _write_prepared_relational_graph(
     memory_contracts: dict[str, Any],
     register_relations: dict[str, Any],
     product_graph: dict[str, Any],
+    runtime_frame_affine: dict[str, Any],
     import_register_seeds: list[dict[str, Any]],
     import_register_analysis: dict[str, Any],
     segment_candidates: list[dict[str, Any]],
@@ -499,6 +514,7 @@ def _write_prepared_relational_graph(
         memory_contracts=memory_contracts,
         register_relations=register_relations,
         product_graph=product_graph,
+        runtime_frame_affine=runtime_frame_affine,
         import_register_seeds=import_register_seeds,
         import_register_analysis=import_register_analysis,
         external_call_sites=external_call_sites,
@@ -552,6 +568,7 @@ def stage_a_prove_relational(
     region_facts: Path | None = None,
     _prepare_only: bool = False,
     _analyze_only: bool = False,
+    _proposal_only: bool = False,
 ) -> dict[str, Any]:
     started_at = utc_now()
     out = Path(out)
@@ -830,12 +847,20 @@ def stage_a_prove_relational(
         return_predecessors = _closed_internal_return_predecessors(
             register_relations,
         )
+        returning_external_thunk_predecessors = (
+            _returning_external_thunk_predecessors(
+                normalized, behaviors, register_relations,
+            )
+        )
         composed_import_register_analysis = _infer_import_register_invariants(
             normalized,
             behaviors,
             import_register_seeds,
             internal_return_predecessors=return_predecessors,
             callsite_summary_predecessors=callsite_summary_edges,
+            returning_external_thunk_predecessors=(
+                returning_external_thunk_predecessors
+            ),
         )
         if (
             composed_import_register_analysis.get("relations")
@@ -884,6 +909,26 @@ def stage_a_prove_relational(
     normalized, stack_window_analysis = _attach_stack_window_invariants(
         normalized, behaviors, register_relations, original_bin, candidate_bin
     )
+    normalized, x87_stack_read_analysis = attach_x87_exact_stack_read_invariants(
+        normalized, behaviors
+    )
+    stack_window_analysis["x87_exact_stack_reads"] = x87_stack_read_analysis
+    normalized, branch_exact_memory_analysis = (
+        _attach_branch_exact_memory_requirements(
+            normalized, behaviors, original_bin, candidate_bin
+        )
+    )
+    stack_window_analysis["branch_exact_memory_requirements"] = (
+        branch_exact_memory_analysis
+    )
+    normalized, bound_pullback_analysis = attach_no_write_bound_edge_pullbacks(
+        normalized, behaviors
+    )
+    stack_window_analysis["bound_edge_pullbacks"] = bound_pullback_analysis
+    normalized, predicate_pullback_analysis = attach_no_write_state_predicate_pullbacks(
+        normalized, behaviors
+    )
+    stack_window_analysis["state_predicate_pullbacks"] = predicate_pullback_analysis
     # Stack provenance is discovered from decoded memory accesses and runtime
     # frames after the initial edge analysis. Replay register synthesis so
     # stack-derived pointers flow forward as related words instead of exact
@@ -911,6 +956,9 @@ def stage_a_prove_relational(
     static_word_analysis["initial_code_pointers"] = (
         initial_static_code_pointer_analysis
     )
+    register_transfer_table: dict[str, Any] = {}
+    register_transfer_programs: dict[str, Any] = {}
+    register_transfer_program_cache: dict[str, Any] = {}
     # Static slots are inferred from paired writes after the first register
     # fixed point. Replay synthesis so equal-address loads do not retain an
     # unsoundly strong exact relation when their checked slot is only related.
@@ -1031,6 +1079,9 @@ def stage_a_prove_relational(
         original_bin=original_bin,
         candidate_bin=candidate_bin,
         register_transfer_cache=register_transfer_cache,
+        register_transfer_table_out=register_transfer_table,
+        register_transfer_programs_out=register_transfer_programs,
+        register_transfer_program_cache=register_transfer_program_cache,
     )
     fixed_register_call_candidates = combined_indirect_call_candidates[
         len(indirect_call_candidates):
@@ -1095,6 +1146,9 @@ def stage_a_prove_relational(
             original_bin=original_bin,
             candidate_bin=candidate_bin,
             register_transfer_cache=register_transfer_cache,
+            register_transfer_table_out=register_transfer_table,
+            register_transfer_programs_out=register_transfer_programs,
+            register_transfer_program_cache=register_transfer_program_cache,
         )
         normalized, register_relations = _lower_stack_register_relations(
             normalized, register_relations
@@ -1176,164 +1230,35 @@ def stage_a_prove_relational(
     write_json(out / "relational-register-relations.json", register_relations)
     write_json(
         out / "relational-register-dataflow-graph.json",
-        register_relations["dataflow_graph"],
+        register_transfer_table["graph"],
+    )
+    write_json(
+        out / "relational-register-transfer-table.json",
+        register_transfer_table_payload(
+            original_sha256=original_bin.sha256,
+            candidate_sha256=candidate_bin.sha256,
+            graph_sha256=str(register_transfer_table["graph_sha256"]),
+            regions=register_transfer_table["regions"],
+            propagation=register_transfer_table["propagation"],
+        ),
+    )
+    register_transfer_program_artifact = register_transfer_programs_payload(
+        original_sha256=original_bin.sha256,
+        candidate_sha256=candidate_bin.sha256,
+        graph_sha256=str(register_transfer_programs["graph_sha256"]),
+        context=register_transfer_programs["context"],
+        programs=register_transfer_programs["programs"],
+        propagation=register_transfer_programs["propagation"],
+    )
+    write_json(
+        out / "relational-register-transfer-programs.json",
+        register_transfer_program_artifact,
+    )
+    write_json(
+        out / "relational-register-program-dataflow-graph.json",
+        register_transfer_programs["graph"],
     )
     write_json(out / "relation-contract.json", normalized)
-    external_call_sites = _external_call_site_candidates(
-        normalized, behaviors, register_relations,
-        import_register_analysis["indirect_import_calls"],
-    )
-    write_json(out / "relational-external-call-sites.json", external_call_sites)
-    proof_ir = _attach_machine_import_call_contract_analysis(
-        proof_ir, machine_call_analysis
-    )
-    proof_ir = _attach_external_call_site_analysis(proof_ir, external_call_sites)
-    RelationalProofIR.parse(proof_ir)
-    write_json(out / "relational-proof-ir.json", proof_ir)
-    semantic_ir = _relational_semantic_ir(
-        original_bin, candidate_bin, normalized, behaviors
-    )
-    write_json(out / "relational-semantic-ir.json", semantic_ir)
-    memory_contracts = _relational_memory_contracts(
-        original_bin, candidate_bin, normalized, behaviors, register_relations
-    )
-    write_json(out / "relational-memory-contracts.json", memory_contracts)
-    invariant_synthesis = _synthesize_relational_invariants(normalized, behaviors)
-    write_json(out / "relational-invariants.json", invariant_synthesis)
-    state_analysis = StateAnalysisProducts.create(
-        extracted=ExtractedProgramPair.create(
-            contract=normalized,
-            behaviors=behaviors,
-            extraction=extraction,
-        ),
-        register_relations=register_relations,
-        stack_windows=stack_window_analysis,
-        machine_import_calls=machine_call_analysis,
-        external_call_sites=external_call_sites,
-        semantic_ir=semantic_ir,
-        memory_contracts=memory_contracts,
-        invariants=invariant_synthesis,
-    )
-    proof_ir = _attach_invariant_synthesis(proof_ir, invariant_synthesis)
-    proof_ir = _attach_register_relation_analysis(proof_ir, register_relations)
-    proof_ir = _attach_memory_transition_analysis(
-        proof_ir, normalized, behaviors, memory_contracts, register_relations
-    )
-    bounded_table_call_inputs = (
-        _bounded_immutable_code_pointer_table_call_inputs(
-            normalized,
-            behaviors,
-            table_call_proposals,
-            original_bin=original_bin,
-            candidate_bin=candidate_bin,
-            original_image_base=original_bin.image_base,
-            candidate_image_base=candidate_bin.image_base,
-        )
-    )
-    write_json(
-        out / "relational-bounded-table-call-inputs.json",
-        bounded_table_call_inputs,
-    )
-    segment_diagnostics: list[dict[str, Any]] = []
-    segment_candidates = _segment_refinement_candidates(
-        normalized, behaviors, memory_contracts, register_relations,
-        import_register_seeds, diagnostics=segment_diagnostics,
-        original_bin=original_bin, candidate_bin=candidate_bin,
-        bounded_table_call_candidates=bounded_table_call_inputs["candidates"],
-    )
-    write_json(
-        out / "relational-segment-diagnostics.json",
-        _segment_refinement_diagnostic_report(segment_diagnostics),
-    )
-    proof_ir = _attach_segment_refinement_analysis(
-        proof_ir, normalized, behaviors, memory_contracts, register_relations,
-        import_register_seeds, segment_candidates=segment_candidates,
-        segment_diagnostics=segment_diagnostics,
-    )
-    product_graph = _relational_product_graph(
-        normalized, behaviors, register_relations, segment_candidates,
-        original_image_base=original_bin.image_base,
-        candidate_image_base=candidate_bin.image_base,
-        indirect_call_candidates=combined_indirect_call_candidates,
-        bounded_table_call_candidates=bounded_table_call_inputs["candidates"],
-        dynamic_call_candidates=dynamic_call_candidates,
-        import_register_seeds=import_register_seeds,
-        import_call_candidates=import_register_analysis["indirect_import_calls"],
-        external_call_candidates=external_call_sites["candidates"],
-    )
-    composition = CompositionProducts.create(
-        state=state_analysis,
-        product_graph=product_graph,
-        segment_candidates=segment_candidates,
-    )
-    product_graph = dict(composition.product_graph.raw)
-    _checked_product_reachability_inventories(product_graph)
-    write_json(out / "relational-product-graph.json", product_graph)
-    if (original_isa is None) != (candidate_isa is None):
-        raise StageAInputError("both original and candidate side ISA artifacts are required")
-    if original_isa is not None and candidate_isa is not None:
-        lean_instruction_forms = {}
-        for side, path, binary in (
-            ("original", original_isa, original_bin),
-            ("candidate", candidate_isa, candidate_bin),
-        ):
-            lean_instruction_forms.update(
-                load_side_isa(
-                    path=Path(path),
-                    contract=normalized,
-                    side=side,
-                    binary_sha256=binary.sha256,
-                )
-            )
-        lean_instruction_form_evidence = {
-            "status": "lean_extracted_untrusted",
-            "cache": "manifest_bound_side_artifacts",
-            **_lean_form_source_hashes(),
-            "row_count": len(lean_instruction_forms),
-            "side_artifacts": {
-                "original": sha256_file(Path(original_isa)),
-                "candidate": sha256_file(Path(candidate_isa)),
-            },
-        }
-    else:
-        lean_instruction_forms, lean_instruction_form_evidence = (
-            extract_lean_instruction_forms(
-                original=original_artifact,
-                candidate=candidate_artifact,
-                relation_contract=normalized,
-            )
-        )
-    isa_requirements = build_isa_requirement_inventory(
-        original=original_bin,
-        candidate=candidate_bin,
-        relation_contract=normalized,
-        product_graph=product_graph,
-        lean_forms=lean_instruction_forms,
-        lean_form_source_sha256=str(
-            lean_instruction_form_evidence["classifier_sha256"]
-        ),
-        lean_form_extractor_sha256=str(
-            lean_instruction_form_evidence["extractor_sha256"]
-        ),
-    )
-    isa_requirements_path = out / "isa-requirements.json"
-    write_json(isa_requirements_path, isa_requirements.to_payload())
-    isa_requirements = ISARequirementInventory.parse(
-        _read_json(isa_requirements_path)
-    )
-    proof_ir = _attach_product_graph_analysis(proof_ir, product_graph)
-    proof_ir = _attach_dynamic_indirect_call_analysis(
-        proof_ir, normalized, behaviors, dynamic_call_candidates, product_graph
-    )
-    proof_ir = _attach_import_register_analysis(
-        proof_ir, import_register_seeds, import_register_analysis,
-        segment_candidates, memory_contracts,
-    )
-    proof_ir = _attach_stack_window_analysis(
-        proof_ir, normalized, stack_window_analysis
-    )
-    RelationalProofIR.parse(proof_ir)
-    write_json(out / "relational-proof-ir.json", proof_ir)
     write_json(
         out / "relational-decoded-behaviors.json",
         decoded_behaviors_payload(
@@ -1343,17 +1268,115 @@ def stage_a_prove_relational(
             behaviors=behaviors,
         ),
     )
+    try:
+        frame_max_shapes = int(os.environ.get(
+            "SPAGHETTI_EXTRACTOR_STAGE_A_FRAME_AFFINE_SHAPES", "65536"
+        ))
+        frame_max_families = int(os.environ.get(
+            "SPAGHETTI_EXTRACTOR_STAGE_A_FRAME_AFFINE_FAMILIES", "65536"
+        ))
+    except ValueError:
+        frame_max_shapes = 0
+        frame_max_families = 0
+    runtime_frame_affine = runtime_frame_affine_viability_payload(
+            original_sha256=original_bin.sha256,
+            candidate_sha256=candidate_bin.sha256,
+            relation_contract_sha256=sha256_file(
+                out / "relation-contract.json"
+            ),
+            decoded_behaviors_sha256=sha256_file(
+                out / "relational-decoded-behaviors.json"
+            ),
+            register_relations_sha256=sha256_file(
+                out / "relational-register-relations.json"
+            ),
+            behaviors=behaviors,
+            register_relations=register_relations,
+            max_shapes=frame_max_shapes,
+            max_families=frame_max_families,
+        )
     write_json(
-        out / "relational-segment-candidates.json",
-        segment_candidates_payload(
-            candidates=segment_candidates,
-            diagnostics_sha256=sha256_file(
-                out / "relational-segment-diagnostics.json"
-            ),
-            product_graph_sha256=sha256_file(
-                out / "relational-product-graph.json"
-            ),
+        out / RUNTIME_FRAME_AFFINE_VIABILITY_FILE,
+        runtime_frame_affine,
+    )
+    register_dataflow_problem_seed = register_dataflow_problem_seed_payload(
+        original_sha256=original_bin.sha256,
+        candidate_sha256=candidate_bin.sha256,
+        contract_sha256=_canonical_json_sha256(normalized),
+        behaviors_sha256=_canonical_json_sha256(behaviors),
+        indirect_call_candidates=combined_indirect_call_candidates,
+        import_call_candidates=import_register_analysis[
+            "indirect_import_calls"
+        ],
+        callsite_summary_predecessors=callsite_preservation_analysis.get(
+            "proposal_edges", []
         ),
+    )
+    write_json(
+        out / "relational-register-dataflow-problem-seed.json",
+        register_dataflow_problem_seed,
+    )
+    if _proposal_only:
+        RelationalProofIR.parse(proof_ir)
+        write_json(out / "relational-proof-ir.json", proof_ir)
+        shutil.rmtree(out / "lean")
+        shutil.rmtree(out / "certificates")
+        return write_relational_proposal_manifest(
+            out,
+            original_sha256=original_bin.sha256,
+            candidate_sha256=candidate_bin.sha256,
+        )
+    # Composition is a downstream phase with its own source and cache boundary.
+    # Import it only after proposal discovery has reached its terminal artifact.
+    from .composition_products import _produce_composition_outputs
+
+    assembled = _produce_composition_outputs(
+        out=out,
+        original_bin=original_bin,
+        candidate_bin=candidate_bin,
+        original_artifact=original_artifact,
+        candidate_artifact=candidate_artifact,
+        normalized=normalized,
+        behaviors=behaviors,
+        extraction=extraction,
+        proof_ir=proof_ir,
+        register_relations=register_relations,
+        stack_window_analysis=stack_window_analysis,
+        machine_call_analysis=machine_call_analysis,
+        import_register_seeds=import_register_seeds,
+        import_register_analysis=import_register_analysis,
+        table_call_proposals=table_call_proposals,
+        dynamic_call_candidates=dynamic_call_candidates,
+        combined_indirect_call_candidates=combined_indirect_call_candidates,
+        original_isa=original_isa,
+        candidate_isa=candidate_isa,
+    )
+    proof_ir = assembled["proof_ir"]
+    invariant_synthesis = assembled["invariant_synthesis"]
+    memory_contracts = assembled["memory_contracts"]
+    product_graph = assembled["product_graph"]
+    external_call_sites = assembled["external_call_sites"]
+    segment_candidates = assembled["segment_candidates"]
+    isa_requirements = assembled["isa_requirements"]
+    runtime_frame_affine = runtime_frame_affine_viability_payload(
+        original_sha256=original_bin.sha256,
+        candidate_sha256=candidate_bin.sha256,
+        relation_contract_sha256=sha256_file(out / "relation-contract.json"),
+        decoded_behaviors_sha256=sha256_file(
+            out / "relational-decoded-behaviors.json"
+        ),
+        register_relations_sha256=sha256_file(
+            out / "relational-register-relations.json"
+        ),
+        behaviors=behaviors,
+        register_relations=register_relations,
+        product_graph=product_graph,
+        max_shapes=frame_max_shapes,
+        max_families=frame_max_families,
+    )
+    write_json(
+        out / RUNTIME_FRAME_AFFINE_VIABILITY_FILE,
+        runtime_frame_affine,
     )
     analysis_manifest = write_relational_analysis_manifest(
         out,
@@ -1374,6 +1397,7 @@ def stage_a_prove_relational(
         memory_contracts=memory_contracts,
         register_relations=register_relations,
         product_graph=product_graph,
+        runtime_frame_affine=runtime_frame_affine,
         import_register_seeds=import_register_seeds,
         import_register_analysis=import_register_analysis,
         segment_candidates=segment_candidates,
@@ -1465,6 +1489,7 @@ def stage_a_prove_relational(
         normalized, behaviors, invariant_synthesis=invariant_synthesis,
         memory_contracts=memory_contracts, register_relations=register_relations,
         product_graph=product_graph,
+        runtime_frame_affine=runtime_frame_affine,
         import_register_seeds=import_register_seeds,
         import_register_analysis=import_register_analysis,
         external_call_sites=external_call_sites,
@@ -1555,13 +1580,234 @@ def stage_a_analyze_relational(
     )
 
 
+def stage_a_discover_relational_proposals(
+    *,
+    original: Path,
+    candidate: Path,
+    relation_contract: Path,
+    out: Path,
+    original_extraction: Path | None = None,
+    candidate_extraction: Path | None = None,
+    normalized_behaviors: Path | None = None,
+    region_facts: Path | None = None,
+) -> dict[str, Any]:
+    return stage_a_prove_relational(
+        original=original,
+        candidate=candidate,
+        relation_contract=relation_contract,
+        out=out,
+        original_extraction=original_extraction,
+        candidate_extraction=candidate_extraction,
+        normalized_behaviors=normalized_behaviors,
+        region_facts=region_facts,
+        _analyze_only=True,
+        _proposal_only=True,
+    )
+
+
+def _legacy_stage_a_assemble_relational_analysis(
+    *,
+    proposal: Path,
+    register_dataflow_aggregate: Path,
+    out: Path,
+    original_isa: Path | None = None,
+    candidate_isa: Path | None = None,
+) -> dict[str, Any]:
+    proposal = Path(proposal)
+    out = Path(out)
+    source_manifest = validate_relational_proposal(proposal)
+    copy_relational_proposal(proposal, out)
+    copied_manifest = validate_relational_proposal(out)
+    if copied_manifest != source_manifest:
+        raise StageAInputError("copied relational proposal closure changed")
+    (out / RELATIONAL_PROPOSAL_MANIFEST).unlink()
+
+    original_artifact = out / "artifacts" / "original.pe"
+    candidate_artifact = out / "artifacts" / "candidate.pe"
+    original_bin = _parse_stage_a_pe(original_artifact)
+    candidate_bin = _parse_stage_a_pe(candidate_artifact)
+    if original_bin.sha256 != source_manifest.original_sha256:
+        raise StageAInputError("proposal original PE identity changed")
+    if candidate_bin.sha256 != source_manifest.candidate_sha256:
+        raise StageAInputError("proposal candidate PE identity changed")
+
+    normalized = _load_contract(out / "relation-contract.json")
+    behaviors = parse_decoded_behaviors(
+        _read_json(out / "relational-decoded-behaviors.json"),
+        expected_original_sha256=original_bin.sha256,
+        expected_candidate_sha256=candidate_bin.sha256,
+        expected_relation_contract_sha256=sha256_file(
+            out / "relation-contract.json"
+        ),
+        expected_region_count=len(normalized.get("regions", [])),
+    )
+    seed = parse_register_dataflow_problem_seed(
+        _read_json(out / "relational-register-dataflow-problem-seed.json"),
+        expected_original_sha256=original_bin.sha256,
+        expected_candidate_sha256=candidate_bin.sha256,
+        expected_contract_sha256=_canonical_json_sha256(normalized),
+        expected_behaviors_sha256=_canonical_json_sha256(behaviors),
+    )
+    aggregate = _read_json(Path(register_dataflow_aggregate))
+    proposal_register_relations = _read_json(
+        out / "relational-register-relations.json"
+    )
+    recomputed_contract, register_relations = _synthesize_register_relations(
+        normalized,
+        behaviors,
+        original_image_base=original_bin.image_base,
+        candidate_image_base=candidate_bin.image_base,
+        indirect_call_candidates=seed["indirect_call_candidates"],
+        import_call_candidates=seed["import_call_candidates"],
+        callsite_summary_predecessors=seed["callsite_summary_predecessors"],
+        original_bin=original_bin,
+        candidate_bin=candidate_bin,
+        _dataflow_aggregate=aggregate,
+    )
+    recomputed_contract, register_relations = _lower_stack_register_relations(
+        recomputed_contract, register_relations
+    )
+    register_relations = _attach_stack_register_output_claims(
+        recomputed_contract, behaviors, register_relations
+    )
+    register_relations = _attach_static_word_register_output_claims(
+        recomputed_contract, behaviors, register_relations
+    )
+    for field in (
+        "fixed_code_pointer_call_fixed_point",
+        "callsite_register_relation_fixed_point",
+    ):
+        if field in proposal_register_relations:
+            register_relations[field] = json.loads(json.dumps(
+                proposal_register_relations[field]
+            ))
+    if recomputed_contract != normalized:
+        raise StageAInputError(
+            "aggregate register replay changed the proposal relation contract"
+        )
+    if register_relations != proposal_register_relations:
+        raise StageAInputError(
+            "aggregate register replay differs from proposal discovery"
+        )
+    write_json(out / "relational-register-relations.json", register_relations)
+    runtime_frame_affine = _read_json(
+        out / RUNTIME_FRAME_AFFINE_VIABILITY_FILE
+    )
+    validate_runtime_frame_affine_viability_payload(
+        runtime_frame_affine,
+        original_sha256=original_bin.sha256,
+        candidate_sha256=candidate_bin.sha256,
+        relation_contract_sha256=sha256_file(out / "relation-contract.json"),
+        decoded_behaviors_sha256=sha256_file(
+            out / "relational-decoded-behaviors.json"
+        ),
+        register_relations_sha256=sha256_file(
+            out / "relational-register-relations.json"
+        ),
+        behaviors=behaviors,
+        register_relations=register_relations,
+    )
+
+    import_seed_artifact = _read_json(
+        out / "relational-import-register-seeds.json"
+    )
+    import_register_seeds = import_seed_artifact.get("candidates")
+    if not isinstance(import_register_seeds, list):
+        raise StageAInputError("proposal import register seeds are malformed")
+    import_register_analysis = _read_json(
+        out / "relational-import-register-invariants.json"
+    )
+    indirect_targets = _read_json(out / "relational-indirect-call-targets.json")
+    table_call_proposals = indirect_targets.get("table_call_proposals")
+    dynamic_call_candidates = indirect_targets.get("dynamic_range_candidates")
+    indirect_call_candidates = indirect_targets.get("candidates")
+    fixed_register_candidates = indirect_targets.get("fixed_register_candidates")
+    if not all(isinstance(value, list) for value in (
+        table_call_proposals,
+        dynamic_call_candidates,
+        indirect_call_candidates,
+        fixed_register_candidates,
+    )):
+        raise StageAInputError("proposal indirect-call inventory is malformed")
+    combined_indirect_call_candidates = [
+        *indirect_call_candidates,
+        *fixed_register_candidates,
+    ]
+    machine_call_analysis = _read_json(
+        out / "relational-machine-import-calls.json"
+    )
+    stack_window_analysis = _read_json(out / "relational-stack-windows.json")
+    proof_ir = _read_json(out / "relational-proof-ir.json")
+    RelationalProofIR.parse(proof_ir)
+    from .composition_products import _produce_composition_outputs
+
+    assembled = _produce_composition_outputs(
+        out=out,
+        original_bin=original_bin,
+        candidate_bin=candidate_bin,
+        original_artifact=original_artifact,
+        candidate_artifact=candidate_artifact,
+        normalized=normalized,
+        behaviors=behaviors,
+        extraction={"source": "manifest_bound_relational_proposal_closure"},
+        proof_ir=proof_ir,
+        register_relations=register_relations,
+        stack_window_analysis=stack_window_analysis,
+        machine_call_analysis=machine_call_analysis,
+        import_register_seeds=import_register_seeds,
+        import_register_analysis=import_register_analysis,
+        table_call_proposals=table_call_proposals,
+        dynamic_call_candidates=dynamic_call_candidates,
+        combined_indirect_call_candidates=combined_indirect_call_candidates,
+        original_isa=original_isa,
+        candidate_isa=candidate_isa,
+    )
+    if not assembled["product_graph"]:
+        raise StageAInputError("relational proposal assembly produced no graph")
+    affine_budgets = runtime_frame_affine.get("budgets")
+    if not isinstance(affine_budgets, Mapping):
+        raise StageAInputError("runtime frame affine budgets are malformed")
+    runtime_frame_affine = runtime_frame_affine_viability_payload(
+        original_sha256=original_bin.sha256,
+        candidate_sha256=candidate_bin.sha256,
+        relation_contract_sha256=sha256_file(out / "relation-contract.json"),
+        decoded_behaviors_sha256=sha256_file(
+            out / "relational-decoded-behaviors.json"
+        ),
+        register_relations_sha256=sha256_file(
+            out / "relational-register-relations.json"
+        ),
+        behaviors=behaviors,
+        register_relations=register_relations,
+        product_graph=assembled["product_graph"],
+        max_shapes=int(affine_budgets.get("max_shapes", 0)),
+        max_families=int(affine_budgets.get("max_families", 0)),
+    )
+    write_json(
+        out / RUNTIME_FRAME_AFFINE_VIABILITY_FILE,
+        runtime_frame_affine,
+    )
+    manifest = write_relational_analysis_manifest(
+        out,
+        original_sha256=original_bin.sha256,
+        candidate_sha256=candidate_bin.sha256,
+    )
+    validate_relational_analysis(out)
+    return manifest
+
+
 def stage_a_generate_relational(
     *, analysis: Path, out: Path
 ) -> dict[str, Any]:
+    from .analysis_reference import (
+        materialize_relational_analysis_view,
+        validate_relational_analysis_view,
+    )
+
     analysis = Path(analysis)
     out = Path(out)
-    source_manifest = validate_relational_analysis(analysis)
-    copy_relational_analysis(analysis, out)
+    source_manifest = validate_relational_analysis_view(analysis)
+    materialize_relational_analysis_view(analysis, out)
     copied_manifest = validate_relational_analysis(out)
     if copied_manifest != source_manifest:
         raise StageAInputError("copied relational analysis manifest changed")
@@ -1611,6 +1857,24 @@ def stage_a_generate_relational(
     register_relations = _read_json(out / "relational-register-relations.json")
     product_graph = _read_json(out / "relational-product-graph.json")
     ProductGraphIR.parse(product_graph)
+    runtime_frame_affine = _read_json(
+        out / RUNTIME_FRAME_AFFINE_VIABILITY_FILE
+    )
+    validate_runtime_frame_affine_viability_payload(
+        runtime_frame_affine,
+        original_sha256=original_bin.sha256,
+        candidate_sha256=candidate_bin.sha256,
+        relation_contract_sha256=sha256_file(out / "relation-contract.json"),
+        decoded_behaviors_sha256=sha256_file(
+            out / "relational-decoded-behaviors.json"
+        ),
+        register_relations_sha256=sha256_file(
+            out / "relational-register-relations.json"
+        ),
+        behaviors=behaviors,
+        register_relations=register_relations,
+        product_graph=product_graph,
+    )
     import_seed_artifact = _read_json(
         out / "relational-import-register-seeds.json"
     )
@@ -1645,6 +1909,7 @@ def stage_a_generate_relational(
         memory_contracts=memory_contracts,
         register_relations=register_relations,
         product_graph=product_graph,
+        runtime_frame_affine=runtime_frame_affine,
         import_register_seeds=import_register_seeds,
         import_register_analysis=import_register_analysis,
         segment_candidates=segment_candidates,

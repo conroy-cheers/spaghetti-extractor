@@ -31,12 +31,15 @@ from .expressions import (
     _lean_dynamic_range_relation,
     _lean_external_target,
     _lean_import_register_seed_claim,
+    _lean_paired_exact_expr_witness,
     _lean_register_offset_write,
     _lean_semantic_bool_expr,
+    _lean_semantic_expr,
     _lean_static_word_relation_slot,
     _lean_stack_address_separation_claim,
 )
 from .definitions import (
+    _lean_bounded_immutable_relocation_table_jump_claim,
     _lean_static_range,
     _static_index_ranges,
 )
@@ -74,6 +77,99 @@ def _lean_bounded_immutable_code_pointer_table_call_claim(
         + ", rows := " + (rows_name if rows_name is not None else f"[{rows}]")
         + " }"
     )
+
+
+def _paired_pure_expression_witness(
+    original_expression: Any,
+    candidate_expression: Any,
+) -> dict[str, Any] | None:
+    """Build a witness whose admissibility is checked against StateRel in Lean."""
+    if not isinstance(original_expression, dict) or not isinstance(
+        candidate_expression, dict
+    ):
+        return None
+    operation = original_expression.get("op")
+    if operation != candidate_expression.get("op"):
+        return None
+    if operation == "input_reg":
+        return {
+            "kind": "input_reg",
+            "original": str(original_expression.get("reg")),
+            "candidate": str(candidate_expression.get("reg")),
+        }
+    if operation == "constant":
+        original_value = int(original_expression.get("value", -1))
+        candidate_value = int(candidate_expression.get("value", -1))
+        if original_value != candidate_value:
+            return None
+        return {"kind": "constant", "value": original_value}
+    if operation in {
+        "add", "sub", "bit_and", "bit_xor", "shift_left_by",
+        "shift_right_by", "shift_arithmetic_right_by", "bit_or",
+        "unsigned_less_value", "multiply", "multiply_high_unsigned",
+        "multiply_high_signed",
+    }:
+        left = _paired_pure_expression_witness(
+            original_expression.get("left"), candidate_expression.get("left")
+        )
+        right = _paired_pure_expression_witness(
+            original_expression.get("right"), candidate_expression.get("right")
+        )
+        if left is None or right is None:
+            return None
+        return {
+            "kind": "binary",
+            "operation": operation,
+            "left": left,
+            "right": right,
+        }
+    if operation in {"bit_not", "lowest_set_bit", "highest_set_bit"}:
+        value = _paired_pure_expression_witness(
+            original_expression.get("value"), candidate_expression.get("value")
+        )
+        if value is None:
+            return None
+        return {"kind": "unary", "operation": operation, "value": value}
+    if operation in {"extract_byte", "shift_left", "shift_right", "bit_value"}:
+        metadata = "index" if operation in {"extract_byte", "bit_value"} else "amount"
+        original_index = int(original_expression.get(metadata, -1))
+        candidate_index = int(candidate_expression.get(metadata, -1))
+        if original_index != candidate_index:
+            return None
+        value = _paired_pure_expression_witness(
+            original_expression.get("value"), candidate_expression.get("value")
+        )
+        if value is None:
+            return None
+        return {
+            "kind": "indexed",
+            "operation": operation,
+            "index": original_index,
+            "value": value,
+        }
+    if operation == "if_equal":
+        children = {
+            field: _paired_pure_expression_witness(
+                original_expression.get(field), candidate_expression.get(field)
+            )
+            for field in ("left", "right", "then", "else")
+        }
+        if any(value is None for value in children.values()):
+            return None
+        return {"kind": "if_equal", **children}
+    if operation in {
+        "divide_quotient", "divide_remainder", "division_valid_value",
+    }:
+        children = {
+            field: _paired_pure_expression_witness(
+                original_expression.get(field), candidate_expression.get(field)
+            )
+            for field in ("high", "low", "divisor")
+        }
+        if any(value is None for value in children.values()):
+            return None
+        return {"kind": "ternary", "operation": operation, **children}
+    return None
 
 
 def _write_reachable_product_local_certificate(
@@ -442,6 +538,8 @@ def _write_relational_product_graph_modules(
     segment_candidates: list[dict[str, Any]],
     segment_refinement_modules: list[dict[str, Any]],
     decode_chunk_regions: list[list[int]],
+    *,
+    contract: dict[str, Any] | None = None,
 ) -> list[str]:
     nodes = product_graph["nodes"]
     edges = product_graph["edges"]
@@ -954,6 +1052,13 @@ def _write_relational_product_graph_modules(
             "match": match_name,
         }
     decoded_control_candidates = evidence["decoded_control_candidates"]
+    x87_control_sources = {
+        int(candidate["source_region_index"])
+        for candidate in segment_candidates
+        if str(candidate.get("certificate_profile", "")).startswith(
+            "composable_x87_"
+        )
+    }
     decoded_control_modules: list[str] = []
     for chunk_index, offset in enumerate(
         range(0, len(decoded_control_candidates), proof_chunk_size)
@@ -971,7 +1076,19 @@ def _write_relational_product_graph_modules(
             node_id = int(candidate["node_id"])
             region_index = int(candidate["region_index"])
             theorem_name = f"productNode{node_id}DecodedControlEdgesComplete"
-            if candidate.get("profile") == "immutable_relocated_function_pointer_call_v1":
+            if (
+                node_id in x87_control_sources
+                or candidate.get("profile") == "x87_singleton_decoded_control_v1"
+            ):
+                definitions.append(
+                    f"theorem {theorem_name} :\n"
+                    "    NodeControlEdgesComplete relationalProductGraph "
+                    f"{node_id} staticProofContext region{region_index} "
+                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
+                    "  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr "
+                    "(Or.inr (Or.inr (Or.inl ⟨by decide, by decide, by decide⟩))))))))"
+                )
+            elif candidate.get("profile") == "immutable_relocated_function_pointer_call_v1":
                 original_normalized = f"productNode{node_id}OriginalNormalized"
                 candidate_normalized = f"productNode{node_id}CandidateNormalized"
                 claim_name = f"productNode{node_id}ImmutableIndirectCallClaim"
@@ -1125,6 +1242,109 @@ def _write_relational_product_graph_modules(
                     f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
                     f"by decide, {closed_name}⟩⟩)",
                 ])
+            elif candidate.get("profile") == "fixed_static_function_pointer_jump_v1":
+                original_normalized = f"productNode{node_id}OriginalNormalized"
+                candidate_normalized = f"productNode{node_id}CandidateNormalized"
+                static_claim_name = (
+                    f"productNode{node_id}StaticWordSlotIndirectJumpClaim"
+                )
+                claim_name = f"productNode{node_id}ImmutableIndirectJumpClaim"
+                static_closed_name = (
+                    f"productNode{node_id}StaticWordSlotIndirectJumpClosed"
+                )
+                closed_name = f"productNode{node_id}ImmutableIndirectJumpClosed"
+                original_writes = ", ".join(
+                    _lean_register_offset_write(write)
+                    for write in candidate["original_writes"]
+                )
+                candidate_writes = ", ".join(
+                    _lean_register_offset_write(write)
+                    for write in candidate["candidate_writes"]
+                )
+                definitions.extend([
+                    f"def {original_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior false region{region_index}.targets "
+                    f"originalBehavior{region_index}).get (by decide)",
+                    f"def {candidate_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior true region{region_index}.targets "
+                    f"candidateBehavior{region_index}).get (by decide)",
+                    f"theorem {original_normalized}Checked :\n"
+                    f"    normalizeSymbolicBehavior false region{region_index}.targets "
+                    f"originalBehavior{region_index} = some {original_normalized} := "
+                    "by decide",
+                    f"theorem {candidate_normalized}Checked :\n"
+                    f"    normalizeSymbolicBehavior true region{region_index}.targets "
+                    f"candidateBehavior{region_index} = some {candidate_normalized} := "
+                    "by decide",
+                    f"theorem {original_normalized}WritesEmpty : "
+                    f"{original_normalized}.writes = [] := by decide",
+                    f"theorem {candidate_normalized}WritesEmpty : "
+                    f"{candidate_normalized}.writes = [] := by decide",
+                    f"theorem {original_normalized}X87 : "
+                    f"{original_normalized}.x87 = "
+                    f"originalBehavior{region_index}.x87 := by decide",
+                    f"theorem {candidate_normalized}X87 : "
+                    f"{candidate_normalized}.x87 = "
+                    f"candidateBehavior{region_index}.x87 := by decide",
+                    f"theorem {original_normalized}Esp : "
+                    f"{original_normalized}.registers.esp = .inputReg .esp := "
+                    "by decide",
+                    f"theorem {candidate_normalized}Esp : "
+                    f"{candidate_normalized}.registers.esp = .inputReg .esp := "
+                    "by decide",
+                    f"theorem {original_normalized}EspGet : "
+                    f"{original_normalized}.registers.get .esp = .inputReg .esp := "
+                    "by decide",
+                    f"theorem {candidate_normalized}EspGet : "
+                    f"{candidate_normalized}.registers.get .esp = .inputReg .esp := "
+                    "by decide",
+                    f"theorem {original_normalized}RegistersGet (register : Reg) : "
+                    f"{original_normalized}.registers.get register = .inputReg register := by\n"
+                    "  cases register <;> decide",
+                    f"theorem {candidate_normalized}RegistersGet (register : Reg) : "
+                    f"{candidate_normalized}.registers.get register = .inputReg register := by\n"
+                    "  cases register <;> decide",
+                    f"def {static_claim_name} : StaticWordSlotIndirectJumpTargetClaim := {{\n"
+                    f"  targetId := {int(candidate['target_id'])}\n"
+                    f"  slot := {_lean_static_word_relation_slot(candidate['slot'])}\n"
+                    f"  originalAddress := {int(candidate['original_address'])}\n"
+                    f"  candidateAddress := {int(candidate['candidate_address'])}\n"
+                    f"  originalAssembledRead := "
+                    f"{_lean_bool(bool(candidate['original_assembled_read']))}\n"
+                    f"  candidateAssembledRead := "
+                    f"{_lean_bool(bool(candidate['candidate_assembled_read']))}\n"
+                    f"  originalWrites := [{original_writes}]\n"
+                    f"  candidateWrites := [{candidate_writes}]\n"
+                    "}",
+                    f"def {claim_name} : ImmutableIndirectJumpTargetClaim :=\n"
+                    f"  {static_claim_name}.toImmutable",
+                    f"theorem {static_closed_name} :\n"
+                    f"    StaticWordSlotIndirectJumpTargetsClosed staticProofContext "
+                    f"region{region_index}.inputInvariant {original_normalized} "
+                    f"{candidate_normalized} {static_claim_name} :=\n"
+                    "  staticWordSlotIndirectJumpTargetsClosed_of_checked "
+                    f"staticProofContext region{region_index}.inputInvariant "
+                    f"{original_normalized} {candidate_normalized} {static_claim_name} "
+                    "(by decide)",
+                    f"theorem {closed_name} :\n"
+                    f"    ImmutableIndirectJumpTargetsClosed staticProofContext "
+                    f"region{region_index}.inputInvariant {original_normalized} "
+                    f"{candidate_normalized} {claim_name} := by\n"
+                    f"  exact immutableIndirectJumpTargetsClosed_of_staticWordSlot "
+                    f"staticProofContext region{region_index}.inputInvariant "
+                    f"{original_normalized} {candidate_normalized} {static_claim_name} "
+                    f"{static_closed_name}",
+                    f"theorem {theorem_name} :\n"
+                    "    NodeControlEdgesComplete relationalProductGraph "
+                    f"{node_id} staticProofContext region{region_index} "
+                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
+                    f"  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr "
+                    "(Or.inl "
+                    f"⟨{original_normalized}, {candidate_normalized}, {claim_name}, "
+                    f"⟨originalBehavior{region_index}CheckedDecoded, "
+                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
+                    f"by decide, {closed_name}⟩⟩))))))",
+                ])
             elif candidate.get("profile") == "immutable_relocated_function_pointer_jump_v1":
                 original_normalized = f"productNode{node_id}OriginalNormalized"
                 candidate_normalized = f"productNode{node_id}CandidateNormalized"
@@ -1258,10 +1478,162 @@ def _write_relational_product_graph_modules(
                     f"{node_id} staticProofContext region{region_index} "
                     f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
                     f"  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr "
-                    f"(Or.inr ⟨{original_normalized}, {candidate_normalized}, "
+                    f"(Or.inr (Or.inl ⟨{original_normalized}, {candidate_normalized}, "
                     f"{claim_name}, ⟨originalBehavior{region_index}CheckedDecoded, "
                     f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
-                    f"by decide, {closed_name}⟩⟩))))))",
+                    f"by decide, {closed_name}⟩⟩)))))))",
+                ])
+            elif candidate.get("profile") == (
+                "bounded_immutable_relocation_table_jump_v1"
+            ):
+                extra_imports.add("RelationalStaticContext")
+                index_witness = _paired_pure_expression_witness(
+                    candidate.get("original_index_expression"),
+                    candidate.get("candidate_index_expression"),
+                )
+                if index_witness is None:
+                    definitions.append(
+                        f"theorem {theorem_name} :\n"
+                        "    NodeControlEdgesComplete relationalProductGraph "
+                        f"{node_id} staticProofContext region{region_index} "
+                        f"originalBehavior{region_index} candidateBehavior{region_index} :=\n"
+                        f"  Or.inl ⟨originalBehavior{region_index}CheckedDecoded, "
+                        f"candidateBehavior{region_index}CheckedDecoded, by decide⟩"
+                    )
+                    continue
+                original_index_expression = candidate.get(
+                    "original_index_expression"
+                )
+                candidate_index_expression = candidate.get(
+                    "candidate_index_expression"
+                )
+                original_index_register = candidate.get("original_index_register")
+                candidate_index_register = candidate.get("candidate_index_register")
+                if (
+                    (original_index_register is None or candidate_index_register is None)
+                    and contract is not None
+                ):
+                    candidate_region_index = int(candidate["region_index"])
+                    regions = contract.get("regions", [])
+                    region = (
+                        regions[candidate_region_index]
+                        if 0 <= candidate_region_index < len(regions)
+                        else {}
+                    )
+                    matching_bounds = []
+                    for bound in region.get("bounds", []):
+                        original_bound_expression = bound.get(
+                            "original_expression"
+                        ) or {
+                            "op": "input_reg",
+                            "reg": bound.get("original"),
+                        }
+                        candidate_bound_expression = bound.get(
+                            "candidate_expression"
+                        ) or {
+                            "op": "input_reg",
+                            "reg": bound.get("candidate"),
+                        }
+                        if (
+                            original_bound_expression == original_index_expression
+                            and candidate_bound_expression == candidate_index_expression
+                            and int(bound.get("unsigned_lt", -1))
+                            == int(candidate["upper_exclusive"])
+                        ):
+                            matching_bounds.append(bound)
+                    if len(matching_bounds) == 1:
+                        original_index_register = matching_bounds[0].get("original")
+                        candidate_index_register = matching_bounds[0].get("candidate")
+                if original_index_register is None and isinstance(
+                    original_index_expression, dict
+                ) and original_index_expression.get("op") == "input_reg":
+                    original_index_register = original_index_expression.get("reg")
+                if candidate_index_register is None and isinstance(
+                    candidate_index_expression, dict
+                ) and candidate_index_expression.get("op") == "input_reg":
+                    candidate_index_register = candidate_index_expression.get("reg")
+                if original_index_register is None or candidate_index_register is None:
+                    raise StageAInputError(
+                        "bounded relocation-table jump at product node "
+                        f"{node_id} lacks an explicit index-bound register"
+                    )
+                original_normalized = f"productNode{node_id}OriginalNormalized"
+                candidate_normalized = f"productNode{node_id}CandidateNormalized"
+                table_claim_name = (
+                    f"productNode{node_id}BoundedRelocationTableJumpClaim"
+                )
+                claim_name = (
+                    f"productNode{node_id}BoundedRelocationTableJumpControlClaim"
+                )
+                closed_name = (
+                    f"productNode{node_id}BoundedRelocationTableJumpClosed"
+                )
+                node_closed_name = (
+                    f"productNode{node_id}BoundedRelocationTableJumpEdgesComplete"
+                )
+                definitions.extend([
+                    f"def {original_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior false region{region_index}.targets "
+                    f"originalBehavior{region_index}).get (by decide)",
+                    f"def {candidate_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior true region{region_index}.targets "
+                    f"candidateBehavior{region_index}).get (by decide)",
+                    f"theorem {original_normalized}Checked :\n"
+                    f"    normalizeSymbolicBehavior false region{region_index}.targets "
+                    f"originalBehavior{region_index} = some {original_normalized} := "
+                    "by decide",
+                    f"theorem {candidate_normalized}Checked :\n"
+                    f"    normalizeSymbolicBehavior true region{region_index}.targets "
+                    f"candidateBehavior{region_index} = some {candidate_normalized} := "
+                    "by decide",
+                    f"def {table_claim_name} : "
+                    "BoundedImmutableRelocationTableJumpClaim :=\n  "
+                    + _lean_bounded_immutable_relocation_table_jump_claim(candidate),
+                    f"def {claim_name} : "
+                    "BoundedImmutableRelocationTableJumpControlClaim := {\n"
+                    f"  table := {table_claim_name}\n"
+                    f"  indexWitness := {_lean_paired_exact_expr_witness(index_witness)}\n"
+                    "  indexBound := {\n"
+                    f"    original := .{original_index_register}\n"
+                    f"    candidate := .{candidate_index_register}\n"
+                    "    originalExpression := some "
+                    f"({_lean_semantic_expr(candidate['original_index_expression'])})\n"
+                    "    candidateExpression := some "
+                    f"({_lean_semantic_expr(candidate['candidate_index_expression'])})\n"
+                    f"    upperExclusive := {int(candidate['upper_exclusive'])}\n"
+                    "  }\n"
+                    "}",
+                    f"theorem {closed_name} :\n"
+                    "    BoundedImmutableRelocationTableJumpTargetsClosed "
+                    f"staticProofContext region{region_index}.inputInvariant "
+                    f"{original_normalized} {candidate_normalized} {claim_name} :=\n"
+                    "  boundedImmutableRelocationTableJumpTargetsClosed_of_checked "
+                    f"staticProofContext region{region_index}.inputInvariant "
+                    f"{original_normalized} {candidate_normalized} {claim_name} "
+                    "staticProofContextChecked (by decide)",
+                    f"theorem {node_closed_name} :\n"
+                    "    NodeBoundedImmutableRelocationTableJumpEdgesComplete "
+                    f"relationalProductGraph {node_id} staticProofContext "
+                    f"region{region_index} originalBehavior{region_index} "
+                    f"candidateBehavior{region_index} {original_normalized} "
+                    f"{candidate_normalized} {claim_name} := by\n"
+                    "  exact nodeBoundedImmutableRelocationTableJumpEdgesComplete_of_checked\n"
+                    f"    relationalProductGraph {node_id} staticProofContext "
+                    f"region{region_index} originalBehavior{region_index} "
+                    f"candidateBehavior{region_index} {original_normalized} "
+                    f"{candidate_normalized} {claim_name} staticProofContextChecked\n"
+                    f"    originalBehavior{region_index}CheckedDecoded "
+                    f"candidateBehavior{region_index}CheckedDecoded "
+                    f"{original_normalized}Checked {candidate_normalized}Checked "
+                    "(by decide) (by decide)",
+                    f"theorem {theorem_name} :\n"
+                    "    NodeControlEdgesComplete relationalProductGraph "
+                    f"{node_id} staticProofContext region{region_index} "
+                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
+                    "  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr "
+                    "(Or.inr (Or.inr (Or.inr "
+                    f"⟨{original_normalized}, {candidate_normalized}, {claim_name}, "
+                    f"{node_closed_name}⟩))))))))",
                 ])
             elif (
                 candidate.get("profile")
@@ -1270,6 +1642,7 @@ def _write_relational_product_graph_modules(
                 and candidate.get("input_contract")
                 == "bounded_immutable_code_pointer_table_call_v1"
             ):
+                extra_imports.add("RelationalStaticContext")
                 original_normalized = f"productNode{node_id}OriginalNormalized"
                 candidate_normalized = f"productNode{node_id}CandidateNormalized"
                 claim_name = (
@@ -1380,11 +1753,38 @@ def _write_relational_product_graph_modules(
                     f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
                     f"{match_name}, {closed_name}⟩⟩)))))",
                 ])
-            elif candidate.get("profile") == "inductive_iat_register_call_v1":
+            elif candidate.get("profile") in {
+                "inductive_iat_register_call_v1",
+                "seeded_iat_register_call_v1",
+            }:
                 original_normalized = f"productNode{node_id}OriginalNormalized"
                 candidate_normalized = f"productNode{node_id}CandidateNormalized"
                 claim_name = f"productNode{node_id}ImportIndirectCallClaim"
                 closed_name = f"productNode{node_id}ImportIndirectCallClosed"
+                seed_definitions: list[str] = []
+                closed_proof = (
+                    "  importRegisterIndirectCallTargetsClosed_of_checked "
+                    f"staticProofContext region{region_index}.inputInvariant "
+                    f"{original_normalized} "
+                    f"{candidate_normalized} {claim_name} (by decide)"
+                )
+                if candidate.get("profile") == "seeded_iat_register_call_v1":
+                    seed = candidate.get("seed")
+                    if not isinstance(seed, dict):
+                        raise StageAInputError(
+                            f"seeded import call at product node {node_id} lacks its seed"
+                        )
+                    seed_name = f"productNode{node_id}ImportIndirectCallSeed"
+                    seed_definitions.append(
+                        f"def {seed_name} : ImportRegisterSeedClaim := "
+                        + _lean_import_register_seed_claim(seed)
+                    )
+                    closed_proof = (
+                        "  importRegisterIndirectCallTargetsClosed_of_seed_checked "
+                        f"staticProofContext region{region_index}.inputInvariant "
+                        f"{original_normalized} {candidate_normalized} {claim_name} "
+                        f"{seed_name} (by decide)"
+                    )
                 definitions.extend([
                     f"def {original_normalized} : NormalizedSymbolicBehavior :=\n"
                     f"  (normalizeSymbolicBehavior false region{region_index}.targets "
@@ -1398,13 +1798,13 @@ def _write_relational_product_graph_modules(
                     f"  candidateRegister := .{candidate['candidate_register']}\n"
                     f"  continuationTargetId := {int(candidate['continuation_target_id'])}\n"
                     "}",
+                    *seed_definitions,
                     f"theorem {closed_name} :\n"
                     f"    ImportRegisterIndirectCallTargetsClosed "
-                    f"region{region_index}.inputInvariant {original_normalized} "
+                    f"staticProofContext region{region_index}.inputInvariant "
+                    f"{original_normalized} "
                     f"{candidate_normalized} {claim_name} :=\n"
-                    "  importRegisterIndirectCallTargetsClosed_of_checked "
-                    f"region{region_index}.inputInvariant {original_normalized} "
-                    f"{candidate_normalized} {claim_name} (by decide)",
+                    f"{closed_proof}",
                     f"theorem {theorem_name} :\n"
                     "    NodeControlEdgesComplete relationalProductGraph "
                     f"{node_id} staticProofContext region{region_index} "

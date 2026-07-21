@@ -6,6 +6,7 @@ import z3
 
 from ..model import _semantic_hash
 from ..schema import FLAG_BITS, REGISTERS
+from .semantic_control import _semantic_edges
 
 
 _SEMANTIC_FLAG_FIELDS = {
@@ -293,44 +294,6 @@ def _semantic_tautology(expression: dict[str, Any]) -> tuple[bool, str]:
         return False, "counterexample_exists"
     return False, f"solver_unknown:{solver.reason_unknown()}"
 
-def _semantic_edges(behavior: dict[str, Any]) -> list[dict[str, Any]]:
-    outcome = behavior["outcome"]
-    operation = outcome.get("op")
-    truth = {"op": "bool_constant", "value": True}
-    if operation in {"jump", "call", "call_unmapped_return"}:
-        return [{
-            "target": int(outcome["target"]),
-            "guard": truth,
-            "kind": "call" if operation == "call_unmapped_return" else operation,
-        }]
-    if operation == "branch":
-        if int(outcome["taken"]) == int(outcome["fallthrough"]):
-            return [{
-                "target": int(outcome["taken"]),
-                "guard": truth,
-                "kind": "branch_converged",
-            }]
-        return [
-            {"target": int(outcome["taken"]), "guard": outcome["condition"], "kind": "branch_taken"},
-            {
-                "target": int(outcome["fallthrough"]),
-                "guard": {"op": "not", "value": outcome["condition"]},
-                "kind": "branch_fallthrough",
-            },
-        ]
-    if operation in {"bulk_copy", "atomic_compare_exchange"}:
-        return [{"target": int(outcome["continuation"]), "guard": truth, "kind": operation}]
-    if operation == "checked_continue":
-        return [{"target": int(outcome["continuation"]), "guard": outcome["valid"], "kind": operation}]
-    if operation == "external_call":
-        return [{
-            "target": int(outcome["continuation"]),
-            "guard": truth,
-            "kind": operation,
-            "environment_barrier": True,
-        }]
-    return []
-
 def _local_invariant_seeds(region: dict[str, Any]) -> list[dict[str, Any]]:
     seeds = []
     for bound_index, bound in enumerate(region.get("bounds", [])):
@@ -482,12 +445,19 @@ def _synthesize_relational_invariants(
                 "region_id": target_region["id"],
                 "requirement_id": requirement["id"],
             })
-        elif len(predecessors) > 1:
+        elif (
+            len(predecessors) > 1
+            and not any(
+                edge["source_index"] == target_index for edge in predecessors
+            )
+        ):
             # Joins are invariant cutpoints. Expanding a separate substituted
             # predicate down every predecessor path is both redundant with the
             # checked product-graph invariant table and potentially
-            # exponential. Keep the complete incoming inventory and require a
-            # checked join invariant instead.
+            # exponential. A direct self-loop is the useful exception: checking
+            # its explicit invariant on every incoming edge closes the loop by
+            # induction without expanding another path. Other joins keep the
+            # complete incoming inventory and require a checked join invariant.
             barriers.append({
                 "kind": "control_join_invariant_required",
                 "side": side,

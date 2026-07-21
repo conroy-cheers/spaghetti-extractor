@@ -19,6 +19,7 @@ from .pe import (
     mapped_section_size,
 )
 from .util import sha256_bytes
+from .errors import StageAInputError
 
 
 STAGE_A_MODEL_ID = "x86-pe32-env-v1"
@@ -162,10 +163,6 @@ class BlockSide:
     @property
     def size(self) -> int:
         return self.rva_end - self.rva_start
-
-
-class StageAInputError(ValueError):
-    pass
 
 
 class _ExportParseError(ValueError):
@@ -1360,10 +1357,22 @@ def _linker_map_section_fragment_symbol(section_name: str) -> str | None:
 
 def _parse_linker_map_symbol_line(line: str, binary: StageABinary) -> tuple[int, str] | None:
     match = re.match(r"^\s*(0x[0-9a-fA-F]+)\s+([A-Za-z_.$@?][A-Za-z0-9_.$@?~-]*)\s*$", line)
-    if match is None:
-        return None
-    address = int(match.group(1), 16)
-    name = match.group(2)
+    if match is not None:
+        address = int(match.group(1), 16)
+        name = match.group(2)
+    else:
+        # LINK and lld-link maps identify a symbol by section:offset and also
+        # print its image-relative absolute address. The latter is sufficient
+        # here; section numbers and symbols remain untrusted mapping hints.
+        msvc_match = re.match(
+            r"^\s*[0-9a-fA-F]{4}:[0-9a-fA-F]{8,16}\s+"
+            r"(\S+)\s+([0-9a-fA-F]{8,16})(?:\s+.*)?$",
+            line,
+        )
+        if msvc_match is None:
+            return None
+        name = msvc_match.group(1)
+        address = int(msvc_match.group(2), 16)
     if name.startswith(".") or name in {"PROVIDE", "CREATE_OBJECT_SYMBOLS"}:
         return None
     rva = address - binary.image_base if address >= binary.image_base else address

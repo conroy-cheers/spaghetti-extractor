@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ...errors import StageAInputError
 from ...stage_binary import StageABinary
 from ...util import sha256_bytes
 from ..callsite_preservation import (
@@ -15,6 +16,18 @@ from ..extraction import (
     _semantic_exact_memory_inputs,
 )
 from ..model import _semantic_constant_bool
+from ..register_dataflow_artifact import (
+    register_transfer_observation_sha256,
+    register_transfer_semantics_sha256,
+)
+from ..register_transfer_ir import (
+    RegisterTransferIncomplete,
+    compile_register_transfer_program,
+    evaluate_register_transfer_program,
+    parse_register_transfer_context,
+    register_transfer_context_payload,
+    register_transfer_programs_payload,
+)
 from ..schema import STAGE_A_RELATIONAL_MODEL_ID
 from .callsite import (
     CALLSITE_PRESERVATION_ANALYSIS_FORMAT,
@@ -23,7 +36,8 @@ from .callsite import (
 from .control import _constant_read32_address
 from .dataflow import stable_dataflow_graph, strongly_connected_components
 from .external import _semantic_external_target_identity
-from .invariants import _semantic_edges
+from .fixedpoint import solve_monotone_fixed_point_by_scc
+from .semantic_control import _semantic_edges
 from .region_local import (
     _attach_assembled_immutable_read_address_separations,
     _attach_import_seed_address_separations,
@@ -39,6 +53,19 @@ from .register_static import (
     _immutable_image_word_read,
     _paired_constant_relation,
 )
+from .register_lattice import (
+    RegisterRelation,
+    _REGISTER_CODE_POINTER_DISJUNCTION_BUDGET,
+    _REGISTER_RELATION_KINDS,
+    _register_code_pointer_producer_relation,
+    _register_code_pointer_provenance_payload,
+    _register_relation_implies,
+    _register_relation_implies_exact,
+    _register_relation_join,
+    _register_relation_key,
+    _register_relation_kind,
+    _register_relation_payload,
+)
 from .segments import _semantic_expr_registers
 from .stack import (
     _attach_return_slot_contracts,
@@ -49,11 +76,6 @@ from .stack import (
 )
 
 
-_REGISTER_RELATION_KINDS = {
-    "exact", "fixed_word", "code_pointer", "data_pointer", "fixed_code_pointer",
-    "related_word",
-}
-RegisterRelation = str | dict[str, Any]
 _X86_GENERAL_REGISTERS = frozenset({
     "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp",
 })
@@ -64,75 +86,6 @@ _PE32_EXTERNAL_PRESERVED_REGISTERS = frozenset({
 def _machine_result_invariant_relation(relation: dict[str, Any]) -> str:
     return "exact" if relation.get("relation") == "exact" else "related_word"
 
-
-def _register_relation_kind(relation: RegisterRelation) -> str:
-    if isinstance(relation, str):
-        return relation
-    return str(relation.get("relation", "related_word"))
-
-
-def _register_relation_payload(relation: RegisterRelation) -> dict[str, Any]:
-    kind = _register_relation_kind(relation)
-    if kind == "fixed_word" and isinstance(relation, dict):
-        value = relation.get("value")
-        if (
-            isinstance(value, int)
-            and not isinstance(value, bool)
-            and 0 <= value < 2**32
-        ):
-            return {"relation": kind, "value": int(value)}
-    if kind == "fixed_code_pointer" and isinstance(relation, dict):
-        target_id = relation.get("target_id")
-        if (
-            isinstance(target_id, int)
-            and not isinstance(target_id, bool)
-            and target_id >= 0
-        ):
-            return {"relation": kind, "target_id": int(target_id)}
-    if kind in _REGISTER_RELATION_KINDS - {"fixed_word", "fixed_code_pointer"}:
-        return {"relation": kind}
-    return {"relation": "related_word"}
-
-
-def _register_relation_key(relation: RegisterRelation) -> tuple[str, int | None]:
-    payload = _register_relation_payload(relation)
-    return payload["relation"], payload.get("target_id", payload.get("value"))
-
-
-def _register_relation_join(relations: list[RegisterRelation]) -> RegisterRelation:
-    if not relations:
-        return "related_word"
-    keys = {_register_relation_key(relation) for relation in relations}
-    if len(keys) != 1:
-        if all(
-            _register_relation_kind(relation) in {"fixed_word", "exact"}
-            for relation in relations
-        ):
-            return "exact"
-        # In particular, fixed targets with different canonical IDs must never
-        # retain either target identity after a join.
-        return "related_word"
-    if _register_relation_kind(relations[0]) in {
-        "fixed_word", "fixed_code_pointer",
-    }:
-        return _register_relation_payload(relations[0])
-    return _register_relation_kind(relations[0])
-
-
-def _register_relation_implies(
-    source: RegisterRelation, target: RegisterRelation,
-) -> bool:
-    source_key = _register_relation_key(source)
-    target_key = _register_relation_key(target)
-    if source_key == target_key or target_key[0] == "related_word":
-        return True
-    if source_key[0] == "fixed_word" and target_key[0] == "exact":
-        return True
-    return source_key[0] == "fixed_code_pointer" and target_key[0] == "code_pointer"
-
-
-def _register_relation_implies_exact(relation: RegisterRelation) -> bool:
-    return _register_relation_kind(relation) in {"exact", "fixed_word"}
 
 def _fixed_register_values(
     input_relations: dict[str, RegisterRelation],
@@ -447,6 +400,163 @@ def _matching_static_word_relation_slot(
         ):
             matches.append(slot)
     return dict(matches[0]) if len(matches) == 1 else None
+
+
+def _paired_code_target_id(
+    original_value: int,
+    candidate_value: int,
+    contract: dict[str, Any],
+    original_image_base: int,
+    candidate_image_base: int,
+) -> int | None:
+    """Return the unique canonical target for a concrete address pair."""
+    matches = []
+    for target_id, target in enumerate(contract.get("code_targets", [])):
+        if not (
+            isinstance(target, dict)
+            and target.get("id") == target_id
+        ):
+            continue
+        original_rvas = [
+            target.get("original_rva"),
+            *target.get("original_aliases", []),
+        ]
+        candidate_rvas = [
+            target.get("candidate_rva"),
+            *target.get("candidate_aliases", []),
+        ]
+        if (
+            (original_value & 0xFFFFFFFF) in {
+                (original_image_base + int(rva)) & 0xFFFFFFFF
+                for rva in original_rvas
+                if isinstance(rva, int) and not isinstance(rva, bool)
+            }
+            and (candidate_value & 0xFFFFFFFF) in {
+                (candidate_image_base + int(rva)) & 0xFFFFFFFF
+                for rva in candidate_rvas
+                if isinstance(rva, int) and not isinstance(rva, bool)
+            }
+        ):
+            matches.append(target_id)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _register_transfer_region_context_sha256(
+    *,
+    behavior_pair: dict[str, Any],
+    input_pairs: dict[str, str],
+    output_pairs: dict[str, str],
+    contract: dict[str, Any],
+    original_image_base: int,
+    candidate_image_base: int,
+    original_bin: StageABinary | None,
+    candidate_bin: StageABinary | None,
+    register_order: tuple[str, ...],
+) -> str:
+    """Hash only static facts that can affect one region transfer."""
+    original_registers = behavior_pair["original_ir"]["registers"]
+    candidate_registers = behavior_pair["candidate_ir"]["registers"]
+    rows = []
+    for register in register_order:
+        candidate_register = output_pairs.get(register)
+        if (
+            register not in original_registers
+            or candidate_register is None
+            or candidate_register not in candidate_registers
+        ):
+            rows.append({
+                "register": register,
+                "candidate_register": candidate_register,
+                "status": "output_pair_missing",
+            })
+            continue
+        original_expression = original_registers[register]
+        candidate_expression = candidate_registers[candidate_register]
+        rows.append({
+            "register": register,
+            "candidate_register": candidate_register,
+            "original_expression": original_expression,
+            "candidate_expression": candidate_expression,
+            "paired_constant_relation": _paired_constant_relation(
+                original_expression,
+                candidate_expression,
+                contract,
+                original_image_base,
+                candidate_image_base,
+            ),
+            "static_word_relation_slot": _matching_static_word_relation_slot(
+                original_expression,
+                candidate_expression,
+                contract,
+            ),
+            "original_immutable_word_read": (
+                _immutable_image_word_read(original_expression, original_bin)
+                if original_bin is not None else None
+            ),
+            "candidate_immutable_word_read": (
+                _immutable_image_word_read(candidate_expression, candidate_bin)
+                if candidate_bin is not None else None
+            ),
+        })
+    return sha256_bytes(
+        json.dumps(
+            {
+                "format": "stage-a-register-transfer-region-context-v2",
+                "original_image_base": original_image_base,
+                "candidate_image_base": candidate_image_base,
+                "global_values_empty": not contract.get("value_targets"),
+                "input_pairs": input_pairs,
+                "output_pairs": output_pairs,
+                "outputs": rows,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+
+
+def _fixed_immutable_transfer_probe(
+    *,
+    behavior_pair: dict[str, Any],
+    input_relations: dict[str, RegisterRelation],
+    input_pairs: dict[str, str],
+    output_pairs: dict[str, str],
+    original_bin: StageABinary | None,
+    candidate_bin: StageABinary | None,
+    register_order: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    if original_bin is None or candidate_bin is None:
+        return []
+    original_fixed, candidate_fixed = _fixed_register_values(
+        input_relations, input_pairs,
+    )
+    original_registers = behavior_pair["original_ir"]["registers"]
+    candidate_registers = behavior_pair["candidate_ir"]["registers"]
+    rows = []
+    for register in register_order:
+        candidate_register = output_pairs.get(register)
+        if (
+            register not in original_registers
+            or candidate_register is None
+            or candidate_register not in candidate_registers
+        ):
+            continue
+        original_value = _fixed_immutable_expr_value(
+            original_registers[register], original_bin, original_fixed,
+        )
+        candidate_value = _fixed_immutable_expr_value(
+            candidate_registers[candidate_register],
+            candidate_bin,
+            candidate_fixed,
+        )
+        if original_value is not None or candidate_value is not None:
+            rows.append({
+                "register": register,
+                "candidate_register": candidate_register,
+                "original_value": original_value,
+                "candidate_value": candidate_value,
+            })
+    return rows
 
 def _callsite_generation_incomplete(
     callsite: int,
@@ -1086,6 +1196,7 @@ def _infer_import_register_invariants(
     *,
     internal_return_predecessors: list[dict[str, Any]] | None = None,
     callsite_summary_predecessors: list[dict[str, Any]] | None = None,
+    returning_external_thunk_predecessors: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     region_by_numeric_id = {
         int(region["numeric_id"]): index
@@ -1287,6 +1398,51 @@ def _infer_import_register_invariants(
         existing_edges.add(key)
         accepted_callsite_summary_predecessors += 1
 
+    accepted_returning_external_thunk_predecessors = 0
+    for predecessor in returning_external_thunk_predecessors or []:
+        if not isinstance(predecessor, dict):
+            continue
+        source_value = predecessor.get("source_region_index")
+        target_value = predecessor.get("target_region_index")
+        contract_id = predecessor.get("machine_contract_id")
+        preserved = predecessor.get("preserved_registers")
+        if not (
+            isinstance(source_value, int)
+            and not isinstance(source_value, bool)
+            and isinstance(target_value, int)
+            and not isinstance(target_value, bool)
+            and isinstance(contract_id, int)
+            and not isinstance(contract_id, bool)
+            and isinstance(preserved, list)
+            and all(
+                isinstance(register, str) and register in _X86_GENERAL_REGISTERS
+                for register in preserved
+            )
+            and predecessor.get("proposal_only") is True
+        ):
+            continue
+        source_index = int(source_value)
+        target_index = int(target_value)
+        key = (source_index, target_index, "returning_external_thunk")
+        if (
+            not 0 <= source_index < len(behaviors)
+            or not 0 <= target_index < len(behaviors)
+            or key in existing_edges
+        ):
+            continue
+        incoming[target_index].append(len(edges))
+        edges.append({
+            "source_region_index": source_index,
+            "target_region_index": target_index,
+            "kind": "returning_external_thunk",
+            "environment_barrier": True,
+            "proposal_only": True,
+            "machine_contract_id": int(contract_id),
+            "preserved_registers": sorted(set(preserved)),
+        })
+        existing_edges.add(key)
+        accepted_returning_external_thunk_predecessors += 1
+
     def transferred_source_fact(
         edge: dict[str, Any],
         target_fact: tuple[str, str, tuple[str, str, str | int]],
@@ -1298,6 +1454,13 @@ def _infer_import_register_invariants(
             and target_fact not in set(edge["preserved_import_relation_keys"])
         ):
             return None
+        if edge["kind"] == "returning_external_thunk":
+            preserved_registers = set(edge["preserved_registers"])
+            if (
+                original_register not in preserved_registers
+                or candidate_register not in preserved_registers
+            ):
+                return None
         original_expression = (
             behaviors[source_index]["original_ir"].get("registers") or {}
         ).get(original_register) or {}
@@ -1482,6 +1645,61 @@ def _infer_import_register_invariants(
             "import": matches[0]["import"],
         })
 
+    # A region may load an IAT entry and dispatch through that value before the
+    # next cutpoint.  Such a call does not require an inductive entry relation:
+    # the existing import-register seed certificate proves the output value
+    # directly from the loader-populated IAT word.  Keep this proposal exact and
+    # unambiguous; Lean independently replays the seed and call-target equality.
+    call_sources = {int(row["source_region_index"]) for row in call_rows}
+    seeds_by_region: dict[int, list[dict[str, Any]]] = {}
+    for seed in seeds:
+        seeds_by_region.setdefault(int(seed["region_index"]), []).append(seed)
+    for source_index, behavior_pair in enumerate(behaviors):
+        if source_index in call_sources:
+            continue
+        original_behavior = behavior_pair["original_ir"]
+        candidate_behavior = behavior_pair["candidate_ir"]
+        original_outcome = original_behavior.get("outcome") or {}
+        candidate_outcome = candidate_behavior.get("outcome") or {}
+        if (
+            original_outcome.get("op") != "indirect_call"
+            or candidate_outcome.get("op") != "indirect_call"
+        ):
+            continue
+        continuation = int(original_outcome.get("continuation", -1))
+        if continuation != int(candidate_outcome.get("continuation", -2)):
+            continue
+        continuation_index = region_by_numeric_id.get(continuation)
+        if continuation_index is None:
+            continue
+        original_registers = original_behavior.get("registers") or {}
+        candidate_registers = candidate_behavior.get("registers") or {}
+        matches = [
+            seed for seed in seeds_by_region.get(source_index, [])
+            if original_outcome.get("target")
+                == original_registers.get(str(seed["original_register"]))
+            and candidate_outcome.get("target")
+                == candidate_registers.get(str(seed["candidate_register"]))
+        ]
+        if len(matches) != 1:
+            continue
+        seed = matches[0]
+        call_rows.append({
+            "profile": "seeded_iat_register_call_v1",
+            "source_region_index": source_index,
+            "continuation_region_index": continuation_index,
+            "original_register": str(seed["original_register"]),
+            "candidate_register": str(seed["candidate_register"]),
+            "import": seed["import"],
+            "seed": json.loads(json.dumps(seed)),
+        })
+
+    call_rows.sort(key=lambda row: (
+        int(row["source_region_index"]),
+        int(row["continuation_region_index"]),
+        str(row["profile"]),
+    ))
+
     return {
         "format": "stage-a-relational-import-register-invariants-v1",
         "status": "proposal_requires_edge_and_scc_lean_replay",
@@ -1501,6 +1719,9 @@ def _infer_import_register_invariants(
             ),
             "callsite_summary_predecessors": (
                 accepted_callsite_summary_predecessors
+            ),
+            "returning_external_thunk_predecessors": (
+                accepted_returning_external_thunk_predecessors
             ),
         },
     }
@@ -1528,6 +1749,79 @@ def _closed_internal_return_predecessors(
         }
         for source_index, target_index in sorted(result)
     ]
+
+
+def _returning_external_thunk_predecessors(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    register_relations: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Propose caller-specific successors for checked returning import thunks.
+
+    The edge is intentionally not treated as an ordinary decoded predecessor.
+    Its import facts are carried by the active runtime frame and must be replayed
+    through the exact machine contract by Lean before acceptance.
+    """
+    region_by_numeric_id = {
+        int(region["numeric_id"]): index
+        for index, region in enumerate(contract.get("regions", []))
+    }
+    contracts_by_id = {
+        int(item["id"]): item
+        for item in contract.get("machine_import_call_contracts", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("id"), int)
+        and not isinstance(item.get("id"), bool)
+    }
+    rows: dict[tuple[int, int, int], dict[str, Any]] = {}
+    for edge in register_relations.get("edges", []):
+        if not isinstance(edge, dict) or edge.get("kind") != "call":
+            continue
+        contract_id = edge.get("returning_external_thunk_contract_id")
+        source_value = edge.get("source_region_index")
+        if not (
+            isinstance(contract_id, int)
+            and not isinstance(contract_id, bool)
+            and isinstance(source_value, int)
+            and not isinstance(source_value, bool)
+            and 0 <= int(source_value) < len(behaviors)
+        ):
+            continue
+        machine_contract = contracts_by_id.get(int(contract_id))
+        if machine_contract is None or machine_contract.get("disposition") != "returns":
+            continue
+        source_index = int(source_value)
+        original_outcome = behaviors[source_index].get("original_ir", {}).get(
+            "outcome"
+        ) or {}
+        candidate_outcome = behaviors[source_index].get("candidate_ir", {}).get(
+            "outcome"
+        ) or {}
+        continuation = original_outcome.get("continuation")
+        if (
+            original_outcome.get("op") != "call"
+            or candidate_outcome.get("op") != "call"
+            or continuation != candidate_outcome.get("continuation")
+            or not isinstance(continuation, int)
+            or isinstance(continuation, bool)
+        ):
+            continue
+        target_index = region_by_numeric_id.get(int(continuation))
+        if target_index is None:
+            continue
+        key = (source_index, target_index, int(contract_id))
+        rows[key] = {
+            "source_region_index": source_index,
+            "target_region_index": target_index,
+            "machine_contract_id": int(contract_id),
+            "preserved_registers": sorted({
+                str(register)
+                for register in machine_contract.get("preserved_registers", [])
+                if str(register) in _X86_GENERAL_REGISTERS
+            }),
+            "proposal_only": True,
+        }
+    return [rows[key] for key in sorted(rows)]
 
 def _attach_import_register_invariants(
     contract: dict[str, Any], analysis: dict[str, Any],
@@ -1670,6 +1964,619 @@ def _indirect_fixed_code_pointer_register_calls(
     )
 
 
+def _bounded_register_code_pointer_provenance(
+    *,
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    relation_rows: list[dict[str, Any]],
+    predecessors: list[list[tuple[Any, ...]]],
+    register_order: tuple[str, ...],
+    input_pair_candidates: list[dict[str, str]],
+    output_pair_candidates: list[dict[str, str]],
+    output_reasons: list[dict[str, str]],
+    launch_root_region_indices: set[int],
+    protocol_callback_region_indices: set[int],
+    conservative_entry_regions: set[int],
+    stack_window_input_pairs: list[set[tuple[str, str]]],
+    original_image_base: int,
+    candidate_image_base: int,
+    disjunction_budget: int,
+) -> dict[str, Any]:
+    """Track finite register-held code targets without granting authority.
+
+    This side lattice deliberately does not alter the semantic register
+    relations consumed by Lean. It records only unambiguous fixed-target
+    producers, exact register copies, and graph-edge preservation. Any unknown
+    contribution dominates a join, and an over-budget union is discarded.
+    """
+    if (
+        not isinstance(disjunction_budget, int)
+        or isinstance(disjunction_budget, bool)
+        or disjunction_budget <= 0
+    ):
+        raise ValueError("register code-pointer disjunction budget must be positive")
+
+    region_count = len(relation_rows)
+    unknown: RegisterRelation = "related_word"
+    producer_reasons = frozenset({
+        "paired_constant",
+        "static_word_slot",
+        "immutable_image_word",
+        "assembled_immutable_image_word",
+        "fixed_immutable_expression",
+    })
+    overflow_locations: set[tuple[str, int, str]] = set()
+
+    def joined(
+        relations: list[RegisterRelation],
+        *,
+        direction: str,
+        region_index: int,
+        register: str,
+    ) -> RegisterRelation:
+        provenance = [
+            _register_code_pointer_provenance_payload(relation)
+            for relation in relations
+        ]
+        if provenance and all(payload is not None for payload in provenance):
+            target_ids = {
+                int(alternative["target_id"])
+                for payload in provenance
+                if payload is not None
+                for alternative in payload["target_alternatives"]
+            }
+            if len(target_ids) > disjunction_budget:
+                overflow_locations.add((direction, region_index, register))
+        return _register_relation_join(
+            relations,
+            finite_code_pointer_budget=disjunction_budget,
+        )
+
+    output_relations_by_register = [
+        {
+            str(relation["original"]): relation
+            for relation in row.get("outputs", [])
+            if isinstance(relation, dict)
+        }
+        for row in relation_rows
+    ]
+    output_claims_by_register = []
+    for row in relation_rows:
+        claims: dict[str, list[dict[str, Any]]] = {}
+        for claim in row.get("output_claims", []):
+            if not isinstance(claim, dict):
+                continue
+            output = claim.get("output")
+            if not isinstance(output, dict):
+                continue
+            original_register = output.get("original")
+            if isinstance(original_register, str):
+                claims.setdefault(original_register, []).append(claim)
+        output_claims_by_register.append(claims)
+
+    def transfer_output(
+        region_index: int,
+        register: str,
+        input_state: dict[str, RegisterRelation],
+    ) -> RegisterRelation:
+        original_registers = behaviors[region_index]["original_ir"]["registers"]
+        candidate_registers = behaviors[region_index]["candidate_ir"]["registers"]
+        candidate_register = output_pair_candidates[region_index].get(register)
+        if (
+            register not in original_registers
+            or candidate_register is None
+            or candidate_register not in candidate_registers
+        ):
+            return unknown
+        original_expression = original_registers[register]
+        candidate_expression = candidate_registers[candidate_register]
+        if (
+            isinstance(original_expression, dict)
+            and isinstance(candidate_expression, dict)
+            and original_expression.get("op") == "input_reg"
+            and candidate_expression.get("op") == "input_reg"
+        ):
+            source_register = str(original_expression.get("reg"))
+            expected_candidate = input_pair_candidates[region_index].get(
+                source_register, source_register,
+            )
+            if str(candidate_expression.get("reg")) == expected_candidate:
+                return input_state.get(source_register, unknown)
+
+        semantic_relation = output_relations_by_register[region_index].get(register)
+        reason = output_reasons[region_index].get(register, "")
+        target_id = (
+            semantic_relation.get("target_id")
+            if isinstance(semantic_relation, dict)
+            and semantic_relation.get("relation") == "fixed_code_pointer"
+            else None
+        )
+        if target_id is None and reason in producer_reasons:
+            claim_targets = []
+            for claim in output_claims_by_register[region_index].get(register, []):
+                output = claim.get("output")
+                original_value = claim.get("original_value")
+                candidate_value = claim.get("candidate_value")
+                if not (
+                    isinstance(output, dict)
+                    and output.get("candidate") == candidate_register
+                    and isinstance(original_value, int)
+                    and not isinstance(original_value, bool)
+                    and isinstance(candidate_value, int)
+                    and not isinstance(candidate_value, bool)
+                ):
+                    continue
+                claim_target = _paired_code_target_id(
+                    original_value,
+                    candidate_value,
+                    contract,
+                    original_image_base,
+                    candidate_image_base,
+                )
+                if claim_target is not None:
+                    claim_targets.append(claim_target)
+            unique_claim_targets = sorted(set(claim_targets))
+            target_id = (
+                unique_claim_targets[0]
+                if len(unique_claim_targets) == 1 else None
+            )
+        if (
+            reason not in producer_reasons
+            or not isinstance(target_id, int)
+            or isinstance(target_id, bool)
+            or target_id < 0
+        ):
+            return unknown
+        return _register_code_pointer_producer_relation(
+            target_id=target_id,
+            region_id=str(relation_rows[region_index]["region_id"]),
+            region_index=region_index,
+            claim_kind=reason,
+            original_register=register,
+            candidate_register=candidate_register,
+        )
+
+    seed_regions = (
+        launch_root_region_indices
+        | protocol_callback_region_indices
+        | conservative_entry_regions
+    )
+    input_states: list[dict[str, RegisterRelation] | None] = [
+        ({register: unknown for register in register_order}
+         if region_index in seed_regions else None)
+        for region_index in range(region_count)
+    ]
+    output_states: list[dict[str, RegisterRelation] | None] = [
+        None for _ in range(region_count)
+    ]
+    output_reason_states: list[dict[str, str] | None] = [
+        None for _ in range(region_count)
+    ]
+    successors: list[set[int]] = [set() for _ in range(region_count)]
+    for target_index, incoming in enumerate(predecessors):
+        for source_index, _barrier, _kind, _preserved, _results in incoming:
+            successors[int(source_index)].add(target_index)
+
+    def evaluate_output(
+        region_index: int,
+        input_state: dict[str, RegisterRelation],
+        previous_output: dict[str, RegisterRelation] | None,
+    ) -> tuple[dict[str, RegisterRelation], dict[str, str]]:
+        proposed = {
+            register: transfer_output(region_index, register, input_state)
+            for register in register_order
+        }
+        reasons = {
+            register: (
+                "finite_code_pointer"
+                if _register_code_pointer_provenance_payload(relation) is not None
+                else "unknown_or_clobbered"
+            )
+            for register, relation in proposed.items()
+        }
+        if previous_output is None:
+            return proposed, reasons
+        stable = {
+            register: joined(
+                [previous_output[register], proposed[register]],
+                direction="output",
+                region_index=region_index,
+                register=register,
+            )
+            for register in register_order
+        }
+        return stable, reasons
+
+    def recompute_input(
+        region_index: int,
+        next_outputs: list[dict[str, RegisterRelation] | None]
+        | tuple[dict[str, RegisterRelation] | None, ...],
+    ) -> dict[str, RegisterRelation] | None:
+        result: dict[str, RegisterRelation] = {}
+        any_candidates = False
+        for register in register_order:
+            candidates: list[RegisterRelation] = []
+            if region_index in seed_regions:
+                candidates.append(unknown)
+            for source_index, barrier, kind, preserved, edge_results in (
+                predecessors[region_index]
+            ):
+                source_output = next_outputs[int(source_index)]
+                if source_output is None:
+                    continue
+                any_candidates = True
+                if kind == "internal_callsite_preservation_summary":
+                    result_relation = edge_results.get(register)
+                    source_targets = _register_code_pointer_provenance_payload(
+                        source_output[register]
+                    )
+                    result_target = (
+                        _register_relation_payload(result_relation).get("target_id")
+                        if result_relation is not None else None
+                    )
+                    contribution = (
+                        source_output[register]
+                        if register in preserved
+                        and source_targets is not None
+                        and {
+                            alternative["target_id"]
+                            for alternative in source_targets["target_alternatives"]
+                        } == {result_target}
+                        else unknown
+                    )
+                elif not barrier:
+                    contribution = source_output[register]
+                elif register in edge_results:
+                    contribution = unknown
+                elif register in preserved:
+                    contribution = source_output[register]
+                else:
+                    contribution = unknown
+                candidates.append(contribution)
+            if not candidates:
+                continue
+            any_candidates = True
+            result[register] = joined(
+                candidates,
+                direction="input",
+                region_index=region_index,
+                register=register,
+            )
+            candidate_register = input_pair_candidates[region_index].get(register)
+            if (
+                candidate_register is not None
+                and (register, candidate_register)
+                    in stack_window_input_pairs[region_index]
+            ):
+                result[register] = unknown
+        if not any_candidates:
+            return None
+        if len(result) != len(register_order):
+            raise AssertionError("reachable code-pointer provenance state is incomplete")
+        return result
+
+    fixed_point = solve_monotone_fixed_point_by_scc(
+        initial_input_states=input_states,
+        initial_output_states=output_states,
+        initial_output_reason_states=output_reason_states,
+        successors=[tuple(sorted(items)) for items in successors],
+        evaluate_output=evaluate_output,
+        recompute_input=recompute_input,
+        max_iterations=max(
+            1, region_count * len(register_order) * (disjunction_budget + 1) + 1,
+        ),
+    )
+
+    def relation_rows_for_state(
+        region_index: int,
+        state: dict[str, RegisterRelation] | None,
+        pairs: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        if state is None:
+            return []
+        rows = []
+        for register in register_order:
+            payload = _register_code_pointer_provenance_payload(state[register])
+            candidate_register = pairs.get(register)
+            if payload is None or candidate_register is None:
+                continue
+            rows.append({
+                "original": register,
+                "candidate": candidate_register,
+                **payload,
+            })
+        return rows
+
+    provenance_regions = []
+    for region_index in range(region_count):
+        inputs = relation_rows_for_state(
+            region_index,
+            fixed_point.input_states[region_index],
+            input_pair_candidates[region_index],
+        )
+        outputs = relation_rows_for_state(
+            region_index,
+            fixed_point.output_states[region_index],
+            output_pair_candidates[region_index],
+        )
+        if inputs or outputs:
+            provenance_regions.append({
+                "region_id": str(relation_rows[region_index]["region_id"]),
+                "region_index": region_index,
+                "inputs": inputs,
+                "outputs": outputs,
+            })
+
+    regions = contract.get("regions", [])
+    code_targets = contract.get("code_targets", [])
+    region_by_numeric_id = {
+        int(region["numeric_id"]): region_index
+        for region_index, region in enumerate(regions)
+        if isinstance(region, dict)
+        and isinstance(region.get("numeric_id"), int)
+        and not isinstance(region.get("numeric_id"), bool)
+    }
+    target_ids_by_region_index: dict[int, list[int]] = {}
+    for target_id, target in enumerate(code_targets):
+        if not (
+            isinstance(target, dict)
+            and target.get("id") == target_id
+        ):
+            continue
+        mapped = target.get("region_index")
+        target_region = (
+            int(mapped)
+            if isinstance(mapped, int)
+            and not isinstance(mapped, bool)
+            and 0 <= mapped < region_count
+            else region_by_numeric_id.get(target_id)
+        )
+        if target_region is not None:
+            target_ids_by_region_index.setdefault(target_region, []).append(target_id)
+
+    controls = []
+    incomplete_controls = []
+    for source_index, behavior_pair in enumerate(behaviors):
+        original_outcome = behavior_pair["original_ir"].get("outcome") or {}
+        candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
+        operation = original_outcome.get("op")
+        original_target = original_outcome.get("target") or {}
+        candidate_target = candidate_outcome.get("target") or {}
+        if not (
+            operation in {"indirect_call", "indirect_jump"}
+            and candidate_outcome.get("op") == operation
+            and isinstance(original_target, dict)
+            and isinstance(candidate_target, dict)
+            and original_target.get("op") == "input_reg"
+            and candidate_target.get("op") == "input_reg"
+        ):
+            continue
+        original_register = str(original_target.get("reg"))
+        candidate_register = str(candidate_target.get("reg"))
+        expected_candidate = input_pair_candidates[source_index].get(
+            original_register
+        )
+        state = fixed_point.input_states[source_index]
+        payload = (
+            _register_code_pointer_provenance_payload(
+                state.get(original_register, unknown)
+            )
+            if state is not None else None
+        )
+        blocker = None
+        if candidate_register != expected_candidate:
+            blocker = "ambiguous_register_pair"
+        elif ("input", source_index, original_register) in overflow_locations:
+            blocker = "finite_disjunction_budget_overflow"
+        elif payload is None:
+            blocker = "unknown_or_clobbered_provenance"
+
+        target_alternatives = []
+        if blocker is None and payload is not None:
+            for alternative in payload["target_alternatives"]:
+                target_id = int(alternative["target_id"])
+                target = (
+                    code_targets[target_id]
+                    if isinstance(code_targets, list)
+                    and 0 <= target_id < len(code_targets)
+                    and isinstance(code_targets[target_id], dict)
+                    and code_targets[target_id].get("id") == target_id
+                    else None
+                )
+                mapped = target.get("region_index") if target is not None else None
+                target_region_index = (
+                    int(mapped)
+                    if isinstance(mapped, int)
+                    and not isinstance(mapped, bool)
+                    and 0 <= mapped < region_count
+                    else region_by_numeric_id.get(target_id)
+                )
+                if target_region_index is None:
+                    blocker = "canonical_target_region_missing"
+                    target_alternatives = []
+                    break
+                target_alternatives.append({
+                    "target_id": target_id,
+                    "target_region_index": target_region_index,
+                    "producer_witnesses": alternative["producer_witnesses"],
+                })
+
+        continuation = {}
+        if blocker is None and operation == "indirect_call":
+            original_continuation = original_outcome.get("continuation")
+            candidate_continuation = candidate_outcome.get("continuation")
+            continuation_region_index = (
+                region_by_numeric_id.get(original_continuation)
+                if isinstance(original_continuation, int)
+                and not isinstance(original_continuation, bool)
+                and original_continuation == candidate_continuation
+                else None
+            )
+            continuation_target_ids = target_ids_by_region_index.get(
+                continuation_region_index, []
+            ) if continuation_region_index is not None else []
+            if len(continuation_target_ids) != 1:
+                blocker = "canonical_continuation_missing_or_ambiguous"
+            else:
+                continuation = {
+                    "continuation_region_index": continuation_region_index,
+                    "continuation_target_id": continuation_target_ids[0],
+                }
+
+        common = {
+            "source_region_index": source_index,
+            "operation": operation,
+            "original_register": original_register,
+            "candidate_register": candidate_register,
+        }
+        if blocker is not None:
+            incomplete_controls.append({**common, "blocker": blocker})
+            continue
+        controls.append({
+            "profile": "inductive_finite_code_pointer_register_control_v1",
+            **common,
+            **continuation,
+            "target_alternatives": target_alternatives,
+        })
+
+    finite_inputs = sum(len(region["inputs"]) for region in provenance_regions)
+    finite_outputs = sum(len(region["outputs"]) for region in provenance_regions)
+    multi_target_inputs = sum(
+        len(relation["target_alternatives"]) > 1
+        for region in provenance_regions for relation in region["inputs"]
+    )
+    multi_target_outputs = sum(
+        len(relation["target_alternatives"]) > 1
+        for region in provenance_regions for relation in region["outputs"]
+    )
+    return {
+        "profile": "bounded_register_code_pointer_provenance_v1",
+        "status": (
+            "proposal_requires_generated_lean_replay"
+            if fixed_point.converged else "incomplete"
+        ),
+        "acceptance_authority": False,
+        "finite_disjunction_budget": disjunction_budget,
+        "converged": fixed_point.converged,
+        "iterations": fixed_point.iterations,
+        "overflow_locations": [
+            {"direction": direction, "region_index": region_index,
+             "register": register}
+            for direction, region_index, register in sorted(overflow_locations)
+        ],
+        "controls": controls,
+        "incomplete_controls": incomplete_controls,
+        "counts": {
+            "regions_with_provenance": len(provenance_regions),
+            "finite_input_relations": finite_inputs,
+            "finite_output_relations": finite_outputs,
+            "multi_target_input_relations": multi_target_inputs,
+            "multi_target_output_relations": multi_target_outputs,
+            "indirect_controls": len(controls),
+            "indirect_calls": sum(
+                control["operation"] == "indirect_call" for control in controls
+            ),
+            "indirect_jumps": sum(
+                control["operation"] == "indirect_jump" for control in controls
+            ),
+            "multi_target_indirect_controls": sum(
+                len(control["target_alternatives"]) > 1 for control in controls
+            ),
+            "incomplete_indirect_controls": len(incomplete_controls),
+            "overflow_locations": len(overflow_locations),
+        },
+        "regions": provenance_regions,
+    }
+
+
+def _register_transfer_propagation(
+    *,
+    regions: list[dict[str, Any]],
+    predecessors: list[
+        list[
+            tuple[
+                int, bool, str, frozenset[str],
+                dict[str, RegisterRelation],
+            ]
+        ]
+    ],
+    register_order: tuple[str, ...],
+    launch_root_region_indices: set[int],
+    protocol_callback_region_indices: set[int],
+    conservative_entry_regions: set[int],
+    input_pair_candidates: list[dict[str, str]],
+    stack_window_input_pairs: list[set[tuple[str, str]]],
+) -> dict[str, Any]:
+    propagation_edges = {
+        json.dumps(edge, sort_keys=True, separators=(",", ":")): edge
+        for target_index, incoming in enumerate(predecessors)
+        for source_index, barrier, kind, preserved, results in incoming
+        for edge in [{
+            "source_id": str(regions[source_index]["id"]),
+            "target_id": str(regions[target_index]["id"]),
+            "environment_barrier": bool(barrier),
+            "kind": str(kind),
+            "preserved_registers": sorted(preserved),
+            "result_relations": [
+                {
+                    "register": register,
+                    **_register_relation_payload(results[register]),
+                }
+                for register in register_order
+                if register in results
+            ],
+        }]
+    }
+    return {
+        "regions": [
+            {
+                "id": str(region["id"]),
+                "seed_relation": (
+                    _register_relation_join([
+                        *(
+                            ["exact"]
+                            if region_index in launch_root_region_indices
+                            else []
+                        ),
+                        *(
+                            ["related_word"]
+                            if region_index in protocol_callback_region_indices
+                            or region_index in conservative_entry_regions
+                            else []
+                        ),
+                    ])
+                    if region_index in launch_root_region_indices
+                    or region_index in protocol_callback_region_indices
+                    or region_index in conservative_entry_regions
+                    else None
+                ),
+                "stack_window_registers": sorted(
+                    register
+                    for register in register_order
+                    if (
+                        input_pair_candidates[region_index].get(register)
+                        is not None
+                        and (
+                            register,
+                            input_pair_candidates[region_index][register],
+                        ) in stack_window_input_pairs[region_index]
+                    )
+                ),
+            }
+            for region_index, region in enumerate(regions)
+        ],
+        "edges": sorted(
+            propagation_edges.values(),
+            key=lambda edge: (
+                edge["target_id"],
+                edge["source_id"],
+                edge["kind"],
+                json.dumps(edge, sort_keys=True, separators=(",", ":")),
+            ),
+        ),
+    }
+
+
 def _synthesize_register_relations(
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
@@ -1685,6 +2592,15 @@ def _synthesize_register_relations(
     _transfer_cache: dict[
         str, tuple[dict[str, RegisterRelation], dict[str, str]]
     ] | None = None,
+    _transfer_table_out: dict[str, Any] | None = None,
+    _transfer_programs_out: dict[str, Any] | None = None,
+    _transfer_program_cache: dict[str, tuple[dict[str, Any], list[dict[str, Any]]]]
+    | None = None,
+    _dataflow_aggregate: dict[str, Any] | None = None,
+    _compiled_problem_out: dict[str, Any] | None = None,
+    code_pointer_disjunction_budget: int = (
+        _REGISTER_CODE_POINTER_DISJUNCTION_BUDGET
+    ),
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     refined = json.loads(json.dumps(contract))
     regions = refined["regions"]
@@ -2180,109 +3096,227 @@ def _synthesize_register_relations(
         None for _ in regions
     ]
     max_iterations = max(1, len(regions) * len(register_order) + 1)
-    converged = False
-    dirty_regions = {
-        region_index
-        for region_index, state in enumerate(input_states)
-        if state is not None
-    }
-    transfer_evaluations = 0
     transfer_cache_hits = 0
     transfer_cache_misses = 0
-    transfer_context_sha256 = sha256_bytes(
-        json.dumps(
-            {
-                "format": "stage-a-register-transfer-context-v1",
-                "original_binary_sha256": (
-                    getattr(original_bin, "sha256", None)
-                ),
-                "candidate_binary_sha256": (
-                    getattr(candidate_bin, "sha256", None)
-                ),
-                "original_image_base": original_image_base,
-                "candidate_image_base": candidate_image_base,
-                "value_targets": refined.get("value_targets", []),
-                "code_targets": refined.get("code_targets", []),
-                "static_word_relation_slots": refined.get(
-                    "static_word_relation_slots", []
-                ),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    )
+    if _dataflow_aggregate is not None and _transfer_table_out is not None:
+        raise StageAInputError(
+            "precomputed register dataflow cannot emit observation tables"
+        )
     transfer_region_contexts = [
-        sha256_bytes(
-            json.dumps(
-                {
-                    "context_sha256": transfer_context_sha256,
-                    "original_registers": behavior_pair["original_ir"][
-                        "registers"
-                    ],
-                    "candidate_registers": behavior_pair["candidate_ir"][
-                        "registers"
-                    ],
-                    "input_pairs": input_pair_candidates[region_index],
-                    "output_pairs": output_pair_candidates[region_index],
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
+        _register_transfer_region_context_sha256(
+            behavior_pair=behavior_pair,
+            input_pairs=input_pair_candidates[region_index],
+            output_pairs=output_pair_candidates[region_index],
+            contract=refined,
+            original_image_base=original_image_base,
+            candidate_image_base=candidate_image_base,
+            original_bin=original_bin,
+            candidate_bin=candidate_bin,
+            register_order=register_order,
         )
         for region_index, behavior_pair in enumerate(behaviors)
     ]
-    dataflow_graph = stable_dataflow_graph(
-        successor_regions,
-        region_ids=[str(region["id"]) for region in regions],
-        transfer_semantics_sha256=transfer_region_contexts,
+    need_transfer_programs = (
+        _transfer_programs_out is not None
+        or _dataflow_aggregate is not None
+        or _compiled_problem_out is not None
     )
-    for iteration in range(max_iterations):
-        next_outputs = [
-            None if row is None else dict(row) for row in output_states
+    transfer_context = (
+        register_transfer_context_payload(
+            contract=refined,
+            original_bin=original_bin,
+            candidate_bin=candidate_bin,
+        )
+        if need_transfer_programs
+        and original_bin is not None
+        and candidate_bin is not None
+        and hasattr(original_bin, "pe")
+        and hasattr(candidate_bin, "pe")
+        else None
+    )
+    transfer_program_cache_key = (
+        sha256_bytes(json.dumps({
+            "format": "stage-a-register-transfer-program-set-v1",
+            "context_sha256": transfer_context["context_sha256"],
+            "region_contexts": transfer_region_contexts,
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+        if transfer_context is not None else None
+    )
+    cached_program_set = (
+        _transfer_program_cache.get(transfer_program_cache_key)
+        if _transfer_program_cache is not None
+        and transfer_program_cache_key is not None
+        else None
+    )
+    if cached_program_set is not None:
+        transfer_context, transfer_programs = cached_program_set
+    elif transfer_context is not None:
+        transfer_programs = [
+            compile_register_transfer_program(
+                region_id=str(regions[region_index]["id"]),
+                behavior_pair=behavior_pair,
+                input_pairs=input_pair_candidates[region_index],
+                output_pairs=output_pair_candidates[region_index],
+                contract=refined,
+                original_image_base=original_image_base,
+                candidate_image_base=candidate_image_base,
+                original_bin=original_bin,
+                candidate_bin=candidate_bin,
+                context_sha256=str(transfer_context["context_sha256"]),
+                register_order=register_order,
+            )
+            for region_index, behavior_pair in enumerate(behaviors)
         ]
-        next_reasons = [
-            None if row is None else dict(row) for row in output_reason_states
+        if (
+            _transfer_program_cache is not None
+            and transfer_program_cache_key is not None
+        ):
+            _transfer_program_cache[transfer_program_cache_key] = (
+                transfer_context, transfer_programs,
+            )
+    else:
+        transfer_programs = []
+    parsed_transfer_context = (
+        parse_register_transfer_context(transfer_context)
+        if transfer_context is not None else None
+    )
+    transfer_propagation = (
+        _register_transfer_propagation(
+            regions=regions,
+            predecessors=predecessors,
+            register_order=register_order,
+            launch_root_region_indices=launch_root_region_indices,
+            protocol_callback_region_indices=protocol_callback_region_indices,
+            conservative_entry_regions=conservative_entry_regions,
+            input_pair_candidates=input_pair_candidates,
+            stack_window_input_pairs=stack_window_input_pairs,
+        )
+        if need_transfer_programs or _transfer_table_out is not None else None
+    )
+    program_dataflow_graph = (
+        stable_dataflow_graph(
+            successor_regions,
+            region_ids=[str(region["id"]) for region in regions],
+            transfer_semantics_sha256=[
+                str(program["program_sha256"])
+                for program in transfer_programs
+            ],
+        )
+        if transfer_context is not None else None
+    )
+    transfer_program_artifact = (
+        register_transfer_programs_payload(
+            original_sha256=str(original_bin.sha256),
+            candidate_sha256=str(candidate_bin.sha256),
+            graph_sha256=str(program_dataflow_graph.graph_sha256),
+            context=transfer_context,
+            programs=transfer_programs,
+            propagation=transfer_propagation,
+        )
+        if transfer_context is not None
+        and program_dataflow_graph is not None
+        and transfer_propagation is not None
+        and original_bin is not None
+        and candidate_bin is not None
+        else None
+    )
+    if _compiled_problem_out is not None:
+        if _dataflow_aggregate is not None:
+            raise StageAInputError(
+                "register dataflow compilation cannot also consume a solution"
+            )
+        if transfer_program_artifact is None or program_dataflow_graph is None:
+            raise StageAInputError(
+                "register dataflow compilation requires exact PE transfer programs"
+            )
+        _compiled_problem_out.clear()
+        _compiled_problem_out.update({
+            "graph": program_dataflow_graph.to_payload(),
+            "transfer_programs": transfer_program_artifact,
+        })
+        return refined, {
+            "format": "stage-a-register-dataflow-compile-only-v1",
+            "status": "compiled",
+            "acceptance_authority": False,
+        }
+    transfer_observation_hashes: list[set[str]] = [set() for _ in regions]
+    transfer_observation_rows: list[dict[str, dict[str, Any]]] = [
+        {} for _ in regions
+    ]
+    def evaluate_output(
+        region_index: int,
+        input_kinds: dict[str, RegisterRelation],
+        previous_output: dict[str, RegisterRelation] | None,
+    ) -> tuple[dict[str, RegisterRelation], dict[str, str]]:
+        nonlocal transfer_cache_hits, transfer_cache_misses
+        behavior_pair = behaviors[region_index]
+        original_registers = behavior_pair["original_ir"]["registers"]
+        candidate_registers = behavior_pair["candidate_ir"]["registers"]
+        fixed_immutable_probe = _fixed_immutable_transfer_probe(
+            behavior_pair=behavior_pair,
+            input_relations=input_kinds,
+            input_pairs=input_pair_candidates[region_index],
+            output_pairs=output_pair_candidates[region_index],
+            original_bin=original_bin,
+            candidate_bin=candidate_bin,
+            register_order=register_order,
+        )
+        input_relation_payloads = [
+            {
+                "register": register,
+                **_register_relation_payload(input_kinds[register]),
+            }
+            for register in register_order
         ]
-        changed_output_regions: set[int] = set()
-        for region_index in sorted(dirty_regions):
-            input_kinds = input_states[region_index]
-            if input_kinds is None:
-                continue
-            behavior_pair = behaviors[region_index]
-            transfer_evaluations += 1
-            original_registers = behavior_pair["original_ir"]["registers"]
-            candidate_registers = behavior_pair["candidate_ir"]["registers"]
-            transfer_cache_key = transfer_region_contexts[region_index] + ":" + (
-                json.dumps(
-                    [
-                        _register_relation_key(input_kinds[register])
-                        for register in register_order
-                    ],
-                    separators=(",", ":"),
+        transfer_observation = register_transfer_observation_sha256(
+            input_relations=input_relation_payloads,
+            fixed_immutable_probe=fixed_immutable_probe,
+        )
+        transfer_observation_hashes[region_index].add(transfer_observation)
+        transfer_cache_key = (
+            transfer_region_contexts[region_index]
+            + ":"
+            + transfer_observation
+        )
+        cached_transfer = (
+            _transfer_cache.get(transfer_cache_key)
+            if _transfer_cache is not None else None
+        )
+        if cached_transfer is not None:
+            transfer_cache_hits += 1
+            cached_kinds, cached_reasons = cached_transfer
+            kinds = {
+                register: (
+                    dict(relation) if isinstance(relation, dict) else relation
                 )
-            )
-            cached_transfer = (
-                _transfer_cache.get(transfer_cache_key)
-                if _transfer_cache is not None else None
-            )
-            if cached_transfer is not None:
-                transfer_cache_hits += 1
-                cached_kinds, cached_reasons = cached_transfer
-                kinds = {
-                    register: (
-                        dict(relation) if isinstance(relation, dict) else relation
+                for register, relation in cached_kinds.items()
+            }
+            reasons = dict(cached_reasons)
+        else:
+            transfer_cache_misses += 1
+            if parsed_transfer_context is not None:
+                try:
+                    transfer_result = evaluate_register_transfer_program(
+                        transfer_programs[region_index],
+                        input_kinds,
+                        context_payload=parsed_transfer_context,
+                        validate=False,
+                        validate_context=False,
                     )
-                    for register, relation in cached_kinds.items()
-                }
-                reasons = dict(cached_reasons)
+                except RegisterTransferIncomplete as exc:
+                    raise AssertionError(
+                        "compiled register transfer program is incomplete: "
+                        + exc.code
+                    ) from exc
+                kinds = transfer_result.relations
+                reasons = transfer_result.reasons
             else:
-                transfer_cache_misses += 1
                 kinds = {}
                 reasons = {}
                 for register in register_order:
-                    candidate_register = output_pair_candidates[region_index].get(
-                        register,
-                    )
+                    candidate_register = output_pair_candidates[
+                        region_index
+                    ].get(register)
                     if (
                         register not in original_registers
                         or candidate_register is None
@@ -2305,111 +3339,208 @@ def _synthesize_register_relations(
                             input_pair_candidates[region_index],
                         )
                     )
-                if _transfer_cache is not None:
-                    _transfer_cache[transfer_cache_key] = (
-                        {
-                            register: (
-                                dict(relation)
-                                if isinstance(relation, dict) else relation
-                            )
-                            for register, relation in kinds.items()
-                        },
-                        dict(reasons),
-                    )
-            previous_output = output_states[region_index]
-            if previous_output is not None:
-                joined_kinds = {
-                    register: _register_relation_join([
-                        previous_output[register], kinds[register],
-                    ])
-                    for register in register_order
+            if _transfer_cache is not None:
+                _transfer_cache[transfer_cache_key] = (
+                    {
+                        register: (
+                            dict(relation)
+                            if isinstance(relation, dict) else relation
+                        )
+                        for register, relation in kinds.items()
+                    },
+                    dict(reasons),
+                )
+        observation_row = {
+            "sha256": transfer_observation,
+            "input_relations": input_relation_payloads,
+            "fixed_immutable_probe": fixed_immutable_probe,
+            "output_relations": [
+                {
+                    "register": register,
+                    **_register_relation_payload(kinds[register]),
                 }
-                for register in register_order:
-                    if joined_kinds[register] != kinds[register]:
-                        reasons[register] = "monotone_transfer_widening"
-                kinds = joined_kinds
-            if kinds != previous_output:
-                changed_output_regions.add(region_index)
-            next_outputs[region_index] = kinds
-            next_reasons[region_index] = reasons
-
-        next_inputs = [
-            None if row is None else dict(row) for row in input_states
-        ]
-        affected_inputs = {
-            target_index
-            for source_index in changed_output_regions
-            for target_index in successor_regions[source_index]
+                for register in register_order
+            ],
+            "reasons": dict(reasons),
         }
-        changed_input_regions: set[int] = set()
-        for region_index in sorted(affected_inputs):
-            region = regions[region_index]
-            incoming = predecessors[region_index]
-            kinds: dict[str, RegisterRelation] | None = None
+        prior_observation = transfer_observation_rows[region_index].get(
+            transfer_observation
+        )
+        if prior_observation is not None and prior_observation != observation_row:
+            raise AssertionError("register transfer observation is nondeterministic")
+        transfer_observation_rows[region_index][transfer_observation] = (
+            observation_row
+        )
+        if previous_output is not None:
+            joined_kinds = {
+                register: _register_relation_join([
+                    previous_output[register], kinds[register],
+                ])
+                for register in register_order
+            }
             for register in register_order:
-                candidates: list[RegisterRelation] = []
-                if region_index in launch_root_region_indices:
-                    candidates.append("exact")
-                if region_index in protocol_callback_region_indices:
-                    candidates.append("related_word")
-                if region_index in conservative_entry_regions:
-                    candidates.append("related_word")
-                for source_index, barrier, kind, preserved, results in incoming:
-                    source_output = next_outputs[source_index]
-                    if source_output is None:
-                        continue
-                    candidates.append(
-                        source_output[register]
-                        if kind == "internal_callsite_preservation_summary"
-                        and register in preserved
-                        and register in results
-                        and _register_relation_key(
-                            source_output[register]
-                        ) == _register_relation_key(results[register])
-                        else "related_word"
-                        if kind == "internal_callsite_preservation_summary"
-                        else
-                        source_output[register]
-                        if not barrier
-                        else results[register]
-                        if register in results
-                        else source_output[register]
-                        if register in preserved
-                        else "related_word"
-                    )
-                if not candidates:
+                if joined_kinds[register] != kinds[register]:
+                    reasons[register] = "monotone_transfer_widening"
+            kinds = joined_kinds
+        return kinds, reasons
+
+    def recompute_input(
+        region_index: int,
+        next_outputs: list[dict[str, RegisterRelation] | None]
+        | tuple[dict[str, RegisterRelation] | None, ...],
+    ) -> dict[str, RegisterRelation] | None:
+        incoming = predecessors[region_index]
+        kinds: dict[str, RegisterRelation] | None = None
+        for register in register_order:
+            candidates: list[RegisterRelation] = []
+            if region_index in launch_root_region_indices:
+                candidates.append("exact")
+            if region_index in protocol_callback_region_indices:
+                candidates.append("related_word")
+            if region_index in conservative_entry_regions:
+                candidates.append("related_word")
+            for source_index, barrier, kind, preserved, results in incoming:
+                source_output = next_outputs[source_index]
+                if source_output is None:
                     continue
-                if kinds is None:
-                    kinds = {}
-                kinds[register] = _register_relation_join(candidates)
-                candidate_register = input_pair_candidates[region_index].get(register)
-                if (
-                    candidate_register is not None
-                    and (register, candidate_register)
-                        in stack_window_input_pairs[region_index]
-                ):
-                    # A stack window relates offsets inside paired concrete
-                    # ranges; it does not imply literal register equality.
-                    kinds[register] = "related_word"
-            if kinds is not None and len(kinds) != len(register_order):
-                raise AssertionError("reachable register state is incomplete")
-            if kinds != input_states[region_index]:
-                changed_input_regions.add(region_index)
-            next_inputs[region_index] = kinds
-        if not changed_input_regions and not changed_output_regions:
-            output_reason_states = next_reasons
-            converged = True
-            break
-        input_states = next_inputs
-        output_states = next_outputs
-        output_reason_states = next_reasons
-        dirty_regions = changed_input_regions
+                candidates.append(
+                    source_output[register]
+                    if kind == "internal_callsite_preservation_summary"
+                    and register in preserved
+                    and register in results
+                    and _register_relation_key(
+                        source_output[register]
+                    ) == _register_relation_key(results[register])
+                    else "related_word"
+                    if kind == "internal_callsite_preservation_summary"
+                    else source_output[register]
+                    if not barrier
+                    else results[register]
+                    if register in results
+                    else source_output[register]
+                    if register in preserved
+                    else "related_word"
+                )
+            if not candidates:
+                continue
+            if kinds is None:
+                kinds = {}
+            kinds[register] = _register_relation_join(candidates)
+            candidate_register = input_pair_candidates[region_index].get(register)
+            if (
+                candidate_register is not None
+                and (register, candidate_register)
+                    in stack_window_input_pairs[region_index]
+            ):
+                # A stack window relates offsets inside paired concrete ranges;
+                # it does not imply literal register equality.
+                kinds[register] = "related_word"
+        if kinds is not None and len(kinds) != len(register_order):
+            raise AssertionError("reachable register state is incomplete")
+        return kinds
+
+    if _dataflow_aggregate is not None:
+        # Keep distributed-solution replay outside the proposal producer's
+        # import closure. Proposal discovery does not consume an aggregate, so
+        # checker-only changes must not invalidate that expensive phase.
+        from ..register_dataflow_solution import (
+            validate_register_dataflow_solution,
+        )
+
+        if (
+            transfer_program_artifact is None
+            or program_dataflow_graph is None
+            or original_bin is None
+            or candidate_bin is None
+        ):
+            raise StageAInputError(
+                "precomputed register dataflow requires exact PE transfer programs"
+            )
+        solution = validate_register_dataflow_solution(
+            aggregate_payload=_dataflow_aggregate,
+            transfer_programs_payload=transfer_program_artifact,
+            expected_original_sha256=original_bin.sha256,
+            expected_candidate_sha256=candidate_bin.sha256,
+            expected_graph_sha256=program_dataflow_graph.graph_sha256,
+        )
+        input_states = [dict(state) for state in solution.input_states]
+        output_states = [dict(state) for state in solution.output_states]
+        output_reason_states = [
+            dict(reasons) for reasons in solution.output_reasons
+        ]
+        converged = True
+        fixed_point_iterations = 0
+        transfer_evaluations = 0
     else:
-        iteration = max_iterations - 1
+        fixed_point = solve_monotone_fixed_point_by_scc(
+            initial_input_states=input_states,
+            initial_output_states=output_states,
+            initial_output_reason_states=output_reason_states,
+            successors=[tuple(sorted(targets)) for targets in successor_regions],
+            evaluate_output=evaluate_output,
+            recompute_input=recompute_input,
+            max_iterations=max_iterations,
+        )
+        input_states = list(fixed_point.input_states)
+        output_states = list(fixed_point.output_states)
+        output_reason_states = list(fixed_point.output_reason_states)
+        converged = fixed_point.converged
+        fixed_point_iterations = fixed_point.iterations
+        transfer_evaluations = fixed_point.transfer_evaluations
+    transfer_semantics_sha256 = [
+        register_transfer_semantics_sha256(
+            context_sha256=transfer_region_contexts[region_index],
+            observation_sha256=sorted(
+                transfer_observation_hashes[region_index]
+            ),
+        )
+        for region_index in range(len(regions))
+    ]
+    observation_dataflow_graph = stable_dataflow_graph(
+        successor_regions,
+        region_ids=[str(region["id"]) for region in regions],
+        transfer_semantics_sha256=transfer_semantics_sha256,
+    )
+    dataflow_graph = program_dataflow_graph or observation_dataflow_graph
+    if _transfer_table_out is not None:
+        assert transfer_propagation is not None
+        _transfer_table_out.clear()
+        _transfer_table_out.update({
+            "graph": observation_dataflow_graph.to_payload(),
+            "graph_sha256": observation_dataflow_graph.graph_sha256,
+            "regions": [
+                {
+                    "id": str(region["id"]),
+                    "context_sha256": transfer_region_contexts[region_index],
+                    "transfer_semantics_sha256": transfer_semantics_sha256[
+                        region_index
+                    ],
+                    "observations": [
+                        transfer_observation_rows[region_index][digest]
+                        for digest in sorted(
+                            transfer_observation_rows[region_index]
+                        )
+                    ],
+                }
+                for region_index, region in enumerate(regions)
+            ],
+            "propagation": transfer_propagation,
+        })
+    if _transfer_programs_out is not None and transfer_context is not None:
+        assert transfer_propagation is not None
+        assert program_dataflow_graph is not None
+        _transfer_programs_out.clear()
+        _transfer_programs_out.update({
+            "graph": program_dataflow_graph.to_payload(),
+            "graph_sha256": program_dataflow_graph.graph_sha256,
+            "context": transfer_context,
+            "programs": transfer_programs,
+            "propagation": transfer_propagation,
+        })
     if _solver_metrics is not None:
         _solver_metrics.clear()
         _solver_metrics.update({
-            "iterations": iteration + 1,
+            "iterations": fixed_point_iterations,
             "transfer_evaluations": transfer_evaluations,
             "transfer_cache_hits": transfer_cache_hits,
             "transfer_cache_misses": transfer_cache_misses,
@@ -2653,6 +3784,25 @@ def _synthesize_register_relations(
             refined, behaviors, relation_rows,
         )
     )
+    register_code_pointer_provenance = (
+        _bounded_register_code_pointer_provenance(
+            contract=refined,
+            behaviors=behaviors,
+            relation_rows=relation_rows,
+            predecessors=predecessors,
+            register_order=register_order,
+            input_pair_candidates=input_pair_candidates,
+            output_pair_candidates=output_pair_candidates,
+            output_reasons=output_reasons,
+            launch_root_region_indices=launch_root_region_indices,
+            protocol_callback_region_indices=protocol_callback_region_indices,
+            conservative_entry_regions=conservative_entry_regions,
+            stack_window_input_pairs=stack_window_input_pairs,
+            original_image_base=original_image_base,
+            candidate_image_base=candidate_image_base,
+            disjunction_budget=code_pointer_disjunction_budget,
+        )
+    )
 
     unsupported_edges = 0
     fully_exact_edges = 0
@@ -2665,6 +3815,7 @@ def _synthesize_register_relations(
         immutable_indirect_jump = (
             edge.get("indirect_target_profile") in {
                 "immutable_relocated_function_pointer_jump_v1",
+                "fixed_static_function_pointer_jump_v1",
                 "fixed_code_address_indirect_jump_v1",
             }
         )
@@ -2786,6 +3937,16 @@ def _synthesize_register_relations(
         "indirect_fixed_code_pointer_calls": len(
             indirect_fixed_code_pointer_calls
         ),
+        "finite_code_pointer_indirect_controls": int(
+            register_code_pointer_provenance["counts"]["indirect_controls"]
+        ),
+        "finite_code_pointer_multi_target_controls": int(
+            register_code_pointer_provenance["counts"]
+            ["multi_target_indirect_controls"]
+        ),
+        "finite_code_pointer_provenance_overflows": int(
+            register_code_pointer_provenance["counts"]["overflow_locations"]
+        ),
         "data_pointer_output_relations": sum(
             _register_relation_kind(kind) == "data_pointer"
             for kinds in output_kinds for kind in kinds.values()
@@ -2863,7 +4024,7 @@ def _synthesize_register_relations(
         "model": STAGE_A_RELATIONAL_MODEL_ID,
         "converged": converged,
         "dataflow_complete": dataflow_complete,
-        "iterations": iteration + 1,
+        "iterations": None,
         "relation_kinds": sorted(_REGISTER_RELATION_KINDS),
         "trust": {
             "role": "analysis_and_proof_proposal_only",
@@ -2875,6 +4036,7 @@ def _synthesize_register_relations(
         "dataflow_graph": dataflow_graph.to_payload(),
         "return_slot_analysis": return_slot_analysis,
         "indirect_fixed_code_pointer_calls": indirect_fixed_code_pointer_calls,
+        "register_code_pointer_provenance": register_code_pointer_provenance,
         "counts": counts,
         "regions": relation_rows,
         "edges": edges,

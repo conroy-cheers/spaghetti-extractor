@@ -9,6 +9,18 @@ from .analysis_artifact import (
     RELATIONAL_DECODED_BEHAVIORS_FORMAT,
     RELATIONAL_SEGMENT_CANDIDATES_FORMAT,
 )
+from .analyses.affine_linked_control import AFFINE_LINKED_CONTROL_FORMAT
+from .register_dataflow_formats import (
+    REGISTER_DATAFLOW_PROBLEM_FORMAT,
+    REGISTER_DATAFLOW_PROBLEM_SEED_FORMAT,
+)
+from .proposal_artifact import RELATIONAL_PROPOSAL_FORMAT
+from .runtime_frame_artifact import RUNTIME_FRAME_AFFINE_VIABILITY_FORMAT
+from .register_transfer_core import (
+    REGISTER_TRANSFER_CONTEXT_FORMAT,
+    REGISTER_TRANSFER_PROGRAM_FORMAT,
+    REGISTER_TRANSFER_PROGRAMS_FORMAT,
+)
 
 from .schema import (
     EXTERNAL_ENVIRONMENT_PROFILE_FORMAT,
@@ -39,6 +51,14 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "format": RELATIONAL_ANALYSIS_FORMAT,
                 "python_boundary": (
                     "relational.analysis_artifact.RelationalAnalysisManifest"
+                ),
+            },
+            {
+                "id": "relational-proposal-closure",
+                "format": RELATIONAL_PROPOSAL_FORMAT,
+                "python_boundary": (
+                    "relational.proposal_artifact."
+                    "validate_relational_proposal"
                 ),
             },
             {
@@ -80,6 +100,62 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "format": RELATIONAL_SEGMENT_CERTIFICATE_FORMAT,
                 "python_boundary": "relational.schema.RelationalSegmentCertificate",
             },
+            {
+                "id": "register-transfer-context",
+                "format": REGISTER_TRANSFER_CONTEXT_FORMAT,
+                "python_boundary": (
+                    "relational.register_transfer_core."
+                    "parse_register_transfer_context"
+                ),
+            },
+            {
+                "id": "register-transfer-program",
+                "format": REGISTER_TRANSFER_PROGRAM_FORMAT,
+                "python_boundary": (
+                    "relational.register_transfer_core."
+                    "parse_register_transfer_program"
+                ),
+            },
+            {
+                "id": "register-transfer-programs",
+                "format": REGISTER_TRANSFER_PROGRAMS_FORMAT,
+                "python_boundary": (
+                    "relational.register_transfer_core."
+                    "parse_register_transfer_programs"
+                ),
+            },
+            {
+                "id": "register-dataflow-problem",
+                "format": REGISTER_DATAFLOW_PROBLEM_FORMAT,
+                "python_boundary": (
+                    "relational.register_dataflow_problem."
+                    "parse_register_dataflow_problem"
+                ),
+            },
+            {
+                "id": "register-dataflow-problem-seed",
+                "format": REGISTER_DATAFLOW_PROBLEM_SEED_FORMAT,
+                "python_boundary": (
+                    "relational.register_dataflow_seed."
+                    "parse_register_dataflow_problem_seed"
+                ),
+            },
+            {
+                "id": "runtime-frame-affine-viability",
+                "format": RUNTIME_FRAME_AFFINE_VIABILITY_FORMAT,
+                "python_boundary": (
+                    "relational.runtime_frame_artifact."
+                    "validate_runtime_frame_affine_viability_payload"
+                ),
+            },
+            {
+                "id": "affine-linked-control",
+                "format": AFFINE_LINKED_CONTROL_FORMAT,
+                "python_boundary": (
+                    "relational.analyses.affine_linked_control."
+                    "affine_linked_control_payload"
+                ),
+            },
         ],
         "artifacts": [
             {
@@ -87,6 +163,16 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "path": "relational-analysis-manifest.json",
                 "producer": "relational-analysis",
                 "consumers": ["lean-source-generation"],
+                "cache_boundary": True,
+            },
+            {
+                "id": "relational-proposal-closure",
+                "path": "relational-proposal-manifest.json",
+                "producer": "state-proposal-discovery",
+                "consumers": [
+                    "register-problem-compilation",
+                    "downstream-analysis-phases",
+                ],
                 "cache_boundary": True,
             },
             {
@@ -122,6 +208,10 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "paths": [
                     "relational-register-relations.json",
                     "relational-register-dataflow-graph.json",
+                    "relational-register-dataflow-problem-seed.json",
+                    "relational-register-program-dataflow-graph.json",
+                    "relational-register-transfer-table.json",
+                    "relational-register-transfer-programs.json",
                     "relational-stack-windows.json",
                     "relational-memory-contracts.json",
                     "relational-static-word-relations.json",
@@ -137,6 +227,14 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "producer": "control-composition",
                 "consumers": ["acceptance-integration", "contract-diagnostics"],
                 "cache_boundary": True,
+            },
+            {
+                "id": "runtime-frame-affine-viability",
+                "path": "relational-runtime-frame-affine-viability.json",
+                "producer": "state-and-frame-analysis",
+                "consumers": ["lean-source-generation", "control-composition"],
+                "cache_boundary": True,
+                "proof_authority": False,
             },
             {
                 "id": "isa-requirements",
@@ -216,11 +314,62 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 ],
             },
             {
+                "module": "StageA.RelationalAffineFrames",
+                "declarations": [
+                    "ReturnSlotAffineFamily",
+                    "ReturnSlotAffineFamily.contains",
+                    "ReturnSlotTransferRule.applyAffineFamily_contains",
+                    "ReturnSlotAffineMemoryTransferClaim.Checked",
+                    "returnSlotAffineMemoryTransferHoldsRuntimeFrame_of_checked",
+                    "ReturnSlotAffineFrameTransitionClaim",
+                    "ReturnSlotAffineFrameProfile",
+                ],
+            },
+            {
                 "module": "StageA.RelationalLinkedFrames",
                 "declarations": [
                     "RelationalRuntimeCallFrameLink",
                     "RelationalLinkedRuntimeCallStackHolds",
                     "LinkedProductControlProfile",
+                    "LinkedControlAuthority",
+                    "LinkedProductControlProfile.authority",
+                ],
+            },
+            {
+                "module": "StageA.RelationalAffineLinkedFrames",
+                "declarations": [
+                    "ReturnSlotAffineInventoryLocations",
+                    "ReturnSlotAffineInventoryShape",
+                    "ReturnSlotAffineInventoryShape.Realizes",
+                    "ReturnSlotAffineFrameSemanticTransitionBinding",
+                    "ReturnSlotAffineFrameSemanticTransitionBinding.afterNoWriteNested",
+                    "RelationalRuntimeCallFrameAffineLinkShape",
+                    "AffineLinkedProductControlProfile",
+                    "AffineLinkedProductControlProfile.LinksAllowed",
+                    "AffineLinkedProductControlProfile.shallowAuthority",
+                    "AffineLinkedProductControlProfile.authority",
+                ],
+            },
+            {
+                "module": "StageA.RelationalAffineLinkedExecution",
+                "declarations": [
+                    "affineOrdinaryBindingsCoverActiveNodeEdge",
+                    "affineOrdinaryBinding_of_allowed",
+                    "AffineLinkedOrdinaryTransitionBinding.afterNoWriteNestedWithFacts",
+                    "AffineLinkedOrdinaryTransitionBinding.nextRunningRelated",
+                ],
+            },
+            {
+                "module": "StageA.RelationalAffineLinkedMemory",
+                "declarations": [
+                    "PairedDecodedWritesClaim",
+                    "relationalLinkedStackWritesAvoidChecked",
+                    "RelationalLinkedRuntimeCallStackHolds.afterPairedWrites",
+                    "ReturnSlotAffineLinkedMemoryTransitionBinding",
+                    "AffineLinkedOrdinaryMemoryTransitionBinding",
+                    "AffineLinkedOrdinaryMemoryTransitionBinding.linkedStackWritesAvoidChecked",
+                    "AffineLinkedOrdinaryMemoryTransitionBinding.nextRunningRelated",
+                    "affineMemoryBindingsNextRunningRelated_of_allowed",
                 ],
             },
             {
@@ -236,11 +385,25 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 ],
             },
             {
+                "module": "StageA.RelationalLinkedExecution",
+                "declarations": [
+                    "RelationalLinkedRuntimeCallFactsHold",
+                    "LinkedWorldExecutionsRelated",
+                    "LinkedWorldExternalProtocolEnvironmentsRefine",
+                    "LinkedRunningProductNodeStepRefined",
+                    "LinkedProductStepRefinement",
+                    "LinkedWholeProgramCertificate",
+                    "pe32ProgramsEquivalentLinked",
+                ],
+            },
+            {
                 "module": "StageA.RelationalPEWorldExecution",
                 "declarations": [
                     "RawEipWorldExecution",
                     "RawEipPairBridgeClosed",
                     "PE32RawProgramsObservationallyEquivalent",
+                    "PE32RawProgramsLinkedObservationallyEquivalent",
+                    "pe32ProgramsEquivalentLinked_raw",
                 ],
             },
         ],
@@ -266,6 +429,14 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                     "src/spaghetti_extractor/relational/analyses/memory.py",
                     "src/spaghetti_extractor/relational/analyses/invariants.py",
                     "src/spaghetti_extractor/relational/analyses/frames.py",
+                    "src/spaghetti_extractor/relational/runtime_frame_artifact.py",
+                    "src/spaghetti_extractor/relational/analyses/affine_linked_control.py",
+                    "src/spaghetti_extractor/relational/lean/affine_frames.py",
+                    "src/spaghetti_extractor/relational/lean/affine_linked_control.py",
+                    "src/spaghetti_extractor/lean/StageA/RelationalAffineFrames.lean",
+                    "src/spaghetti_extractor/lean/StageA/RelationalAffineLinkedFrames.lean",
+                    "src/spaghetti_extractor/lean/StageA/RelationalAffineLinkedExecution.lean",
+                    "src/spaghetti_extractor/lean/StageA/RelationalAffineLinkedMemory.lean",
                 ],
                 "integration_fixtures": ["tests/test_stage_a_relational_state.py"],
             },
@@ -326,6 +497,7 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "owned_paths": [
                     "src/spaghetti_extractor/relational/lean/acceptance.py",
                     "src/spaghetti_extractor/lean/StageA/RelationalCertificates.lean",
+                    "src/spaghetti_extractor/lean/StageA/RelationalLinkedExecution.lean",
                 ],
                 "integration_fixtures": ["tests/test_stage_a_relational_acceptance.py"],
             },

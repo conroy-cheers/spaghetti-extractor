@@ -46,6 +46,22 @@
       "world_effect": "none"
     },
     {
+      "id": 3,
+      "import": {
+        "dll": "kernel32.dll",
+        "symbol": "SetUnhandledExceptionFilter"
+      },
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 1,
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "callbackRegistration",
+      "world_effect_argument": 0
+    },
+    {
       "id": 4,
       "import": {"dll": "kernel32.dll", "symbol": "VirtualQuery"},
       "abi_template": "pe32-stdcall-v1",
@@ -129,6 +145,158 @@
       "argument_words": 1,
       "memory_effect": "none",
       "memory_footprints": [],
+      "world_effect": "tlsState"
+    },
+    {
+      "id": 10,
+      "import": {"dll": "kernel32.dll", "symbol": "WideCharToMultiByte"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 8,
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {
+          "access": "read",
+          "base_argument": 2,
+          "offset": 0,
+          "size": {
+            "kind": "argument_or_bounded_terminated",
+            "length_argument": 3,
+            "terminated_value": 4294967295,
+            "source_argument": 2,
+            "source_offset": 0,
+            "unit_bytes": 2,
+            "sentinel": [0, 0],
+            "max_units": 524288
+          },
+          "nullable": false
+        },
+        {
+          "access": "write",
+          "base_argument": 4,
+          "offset": 0,
+          "size": {"kind": "argument", "argument": 5, "scale": 1},
+          "nullable": true
+        },
+        {
+          "access": "read",
+          "base_argument": 6,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 2},
+          "nullable": true
+        },
+        {
+          "access": "write",
+          "base_argument": 7,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 4},
+          "nullable": true
+        }
+      ],
+      "world_effect": "tlsState"
+    },
+    {
+      "id": 11,
+      "import": {"dll": "kernel32.dll", "symbol": "IsDBCSLeadByteEx"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 2,
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "id": 12,
+      "import": {"dll": "kernel32.dll", "symbol": "MultiByteToWideChar"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 6,
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {
+          "access": "read",
+          "base_argument": 2,
+          "offset": 0,
+          "size": {
+            "kind": "argument_or_bounded_terminated",
+            "length_argument": 3,
+            "terminated_value": 4294967295,
+            "source_argument": 2,
+            "source_offset": 0,
+            "unit_bytes": 1,
+            "sentinel": [0],
+            "max_units": 1048576
+          },
+          "nullable": false
+        },
+        {
+          "access": "write",
+          "base_argument": 4,
+          "offset": 0,
+          "size": {"kind": "argument", "argument": 5, "scale": 2},
+          "nullable": true
+        }
+      ],
+      "world_effect": "tlsState"
+    },
+    {
+      "id": 13,
+      "import": {"dll": "kernel32.dll", "symbol": "GetModuleHandleA"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 1,
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {
+          "access": "read",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {
+            "kind": "bounded_terminated",
+            "source_argument": 0,
+            "source_offset": 0,
+            "unit_bytes": 1,
+            "sentinel": [0],
+            "max_units": 1048576
+          },
+          "nullable": true
+        }
+      ],
+      "world_effect": "tlsState"
+    },
+    {
+      "id": 14,
+      "import": {"dll": "kernel32.dll", "symbol": "GetProcAddress"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 2,
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {
+          "access": "read",
+          "base_argument": 1,
+          "offset": 0,
+          "size": {
+            "kind": "bounded_terminated",
+            "source_argument": 1,
+            "source_offset": 0,
+            "unit_bytes": 1,
+            "sentinel": [0],
+            "max_units": 1048576
+          },
+          "nullable": false
+        }
+      ],
       "world_effect": "tlsState"
     }
   ]

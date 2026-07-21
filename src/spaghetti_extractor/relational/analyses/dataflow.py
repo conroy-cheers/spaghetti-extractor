@@ -453,11 +453,287 @@ def stable_dataflow_graph(
     )
 
 
+def parse_stable_dataflow_graph(payload: object) -> StableDataflowGraph:
+    """Strictly reconstruct a scheduler graph from its serialized proposal."""
+    if not isinstance(payload, dict) or not all(
+        isinstance(key, str) for key in payload
+    ):
+        raise ValueError("stable dataflow graph must be an object")
+    expected_fields = {
+        "format",
+        "status",
+        "acceptance_authority",
+        "region_count",
+        "component_count",
+        "graph_sha256",
+        "topological_component_ids",
+        "components",
+        "pack_count",
+        "topological_pack_ids",
+        "packs",
+    }
+    if set(payload) != expected_fields:
+        raise ValueError("stable dataflow graph fields do not match the schema")
+    if (
+        payload["format"] != "stage-a-register-dataflow-graph-v1"
+        or payload["status"] != "untrusted_proposal_requires_lean_replay"
+        or payload["acceptance_authority"] is not False
+    ):
+        raise ValueError("stable dataflow graph identity does not match")
+    region_count = payload["region_count"]
+    if not isinstance(region_count, int) or isinstance(region_count, bool):
+        raise ValueError("stable dataflow graph region count is invalid")
+
+    raw_components = payload["components"]
+    if not isinstance(raw_components, list):
+        raise ValueError("stable dataflow graph components must be a list")
+    components: list[StableDataflowComponent] = []
+    for raw_component in raw_components:
+        if not isinstance(raw_component, dict) or set(raw_component) != {
+            "id",
+            "region_ids",
+            "region_indices",
+            "predecessor_ids",
+            "successor_ids",
+            "local_semantics_sha256",
+            "boundary_sha256",
+            "resource_class",
+        }:
+            raise ValueError("stable dataflow component is malformed")
+        region_ids = raw_component["region_ids"]
+        region_indices = raw_component["region_indices"]
+        predecessor_ids = raw_component["predecessor_ids"]
+        successor_ids = raw_component["successor_ids"]
+        if (
+            not isinstance(region_ids, list)
+            or region_ids != sorted(set(region_ids))
+            or not region_ids
+            or not all(isinstance(item, str) and item for item in region_ids)
+            or not isinstance(region_indices, list)
+            or region_indices != sorted(set(region_indices))
+            or len(region_indices) != len(region_ids)
+            or not all(
+                isinstance(item, int)
+                and not isinstance(item, bool)
+                and 0 <= item < region_count
+                for item in region_indices
+            )
+            or not isinstance(predecessor_ids, list)
+            or predecessor_ids != sorted(set(predecessor_ids))
+            or not isinstance(successor_ids, list)
+            or successor_ids != sorted(set(successor_ids))
+        ):
+            raise ValueError("stable dataflow component inventory is malformed")
+        component_id = "register-scc-" + _canonical_sha256({
+            "profile": "stage-a-register-dataflow-scc-v1",
+            "region_ids": region_ids,
+        })
+        if raw_component["id"] != component_id:
+            raise ValueError("stable dataflow component identity does not match")
+        if any(
+            not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None
+            for value in (
+                raw_component["local_semantics_sha256"],
+                raw_component["boundary_sha256"],
+            )
+        ):
+            raise ValueError("stable dataflow component digest is invalid")
+        member_count = len(region_ids)
+        expected_resource = (
+            "small" if member_count <= 8
+            else "medium" if member_count <= 64
+            else "large"
+        )
+        if raw_component["resource_class"] != expected_resource:
+            raise ValueError("stable dataflow component resource class is invalid")
+        components.append(StableDataflowComponent(
+            id=component_id,
+            region_ids=tuple(region_ids),
+            region_indices=tuple(region_indices),
+            predecessor_ids=tuple(predecessor_ids),
+            successor_ids=tuple(successor_ids),
+            local_semantics_sha256=raw_component["local_semantics_sha256"],
+            boundary_sha256=raw_component["boundary_sha256"],
+            resource_class=expected_resource,
+        ))
+    if payload["component_count"] != len(components):
+        raise ValueError("stable dataflow component count does not match")
+    component_by_id = {component.id: component for component in components}
+    if len(component_by_id) != len(components):
+        raise ValueError("stable dataflow component IDs are ambiguous")
+    if sorted(
+        index for component in components for index in component.region_indices
+    ) != list(range(region_count)):
+        raise ValueError("stable dataflow components do not cover every region")
+    region_ids = [
+        region_id for component in components for region_id in component.region_ids
+    ]
+    if len(set(region_ids)) != region_count:
+        raise ValueError("stable dataflow region IDs are ambiguous")
+    for component in components:
+        if any(item not in component_by_id for item in component.predecessor_ids):
+            raise ValueError("stable dataflow predecessor is unknown")
+        if any(item not in component_by_id for item in component.successor_ids):
+            raise ValueError("stable dataflow successor is unknown")
+        if any(
+            component.id not in component_by_id[item].successor_ids
+            for item in component.predecessor_ids
+        ) or any(
+            component.id not in component_by_id[item].predecessor_ids
+            for item in component.successor_ids
+        ):
+            raise ValueError("stable dataflow component boundaries disagree")
+    topological_component_ids = payload["topological_component_ids"]
+    if (
+        not isinstance(topological_component_ids, list)
+        or set(topological_component_ids) != set(component_by_id)
+        or len(topological_component_ids) != len(component_by_id)
+    ):
+        raise ValueError("stable dataflow component order is incomplete")
+    component_position = {
+        component_id: index
+        for index, component_id in enumerate(topological_component_ids)
+    }
+    if any(
+        component_position[predecessor_id] >= component_position[component.id]
+        for component in components
+        for predecessor_id in component.predecessor_ids
+    ):
+        raise ValueError("stable dataflow component order is not topological")
+    component_depth: dict[str, int] = {}
+    for component_id in topological_component_ids:
+        component = component_by_id[component_id]
+        component_depth[component_id] = max(
+            (
+                component_depth[predecessor_id] + 1
+                for predecessor_id in component.predecessor_ids
+            ),
+            default=0,
+        )
+    raw_packs = payload["packs"]
+    if not isinstance(raw_packs, list):
+        raise ValueError("stable dataflow packs must be a list")
+    packs: list[StableDataflowPack] = []
+    for raw_pack in raw_packs:
+        if not isinstance(raw_pack, dict) or set(raw_pack) != {
+            "id",
+            "component_ids",
+            "predecessor_ids",
+            "topological_depth",
+            "region_count",
+            "local_semantics_sha256",
+            "resource_class",
+        }:
+            raise ValueError("stable dataflow pack is malformed")
+        component_ids = raw_pack["component_ids"]
+        predecessor_ids = raw_pack["predecessor_ids"]
+        if (
+            not isinstance(component_ids, list)
+            or component_ids != sorted(set(component_ids))
+            or not component_ids
+            or any(item not in component_by_id for item in component_ids)
+            or not isinstance(predecessor_ids, list)
+            or predecessor_ids != sorted(set(predecessor_ids))
+        ):
+            raise ValueError("stable dataflow pack inventory is malformed")
+        pack_id = "register-pack-" + _canonical_sha256({
+            "profile": "stage-a-register-dataflow-pack-v1",
+            "component_ids": component_ids,
+        })
+        if raw_pack["id"] != pack_id:
+            raise ValueError("stable dataflow pack identity does not match")
+        pack_region_count = sum(
+            len(component_by_id[item].region_ids) for item in component_ids
+        )
+        pack_semantics_sha256 = _canonical_sha256({
+            "profile": "stage-a-register-dataflow-pack-semantics-v1",
+            "components": sorted(
+                (
+                    component_id,
+                    component_by_id[component_id].local_semantics_sha256,
+                    component_by_id[component_id].boundary_sha256,
+                )
+                for component_id in component_ids
+            ),
+        })
+        pack_depth = max(component_depth[item] for item in component_ids)
+        if (
+            raw_pack["region_count"] != pack_region_count
+            or raw_pack["local_semantics_sha256"] != pack_semantics_sha256
+            or raw_pack["topological_depth"] != pack_depth
+            or raw_pack["resource_class"] != _resource_class(pack_region_count)
+        ):
+            raise ValueError("stable dataflow pack semantics do not match")
+        packs.append(StableDataflowPack(
+            id=pack_id,
+            component_ids=tuple(component_ids),
+            predecessor_ids=tuple(predecessor_ids),
+            topological_depth=pack_depth,
+            region_count=pack_region_count,
+            local_semantics_sha256=pack_semantics_sha256,
+            resource_class=raw_pack["resource_class"],
+        ))
+    if payload["pack_count"] != len(packs):
+        raise ValueError("stable dataflow pack count does not match")
+    pack_by_id = {pack.id: pack for pack in packs}
+    if len(pack_by_id) != len(packs):
+        raise ValueError("stable dataflow pack IDs are ambiguous")
+    component_pack_id = {
+        component_id: pack.id
+        for pack in packs
+        for component_id in pack.component_ids
+    }
+    if set(component_pack_id) != set(component_by_id):
+        raise ValueError("stable dataflow packs do not cover every component")
+    for pack in packs:
+        expected_predecessors = sorted({
+            component_pack_id[predecessor_id]
+            for component_id in pack.component_ids
+            for predecessor_id in component_by_id[component_id].predecessor_ids
+            if component_pack_id[predecessor_id] != pack.id
+        })
+        if list(pack.predecessor_ids) != expected_predecessors:
+            raise ValueError("stable dataflow pack predecessors do not match")
+    topological_pack_ids = payload["topological_pack_ids"]
+    expected_pack_order = [
+        pack.id for pack in sorted(
+            packs, key=lambda pack: (pack.topological_depth, pack.id)
+        )
+    ]
+    if topological_pack_ids != expected_pack_order:
+        raise ValueError("stable dataflow pack order does not match")
+    component_hash_rows = []
+    for component in sorted(components, key=lambda item: item.id):
+        component_payload = component.to_payload()
+        del component_payload["region_indices"]
+        component_hash_rows.append(component_payload)
+    graph_without_digest = {
+        "profile": "stage-a-register-dataflow-graph-v1",
+        "region_ids": sorted(region_ids),
+        "topological_component_ids": topological_component_ids,
+        "components": component_hash_rows,
+        "topological_pack_ids": topological_pack_ids,
+        "packs": [pack.to_payload() for pack in sorted(packs, key=lambda item: item.id)],
+    }
+    graph_sha256 = _canonical_sha256(graph_without_digest)
+    if payload["graph_sha256"] != graph_sha256:
+        raise ValueError("stable dataflow graph digest does not match")
+    return StableDataflowGraph(
+        region_count=region_count,
+        graph_sha256=graph_sha256,
+        topological_component_ids=tuple(topological_component_ids),
+        components=tuple(components),
+        topological_pack_ids=tuple(topological_pack_ids),
+        packs=tuple(packs),
+    )
+
+
 __all__ = [
     "StableDataflowComponent",
     "StableDataflowGraph",
     "StableDataflowPack",
     "StronglyConnectedComponents",
+    "parse_stable_dataflow_graph",
     "stable_dataflow_graph",
     "strongly_connected_components",
 ]

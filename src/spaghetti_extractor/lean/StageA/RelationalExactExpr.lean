@@ -114,6 +114,46 @@ theorem immutablePairedConstantRead8_eval_equal
     BitVec.zeroExtend 32 (value.extractLsb' 0 8)) wordsEqual
   simpa [Expr.eval, machineStateRead32_eq_memoryRead32] using lowEqual
 
+theorem MachineState.readX87Word_four_extractLsb (state : MachineState)
+    (address : Word) :
+    (state.readX87Word address 4).extractLsb' 0 32 = state.read32 address := by
+  apply BitVec.eq_of_getLsbD_eq
+  intro index
+  by_cases below8 : index < 8
+  · have below16 : index < 16 := by omega
+    have below24 : index < 24 := by omega
+    have below32 : index < 32 := by omega
+    have below80 : index < 80 := by omega
+    simp [MachineState.readX87Word, MachineState.read32, List.range_succ,
+      below8, below16, below24, below32, below80]
+  by_cases below16 : index < 16
+  · have atLeast8 : 8 ≤ index := by omega
+    have below24 : index < 24 := by omega
+    have below32 : index < 32 := by omega
+    have below80 : index < 80 := by omega
+    simp [MachineState.readX87Word, MachineState.read32, List.range_succ,
+      BitVec.getLsbD_of_ge, below8, below16, below24, below32, below80,
+      atLeast8]
+  by_cases below24 : index < 24
+  · have atLeast16 : 16 ≤ index := by omega
+    have atLeast8 : 8 ≤ index := by omega
+    have byte1Past : 8 ≤ index - 8 := by omega
+    have below32 : index < 32 := by omega
+    have below80 : index < 80 := by omega
+    simp [MachineState.readX87Word, MachineState.read32, List.range_succ,
+      BitVec.getLsbD_of_ge, below8, below16, below24, below32, below80,
+      atLeast8, atLeast16, byte1Past]
+  by_cases below32 : index < 32
+  · have atLeast24 : 24 ≤ index := by omega
+    have atLeast8 : 8 ≤ index := by omega
+    have byte1Past : 8 ≤ index - 8 := by omega
+    have byte2Past : 8 ≤ index - 16 := by omega
+    have below80 : index < 80 := by omega
+    simp [MachineState.readX87Word, MachineState.read32, List.range_succ,
+      BitVec.getLsbD_of_ge, below8, below16, below24, below32, below80,
+      atLeast8, atLeast24, byte1Past, byte2Past]
+  · simp [BitVec.getLsbD_of_ge, below32]
+
 def exactStaticWordSlotAddresses (context : StaticProofContext)
     (originalAddress candidateAddress : Nat) : Bool :=
   context.staticWordRelationSlots.any fun slot =>
@@ -280,6 +320,7 @@ theorem _root_.StageA.Formal.Expr.eval_eq_of_exactInputsOnly
     ⟨inputRegisters, _inputBounds, _inputSeparations, _inputStackWindows,
       _inputMemory, _inputDynamicMemory, inputUndefined, inputX87, inputFlags,
       inputFsBase⟩
+  have inputLegacyX87 : original.x87 = candidate.x87 := inputX87.1
   have exactRegister : ∀ register,
       exactIdentityRegister invariant.registerRelations register = true →
         original.registers.get register = candidate.registers.get register := by
@@ -409,12 +450,12 @@ theorem _root_.StageA.Formal.Expr.eval_eq_of_pairedExactInputsOnly
       rcases related with ⟨_, _, _, _, _, _, _, _, relatedCore, _⟩
       simpa [Expr.eval] using congrArg (fun state : X87MachineState =>
         BitVec.zeroExtend 32 state.control)
-        relatedCore.2.2.2.2.2.2.2.1
+        relatedCore.2.2.2.2.2.2.2.1.1
   | .inputX87Status, .inputX87Status => by
       rcases related with ⟨_, _, _, _, _, _, _, _, relatedCore, _⟩
       simpa [Expr.eval] using congrArg (fun state : X87MachineState =>
         BitVec.zeroExtend 32 state.status)
-        relatedCore.2.2.2.2.2.2.2.1
+        relatedCore.2.2.2.2.2.2.2.1.1
   | .constant originalValue, .constant candidateValue => by
       simp only [Expr.pairedExactInputsOnly, beq_iff_eq] at checked
       subst candidateValue
@@ -721,6 +762,7 @@ def PairedExactTernaryOp.expression
 
 inductive PairedStaticExprWitness where
   | constant (original candidate : Nat)
+  | fixedInputReg (original candidate : Reg) (value : Nat)
   | binary (operation : PairedExactBinaryOp)
       (left right : PairedStaticExprWitness)
   | unary (operation : PairedExactUnaryOp) (value : PairedStaticExprWitness)
@@ -733,6 +775,8 @@ def PairedStaticExprWitness.expression
     (side : PairedExactExprSide) : PairedStaticExprWitness → Expr
   | .constant original candidate =>
       .constant (match side with | .original => original | .candidate => candidate)
+  | .fixedInputReg original candidate _ =>
+      .inputReg (match side with | .original => original | .candidate => candidate)
   | .binary operation left right =>
       operation.expression (left.expression side) (right.expression side)
   | .unary operation value => operation.expression (value.expression side)
@@ -747,6 +791,7 @@ def PairedStaticExprWitness.value
     PairedStaticExprWitness → Option Word
   | .constant original candidate => some (BitVec.ofNat 32
       (match side with | .original => original | .candidate => candidate))
+  | .fixedInputReg _ _ value => some (BitVec.ofNat 32 value)
   | .binary operation left right => do
       let leftValue ← left.value context side
       let rightValue ← right.value context side
@@ -766,17 +811,68 @@ def PairedStaticExprWitness.value
       let result ← value.value context side
       some (operation.value result index)
 
+def fixedRegisterPair (relations : List RegisterRelationPair)
+    (originalRegister candidateRegister : Reg) (value : Nat) : Bool :=
+  relations.any fun relation =>
+    relation.original == originalRegister && relation.candidate == candidateRegister &&
+      relation.relation == .fixedWord value
+
+theorem registerRelationsHold_fixed_pair
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (relations : List RegisterRelationPair) (original candidate : PureState)
+    (originalRegister candidateRegister : Reg) (value : Nat)
+    (related : registerRelationsHold originalImageBase candidateImageBase targets values
+      relations original candidate = true)
+    (fixed : fixedRegisterPair relations originalRegister candidateRegister value = true) :
+    original.get originalRegister = BitVec.ofNat 32 value ∧
+      candidate.get candidateRegister = BitVec.ofNat 32 value := by
+  simp only [registerRelationsHold, List.all_eq_true] at related
+  simp only [fixedRegisterPair, List.any_eq_true] at fixed
+  rcases fixed with ⟨relation, member, checks⟩
+  have holds := related relation member
+  rcases relation with ⟨relationOriginal, relationCandidate, relationKind⟩
+  simp only [Bool.and_eq_true, beq_iff_eq] at checks
+  rcases checks with
+    ⟨⟨originalExact, candidateExact⟩, relationExact⟩
+  subst relationOriginal
+  subst relationCandidate
+  subst relationKind
+  simpa [RegisterValueRelation.holds] using holds
+
+def PairedStaticExprWitness.checked (invariant : StateInvariant) :
+    PairedStaticExprWitness → Bool
+  | .constant _ _ | .read32 _ _ => true
+  | .fixedInputReg original candidate value =>
+      fixedRegisterPair invariant.registerRelations original candidate value
+  | .binary _ left right => left.checked invariant && right.checked invariant
+  | .unary _ value | .indexed _ _ value => value.checked invariant
+
 theorem PairedStaticExprWitness.original_eval_eq_value
-    (context : StaticProofContext) (state : MachineState)
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
     (witness : PairedStaticExprWitness) (value : Word)
-    (immutable : ImmutableImageWordMemory context.originalPe state.memory)
+    (related : StateRel context world invariant original candidate)
+    (checked : witness.checked invariant = true)
     (evaluates : witness.value context .original = some value) :
-    (witness.expression .original).eval state = value := by
+    (witness.expression .original).eval original = value := by
   induction witness generalizing value with
   | constant original candidate =>
       simpa [PairedStaticExprWitness.value,
         PairedStaticExprWitness.expression, Expr.eval] using evaluates
+  | fixedInputReg originalRegister candidateRegister fixedValue =>
+      simp only [PairedStaticExprWitness.value, Option.some.injEq] at evaluates
+      subst value
+      rcases related with ⟨_, _, _, _, _, _, _, _, relatedCore, _⟩
+      have fixed := registerRelationsHold_fixed_pair
+        context.originalPe.imageBase context.candidatePe.imageBase
+        context.codeMap.entries.toList (context.relationalValueTargets world)
+        invariant.registerRelations original.registers candidate.registers
+        originalRegister candidateRegister fixedValue relatedCore.1 checked
+      simpa [PairedStaticExprWitness.value,
+        PairedStaticExprWitness.expression, Expr.eval] using fixed.1
   | binary operation left right leftSound rightSound =>
+      simp only [PairedStaticExprWitness.checked, Bool.and_eq_true] at checked
       cases leftResult : left.value context .original with
       | none => simp [PairedStaticExprWitness.value, leftResult] at evaluates
       | some leftValue =>
@@ -786,50 +882,68 @@ theorem PairedStaticExprWitness.original_eval_eq_value
           | some rightValue =>
               simp [PairedStaticExprWitness.value, leftResult, rightResult] at evaluates
               subst value
-              have leftEvaluates := leftSound leftValue leftResult
-              have rightEvaluates := rightSound rightValue rightResult
+              have leftEvaluates := leftSound leftValue checked.1 leftResult
+              have rightEvaluates := rightSound rightValue checked.2 rightResult
               cases operation <;> simp_all [PairedStaticExprWitness.expression,
                 PairedExactBinaryOp.expression, PairedExactBinaryOp.value, Expr.eval]
   | unary operation operand operandSound =>
+      simp only [PairedStaticExprWitness.checked] at checked
       cases operandResult : operand.value context .original with
       | none => simp [PairedStaticExprWitness.value, operandResult] at evaluates
       | some operandValue =>
           simp [PairedStaticExprWitness.value, operandResult] at evaluates
           subst value
-          have operandEvaluates := operandSound operandValue operandResult
+          have operandEvaluates := operandSound operandValue checked operandResult
           cases operation <;> simp_all [PairedStaticExprWitness.expression,
             PairedExactUnaryOp.expression, PairedExactUnaryOp.value, Expr.eval]
   | read32 originalAddress candidateAddress =>
+      have immutable := StateRel.originalImmutableImageWordMemory
+        context world invariant original candidate related
       cases readResult : readImmutableImageWord context.originalPe originalAddress 4 with
       | none => simp [PairedStaticExprWitness.value, readResult] at evaluates
       | some expected =>
           simp [PairedStaticExprWitness.value, readResult] at evaluates
           subst value
           have read := ImmutableImageWordMemory.read32_of_checked context.originalPe
-            state.memory originalAddress expected immutable readResult
+            original.memory originalAddress expected immutable readResult
           simpa [PairedStaticExprWitness.expression, Expr.eval,
             machineStateRead32_eq_memoryRead32] using read
   | indexed operation index operand operandSound =>
+      simp only [PairedStaticExprWitness.checked] at checked
       cases operandResult : operand.value context .original with
       | none => simp [PairedStaticExprWitness.value, operandResult] at evaluates
       | some operandValue =>
           simp [PairedStaticExprWitness.value, operandResult] at evaluates
           subst value
-          have operandEvaluates := operandSound operandValue operandResult
+          have operandEvaluates := operandSound operandValue checked operandResult
           cases operation <;> simp_all [PairedStaticExprWitness.expression,
             PairedExactIndexedOp.expression, PairedExactIndexedOp.value, Expr.eval]
 
 theorem PairedStaticExprWitness.candidate_eval_eq_value
-    (context : StaticProofContext) (state : MachineState)
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
     (witness : PairedStaticExprWitness) (value : Word)
-    (immutable : ImmutableImageWordMemory context.candidatePe state.memory)
+    (related : StateRel context world invariant original candidate)
+    (checked : witness.checked invariant = true)
     (evaluates : witness.value context .candidate = some value) :
-    (witness.expression .candidate).eval state = value := by
+    (witness.expression .candidate).eval candidate = value := by
   induction witness generalizing value with
   | constant original candidate =>
       simpa [PairedStaticExprWitness.value,
         PairedStaticExprWitness.expression, Expr.eval] using evaluates
+  | fixedInputReg originalRegister candidateRegister fixedValue =>
+      simp only [PairedStaticExprWitness.value, Option.some.injEq] at evaluates
+      subst value
+      rcases related with ⟨_, _, _, _, _, _, _, _, relatedCore, _⟩
+      have fixed := registerRelationsHold_fixed_pair
+        context.originalPe.imageBase context.candidatePe.imageBase
+        context.codeMap.entries.toList (context.relationalValueTargets world)
+        invariant.registerRelations original.registers candidate.registers
+        originalRegister candidateRegister fixedValue relatedCore.1 checked
+      simpa [PairedStaticExprWitness.value,
+        PairedStaticExprWitness.expression, Expr.eval] using fixed.2
   | binary operation left right leftSound rightSound =>
+      simp only [PairedStaticExprWitness.checked, Bool.and_eq_true] at checked
       cases leftResult : left.value context .candidate with
       | none => simp [PairedStaticExprWitness.value, leftResult] at evaluates
       | some leftValue =>
@@ -839,38 +953,130 @@ theorem PairedStaticExprWitness.candidate_eval_eq_value
           | some rightValue =>
               simp [PairedStaticExprWitness.value, leftResult, rightResult] at evaluates
               subst value
-              have leftEvaluates := leftSound leftValue leftResult
-              have rightEvaluates := rightSound rightValue rightResult
+              have leftEvaluates := leftSound leftValue checked.1 leftResult
+              have rightEvaluates := rightSound rightValue checked.2 rightResult
               cases operation <;> simp_all [PairedStaticExprWitness.expression,
                 PairedExactBinaryOp.expression, PairedExactBinaryOp.value, Expr.eval]
   | unary operation operand operandSound =>
+      simp only [PairedStaticExprWitness.checked] at checked
       cases operandResult : operand.value context .candidate with
       | none => simp [PairedStaticExprWitness.value, operandResult] at evaluates
       | some operandValue =>
           simp [PairedStaticExprWitness.value, operandResult] at evaluates
           subst value
-          have operandEvaluates := operandSound operandValue operandResult
+          have operandEvaluates := operandSound operandValue checked operandResult
           cases operation <;> simp_all [PairedStaticExprWitness.expression,
             PairedExactUnaryOp.expression, PairedExactUnaryOp.value, Expr.eval]
   | read32 originalAddress candidateAddress =>
+      have immutable := StateRel.candidateImmutableImageWordMemory
+        context world invariant original candidate related
       cases readResult : readImmutableImageWord context.candidatePe candidateAddress 4 with
       | none => simp [PairedStaticExprWitness.value, readResult] at evaluates
       | some expected =>
           simp [PairedStaticExprWitness.value, readResult] at evaluates
           subst value
           have read := ImmutableImageWordMemory.read32_of_checked context.candidatePe
-            state.memory candidateAddress expected immutable readResult
+            candidate.memory candidateAddress expected immutable readResult
           simpa [PairedStaticExprWitness.expression, Expr.eval,
             machineStateRead32_eq_memoryRead32] using read
   | indexed operation index operand operandSound =>
+      simp only [PairedStaticExprWitness.checked] at checked
       cases operandResult : operand.value context .candidate with
       | none => simp [PairedStaticExprWitness.value, operandResult] at evaluates
       | some operandValue =>
           simp [PairedStaticExprWitness.value, operandResult] at evaluates
           subst value
-          have operandEvaluates := operandSound operandValue operandResult
+          have operandEvaluates := operandSound operandValue checked operandResult
           cases operation <;> simp_all [PairedStaticExprWitness.expression,
             PairedExactIndexedOp.expression, PairedExactIndexedOp.value, Expr.eval]
+
+def pairedStackOffsetExpression (register : Reg) (amount : Nat) : Expr :=
+  if amount == 0 then .inputReg register
+  else .add (.inputReg register) (.constant amount)
+
+@[simp] theorem pairedStackOffsetExpression_eval (state : MachineState)
+    (register : Reg) (amount : Nat) :
+    (pairedStackOffsetExpression register amount).eval state =
+      state.registers.get register + BitVec.ofNat 32 amount := by
+  by_cases zero : amount = 0
+  · simp [pairedStackOffsetExpression, zero, Expr.eval]
+  · simp [pairedStackOffsetExpression, zero, Expr.eval]
+
+structure PairedStackSeparatedWrite where
+  window : StackWindowPair
+  amount : Nat
+  originalValue : Expr
+  candidateValue : Expr
+deriving Repr, DecidableEq
+
+def PairedStackSeparatedWrite.write (side : PairedExactExprSide)
+    (write : PairedStackSeparatedWrite) : Expr × Expr :=
+  match side with
+  | .original =>
+      (pairedStackOffsetExpression write.window.originalRegister write.amount,
+        write.originalValue)
+  | .candidate =>
+      (pairedStackOffsetExpression write.window.candidateRegister write.amount,
+        write.candidateValue)
+
+def PairedStackSeparatedWrite.checked (invariant : StateInvariant)
+    (write : PairedStackSeparatedWrite) : Bool :=
+  invariant.stackWindows.contains write.window &&
+    write.amount % 4 == 0 && write.amount + 4 <= write.window.bytesAbove
+
+theorem PairedStackSeparatedWrite.avoidsStaticSlot_of_checked
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (write : PairedStackSeparatedWrite) (slot : StaticWordRelationSlotPair)
+    (checked : write.checked invariant = true)
+    (slotValid : slot.valid context = true)
+    (related : StateRel context world invariant original candidate) :
+    Write32AvoidsWord slot.originalAddress
+        ((write.write .original).1.eval original) ∧
+      Write32AvoidsWord slot.candidateAddress
+        ((write.write .candidate).1.eval candidate) := by
+  simp only [PairedStackSeparatedWrite.checked, Bool.and_eq_true,
+    beq_iff_eq, decide_eq_true_eq] at checked
+  rcases checked with ⟨⟨windowMember, amountAligned⟩, amountInside⟩
+  have rangesValid := related.stackRangesValid context world invariant
+  have windowsHold := related.stackWindowsHold context world invariant
+  simp only [stackWindowsRelated, List.all_eq_true] at windowsHold
+  have windowHolds := windowsHold write.window
+    (List.contains_iff_mem.mp windowMember)
+  rcases pairedStackWordLocation_above_window context world write.window
+      original.registers candidate.registers rangesValid windowHolds write.amount
+      amountAligned amountInside with
+    ⟨location, originalLocation, candidateLocation⟩
+  have rangeValid : location.range.disjointFromImages context = true := by
+    have validRows := rangesValid
+    simp only [RelationalWorld.stackRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at validRows
+    exact (validRows.1.1.2 location.range location.rangeMember).1.1.1
+  have rangeShape := rangeValid
+  simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
+    Bool.or_eq_true, decide_eq_true_eq] at rangeShape
+  rcases rangeShape with
+    ⟨⟨⟨⟨_rangeNonempty, originalNoWrap⟩, candidateNoWrap⟩,
+      originalDisjoint⟩, candidateDisjoint⟩
+  have originalBounds := slot.originalBounds context slotValid
+  have candidateBounds := slot.candidateBounds context slotValid
+  have originalAvoids := stackRangeWordWriteAvoidsImageWord
+    location.range.originalBase location.range.size context.originalPe.imageBase
+    context.originalPe.sizeOfImage location.offset location.inside originalNoWrap
+    originalDisjoint slot.originalAddress originalBounds.1 originalBounds.2.1
+    originalBounds.2.2
+  have candidateAvoids := stackRangeWordWriteAvoidsImageWord
+    location.range.candidateBase location.range.size context.candidatePe.imageBase
+    context.candidatePe.sizeOfImage location.offset location.inside candidateNoWrap
+    candidateDisjoint slot.candidateAddress candidateBounds.1 candidateBounds.2.1
+    candidateBounds.2.2
+  rw [← location.originalAddressExact, originalLocation] at originalAvoids
+  rw [← location.candidateAddressExact, candidateLocation] at candidateAvoids
+  constructor
+  · simpa [PairedStackSeparatedWrite.write]
+      using originalAvoids
+  · simpa [PairedStackSeparatedWrite.write]
+      using candidateAvoids
 
 inductive PairedExactExprWitness where
   | inputReg (original candidate : Reg)
@@ -884,8 +1090,12 @@ inductive PairedExactExprWitness where
   | unary (operation : PairedExactUnaryOp) (value : PairedExactExprWitness)
   | read8 (originalAddress candidateAddress : Nat)
   | read32 (originalAddress candidateAddress : Nat)
+  | statePredicateRead32 (predicate : PairedStatePredicate)
+      (read : PairedExactMemoryRead)
   | read8At (address : PairedStaticExprWitness)
   | read32At (address : PairedStaticExprWitness)
+  | stackSeparatedRead32 (originalAddress candidateAddress : Nat)
+      (writes : List PairedStackSeparatedWrite)
   | indexed (operation : PairedExactIndexedOp) (index : Nat)
       (value : PairedExactExprWitness)
   | ifEqual (left right thenValue elseValue : PairedExactExprWitness)
@@ -912,8 +1122,16 @@ def PairedExactExprWitness.expression
   | .read32 originalAddress candidateAddress =>
       .read32 (.constant (match side with
         | .original => originalAddress | .candidate => candidateAddress))
+  | .statePredicateRead32 _ read =>
+      .read32 (match side with
+        | .original => read.originalAddress | .candidate => read.candidateAddress)
   | .read8At address => .read8 (address.expression side)
   | .read32At address => .read32 (address.expression side)
+  | .stackSeparatedRead32 originalAddress candidateAddress writes =>
+      .constantRead32AfterWrites
+        (match side with
+          | .original => originalAddress | .candidate => candidateAddress)
+        (writes.map (PairedStackSeparatedWrite.write side))
   | .indexed operation index value =>
       operation.expression (value.expression side) index
   | .ifEqual left right thenValue elseValue =>
@@ -939,12 +1157,21 @@ def PairedExactExprWitness.checked
       .read32 originalAddress candidateAddress =>
       immutableImageWordsPairedEqual context originalAddress candidateAddress ||
         exactStaticWordSlotAddresses context originalAddress candidateAddress
+  | .statePredicateRead32 predicate read =>
+      invariant.predicates.contains predicate &&
+        predicate.exactMemoryReads.contains read && read.bytes == 4
   | .read8At address | .read32At address =>
-      match address.value context .original, address.value context .candidate with
-      | some originalAddress, some candidateAddress =>
-          immutableImageWordsPairedEqual context originalAddress.toNat
-            candidateAddress.toNat
-      | _, _ => false
+      address.checked invariant &&
+        match address.value context .original, address.value context .candidate with
+        | some originalAddress, some candidateAddress =>
+            immutableImageWordsPairedEqual context originalAddress.toNat
+              candidateAddress.toNat
+        | _, _ => false
+  | .stackSeparatedRead32 originalAddress candidateAddress writes =>
+      exactStaticWordSlotAddresses context originalAddress candidateAddress &&
+        staticWordRelationSlotsValid context &&
+        !writes.isEmpty && writes.length <= 16 &&
+        writes.all (PairedStackSeparatedWrite.checked invariant)
   | .ifEqual left right thenValue elseValue =>
       left.checked context invariant && right.checked context invariant &&
         thenValue.checked context invariant && elseValue.checked context invariant
@@ -982,12 +1209,12 @@ theorem PairedExactExprWitness.eval_equal_of_checked
       rcases related with ⟨_, _, _, _, _, _, _, _, relatedCore, _⟩
       simpa [PairedExactExprWitness.expression, Expr.eval] using congrArg
         (fun state : X87MachineState => BitVec.zeroExtend 32 state.control)
-        relatedCore.2.2.2.2.2.2.2.1
+        relatedCore.2.2.2.2.2.2.2.1.1
   | inputX87Status =>
       rcases related with ⟨_, _, _, _, _, _, _, _, relatedCore, _⟩
       simpa [PairedExactExprWitness.expression, Expr.eval] using congrArg
         (fun state : X87MachineState => BitVec.zeroExtend 32 state.status)
-        relatedCore.2.2.2.2.2.2.2.1
+        relatedCore.2.2.2.2.2.2.2.1.1
   | read8 originalAddress candidateAddress =>
       simp only [PairedExactExprWitness.checked, Bool.or_eq_true] at checked
       rcases checked with immutable | slot
@@ -1010,56 +1237,130 @@ theorem PairedExactExprWitness.eval_equal_of_checked
             original candidate related) immutable
       · exact exactStaticWordSlotRead32_eval_equal context world invariant
           original candidate originalAddress candidateAddress slot related
+  | statePredicateRead32 predicate read =>
+      simp only [PairedExactExprWitness.checked, Bool.and_eq_true,
+        beq_iff_eq] at checked
+      rcases checked with ⟨⟨predicateMember, readMember⟩, fourBytes⟩
+      have wordsEqual := StateRel.exactMemoryRead context world invariant
+        original candidate predicate read
+        (List.contains_iff_mem.mp predicateMember)
+        (List.contains_iff_mem.mp readMember) related
+      rw [fourBytes] at wordsEqual
+      have lowWordsEqual := congrArg
+        (fun value : X87Word => value.extractLsb' 0 32) wordsEqual
+      change
+        (original.readX87Word (read.originalAddress.eval original) 4).extractLsb' 0 32 =
+          (candidate.readX87Word (read.candidateAddress.eval candidate) 4).extractLsb' 0 32
+        at lowWordsEqual
+      rw [MachineState.readX87Word_four_extractLsb,
+        MachineState.readX87Word_four_extractLsb] at lowWordsEqual
+      simpa [PairedExactExprWitness.expression, Expr.eval, fourBytes]
+        using lowWordsEqual
   | read8At address =>
-      simp only [PairedExactExprWitness.checked] at checked
+      simp only [PairedExactExprWitness.checked, Bool.and_eq_true] at checked
+      rcases checked with ⟨addressChecked, immutablePair⟩
       cases originalResult : address.value context .original with
-      | none => simp [originalResult] at checked
+      | none => simp [originalResult] at immutablePair
       | some originalValue =>
           cases candidateResult : address.value context .candidate with
-          | none => simp [originalResult, candidateResult] at checked
+          | none => simp [originalResult, candidateResult] at immutablePair
           | some candidateValue =>
-              simp [originalResult, candidateResult] at checked
-              have originalAddress := address.original_eval_eq_value context original
-                originalValue
-                (StateRel.originalImmutableImageWordMemory context world invariant
-                  original candidate related) originalResult
-              have candidateAddress := address.candidate_eval_eq_value context candidate
-                candidateValue
-                (StateRel.candidateImmutableImageWordMemory context world invariant
-                  original candidate related) candidateResult
+              simp [originalResult, candidateResult] at immutablePair
+              have originalAddress := address.original_eval_eq_value context world
+                invariant original candidate originalValue related addressChecked
+                originalResult
+              have candidateAddress := address.candidate_eval_eq_value context world
+                invariant original candidate candidateValue related addressChecked
+                candidateResult
               have readEqual := immutablePairedConstantRead8_eval_equal context
                 originalValue.toNat candidateValue.toNat original candidate
                 (StateRel.originalImmutableImageWordMemory context world invariant
                   original candidate related)
                 (StateRel.candidateImmutableImageWordMemory context world invariant
-                  original candidate related) checked
+                  original candidate related) immutablePair
               simpa [PairedExactExprWitness.expression, Expr.eval, originalAddress,
                 candidateAddress] using readEqual
   | read32At address =>
-      simp only [PairedExactExprWitness.checked] at checked
+      simp only [PairedExactExprWitness.checked, Bool.and_eq_true] at checked
+      rcases checked with ⟨addressChecked, immutablePair⟩
       cases originalResult : address.value context .original with
-      | none => simp [originalResult] at checked
+      | none => simp [originalResult] at immutablePair
       | some originalValue =>
           cases candidateResult : address.value context .candidate with
-          | none => simp [originalResult, candidateResult] at checked
+          | none => simp [originalResult, candidateResult] at immutablePair
           | some candidateValue =>
-              simp [originalResult, candidateResult] at checked
-              have originalAddress := address.original_eval_eq_value context original
-                originalValue
-                (StateRel.originalImmutableImageWordMemory context world invariant
-                  original candidate related) originalResult
-              have candidateAddress := address.candidate_eval_eq_value context candidate
-                candidateValue
-                (StateRel.candidateImmutableImageWordMemory context world invariant
-                  original candidate related) candidateResult
+              simp [originalResult, candidateResult] at immutablePair
+              have originalAddress := address.original_eval_eq_value context world
+                invariant original candidate originalValue related addressChecked
+                originalResult
+              have candidateAddress := address.candidate_eval_eq_value context world
+                invariant original candidate candidateValue related addressChecked
+                candidateResult
               have readEqual := immutablePairedConstantRead32_eval_equal context
                 originalValue.toNat candidateValue.toNat original candidate
                 (StateRel.originalImmutableImageWordMemory context world invariant
                   original candidate related)
                 (StateRel.candidateImmutableImageWordMemory context world invariant
-                  original candidate related) checked
+                  original candidate related) immutablePair
               simpa [PairedExactExprWitness.expression, Expr.eval, originalAddress,
                 candidateAddress] using readEqual
+  | stackSeparatedRead32 originalAddress candidateAddress writes =>
+      simp only [PairedExactExprWitness.checked, Bool.and_eq_true,
+        decide_eq_true_eq] at checked
+      rcases checked with
+        ⟨⟨⟨⟨slotChecked, slotsValid⟩, _writesNonempty⟩, _writesBounded⟩,
+          writesChecked⟩
+      have initialEqual := exactStaticWordSlotRead32_eval_equal context world invariant
+        original candidate originalAddress candidateAddress slotChecked related
+      simp only [exactStaticWordSlotAddresses, List.any_eq_true] at slotChecked
+      rcases slotChecked with ⟨slot, slotMember, slotShape⟩
+      simp only [Bool.and_eq_true, beq_iff_eq] at slotShape
+      rcases slotShape with
+        ⟨⟨originalAddressExact, candidateAddressExact⟩, relationExact⟩
+      have slotValid := slot.valid_of_member context slotsValid slotMember
+      have originalAvoids : ∀ evaluatedWrite,
+          evaluatedWrite ∈ evalNormalizedWrites original
+            (writes.map (PairedStackSeparatedWrite.write .original)) →
+          Write32AvoidsWord slot.originalAddress evaluatedWrite.1 := by
+        intro evaluatedWrite evaluatedMember
+        simp only [evalNormalizedWrites, List.mem_map] at evaluatedMember
+        rcases evaluatedMember with ⟨writeExpr, writeExprMember, evaluatedExact⟩
+        rcases writeExprMember with ⟨sourceWrite, sourceMember, writeExprExact⟩
+        subst writeExpr
+        subst evaluatedWrite
+        simp only [List.all_eq_true] at writesChecked
+        have sourceChecked := writesChecked sourceWrite sourceMember
+        exact (sourceWrite.avoidsStaticSlot_of_checked context world invariant
+          original candidate slot sourceChecked slotValid related).1
+      have candidateAvoids : ∀ evaluatedWrite,
+          evaluatedWrite ∈ evalNormalizedWrites candidate
+            (writes.map (PairedStackSeparatedWrite.write .candidate)) →
+          Write32AvoidsWord slot.candidateAddress evaluatedWrite.1 := by
+        intro evaluatedWrite evaluatedMember
+        simp only [evalNormalizedWrites, List.mem_map] at evaluatedMember
+        rcases evaluatedMember with ⟨writeExpr, writeExprMember, evaluatedExact⟩
+        rcases writeExprMember with ⟨sourceWrite, sourceMember, writeExprExact⟩
+        subst writeExpr
+        subst evaluatedWrite
+        simp only [List.all_eq_true] at writesChecked
+        have sourceChecked := writesChecked sourceWrite sourceMember
+        exact (sourceWrite.avoidsStaticSlot_of_checked context world invariant
+          original candidate slot sourceChecked slotValid related).2
+      have originalStable := Memory.read32_applyConcreteWrites_of_avoids
+        original.memory slot.originalAddress
+        (evalNormalizedWrites original
+          (writes.map (PairedStackSeparatedWrite.write .original))) originalAvoids
+      have candidateStable := Memory.read32_applyConcreteWrites_of_avoids
+        candidate.memory slot.candidateAddress
+        (evalNormalizedWrites candidate
+          (writes.map (PairedStackSeparatedWrite.write .candidate))) candidateAvoids
+      simp only [PairedExactExprWitness.expression]
+      rw [Expr.eval_constantRead32AfterWrites,
+        Expr.eval_constantRead32AfterWrites]
+      rw [← originalAddressExact, ← candidateAddressExact]
+      rw [originalStable, candidateStable]
+      rw [originalAddressExact, candidateAddressExact]
+      simpa [Expr.eval, machineStateRead32_eq_memoryRead32] using initialEqual
   | undefined slot =>
       rcases related with ⟨_, _, _, _, _, _, _, _, relatedCore, _⟩
       simp only [PairedExactExprWitness.expression, Expr.eval]

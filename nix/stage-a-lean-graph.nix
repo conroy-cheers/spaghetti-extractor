@@ -8,6 +8,7 @@
 , targetNode ? null
 , targetNodes ? []
 , targetBundle ? false
+, auditTheorem ? null
 }:
 
 let
@@ -15,12 +16,12 @@ let
   standalone = standaloneSourceRoot != null;
   standaloneSource = module: standaloneSourceRoot + "/${module}.lean";
   standaloneImports = module:
-    lib.filter (dependency: dependency != null) (map
+    lib.unique (lib.filter (dependency: dependency != null) (map
       (line:
         let matched = builtins.match
           "^import StageA\\.([A-Za-z0-9_]+)$" line;
         in if matched == null then null else builtins.head matched)
-      (lib.splitString "\n" (builtins.readFile (standaloneSource module))));
+      (lib.splitString "\n" (builtins.readFile (standaloneSource module)))));
   standaloneModuleSet = builtins.listToAttrs (map (module: {
     name = module;
     value = true;
@@ -48,7 +49,7 @@ let
       in {
         id = module;
         modules = [ module ];
-        dependencies = standaloneImports module;
+        dependencies = lib.sort builtins.lessThan (standaloneImports module);
         resource_class = "light";
         estimated_memory_mb = 512;
         source_sha256 = builtins.hashString "sha256" sourceSha256;
@@ -305,20 +306,126 @@ let
       )
       PY
     '';
+  selectedAuditTheorem =
+    if auditTheorem != null then auditTheorem else graph.expected_final_theorem;
+  acceptanceNodeSteps = graph.acceptance.node_steps or null;
+  acceptanceNodeStepsValid = builtins.isList acceptanceNodeSteps
+    && builtins.all (step:
+      builtins.isAttrs step && step ? kind && builtins.isString step.kind
+    ) acceptanceNodeSteps;
+  parameterizedEnvironment = acceptanceNodeStepsValid && builtins.any (step:
+      builtins.elem step.kind [
+        "external_call"
+        "external_protocol"
+        "external_jump"
+        "external_terminate"
+      ]
+    ) acceptanceNodeSteps;
+  parameterizedProtocolEnvironment = acceptanceNodeStepsValid
+    && builtins.any (step: step.kind == "external_protocol") acceptanceNodeSteps;
+  ordinaryCanonicalResult = originalProgram: candidateProgram: ''
+    PE32RawProgramsObservationallyEquivalent staticProofContext
+      relationalProductGraph productInvariantTable
+      relationalProductReachabilityEvidence productControlProfile consoleLaunch
+      ${originalProgram} ${candidateProgram}
+  '';
+  linkedCanonicalResult = originalProgram: candidateProgram: ''
+    PE32RawProgramsLinkedObservationallyEquivalent staticProofContext
+      relationalProductGraph productInvariantTable
+      relationalProductReachabilityEvidence linkedProductControlProfile consoleLaunch
+      ${originalProgram} ${candidateProgram}
+  '';
+  ordinaryCanonicalType =
+    if parameterizedProtocolEnvironment then ''
+      forall (originalEnvironment candidateEnvironment : WorldExternalEnvironment)
+        (originalProtocolEnvironment candidateProtocolEnvironment :
+          WorldExternalProtocolEnvironment),
+        ExternalEnvironmentRefines staticProofContext externalCallSites
+            originalEnvironment candidateEnvironment ->
+          WorldExternalProtocolEnvironmentsRefine staticProofContext
+              relationalProductGraph productInvariantTable
+              relationalProductReachabilityEvidence productControlProfile
+              protocolCallbackTargets externalCallSites
+              originalProtocolEnvironment candidateProtocolEnvironment ->
+            ${ordinaryCanonicalResult
+              "(originalWorldProgram originalEnvironment originalProtocolEnvironment)"
+              "(candidateWorldProgram candidateEnvironment candidateProtocolEnvironment)"}
+    '' else if parameterizedEnvironment then ''
+      forall (originalEnvironment candidateEnvironment : WorldExternalEnvironment),
+        ExternalEnvironmentRefines staticProofContext externalCallSites
+            originalEnvironment candidateEnvironment ->
+          ${ordinaryCanonicalResult
+            "(originalWorldProgram originalEnvironment)"
+            "(candidateWorldProgram candidateEnvironment)"}
+    '' else ordinaryCanonicalResult "originalWorldProgram" "candidateWorldProgram";
+  linkedCanonicalType =
+    if parameterizedProtocolEnvironment then
+      throw "linked final-theorem audit does not support protocol environments"
+    else if parameterizedEnvironment then ''
+      forall (originalEnvironment candidateEnvironment : WorldExternalEnvironment),
+        ExternalEnvironmentRefines staticProofContext externalCallSites
+            originalEnvironment candidateEnvironment ->
+          ${linkedCanonicalResult
+            "(originalWorldProgram originalEnvironment)"
+            "(candidateWorldProgram candidateEnvironment)"}
+    '' else linkedCanonicalResult "originalWorldProgram" "candidateWorldProgram";
+  canonicalAuditType =
+    if selectedAuditTheorem
+      == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
+    then ordinaryCanonicalType
+    else if selectedAuditTheorem
+      == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
+    then linkedCanonicalType
+    else throw "unsupported Stage A final theorem for typed audit";
+  canonicalAuditProfile =
+    (if selectedAuditTheorem
+      == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
+     then "linked-raw-pe32" else "raw-pe32")
+    + (if parameterizedProtocolEnvironment then "-stateful-protocol"
+       else if parameterizedEnvironment then "-external-environment"
+       else "-closed");
   auditSource = pkgs.writeText "StageARelationalAudit.lean" ''
     import StageA.${graph.root_module}
 
-    #check ${graph.expected_final_theorem}
-    #print axioms ${graph.expected_final_theorem}
+    namespace StageA.FinalTheoremAudit
+
+    open StageA.Formal StageA.Relational StageA.GeneratedRelational
+
+    /-- The final audit is a proof term at the canonical whole-program type.
+    Merely finding a declaration with the expected public name is insufficient. -/
+    theorem typedFinalTheorem :
+        ${canonicalAuditType} :=
+      ${selectedAuditTheorem}
+
+    #check ${selectedAuditTheorem}
+    #check typedFinalTheorem
+    #print axioms typedFinalTheorem
+
+    end StageA.FinalTheoremAudit
   '';
   approvedAxioms = builtins.toJSON graph.approved_axioms;
   selectedTargetNodes =
     if targetNode != null then [ targetNode ] else targetNodes;
-  acceptanceReady =
-    graph.acceptance.status == "ready"
+  legacyAcceptanceReady =
+    acceptanceNodeStepsValid
+    && graph.acceptance.status == "ready"
     && graph.acceptance.theorem == graph.expected_final_theorem
     && graph.expected_final_theorem
       == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent";
+  linkedAcceptance = graph.acceptance.linked_acceptance or null;
+  linkedAcceptanceReady =
+    acceptanceNodeStepsValid
+    && !parameterizedProtocolEnvironment
+    && graph.acceptance.status == "ready"
+    && linkedAcceptance != null
+    && linkedAcceptance.status == "ready"
+    && linkedAcceptance.theorem == selectedAuditTheorem
+    && selectedAuditTheorem
+      == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked";
+  acceptanceReady =
+    if selectedAuditTheorem == graph.expected_final_theorem
+    then legacyAcceptanceReady
+    else linkedAcceptanceReady;
   selectedNodeResults = map (node:
     let source = nodeDrvs.${node};
     in pkgs.runCommand
@@ -461,7 +568,8 @@ pkgs.runCommand "stage-a-relational-proof-audit"
       > "$out/lean.stdout" \
       2> "$out/lean.stderr"
 
-    EXPECTED_THEOREM=${lib.escapeShellArg graph.expected_final_theorem} \
+    EXPECTED_THEOREM=${lib.escapeShellArg selectedAuditTheorem} \
+    CANONICAL_PROPOSITION_PROFILE=${lib.escapeShellArg canonicalAuditProfile} \
     APPROVED_AXIOMS=${lib.escapeShellArg approvedAxioms} \
       python3 - "$out/lean.stdout" "$out/audit.json" <<'PY'
     import json
@@ -472,19 +580,28 @@ pkgs.runCommand "stage-a-relational-proof-audit"
 
     stdout = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
     theorem = os.environ["EXPECTED_THEOREM"]
+    canonical_profile = os.environ["CANONICAL_PROPOSITION_PROFILE"]
     approved = json.loads(os.environ["APPROVED_AXIOMS"])
-    match = re.search(r"depends on axioms:\s*\[(.*?)\]", stdout, re.DOTALL)
+    typed_witness = "StageA.FinalTheoremAudit.typedFinalTheorem"
+    match = re.search(
+        rf"'{re.escape(typed_witness)}' depends on axioms:\s*\[(.*?)\]",
+        stdout,
+        re.DOTALL,
+    )
     if match:
         observed = [item.strip() for item in match.group(1).split(",") if item.strip()]
-    elif "does not depend on any axioms" in stdout:
+    elif f"'{typed_witness}' does not depend on any axioms" in stdout:
         observed = []
     else:
-        raise SystemExit("Lean axiom audit did not emit a parseable inventory")
+        raise SystemExit("Lean typed final-theorem audit did not emit an axiom inventory")
     unexpected = sorted(set(observed) - set(approved))
     payload = {
         "format": "stage-a-relational-lean-audit-v1",
         "status": "checked" if not unexpected else "rejected",
         "theorem": theorem,
+        "typed_witness": typed_witness,
+        "proposition_type_checked": True,
+        "canonical_proposition_profile": canonical_profile,
         "lean_trust": 0,
         "approved_axioms": approved,
         "observed_axioms": observed,

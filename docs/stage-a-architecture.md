@@ -30,6 +30,13 @@ and candidate-only feedback commands are not acceptance gates.
   and memory IR. Its caches are untrusted and content-addressed.
 - `analyses/` proposes control, register, stack, memory, invariant, external,
   and segment evidence. A proposal cannot close an obligation.
+- `proposal_cli.py` terminates static discovery at a strict, hashed proposal
+  closure. Its package does not contain aggregate replay or final assembly.
+- `composition_products.py` consumes the independently checked register,
+  semantic, memory, and ISA products and emits segment, product-graph, ISA,
+  and final proof-IR composition products.
+- `assembly.py` validates those phase products and merges them into the legacy
+  analysis view. It cannot silently rerun proposal discovery or composition.
 - `lean/` emits definitions, local segment certificates, product composition,
   and the final acceptance module.
 - `build.py` validates prepared source graphs and drives the Nix derivation
@@ -108,7 +115,14 @@ Nix executables are phase-scoped. `spaghetti-extractor-mapping` owns static
 maps and relation contracts, `spaghetti-extractor-side` owns side-local
 extraction, `spaghetti-extractor-normalize` owns pair normalization,
 `spaghetti-extractor-region-facts` owns immutable region-local proposals,
-`spaghetti-extractor-analysis` owns global analysis, and
+`spaghetti-extractor-proposal` owns global proposal discovery,
+`spaghetti-extractor-register-dataflow-problem` owns transfer-problem
+compilation, `spaghetti-extractor-register-replay` owns aggregate validation,
+`spaghetti-extractor-semantic-products` owns semantic IR and invariants,
+`spaghetti-extractor-memory-products` owns memory contracts and external call
+sites, `spaghetti-extractor-composition-products` owns segments, the product
+graph, ISA requirements, and final proof IR,
+`spaghetti-extractor-analysis` owns only validated assembly, and
 `spaghetti-extractor-preparation` owns generated Lean sources and the module
 graph. Fixture derivations must use the narrowest executable. The general CLI
 is a user-facing facade, not an acceptable build dependency for an isolated
@@ -161,24 +175,101 @@ and the proposal fails closed.
 
 The remaining global state analysis is transitional. Register, callsite,
 stack, static-memory, dynamic-range, and indirect-control feedback still share
-one derivation. The next durable boundary is an immutable SCC artifact keyed by
-stable region identities, local transfer-function hashes, and incoming SCC
-summaries. A candidate change should invalidate only changed SCCs and their
-condensation-graph descendants. Cache entries remain untrusted proposals; Lean
-reconnects every accepted claim to the exact image bytes and checked
-whole-program graph.
+one discovery derivation. During migration it emits both the former observed
+transfer table and `relational-register-transfer-programs.json`. The latter is
+a strict, ordered local transfer IR over the register lattice. It represents
+constant relations, input copies, fixed-expression evaluation, exact-input
+conditions, and conservative terminal relations. Unknown rules, malformed
+relations, missing context, and context identity mismatches fail closed.
+
+Transfer workers consume no observed input/output rows. They receive per-region
+programs plus one content-addressed evaluation context containing only paired
+constant targets and immutable PE memory ranges, with IAT ranges excluded. The
+pure worker source closure therefore does not parse PE files or import the
+global analyzer. The context implementation has been exhaustively compared
+against the prior immutable-word reader over both GNU hello images: all 237,888
+valid word positions agreed. Program-mode SCC replay covers all 7,430 regions
+and produces byte-identical register relations to the monolithic analyzer.
+
+The observed table remains only as a differential migration oracle. The
+analyzer emits a strict
+`relational-register-dataflow-problem-seed.json`, containing the exact binary
+identities, contract/behavior content hashes, and proposal inputs. A separate
+problem-compiler derivation produces the canonical
+`relational-register-dataflow-problem.json` from the exact PE files, referenced
+contract and decoded-behavior artifacts, and seed. Large semantic inventories
+are referenced rather than embedded in the seed, and the compiled problem is
+not copied into the broad analysis artifact. The planner consumes this one
+immutable problem instead of independently supplied graph, program, and hash
+arguments. The broad analyzer's source closure deliberately excludes the
+problem compiler and planner.
+
+Pack aggregation is consumed through a separate linear checker. It recomputes
+every region input from seeds and predecessor summaries and checks each output
+against the local transfer program, without rerunning the iterative SCC solver.
+Malformed, stale, noncanonical, incomplete, or non-monotone solutions fail
+closed. The aggregate remains an untrusted proposal: Lean still checks the
+resulting state claims and final composition theorem.
+
+Checked aggregate consumption terminates in
+`stage-a-relational-register-replay-v1`. Its two-file artifact binds both PE
+identities, the proposal closure, aggregate semantic digest, aggregate file
+hash, and reconstructed register-relation bytes. Final assembly validates
+those bindings and requires the replayed relations to equal proposal discovery
+byte-for-byte. The replay package contains neither proposal orchestration nor
+final composition, while the assembly package contains the replay schema but
+not the aggregate checker or SCC implementation.
+
+Semantic IR plus invariant synthesis form an independent proposal-bound branch.
+They consume no register solution and run in parallel with transfer compilation
+and SCC solving. Memory contracts plus external-call sites form a second branch
+bound to both proposal and register replay. Both artifacts use exact file
+inventories and bind their source closure identities and input-file hashes.
+Composition contains their validators but not their producers. Assembly
+contains only the proposal, replay, semantic, memory, composition, and final
+analysis validators. Edits in any downstream family therefore cannot
+invalidate proposal discovery or register propagation.
+
+Global discovery now terminates in
+`stage-a-relational-proposal-closure-v1`. The manifest lists an exact file
+inventory, hashes every member, binds both PE identities, and rejects missing,
+unknown, noncanonical, or modified files. The closure contains the final
+register seed and the surrounding fixed-register-call, callsite, stack,
+static-word, and dynamic/static-pointer proposals, but contains neither Lean
+outputs nor final product-graph assembly. Register replay validates the closure,
+consumes the separately checked register solution, and requires the
+reconstructed contract and register relations to match discovery byte-for-byte.
+Composition consumes those independently validated artifacts and emits a
+strict six-file `stage-a-relational-composition-products-v1` artifact. Final
+assembly then combines the validated phase products without running analysis.
+
+The physical source graph matches the artifact graph. Proposal discovery is in
+a source closure that omits assembly, composition, aggregate replay, SCC
+workers, and solution validation. Composition has its own source closure and
+does not contain proposal, replay, semantic, or memory producers. Assembly has
+a dedicated CLI and contains validators but no analysis producer or Lean
+generator. The transfer-problem compiler has another reduced source closure.
+Boundary checks exercise each packaged entrypoint and assert those exclusions.
+Consequently, editing assembly schedules only the assembly executable, final
+analysis, and its checks; editing composition starts at composition; editing
+the solution checker starts at aggregate replay; editing transfer compilation
+starts at the problem; only proposal semantics can invalidate discovery.
 
 The register analyzer emits
-`relational-register-dataflow-graph.json` as the migration manifest for that
-boundary. It contains a deterministic SCC condensation DAG and coarser packs
-for Nix execution. SCC identities depend on stable region identities rather
-than inventory positions. Pack identities depend on SCC membership, while pack
-semantics hashes include local transfer and boundary hashes. Therefore a local
-semantic edit preserves the node identity and invalidates its result plus its
-true descendants; reordering the input inventory invalidates nothing. Large
-SCCs are isolated and resource classes are assigned from total pack region
-counts so the remote scheduler can limit memory pressure. This manifest is an
-untrusted scheduling proposal and has no acceptance authority.
+`relational-register-program-dataflow-graph.json` as the incremental manifest
+for that boundary. Its semantic hashes derive from transfer programs, not the
+legacy observation inventory. The program collection carries its strict seed
+and propagation-edge inventory, so the planner does not read the observed
+transfer table. The graph contains a deterministic SCC condensation DAG and
+coarser packs for Nix execution. SCC identities depend on stable region
+identities rather than inventory positions. Pack identities depend on SCC
+membership, while pack semantics hashes include local transfer and boundary
+hashes. Therefore a local semantic edit preserves the node identity and
+invalidates its result plus its true descendants; reordering the input
+inventory invalidates nothing. Large SCCs are isolated and resource classes are
+assigned from total pack region counts so the remote scheduler can limit memory
+pressure. This manifest is an untrusted scheduling proposal and has no
+acceptance authority.
 
 The intended build DAG is directional:
 
@@ -188,15 +279,22 @@ The intended build DAG is directional:
    consumes the map and the two side artifacts.
 3. Region-local facts consume normalized behavior but not global fixed-point
    code.
-4. SCC packs consume only their projected local semantics and predecessor
-   summaries. An exact-cover aggregation step rejects missing, duplicate, or
-   stale outputs.
+4. The register problem compiler consumes the immutable proposal closure and
+   its compact seed. SCC
+   packs consume only their projected local programs, the shared immutable
+   evaluation context, and predecessor summaries. They contain no observed
+   transfer rows. An exact-cover aggregation step rejects missing, duplicate,
+   or stale outputs, and the linear consumer validates the solution before
+   state claims are emitted. The pre-migration global result is compared region
+   by region until seed generation is extracted from broad analysis and the
+   monolithic solver path is retired.
 5. Segment proofs consume only the relevant state summaries and exact decoded
    paths. Product composition depends on the segment certificates it reaches.
 6. The final acceptance derivation is small and depends on all required roots,
    frontiers, environment refinements, and the final Lean theorem.
 
-Nix inputs for a pack must be projected into content-addressed per-pack files.
+Nix inputs for a semantic pack must be projected into content-addressed
+per-pack files.
 Passing the monolithic normalized-behavior or analysis JSON path to every pack
 would make every parent store-path change invalidate every child, defeating
 the graph even when the pack hashes are stable. The same rule applies to Lean:
@@ -204,10 +302,137 @@ generated modules are individual `builtins.path` inputs, and kernel modules are
 separate from generated facts. A broad source tree, complete report directory,
 or user-facing CLI package is never an input to a narrow phase derivation.
 
-As of the GNU hello benchmark, 7,430 regions form 6,271 SCCs and 432 execution
-packs: 419 small, 12 medium, and one large. A dataflow-planner-only edit rebuilt
-the analysis package and analysis result in about 2 minutes 45 seconds on a
-remote builder; the warm Nix replay took under one second. The planner is now
-present, but pack-local solving remains the next implementation step. Until
-that migration lands, the single global analysis derivation still accounts for
-most analysis-only cold time.
+Semantic graph identity and Nix scheduling policy are separate. The proposal
+retains the stable SCC graph and transfer identities; the planner derives a
+solver schedule from that immutable graph. Changing pack size or scheduling
+heuristics therefore invalidates planning and workers, not PE extraction or
+proposal discovery. The current lineage-aware scheduler extends a predecessor
+pack only when all incoming components are already in that pack. Other work is
+grouped by deterministic same-depth hash buckets. This preserves useful branch
+parallelism, cannot introduce a quotient-graph cycle, and bounds ordinary
+workers to 128 regions. Indivisible SCCs may exceed that budget.
+
+On GNU hello, this converts 7,430 regions and 6,271 SCCs into 237 packs. The
+pack graph has a 41-pack critical path, maximum width fourteen, and one
+indivisible 554-region SCC. A more aggressive contiguous schedule produced
+only 127 packs but had a 104-pack critical path and width three, so total node
+count alone is not used as the performance objective.
+
+Fine-grained graph mode reads the prepared manifest during Nix evaluation to
+construct the derivation DAG. Explicit preparation remains the normal boundary
+for arbitrary binaries; extraction does not run as IFD. Each pack file and the
+shared transfer context are imported as independent `builtins.path` inputs.
+Changing one pack does not change every worker merely because its parent plan
+directory acquired a new store path.
+
+Floating CA outputs require one additional evaluation boundary. Nix cannot
+purely IFD-read the unresolved output placeholder of a content-addressed
+preparation derivation, even though that output will become a concrete store
+path after realization. `stage-a-build-relational --prepared-nix-ref` therefore
+realizes preparation first and evaluates the Lean graph second. Both phases are
+ordinary cached Nix builds and may use the same remote builders; only their
+coordination runs outside the sandbox. This avoids disabling CA early cutoff or
+silently compiling Lean locally merely to recover a one-command interface.
+
+The cold 237-pack GNU solve ran on `acacia` in 221.1 seconds and produced a
+complete 7,430-region aggregate with no missing observations. A fully cached
+replay took 0.8 seconds. Requalifying all producers after narrowing the shared
+context input took 73.9 seconds and resolved to the existing semantic and
+aggregate paths. Project-specific binary-cache realization lookups can dominate
+a cold development run when an endpoint is unavailable; the measured cold
+qualification therefore used `--option substituters ''`, while release builds
+may use the configured caches.
+
+Final Nix assembly now emits an immutable reference view instead of copying the
+legacy 936 MiB tree. Every referenced file must resolve to a regular file under
+`/nix/store`, and its bytes are checked against the unchanged analysis
+manifest. Mutable, relative, missing, or non-store symlinks fail closed. The
+GNU hello output is 156 KiB physically, retains a 1.14 GB Nix closure through
+34 explicit references, and an assembly-only remote rebuild plus exact
+7,430-region comparison takes about 10.2 seconds. Local non-Nix assembly still
+uses regular files. `materialize_relational_analysis_view` provides the
+explicit portable-export boundary and proof preparation currently uses it for
+compatibility. A later preparation refinement can consume the validated view
+directly and avoid that final materialization as well.
+
+Floating content-addressed Nix derivations implement early cutoff for the
+fine-grained register-dataflow DAG. Each pack is one multi-output CA derivation:
+
+- `out` contains only status and canonical output relations consumed by
+  descendants;
+- `solution` contains the full canonical region solution consumed by final
+  aggregation;
+- `audit` contains command transcripts and diagnostics and retains explicit
+  links to the semantic outputs for inspection.
+
+The outputs are addressed independently. Audit or producer changes may alter
+`audit` while `out` and `solution` resolve to their existing semantic paths, at
+which point Nix prunes all potential descendants and the final aggregate. The
+aggregate consumes every `solution` output and checks predecessor bindings
+against the semantic digests. Its own `out` contains only canonical aggregate
+JSON and has no Nix references; its separate `audit` output retains the plan,
+summaries, solutions, and command transcript. These summaries and solutions
+remain untrusted proposal data and cannot authorize Stage A acceptance without
+Lean replay.
+
+`nix/stage-a-ca-derivation-smoke.nix` exercises the same contract independently
+of the production graph. In a disposable user-owned Nix store under Nix 2.34.7,
+two producer derivations with different provenance emitted identical semantic
+summary bytes. Nix rebuilt the second producer, resolved the same floating
+content address, and reused the existing consumer store path without rebuilding
+the consumer. This proves the required early-cutoff behavior locally. The
+consumer was then copied to a local file binary cache; a clean disposable store
+rebuilt only a third producer revision, resolved the same semantic address, and
+substituted the unchanged consumer from that cache. The system daemon and
+`acacia` now enable `ca-derivations`. A production remote qualification under
+Nix 2.34.8 rebuilt two distinct producer revisions on `acacia`; both resolved
+to the same semantic output, and the second build reused the existing consumer
+without rebuilding it. `banksia` does not currently advertise
+`ca-derivations`, so CA pack nodes are scheduled on `acacia` while ordinary
+proof nodes remain eligible for both hosts. `nix/stage-a-builders` retains the
+10-job memory-safe Lean profile. `nix/stage-a-lightweight-ca-builders` exposes
+24 one-core slots for the low-memory register workers. Worker derivations
+prefer remote execution and the lightweight aggregate prefers local execution;
+`--max-jobs 0` remains available when a run must prohibit all local work.
+Qualification through the production binary cache remains outstanding.
+
+Introducing the three-output pack contract required one graph-wide production
+qualification because every pack recipe changed. Rebuilding 237 packs plus the
+aggregate on `acacia` took 26 minutes 48 seconds. Every semantic output resolved
+to its prior content address: the aggregate retained digest
+`eaca819d50e6da1ed04cbb2f7357419853192b5fe9d8c690e03159045a2731d8`,
+contains 7,430 region solutions, and has zero Nix references. A subsequent
+register-graph build took 1.39 seconds and downstream composition took 1.43
+seconds without executing their prospective derivations. The cold time is the
+cost of globally changing a producer recipe, not the expected cost of changing
+one candidate slice; ordinary semantic changes invalidate only affected packs
+and their descendants.
+
+Invariant synthesis no longer owns the shared decoded-exit normalizer.
+`analyses/semantic_control.py` contains that stable helper, while region facts,
+proposal discovery, register-problem compilation, and register replay omit
+`analyses/invariants.py` from their source closures. The source-boundary check
+asserts those exclusions and exercises each packaged entrypoint. Qualifying
+this source-inventory change on GNU hello took 298.7 seconds: region facts and
+proposal discovery ran once, Nix listed the 237 potential pack derivations but
+built none of them, and the aggregate resolved to the existing store path and
+semantic digest above. The immediately repeated remote-only register plus
+composition build took 0.171 seconds and reused the existing composition
+output. Future invariant-synthesis edits therefore begin at semantic products
+and composition instead of restarting extraction and register propagation.
+
+The relational test graph still has coarser invalidation boundaries than the
+production analysis graph. Each per-method test derivation currently embeds
+its complete source test module, so editing one method invalidates every shard
+from that module. Every shard also consumes the monolithic Python package, so a
+change confined to one analysis phase invalidates unrelated decoder, emulator,
+and acceptance tests. The next test-graph optimization is a content-addressed
+per-method source-extraction layer followed by phase-specific Python package
+closures. That work affects iteration cost only; it must not remove any test
+from the aggregate release gate.
+
+Diagnostics must resolve the current flake derivation before requesting a
+companion output. A reverse `nix-store -q --deriver` lookup from an unchanged CA
+semantic output may name an older producer whose `audit` output predates the
+current output schema. The current aggregate audit contains all 237 summaries
+and 237 full solutions, while the semantic aggregate remains reference-free.

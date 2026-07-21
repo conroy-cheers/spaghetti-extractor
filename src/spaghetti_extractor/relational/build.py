@@ -48,16 +48,151 @@ def _relational_nix_build_command(
     expression: str,
     builders_file: Path | None,
 ) -> list[str]:
-    command = [
-        "nix", "build", "--no-link", "--json", "--impure", "--expr", expression,
-    ]
+    command = ["nix", "build"]
     if builders_file is not None:
-        command[2:2] = [
+        command.extend([
             "--max-jobs", "0", "--cores", "2",
             "--builders", f"@{builders_file}",
-        ]
-        command[10:10] = ["--option", "builders-use-substitutes", "true"]
+        ])
+    command.extend(["--no-link", "--json"])
+    if builders_file is not None:
+        command.extend(["--option", "builders-use-substitutes", "true"])
+    command.extend(["--impure", "--expr", expression])
     return command
+
+
+def _relational_nix_realize_command(
+    flake_ref: str,
+    builders_file: Path | None,
+) -> list[str]:
+    command = ["nix", "build"]
+    if builders_file is not None:
+        command.extend([
+            "--max-jobs", "0", "--cores", "2",
+            "--builders", f"@{builders_file}",
+        ])
+    command.extend(["--no-link", "--json"])
+    if builders_file is not None:
+        command.extend(["--option", "builders-use-substitutes", "true"])
+    command.append(flake_ref)
+    return command
+
+
+def _nix_single_output_path(stdout: str, *, operation: str) -> Path:
+    try:
+        build_outputs = json.loads(stdout)
+        output_paths = [
+            Path(path)
+            for build in build_outputs
+            for path in build["outputs"].values()
+        ]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise StageAInputError(f"Nix returned malformed {operation} provenance") from exc
+    if len(build_outputs) != 1 or len(output_paths) != 1:
+        raise StageAInputError(
+            f"Nix {operation} must produce exactly one derivation output"
+        )
+    return output_paths[0]
+
+
+def stage_a_build_relational_from_nix(
+    *,
+    prepared_nix_ref: str,
+    prepared_subpath: Path,
+    out: Path,
+    executor: str = "nix",
+    flake: Path | None = None,
+    builders_file: Path | None = None,
+    target_node: str | None = None,
+    target_nodes: list[str] | None = None,
+) -> dict[str, Any]:
+    """Realize a prepared proof first, then build its dynamic Lean graph.
+
+    Content-addressed derivation outputs cannot be inspected with IFD during the
+    same pure flake evaluation.  This explicit orchestration boundary preserves
+    Nix caching for both phases while giving the graph evaluator a realized,
+    concrete store path.
+    """
+
+    if executor != "nix":
+        raise StageAInputError(f"unsupported relational proof executor {executor!r}")
+    if not isinstance(prepared_nix_ref, str) or not prepared_nix_ref.strip():
+        raise StageAInputError("prepared Nix reference must be a non-empty string")
+    relative = Path(prepared_subpath)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise StageAInputError("prepared Nix subpath must remain inside its output")
+
+    out = Path(out).resolve()
+    flake_root = _find_relational_flake_root(flake)
+    builders_path: Path | None = None
+    if builders_file is not None:
+        builders_path = Path(builders_file).resolve()
+        if not builders_path.is_file():
+            raise StageAInputError(f"Nix builders file does not exist: {builders_path}")
+    command = _relational_nix_realize_command(prepared_nix_ref, builders_path)
+    started = time.monotonic()
+    process = subprocess.run(
+        command,
+        cwd=flake_root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    realization_elapsed = round(time.monotonic() - started, 3)
+    if process.returncode != 0:
+        _remove_relational_build_output(out)
+        out.mkdir(parents=True)
+        (out / "prepared-nix.stdout").write_text(process.stdout, encoding="utf-8")
+        (out / "prepared-nix.stderr").write_text(process.stderr, encoding="utf-8")
+        failure = {
+            "format": "stage-a-prepared-nix-realization-v1",
+            "status": "incomplete",
+            "prepared_nix_ref": prepared_nix_ref,
+            "prepared_subpath": relative.as_posix(),
+            "returncode": process.returncode,
+            "elapsed_seconds": realization_elapsed,
+        }
+        write_json(out / "prepared-nix-realization.json", failure)
+        raise StageAInputError(
+            "Nix prepared-proof realization failed; complete logs are in "
+            f"{out / 'prepared-nix.stderr'}:\n"
+            + process.stderr[-8000:]
+        )
+
+    result_path = _nix_single_output_path(
+        process.stdout, operation="prepared-proof realization"
+    ).resolve()
+    prepared = (result_path / relative).resolve()
+    if prepared != result_path and result_path not in prepared.parents:
+        raise StageAInputError("prepared Nix subpath resolves outside its output")
+    if not prepared.is_dir():
+        raise StageAInputError(
+            f"prepared Nix subpath does not exist as a directory: {prepared}"
+        )
+
+    result = stage_a_build_relational(
+        prepared=prepared,
+        out=out,
+        executor=executor,
+        flake=flake_root,
+        builders_file=builders_path,
+        target_node=target_node,
+        target_nodes=target_nodes,
+    )
+    realization = {
+        "format": "stage-a-prepared-nix-realization-v1",
+        "status": "realized",
+        "prepared_nix_ref": prepared_nix_ref,
+        "prepared_subpath": relative.as_posix(),
+        "result_path": str(result_path),
+        "prepared_path": str(prepared),
+        "builders_file": str(builders_path) if builders_path is not None else None,
+        "local_derivation_builds": builders_path is None,
+        "elapsed_seconds": realization_elapsed,
+    }
+    write_json(out / "prepared-nix-realization.json", realization)
+    return {**result, "prepared_realization": realization}
 
 
 def _relational_node_closure(
@@ -108,9 +243,12 @@ def _relational_raw_build_nodes(reachable: set[str]) -> list[dict[str, Any]]:
         1,
         int(
             os.environ.get(
-                # Match the generated static-tree leaf width by default.
+                # These proofs reduce a full PE-backed mapping context and can
+                # take minutes apiece. Keep each one as its own CA derivation so
+                # cancellation or a later sibling failure cannot discard
+                # already-completed kernel work.
                 "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_STATIC_CODE_MAP_NIX_PACK_MODULES",
-                "16",
+                "1",
             )
         ),
     )
@@ -355,11 +493,16 @@ def stage_a_build_relational(
             directory.chmod(directory.stat().st_mode | 0o700)
         return result
     result_path = result_paths[0]
+    final_node = graph.get("final_node")
+    if not isinstance(final_node, str) or not final_node:
+        raise StageAInputError("relational graph omits its final node")
+    acceptance_node_ids = _relational_node_closure(graph, [final_node])
+    acceptance_dependency_ids = acceptance_node_ids - {final_node}
     audit = _read_json(result_path / "audit.json")
     dependency_pack = _read_json(result_path / "dependency-pack.json")
     if (
         dependency_pack.get("format") != "stage-a-lean-root-dependency-pack-v1"
-        or dependency_pack.get("node_count") != len(graph["nodes"]) - 1
+        or dependency_pack.get("node_count") != len(acceptance_dependency_ids)
         or not isinstance(dependency_pack.get("archive_bytes"), int)
         or dependency_pack["archive_bytes"] <= 0
         or not isinstance(dependency_pack.get("archive_sha256"), str)
@@ -374,7 +517,11 @@ def stage_a_build_relational(
         or not all(isinstance(node, dict) for node in node_provenance)
     ):
         raise StageAInputError("Nix relational graph omitted node content provenance")
-    expected_nodes = {node["id"]: node for node in graph["nodes"]}
+    expected_nodes = {
+        node["id"]: node
+        for node in graph["nodes"]
+        if node["id"] in acceptance_node_ids
+    }
     observed_nodes = {node.get("id"): node for node in node_provenance}
     if set(observed_nodes) != set(expected_nodes) or len(observed_nodes) != len(node_provenance):
         raise StageAInputError("Nix relational node provenance does not match the prepared graph")
@@ -461,9 +608,23 @@ def stage_a_build_relational(
     shutil.copyfile(result_path / "lean.stderr", out / "lean.stderr")
     shutil.copyfile(result_path / "dependency-pack.json", out / "dependency-pack.json")
     write_json(out / "relational-proof-ir.json", proof_ir)
+    analysis_manifest = _read_json(out / "relational-analysis-manifest.json")
+    proof_ir_sha256 = sha256_file(out / "relational-proof-ir.json")
+    proof_ir_rows = [
+        row
+        for row in analysis_manifest.get("files", [])
+        if isinstance(row, dict) and row.get("path") == "relational-proof-ir.json"
+    ]
+    if len(proof_ir_rows) != 1:
+        raise StageAInputError(
+            "relational analysis manifest does not bind exactly one proof IR"
+        )
+    proof_ir_rows[0]["sha256"] = proof_ir_sha256
+    write_json(out / "relational-analysis-manifest.json", analysis_manifest)
     report_manifest = _read_json(out / "prepared-proof.json")
-    report_manifest["proof_ir_sha256"] = sha256_file(
-        out / "relational-proof-ir.json"
+    report_manifest["proof_ir_sha256"] = proof_ir_sha256
+    report_manifest["analysis_manifest_sha256"] = sha256_file(
+        out / "relational-analysis-manifest.json"
     )
     write_json(out / "prepared-proof.json", report_manifest)
     provenance = {
@@ -549,6 +710,41 @@ def _finalize_proof_ir(
         **evidence,
         "kind": "lean_checked_inductive_invariant_family",
     }
+    certificate_projection_by_kind = {
+        "direct_call_push": (
+            "lean_checked_reachable_running_node_refinement",
+            ("WholeProgramCertificate.runningProductNodesRefined",),
+        ),
+        "return_slot_affine_transfer": (
+            "lean_checked_reachable_running_node_refinement",
+            ("WholeProgramCertificate.runningProductNodesRefined",),
+        ),
+        "return_slot_return_affine_transfer": (
+            "lean_checked_reachable_running_node_refinement",
+            ("WholeProgramCertificate.runningProductNodesRefined",),
+        ),
+        "machine_import_call_boundary": (
+            "lean_checked_external_running_node_refinement",
+            (
+                "WholeProgramCertificate.runningProductNodesRefined",
+                "WholeProgramCertificate.environmentsRefined",
+            ),
+        ),
+        "external_jump_control_refinement": (
+            "lean_checked_external_running_node_refinement",
+            (
+                "WholeProgramCertificate.runningProductNodesRefined",
+                "WholeProgramCertificate.environmentsRefined",
+            ),
+        ),
+        "memory_transition_preservation": (
+            "lean_checked_reachable_execution_memory_refinement",
+            (
+                "WholeProgramCertificate.reachableExecutionEdgesRefined",
+                "WholeProgramCertificate.runningProductNodesRefined",
+            ),
+        ),
+    }
     finalized_obligations = []
     for obligation in proof_ir["obligations"]:
         if obligation["kind"] == "relational_region_equivalence":
@@ -620,6 +816,23 @@ def _finalize_proof_ir(
             })
         elif (
             acceptance_theorem_checked
+            and obligation["kind"] in certificate_projection_by_kind
+        ):
+            evidence_kind, certificate_fields = certificate_projection_by_kind[
+                obligation["kind"]
+            ]
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "blocker": None,
+                "evidence": {
+                    **evidence,
+                    "kind": evidence_kind,
+                    "certificate_fields": list(certificate_fields),
+                },
+            })
+        elif (
+            acceptance_theorem_checked
             and obligation["kind"] == "iat_memory_relation_override"
         ):
             finalized_obligations.append({
@@ -629,24 +842,6 @@ def _finalize_proof_ir(
                     **evidence,
                     "kind": "lean_checked_iat_masked_memory_relation",
                     "lemma": "StageA.Relational.StateRel.ordinaryMemoryRelation",
-                },
-            })
-        elif (
-            acceptance_theorem_checked
-            and obligation["kind"] == "memory_transition_preservation"
-            and obligation.get("analysis", {}).get("status")
-                == "candidate_requires_lean_replay"
-        ):
-            finalized_obligations.append({
-                **obligation,
-                "status": "proved",
-                "evidence": {
-                    **evidence,
-                    "kind": "lean_checked_exact_memory_pullback_transition",
-                    "lemma": (
-                        "StageA.Relational.InvariantWP."
-                        "memoryObservationTransitionClosed_of_exact_pullback_pairs"
-                    ),
                 },
             })
         elif (
@@ -665,6 +860,56 @@ def _finalize_proof_ir(
                     "theorem": (
                         "StageA.GeneratedRelational."
                         f"externalCallEdge{edge_id}ProductRefinementChecked"
+                    ),
+                },
+            })
+        elif (
+            acceptance_theorem_checked
+            and obligation["kind"] == "paired_stack_range_world"
+        ):
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "blocker": None,
+                "evidence": {
+                    **evidence,
+                    "kind": "lean_checked_launch_realizability",
+                    "certificate_field": "WholeProgramCertificate.launchRealizable",
+                },
+            })
+        elif (
+            acceptance_theorem_checked
+            and obligation["kind"] in {
+                "return_pop",
+                "return_slot_runtime_frame",
+                "stack_window_reachability",
+            }
+        ):
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "blocker": None,
+                "evidence": {
+                    **evidence,
+                    "kind": "lean_checked_reachable_running_node_refinement",
+                    "certificate_field": (
+                        "WholeProgramCertificate.runningProductNodesRefined"
+                    ),
+                },
+            })
+        elif (
+            acceptance_theorem_checked
+            and obligation["kind"] == "relational_segment_refinement"
+        ):
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "blocker": None,
+                "evidence": {
+                    **evidence,
+                    "kind": "lean_checked_reachable_execution_edge_refinement",
+                    "certificate_field": (
+                        "WholeProgramCertificate.reachableExecutionEdgesRefined"
                     ),
                 },
             })
@@ -909,7 +1154,18 @@ def _check_nix_relational_report(
                     for module in RELATIONAL_KERNEL_MODULES
                 ),
             })
-            expected_nodes = {node["id"]: node for node in graph["nodes"]}
+            final_node = graph.get("final_node")
+            acceptance_node_ids = (
+                _relational_node_closure(graph, [final_node])
+                if isinstance(final_node, str) and final_node
+                else set()
+            )
+            acceptance_dependency_ids = acceptance_node_ids - {final_node}
+            expected_nodes = {
+                node["id"]: node
+                for node in graph["nodes"]
+                if node["id"] in acceptance_node_ids
+            }
             observed_rows = provenance.get("nodes")
             observed_nodes = {
                 row.get("id"): row
@@ -936,7 +1192,8 @@ def _check_nix_relational_report(
                 dependency_pack.get("format")
                     == "stage-a-lean-root-dependency-pack-v1"
                 and provenance.get("dependency_pack") == dependency_pack
-                and dependency_pack.get("node_count") == len(graph["nodes"]) - 1
+                and dependency_pack.get("node_count")
+                    == len(acceptance_dependency_ids)
             )
             checks["declared_build_checks_hold"] = all(
                 value is True for value in verdict.get("checks", {}).values()
@@ -1017,6 +1274,21 @@ def _write_relational_module_graph(
     if "RelationalLaunchRealizabilityCertificate" in sources:
         visit("RelationalLaunchRealizabilityCertificate")
         auxiliary_modules.append("RelationalLaunchRealizabilityCertificate")
+    if "RelationalAffineLinkedControl" in sources:
+        visit("RelationalAffineLinkedControl")
+        auxiliary_modules.append("RelationalAffineLinkedControl")
+    if "RelationalAffineLinkedControlBindings" in sources:
+        visit("RelationalAffineLinkedControlBindings")
+        auxiliary_modules.append("RelationalAffineLinkedControlBindings")
+    if "RelationalAffineLinkedCallBindings" in sources:
+        visit("RelationalAffineLinkedCallBindings")
+        auxiliary_modules.append("RelationalAffineLinkedCallBindings")
+    if "RelationalAffineLinkedExternalCallBindings" in sources:
+        visit("RelationalAffineLinkedExternalCallBindings")
+        auxiliary_modules.append("RelationalAffineLinkedExternalCallBindings")
+    if "RelationalAffineLinkedMemoryBindings" in sources:
+        visit("RelationalAffineLinkedMemoryBindings")
+        auxiliary_modules.append("RelationalAffineLinkedMemoryBindings")
     logical_modules = {
         module: {
             "source": f"lean/StageA/{module}.lean",
@@ -1049,6 +1321,12 @@ def _write_relational_module_graph(
             # intra-process parallelism at one while allowing Nix to schedule
             # the bounded leaves independently across builders.
             return "high-memory", max(4096, source_bytes // 1024 * 3)
+        if any(
+            module.startswith("RelationalAffineLinkedControl")
+            or module.startswith("RelationalAffineLinkedMemory")
+            for module in modules
+        ):
+            return "high-memory", max(6144, source_bytes // 1024 * 3)
         if any(
             module in (
                 "RelationalProofOriginalCoverageData",
@@ -1366,6 +1644,9 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
             prepared / "relational-static-word-relations.json"
         ),
         "register_relations_sha256": prepared / "relational-register-relations.json",
+        "runtime_frame_affine_sha256": (
+            prepared / "relational-runtime-frame-affine-viability.json"
+        ),
         "stack_windows_sha256": prepared / "relational-stack-windows.json",
         "segment_diagnostics_sha256": (
             prepared / "relational-segment-diagnostics.json"

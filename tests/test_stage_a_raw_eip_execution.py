@@ -49,18 +49,18 @@ set_option maxHeartbeats 0
 def fixtureBytes : Bytes := {list(image)}
 
 def checkedMap : StaticCodeMap := {{
-  entries := #[{{
+  entries := .leaf [{{
     id := 0
     originalRva := 0x1000
     candidateRva := 0x1000
     originalAliases := [{{ rva := 0x1002, paddingIndex := 0 }}]
     candidateAliases := [{{ rva := 0x1002, paddingIndex := 0 }}]
   }}]
-  originalAddresses := #[
+  originalAddresses := .leaf [
     {{ targetId := 0, kind := .canonical }},
     {{ targetId := 0, kind := .alias 0 }}
   ]
-  candidateAddresses := #[
+  candidateAddresses := .leaf [
     {{ targetId := 0, kind := .canonical }},
     {{ targetId := 0, kind := .alias 0 }}
   ]
@@ -82,15 +82,15 @@ def checkedExecutableButUnmapped : Bool :=
 example : checkedExecutableButUnmapped = true := by native_decide
 
 def ambiguousMap : StaticCodeMap := {{
-  entries := #[
+  entries := .leaf [
     {{ id := 0, originalRva := 0x1000, candidateRva := 0x1000 }},
     {{ id := 1, originalRva := 0x1000, candidateRva := 0x1000 }}
   ]
-  originalAddresses := #[
+  originalAddresses := .leaf [
     {{ targetId := 0, kind := .canonical }},
     {{ targetId := 1, kind := .canonical }}
   ]
-  candidateAddresses := #[
+  candidateAddresses := .leaf [
     {{ targetId := 0, kind := .canonical }},
     {{ targetId := 1, kind := .canonical }}
   ]

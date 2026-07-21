@@ -473,6 +473,7 @@ class StageABoundedTableCallGenerationTests(unittest.TestCase):
             graph["evidence"]["reachable_decoded_control_frontier_node_ids"], []
         )
         self.assertIn("ImmutableCodePointerTableRow", decoded_source)
+        self.assertIn("import StageA.RelationalStaticContext\n", decoded_source)
         self.assertIn("BoundedImmutableCodePointerTableCallClaim", decoded_source)
         self.assertIn("BoundedImmutableCodePointerTableCallTargetsClosed", decoded_source)
         self.assertIn(
@@ -615,7 +616,7 @@ class StageABoundedTableCallGenerationTests(unittest.TestCase):
             [{"source_node_id": 0, "candidate_index": 0, "edge_ids": []}],
         )
 
-    def test_reverse_sentinel_source_bound_is_requested_before_register_synthesis(
+    def test_reverse_sentinel_empty_source_is_uninhabited_before_register_synthesis(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -634,15 +635,11 @@ class StageABoundedTableCallGenerationTests(unittest.TestCase):
             )
 
         self.assertEqual(contract["regions"][0]["bounds"], [])
-        self.assertEqual(refined["regions"][0]["bounds"], [{
-            "original": "eax",
-            "candidate": "eax",
-            "original_expression": self._register_arithmetic("sub", "eax", 1),
-            "candidate_expression": self._register_arithmetic("sub", "eax", 1),
-            "unsigned_lt": 0,
-            "expression_source": (
-                "generated_reverse_sentinel_table_source_invariant_request"
-            ),
+        self.assertEqual(refined["regions"][0]["bounds"], [])
+        self.assertEqual(refined["regions"][0]["state_predicates"], [{
+            "original": {"op": "bool_constant", "value": False},
+            "candidate": {"op": "bool_constant", "value": False},
+            "source": "generated_uninhabited_control_state",
         }])
         self.assertEqual(analysis["status"], "candidate_requires_lean_replay")
         self.assertEqual(analysis["incomplete"], [])
