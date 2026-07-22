@@ -1001,6 +1001,103 @@ def _lean_direct_call_prepared_writes_claim(claim: dict[str, Any]) -> str:
         + " }"
     )
 
+
+def _lean_direct_call_prepared_exact_word_seed_claim(
+    seed: dict[str, Any],
+) -> str:
+    before = ", ".join(
+        _lean_paired_prepared_word_write_item(item)
+        for item in seed.get("before", [])
+    )
+    after = ", ".join(
+        _lean_paired_prepared_word_write_item(item)
+        for item in seed.get("after", [])
+    )
+    original_after = ", ".join(
+        _lean_register_offset_witness(item)
+        for item in seed.get("original_after_addresses", [])
+    )
+    candidate_after = ", ".join(
+        _lean_register_offset_witness(item)
+        for item in seed.get("candidate_after_addresses", [])
+    )
+    exact_word = seed["exact_word"]
+    return (
+        "{ before := [" + before + "]"
+        + ", selected := "
+        + _lean_paired_prepared_word_write_item(seed["selected"])
+        + ", after := [" + after + "]"
+        + ", originalSelectedAddress := "
+        + _lean_register_offset_witness(seed["original_selected_address"])
+        + ", candidateSelectedAddress := "
+        + _lean_register_offset_witness(seed["candidate_selected_address"])
+        + ", originalAfterAddresses := [" + original_after + "]"
+        + ", candidateAfterAddresses := [" + candidate_after + "]"
+        + ", exactWord := { originalOffset := "
+        + str(int(exact_word["original_offset"]))
+        + ", candidateOffset := "
+        + str(int(exact_word["candidate_offset"]))
+        + " } }"
+    )
+
+
+def _lean_frame_exact_expr_witness(witness: dict[str, Any]) -> str:
+    kind = str(witness["kind"])
+    if kind == "constant":
+        return f"FrameExactExprWitness.constant {int(witness['value'])}"
+    if kind == "exact_word_read32":
+        word = witness["word"]
+        return (
+            "FrameExactExprWitness.exactWordRead32 "
+            + _lean_return_slot_offset_pair(witness["location"])
+            + " { originalOffset := " + str(int(word["original"]))
+            + ", candidateOffset := " + str(int(word["candidate"])) + " } "
+            + f"({_lean_register_offset_witness(witness['original_address'])}) "
+            + f"({_lean_register_offset_witness(witness['candidate_address'])})"
+        )
+    if kind == "binary":
+        operation = {
+            "add": "add",
+            "sub": "sub",
+            "bit_and": "bitAnd",
+            "bit_xor": "bitXor",
+            "shift_left_by": "shiftLeftBy",
+            "shift_right_by": "shiftRightBy",
+            "shift_arithmetic_right_by": "shiftArithmeticRightBy",
+            "bit_or": "bitOr",
+            "unsigned_less_value": "unsignedLessValue",
+            "multiply": "multiply",
+            "multiply_high_unsigned": "multiplyHighUnsigned",
+            "multiply_high_signed": "multiplyHighSigned",
+        }.get(str(witness["operation"]))
+        if operation is None:
+            raise StageAInputError(
+                f"unsupported frame-exact binary witness {witness!r}"
+            )
+        return (
+            f"FrameExactExprWitness.binary .{operation} "
+            f"({_lean_frame_exact_expr_witness(witness['left'])}) "
+            f"({_lean_frame_exact_expr_witness(witness['right'])})"
+        )
+    raise StageAInputError(f"unsupported frame-exact expression witness {witness!r}")
+
+
+def _lean_frame_exact_stack_word_writes_claim(claim: dict[str, Any]) -> str:
+    writes = []
+    for item in claim["writes"]:
+        value = item["value"]
+        writes.append(
+            "{ window := " + _lean_stack_window(item["window"])
+            + ", amount := " + str(int(item["amount"]))
+            + ", value := { original := "
+            + _lean_semantic_expr(value["original"])
+            + ", candidate := " + _lean_semantic_expr(value["candidate"])
+            + ", witness := "
+            + _lean_frame_exact_expr_witness(value["witness"])
+            + " } }"
+        )
+    return "{ writes := [" + ", ".join(writes) + "] }"
+
 def _lean_state_invariant(invariant: dict[str, Any]) -> str:
     register_relations = ", ".join(
         _lean_register_relation_pair(pair)
@@ -1287,6 +1384,15 @@ def _lean_register_output_claim(claim: dict[str, Any]) -> str:
             "InvariantWP.RegisterOutputClaim.stackWindowIdentity { output := "
             + _lean_register_relation_pair(claim["output"])
             + ", window := " + _lean_stack_window(claim["window"])
+            + " }"
+        )
+    if kind == "stack_window_affine":
+        return (
+            "InvariantWP.RegisterOutputClaim.stackWindowAffine { output := "
+            + _lean_register_relation_pair(claim["output"])
+            + ", source := " + _lean_stack_window(claim["source"])
+            + ", target := " + _lean_stack_window(claim["target"])
+            + ", adjustment := " + _lean_stack_adjustment(claim["adjustment"])
             + " }"
         )
     raise StageAInputError(f"unsupported register output claim {kind!r}")

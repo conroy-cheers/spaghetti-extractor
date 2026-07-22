@@ -9,7 +9,7 @@ from ...util import sha256_bytes
 from ..contract import _raw_base_relocations
 from ..extraction import _assembled_u32_after_register_writes
 from ..model import _semantic_constant_bool
-from ..schema import RELATIONAL_ACCEPTANCE_THEOREM, integer as _integer
+from ..schema import integer as _integer
 from .external import (
     _select_machine_import_call_contract,
     _semantic_external_target_identity,
@@ -86,6 +86,9 @@ def _relational_product_graph(
             "source_target_id": int(node_targets[source]["id"]),
             "target_target_id": int(node_targets[target]["id"]),
             "kind": kind,
+            "candidate_kind": kind_names.get(
+                str(relation_edge.get("candidate_kind", relation_edge.get("kind")))
+            ),
             "original_guard": relation_edge["original_guard"],
             "candidate_guard": relation_edge["candidate_guard"],
             "infeasible": (
@@ -660,17 +663,34 @@ def _relational_product_graph(
         ]
         candidate_graph_decoded = [
             {
-                "kind": edges[edge_id]["kind"],
+                "kind": edges[edge_id].get(
+                    "candidate_kind", edges[edge_id]["kind"]
+                ),
                 "target_target_id": edges[edge_id]["target_target_id"],
                 "guard": edges[edge_id]["candidate_guard"],
             }
             for edge_id in node["outgoing_edge_ids"]
         ]
+
+        def canonical_edges(
+            values: list[dict[str, Any]],
+        ) -> list[dict[str, Any]]:
+            return sorted(
+                values,
+                key=lambda value: (
+                    str(value["kind"]),
+                    int(value["target_target_id"]),
+                    json.dumps(value["guard"], sort_keys=True),
+                ),
+            )
+
         if (
             original_decoded is not None
             and candidate_decoded is not None
-            and original_graph_decoded == original_decoded
-            and candidate_graph_decoded == candidate_decoded
+            and canonical_edges(original_graph_decoded)
+                == canonical_edges(original_decoded)
+            and canonical_edges(candidate_graph_decoded)
+                == canonical_edges(candidate_decoded)
         ):
             decoded_candidate = {
                 "node_id": node_id,
@@ -2051,16 +2071,17 @@ def _composition_progress(
                     "affine-dispatched ordinary edge"
                 ),
             })
-        next_work.append({
-            "category": "affine_linked_acceptance_composition",
-            "count": len(
-                affine_progress["rooted_unbound_call_transition_ids"]
-            ),
-            "example_ids": affine_progress[
-                "rooted_unbound_call_transition_ids"
-            ][:10],
-            "next_action": affine_progress["next_action"],
-        })
+        if affine_progress["rooted_unbound_call_transition_ids"]:
+            next_work.append({
+                "category": "affine_linked_acceptance_composition",
+                "count": len(
+                    affine_progress["rooted_unbound_call_transition_ids"]
+                ),
+                "example_ids": affine_progress[
+                    "rooted_unbound_call_transition_ids"
+                ][:10],
+                "next_action": affine_progress["next_action"],
+            })
     if unresolved_indirect_control_cuts:
         next_work.append({
             "category": "unresolved_indirect_control",
@@ -2303,7 +2324,10 @@ def _composition_progress(
         "trust": {
             "role": "diagnostic_projection_of_hashed_proof_inputs",
             "acceptance_authority": False,
-            "final_pass_requires": RELATIONAL_ACCEPTANCE_THEOREM,
+            "final_pass_requires": (
+                acceptance.get("theorem")
+                or acceptance.get("required_theorem")
+            ),
         },
     }
 
@@ -2429,10 +2453,10 @@ def _attach_product_graph_analysis(
             ),
             "next_action": (
                 "prove ProductStepRefinement for the complete rooted graph and emit "
-                f"{RELATIONAL_ACCEPTANCE_THEOREM} as a closed application of "
-                "StageA.Relational.pe32ProgramsEquivalent"
+                "a supported whole-program acceptance theorem as a closed "
+                "application of the matching StageA.Relational equivalence theorem"
             ),
-            "lean_witness": "StageA.Relational.pe32ProgramsEquivalent",
+            "lean_witness": "StageA.Relational whole-program equivalence theorem",
         },
     ]
     attached = dict(proof_ir)

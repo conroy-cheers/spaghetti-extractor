@@ -558,6 +558,7 @@ def _write_relational_product_graph_modules(
         f"targetNodeId := {edge['target_node_id']}, "
         f"sourceTargetId := {edge['source_target_id']}, "
         f"targetTargetId := {edge['target_target_id']}, kind := .{edge['kind']}, "
+        f"candidateKind := .{edge.get('candidate_kind', edge['kind'])}, "
         f"originalGuard := {_lean_semantic_bool_expr(edge['original_guard'])}, "
         f"candidateGuard := {_lean_semantic_bool_expr(edge['candidate_guard'])}, "
         f"infeasible := {_lean_bool(bool(edge['infeasible']))} }}"

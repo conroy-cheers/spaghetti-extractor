@@ -8,7 +8,7 @@
 , targetNode ? null
 , targetNodes ? []
 , targetBundle ? false
-, auditTheorem ? null
+, contentAddressed ? true
 }:
 
 let
@@ -131,13 +131,13 @@ let
         name = node.id;
         value = pkgs.runCommand
           (lib.strings.sanitizeDerivationName "stage-a-lean-${node.id}")
-          {
+          ({
             nativeBuildInputs = [ pkgs.lean4 pkgs.python3 pkgs.coreutils ];
             preferLocalBuild = false;
             allowSubstitutes = true;
-          }
+          } // lib.optionalAttrs contentAddressed { __contentAddressed = true; })
           ''
-            mkdir -p "$out/StageA" source/StageA deps/StageA
+            mkdir -p "$out/StageA" "$out/logs" source/StageA deps/StageA
             ulimit -s unlimited 2>/dev/null || true
             cat > source-hashes <<'HASHES'
             ${sourceChecks node}
@@ -187,7 +187,9 @@ let
                 lean -j ${leanJobs} \
                   -R source \
                   -o "deps/StageA/${module}.olean" \
-                  "source/StageA/${module}.lean"
+                  "source/StageA/${module}.lean" \
+                  > >(tee "$out/logs/${module}.stdout") \
+                  2> >(tee "$out/logs/${module}.stderr" >&2)
               ''
             else ''
               compile_jobs="$NIX_BUILD_CORES"
@@ -207,7 +209,9 @@ let
                   lean -j 1 \
                     -R source \
                     -o "deps/StageA/$module.olean" \
-                    "source/StageA/$module.lean"
+                    "source/StageA/$module.lean" \
+                    > >(tee "$out/logs/$module.stdout") \
+                    2> >(tee "$out/logs/$module.stderr" >&2)
                 ' _
             ''}
             ${lib.concatMapStringsSep "\n" (module: ''
@@ -217,23 +221,71 @@ let
             cat > "$out/module-result.json" <<'JSON'
             ${metadata}
             JSON
-            python3 - "$out/module-result.json" "$out/StageA" <<'PY'
+            python3 - "$out/module-result.json" "$out/StageA" "$out/logs" <<'PY'
             import hashlib
             import json
             import pathlib
+            import re
             import sys
 
             result_path = pathlib.Path(sys.argv[1])
             stage_a = pathlib.Path(sys.argv[2])
+            logs = pathlib.Path(sys.argv[3])
             payload = json.loads(result_path.read_text(encoding="utf-8"))
-            payload["outputs"] = [
-                {
-                    "module": path.stem,
+            outputs = []
+            for path in sorted(stage_a.glob("*.olean")):
+                module = path.stem
+                source = (stage_a / f"{module}.lean").read_text(encoding="utf-8")
+                stdout_path = logs / f"{module}.stdout"
+                stderr_path = logs / f"{module}.stderr"
+                combined = "\n".join((
+                    stdout_path.read_text(encoding="utf-8"),
+                    stderr_path.read_text(encoding="utf-8"),
+                ))
+                requested = re.findall(
+                    r"(?m)^\s*#print\s+axioms\s+([A-Za-z0-9_'.]+)\s*$", source
+                )
+                parsed = {}
+                for declaration, axioms in re.findall(
+                    r"'([^']+)' depends on axioms:\s*\[(.*?)\]",
+                    combined,
+                    re.DOTALL,
+                ):
+                    parsed[declaration] = sorted({
+                        item.strip()
+                        for item in axioms.replace("\n", " ").split(",")
+                        if item.strip()
+                    })
+                for declaration in re.findall(
+                    r"'([^']+)' does not depend on any axioms", combined
+                ):
+                    parsed[declaration] = []
+                matched = {
+                    request: next((
+                        axioms for declaration, axioms in parsed.items()
+                        if declaration == request or declaration.endswith(f".{request}")
+                    ), None)
+                    for request in requested
+                }
+                outputs.append({
+                    "module": module,
                     "olean_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                     "olean_bytes": path.stat().st_size,
-                }
-                for path in sorted(stage_a.glob("*.olean"))
-            ]
+                    "compile_stdout": f"logs/{module}.stdout",
+                    "compile_stderr": f"logs/{module}.stderr",
+                    "compile_stdout_sha256": hashlib.sha256(
+                        stdout_path.read_bytes()
+                    ).hexdigest(),
+                    "compile_stderr_sha256": hashlib.sha256(
+                        stderr_path.read_bytes()
+                    ).hexdigest(),
+                    "axiom_audit": {
+                        "requested": requested,
+                        "inventories": matched,
+                        "complete": all(value is not None for value in matched.values()),
+                    },
+                })
+            payload["outputs"] = outputs
             result_path.write_text(
                 json.dumps(payload, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
@@ -251,11 +303,11 @@ let
     inherit (rootNode) id modules dependencies resource_class estimated_memory_mb source_sha256;
   };
   rootDependencyPack = pkgs.runCommand "stage-a-relational-root-dependencies"
-    {
+    ({
       nativeBuildInputs = [ pkgs.python3 pkgs.gnutar pkgs.zstd pkgs.coreutils ];
       preferLocalBuild = false;
       allowSubstitutes = true;
-    }
+    } // lib.optionalAttrs contentAddressed { __contentAddressed = true; })
     ''
       mkdir -p staging/StageA staging/node-results "$out"
       : > olean-paths
@@ -306,8 +358,11 @@ let
       )
       PY
     '';
-  selectedAuditTheorem =
-    if auditTheorem != null then auditTheorem else graph.expected_final_theorem;
+  supportedAuditTheorems = [
+    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
+    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
+  ];
+  selectedAuditTheorem = graph.expected_final_theorem;
   acceptanceNodeSteps = graph.acceptance.node_steps or null;
   acceptanceNodeStepsValid = builtins.isList acceptanceNodeSteps
     && builtins.all (step:
@@ -406,9 +461,10 @@ let
   approvedAxioms = builtins.toJSON graph.approved_axioms;
   selectedTargetNodes =
     if targetNode != null then [ targetNode ] else targetNodes;
-  legacyAcceptanceReady =
+  ordinaryAcceptanceReady =
     acceptanceNodeStepsValid
     && graph.acceptance.status == "ready"
+    && graph.acceptance.required_theorem == selectedAuditTheorem
     && graph.acceptance.theorem == graph.expected_final_theorem
     && graph.expected_final_theorem
       == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent";
@@ -417,41 +473,45 @@ let
     acceptanceNodeStepsValid
     && !parameterizedProtocolEnvironment
     && graph.acceptance.status == "ready"
+    && graph.acceptance.required_theorem == selectedAuditTheorem
+    && graph.acceptance.theorem == selectedAuditTheorem
     && linkedAcceptance != null
     && linkedAcceptance.status == "ready"
     && linkedAcceptance.theorem == selectedAuditTheorem
     && selectedAuditTheorem
       == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked";
-  acceptanceReady =
-    if selectedAuditTheorem == graph.expected_final_theorem
-    then legacyAcceptanceReady
-    else linkedAcceptanceReady;
+  acceptanceReady = builtins.elem selectedAuditTheorem supportedAuditTheorems
+    && (if selectedAuditTheorem
+          == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
+        then ordinaryAcceptanceReady
+        else linkedAcceptanceReady);
   selectedNodeResults = map (node:
     let source = nodeDrvs.${node};
     in pkgs.runCommand
       (lib.strings.sanitizeDerivationName "stage-a-lean-${node}-detached")
-      {
+      ({
         nativeBuildInputs = [ pkgs.coreutils ];
         preferLocalBuild = false;
         allowSubstitutes = true;
-      }
+      } // lib.optionalAttrs contentAddressed { __contentAddressed = true; })
       ''
-        mkdir -p "$out/StageA"
+        mkdir -p "$out/StageA" "$out/logs"
         cp -L "${source}"/StageA/*.lean "$out/StageA/"
         cp -L "${source}"/StageA/*.olean "$out/StageA/"
+        cp -L "${source}"/logs/* "$out/logs/"
         cp "${source}/module-result.json" "$out/module-result.json"
       ''
   ) selectedTargetNodes;
   selectedTargetPaths = map (node: nodeDrvs.${node}) selectedTargetNodes;
   selectedTargetArgs = lib.escapeShellArgs (map toString selectedTargetPaths);
   selectedTargetBundle = pkgs.runCommand "stage-a-lean-target-bundle"
-    {
+    ({
       nativeBuildInputs = [ pkgs.lean4 pkgs.python3 pkgs.coreutils ];
       preferLocalBuild = false;
       allowSubstitutes = true;
-    }
+    } // lib.optionalAttrs contentAddressed { __contentAddressed = true; })
     ''
-      mkdir -p "$out/StageA" "$out/node-results"
+      mkdir -p "$out/StageA" "$out/logs" "$out/node-results"
       node_index=0
       for source in ${selectedTargetArgs}; do
         for source_file in "$source"/StageA/*.lean "$source"/StageA/*.olean; do
@@ -461,6 +521,14 @@ let
             exit 1
           fi
           cp -L "$source_file" "$destination"
+        done
+        for log_file in "$source"/logs/*; do
+          destination="$out/logs/$(basename "$log_file")"
+          if [ -e "$destination" ] && ! cmp -s "$destination" "$log_file"; then
+            echo "conflicting target-bundle log: $(basename "$log_file")" >&2
+            exit 1
+          fi
+          cp -L "$log_file" "$destination"
         done
         result_name="$(printf '%06d.json' "$node_index")"
         cp "$source/module-result.json" "$out/node-results/$result_name"
@@ -512,13 +580,13 @@ if selectedTargetNodes != [] then
   if targetBundle then selectedTargetBundle else selectedNodeResults
 else
 pkgs.runCommand "stage-a-relational-proof-audit"
-  {
+  ({
     nativeBuildInputs = [ pkgs.lean4 pkgs.python3 pkgs.gnutar pkgs.zstd pkgs.coreutils ];
     preferLocalBuild = false;
     allowSubstitutes = true;
-  }
+  } // lib.optionalAttrs contentAddressed { __contentAddressed = true; })
   ''
-    mkdir -p "$out" deps source/StageA
+    mkdir -p "$out" "$out/logs" deps source/StageA
     ulimit -s unlimited 2>/dev/null || true
     tar --zstd -xf ${rootDependencyPack}/dependencies.tar.zst -C deps
     export LEAN_PATH="$PWD/deps"
@@ -531,31 +599,78 @@ pkgs.runCommand "stage-a-relational-proof-audit"
       lean -j 2 \
         -R source \
         -o "deps/StageA/${module}.olean" \
-        "source/StageA/${module}.lean"
+        "source/StageA/${module}.lean" \
+        > >(tee "$out/logs/${module}.stdout") \
+        2> >(tee "$out/logs/${module}.stderr" >&2)
     '') rootNode.modules}
     cat > deps/root-module-result.json <<'JSON'
     ${rootMetadata}
     JSON
-    python3 - deps/root-module-result.json deps/StageA ${lib.escapeShellArg (builtins.toJSON rootNode.modules)} <<'PY'
+    python3 - deps/root-module-result.json deps/StageA "$out/logs" source/StageA ${lib.escapeShellArg (builtins.toJSON rootNode.modules)} <<'PY'
     import hashlib
     import json
     import pathlib
+    import re
     import sys
 
     result_path = pathlib.Path(sys.argv[1])
     stage_a = pathlib.Path(sys.argv[2])
-    modules = json.loads(sys.argv[3])
+    logs = pathlib.Path(sys.argv[3])
+    sources = pathlib.Path(sys.argv[4])
+    modules = json.loads(sys.argv[5])
     payload = json.loads(result_path.read_text(encoding="utf-8"))
-    payload["outputs"] = [
-        {
-            "module": module,
-            "olean_sha256": hashlib.sha256(
-                (stage_a / f"{module}.olean").read_bytes()
-            ).hexdigest(),
-            "olean_bytes": (stage_a / f"{module}.olean").stat().st_size,
+    outputs = []
+    for module in modules:
+        olean = stage_a / f"{module}.olean"
+        stdout_path = logs / f"{module}.stdout"
+        stderr_path = logs / f"{module}.stderr"
+        source = (sources / f"{module}.lean").read_text(encoding="utf-8")
+        combined = "\n".join((
+            stdout_path.read_text(encoding="utf-8"),
+            stderr_path.read_text(encoding="utf-8"),
+        ))
+        requested = re.findall(
+            r"(?m)^\s*#print\s+axioms\s+([A-Za-z0-9_'.]+)\s*$", source
+        )
+        parsed = {}
+        for declaration, axioms in re.findall(
+            r"'([^']+)' depends on axioms:\s*\[(.*?)\]", combined, re.DOTALL
+        ):
+            parsed[declaration] = sorted({
+                item.strip()
+                for item in axioms.replace("\n", " ").split(",")
+                if item.strip()
+            })
+        for declaration in re.findall(
+            r"'([^']+)' does not depend on any axioms", combined
+        ):
+            parsed[declaration] = []
+        matched = {
+            request: next((
+                axioms for declaration, axioms in parsed.items()
+                if declaration == request or declaration.endswith(f".{request}")
+            ), None)
+            for request in requested
         }
-        for module in modules
-    ]
+        outputs.append({
+            "module": module,
+            "olean_sha256": hashlib.sha256(olean.read_bytes()).hexdigest(),
+            "olean_bytes": olean.stat().st_size,
+            "compile_stdout": f"logs/{module}.stdout",
+            "compile_stderr": f"logs/{module}.stderr",
+            "compile_stdout_sha256": hashlib.sha256(
+                stdout_path.read_bytes()
+            ).hexdigest(),
+            "compile_stderr_sha256": hashlib.sha256(
+                stderr_path.read_bytes()
+            ).hexdigest(),
+            "axiom_audit": {
+                "requested": requested,
+                "inventories": matched,
+                "complete": all(value is not None for value in matched.values()),
+            },
+        })
+    payload["outputs"] = outputs
     result_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -565,8 +680,8 @@ pkgs.runCommand "stage-a-relational-proof-audit"
     lean -j 2 --trust=0 \
       -o "$out/StageARelationalAudit.olean" \
       StageARelationalAudit.lean \
-      > "$out/lean.stdout" \
-      2> "$out/lean.stderr"
+      > >(tee "$out/lean.stdout") \
+      2> >(tee "$out/lean.stderr" >&2)
 
     EXPECTED_THEOREM=${lib.escapeShellArg selectedAuditTheorem} \
     CANONICAL_PROPOSITION_PROFILE=${lib.escapeShellArg canonicalAuditProfile} \

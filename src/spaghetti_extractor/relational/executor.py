@@ -21,7 +21,7 @@ from .lean.compiler import (
     _run_lean_relational,
     _terminate_process_group,
 )
-from .schema import RELATIONAL_ACCEPTANCE_THEOREM, RELATIONAL_APPROVED_AXIOMS
+from .schema import RELATIONAL_APPROVED_AXIOMS
 
 
 def _failed_shard_hint_path(lean_dir: Path) -> Path | None:

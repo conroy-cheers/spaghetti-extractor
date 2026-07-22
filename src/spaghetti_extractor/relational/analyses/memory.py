@@ -922,6 +922,17 @@ def _attach_static_word_relation_slots(
         for slot in updated.get("static_dynamic_pointer_slots", [])
     }
     existing = [dict(slot) for slot in updated.get("static_word_relation_slots", [])]
+    existing_original_to_candidate: dict[int, set[int]] = {}
+    existing_candidate_to_original: dict[int, set[int]] = {}
+    for slot in existing:
+        original_address = int(slot["original_address"])
+        candidate_address = int(slot["candidate_address"])
+        existing_original_to_candidate.setdefault(original_address, set()).add(
+            candidate_address
+        )
+        existing_candidate_to_original.setdefault(candidate_address, set()).add(
+            original_address
+        )
 
     def record_proposal(
         original_address: int,
@@ -1086,6 +1097,14 @@ def _attach_static_word_relation_slots(
         for key in proposals
         if len(original_to_candidate[key[0]]) != 1
         or len(candidate_to_original[key[1]]) != 1
+        or (
+            key[0] in existing_original_to_candidate
+            and key[1] not in existing_original_to_candidate[key[0]]
+        )
+        or (
+            key[1] in existing_candidate_to_original
+            and key[0] not in existing_candidate_to_original[key[1]]
+        )
     }
     for key in sorted(ambiguous):
         proposal = proposals[key]
@@ -1096,8 +1115,8 @@ def _attach_static_word_relation_slots(
             "candidate_address": key[1],
             "uses": proposal["uses"],
             "next_action": (
-                "provide an explicit one-to-one static word mapping or repair "
-                "the candidate layout"
+                "retain one explicit one-to-one static word mapping or repair "
+                "the candidate layout and paired accesses"
             ),
         })
 

@@ -1327,6 +1327,52 @@ theorem DynamicAddressRangePair.wordAddress_fits
     Nat.mod_eq_of_lt offsetBefore, Nat.mod_eq_of_lt addressBefore]
   omega
 
+theorem PairedStackWordLocation.addressesFit
+    (context : StaticProofContext) (world : RelationalWorld)
+    (location : PairedStackWordLocation world)
+    (rangesValid : world.stackRangesValid context = true) :
+    location.originalAddress.toNat + 4 <= 2 ^ 32 ∧
+      location.candidateAddress.toNat + 4 <= 2 ^ 32 := by
+  have validRows := rangesValid
+  simp only [RelationalWorld.stackRangesValid, Bool.and_eq_true,
+    List.all_eq_true] at validRows
+  have rangeRow := validRows.1.1.2 location.range location.rangeMember
+  have rangeValid : location.range.disjointFromImages context = true :=
+    rangeRow.1.1.1
+  have originalNoWrap :
+      location.range.originalBase.toNat + location.range.size < 2 ^ 32 := by
+    simpa [DynamicAddressRangePair.sideBase] using
+      DynamicAddressRangePair.sideBase_noWrap_of_disjoint
+        context false location.range rangeValid
+  have candidateNoWrap :
+      location.range.candidateBase.toNat + location.range.size < 2 ^ 32 := by
+    simpa [DynamicAddressRangePair.sideBase] using
+      DynamicAddressRangePair.sideBase_noWrap_of_disjoint
+        context true location.range rangeValid
+  have inside := location.inside
+  have offsetSmall : location.offset < 2 ^ 32 := by omega
+  have originalAddressBefore :
+      location.range.originalBase.toNat + location.offset < 2 ^ 32 := by omega
+  have candidateAddressBefore :
+      location.range.candidateBase.toNat + location.offset < 2 ^ 32 := by omega
+  have originalAddressNat : location.originalAddress.toNat =
+      location.range.originalBase.toNat + location.offset := by
+    rw [location.originalAddressExact]
+    simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+      Nat.mod_eq_of_lt offsetSmall,
+      Nat.mod_eq_of_lt originalAddressBefore]
+  have candidateAddressNat : location.candidateAddress.toNat =
+      location.range.candidateBase.toNat + location.offset := by
+    rw [location.candidateAddressExact]
+    simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+      Nat.mod_eq_of_lt offsetSmall,
+      Nat.mod_eq_of_lt candidateAddressBefore]
+  constructor
+  · rw [originalAddressNat]
+    omega
+  · rw [candidateAddressNat]
+    omega
+
 theorem stackRangeWordWriteAvoidsOtherWord
     (context : StaticProofContext) (candidate : Bool)
     (world : RelationalWorld)
@@ -4675,8 +4721,8 @@ def outcomesRelated (originalImageBase candidateImageBase : Nat)
   | .jump original, .jump candidate => original == candidate
   | .branch originalCondition originalTaken originalFallthrough,
       .branch candidateCondition candidateTaken candidateFallthrough =>
-      originalCondition == candidateCondition && originalTaken == candidateTaken &&
-        originalFallthrough == candidateFallthrough
+      (if originalCondition then originalTaken else originalFallthrough) ==
+        (if candidateCondition then candidateTaken else candidateFallthrough)
   | .call originalTarget originalContinuation, .call candidateTarget candidateContinuation =>
       originalTarget == candidateTarget && originalContinuation == candidateContinuation
   | .callUnmappedReturn originalTarget, .callUnmappedReturn candidateTarget =>

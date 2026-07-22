@@ -3,6 +3,18 @@ from __future__ import annotations
 from typing import Any
 
 
+def _normalized_branch_guard(
+    condition: dict[str, Any], *, taken: bool,
+) -> dict[str, Any]:
+    if taken:
+        return condition
+    if condition.get("op") == "not" and isinstance(
+        condition.get("value"), dict
+    ):
+        return condition["value"]
+    return {"op": "not", "value": condition}
+
+
 def _semantic_edges(behavior: dict[str, Any]) -> list[dict[str, Any]]:
     outcome = behavior["outcome"]
     operation = outcome.get("op")
@@ -23,12 +35,16 @@ def _semantic_edges(behavior: dict[str, Any]) -> list[dict[str, Any]]:
         return [
             {
                 "target": int(outcome["taken"]),
-                "guard": outcome["condition"],
+                "guard": _normalized_branch_guard(
+                    outcome["condition"], taken=True
+                ),
                 "kind": "branch_taken",
             },
             {
                 "target": int(outcome["fallthrough"]),
-                "guard": {"op": "not", "value": outcome["condition"]},
+                "guard": _normalized_branch_guard(
+                    outcome["condition"], taken=False
+                ),
                 "kind": "branch_fallthrough",
             },
         ]

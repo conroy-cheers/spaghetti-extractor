@@ -18,6 +18,7 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ID_RE = re.compile(r"[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?")
 _ARTIFACT_ROLES = frozenset({
     "semantic_program",
+    "candidate_semantic_program",
     "original_source",
     "candidate_source",
     "original_object",

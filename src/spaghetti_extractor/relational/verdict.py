@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from pathlib import Path
@@ -8,17 +9,30 @@ from typing import Any
 from ..stage_binary import StageABinary
 from ..util import sha256_file, utc_now, write_json
 from .schema import (
-    RELATIONAL_ACCEPTANCE_THEOREM,
+    SchemaError,
     STAGE_A_RELATIONAL_MODEL_ID,
     STAGE_A_RELATIONAL_PROFILE_ID,
+    selected_relational_acceptance_theorem,
 )
 
 
 def _write_relational_verdict(out: Path, started_at: str, original: StageABinary, candidate: StageABinary, contract: dict[str, Any], proof_ir: dict[str, Any], trusted_base: dict[str, Any], verdict: str, lean: dict[str, Any], *, certificates: list[dict[str, Any]], blocker: str | None) -> dict[str, Any]:
+    acceptance: dict[str, Any] = {}
+    selected_theorem: str | None = None
+    try:
+        payload = json.loads(
+            (out / "whole-program-acceptance.json").read_text(encoding="utf-8")
+        )
+        if isinstance(payload, dict):
+            acceptance = payload
+            selected_theorem = selected_relational_acceptance_theorem(acceptance)
+    except (OSError, json.JSONDecodeError, SchemaError):
+        pass
     checked_theorem = str(lean.get("theorem") or "")
     whole_program_checked = (
         lean.get("status") == "checked"
-        and checked_theorem == RELATIONAL_ACCEPTANCE_THEOREM
+        and selected_theorem is not None
+        and checked_theorem == selected_theorem
     )
     if verdict == "pass" and not whole_program_checked:
         verdict = "incomplete"
@@ -242,6 +256,8 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
         "acceptance_authority": "whole_program_lean",
         "profile": STAGE_A_RELATIONAL_PROFILE_ID,
         "model": STAGE_A_RELATIONAL_MODEL_ID,
+        "expected_final_theorem": selected_theorem,
+        "acceptance": acceptance,
         "claim_scope": {
             "kind": (
                 "whole_program_observational_equivalence"

@@ -7,13 +7,33 @@ from spaghetti_extractor.relational.artifacts import write_text_if_changed
 from spaghetti_extractor.relational.schema import (
     ModuleGraph,
     PreparedProofDigests,
+    RELATIONAL_ACCEPTANCE_THEOREM,
+    RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
     SchemaError,
     StageAInterfaceManifest,
+    choose_relational_acceptance_theorem,
 )
 from spaghetti_extractor.relational.interfaces import stage_a_interface_manifest
 
 
 class RelationalSchemaTests(unittest.TestCase):
+    def test_acceptance_theorem_selection_prefers_ordinary_then_linked(self):
+        self.assertEqual(
+            choose_relational_acceptance_theorem(
+                ordinary_ready=True, linked_ready=True
+            ),
+            RELATIONAL_ACCEPTANCE_THEOREM,
+        )
+        self.assertEqual(
+            choose_relational_acceptance_theorem(
+                ordinary_ready=False, linked_ready=True
+            ),
+            RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+        )
+        self.assertIsNone(choose_relational_acceptance_theorem(
+            ordinary_ready=False, linked_ready=False
+        ))
+
     def test_module_graph_parser_returns_immutable_nodes(self):
         graph = ModuleGraph.parse({
             "format": "stage-a-lean-module-graph-v1",
@@ -78,7 +98,14 @@ class RelationalSchemaTests(unittest.TestCase):
 
         self.assertEqual(
             parsed.acceptance_theorem,
-            "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent",
+            RELATIONAL_ACCEPTANCE_THEOREM,
+        )
+        self.assertEqual(
+            set(parsed.acceptance_theorems),
+            {
+                RELATIONAL_ACCEPTANCE_THEOREM,
+                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+            },
         )
         self.assertIn("external-protocol", parsed.workstream_ids)
         self.assertIn("acceptance-integration", parsed.workstream_ids)
@@ -105,6 +132,22 @@ class RelationalSchemaTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(SchemaError, "must be disjoint"):
             StageAInterfaceManifest.parse(overlapping)
+
+    def test_module_graph_parser_rejects_unknown_acceptance_theorem(self):
+        with self.assertRaisesRegex(SchemaError, "not a supported acceptance theorem"):
+            ModuleGraph.parse({
+                "format": "stage-a-lean-module-graph-v1",
+                "root_module": "RelationalAcceptance",
+                "expected_final_theorem": "StageA.GeneratedRelational.looksEquivalent",
+                "nodes": [{
+                    "id": "acceptance",
+                    "modules": ["RelationalAcceptance"],
+                    "dependencies": [],
+                    "source_sha256": "a" * 64,
+                    "resource_class": "light",
+                    "estimated_memory_mb": 512,
+                }],
+            })
 
     def test_write_text_if_changed_preserves_timestamp(self):
         with tempfile.TemporaryDirectory() as temporary:

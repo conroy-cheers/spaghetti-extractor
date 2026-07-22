@@ -9,6 +9,16 @@ from pathlib import Path
 from unittest import mock
 
 from spaghetti_extractor.relational.interfaces import stage_a_interface_manifest
+from spaghetti_extractor.relational.schema import (
+    RELATIONAL_ACCEPTANCE_THEOREM,
+    RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+)
+from spaghetti_extractor.roundtrip_fuzz.discovery import (
+    DiscoveryArtifact,
+    DiscoveryCaseResult,
+    DiscoveryCaseStatus,
+    DiscoveryPhaseResult,
+)
 from spaghetti_extractor.roundtrip_fuzz.model import (
     ROUNDTRIP_CASE_FORMAT,
     ROUNDTRIP_CORPUS_FORMAT,
@@ -23,7 +33,66 @@ from spaghetti_extractor.stage_binary import StageAInputError
 from spaghetti_extractor.util import sha256_file, write_json
 
 
+def _ready_preflight(**_kwargs):
+    return {
+        "format": "stage-a-relational-static-preflight-v1",
+        "status": "ready",
+        "acceptance_authority": False,
+        "reason_code": None,
+        "issues": [],
+    }
+
+
+def _ready_acceptance(
+    theorem: str = RELATIONAL_ACCEPTANCE_THEOREM,
+) -> dict[str, object]:
+    acceptance: dict[str, object] = {
+        "status": "ready",
+        "required_theorem": theorem,
+        "theorem": theorem,
+        "blockers": [],
+    }
+    if theorem == RELATIONAL_LINKED_ACCEPTANCE_THEOREM:
+        acceptance["linked_acceptance"] = {
+            "status": "ready",
+            "theorem": theorem,
+        }
+    return acceptance
+
+
 class RoundTripFuzzRunnerTests(unittest.TestCase):
+    def test_stage_b_mode_uses_the_opaque_static_roundtrip_and_final_theorem(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            corpus_path = self._write_corpus(root)
+            result = {
+                "status": "pass",
+                "reason_codes": [],
+                "proof": {
+                    "final_theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+                    "lean_kernel_checked": True,
+                    "diagnostics": [],
+                },
+            }
+            with mock.patch(
+                "spaghetti_extractor.roundtrip_fuzz.runner."
+                "run_static_opaque_stage_b_relational_roundtrip",
+                return_value=result,
+            ) as roundtrip:
+                report = run_roundtrip_corpus(
+                    corpus=corpus_path,
+                    mode="stage-b-roundtrip",
+                    out=root / "run",
+                )
+
+            self.assertEqual(report["counts"]["pass"], 1)
+            self.assertTrue(report["cases"][0]["expectation_matched"])
+            self.assertEqual(
+                report["cases"][0]["acceptance"]["theorem"],
+                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+            )
+            roundtrip.assert_called_once()
+
     def test_ready_acceptance_does_not_report_auxiliary_affine_analysis_as_frontier(self) -> None:
         result = {
             "acceptance": {"status": "ready"},
@@ -43,7 +112,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
             "affine_linked_control",
         )
 
-    def test_proof_core_uses_final_theorem_and_reuses_warm_artifacts(self) -> None:
+    def test_proof_core_reuses_persisted_final_theorem_audit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             corpus_path = self._write_corpus(root)
@@ -59,32 +128,36 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                     "original_sha256": sha256_file(Path(kwargs["original"])),
                     "candidate_sha256": sha256_file(Path(kwargs["candidate"])),
                     "relation_contract_sha256": "f" * 64,
-                    "acceptance": {"status": "ready", "blockers": []},
+                    "acceptance": _ready_acceptance(),
                     "composition_progress": {"frontiers": {}},
                 }
                 write_json(out / "prepared-proof.json", payload)
                 write_json(out / "stage-a-interface-manifest.json", stage_a_interface_manifest())
                 write_json(out / "module-graph.json", {"format": "test"})
+                write_json(out / "relation-contract.json", {"format": "test"})
                 return payload
 
             def build(**kwargs):
                 calls["build"] += 1
                 out = Path(kwargs["out"])
-                out.mkdir(parents=True)
+                out.mkdir(parents=True, exist_ok=True)
+                reused = (out / "verdict.json").is_file()
                 case_root = root / "cases" / "case-pass"
                 payload = {
                     "format": "stage-a-relational-nix-build-v1",
                     "status": "pass",
-                    "expected_final_theorem": (
-                        "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
-                    ),
+                    "expected_final_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                    "acceptance": _ready_acceptance(),
                     "original": {"sha256": sha256_file(case_root / "original.exe")},
                     "candidate": {"sha256": sha256_file(case_root / "candidate.exe")},
-                    "relation_contract_sha256": "e" * 64,
+                    "relation_contract_sha256": sha256_file(
+                        Path(kwargs["prepared"]) / "relation-contract.json"
+                    ),
                     "checks": {
                         "lean_trust_zero": True,
                         "final_theorem_matches": True,
                     },
+                    "nix_work_reused": reused,
                 }
                 write_json(out / "verdict.json", payload)
                 return payload
@@ -96,13 +169,15 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 out=out,
                 _prepare=prepare,
                 _build=build,
+                _preflight=_ready_preflight,
             )
             second = run_roundtrip_corpus(
                 corpus=corpus_path,
                 mode="proof-core",
                 out=out,
                 _prepare=lambda **_kwargs: self.fail("warm run prepared again"),
-                _build=lambda **_kwargs: self.fail("warm run rebuilt again"),
+                _build=build,
+                _preflight=lambda **_kwargs: self.fail("warm run preflighted again"),
             )
 
             self.assertEqual(first["status"], "pass", first)
@@ -111,10 +186,347 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 first["cases"][0]["acceptance"]["authority"],
                 "whole_program_lean",
             )
-            self.assertEqual(calls, {"prepare": 1, "build": 1})
-            self.assertTrue(all(
-                phase["cache_hit"] for phase in second["cases"][0]["phases"]
-            ))
+            self.assertEqual(calls, {"prepare": 1, "build": 2})
+            self.assertIsNone(second["cases"][0]["error"], second)
+            second_phases = {
+                phase["id"]: phase for phase in second["cases"][0]["phases"]
+            }
+            self.assertTrue(second_phases["static-preflight"]["cache_hit"])
+            self.assertTrue(second_phases["proof-preparation"]["cache_hit"])
+            self.assertTrue(second_phases["proof-build-and-audit"]["cache_hit"])
+
+    def test_discovery_hands_recovered_contracts_to_ordinary_proof_core(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            corpus_path = self._write_corpus(root)
+            observed_relations: list[Path] = []
+
+            def discover(**kwargs):
+                out = Path(kwargs["out"])
+                proposal = out / "proposal"
+                proposal.mkdir(parents=True)
+                report = proposal / "discovery-result.json"
+                relation = proposal / "recovered-relation-contract.json"
+                layout = proposal / "recovered-layout-contract.json"
+                write_json(report, {
+                    "format": "stage-a-roundtrip-discovery-v1",
+                    "status": "recovered",
+                })
+                write_json(relation, {"format": "test-recovered-relation"})
+                write_json(layout, {"format": "stage-a-layout-contract-v1"})
+                return DiscoveryCaseResult(
+                    case_id="case-pass",
+                    status=DiscoveryCaseStatus.DIFFERENT,
+                    phases=(DiscoveryPhaseResult(
+                        id="mapping-discovery",
+                        status="recovered",
+                        cache_key="discovery-key",
+                        cache_hit=False,
+                        duration_seconds=0.01,
+                        artifact="proposal/discovery-result.json",
+                        artifact_sha256=sha256_file(report),
+                        reason_code=None,
+                    ),),
+                    artifacts=(
+                        DiscoveryArtifact(
+                            role="recovered_relation_contract",
+                            path="proposal/recovered-relation-contract.json",
+                            sha256=sha256_file(relation),
+                        ),
+                        DiscoveryArtifact(
+                            role="recovered_layout_contract",
+                            path="proposal/recovered-layout-contract.json",
+                            sha256=sha256_file(layout),
+                        ),
+                    ),
+                    frontiers=({
+                        "phase": "comparison",
+                        "reason_code": "recovered_relation_semantically_different",
+                    },),
+                    comparison={"status": "different"},
+                )
+
+            def preflight(**kwargs):
+                observed_relations.append(Path(kwargs["relation_contract"]))
+                return _ready_preflight()
+
+            def prepare(**kwargs):
+                observed_relations.append(Path(kwargs["relation_contract"]))
+                out = Path(kwargs["out"])
+                out.mkdir(parents=True)
+                payload = {
+                    "format": "stage-a-prepared-relational-v1",
+                    "status": "prepared",
+                    "original_sha256": sha256_file(Path(kwargs["original"])),
+                    "candidate_sha256": sha256_file(Path(kwargs["candidate"])),
+                    "acceptance": _ready_acceptance(),
+                    "composition_progress": {"frontiers": {}},
+                }
+                write_json(out / "prepared-proof.json", payload)
+                write_json(
+                    out / "stage-a-interface-manifest.json",
+                    stage_a_interface_manifest(),
+                )
+                write_json(out / "module-graph.json", {"format": "test"})
+                shutil.copyfile(
+                    kwargs["relation_contract"], out / "relation-contract.json"
+                )
+                return payload
+
+            def build(**kwargs):
+                out = Path(kwargs["out"])
+                out.mkdir(parents=True)
+                case_root = root / "cases" / "case-pass"
+                payload = {
+                    "format": "stage-a-relational-nix-build-v1",
+                    "status": "pass",
+                    "expected_final_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                    "acceptance": _ready_acceptance(),
+                    "original": {"sha256": sha256_file(case_root / "original.exe")},
+                    "candidate": {"sha256": sha256_file(case_root / "candidate.exe")},
+                    "relation_contract_sha256": sha256_file(
+                        Path(kwargs["prepared"]) / "relation-contract.json"
+                    ),
+                    "checks": {
+                        "lean_trust_zero": True,
+                        "final_theorem_matches": True,
+                    },
+                }
+                write_json(out / "verdict.json", payload)
+                return payload
+
+            out = root / "run"
+            result = run_roundtrip_corpus(
+                corpus=corpus_path,
+                mode="discovery",
+                out=out,
+                _discover=discover,
+                _preflight=preflight,
+                _prepare=prepare,
+                _build=build,
+            )
+
+            case = result["cases"][0]
+            recovered = (
+                out / "cases" / "case-pass" / "discovery" / "proposal"
+                / "recovered-relation-contract.json"
+            ).resolve()
+            self.assertEqual(result["status"], "pass", result)
+            self.assertEqual(case["actual_disposition"], "pass")
+            self.assertEqual(observed_relations, [recovered, recovered])
+            self.assertEqual(
+                [phase["id"] for phase in case["phases"]],
+                [
+                    "mapping-discovery",
+                    "discovery-proof-handoff",
+                    "static-preflight",
+                    "proof-preparation",
+                    "proof-build-and-audit",
+                ],
+            )
+            binding = json.loads((
+                out / "cases" / "case-pass" / "prepared"
+                / "roundtrip-input-binding.json"
+            ).read_text(encoding="utf-8"))
+            self.assertEqual(binding["relation_contract_origin"], "discovery")
+            self.assertEqual(
+                binding["layout_contract_input_sha256"],
+                sha256_file(
+                    out / "cases" / "case-pass" / "discovery" / "proposal"
+                    / "recovered-layout-contract.json"
+                ),
+            )
+
+    def test_discovery_without_typed_recovered_contracts_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            corpus_path = self._write_corpus(root)
+
+            def discover(**kwargs):
+                out = Path(kwargs["out"])
+                out.mkdir(parents=True)
+                report = out / "proposal-unavailable.json"
+                write_json(report, {
+                    "format": "stage-a-roundtrip-discovery-v1",
+                    "status": "incomplete",
+                })
+                return DiscoveryCaseResult(
+                    case_id="case-pass",
+                    status=DiscoveryCaseStatus.INCOMPLETE,
+                    phases=(DiscoveryPhaseResult(
+                        id="mapping-discovery",
+                        status="incomplete",
+                        cache_key="discovery-key",
+                        cache_hit=False,
+                        duration_seconds=0.01,
+                        artifact="proposal-unavailable.json",
+                        artifact_sha256=sha256_file(report),
+                        reason_code="linker_map_hints_unavailable",
+                    ),),
+                    artifacts=(),
+                    frontiers=(),
+                    comparison=None,
+                )
+
+            result = run_roundtrip_corpus(
+                corpus=corpus_path,
+                mode="discovery",
+                out=root / "run",
+                _discover=discover,
+                _preflight=lambda **_kwargs: self.fail(
+                    "incomplete discovery reached proof preflight"
+                ),
+                _prepare=lambda **_kwargs: self.fail(
+                    "incomplete discovery reached proof preparation"
+                ),
+                _build=lambda **_kwargs: self.fail(
+                    "incomplete discovery reached proof build"
+                ),
+            )
+
+            case = result["cases"][0]
+            self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(case["actual_disposition"], "incomplete")
+            self.assertEqual(
+                [phase["id"] for phase in case["phases"]],
+                ["mapping-discovery", "discovery-proof-handoff"],
+            )
+            self.assertEqual(
+                case["phases"][-1]["reason_code"],
+                "recovered_contract_handoff_incomplete",
+            )
+            self.assertIsNone(case["acceptance"]["authority"])
+
+    def test_pass_accepts_the_selected_linked_inventory_theorem(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            corpus_path = self._write_corpus(root)
+
+            def prepare(**kwargs):
+                out = Path(kwargs["out"])
+                out.mkdir(parents=True)
+                payload = {
+                    "format": "stage-a-prepared-relational-v1",
+                    "status": "prepared",
+                    "original_sha256": sha256_file(Path(kwargs["original"])),
+                    "candidate_sha256": sha256_file(Path(kwargs["candidate"])),
+                    "acceptance": _ready_acceptance(
+                        RELATIONAL_LINKED_ACCEPTANCE_THEOREM
+                    ),
+                    "composition_progress": {"frontiers": {}},
+                }
+                write_json(out / "prepared-proof.json", payload)
+                write_json(
+                    out / "stage-a-interface-manifest.json",
+                    stage_a_interface_manifest(),
+                )
+                write_json(out / "module-graph.json", {"format": "test"})
+                write_json(out / "relation-contract.json", {"format": "test"})
+                return payload
+
+            def build(**kwargs):
+                out = Path(kwargs["out"])
+                out.mkdir(parents=True)
+                case_root = root / "cases" / "case-pass"
+                payload = {
+                    "format": "stage-a-relational-nix-build-v1",
+                    "status": "pass",
+                    "expected_final_theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+                    "acceptance": _ready_acceptance(
+                        RELATIONAL_LINKED_ACCEPTANCE_THEOREM
+                    ),
+                    "original": {"sha256": sha256_file(case_root / "original.exe")},
+                    "candidate": {"sha256": sha256_file(case_root / "candidate.exe")},
+                    "relation_contract_sha256": sha256_file(
+                        Path(kwargs["prepared"]) / "relation-contract.json"
+                    ),
+                    "checks": {
+                        "lean_trust_zero": True,
+                        "final_theorem_matches": True,
+                    },
+                }
+                write_json(out / "verdict.json", payload)
+                return payload
+
+            result = run_roundtrip_corpus(
+                corpus=corpus_path,
+                mode="proof-core",
+                out=root / "run",
+                _prepare=prepare,
+                _build=build,
+                _preflight=_ready_preflight,
+            )
+
+            self.assertEqual(result["status"], "pass", result)
+            self.assertEqual(
+                result["cases"][0]["acceptance"]["theorem"],
+                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+            )
+
+    def test_pass_rejects_inventory_theorem_other_than_selected_theorem(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            corpus_path = self._write_corpus(root)
+
+            def prepare(**kwargs):
+                out = Path(kwargs["out"])
+                out.mkdir(parents=True)
+                payload = {
+                    "format": "stage-a-prepared-relational-v1",
+                    "status": "prepared",
+                    "original_sha256": sha256_file(Path(kwargs["original"])),
+                    "candidate_sha256": sha256_file(Path(kwargs["candidate"])),
+                    "acceptance": _ready_acceptance(
+                        RELATIONAL_LINKED_ACCEPTANCE_THEOREM
+                    ),
+                    "composition_progress": {"frontiers": {}},
+                }
+                write_json(out / "prepared-proof.json", payload)
+                write_json(
+                    out / "stage-a-interface-manifest.json",
+                    stage_a_interface_manifest(),
+                )
+                write_json(out / "module-graph.json", {"format": "test"})
+                write_json(out / "relation-contract.json", {"format": "test"})
+                return payload
+
+            def build(**kwargs):
+                out = Path(kwargs["out"])
+                out.mkdir(parents=True)
+                case_root = root / "cases" / "case-pass"
+                payload = {
+                    "format": "stage-a-relational-nix-build-v1",
+                    "status": "pass",
+                    "expected_final_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                    "acceptance": _ready_acceptance(
+                        RELATIONAL_LINKED_ACCEPTANCE_THEOREM
+                    ),
+                    "original": {"sha256": sha256_file(case_root / "original.exe")},
+                    "candidate": {"sha256": sha256_file(case_root / "candidate.exe")},
+                    "relation_contract_sha256": sha256_file(
+                        Path(kwargs["prepared"]) / "relation-contract.json"
+                    ),
+                    "checks": {
+                        "lean_trust_zero": True,
+                        "final_theorem_matches": True,
+                    },
+                }
+                write_json(out / "verdict.json", payload)
+                return payload
+
+            result = run_roundtrip_corpus(
+                corpus=corpus_path,
+                mode="proof-core",
+                out=root / "run",
+                _prepare=prepare,
+                _build=build,
+                _preflight=_ready_preflight,
+            )
+
+            case = result["cases"][0]
+            self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(case["actual_disposition"], "incomplete")
+            self.assertIsNone(case["acceptance"]["theorem"])
 
     def test_negative_final_pass_is_always_fatal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -130,12 +542,13 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                     "original_sha256": sha256_file(Path(kwargs["original"])),
                     "candidate_sha256": sha256_file(Path(kwargs["candidate"])),
                     "relation_contract_sha256": "f" * 64,
-                    "acceptance": {"status": "ready", "blockers": []},
+                    "acceptance": _ready_acceptance(),
                     "composition_progress": {"frontiers": {}},
                 }
                 write_json(out / "prepared-proof.json", payload)
                 write_json(out / "stage-a-interface-manifest.json", stage_a_interface_manifest())
                 write_json(out / "module-graph.json", {"format": "test"})
+                write_json(out / "relation-contract.json", {"format": "test"})
                 return payload
 
             def build(**kwargs):
@@ -145,11 +558,13 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 payload = {
                     "format": "stage-a-relational-nix-build-v1",
                     "status": "pass",
-                    "expected_final_theorem": (
-                        "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
-                    ),
+                    "expected_final_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                    "acceptance": _ready_acceptance(),
                     "original": {"sha256": sha256_file(case_root / "original.exe")},
                     "candidate": {"sha256": sha256_file(case_root / "candidate.exe")},
+                    "relation_contract_sha256": sha256_file(
+                        Path(kwargs["prepared"]) / "relation-contract.json"
+                    ),
                     "checks": {
                         "lean_trust_zero": True,
                         "final_theorem_matches": True,
@@ -164,6 +579,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 out=root / "run",
                 _prepare=prepare,
                 _build=build,
+                _preflight=_ready_preflight,
             )
 
             self.assertEqual(result["status"], "incomplete")
@@ -184,7 +600,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                     "status": "prepared",
                     "original_sha256": sha256_file(Path(kwargs["original"])),
                     "candidate_sha256": sha256_file(Path(kwargs["candidate"])),
-                    "acceptance": {"status": "ready", "blockers": []},
+                    "acceptance": _ready_acceptance(),
                     "composition_progress": {"frontiers": {}},
                 }
                 write_json(out / "prepared-proof.json", payload)
@@ -193,6 +609,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                     stage_a_interface_manifest(),
                 )
                 write_json(out / "module-graph.json", {"format": "test"})
+                write_json(out / "relation-contract.json", {"format": "test"})
                 return payload
 
             def build(**kwargs):
@@ -203,11 +620,13 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 payload = {
                     "format": "stage-a-relational-nix-build-v1",
                     "status": "pass",
-                    "expected_final_theorem": (
-                        "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
-                    ),
+                    "expected_final_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                    "acceptance": _ready_acceptance(),
                     "original": {"sha256": sha256_file(case_root / "original.exe")},
                     "candidate": {"sha256": sha256_file(case_root / "candidate.exe")},
+                    "relation_contract_sha256": sha256_file(
+                        Path(kwargs["prepared"]) / "relation-contract.json"
+                    ),
                     "checks": {
                         "lean_trust_zero": True,
                         "final_theorem_matches": True,
@@ -223,6 +642,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 out=out,
                 _prepare=prepare,
                 _build=build,
+                _preflight=_ready_preflight,
             )
             binding_path = (
                 out / "cases" / "case-pass" / "prepared"
@@ -237,9 +657,10 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 out=out,
                 _prepare=prepare,
                 _build=build,
+                _preflight=_ready_preflight,
             )
 
-            self.assertEqual(calls, {"prepare": 2, "build": 1})
+            self.assertEqual(calls, {"prepare": 2, "build": 2})
 
     def test_static_preflight_stop_is_public_and_skips_proof_work(self) -> None:
         from spaghetti_extractor.cli import _build_parser
@@ -249,14 +670,19 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
             "--corpus", "corpus.json",
             "--out", "run",
             "--stop-after-static-preflight",
+            "--genericity-baseline", "baseline.json",
         ])
         self.assertTrue(args.stop_after_static_preflight)
+        self.assertEqual(args.genericity_baseline, Path("baseline.json"))
         with mock.patch(
             "spaghetti_extractor.cli.run_roundtrip_corpus",
             return_value={"status": "pass"},
         ) as run:
             args.func(args)
         self.assertTrue(run.call_args.kwargs["stop_after_static_preflight"])
+        self.assertEqual(
+            run.call_args.kwargs["genericity_baseline"], Path("baseline.json")
+        )
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -270,7 +696,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                     "status": "prepared",
                     "original_sha256": sha256_file(Path(kwargs["original"])),
                     "candidate_sha256": sha256_file(Path(kwargs["candidate"])),
-                    "acceptance": {"status": "ready", "blockers": []},
+                    "acceptance": _ready_acceptance(),
                     "composition_progress": {"frontiers": {}},
                 }
                 write_json(out / "prepared-proof.json", payload)
@@ -288,6 +714,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 stop_after_static_preflight=True,
                 _prepare=prepare,
                 _build=lambda **_kwargs: self.fail("static preflight ran proof work"),
+                _preflight=_ready_preflight,
             )
 
             self.assertEqual(result["status"], "pass", result)
@@ -299,7 +726,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
             self.assertIsNone(case["expectation_matched"])
             self.assertEqual(
                 [phase["id"] for phase in case["phases"]],
-                ["proof-preparation"],
+                ["static-preflight"],
             )
 
     def test_checked_violation_replay_reports_timing_and_content_cache(self) -> None:
@@ -320,7 +747,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                     "status": "prepared",
                     "original_sha256": sha256_file(Path(kwargs["original"])),
                     "candidate_sha256": sha256_file(Path(kwargs["candidate"])),
-                    "acceptance": {"status": "ready", "blockers": []},
+                    "acceptance": _ready_acceptance(),
                     "composition_progress": {"frontiers": {}},
                 }
                 write_json(out / "prepared-proof.json", payload)
@@ -352,7 +779,11 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                     "format": "stage-a-violation-check-v1",
                     "status": "checked",
                 })
-                return {"audit": str(audit), "source": str(source)}
+                return {
+                    "status": "checked",
+                    "audit": str(audit),
+                    "source": str(source),
+                }
 
             def validate(**_kwargs):
                 return {
@@ -380,6 +811,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                     out=out,
                     _prepare=prepare,
                     _build=no_proof,
+                    _preflight=_ready_preflight,
                 )
                 second = run_roundtrip_corpus(
                     corpus=corpus_path,
@@ -387,6 +819,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                     out=out,
                     _prepare=prepare,
                     _build=no_proof,
+                    _preflight=_ready_preflight,
                 )
                 audit = out / "cases" / "case-pass" / "violation" / "audit.json"
                 write_json(audit, {
@@ -400,6 +833,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                     out=out,
                     _prepare=prepare,
                     _build=no_proof,
+                    _preflight=_ready_preflight,
                 )
                 decoded = (
                     out / "cases" / "case-pass" / "prepared"
@@ -412,6 +846,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                     out=out,
                     _prepare=prepare,
                     _build=no_proof,
+                    _preflight=_ready_preflight,
                 )
 
             first_phase = first["cases"][0]["phases"][-1]
@@ -474,6 +909,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
             ("original.exe", b"original"),
             ("candidate.exe", b"candidate"),
             ("relation.json", b"{}\n"),
+            ("original.map", b"original map\n"),
         ):
             (case_root / name).write_bytes(data)
         if with_violation_witness:
@@ -483,6 +919,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
             ("original_pe", "original.exe"),
             ("candidate_pe", "candidate.exe"),
             ("relation_contract", "relation.json"),
+            ("original_linker_map", "original.map"),
         ]
         if with_violation_witness:
             artifact_names.append(("violation_witness", "witness.json"))

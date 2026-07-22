@@ -22,6 +22,9 @@ from spaghetti_extractor.relational.analysis import (
 from spaghetti_extractor.relational.proposal_artifact import (
     validate_relational_proposal,
 )
+from spaghetti_extractor.relational.schema import (
+    RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+)
 from spaghetti_extractor.relational.register_dataflow_problem_cli import (
     main as compile_register_dataflow_problem_main,
 )
@@ -290,7 +293,7 @@ class StageARelationalAnalysisArtifactTests(StageARelationalTestBase):
             self.assertEqual(generated["acceptance"]["status"], "ready")
             self.assertEqual(
                 generated["expected_final_theorem"],
-                RELATIONAL_ACCEPTANCE_THEOREM,
+                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
             )
             self.assertTrue((prepared / "module-graph.json").is_file())
             validate_relational_analysis(prepared)

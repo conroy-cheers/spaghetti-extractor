@@ -10,10 +10,8 @@ from spaghetti_extractor.relational.analyses.segments import (
 from spaghetti_extractor.relational.lean.expressions import (
     _lean_paired_static_expr_witness,
 )
-from spaghetti_extractor.relational.lean.generation import (
-    _compact_compositional_normalized_path,
-)
 from spaghetti_extractor.relational.lean.definitions import (
+    _compact_compositional_normalized_path,
     _lean_normalized_indirect_call_parts,
     _lean_normalized_static_outcome,
 )
@@ -578,6 +576,93 @@ class StageARelationalStateTests(StageARelationalTestBase):
             )
         )
 
+    def test_prepared_stack_writes_use_checked_adjustment_grammar(self):
+        window = {
+            "range_id": 0,
+            "original_register": "esp",
+            "candidate_register": "esp",
+            "bytes_below": 12,
+            "bytes_above": 8,
+        }
+        register = {"op": "input_reg", "reg": "esp"}
+        value = {"op": "input_reg", "reg": "eax"}
+
+        def adjusted(operation, amount):
+            return {
+                "op": operation,
+                "left": register,
+                "right": {"op": "constant", "value": amount},
+            }
+
+        addresses = [
+            register,
+            adjusted("add", 0),
+            adjusted("add", 4),
+            adjusted("sub", 8),
+            adjusted("add", 2**32 - 4),
+        ]
+        behavior = {
+            side: {"writes": [
+                {"address": address, "value": value}
+                for address in addresses
+            ]}
+            for side in ("original_ir", "candidate_ir")
+        }
+        source = {
+            "input_relations": [{
+                "original": "eax", "candidate": "eax", "relation": "exact",
+            }],
+            "stack_windows": [window],
+        }
+
+        claim = _paired_prepared_word_writes_claim(source, behavior, [])
+
+        self.assertIsNotNone(claim)
+        self.assertEqual(
+            [item["adjustment"] for item in claim["writes"]],
+            [
+                {"kind": "identity"},
+                {"kind": "add", "amount": 0},
+                {"kind": "add", "amount": 4},
+                {"kind": "subtract", "amount": 8},
+                {"kind": "subtract", "amount": 4},
+            ],
+        )
+        self.assertEqual(
+            [item["amount"] for item in claim["writes"]],
+            [0, 2**34, 4, 2**33 - 8, 2**32 - 4],
+        )
+
+        too_shallow = {**source, "stack_windows": [{**window, "bytes_below": 7}]}
+        self.assertIsNone(
+            _paired_prepared_word_writes_claim(too_shallow, behavior, [])
+        )
+        ambiguous = {**source, "stack_windows": [window, dict(window)]}
+        self.assertIsNone(
+            _paired_prepared_word_writes_claim(ambiguous, behavior, [])
+        )
+
+        for rejected_address in (
+            {
+                "op": "add",
+                "left": {"op": "constant", "value": 4},
+                "right": register,
+            },
+            {
+                "op": "add",
+                "left": register,
+                "right": {"op": "input_reg", "reg": "eax"},
+            },
+            {"op": "add", "left": register, "right": 4},
+        ):
+            rejected = {
+                side: {"writes": [{"address": rejected_address, "value": value}]}
+                for side in ("original_ir", "candidate_ir")
+            }
+            self.assertIsNone(
+                _paired_prepared_word_writes_claim(source, rejected, [])
+            )
+
     def test_dynamic_range_transfer_recovers_a_checked_stack_spill(self):
         window = {
             "range_id": 0,
@@ -780,6 +865,87 @@ class StageARelationalStateTests(StageARelationalTestBase):
             "bytes_above": 20,
             "reason": "stack_anchor_provenance_unresolved",
         }, analysis["frontier"])
+
+    def test_affine_stack_pointer_output_seeds_checked_headroom(self):
+        binary = SimpleNamespace(
+            image_base=0x400000,
+            pe=SimpleNamespace(
+                OPTIONAL_HEADER=SimpleNamespace(SizeOfImage=0x10000),
+            ),
+        )
+        adjustment = {
+            "op": "add",
+            "left": {"op": "input_reg", "reg": "esp"},
+            "right": {"op": "constant", "value": 8},
+        }
+        relation = {
+            "original": "esp", "candidate": "esp", "relation": "exact",
+        }
+        refined, analysis = _attach_stack_window_invariants(
+            {"regions": [{"id": "stack-adjust", "address_separations": []}]},
+            [{
+                "original_ir": {"registers": {"esp": adjustment}, "writes": []},
+                "candidate_ir": {"registers": {"esp": adjustment}, "writes": []},
+            }],
+            {"regions": [{"inputs": [relation], "outputs": [relation]}], "edges": []},
+            binary,
+            binary,
+        )
+
+        self.assertEqual(analysis["windows"], 1)
+        self.assertEqual(refined["regions"][0]["stack_windows"], [{
+            "range_id": 0,
+            "original_register": "esp",
+            "candidate_register": "esp",
+            "bytes_below": 0,
+            "bytes_above": 9,
+            "source": "related_word_affine_output_seed",
+        }])
+
+    def test_state_rel_output_uses_checked_affine_stack_window(self):
+        output = {
+            "original": "esp", "candidate": "esp", "relation": "related_word",
+        }
+        window = {
+            "range_id": 0,
+            "original_register": "esp",
+            "candidate_register": "esp",
+            "bytes_below": 0,
+            "bytes_above": 9,
+        }
+        adjustment = {
+            "op": "add",
+            "left": {"op": "input_reg", "reg": "esp"},
+            "right": {"op": "constant", "value": 8},
+        }
+        claims = _state_rel_register_output_claims(
+            {"outputs": [output], "output_claims": []},
+            {"inputs": [output]},
+            {"stack_windows": [window]},
+            {
+                "original_ir": {"registers": {"esp": adjustment}},
+                "candidate_ir": {"registers": {"esp": adjustment}},
+            },
+            [],
+        )
+
+        self.assertIsNotNone(claims)
+        self.assertEqual(claims, [{
+            "kind": "ordinary",
+            "claim": {
+                "kind": "stack_window_affine",
+                "output": output,
+                "source": window,
+                "target": {
+                    "range_id": 0,
+                    "original_register": "esp",
+                    "candidate_register": "esp",
+                    "bytes_below": 0,
+                    "bytes_above": 1,
+                },
+                "adjustment": {"kind": "add", "amount": 8},
+            },
+        }])
 
     def test_stack_read_seeds_follow_only_unique_output_register_mapping(self):
         binary = SimpleNamespace(

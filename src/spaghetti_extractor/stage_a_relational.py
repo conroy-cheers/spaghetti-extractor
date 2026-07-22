@@ -384,6 +384,7 @@ from .relational.pipeline import (
     stage_a_analyze_relational,
     stage_a_check_relational_proof,
     stage_a_generate_relational,
+    stage_a_preflight_relational,
     stage_a_prepare_relational,
     stage_a_prove_relational,
 )

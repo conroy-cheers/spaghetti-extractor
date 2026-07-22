@@ -27,6 +27,8 @@ class StageALeanGraphTypedAuditTests(unittest.TestCase):
         self.assertIn('typed_witness = "StageA.FinalTheoremAudit.typedFinalTheorem"', source)
         self.assertIn("acceptanceNodeSteps = graph.acceptance.node_steps or null", source)
         self.assertIn("acceptanceNodeStepsValid", source)
+        self.assertIn("selectedAuditTheorem = graph.expected_final_theorem", source)
+        self.assertNotIn("auditTheorem ? null", source)
 
     @unittest.skipUnless(
         shutil.which("nix")
@@ -219,12 +221,12 @@ end StageA
             "lean": {"trust": 0},
             "root_module": "RelationalBundle",
             "final_node": "relationalbundle",
-            "expected_final_theorem": theorem,
+            "expected_final_theorem": selected_theorem,
             "acceptance": {
                 "format": "stage-a-whole-program-acceptance-v1",
                 "status": "ready",
-                "required_theorem": theorem,
-                "theorem": theorem,
+                "required_theorem": selected_theorem,
+                "theorem": selected_theorem,
                 "node_steps": [] if node_kind is None else [{"kind": node_kind}],
                 "linked_acceptance": {
                     "status": "ready" if linked else "incomplete",
@@ -277,14 +279,6 @@ end StageA
                 + json.dumps(str(root / "prepared-proof.json"))
                 + "; };",
                 "  sourceRoot = builtins.toPath " + json.dumps(str(root)) + ";",
-                *(
-                    [
-                        '  auditTheorem = "StageA.GeneratedRelational.'
-                        'candidatePE32ProgramsEquivalentLinked";'
-                    ]
-                    if mode.startswith("linked_")
-                    else []
-                ),
                 "}",
             ]
         )

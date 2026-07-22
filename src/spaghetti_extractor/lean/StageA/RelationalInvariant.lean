@@ -1569,6 +1569,73 @@ theorem StackWindowIdentityRegisterOutputClaim.holds_output_of_stateRel
   rw [relationKind', originalExpression', candidateExpression']
   simpa [Expr.eval] using baseRelated
 
+/-- A related stack pointer remains related after the same checked affine
+adjustment on both sides.  The proof is routed through the ordinary stack
+window transfer theorem, so wraparound, alignment, and image-disjointness are
+not hidden in a special return rule. -/
+structure StackWindowAffineRegisterOutputClaim where
+  output : RegisterRelationPair
+  source : StackWindowPair
+  target : StackWindowPair
+  adjustment : StackAdjustment
+deriving Repr, DecidableEq
+
+def StackWindowAffineRegisterOutputClaim.targetInvariant
+    (region : RegionRelation) (claim : StackWindowAffineRegisterOutputClaim) :
+    StateInvariant :=
+  { region.inputInvariant with stackWindows := [claim.target] }
+
+def StackWindowAffineRegisterOutputClaim.transferClaim
+    (claim : StackWindowAffineRegisterOutputClaim) : StackWindowAffineTransferClaim := {
+  source := claim.source
+  target := claim.target
+  adjustment := claim.adjustment
+}
+
+def StackWindowAffineRegisterOutputClaim.checked (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : StackWindowAffineRegisterOutputClaim) : Bool :=
+  claim.output.relation == .relatedWord &&
+    claim.output.original == claim.target.originalRegister &&
+    claim.output.candidate == claim.target.candidateRegister &&
+    decide (0 < claim.target.bytesAbove) &&
+    claim.transferClaim.checked region.inputInvariant
+      (claim.targetInvariant region) originalBehavior candidateBehavior
+
+theorem StackWindowAffineRegisterOutputClaim.holds_output_of_stateRel
+    (context : StaticProofContext) (world : RelationalWorld)
+    (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : StackWindowAffineRegisterOutputClaim)
+    (checked : claim.checked region originalBehavior candidateBehavior = true)
+    (originalState candidateState : MachineState)
+    (related : StateRel context world region.inputInvariant originalState candidateState) :
+    claim.output.relation.holds context.originalPe.imageBase
+      context.candidatePe.imageBase context.codeMap.entries.toList
+      (context.relationalValueTargets world)
+      ((originalBehavior.eval originalState).registers.get claim.output.original)
+      ((candidateBehavior.eval candidateState).registers.get claim.output.candidate) = true := by
+  simp only [StackWindowAffineRegisterOutputClaim.checked, Bool.and_eq_true,
+    beq_iff_eq, decide_eq_true_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨relationKind, originalRegister⟩, candidateRegister⟩,
+      bytesAbovePositive⟩, transferChecked⟩
+  rcases related with
+    ⟨_worldValid, stackRangesValid, _stackMemory, _importsStatic,
+      _importsComplete, _importsMemory, _originalImmutable,
+      _candidateImmutable, relatedCore, _specialRegisters⟩
+  have sourceStackWindows := relatedCore.2.2.2.1
+  have targetHolds := stackWindowAffineTransferHolds_of_checked
+    context world region.inputInvariant (claim.targetInvariant region)
+    originalBehavior candidateBehavior claim.transferClaim originalState
+    candidateState stackRangesValid sourceStackWindows transferChecked
+  have targetRelated := claim.target.relatedWord_of_holds context world
+    (originalBehavior.eval originalState).registers
+    (candidateBehavior.eval candidateState).registers stackRangesValid
+    bytesAbovePositive targetHolds
+  rw [relationKind, originalRegister, candidateRegister]
+  exact targetRelated
+
 inductive RegisterOutputClaim where
   | exactExpression (claim : ExactRegisterOutputClaim)
   | exactMemory (claim : ExactMemoryRegisterOutputClaim)
@@ -1580,6 +1647,7 @@ inductive RegisterOutputClaim where
   | stackRead32Sub (claim : StackRead32SubRegisterOutputClaim)
   | stackRead32Relative (claim : StackRead32RelativeRegisterOutputClaim)
   | stackWindowIdentity (claim : StackWindowIdentityRegisterOutputClaim)
+  | stackWindowAffine (claim : StackWindowAffineRegisterOutputClaim)
 deriving Repr, DecidableEq
 
 def RegisterOutputClaim.output : RegisterOutputClaim → RegisterRelationPair
@@ -1593,6 +1661,7 @@ def RegisterOutputClaim.output : RegisterOutputClaim → RegisterRelationPair
   | .stackRead32Sub claim => claim.output
   | .stackRead32Relative claim => claim.output
   | .stackWindowIdentity claim => claim.output
+  | .stackWindowAffine claim => claim.output
 
 def RegisterOutputClaim.checked
     (originalImageBase candidateImageBase : Nat)
@@ -1611,6 +1680,7 @@ def RegisterOutputClaim.checked
   | .stackRead32Sub _ => false
   | .stackRead32Relative _ => false
   | .stackWindowIdentity _ => false
+  | .stackWindowAffine _ => false
 
 def RegisterOutputClaim.Holds
     (originalImageBase candidateImageBase : Nat)
@@ -1636,6 +1706,7 @@ def RegisterOutputClaim.Holds
   | .stackRead32Sub _ => False
   | .stackRead32Relative _ => False
   | .stackWindowIdentity _ => False
+  | .stackWindowAffine _ => False
 
 theorem RegisterOutputClaim.holds_of_checked
     (originalImageBase candidateImageBase : Nat)
@@ -1666,6 +1737,7 @@ theorem RegisterOutputClaim.holds_of_checked
   | stackRead32Sub _ => simp [RegisterOutputClaim.checked] at checked
   | stackRead32Relative _ => simp [RegisterOutputClaim.checked] at checked
   | stackWindowIdentity _ => simp [RegisterOutputClaim.checked] at checked
+  | stackWindowAffine _ => simp [RegisterOutputClaim.checked] at checked
 
 theorem RegisterOutputClaim.holds_output
     (originalImageBase candidateImageBase : Nat)
@@ -1689,6 +1761,7 @@ theorem RegisterOutputClaim.holds_output
   case stackRead32Sub => contradiction
   case stackRead32Relative => contradiction
   case stackWindowIdentity => contradiction
+  case stackWindowAffine => contradiction
 
 def AllRegisterOutputClaims
     (originalImageBase candidateImageBase : Nat)
@@ -1799,6 +1872,7 @@ def RegisterOutputClaim.nonMemoryChecked
   | .stackRead32Sub claim => claim.checked region originalBehavior candidateBehavior
   | .stackRead32Relative claim => claim.checked region originalBehavior candidateBehavior
   | .stackWindowIdentity claim => claim.checked region originalBehavior candidateBehavior
+  | .stackWindowAffine claim => claim.checked region originalBehavior candidateBehavior
 
 theorem ExactRegisterOutputClaim.holds_output_of_stateRel
     (context : StaticProofContext) (world : RelationalWorld)
@@ -1963,6 +2037,10 @@ theorem registerRelationsHold_of_nonMemoryOutputClaims
             candidateBehavior checked.1 originalState candidateState related,
             ih checked.2⟩
       | stackWindowIdentity claim =>
+          exact ⟨claim.holds_output_of_stateRel context world region originalBehavior
+            candidateBehavior checked.1 originalState candidateState related,
+            ih checked.2⟩
+      | stackWindowAffine claim =>
           exact ⟨claim.holds_output_of_stateRel context world region originalBehavior
             candidateBehavior checked.1 originalState candidateState related,
             ih checked.2⟩

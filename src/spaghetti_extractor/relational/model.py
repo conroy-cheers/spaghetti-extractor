@@ -122,6 +122,124 @@ def _target_shaped_register_output_claims(
     return claims
 
 
+def _semantic_register_offset(
+    expression: Any, register: str,
+) -> int | None:
+    if not isinstance(expression, dict):
+        return None
+    operation = expression.get("op")
+    if operation == "input_reg":
+        return 0 if expression.get("reg") == register else None
+    if operation not in {"add", "sub"}:
+        return None
+    left = expression.get("left")
+    right = expression.get("right")
+    if operation == "add" and isinstance(left, dict) and left.get("op") == "constant":
+        left, right = right, left
+    if not isinstance(right, dict) or right.get("op") != "constant":
+        return None
+    value = right.get("value")
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value < 2**32:
+        return None
+    prior = _semantic_register_offset(left, register)
+    if prior is None:
+        return None
+    word_offset = (prior + value if operation == "add" else prior - value) % 2**32
+    return word_offset if word_offset < 2**31 else word_offset - 2**32
+
+
+def _stack_window_affine_register_output_claim(
+    source_region: dict[str, Any],
+    behavior_pair: dict[str, Any],
+    output: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Propose one related stack-pointer output from a checked affine window."""
+
+    if output.get("relation") != "related_word":
+        return None
+    original_registers = (behavior_pair.get("original_ir") or {}).get("registers")
+    candidate_registers = (behavior_pair.get("candidate_ir") or {}).get("registers")
+    if not isinstance(original_registers, dict) or not isinstance(
+        candidate_registers, dict
+    ):
+        return None
+    original_output = str(output.get("original"))
+    candidate_output = str(output.get("candidate"))
+    matches: list[dict[str, Any]] = []
+    for raw_window in source_region.get("stack_windows", []):
+        if not isinstance(raw_window, dict):
+            continue
+        window = dict(raw_window)
+        signed_offset = _semantic_register_offset(
+            original_registers.get(original_output),
+            str(window.get("original_register")),
+        )
+        candidate_offset = _semantic_register_offset(
+            candidate_registers.get(candidate_output),
+            str(window.get("candidate_register")),
+        )
+        if signed_offset is None or signed_offset != candidate_offset or signed_offset % 4:
+            continue
+        bytes_below = int(window.get("bytes_below", -1))
+        bytes_above = int(window.get("bytes_above", -1))
+        if signed_offset == 0:
+            adjustment = {"kind": "identity"}
+            target_below = bytes_below
+            target_above = bytes_above
+        elif signed_offset > 0:
+            if signed_offset >= 2**31 or bytes_above <= signed_offset:
+                continue
+            adjustment = {"kind": "add", "amount": signed_offset}
+            target_below = 0
+            target_above = bytes_above - signed_offset
+        else:
+            amount = -signed_offset
+            if amount >= 2**31 or bytes_below < amount:
+                continue
+            adjustment = {"kind": "subtract", "amount": amount}
+            target_below = bytes_below - amount
+            target_above = bytes_above + amount
+        if target_above <= 0:
+            continue
+        matches.append({
+            "kind": "stack_window_affine",
+            "output": dict(output),
+            "source": window,
+            "target": {
+                "range_id": int(window["range_id"]),
+                "original_register": original_output,
+                "candidate_register": candidate_output,
+                "bytes_below": target_below,
+                "bytes_above": target_above,
+            },
+            "adjustment": adjustment,
+        })
+    return matches[0] if len(matches) == 1 else None
+
+
+def _target_shaped_register_output_claims_with_stack_windows(
+    source: dict[str, Any],
+    target: dict[str, Any],
+    source_region: dict[str, Any],
+    behavior_pair: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    claims: list[dict[str, Any]] = []
+    for relation in target.get("inputs", []):
+        ordinary = _target_shaped_register_output_claims(
+            source, {"inputs": [relation]}
+        )
+        if ordinary is not None:
+            claims.extend(ordinary)
+            continue
+        affine = _stack_window_affine_register_output_claim(
+            source_region, behavior_pair, relation
+        )
+        if affine is None:
+            return None
+        claims.append(affine)
+    return claims
+
+
 def _stack_window_transfer_claims(
     source: dict[str, Any],
     target: dict[str, Any],

@@ -22,7 +22,18 @@ from .isa_conformance_80386 import import_singlestep_80386_json
 from .relational.mapping import stage_a_generate_map
 from .relational.interfaces import stage_a_export_interface_manifest
 from .roundtrip_fuzz.phase0 import generate_phase0_corpus
+from .roundtrip_fuzz.generator import SPIKE_CASES, generate_spike_corpus
+from .roundtrip_fuzz.discovery import (
+    compare_discovery_proposals,
+    discover_linker_map_pair,
+)
 from .roundtrip_fuzz.runner import run_roundtrip_corpus
+from .roundtrip_fuzz.reducer import reduce_case_manifest
+from .roundtrip_fuzz.model import load_case_manifest
+from .roundtrip_fuzz.violation import (
+    audit_prebuilt_checked_violation,
+    prepare_checked_violation_nix_input,
+)
 from .relational.isa_requirements import write_isa_requirement_inventory
 from .relational.isa_qualification import write_isa_semantic_qualification
 from .relational.reference_contract import (
@@ -122,13 +133,13 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         help="generate a deterministic real-PE round-trip qualification corpus",
     )
     fuzz_generate.add_argument("--seed", type=int, default=0)
-    fuzz_generate.add_argument("--count", type=int, default=1)
+    fuzz_generate.add_argument("--count", type=int)
     fuzz_generate.add_argument(
         "--profile",
         default="phase0-winapi-lockstep-v1",
-        choices=["phase0-winapi-lockstep-v1"],
+        choices=["phase0-winapi-lockstep-v1", "structured-spike-v1"],
     )
-    fuzz_generate.add_argument("--external-profile", type=Path, required=True)
+    fuzz_generate.add_argument("--external-profile", type=Path)
     fuzz_generate.add_argument(
         "--toolchain",
         choices=["gnu", "llvm-msvc"],
@@ -139,6 +150,26 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     fuzz_generate.add_argument("--force", action="store_true")
     fuzz_generate.add_argument("--out", type=Path, required=True)
     fuzz_generate.set_defaults(func=_cmd_stage_a_fuzz_generate)
+
+    fuzz_discover = subcommands.add_parser(
+        "stage-a-fuzz-discover",
+        help="recover an untrusted relation proposal with generator mappings withheld",
+    )
+    fuzz_discover.add_argument("--original", type=Path, required=True)
+    fuzz_discover.add_argument("--candidate", type=Path, required=True)
+    fuzz_discover.add_argument("--linker-map-original", type=Path, required=True)
+    fuzz_discover.add_argument("--linker-map-candidate", type=Path, required=True)
+    fuzz_discover.add_argument(
+        "--external-profile", type=Path, action="append", default=[]
+    )
+    fuzz_discover.add_argument(
+        "--ground-truth-proposal",
+        type=Path,
+        help="compare only after isolated discovery; never consumed by proposal generation",
+    )
+    fuzz_discover.add_argument("--force", action="store_true")
+    fuzz_discover.add_argument("--out", type=Path, required=True)
+    fuzz_discover.set_defaults(func=_cmd_stage_a_fuzz_discover)
 
     fuzz_run = subcommands.add_parser(
         "stage-a-fuzz-run",
@@ -154,12 +185,70 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     fuzz_run.add_argument("--flake", type=Path)
     fuzz_run.add_argument("--builders-file", type=Path)
     fuzz_run.add_argument(
+        "--genericity-baseline",
+        type=Path,
+        help="diagnostic-only checked-in proof-core inventory used for growth metrics",
+    )
+    fuzz_run.add_argument(
         "--stop-after-static-preflight",
         action="store_true",
         help="stop after static proof preparation without running Lean proof or violation replay",
     )
     fuzz_run.add_argument("--out", type=Path, required=True)
     fuzz_run.set_defaults(func=_cmd_stage_a_fuzz_run)
+
+    fuzz_prepare_violation = subcommands.add_parser(
+        "stage-a-prepare-violation",
+        help="prepare a checked counterexample leaf for a negative proof case",
+    )
+    fuzz_prepare_violation.add_argument("--case", type=Path, required=True)
+    fuzz_prepare_violation.add_argument("--case-root", type=Path, required=True)
+    fuzz_prepare_violation.add_argument("--prepared", type=Path, required=True)
+    fuzz_prepare_violation.add_argument("--out", type=Path, required=True)
+    fuzz_prepare_violation.set_defaults(func=_cmd_stage_a_prepare_violation)
+
+    fuzz_audit_violation = subcommands.add_parser(
+        "stage-a-audit-violation",
+        help="audit a Nix-built checked counterexample leaf",
+    )
+    fuzz_audit_violation.add_argument("--case", type=Path, required=True)
+    fuzz_audit_violation.add_argument("--case-root", type=Path, required=True)
+    fuzz_audit_violation.add_argument("--prepared", type=Path, required=True)
+    fuzz_audit_violation.add_argument("--proof-node", type=Path, required=True)
+    fuzz_audit_violation.add_argument("--out", type=Path, required=True)
+    fuzz_audit_violation.set_defaults(func=_cmd_stage_a_audit_violation)
+
+    fuzz_reduce = subcommands.add_parser(
+        "stage-a-fuzz-reduce",
+        help="structure-reduce a case while regenerating all proof inputs",
+    )
+    fuzz_reduce.add_argument("--case", type=Path, required=True)
+    fuzz_reduce.add_argument(
+        "--predicate",
+        required=True,
+        help=(
+            "unexpected-final-pass, expected-positive-not-accepted, "
+            "expected-violated-without-checked-witness, violation-id=ID, "
+            "violation-family=FAMILY, mismatch-family=FAMILY, "
+            "proof-frontier=CATEGORY, crash-or-internal-exception, "
+            "nondeterministic-artifact-hash, cache-key-mismatch, or "
+            "phase-duration=PHASE,SECONDS"
+        ),
+    )
+    fuzz_reduce.add_argument(
+        "--mode",
+        choices=["proof-core", "discovery", "stage-b-roundtrip"],
+        default="proof-core",
+    )
+    fuzz_reduce.add_argument("--toolchain", choices=["gnu", "llvm-msvc"])
+    fuzz_reduce.add_argument("--compiler")
+    fuzz_reduce.add_argument("--linker")
+    fuzz_reduce.add_argument("--flake", type=Path)
+    fuzz_reduce.add_argument("--builders-file", type=Path)
+    fuzz_reduce.add_argument("--max-accepted-steps", type=int, default=10_000)
+    fuzz_reduce.add_argument("--force", action="store_true")
+    fuzz_reduce.add_argument("--out", type=Path, required=True)
+    fuzz_reduce.set_defaults(func=_cmd_stage_a_fuzz_reduce)
 
     isa_conformance = subcommands.add_parser(
         "stage-a-check-isa-conformance",
@@ -618,15 +707,32 @@ def _cmd_stage_a_prove(args: Any) -> dict[str, Any]:
 
 
 def _cmd_stage_a_fuzz_generate(args: Any) -> dict[str, Any]:
-    if args.profile != "phase0-winapi-lockstep-v1":
-        raise StageAInputError(f"unsupported round-trip profile {args.profile!r}")
-    if args.seed != 0 or args.count != 1:
-        raise StageAInputError(
-            "the Phase 0 canary currently requires --seed 0 --count 1"
+    if args.profile == "phase0-winapi-lockstep-v1":
+        count = 1 if args.count is None else args.count
+        if args.seed != 0 or count != 1:
+            raise StageAInputError(
+                "the Phase 0 canary requires --seed 0 --count 1"
+            )
+        if args.external_profile is None:
+            raise StageAInputError(
+                "the Phase 0 canary requires --external-profile"
+            )
+        return generate_phase0_corpus(
+            out=args.out,
+            external_profile=args.external_profile,
+            toolchain=args.toolchain,
+            compiler=args.compiler,
+            linker=args.linker,
+            force=args.force,
         )
-    return generate_phase0_corpus(
+    if args.external_profile is not None:
+        raise StageAInputError(
+            "structured-spike-v1 has no imports and does not accept --external-profile"
+        )
+    return generate_spike_corpus(
         out=args.out,
-        external_profile=args.external_profile,
+        seed=args.seed,
+        count=SPIKE_CASES if args.count is None else args.count,
         toolchain=args.toolchain,
         compiler=args.compiler,
         linker=args.linker,
@@ -643,6 +749,67 @@ def _cmd_stage_a_fuzz_run(args: Any) -> dict[str, Any]:
         builders_file=args.builders_file,
         case_ids=args.case_ids,
         stop_after_static_preflight=args.stop_after_static_preflight,
+        genericity_baseline=args.genericity_baseline,
+    )
+
+
+def _cmd_stage_a_prepare_violation(args: Any) -> dict[str, Any]:
+    return prepare_checked_violation_nix_input(
+        case=load_case_manifest(args.case),
+        case_root=args.case_root,
+        prepared=args.prepared,
+        out=args.out,
+    )
+
+
+def _cmd_stage_a_audit_violation(args: Any) -> dict[str, Any]:
+    result = audit_prebuilt_checked_violation(
+        case=load_case_manifest(args.case),
+        case_root=args.case_root,
+        prepared=args.prepared,
+        proof_node=args.proof_node,
+        out=args.out,
+    )
+    return {
+        **result,
+        "status": "checked",
+        "violation_status": result.get("status"),
+    }
+
+
+def _cmd_stage_a_fuzz_discover(args: Any) -> dict[str, Any]:
+    result = discover_linker_map_pair(
+        original=args.original,
+        candidate=args.candidate,
+        linker_map_original=args.linker_map_original,
+        linker_map_candidate=args.linker_map_candidate,
+        external_profiles=args.external_profile,
+        out=args.out,
+        force=args.force,
+    )
+    if args.ground_truth_proposal is not None:
+        comparison = compare_discovery_proposals(
+            recovered=args.out / "recovered-proposal.json",
+            ground_truth=args.ground_truth_proposal,
+            out=args.out / "ground-truth-comparison.json",
+        )
+        result = {**result, "ground_truth_comparison": comparison}
+    return result
+
+
+def _cmd_stage_a_fuzz_reduce(args: Any) -> dict[str, Any]:
+    return reduce_case_manifest(
+        case=args.case,
+        predicate=args.predicate,
+        out=args.out,
+        mode=args.mode,
+        toolchain=args.toolchain,
+        compiler=args.compiler,
+        linker=args.linker,
+        flake=args.flake,
+        builders_file=args.builders_file,
+        max_accepted_steps=args.max_accepted_steps,
+        force=args.force,
     )
 
 
@@ -1082,6 +1249,9 @@ def _exit_status(result: dict[str, Any]) -> int:
         "checked",
         "complete",
         "detected",
+        "recovered",
+        "reduced",
+        "ready",
     }:
         return 0
     if verdict == "pass":

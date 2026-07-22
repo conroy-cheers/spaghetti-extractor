@@ -35,6 +35,7 @@ from .expressions import (
     _lean_import_register_seed_claim,
     _lean_machine_import_call_contract,
     _lean_masked_successor_tautology_proof,
+    _lean_direct_call_prepared_exact_word_seed_claim,
     _lean_direct_call_prepared_writes_claim,
     _lean_direct_call_stack_exact_word_seed_claim,
     _lean_direct_call_stack_writes_claim,
@@ -3077,10 +3078,17 @@ def _write_relational_segment_refinement_modules(
                     raise ValueError(
                         "branch predicate pullback requires checked guard agreement"
                     )
-                guard_expected = (
+                original_guard_expected = (
                     "true" if candidate.get("original_guard") is not None
                     and register_relations["edges"][edge_index].get("kind")
                         == "branch_taken"
+                    else "false"
+                )
+                candidate_guard_expected = (
+                    "true" if candidate.get("candidate_guard") is not None
+                    and candidate.get(
+                        "candidate_edge_kind", candidate.get("edge_kind")
+                    ) == "branch_taken"
                     else "false"
                 )
                 selected_simp = (
@@ -3110,25 +3118,25 @@ def _write_relational_segment_refinement_modules(
                         + "    exact guardTrue\n"
                         + "  have originalPredicateCondition : "
                         f"region{source_index}OutcomeCondition.eval originalState = "
-                        f"{guard_expected} := by\n"
+                        f"{original_guard_expected} := by\n"
                         + "    exact normalizedBranchCondition_eval_of_guard_true "
                         f"region{source_index}OutcomeCondition {edge_name}.originalGuard "
-                        f"{guard_expected} originalState (by decide) guardTrue\n"
+                        f"{original_guard_expected} originalState (by decide) guardTrue\n"
                         + "  have candidatePredicateCondition : "
                         f"{candidate_outcome_condition_name}.eval candidateState = "
-                        f"{guard_expected} := by\n"
+                        f"{candidate_guard_expected} := by\n"
                         + "    exact normalizedBranchCondition_eval_of_guard_true "
                         f"{candidate_outcome_condition_name} {edge_name}.candidateGuard "
-                        f"{guard_expected} candidateState (by decide) "
+                        f"{candidate_guard_expected} candidateState (by decide) "
                         "candidatePredicateGuard\n"
                         + "  have originalPredicateNormalizedCondition : "
                         f"({original_outcome_condition}).eval originalState = "
-                        f"{guard_expected} := by\n"
+                        f"{original_guard_expected} := by\n"
                         f"    simpa [region{source_index}OutcomeCondition] using "
                         "originalPredicateCondition\n"
                         + "  have candidatePredicateNormalizedCondition : "
                         f"({candidate_outcome_condition}).eval candidateState = "
-                        f"{guard_expected} := by\n"
+                        f"{candidate_guard_expected} := by\n"
                         f"    simpa [{candidate_outcome_condition_name}] using "
                         "candidatePredicateCondition\n"
                         + "  have originalPredicateSelected :\n"
@@ -3170,20 +3178,23 @@ def _write_relational_segment_refinement_modules(
                         "    exact guard\n"
                         "  have originalCondition : "
                         f"region{source_index}OutcomeCondition.eval originalState = "
-                        f"{guard_expected} := by\n"
+                        f"{original_guard_expected} := by\n"
                         "    exact normalizedBranchCondition_eval_of_guard_true "
                         f"region{source_index}OutcomeCondition {edge_name}.originalGuard "
-                        f"{guard_expected} originalState (by decide) guard\n"
+                        f"{original_guard_expected} originalState (by decide) guard\n"
                         "  have candidateCondition : "
                         f"{candidate_outcome_condition_name}.eval candidateState = "
-                        f"{guard_expected} := by\n"
+                        f"{candidate_guard_expected} := by\n"
                         "    exact normalizedBranchCondition_eval_of_guard_true "
                         f"{candidate_outcome_condition_name} {edge_name}.candidateGuard "
-                        f"{guard_expected} candidateState (by decide) candidateGuard\n"
+                        f"{candidate_guard_expected} candidateState (by decide) candidateGuard\n"
                     )
                     guard_shape_finish = (
-                        "\n  exact ⟨originalCondition, candidateCondition, "
-                        "originalCondition.trans candidateCondition.symm⟩"
+                        f"\n  simp only [region{source_index}OutcomeCondition, "
+                        f"{candidate_outcome_condition_name}] at "
+                        "originalCondition candidateCondition\n"
+                        "  exact ⟨originalCondition, candidateCondition, by "
+                        "simp [originalCondition, candidateCondition]⟩"
                     )
                 elif guard_claim is None:
                     guard_shape_setup = (
@@ -3202,20 +3213,23 @@ def _write_relational_segment_refinement_modules(
                         "    exact guard\n"
                         "  have originalCondition : "
                         f"region{source_index}OutcomeCondition.eval originalState = "
-                        f"{guard_expected} := by\n"
+                        f"{original_guard_expected} := by\n"
                         "    exact normalizedBranchCondition_eval_of_guard_true "
                         f"region{source_index}OutcomeCondition {edge_name}.originalGuard "
-                        f"{guard_expected} originalState (by decide) guard\n"
+                        f"{original_guard_expected} originalState (by decide) guard\n"
                         "  have candidateCondition : "
                         f"{candidate_outcome_condition_name}.eval candidateState = "
-                        f"{guard_expected} := by\n"
+                        f"{candidate_guard_expected} := by\n"
                         "    exact normalizedBranchCondition_eval_of_guard_true "
                         f"{candidate_outcome_condition_name} {edge_name}.candidateGuard "
-                        f"{guard_expected} candidateState (by decide) candidateGuard\n"
+                        f"{candidate_guard_expected} candidateState (by decide) candidateGuard\n"
                     )
                     guard_shape_finish = (
-                        "\n  exact ⟨originalCondition, candidateCondition, "
-                        "originalCondition.trans candidateCondition.symm⟩"
+                        f"\n  simp only [region{source_index}OutcomeCondition, "
+                        f"{candidate_outcome_condition_name}] at "
+                        "originalCondition candidateCondition\n"
+                        "  exact ⟨originalCondition, candidateCondition, by "
+                        "simp [originalCondition, candidateCondition]⟩"
                     )
                 flag_bits = contract["regions"][target_index].get(
                     "flag_inputs", list(FLAG_BITS)
@@ -3617,10 +3631,20 @@ def _write_relational_segment_refinement_modules(
                     assert isinstance(prepared_claim, dict)
                     stack_amount = int(prepared_claim["stack_amount"])
                     stack_amount_twos_complement = 2**32 - stack_amount
+                    exact_seed_definitions = "".join(
+                        f"def {prefix}DirectCallExactWordSeed{seed_index} : "
+                        "DirectCallPreparedExactWordSeedClaim := "
+                        f"{_lean_direct_call_prepared_exact_word_seed_claim(seed)}\n\n"
+                        for seed_index, seed in enumerate(
+                            prepared_claim.get("exact_word_seeds", [])
+                        )
+                    )
                     direct_call_shape_definition = (
                         f"def {prepared_claim_name} : "
                         "DirectCallPreparedWritesClaim := "
                         f"{_lean_direct_call_prepared_writes_claim(prepared_claim)}\n\n"
+                        + exact_seed_definitions
+                        +
                         f"theorem {shape_name} :\n"
                         "    DirectCallPreparedWritesSegmentShapeClosed "
                         f"staticProofContext {edge_name} "

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import inspect
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from functools import lru_cache
 from hashlib import sha256
@@ -13,9 +14,23 @@ from typing import Any, Callable
 from ..relational.build import stage_a_build_relational
 from ..relational.interfaces import stage_a_interface_manifest
 from ..relational.pipeline import stage_a_prepare_relational
+from ..relational.pipeline import stage_a_preflight_relational
+from ..relational.schema import (
+    RELATIONAL_ACCEPTANCE_THEOREMS,
+    SchemaError,
+    selected_relational_acceptance_theorem,
+)
 from ..stage_binary import StageAInputError
 from ..util import json_dumps, sha256_file, write_json
+from .discovery import (
+    DiscoveryCaseResult,
+    DiscoveryPhaseResult,
+    execute_case_discovery,
+)
 from .model import CaseManifest, ExpectedDisposition, load_corpus_manifest
+from .genericity import load_genericity_baseline, scan_acceptance_genericity
+from .metrics import GenericityEvidence, aggregate_roundtrip_metrics
+from .stage_b_roundtrip import run_static_opaque_stage_b_relational_roundtrip
 from .violation import produce_checked_violation, validate_checked_violation
 
 
@@ -66,6 +81,7 @@ class CaseRunResult:
     frontiers: tuple[dict[str, Any], ...]
     violation: dict[str, Any] | None
     error: str | None
+    discovery: dict[str, Any] | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -82,12 +98,26 @@ class CaseRunResult:
             },
             "frontiers": list(self.frontiers),
             "violation": self.violation,
+            "discovery": self.discovery,
             "error": self.error,
         }
 
 
 PrepareFunction = Callable[..., dict[str, Any]]
 BuildFunction = Callable[..., dict[str, Any]]
+PreflightFunction = Callable[..., dict[str, Any]]
+DiscoveryFunction = Callable[..., DiscoveryCaseResult]
+
+
+@dataclass(frozen=True)
+class ProofInputs:
+    original: Path
+    candidate: Path
+    relation_contract: Path
+    relation_contract_sha256: str
+    relation_origin: str
+    layout_contract: Path | None = None
+    layout_contract_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -108,8 +138,11 @@ def run_roundtrip_corpus(
     builders_file: Path | None = None,
     case_ids: tuple[str, ...] | list[str] = (),
     stop_after_static_preflight: bool = False,
+    genericity_baseline: Path | None = None,
     _prepare: PrepareFunction = stage_a_prepare_relational,
     _build: BuildFunction = stage_a_build_relational,
+    _preflight: PreflightFunction = stage_a_preflight_relational,
+    _discover: DiscoveryFunction = execute_case_discovery,
 ) -> dict[str, Any]:
     corpus_path = Path(corpus).resolve()
     corpus_root = corpus_path.parent
@@ -151,8 +184,20 @@ def run_roundtrip_corpus(
                 builders_file=builders_file,
                 prepare=_prepare,
                 build=_build,
+                preflight=_preflight,
+                discover=_discover,
                 stop_after_static_preflight=stop_after_static_preflight,
             )
+            discovery_result_path = case_out / "discovery" / "result.json"
+            if (
+                selected_mode is RunMode.DISCOVERY
+                and discovery_result_path.is_file()
+            ):
+                discovery_payload = json.loads(
+                    discovery_result_path.read_text(encoding="utf-8")
+                )
+                if isinstance(discovery_payload, dict):
+                    result = replace(result, discovery=discovery_payload)
         except (OSError, StageAInputError, ValueError) as exc:
             result = CaseRunResult(
                 case_id=case.id,
@@ -197,7 +242,7 @@ def run_roundtrip_corpus(
             result.case_id
             for result in results
             if not any(
-                phase.id == "proof-preparation" and phase.status == "ready"
+                phase.id == "static-preflight" and phase.status == "ready"
                 for phase in result.phases
             )
         ]
@@ -241,6 +286,43 @@ def run_roundtrip_corpus(
             "expectations_evaluated": False,
             "static_preflight_failure_case_ids": static_preflight_failures,
         })
+    genericity = scan_acceptance_genericity(
+        package_root=Path(__file__).resolve().parents[1],
+        baseline=(
+            None
+            if genericity_baseline is None
+            else load_genericity_baseline(genericity_baseline)
+        ),
+    )
+    enriched_inventory = replace(
+        genericity.current,
+        structural_shapes=tuple(sorted({
+            f"{case.template}|"
+            f"{'+'.join(sorted(case.transformations)) or 'none'}|"
+            f"{'none' if case.mutation is None else case.mutation.id}"
+            for case, _case_root in selected
+        })),
+        semantic_constructors=tuple(sorted({
+            capability
+            for case, _case_root in selected
+            for capability in case.capabilities
+        })),
+    )
+    metrics = aggregate_roundtrip_metrics(
+        cases=tuple(case for case, _case_root in selected),
+        results=tuple(results),
+        genericity=GenericityEvidence(
+            current=enriched_inventory,
+            baseline=genericity.baseline,
+            forbidden_dispatch_hits=genericity.forbidden_dispatch_hits,
+        ),
+    ).to_payload()
+    write_json(out / "metrics.json", metrics)
+    payload["metrics"] = {
+        "path": "metrics.json",
+        "sha256": sha256_file(out / "metrics.json"),
+        "proof_authority": False,
+    }
     write_json(out / "run-result.json", payload)
     return payload
 
@@ -255,44 +337,196 @@ def _run_case(
     builders_file: Path | None,
     prepare: PrepareFunction,
     build: BuildFunction,
+    preflight: PreflightFunction,
+    discover: DiscoveryFunction,
     stop_after_static_preflight: bool,
 ) -> CaseRunResult:
-    if mode is not RunMode.PROOF_CORE:
+    if mode is RunMode.STAGE_B_ROUNDTRIP:
+        return _run_stage_b_case(
+            case=case,
+            case_root=case_root,
+            mode=mode,
+            out=out,
+            flake=flake,
+            builders_file=builders_file,
+        )
+    phases: list[PhaseResult] = []
+    discovery_frontiers: list[dict[str, Any]] = []
+    discovered_relation: Path | None = None
+    discovered_layout: Path | None = None
+    discovery_out = out / "discovery"
+    if mode is RunMode.DISCOVERY:
+        discovery_result = discover(
+            case=case,
+            case_root=case_root,
+            out=discovery_out,
+        )
+        if not isinstance(discovery_result, DiscoveryCaseResult):
+            raise StageAInputError(
+                "round-trip discovery returned an unsupported result type"
+            )
+        phases.extend(
+            _roundtrip_discovery_phase(phase, discovery_out)
+            for phase in discovery_result.phases
+        )
+        discovery_frontiers.extend(discovery_result.frontiers)
+        handoff_started = time.monotonic()
+        try:
+            discovered_relation = _verified_discovery_artifact(
+                discovery_result,
+                discovery_out,
+                role="recovered_relation_contract",
+            )
+            discovered_layout = _verified_discovery_artifact(
+                discovery_result,
+                discovery_out,
+                role="recovered_layout_contract",
+                expected_format="stage-a-layout-contract-v1",
+            )
+        except StageAInputError as exc:
+            handoff_key = sha256(
+                json_dumps(discovery_result.to_payload()).encode("utf-8")
+            ).hexdigest()
+            phases.append(PhaseResult(
+                id="discovery-proof-handoff",
+                status="incomplete",
+                cache_key=handoff_key,
+                cache_hit=False,
+                duration_seconds=round(time.monotonic() - handoff_started, 6),
+                artifact=None,
+                artifact_sha256=None,
+                reason_code="recovered_contract_handoff_incomplete",
+            ))
+            discovery_frontiers.append({
+                "phase": "discovery-proof-handoff",
+                "reason_code": "recovered_contract_handoff_incomplete",
+                "message": str(exc),
+            })
+            return CaseRunResult(
+                case_id=case.id,
+                mode=mode,
+                expected=case.expectation.disposition,
+                actual=ExpectedDisposition.INCOMPLETE,
+                expectation_matched=(
+                    case.expectation.disposition is ExpectedDisposition.INCOMPLETE
+                ),
+                phases=tuple(phases),
+                acceptance_theorem=None,
+                acceptance_authority=None,
+                frontiers=tuple(discovery_frontiers),
+                violation=None,
+                error=None,
+            )
+        handoff_payload = {
+            "format": "stage-a-roundtrip-discovery-proof-handoff-v1",
+            "case_id": case.id,
+            "relation_contract": {
+                "path": discovered_relation.relative_to(discovery_out).as_posix(),
+                "sha256": sha256_file(discovered_relation),
+            },
+            "layout_contract": {
+                "path": discovered_layout.relative_to(discovery_out).as_posix(),
+                "sha256": sha256_file(discovered_layout),
+            },
+            "trust": {
+                "proof_authority": False,
+                "ordinary_proof_core_required": True,
+            },
+        }
+        handoff_path = discovery_out / "proof-handoff.json"
+        write_json(handoff_path, handoff_payload)
+        handoff_key = sha256(
+            json_dumps(handoff_payload).encode("utf-8")
+        ).hexdigest()
+        phases.append(PhaseResult(
+            id="discovery-proof-handoff",
+            status="ready",
+            cache_key=handoff_key,
+            cache_hit=False,
+            duration_seconds=round(time.monotonic() - handoff_started, 6),
+            artifact="discovery/proof-handoff.json",
+            artifact_sha256=sha256_file(handoff_path),
+            reason_code=None,
+        ))
+    artifacts = case.verify_artifacts(case_root)
+    proof_inputs = ProofInputs(
+        original=artifacts["original_pe"],
+        candidate=artifacts["candidate_pe"],
+        relation_contract=(
+            discovered_relation
+            if discovered_relation is not None
+            else artifacts["relation_contract"]
+        ),
+        relation_contract_sha256=(
+            sha256_file(discovered_relation)
+            if discovered_relation is not None
+            else case.artifact("relation_contract").sha256
+        ),
+        relation_origin=(
+            "discovery" if discovered_relation is not None else "corpus"
+        ),
+        layout_contract=discovered_layout,
+        layout_contract_sha256=(
+            sha256_file(discovered_layout)
+            if discovered_layout is not None else None
+        ),
+    )
+    static_path = out / "static-preflight.json"
+    static_key = _case_static_preflight_key(case, proof_inputs)
+    static_cache_hit = _static_preflight_cache_matches(
+        path=static_path, cache_key=static_key,
+    )
+    static_started = time.monotonic()
+    if static_cache_hit:
+        static_result = json.loads(static_path.read_text(encoding="utf-8"))
+    else:
+        static_result = dict(preflight(
+            original=proof_inputs.original,
+            candidate=proof_inputs.candidate,
+            relation_contract=proof_inputs.relation_contract,
+        ))
+        static_result["roundtrip_cache_key"] = static_key
+        write_json(static_path, static_result)
+    static_ready = static_result.get("status") == "ready"
+    phases.append(PhaseResult(
+        id="static-preflight",
+        status="ready" if static_ready else "incomplete",
+        cache_key=static_key,
+        cache_hit=static_cache_hit,
+        duration_seconds=round(time.monotonic() - static_started, 6),
+        artifact="static-preflight.json",
+        artifact_sha256=sha256_file(static_path),
+        reason_code=(None if static_ready else str(
+            static_result.get("reason_code") or "static_preflight_incomplete"
+        )),
+    ))
+    if not static_ready or stop_after_static_preflight:
         return CaseRunResult(
             case_id=case.id,
             mode=mode,
             expected=case.expectation.disposition,
             actual=ExpectedDisposition.INCOMPLETE,
             expectation_matched=(
+                None if stop_after_static_preflight else
                 case.expectation.disposition is ExpectedDisposition.INCOMPLETE
-                and case.expectation.reason_family == f"{mode.value}-not-implemented"
             ),
-            phases=(PhaseResult(
-                id="mode-preflight",
-                status="incomplete",
-                cache_key=sha256_file(case_root / "case.json"),
-                cache_hit=False,
-                duration_seconds=0.0,
-                artifact=None,
-                artifact_sha256=None,
-                reason_code=f"{mode.value}-not-implemented",
-            ),),
+            phases=tuple(phases),
             acceptance_theorem=None,
             acceptance_authority=None,
-            frontiers=({
-                "phase": "mode-preflight",
-                "reason_code": f"{mode.value}-not-implemented",
-            },),
+            frontiers=tuple(discovery_frontiers + [
+                item for item in static_result.get("issues", [])
+                if isinstance(item, dict)
+            ]),
             violation=None,
             error=None,
         )
-    artifacts = case.verify_artifacts(case_root)
     prepared = out / "prepared"
     prepared_manifest = prepared / "prepared-proof.json"
-    prepare_key = _case_proof_input_key(case)
+    prepare_key = _case_proof_input_key(case, proof_inputs)
     prepare_cache_hit = _prepared_cache_matches(
         prepared=prepared,
         case=case,
+        proof_inputs=proof_inputs,
     )
     prepare_started = time.monotonic()
     if prepare_cache_hit:
@@ -301,21 +535,26 @@ def _run_case(
         if prepared.exists():
             shutil.rmtree(prepared)
         prepare_result = prepare(
-            original=artifacts["original_pe"],
-            candidate=artifacts["candidate_pe"],
-            relation_contract=artifacts["relation_contract"],
+            original=proof_inputs.original,
+            candidate=proof_inputs.candidate,
+            relation_contract=proof_inputs.relation_contract,
             out=prepared,
         )
         write_json(
             prepared / "roundtrip-input-binding.json",
-            _input_binding_payload(case),
+            _input_binding_payload(case, proof_inputs),
         )
     prepare_duration = round(time.monotonic() - prepare_started, 3)
     acceptance = prepare_result.get("acceptance")
-    acceptance_ready = (
-        isinstance(acceptance, dict) and acceptance.get("status") == "ready"
-    )
-    phases = [PhaseResult(
+    selected_theorem: str | None = None
+    acceptance_reason: str | None = None
+    if isinstance(acceptance, dict) and acceptance.get("status") == "ready":
+        try:
+            selected_theorem = selected_relational_acceptance_theorem(acceptance)
+        except SchemaError:
+            acceptance_reason = "invalid_selected_acceptance_theorem"
+    acceptance_ready = selected_theorem in RELATIONAL_ACCEPTANCE_THEOREMS
+    phases.append(PhaseResult(
         id="proof-preparation",
         status="ready" if acceptance_ready else "incomplete",
         cache_key=prepare_key,
@@ -326,23 +565,11 @@ def _run_case(
             sha256_file(prepared_manifest) if prepared_manifest.is_file() else None
         ),
         reason_code=(
-            None if acceptance_ready else _first_acceptance_reason(prepare_result)
+            None
+            if acceptance_ready
+            else acceptance_reason or _first_acceptance_reason(prepare_result)
         ),
-    )]
-    if stop_after_static_preflight:
-        return CaseRunResult(
-            case_id=case.id,
-            mode=mode,
-            expected=case.expectation.disposition,
-            actual=ExpectedDisposition.INCOMPLETE,
-            expectation_matched=None,
-            phases=tuple(phases),
-            acceptance_theorem=None,
-            acceptance_authority=None,
-            frontiers=tuple(_acceptance_frontiers(prepare_result)),
-            violation=None,
-            error=None,
-        )
+    ))
     if not acceptance_ready:
         return _incomplete_case_result(
             case=case,
@@ -351,75 +578,119 @@ def _run_case(
             phases=phases,
             prepare_result=prepare_result,
             prepared=prepared,
+            initial_frontiers=discovery_frontiers,
+            flake=flake,
+            builders_file=builders_file,
         )
     proof_out = out / "proof"
     proof_verdict = proof_out / "verdict.json"
-    build_cache_hit = _proof_cache_matches(proof=proof_out, case=case)
     build_started = time.monotonic()
-    if build_cache_hit:
-        build_result = json.loads(proof_verdict.read_text(encoding="utf-8"))
-    else:
-        if proof_out.exists():
-            shutil.rmtree(proof_out)
-        try:
-            build_result = build(
-                prepared=prepared,
-                out=proof_out,
-                executor="nix",
-                flake=flake,
-                builders_file=builders_file,
-            )
-        except StageAInputError as error:
-            phases.append(PhaseResult(
-                id="proof-build-and-audit",
-                status="incomplete",
-                cache_key=(
-                    sha256_file(prepared / "module-graph.json")
-                    if (prepared / "module-graph.json").is_file()
-                    else prepare_key
-                ),
-                cache_hit=False,
-                duration_seconds=round(time.monotonic() - build_started, 3),
-                artifact=None,
-                artifact_sha256=None,
-                reason_code="final_theorem_not_checked",
-            ))
-            violation_replay = _checked_violation_if_declared(
-                case=case,
-                case_root=case_root,
-                prepared=prepared,
-                out=out / "violation",
-            )
-            violation_result = (
-                violation_replay.result if violation_replay is not None else None
-            )
-            if violation_result is not None and violation_result["status"] == "violated":
-                phases.append(_violation_phase(replay=violation_replay))
-                return CaseRunResult(
-                    case_id=case.id,
-                    mode=mode,
-                    expected=case.expectation.disposition,
-                    actual=ExpectedDisposition.VIOLATED,
-                    expectation_matched=(
-                        case.expectation.disposition is ExpectedDisposition.VIOLATED
-                    ),
-                    phases=tuple(phases),
-                    acceptance_theorem=None,
-                    acceptance_authority=None,
-                    frontiers=tuple(_acceptance_frontiers(prepare_result)),
-                    violation=violation_result,
-                    error=None,
-                )
-            raise error
-        write_json(
-            proof_out / "roundtrip-input-binding.json",
-            _input_binding_payload(case),
+    try:
+        build_result = build(
+            prepared=prepared,
+            out=proof_out,
+            executor="nix",
+            flake=flake,
+            builders_file=builders_file,
         )
+    except StageAInputError as error:
+        phases.append(PhaseResult(
+            id="proof-build-and-audit",
+            status="incomplete",
+            cache_key=(
+                sha256_file(prepared / "module-graph.json")
+                if (prepared / "module-graph.json").is_file()
+                else prepare_key
+            ),
+            cache_hit=False,
+            duration_seconds=round(time.monotonic() - build_started, 3),
+            artifact="proof/verdict.json" if proof_verdict.is_file() else None,
+            artifact_sha256=(
+                sha256_file(proof_verdict) if proof_verdict.is_file() else None
+            ),
+            reason_code="final_theorem_not_checked",
+        ))
+        violation_replay = _checked_violation_if_declared(
+            case=case,
+            case_root=case_root,
+            prepared=prepared,
+            out=out / "violation",
+            flake=flake,
+            builders_file=builders_file,
+        )
+        violation_result = (
+            violation_replay.result if violation_replay is not None else None
+        )
+        if violation_result is not None and violation_result["status"] == "violated":
+            phases.append(_violation_phase(replay=violation_replay))
+            return CaseRunResult(
+                case_id=case.id,
+                mode=mode,
+                expected=case.expectation.disposition,
+                actual=ExpectedDisposition.VIOLATED,
+                expectation_matched=(
+                    case.expectation.disposition is ExpectedDisposition.VIOLATED
+                ),
+                phases=tuple(phases),
+                acceptance_theorem=None,
+                acceptance_authority=None,
+                frontiers=tuple(
+                    discovery_frontiers + _acceptance_frontiers(prepare_result)
+                ),
+                violation=violation_result,
+                error=None,
+            )
+        return CaseRunResult(
+            case_id=case.id,
+            mode=mode,
+            expected=case.expectation.disposition,
+            actual=ExpectedDisposition.INCOMPLETE,
+            expectation_matched=False,
+            phases=tuple(phases),
+            acceptance_theorem=None,
+            acceptance_authority=None,
+            frontiers=tuple(
+                discovery_frontiers
+                + _acceptance_frontiers(prepare_result)
+                + [{
+                    "phase": "proof-build-and-audit",
+                    "reason_code": "final_theorem_not_checked",
+                    "message": str(error),
+                }]
+            ),
+            violation=violation_result,
+            error=str(error),
+        )
+    if not isinstance(build_result, dict):
+        raise StageAInputError("relational proof build returned a non-object verdict")
+    persisted_build_result: dict[str, Any] | None = None
+    if proof_verdict.is_file():
+        try:
+            loaded_verdict = json.loads(proof_verdict.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            loaded_verdict = None
+        if isinstance(loaded_verdict, dict):
+            persisted_build_result = loaded_verdict
+    prepared_relation = prepared / "relation-contract.json"
+    write_json(
+        proof_out / "roundtrip-input-binding.json",
+        _input_binding_payload(case, proof_inputs),
+    )
     build_duration = round(time.monotonic() - build_started, 3)
     passed = (
-        build_result.get("status") == "pass"
-        and build_result.get("expected_final_theorem")
-            == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
+        persisted_build_result == build_result
+        and build_result.get("format") == "stage-a-relational-nix-build-v1"
+        and build_result.get("status") == "pass"
+        and selected_theorem in RELATIONAL_ACCEPTANCE_THEOREMS
+        and build_result.get("expected_final_theorem") == selected_theorem
+        and build_result.get("acceptance") == acceptance
+        and build_result.get("original", {}).get("sha256")
+            == case.artifact("original_pe").sha256
+        and build_result.get("candidate", {}).get("sha256")
+            == case.artifact("candidate_pe").sha256
+        and prepared_relation.is_file()
+        and build_result.get("relation_contract_sha256")
+            == sha256_file(prepared_relation)
         and build_result.get("checks", {}).get("lean_trust_zero") is True
         and build_result.get("checks", {}).get("final_theorem_matches") is True
     )
@@ -431,7 +702,7 @@ def _run_case(
             if (prepared / "module-graph.json").is_file()
             else prepare_key
         ),
-        cache_hit=build_cache_hit,
+        cache_hit=build_result.get("nix_work_reused") is True,
         duration_seconds=build_duration,
         artifact="proof/verdict.json" if proof_verdict.is_file() else None,
         artifact_sha256=sha256_file(proof_verdict) if proof_verdict.is_file() else None,
@@ -445,6 +716,8 @@ def _run_case(
             case_root=case_root,
             prepared=prepared,
             out=out / "violation",
+            flake=flake,
+            builders_file=builders_file,
         )
         violation_result = (
             violation_replay.result if violation_replay is not None else None
@@ -463,8 +736,84 @@ def _run_case(
             str(build_result.get("expected_final_theorem")) if passed else None
         ),
         acceptance_authority="whole_program_lean" if passed else None,
-        frontiers=tuple(_acceptance_frontiers(prepare_result)),
+        frontiers=tuple(
+            discovery_frontiers + _acceptance_frontiers(prepare_result)
+        ),
         violation=violation_result,
+        error=None,
+    )
+
+
+def _run_stage_b_case(
+    *,
+    case: CaseManifest,
+    case_root: Path,
+    mode: RunMode,
+    out: Path,
+    flake: Path | None,
+    builders_file: Path | None,
+) -> CaseRunResult:
+    started = time.monotonic()
+    stage_b_out = out / "stage-b-roundtrip"
+    result = run_static_opaque_stage_b_relational_roundtrip(
+        original_pe=case.artifact("original_pe").verify(case_root),
+        original_linker_map=case.artifact("original_linker_map").verify(case_root),
+        out=stage_b_out,
+        flake=flake,
+        builders_file=builders_file,
+    )
+    status = str(result.get("status") or "incomplete")
+    actual = {
+        "pass": ExpectedDisposition.PASS,
+        "violated": ExpectedDisposition.VIOLATED,
+    }.get(status, ExpectedDisposition.INCOMPLETE)
+    proof = result.get("proof")
+    proof = proof if isinstance(proof, dict) else {}
+    final_theorem = proof.get("final_theorem")
+    accepted = (
+        actual is ExpectedDisposition.PASS
+        and proof.get("lean_kernel_checked") is True
+        and final_theorem in RELATIONAL_ACCEPTANCE_THEOREMS
+    )
+    if actual is ExpectedDisposition.PASS and not accepted:
+        actual = ExpectedDisposition.INCOMPLETE
+    result_path = stage_b_out / "proved-candidate" / "result.json"
+    reason_codes = result.get("reason_codes")
+    first_reason = (
+        str(reason_codes[0])
+        if isinstance(reason_codes, list) and reason_codes
+        else None
+    )
+    return CaseRunResult(
+        case_id=case.id,
+        mode=mode,
+        expected=case.expectation.disposition,
+        actual=actual,
+        expectation_matched=actual is case.expectation.disposition,
+        phases=(PhaseResult(
+            id="opaque-stage-b-roundtrip",
+            status=actual.value,
+            cache_key=sha256_file(case_root / "case.json"),
+            cache_hit=False,
+            duration_seconds=round(time.monotonic() - started, 3),
+            artifact=(
+                "stage-b-roundtrip/proved-candidate/result.json"
+                if result_path.is_file()
+                else None
+            ),
+            artifact_sha256=(
+                sha256_file(result_path) if result_path.is_file() else None
+            ),
+            reason_code=first_reason,
+        ),),
+        acceptance_theorem=str(final_theorem) if accepted else None,
+        acceptance_authority="whole_program_lean" if accepted else None,
+        frontiers=tuple(
+            item
+            for item in proof.get("diagnostics", [])
+            if isinstance(item, dict)
+        ),
+        violation=None,
         error=None,
     )
 
@@ -477,12 +826,17 @@ def _incomplete_case_result(
     phases: list[PhaseResult],
     prepare_result: dict[str, Any],
     prepared: Path,
+    initial_frontiers: list[dict[str, Any]],
+    flake: Path | None,
+    builders_file: Path | None,
 ) -> CaseRunResult:
     violation_replay = _checked_violation_if_declared(
         case=case,
         case_root=case_root,
         prepared=prepared,
         out=prepared.parent / "violation",
+        flake=flake,
+        builders_file=builders_file,
     )
     violation_result = (
         violation_replay.result if violation_replay is not None else None
@@ -510,7 +864,7 @@ def _incomplete_case_result(
         phases=tuple(phases),
         acceptance_theorem=None,
         acceptance_authority=None,
-        frontiers=tuple(_acceptance_frontiers(prepare_result)),
+        frontiers=tuple(initial_frontiers + _acceptance_frontiers(prepare_result)),
         violation=violation_result,
         error=None,
     )
@@ -522,12 +876,21 @@ def _checked_violation_if_declared(
     case_root: Path,
     prepared: Path,
     out: Path,
+    flake: Path | None,
+    builders_file: Path | None,
 ) -> CheckedViolationReplay | None:
     roles = {artifact.role for artifact in case.artifacts}
-    if "violation_witness" not in roles:
+    declared_witness = "violation_witness" in roles
+    if (
+        not declared_witness
+        and case.expectation.disposition is not ExpectedDisposition.VIOLATED
+    ):
         return None
     started = time.monotonic()
-    witness_path = case.artifact("violation_witness").verify(case_root)
+    witness_path = (
+        case.artifact("violation_witness").verify(case_root)
+        if declared_witness else None
+    )
     cache_inputs = _violation_replay_input_binding(
         case=case,
         prepared=prepared,
@@ -545,7 +908,25 @@ def _checked_violation_if_declared(
             case_root=case_root,
             prepared=prepared,
             out=out,
+            flake=flake,
+            builders_file=builders_file,
         )
+        if production.get("status") != "checked":
+            artifact = Path(str(production.get("derivation") or ""))
+            return CheckedViolationReplay(
+                result={
+                    "format": "stage-a-checked-violation-result-v1",
+                    "status": "incomplete",
+                    "family": case.expectation.witness_family,
+                    "reason_code": production.get("reason_code"),
+                },
+                cache_key=cache_key,
+                cache_hit=False,
+                duration_seconds=round(time.monotonic() - started, 6),
+                artifact_sha256=(
+                    sha256_file(artifact) if artifact.is_file() else "0" * 64
+                ),
+            )
         audit_path = Path(production["audit"])
         source_path = Path(production["source"])
         write_json(out / "roundtrip-input-binding.json", {
@@ -556,12 +937,15 @@ def _checked_violation_if_declared(
                 "source_sha256": sha256_file(source_path),
             },
         })
+    effective_witness = witness_path if witness_path is not None else out / "witness.json"
     result = validate_checked_violation(
-        witness_path=witness_path,
+        witness_path=effective_witness,
         audit_path=audit_path,
         case=case,
         case_root=case_root,
         prepared=prepared,
+        flake=flake,
+        builders_file=builders_file,
     )
     return CheckedViolationReplay(
         result=result,
@@ -604,7 +988,16 @@ def _violation_replay_input_binding(
     return {
         "format": "stage-a-roundtrip-violation-replay-input-v1",
         "case_id": case.id,
-        "witness_sha256": case.artifact("violation_witness").sha256,
+        "witness_mode": (
+            "declared" if any(
+                artifact.role == "violation_witness" for artifact in case.artifacts
+            ) else "automatic"
+        ),
+        "witness_sha256": (
+            case.artifact("violation_witness").sha256
+            if any(artifact.role == "violation_witness" for artifact in case.artifacts)
+            else None
+        ),
         "original_sha256": case.artifact("original_pe").sha256,
         "candidate_sha256": case.artifact("candidate_pe").sha256,
         "relation_contract_sha256": sha256_file(relation_contract),
@@ -642,6 +1035,100 @@ def _violation_cache_matches(*, out: Path, inputs: dict[str, Any]) -> bool:
     )
 
 
+def _roundtrip_discovery_phase(
+    phase: DiscoveryPhaseResult,
+    discovery_out: Path,
+) -> PhaseResult:
+    if not isinstance(phase, DiscoveryPhaseResult):
+        raise StageAInputError("round-trip discovery emitted an untyped phase")
+    artifact = None
+    artifact_sha256 = None
+    if phase.artifact is not None:
+        artifact_path = _contained_discovery_path(
+            discovery_out,
+            phase.artifact,
+            context=f"discovery phase {phase.id!r} artifact",
+        )
+        if not artifact_path.is_file():
+            raise StageAInputError(
+                f"discovery phase {phase.id!r} artifact does not exist: "
+                f"{artifact_path}"
+            )
+        artifact_sha256 = sha256_file(artifact_path)
+        if artifact_sha256 != phase.artifact_sha256:
+            raise StageAInputError(
+                f"discovery phase {phase.id!r} artifact hash does not match"
+            )
+        artifact = f"discovery/{Path(phase.artifact).as_posix()}"
+    elif phase.artifact_sha256 is not None:
+        raise StageAInputError(
+            f"discovery phase {phase.id!r} has a hash without an artifact"
+        )
+    return PhaseResult(
+        id=phase.id,
+        status=phase.status,
+        cache_key=phase.cache_key,
+        cache_hit=phase.cache_hit,
+        duration_seconds=phase.duration_seconds,
+        artifact=artifact,
+        artifact_sha256=artifact_sha256,
+        reason_code=phase.reason_code,
+    )
+
+
+def _verified_discovery_artifact(
+    result: DiscoveryCaseResult,
+    discovery_out: Path,
+    *,
+    role: str,
+    expected_format: str | None = None,
+) -> Path:
+    matches = [artifact for artifact in result.artifacts if artifact.role == role]
+    if len(matches) != 1:
+        raise StageAInputError(
+            f"round-trip discovery must publish exactly one {role!r} artifact"
+        )
+    artifact = matches[0]
+    path = _contained_discovery_path(
+        discovery_out,
+        artifact.path,
+        context=f"discovery artifact {role!r}",
+    )
+    if not path.is_file():
+        raise StageAInputError(f"discovery artifact {role!r} does not exist: {path}")
+    if sha256_file(path) != artifact.sha256:
+        raise StageAInputError(f"discovery artifact {role!r} hash does not match")
+    if expected_format is not None:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise StageAInputError(
+                f"discovery artifact {role!r} is not valid JSON"
+            ) from exc
+        if not isinstance(payload, dict) or payload.get("format") != expected_format:
+            raise StageAInputError(
+                f"discovery artifact {role!r} does not have format "
+                f"{expected_format!r}"
+            )
+    return path
+
+
+def _contained_discovery_path(
+    root: Path,
+    relative: str,
+    *,
+    context: str,
+) -> Path:
+    relative_path = Path(relative)
+    if relative_path.is_absolute():
+        raise StageAInputError(f"{context} path must be relative")
+    resolved_root = root.resolve()
+    resolved = (resolved_root / relative_path).resolve()
+    if resolved_root not in resolved.parents:
+        raise StageAInputError(f"{context} escapes the discovery output")
+    return resolved
+
+
 def _directory_sha256(root: Path) -> str:
     digest = sha256()
     for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
@@ -665,16 +1152,75 @@ def _violation_replay_implementation_sha256() -> str:
     return digest.hexdigest()
 
 
-def _case_proof_input_key(case: CaseManifest) -> str:
+def _case_proof_input_key(
+    case: CaseManifest,
+    proof_inputs: ProofInputs,
+) -> str:
     values = [
-        case.artifact(role).sha256
-        for role in ("original_pe", "candidate_pe", "relation_contract")
+        case.artifact("original_pe").sha256,
+        case.artifact("candidate_pe").sha256,
+        proof_inputs.relation_contract_sha256,
+        proof_inputs.layout_contract_sha256 or "no-layout-contract",
+        proof_inputs.relation_origin,
     ]
     values.append(_preparation_implementation_sha256())
     return sha256("\0".join(values).encode("ascii")).hexdigest()
 
 
-def _prepared_cache_matches(*, prepared: Path, case: CaseManifest) -> bool:
+def _case_static_preflight_key(
+    case: CaseManifest,
+    proof_inputs: ProofInputs,
+) -> str:
+    values = [
+        case.artifact("original_pe").sha256,
+        case.artifact("candidate_pe").sha256,
+        proof_inputs.relation_contract_sha256,
+        proof_inputs.layout_contract_sha256 or "no-layout-contract",
+        proof_inputs.relation_origin,
+    ]
+    values.append(_static_preflight_implementation_sha256())
+    return sha256("\0".join(values).encode("ascii")).hexdigest()
+
+
+def _static_preflight_cache_matches(*, path: Path, cache_key: str) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("format") == "stage-a-relational-static-preflight-v1"
+        and payload.get("roundtrip_cache_key") == cache_key
+    )
+
+
+@lru_cache(maxsize=1)
+def _static_preflight_implementation_sha256() -> str:
+    package_root = Path(__file__).resolve().parents[1]
+    paths = (
+        package_root / "stage_binary.py",
+        package_root / "relational" / "contract.py",
+        package_root / "relational" / "extraction.py",
+        package_root / "relational" / "preflight.py",
+        package_root / "relational" / "schema.py",
+        package_root / "relational" / "x87_profile.py",
+    )
+    digest = sha256()
+    digest.update(inspect.getsource(stage_a_preflight_relational).encode("utf-8"))
+    for path in paths:
+        digest.update(path.relative_to(package_root).as_posix().encode("utf-8"))
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _prepared_cache_matches(
+    *,
+    prepared: Path,
+    case: CaseManifest,
+    proof_inputs: ProofInputs,
+) -> bool:
     manifest_path = prepared / "prepared-proof.json"
     interface_path = prepared / "stage-a-interface-manifest.json"
     binding_path = prepared / "roundtrip-input-binding.json"
@@ -695,40 +1241,24 @@ def _prepared_cache_matches(*, prepared: Path, case: CaseManifest) -> bool:
         and manifest.get("original_sha256") == case.artifact("original_pe").sha256
         and manifest.get("candidate_sha256") == case.artifact("candidate_pe").sha256
         and interface == stage_a_interface_manifest()
-        and binding == _input_binding_payload(case)
+        and binding == _input_binding_payload(case, proof_inputs)
         and (prepared / "module-graph.json").is_file()
+        and (prepared / "relation-contract.json").is_file()
     )
 
 
-def _proof_cache_matches(*, proof: Path, case: CaseManifest) -> bool:
-    verdict_path = proof / "verdict.json"
-    binding_path = proof / "roundtrip-input-binding.json"
-    if not verdict_path.is_file() or not binding_path.is_file():
-        return False
-    try:
-        verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
-        binding = json.loads(binding_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    return (
-        verdict.get("format") == "stage-a-relational-nix-build-v1"
-        and verdict.get("status") == "pass"
-        and verdict.get("original", {}).get("sha256") == case.artifact("original_pe").sha256
-        and verdict.get("candidate", {}).get("sha256") == case.artifact("candidate_pe").sha256
-        and binding == _input_binding_payload(case)
-        and verdict.get("expected_final_theorem")
-            == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
-        and verdict.get("checks", {}).get("lean_trust_zero") is True
-    )
-
-
-def _input_binding_payload(case: CaseManifest) -> dict[str, Any]:
+def _input_binding_payload(
+    case: CaseManifest,
+    proof_inputs: ProofInputs,
+) -> dict[str, Any]:
     return {
-        "format": "stage-a-roundtrip-proof-input-binding-v1",
+        "format": "stage-a-roundtrip-proof-input-binding-v2",
         "case_id": case.id,
         "original_sha256": case.artifact("original_pe").sha256,
         "candidate_sha256": case.artifact("candidate_pe").sha256,
-        "relation_contract_input_sha256": case.artifact("relation_contract").sha256,
+        "relation_contract_input_sha256": proof_inputs.relation_contract_sha256,
+        "relation_contract_origin": proof_inputs.relation_origin,
+        "layout_contract_input_sha256": proof_inputs.layout_contract_sha256,
         "semantic_program_sha256": case.semantic_program_sha256,
         "preparation_implementation_sha256": _preparation_implementation_sha256(),
     }

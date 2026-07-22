@@ -21,6 +21,7 @@ from .semantic import (
     RegisterArithmetic,
     Return,
     ScalarValue,
+    SemanticBlock,
     SemanticProgram,
     StackArithmetic,
     StoreStack,
@@ -33,6 +34,15 @@ class AssemblyLoweringVariant:
     id: str
     nop_before_external_symbols: tuple[str, ...] = ()
     invert_branch_blocks: tuple[str, ...] = ()
+    nop_before_blocks: tuple[str, ...] = ()
+    align_blocks: tuple[str, ...] = ()
+    split_blocks: tuple[str, ...] = ()
+    bridge_jump_blocks: tuple[str, ...] = ()
+    reversible_spill_blocks: tuple[str, ...] = ()
+    reassign_eax_arithmetic_blocks: tuple[str, ...] = ()
+    lea_arithmetic_blocks: tuple[str, ...] = ()
+    fallthrough_branch_blocks: tuple[str, ...] = ()
+    block_order: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -51,6 +61,28 @@ def lower_semantic_program_to_gnu_assembly(
     *,
     variant: AssemblyLoweringVariant,
 ) -> str:
+    ordered_blocks = _ordered_blocks(program, variant)
+    known_block_ids = {block.id for block in program.blocks}
+    referenced_variant_blocks = {
+        block_id
+        for values in (
+            variant.invert_branch_blocks,
+            variant.nop_before_blocks,
+            variant.align_blocks,
+            variant.split_blocks,
+            variant.bridge_jump_blocks,
+            variant.reversible_spill_blocks,
+            variant.reassign_eax_arithmetic_blocks,
+            variant.lea_arithmetic_blocks,
+            variant.fallthrough_branch_blocks,
+        )
+        for block_id in values
+    }
+    unknown_variant_blocks = sorted(referenced_variant_blocks - known_block_ids)
+    if unknown_variant_blocks:
+        raise StageAInputError(
+            f"lowering variant names unknown blocks {unknown_variant_blocks}"
+        )
     block_symbols = {
         block.id: (
             "_mainCRTStartup" if block.id == program.entry else _asm_symbol(block.id)
@@ -77,16 +109,43 @@ def lower_semantic_program_to_gnu_assembly(
             ))
         lines.append("")
     lines.extend(("    .text", f"    .globl {block_symbols[program.entry]}"))
-    for block in program.blocks:
+    for block in ordered_blocks:
         if block.id != program.entry:
             lines.append(f"    .globl {block_symbols[block.id]}")
     for imported in imports:
         lines.append(f'    .extern "{imported}"')
     lines.append("")
-    for block in program.blocks:
+    for block_index, block in enumerate(ordered_blocks):
+        if block.id in set(variant.align_blocks):
+            lines.append("    .balign 16, 0x90")
         lines.append(f"{block_symbols[block.id]}:")
-        for operation in block.operations:
-            lines.extend(_lower_operation(operation, object_symbols=object_symbols))
+        if block.id in set(variant.nop_before_blocks):
+            lines.append("    nop")
+        if block.id in set(variant.reversible_spill_blocks):
+            lines.extend((
+                "    lea esp, [esp - 4]",
+                "    xchg ebx, DWORD PTR [esp]",
+                "    xchg ebx, DWORD PTR [esp]",
+                "    lea esp, [esp + 4]",
+            ))
+        for operation_index, operation in enumerate(block.operations):
+            lines.extend(_lower_operation(
+                operation,
+                object_symbols=object_symbols,
+                reassign_eax=(
+                    block.id in set(variant.reassign_eax_arithmetic_blocks)
+                ),
+                use_lea=(block.id in set(variant.lea_arithmetic_blocks)),
+            ))
+            if (
+                block.id in set(variant.split_blocks)
+                and operation_index + 1 == max(1, len(block.operations) // 2)
+            ):
+                split = f".L{_asm_symbol(block.id).lstrip('_')}_split"
+                lines.extend((f"    jmp {split}", f"{split}:"))
+        if block.id in set(variant.bridge_jump_blocks):
+            bridge = f".L{_asm_symbol(block.id).lstrip('_')}_bridge"
+            lines.extend((f"    jmp {bridge}", f"{bridge}:"))
         terminator = block.terminator
         if isinstance(terminator, Jump):
             lines.append(f"    jmp {block_symbols[terminator.target]}")
@@ -95,13 +154,22 @@ def lower_semantic_program_to_gnu_assembly(
             if block.id in set(variant.invert_branch_blocks):
                 condition = "jne" if condition == "je" else "je"
                 lines.append(f"    {condition} {block_symbols[terminator.false_target]}")
-                lines.append(f"    jmp {block_symbols[terminator.true_target]}")
+                fallthrough = terminator.true_target
             else:
                 lines.append(f"    {condition} {block_symbols[terminator.true_target]}")
-                lines.append(f"    jmp {block_symbols[terminator.false_target]}")
+                fallthrough = terminator.false_target
+            next_id = _next_block_id_from_order(ordered_blocks, block_index)
+            if block.id in set(variant.fallthrough_branch_blocks):
+                if next_id != fallthrough:
+                    raise StageAInputError(
+                        f"branch block {block.id!r} declares fallthrough to "
+                        f"{fallthrough!r}, but the next lowered block is {next_id!r}"
+                    )
+            else:
+                lines.append(f"    jmp {block_symbols[fallthrough]}")
         elif isinstance(terminator, InternalCall):
             lines.append(f"    call {block_symbols[terminator.target]}")
-            if _next_block_id(program, block.id) != terminator.continuation:
+            if _next_block_id_from_order(ordered_blocks, block_index) != terminator.continuation:
                 lines.append(f"    jmp {block_symbols[terminator.continuation]}")
         elif isinstance(terminator, Return):
             lines.append("    ret")
@@ -110,7 +178,7 @@ def lower_semantic_program_to_gnu_assembly(
                 lines.append("    nop")
             lines.append(f'    call "{terminator.decorated_symbol}"')
             if terminator.continuation is not None:
-                next_id = _next_block_id(program, block.id)
+                next_id = _next_block_id_from_order(ordered_blocks, block_index)
                 if next_id != terminator.continuation:
                     lines.append(f"    jmp {block_symbols[terminator.continuation]}")
             elif terminator.disposition == "terminates":
@@ -337,6 +405,8 @@ def _lower_operation(
     ),
     *,
     object_symbols: dict[str, str],
+    reassign_eax: bool = False,
+    use_lea: bool = False,
 ) -> list[str]:
     if isinstance(operation, AdjustStack):
         instruction = "sub" if operation.bytes > 0 else "add"
@@ -359,6 +429,18 @@ def _lower_operation(
             f"{_assembly_value(operation.value, object_symbols=object_symbols)}"
         ]
     if isinstance(operation, RegisterArithmetic):
+        if reassign_eax and operation.register == "eax":
+            return [
+                "    xchg eax, edx",
+                f"    {operation.operator} edx, {_assembly_word(operation.immediate)}",
+                "    xchg eax, edx",
+            ]
+        if use_lea and operation.register == "eax" and operation.operator in {"add", "sub"}:
+            opcode = "0x05" if operation.operator == "add" else "0x2d"
+            return [
+                f"    .byte {opcode}",
+                f"    .long {operation.immediate & 0xFFFFFFFF}",
+            ]
         return [
             f"    {operation.operator} {operation.register}, "
             f"{_assembly_word(operation.immediate)}"
@@ -406,6 +488,29 @@ def _next_block_id(program: SemanticProgram, block_id: str) -> str | None:
         index for index, block in enumerate(program.blocks) if block.id == block_id
     )
     return program.blocks[index + 1].id if index + 1 < len(program.blocks) else None
+
+
+def _ordered_blocks(
+    program: SemanticProgram, variant: AssemblyLoweringVariant,
+) -> tuple[SemanticBlock, ...]:
+    if not variant.block_order:
+        return program.blocks
+    expected = {block.id for block in program.blocks}
+    supplied = tuple(variant.block_order)
+    if len(supplied) != len(set(supplied)) or set(supplied) != expected:
+        raise StageAInputError(
+            "lowering variant block_order must be a permutation of all blocks"
+        )
+    by_id = {block.id: block for block in program.blocks}
+    return tuple(by_id[block_id] for block_id in supplied)
+
+
+def _next_block_id_from_order(
+    blocks: tuple[SemanticBlock, ...], index: int,
+) -> str | None:
+    if index + 1 >= len(blocks):
+        return None
+    return str(blocks[index + 1].id)
 
 
 def _tool_output(command: list[str], *, first_line: bool = False) -> str:

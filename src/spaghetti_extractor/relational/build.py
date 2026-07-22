@@ -16,7 +16,9 @@ from .artifacts import read_json_object as _read_json
 from .contract import _load_contract
 from .report_schema import RELATIONAL_PREPARED_REPORT_FILES
 from .schema import (
+    RELATIONAL_ACCEPTANCE_THEOREMS,
     RELATIONAL_ACCEPTANCE_THEOREM,
+    RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
     RELATIONAL_KERNEL_MODULES,
     STAGE_A_RELATIONAL_MODEL_ID,
     STAGE_A_RELATIONAL_PROFILE_ID,
@@ -24,6 +26,7 @@ from .schema import (
     PreparedProofDigests,
     SchemaError,
     StageAInterfaceManifest,
+    selected_relational_acceptance_theorem,
 )
 from .ir import CompositionProgressIR, RelationalProofIR, WholeProgramAcceptanceIR
 
@@ -56,9 +59,39 @@ def _relational_nix_build_command(
         ])
     command.extend(["--no-link", "--json"])
     if builders_file is not None:
-        command.extend(["--option", "builders-use-substitutes", "true"])
+        command.extend([
+            "--option",
+            "builders-use-substitutes",
+            os.environ.get(
+                "SPAGHETTI_EXTRACTOR_NIX_BUILDERS_USE_SUBSTITUTES", "true"
+            ),
+        ])
+    substituters = os.environ.get("SPAGHETTI_EXTRACTOR_NIX_SUBSTITUTERS")
+    if substituters:
+        command.extend(["--option", "substituters", substituters])
     command.extend(["--impure", "--expr", expression])
     return command
+
+
+def _relational_nix_work_reused(stderr: str, *, succeeded: bool) -> bool:
+    """Classify reuse from the real build without evaluating the graph twice.
+
+    This is diagnostic only. The typed Lean audit remains authoritative. Nix
+    reports every realization, substitution, and remote copy on stderr; an
+    otherwise successful quiet invocation therefore reused the complete graph.
+    """
+
+    if not succeeded:
+        return False
+    events = stderr.lower()
+    realization_reported = any(marker in events for marker in (
+        "will be built",
+        "will be fetched",
+        "will be substituted",
+        "building '",
+        "building derivation",
+    )) or re.search(r"copying (?:path|\d+ paths?)", events) is not None
+    return not realization_reported
 
 
 def _relational_nix_realize_command(
@@ -73,7 +106,16 @@ def _relational_nix_realize_command(
         ])
     command.extend(["--no-link", "--json"])
     if builders_file is not None:
-        command.extend(["--option", "builders-use-substitutes", "true"])
+        command.extend([
+            "--option",
+            "builders-use-substitutes",
+            os.environ.get(
+                "SPAGHETTI_EXTRACTOR_NIX_BUILDERS_USE_SUBSTITUTES", "true"
+            ),
+        ])
+    substituters = os.environ.get("SPAGHETTI_EXTRACTOR_NIX_SUBSTITUTERS")
+    if substituters:
+        command.extend(["--option", "substituters", substituters])
     command.append(flake_ref)
     return command
 
@@ -93,6 +135,104 @@ def _nix_single_output_path(stdout: str, *, operation: str) -> Path:
             f"Nix {operation} must produce exactly one derivation output"
         )
     return output_paths[0]
+
+
+def _cached_relational_build_result(
+    *,
+    prepared: Path,
+    out: Path,
+    graph: dict[str, Any],
+    evaluator: Path,
+    flake_root: Path,
+) -> dict[str, Any] | None:
+    """Return a hash-bound prior final proof without reevaluating its Nix DAG."""
+
+    required = (
+        "verdict.json",
+        "nix-provenance.json",
+        "lean-audit.json",
+        "relational-proof-ir.json",
+        "stage-a-interface-manifest.json",
+        "relation-contract.json",
+        "module-graph.json",
+        "trusted-base.json",
+    )
+    if not out.is_dir() or any(not (out / name).is_file() for name in required):
+        return None
+    try:
+        verdict = _read_json(out / "verdict.json")
+        provenance = _read_json(out / "nix-provenance.json")
+        audit = _read_json(out / "lean-audit.json")
+        proof_ir = _read_json(out / "relational-proof-ir.json")
+        RelationalProofIR.parse(proof_ir)
+        report_check = _check_nix_relational_report(
+            report=out, verdict=verdict, out=None
+        )
+    except (OSError, StageAInputError, SchemaError, ValueError):
+        return None
+
+    checks = verdict.get("checks")
+    approved_axioms = set(graph["approved_axioms"])
+    observed_axioms = audit.get("observed_axioms")
+    result_path_raw = provenance.get("result_path")
+    if not isinstance(result_path_raw, str):
+        return None
+    result_path = Path(result_path_raw)
+    try:
+        result_audit = _read_json(result_path / "audit.json")
+        result_nodes = _read_json(result_path / "node-provenance.json")
+    except (OSError, StageAInputError):
+        return None
+
+    artifact_original = prepared / graph["artifacts"]["original"]["path"]
+    artifact_candidate = prepared / graph["artifacts"]["candidate"]["path"]
+    valid = (
+        verdict.get("format") == "stage-a-relational-nix-build-v1"
+        and report_check.get("status") == "pass"
+        and verdict.get("status") == "pass"
+        and verdict.get("verdict") == "pass"
+        and verdict.get("expected_final_theorem")
+            == graph["expected_final_theorem"]
+        and verdict.get("acceptance") == graph["acceptance"]
+        and verdict.get("module_graph_sha256")
+            == sha256_file(prepared / "module-graph.json")
+        and verdict.get("interface_manifest_sha256")
+            == sha256_file(prepared / "stage-a-interface-manifest.json")
+        and verdict.get("relation_contract_sha256")
+            == sha256_file(prepared / "relation-contract.json")
+        and verdict.get("trusted_base_sha256")
+            == sha256_file(prepared / "trusted-base.json")
+        and verdict.get("original", {}).get("sha256")
+            == graph["artifacts"]["original"]["sha256"]
+        and verdict.get("candidate", {}).get("sha256")
+            == graph["artifacts"]["candidate"]["sha256"]
+        and artifact_original.is_file()
+        and artifact_candidate.is_file()
+        and sha256_file(artifact_original)
+            == graph["artifacts"]["original"]["sha256"]
+        and sha256_file(artifact_candidate)
+            == graph["artifacts"]["candidate"]["sha256"]
+        and isinstance(checks, dict)
+        and bool(checks)
+        and all(value is True for value in checks.values())
+        and proof_ir.get("status") == "satisfied"
+        and verdict.get("proof_ir_sha256")
+            == sha256_file(out / "relational-proof-ir.json")
+        and audit.get("status") == "checked"
+        and audit.get("lean_trust") == 0
+        and audit.get("theorem") == graph["expected_final_theorem"]
+        and isinstance(observed_axioms, list)
+        and set(observed_axioms).issubset(approved_axioms)
+        and result_audit == audit
+        and result_nodes.get("format") == "stage-a-lean-node-provenance-v1"
+        and result_nodes.get("nodes") == provenance.get("nodes")
+        and provenance.get("evaluator_sha256") == sha256_file(evaluator)
+        and provenance.get("flake_lock_sha256")
+            == sha256_file(flake_root / "flake.lock")
+        and result_path.is_dir()
+        and str(result_path).startswith("/nix/store/")
+    )
+    return verdict if valid else None
 
 
 def stage_a_build_relational_from_nix(
@@ -288,6 +428,13 @@ def _relational_nix_expression(
     target_node: str | None,
     target_nodes: list[str],
 ) -> tuple[str, dict[str, Any] | None]:
+    content_addressed = os.environ.get(
+        "SPAGHETTI_EXTRACTOR_STAGE_A_NIX_CONTENT_ADDRESSED", "true"
+    ).lower()
+    if content_addressed not in {"true", "false"}:
+        raise StageAInputError(
+            "SPAGHETTI_EXTRACTOR_STAGE_A_NIX_CONTENT_ADDRESSED must be true or false"
+        )
     requested_target_nodes = ([target_node] if target_node is not None else []) + list(
         target_nodes
     )
@@ -331,6 +478,7 @@ def _relational_nix_expression(
         + " ];",
         f"in import (builtins.toPath {json.dumps(str(evaluator))}) {{",
         "  inherit pkgs graphFile preparedManifest sourceRoot targetNode targetNodes;",
+        f"  contentAddressed = {content_addressed};",
         "}",
     ]), focused_input
 
@@ -389,6 +537,23 @@ def stage_a_build_relational(
 
     evaluator = _relational_nix_evaluator()
     flake_root = _find_relational_flake_root(flake)
+    if not requested_target_nodes:
+        reuse_started = time.monotonic()
+        cached = _cached_relational_build_result(
+            prepared=prepared,
+            out=out,
+            graph=graph,
+            evaluator=evaluator,
+            flake_root=flake_root,
+        )
+        if cached is not None:
+            cached = {
+                **cached,
+                "elapsed_seconds": round(time.monotonic() - reuse_started, 3),
+                "nix_work_reused": True,
+            }
+            write_json(out / "verdict.json", cached)
+            return cached
     expression, focused_input = _relational_nix_expression(
         prepared=prepared,
         graph=graph,
@@ -412,6 +577,9 @@ def stage_a_build_relational(
         check=False,
     )
     elapsed = round(time.monotonic() - started, 3)
+    nix_work_reused = _relational_nix_work_reused(
+        process.stderr, succeeded=process.returncode == 0
+    )
     if process.returncode != 0:
         _remove_relational_build_output(out)
         out.mkdir(parents=True)
@@ -468,6 +636,7 @@ def stage_a_build_relational(
                 "result_path": str(result_path),
                 "elapsed_seconds": elapsed,
                 "focused_input": focused_input,
+                "nix_work_reused": nix_work_reused,
                 "node": node_result,
             }
             write_json(out / "node-build.json", result)
@@ -484,6 +653,7 @@ def stage_a_build_relational(
                 "result_paths": [str(path_by_id[node]) for node in requested_target_nodes],
                 "elapsed_seconds": elapsed,
                 "focused_input": focused_input,
+                "nix_work_reused": nix_work_reused,
                 "nodes": [result_by_id[node] for node in requested_target_nodes],
             }
             write_json(out / "node-set-build.json", result)
@@ -640,6 +810,7 @@ def stage_a_build_relational(
         "dependency_pack": dependency_pack,
         "nix_path_info": path_info,
         "elapsed_seconds": elapsed,
+        "nix_work_reused": nix_work_reused,
     }
     write_json(out / "nix-provenance.json", provenance)
     result = {
@@ -685,6 +856,7 @@ def stage_a_build_relational(
         "lean_audit": audit,
         "counts": graph["counts"],
         "elapsed_seconds": elapsed,
+        "nix_work_reused": nix_work_reused,
         "provenance": {
             "result_path": str(result_path),
             "nix_paths": len(path_info),
@@ -704,7 +876,17 @@ def _finalize_proof_ir(
     evidence: dict[str, Any],
 ) -> dict[str, Any]:
     acceptance_theorem_checked = (
-        theorem_checked and theorem == RELATIONAL_ACCEPTANCE_THEOREM
+        theorem_checked and theorem in RELATIONAL_ACCEPTANCE_THEOREMS
+    )
+    certificate_type = (
+        "LinkedWholeProgramCertificate"
+        if theorem == RELATIONAL_LINKED_ACCEPTANCE_THEOREM
+        else "WholeProgramCertificate"
+    )
+    execution_refinement_field = (
+        f"{certificate_type}.runningProductNodesRefined"
+        if theorem == RELATIONAL_LINKED_ACCEPTANCE_THEOREM
+        else f"{certificate_type}.reachableExecutionEdgesRefined"
     )
     invariant_evidence = {
         **evidence,
@@ -713,36 +895,36 @@ def _finalize_proof_ir(
     certificate_projection_by_kind = {
         "direct_call_push": (
             "lean_checked_reachable_running_node_refinement",
-            ("WholeProgramCertificate.runningProductNodesRefined",),
+            (f"{certificate_type}.runningProductNodesRefined",),
         ),
         "return_slot_affine_transfer": (
             "lean_checked_reachable_running_node_refinement",
-            ("WholeProgramCertificate.runningProductNodesRefined",),
+            (f"{certificate_type}.runningProductNodesRefined",),
         ),
         "return_slot_return_affine_transfer": (
             "lean_checked_reachable_running_node_refinement",
-            ("WholeProgramCertificate.runningProductNodesRefined",),
+            (f"{certificate_type}.runningProductNodesRefined",),
         ),
         "machine_import_call_boundary": (
             "lean_checked_external_running_node_refinement",
             (
-                "WholeProgramCertificate.runningProductNodesRefined",
-                "WholeProgramCertificate.environmentsRefined",
+                f"{certificate_type}.runningProductNodesRefined",
+                f"{certificate_type}.environmentsRefined",
             ),
         ),
         "external_jump_control_refinement": (
             "lean_checked_external_running_node_refinement",
             (
-                "WholeProgramCertificate.runningProductNodesRefined",
-                "WholeProgramCertificate.environmentsRefined",
+                f"{certificate_type}.runningProductNodesRefined",
+                f"{certificate_type}.environmentsRefined",
             ),
         ),
         "memory_transition_preservation": (
             "lean_checked_reachable_execution_memory_refinement",
-            (
-                "WholeProgramCertificate.reachableExecutionEdgesRefined",
-                "WholeProgramCertificate.runningProductNodesRefined",
-            ),
+            tuple(dict.fromkeys((
+                execution_refinement_field,
+                f"{certificate_type}.runningProductNodesRefined",
+            ))),
         ),
     }
     finalized_obligations = []
@@ -772,7 +954,7 @@ def _finalize_proof_ir(
                 "evidence": {
                     **evidence,
                     "kind": "lean_checked_whole_program_composition",
-                    "theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                    "theorem": theorem,
                 },
             })
         elif (
@@ -874,7 +1056,7 @@ def _finalize_proof_ir(
                 "evidence": {
                     **evidence,
                     "kind": "lean_checked_launch_realizability",
-                    "certificate_field": "WholeProgramCertificate.launchRealizable",
+                    "certificate_field": f"{certificate_type}.launchRealizable",
                 },
             })
         elif (
@@ -893,7 +1075,7 @@ def _finalize_proof_ir(
                     **evidence,
                     "kind": "lean_checked_reachable_running_node_refinement",
                     "certificate_field": (
-                        "WholeProgramCertificate.runningProductNodesRefined"
+                        f"{certificate_type}.runningProductNodesRefined"
                     ),
                 },
             })
@@ -909,7 +1091,7 @@ def _finalize_proof_ir(
                     **evidence,
                     "kind": "lean_checked_reachable_execution_edge_refinement",
                     "certificate_field": (
-                        "WholeProgramCertificate.reachableExecutionEdgesRefined"
+                        execution_refinement_field
                     ),
                 },
             })
@@ -1073,20 +1255,20 @@ def _check_nix_relational_report(
             checks["prepared_report_valid"] = False
         else:
             checks["prepared_report_valid"] = True
+            expected_theorem = graph.get("expected_final_theorem")
             checks.update({
                 "acceptance_ready": (
                     acceptance.get("status") == "ready"
-                    and acceptance.get("theorem") == RELATIONAL_ACCEPTANCE_THEOREM
-                    and graph.get("expected_final_theorem")
-                        == RELATIONAL_ACCEPTANCE_THEOREM
-                    and verdict.get("expected_final_theorem")
-                        == RELATIONAL_ACCEPTANCE_THEOREM
+                    and expected_theorem in RELATIONAL_ACCEPTANCE_THEOREMS
+                    and acceptance.get("required_theorem") == expected_theorem
+                    and acceptance.get("theorem") == expected_theorem
+                    and verdict.get("expected_final_theorem") == expected_theorem
                     and verdict.get("acceptance") == acceptance
                 ),
                 "lean_trust_zero": audit.get("lean_trust") == 0,
                 "final_theorem_matches": (
                     audit.get("status") == "checked"
-                    and audit.get("theorem") == RELATIONAL_ACCEPTANCE_THEOREM
+                    and audit.get("theorem") == expected_theorem
                 ),
                 "axioms_approved": (
                     isinstance(audit.get("observed_axioms"), list)
@@ -1127,7 +1309,7 @@ def _check_nix_relational_report(
                 "composition_ready": (
                     composition_progress.get("status") == "ready_for_lean"
                     and composition_progress.get("acceptance", {}).get("theorem")
-                        == RELATIONAL_ACCEPTANCE_THEOREM
+                        == expected_theorem
                 ),
                 "module_graph_hash_matches": (
                     sha256_file(report / "module-graph.json")
@@ -1243,6 +1425,12 @@ def _write_relational_module_graph(
     if acceptance.get("format") != "stage-a-whole-program-acceptance-v1":
         raise StageAInputError("prepared proof has an invalid whole-program acceptance artifact")
     acceptance_ready = acceptance.get("status") == "ready"
+    try:
+        selected_acceptance_theorem = selected_relational_acceptance_theorem(
+            acceptance
+        )
+    except SchemaError as exc:
+        raise StageAInputError(str(exc)) from exc
     root = "RelationalAcceptance" if acceptance_ready else "RelationalBundle"
     if root not in sources:
         raise StageAInputError(f"prepared proof is missing StageA.{root}")
@@ -1453,9 +1641,7 @@ def _write_relational_module_graph(
         "root_module": root,
         "auxiliary_modules": auxiliary_modules,
         "final_node": module_node[root],
-        "expected_final_theorem": (
-            RELATIONAL_ACCEPTANCE_THEOREM if acceptance_ready else None
-        ),
+        "expected_final_theorem": selected_acceptance_theorem,
         "acceptance": acceptance,
         "approved_axioms": trusted_base["approved_axioms"],
         "lean": {"version": lean_version, "githash": lean_githash, "trust": 0},
@@ -1584,13 +1770,12 @@ def _validate_relational_module_graph(
         raise StageAInputError("prepared Lean graph omits its acceptance state")
     acceptance_status = acceptance.get("status")
     theorem = graph.get("expected_final_theorem")
-    if acceptance.get("required_theorem") != RELATIONAL_ACCEPTANCE_THEOREM:
-        raise StageAInputError("prepared Lean graph names the wrong acceptance theorem")
+    try:
+        selected_theorem = selected_relational_acceptance_theorem(acceptance)
+    except SchemaError as exc:
+        raise StageAInputError(str(exc)) from exc
     if acceptance_status == "ready":
-        if (
-            theorem != RELATIONAL_ACCEPTANCE_THEOREM
-            or acceptance.get("theorem") != theorem
-        ):
+        if theorem != selected_theorem:
             raise StageAInputError(
                 "acceptance-ready Lean graph does not name the closed whole-program theorem"
             )

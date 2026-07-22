@@ -558,40 +558,45 @@ def _paired_no_write_edges(
     operation = original_outcome.get("op")
     if operation != candidate_outcome.get("op"):
         return ()
-    if operation == "jump":
-        fields = (("target", None, None),)
-    elif operation == "branch":
-        original_condition = original_outcome.get("condition")
-        candidate_condition = candidate_outcome.get("condition")
-        if not isinstance(original_condition, dict) or not isinstance(
-            candidate_condition, dict
-        ):
-            return ()
-        if original_outcome.get("taken") == original_outcome.get("fallthrough"):
-            fields = (("taken", _true_guard(), _true_guard()),)
-        else:
-            fields = (
-                ("taken", original_condition, candidate_condition),
-                (
-                    "fallthrough",
-                    _negate_normalized(original_condition),
-                    _negate_normalized(candidate_condition),
-                ),
-            )
-    else:
-        return ()
-    edges: list[tuple[int, dict[str, Any] | None, dict[str, Any] | None]] = []
-    for field, original_guard, candidate_guard in fields:
-        original_target = original_outcome.get(field)
-        candidate_target = candidate_outcome.get(field)
+    def guarded_targets(
+        outcome: dict[str, Any],
+    ) -> list[tuple[int, dict[str, Any] | None]] | None:
+        if operation == "jump":
+            target = outcome.get("target")
+            if not isinstance(target, int) or isinstance(target, bool):
+                return None
+            return [(target, None)]
+        if operation != "branch":
+            return None
+        condition = outcome.get("condition")
+        taken = outcome.get("taken")
+        fallthrough = outcome.get("fallthrough")
         if (
-            not isinstance(original_target, int)
-            or isinstance(original_target, bool)
-            or original_target != candidate_target
+            not isinstance(condition, dict)
+            or not isinstance(taken, int) or isinstance(taken, bool)
+            or not isinstance(fallthrough, int) or isinstance(fallthrough, bool)
         ):
+            return None
+        if taken == fallthrough:
+            return [(taken, _true_guard())]
+        return [
+            (taken, condition),
+            (fallthrough, _negate_normalized(condition)),
+        ]
+
+    original_targets = guarded_targets(original_outcome)
+    candidate_targets = guarded_targets(candidate_outcome)
+    if original_targets is None or candidate_targets is None:
+        return ()
+    candidate_by_target: dict[int, list[dict[str, Any] | None]] = {}
+    for target, guard in candidate_targets:
+        candidate_by_target.setdefault(target, []).append(guard)
+    edges: list[tuple[int, dict[str, Any] | None, dict[str, Any] | None]] = []
+    for original_target, original_guard in original_targets:
+        candidate_guards = candidate_by_target.get(original_target, [])
+        if len(candidate_guards) != 1:
             return ()
-        if all(edge[0] != original_target for edge in edges):
-            edges.append((original_target, original_guard, candidate_guard))
+        edges.append((original_target, original_guard, candidate_guards[0]))
     return tuple(edges)
 
 

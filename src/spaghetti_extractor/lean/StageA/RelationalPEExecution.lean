@@ -109,7 +109,31 @@ def runPE32SymbolicSpanFuel (pe : PE32) (imports : List PEImport)
             runPE32SymbolicSpanFuel pe imports stop fuel (rva + decoded.size)
               (undefinedSlot + 1) next
         | .stop final =>
-            if rva + decoded.size == stop then some final else none
+            match final.outcome with
+            | some (.jump target) =>
+                if target == rva + decoded.size then
+                  runPE32SymbolicSpanFuel pe imports stop fuel target
+                    (undefinedSlot + 1) { final with outcome := none }
+                else if rva + decoded.size == stop then some final else none
+            | some (.branch condition trueTarget falseTarget) =>
+                let nextRva := rva + decoded.size
+                if nextRva == stop then some final
+                else if trueTarget == nextRva || falseTarget == nextRva then do
+                  let bytes <- executableSpanInstructionWindow pe nextRva stop
+                  let bridge <- decodeInstructionExact bytes
+                  let bridgeTarget <- decodedDirectJumpTarget? nextRva bridge
+                  if nextRva + bridge.size != stop then none
+                  else if trueTarget == nextRva then
+                    let outcome := OutcomeExpr.branch condition bridgeTarget falseTarget
+                    let bridged := { final with outcome := some outcome }
+                    some bridged
+                  else
+                    let outcome := OutcomeExpr.branch condition trueTarget bridgeTarget
+                    let bridged := { final with outcome := some outcome }
+                    some bridged
+                else none
+            | _ =>
+                if rva + decoded.size == stop then some final else none
 
 def executePE32SymbolicSpan (pe : PE32) (imports : List PEImport)
     (span : Span) : Option SymbolicBehavior :=

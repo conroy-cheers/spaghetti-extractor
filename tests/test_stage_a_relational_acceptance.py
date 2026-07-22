@@ -1,5 +1,8 @@
 from tests.stage_a_relational_support import *
-from spaghetti_extractor.relational.schema import PROTOCOL_CALLBACK_CONTROL_FORMAT
+from spaghetti_extractor.relational.schema import (
+    PROTOCOL_CALLBACK_CONTROL_FORMAT,
+    RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+)
 from spaghetti_extractor.relational.lean.acceptance import (
     _acceptance_segment_imports,
     _frame_relations_requiring_internal_preservation,
@@ -15,10 +18,46 @@ from spaghetti_extractor.relational.lean.acceptance import (
     _segment_module_ownership,
     _semantic_bool_is_structural_tautology,
 )
+from spaghetti_extractor.relational.lean.expressions import (
+    _lean_direct_call_prepared_exact_word_seed_claim,
+)
 from typing import Any
 
 
 class StageARelationalAcceptanceTests(StageARelationalTestBase):
+    def test_prepared_exact_word_seed_is_total_lean_syntax(self):
+        stack_item = {
+            "kind": "stack",
+            "window": {
+                "range_id": 0,
+                "original_register": "esp",
+                "candidate_register": "esp",
+                "bytes_below": 12,
+                "bytes_above": 1,
+            },
+            "amount": 4,
+            "value": {
+                "original": {"op": "constant", "value": 7},
+                "candidate": {"op": "constant", "value": 7},
+                "profile": "exact_inputs_v1",
+            },
+        }
+        witness = {"kind": "input"}
+        rendered = _lean_direct_call_prepared_exact_word_seed_claim({
+            "before": [],
+            "selected": stack_item,
+            "after": [stack_item],
+            "original_selected_address": witness,
+            "candidate_selected_address": witness,
+            "original_after_addresses": [witness],
+            "candidate_after_addresses": [witness],
+            "exact_word": {"original_offset": 4, "candidate_offset": 4},
+        })
+
+        self.assertIsInstance(rendered, str)
+        self.assertNotIn("None", rendered)
+        self.assertIn("originalAfterAddresses := [RegisterOffsetWitness.input]", rendered)
+
     def test_acceptance_chunks_import_only_their_owned_segment_modules(self):
         ownership = _segment_module_ownership([
             {"module": "RelationalSegmentRefinementChunk0", "edge_ids": [0, 1]},
@@ -26,7 +65,11 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
         ])
 
         imports = _acceptance_segment_imports(
-            [{"edges": [{"edge_id": 2}], "cases": [{"edge_id": 0}]}],
+            [
+                {"kind": "jump", "edges": [{"edge_id": 2}]},
+                {"kind": "branch", "edges": [{"edge_id": 0}]},
+                {"kind": "external_call", "edges": [{"edge_id": 99}]},
+            ],
             ownership,
         )
 
@@ -38,7 +81,10 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
 
     def test_acceptance_segment_imports_fail_closed_on_missing_or_duplicate_owner(self):
         with self.assertRaisesRegex(StageAInputError, "without generated Lean owners"):
-            _acceptance_segment_imports([{"edge_id": 3}], {0: "Chunk0"})
+            _acceptance_segment_imports(
+                [{"kind": "jump", "edges": [{"edge_id": 3}]}],
+                {0: "Chunk0"},
+            )
         with self.assertRaisesRegex(StageAInputError, "owned by both"):
             _segment_module_ownership([
                 {"module": "Chunk0", "edge_ids": [3]},
@@ -300,7 +346,8 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 result,
             )
             self.assertEqual(
-                result["expected_final_theorem"], RELATIONAL_ACCEPTANCE_THEOREM
+                result["expected_final_theorem"],
+                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
             )
             graph = json.loads(
                 (prepared / "module-graph.json").read_text(encoding="utf-8")
@@ -411,7 +458,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 )
             self.assertEqual(
                 repeated_result["expected_final_theorem"],
-                RELATIONAL_ACCEPTANCE_THEOREM,
+                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
             )
             repeated_graph = json.loads(
                 (repeated / "module-graph.json").read_text(encoding="utf-8")
@@ -506,6 +553,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 Path(__file__).parents[1]
                 / "src" / "spaghetti_extractor" / "lean" / "StageA"
             )
+            shutil.copyfile(source_root / "X87.lean", stage_a / "X87.lean")
             shutil.copyfile(source_root / "Formal.lean", stage_a / "Formal.lean")
             (stage_a / "FormalTlsParsing.lean").write_text(
                 "import StageA.Formal\n\n"
@@ -1747,7 +1795,8 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertEqual(result["status"], "prepared")
             self.assertEqual(result["acceptance"]["status"], "ready", result)
             self.assertEqual(
-                result["expected_final_theorem"], RELATIONAL_ACCEPTANCE_THEOREM
+                result["expected_final_theorem"],
+                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
             )
             graph = _validate_prepared_relational(prepared)
             self.assertEqual(graph["root_module"], "RelationalAcceptance")
@@ -1813,7 +1862,9 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             acceptance_source = (
                 prepared / "lean" / "StageA" / "RelationalAcceptance.lean"
             ).read_text(encoding="utf-8")
-            self.assertIn("theorem candidatePE32ProgramsEquivalent", acceptance_source)
+            self.assertNotIn(
+                "theorem candidatePE32ProgramsEquivalent :", acceptance_source
+            )
             self.assertIn(
                 "theorem candidatePE32ProgramsEquivalentLinked", acceptance_source
             )
@@ -1826,7 +1877,10 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             )
             self.assertIn("originalInstructionSemanticsAdequate", acceptance_source)
             self.assertIn("candidateInstructionSemanticsAdequate", acceptance_source)
-            self.assertIn("launchRealizable := consoleLaunchRealizable", acceptance_source)
+            self.assertIn(
+                "launchRealizable := consoleLaunchLinkedRealizable",
+                acceptance_source,
+            )
             self.assertIn(
                 "import StageA.RelationalLaunchRealizabilityCertificate",
                 acceptance_source,
@@ -1910,10 +1964,6 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 prepared / "lean", bundle="RelationalAcceptance"
             )
             self.assertEqual(lean["status"], "checked", lean)
-            self.assertIn(
-                "candidatePE32ProgramsEquivalent' depends on axioms",
-                lean["stdout"],
-            )
             self.assertIn(
                 "candidatePE32ProgramsEquivalentLinked' depends on axioms",
                 lean["stdout"],
@@ -2375,7 +2425,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             )
             self.assertEqual(lean["status"], "checked", lean)
             self.assertIn(
-                "candidatePE32ProgramsEquivalent' depends on axioms",
+                "candidatePE32ProgramsEquivalentLinked' depends on axioms",
                 lean["stdout"],
             )
             self.assertNotIn("sorryAx", lean["stdout"])
@@ -2447,7 +2497,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             )
             self.assertEqual(lean["status"], "checked", lean)
             self.assertIn(
-                "candidatePE32ProgramsEquivalent' depends on axioms",
+                "candidatePE32ProgramsEquivalentLinked' depends on axioms",
                 lean["stdout"],
             )
             self.assertNotIn("sorryAx", lean["stdout"])
@@ -2553,7 +2603,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             )
             self.assertEqual(lean["status"], "checked", lean)
             self.assertIn(
-                "candidatePE32ProgramsEquivalent' depends on axioms",
+                "candidatePE32ProgramsEquivalentLinked' depends on axioms",
                 lean["stdout"],
             )
             self.assertNotIn("sorryAx", lean["stdout"])
@@ -2789,7 +2839,8 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
 
             self.assertEqual(result["verdict"], "pass", result)
             self.assertEqual(
-                result["proof"]["theorem"], RELATIONAL_ACCEPTANCE_THEOREM
+                result["proof"]["theorem"],
+                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
             )
             self.assertTrue(
                 result["claim_scope"]["whole_program_observational_equivalence"]
@@ -2798,13 +2849,15 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             graph = _validate_relational_module_graph(report)
             self.assertEqual(graph["root_module"], "RelationalAcceptance")
             self.assertEqual(
-                graph["expected_final_theorem"], RELATIONAL_ACCEPTANCE_THEOREM
+                graph["expected_final_theorem"],
+                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
             )
 
             replay = stage_a_check_relational_proof(report=report)
             self.assertEqual(replay["status"], "pass", replay)
             self.assertEqual(
-                replay["lean_check"]["theorem"], RELATIONAL_ACCEPTANCE_THEOREM
+                replay["lean_check"]["theorem"],
+                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
             )
 
             acceptance_source = (
@@ -2943,7 +2996,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                     "candidate_register": "esp",
                     "bytes_below": 4,
                     "bytes_above": 13,
-                    "source": "backward_identity_stack_window",
+                    "source": "related_word_affine_output_seed",
                 },
             )
             self.assertEqual(
@@ -2981,10 +3034,6 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 prepared / "lean", bundle="RelationalAcceptance"
             )
             self.assertEqual(lean["status"], "checked", lean)
-            self.assertIn(
-                "candidatePE32ProgramsEquivalent' depends on axioms",
-                lean["stdout"],
-            )
             self.assertIn(
                 "candidatePE32ProgramsEquivalentLinked' depends on axioms",
                 lean["stdout"],
@@ -3225,6 +3274,8 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertIn("pushNestedAfterSingletonWrite", node_sources)
             self.assertIn("popNestedAfterNoWriteTransfer", node_sources)
             self.assertIn("popLastAfter", node_sources)
+            self.assertIn("theorem acceptanceRunningNode1Refined", node_sources)
+            self.assertIn("have oldResult := acceptanceRunningNode1Refined", node_sources)
 
             lean = _run_lean_relational(
                 prepared / "lean", bundle="RelationalAcceptance"
@@ -6095,16 +6146,53 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 relation_contract=contract,
                 out=root / "mismatched",
             )
+            # The mismatched explicit slot must neither authorize a
+            # static-word guard nor be silently supplemented with an
+            # overlapping inferred slot.
             self.assertEqual(mismatched["acceptance"]["status"], "incomplete")
             mismatch_diagnostics = json.loads(
                 (root / "mismatched" / "relational-segment-diagnostics.json")
                 .read_text(encoding="utf-8")
             )
-            self.assertTrue(any(
-                "branch_guard_relation_unsupported" in edge["failed_checks"]
+            mismatch_edges = [
+                edge
                 for edge in mismatch_diagnostics["edges"]
                 if edge["source_region_index"] == 0
-            ))
+            ]
+            self.assertTrue(mismatch_edges)
+            self.assertTrue(any(
+                "exact_memory_output_claim_present" in edge["failed_checks"]
+                for edge in mismatch_edges
+            ), mismatch_edges)
+            mismatch_segment_source = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted(
+                    (root / "mismatched" / "lean" / "StageA").glob(
+                        "RelationalSegmentRefinementChunk*.lean"
+                    )
+                )
+            )
+            self.assertNotIn("StaticWordZeroGuardClaim", mismatch_segment_source)
+            mismatch_contract = json.loads(
+                (root / "mismatched" / "relation-contract.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                mismatch_contract["static_word_relation_slots"],
+                relation["static_word_relation_slots"],
+            )
+            mismatch_static_analysis = json.loads(
+                (root / "mismatched" / "relational-static-word-relations.json")
+                .read_text(encoding="utf-8")
+            )
+            self.assertIn(
+                "static_word_address_mapping_ambiguous",
+                {
+                    item["category"]
+                    for item in mismatch_static_analysis["rejected"]
+                },
+            )
 
             relation["static_word_relation_slots"][0][
                 "candidate_address"
@@ -6218,15 +6306,13 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 out=root / "mismatched",
             )
             self.assertEqual(mismatched["acceptance"]["status"], "incomplete")
-            mismatch_diagnostics = json.loads(
-                (root / "mismatched" / "relational-segment-diagnostics.json")
-                .read_text(encoding="utf-8")
+            self.assertIn(
+                "launch_realizability_certificate_unsupported",
+                {
+                    blocker["code"]
+                    for blocker in mismatched["acceptance"]["blockers"]
+                },
             )
-            self.assertTrue(any(
-                "branch_guard_relation_unsupported" in edge["failed_checks"]
-                for edge in mismatch_diagnostics["edges"]
-                if edge["source_region_index"] == 0
-            ))
 
             candidate.write_bytes(_pe32_image(pointer_chain_code(0x400000)))
             prepared = root / "prepared"
@@ -6959,7 +7045,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                     out=report,
                 )
 
-            self.assertEqual(result["verdict"], "incomplete", result)
+            self.assertEqual(result["verdict"], "pass", result)
             self.assertEqual(result["proof"]["lean"]["status"], "checked", result)
             relations = json.loads(
                 (report / "relational-register-relations.json").read_text(

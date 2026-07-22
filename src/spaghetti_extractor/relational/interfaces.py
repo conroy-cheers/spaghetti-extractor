@@ -26,6 +26,7 @@ from .schema import (
     EXTERNAL_ENVIRONMENT_PROFILE_FORMAT,
     PROTOCOL_CALLBACK_CONTROL_FORMAT,
     RELATION_CONTRACT_FORMAT,
+    RELATIONAL_ACCEPTANCE_THEOREM_INVENTORY,
     RELATIONAL_ACCEPTANCE_THEOREM,
     RELATIONAL_PROOF_IR_FORMAT,
     RELATIONAL_SEGMENT_CERTIFICATE_FORMAT,
@@ -42,6 +43,13 @@ def stage_a_interface_manifest() -> dict[str, Any]:
         "model": STAGE_A_RELATIONAL_MODEL_ID,
         "acceptance": {
             "theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+            "supported_theorems": [
+                {
+                    "theorem": theorem,
+                    **RELATIONAL_ACCEPTANCE_THEOREM_INVENTORY[theorem],
+                }
+                for theorem in RELATIONAL_ACCEPTANCE_THEOREM_INVENTORY
+            ],
             "only_pass_authority": True,
             "integration_owner": "acceptance-integration",
         },

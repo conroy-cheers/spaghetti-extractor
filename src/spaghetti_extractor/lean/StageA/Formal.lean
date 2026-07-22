@@ -1137,9 +1137,11 @@ def Expr.addNormalized (left right : Expr) : Expr :=
   | .constant 0, expression => expression
   | .constant a, .constant b => .constant ((a + b) % (2 ^ 32))
   | .add expression (.constant a), .constant b =>
-      .add expression (.constant ((a + b) % (2 ^ 32)))
+      let offset := (a + b) % (2 ^ 32)
+      if offset == 0 then expression else .add expression (.constant offset)
   | .sub expression (.constant a), .constant b =>
-      .add expression (.constant ((2 ^ 32 - a + b) % (2 ^ 32)))
+      let offset := (2 ^ 32 - a + b) % (2 ^ 32)
+      if offset == 0 then expression else .add expression (.constant offset)
   | a, b => .add a b
 
 def Expr.subNormalized (left right : Expr) : Expr :=
@@ -1923,6 +1925,30 @@ def Expr.provablyUnequal (left right : Expr) : Bool :=
   let rightAffine := right.affineBaseOffset
   leftAffine.1 == rightAffine.1 && leftAffine.2 != rightAffine.2
 
+/-- Prove that two four-byte writes share no byte address.  The check only
+accepts equal symbolic affine bases with distinct normalized offsets; every
+other address relation remains unknown. -/
+def wordWriteAddressesProvablyDisjoint (left right : Expr) : Bool :=
+  (List.range 4).all fun leftOffset =>
+    (List.range 4).all fun rightOffset =>
+      (left.offset leftOffset).provablyUnequal (right.offset rightOffset)
+
+/-- Find the latest exact-address word write when every subsequent write is
+provably disjoint from that word. -/
+def exactWrite32WithDisjointTail? (address : Expr) :
+    List (Expr × Expr) -> Option Expr
+  | [] => none
+  | write :: tail =>
+      match exactWrite32WithDisjointTail? address tail with
+      | some value => some value
+      | none =>
+          if write.1 == address &&
+              tail.all fun later =>
+                wordWriteAddressesProvablyDisjoint address later.1 then
+            some write.2
+          else
+            none
+
 def symbolicRead8 (behavior : SymbolicBehavior) (address : Expr) : Expr :=
   behavior.writes.foldl (fun current write =>
     let offsets := [0, 1, 2, 3]
@@ -1933,22 +1959,38 @@ def symbolicRead8 (behavior : SymbolicBehavior) (address : Expr) : Expr :=
         else .read8AfterWrite address write.1 write.2 current) (.read8 address)
 
 def symbolicRead32 (behavior : SymbolicBehavior) (address : Expr) : Expr :=
-  if behavior.writes.isEmpty then
-    .read32 address
-  else
-    let b0 := symbolicRead8 behavior address
-    let b1 := .shiftLeft (symbolicRead8 behavior (address.offset 1)) 8
-    let b2 := .shiftLeft (symbolicRead8 behavior (address.offset 2)) 16
-    let b3 := .shiftLeft (symbolicRead8 behavior (address.offset 3)) 24
-    .bitOr (.bitOr b0 b1) (.bitOr b2 b3)
+  match exactWrite32WithDisjointTail? address behavior.writes with
+  | some value => value
+  | none =>
+      if behavior.writes.all fun write =>
+          wordWriteAddressesProvablyDisjoint address write.1 then
+        .read32 address
+      else
+        let b0 := symbolicRead8 behavior address
+        let b1 := .shiftLeft (symbolicRead8 behavior (address.offset 1)) 8
+        let b2 := .shiftLeft (symbolicRead8 behavior (address.offset 2)) 16
+        let b3 := .shiftLeft (symbolicRead8 behavior (address.offset 3)) 24
+        .bitOr (.bitOr b0 b1) (.bitOr b2 b3)
 
 def symbolicRead16 (behavior : SymbolicBehavior) (address : Expr) : Expr :=
   let b0 := symbolicRead8 behavior address
   let b1 := .shiftLeft (symbolicRead8 behavior (address.offset 1)) 8
   .bitOr b0 b1
 
+/-- Append a completed word write in the total-memory Stage A profile.
+
+An exact later word write fully overwrites earlier writes at the same symbolic
+address.  Writing the initial word value restores memory only when every
+retained write is provably disjoint.  Unknown overlap is kept explicit.  This
+canonicalization preserves `SymbolicBehavior.eval`; it does not claim that
+removed machine accesses have the same fault trace on a partial memory model. -/
 def SymbolicBehavior.write32 (behavior : SymbolicBehavior) (address value : Expr) : SymbolicBehavior :=
-  { behavior with writes := behavior.writes ++ [(address, value)] }
+  let retained := behavior.writes.filter fun write => write.1 != address
+  if value == .read32 address &&
+      retained.all fun write => wordWriteAddressesProvablyDisjoint address write.1 then
+    { behavior with writes := retained }
+  else
+    { behavior with writes := retained ++ [(address, value)] }
 
 def SymbolicBehavior.eval (behavior : SymbolicBehavior) (state : MachineState) : ConcreteBehavior := {
   registers := {
@@ -2541,6 +2583,13 @@ def decodeGenericInstruction : Bytes -> Option DecodedInstruction
       else if 0x58 <= opcode && opcode <= 0x5f then do
         let destination <- registerOfCode (opcode - 0x58)
         pure { instruction := .popReg destination, size := 1, trailing := tail }
+      else if 0x91 <= opcode && opcode <= 0x97 then do
+        let destination <- registerOfCode (opcode - 0x90)
+        pure {
+          instruction := .exchange (.register destination) .eax,
+          size := 1,
+          trailing := tail,
+        }
       else if 0x70 <= opcode && opcode <= 0x7f then do
         let displacement <- tail.head?
         let condition <- conditionOfCode (opcode - 0x70)
@@ -3867,6 +3916,13 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
         outcome := some (.atomicCompareExchange address expected replacement nextRva)
       })
 
+def decodedDirectJumpTarget? (pc : Nat) (decoded : DecodedInstruction) : Option Nat :=
+  let nextRva := pc + decoded.size
+  match decoded.instruction with
+  | .jumpRel8 displacement => some (relativeTarget8 nextRva displacement)
+  | .jumpRel32 displacement => some (relativeTarget32 nextRva displacement)
+  | _ => none
+
 def executeCode (pe : PE32) (imports : List PEImport) :
     Nat -> Nat -> Nat -> Bytes -> SymbolicBehavior -> Option (SymbolicBehavior × Bytes)
   | 0, _, _, _, _ => none
@@ -3876,7 +3932,37 @@ def executeCode (pe : PE32) (imports : List PEImport) :
       let result <- executeInstruction pe imports pc undefinedSlot decoded state
       match result with
       | .next nextState => executeCode pe imports fuel (undefinedSlot + 1) (pc + decoded.size) decoded.trailing nextState
-      | .stop finalState => pure (finalState, decoded.trailing)
+      | .stop finalState =>
+          -- A direct jump to the immediately following instruction is an
+          -- internal path boundary, not an observable segment exit.  Folding
+          -- it here lets exact-byte segment decoding compose block splits
+          -- without inventing an unchecked stuttering state.
+          match finalState.outcome with
+          | some (.jump target) =>
+              if target == pc + decoded.size then
+                executeCode pe imports fuel (undefinedSlot + 1) target decoded.trailing
+                  { finalState with outcome := none }
+              else
+                pure (finalState, decoded.trailing)
+          | some (.branch condition trueTarget falseTarget) =>
+              let nextRva := pc + decoded.size
+              match decodeInstructionExact decoded.trailing with
+              | some bridge =>
+                  match decodedDirectJumpTarget? nextRva bridge with
+                  | some bridgeTarget =>
+                      if trueTarget == nextRva then
+                        let outcome := OutcomeExpr.branch condition bridgeTarget falseTarget
+                        let bridged := { finalState with outcome := some outcome }
+                        pure (bridged, bridge.trailing)
+                      else if falseTarget == nextRva then
+                        let outcome := OutcomeExpr.branch condition trueTarget bridgeTarget
+                        let bridged := { finalState with outcome := some outcome }
+                        pure (bridged, bridge.trailing)
+                      else
+                        pure (finalState, decoded.trailing)
+                  | none => pure (finalState, decoded.trailing)
+              | none => pure (finalState, decoded.trailing)
+          | _ => pure (finalState, decoded.trailing)
 
 def paddingByte (byte : Byte) : Bool :=
   byte == 0 || byte == 0x90 || byte == 0xcc
@@ -4010,7 +4096,10 @@ def regionBehaviorWithImports (pe : PE32) (imports : List PEImport)
     (span : Span) : Option SymbolicBehavior := do
   let bytes <- spanBytes pe span
   let (behavior, trailing) <- executeCode pe imports (bytes.length + 1) 0 span.start bytes initialSymbolic
-  if !trailing.isEmpty then none else
+  -- Linker-derived regions may end with unreachable alignment bytes after a
+  -- stopping control transfer.  They are admissible only through the same
+  -- reviewed padding grammar used for complete entry decoding.
+  if !paddingBytes trailing then none else
   if behavior.outcome.isSome then pure behavior else
   pure { behavior with outcome := some (.jump span.stop) }
 

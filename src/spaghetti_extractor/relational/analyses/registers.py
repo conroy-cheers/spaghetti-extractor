@@ -2714,14 +2714,31 @@ def _synthesize_register_relations(
         candidate_edges = _semantic_edges(behavior_pair["candidate_ir"])
         if len(original_edges) != len(candidate_edges):
             continue
-        paired_edges = list(zip(original_edges, candidate_edges, strict=True))
-        if any(
-            int(original_edge["target"]) != int(candidate_edge["target"])
-            or str(original_edge["kind"]) != str(candidate_edge["kind"])
-            or bool(original_edge.get("environment_barrier")) !=
-                bool(candidate_edge.get("environment_barrier"))
-            for original_edge, candidate_edge in paired_edges
-        ):
+        candidate_by_target: dict[int, list[dict[str, Any]]] = {}
+        for candidate_edge in candidate_edges:
+            candidate_by_target.setdefault(
+                int(candidate_edge["target"]), []
+            ).append(candidate_edge)
+        paired_edges: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for original_edge in original_edges:
+            matches = candidate_by_target.get(int(original_edge["target"]), [])
+            if len(matches) != 1:
+                paired_edges = []
+                break
+            candidate_edge = matches[0]
+            original_kind = str(original_edge["kind"])
+            candidate_kind = str(candidate_edge["kind"])
+            branch_kinds = {"branch_taken", "branch_fallthrough"}
+            if (
+                original_kind != candidate_kind
+                and {original_kind, candidate_kind} != branch_kinds
+            ) or bool(original_edge.get("environment_barrier")) != bool(
+                candidate_edge.get("environment_barrier")
+            ):
+                paired_edges = []
+                break
+            paired_edges.append((original_edge, candidate_edge))
+        if len(paired_edges) != len(original_edges):
             continue
         for original_edge, candidate_edge in paired_edges:
             target_index = region_by_id.get(int(original_edge["target"]))
@@ -2756,6 +2773,7 @@ def _synthesize_register_relations(
                 "source_region_index": source_index,
                 "target_region_index": target_index,
                 "kind": str(original_edge["kind"]),
+                "candidate_kind": str(candidate_edge["kind"]),
                 "original_guard": original_edge["guard"],
                 "candidate_guard": candidate_edge["guard"],
                 "environment_barrier": barrier,

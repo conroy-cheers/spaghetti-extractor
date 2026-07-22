@@ -107,6 +107,69 @@ RELATIONAL_KERNEL_MODULES = (
 RELATIONAL_ACCEPTANCE_THEOREM = (
     "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
 )
+RELATIONAL_LINKED_ACCEPTANCE_THEOREM = (
+    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
+)
+RELATIONAL_ACCEPTANCE_THEOREM_INVENTORY = {
+    RELATIONAL_ACCEPTANCE_THEOREM: {
+        "proposition": "StageA.Relational.PE32RawProgramsObservationallyEquivalent",
+        "certificate": "WholeProgramCertificate",
+    },
+    RELATIONAL_LINKED_ACCEPTANCE_THEOREM: {
+        "proposition": (
+            "StageA.Relational.PE32RawProgramsLinkedObservationallyEquivalent"
+        ),
+        "certificate": "LinkedWholeProgramCertificate",
+    },
+}
+RELATIONAL_ACCEPTANCE_THEOREMS = frozenset(
+    RELATIONAL_ACCEPTANCE_THEOREM_INVENTORY
+)
+
+
+def choose_relational_acceptance_theorem(
+    *, ordinary_ready: bool, linked_ready: bool
+) -> str | None:
+    """Select the least specialized checked whole-program proposition."""
+    if ordinary_ready:
+        return RELATIONAL_ACCEPTANCE_THEOREM
+    if linked_ready:
+        return RELATIONAL_LINKED_ACCEPTANCE_THEOREM
+    return None
+
+
+def selected_relational_acceptance_theorem(
+    acceptance: Mapping[str, Any],
+) -> str | None:
+    """Validate and return the sole theorem authorized by an acceptance artifact."""
+    status = acceptance.get("status")
+    required = acceptance.get("required_theorem")
+    theorem = acceptance.get("theorem")
+    if required not in RELATIONAL_ACCEPTANCE_THEOREMS:
+        raise SchemaError("whole-program acceptance requires an unsupported theorem")
+    if status == "incomplete":
+        if theorem is not None:
+            raise SchemaError(
+                "incomplete whole-program acceptance must not advertise a theorem"
+            )
+        return None
+    if status != "ready":
+        raise SchemaError("whole-program acceptance has an invalid status")
+    if theorem != required:
+        raise SchemaError(
+            "ready whole-program acceptance theorem does not match its requirement"
+        )
+    if theorem == RELATIONAL_LINKED_ACCEPTANCE_THEOREM:
+        linked = acceptance.get("linked_acceptance")
+        if (
+            not isinstance(linked, Mapping)
+            or linked.get("status") != "ready"
+            or linked.get("theorem") != theorem
+        ):
+            raise SchemaError(
+                "linked whole-program acceptance omits its checked linked authority"
+            )
+    return str(theorem)
 
 
 class AcceptanceAuthority(str, Enum):
@@ -420,6 +483,8 @@ class ModuleGraph:
         theorem = payload.get("expected_final_theorem")
         if theorem is not None and not isinstance(theorem, str):
             raise SchemaError("expected_final_theorem must be a string or null")
+        if theorem is not None and theorem not in RELATIONAL_ACCEPTANCE_THEOREMS:
+            raise SchemaError("expected_final_theorem is not a supported acceptance theorem")
         return cls(
             format=_required_string(payload, "format"),
             root_module=_required_string(payload, "root_module"),
@@ -480,6 +545,7 @@ class StageAInterfaceManifest:
     format: str
     model: str
     acceptance_theorem: str
+    acceptance_theorems: tuple[str, ...]
     schema_ids: tuple[str, ...]
     artifact_ids: tuple[str, ...]
     workstream_ids: tuple[str, ...]
@@ -534,12 +600,35 @@ class StageAInterfaceManifest:
         if not isinstance(acceptance, Mapping):
             raise SchemaError("interface manifest acceptance must be an object")
         theorem = _required_string(acceptance, "theorem")
+        supported_theorems = acceptance.get("supported_theorems")
+        if not isinstance(supported_theorems, list) or any(
+            not isinstance(row, Mapping)
+            or row.get("theorem") not in RELATIONAL_ACCEPTANCE_THEOREMS
+            or row.get("proposition")
+                != RELATIONAL_ACCEPTANCE_THEOREM_INVENTORY[row["theorem"]][
+                    "proposition"
+                ]
+            or row.get("certificate")
+                != RELATIONAL_ACCEPTANCE_THEOREM_INVENTORY[row["theorem"]][
+                    "certificate"
+                ]
+            for row in supported_theorems
+        ):
+            raise SchemaError("interface manifest has an invalid acceptance theorem inventory")
+        theorem_names = tuple(str(row["theorem"]) for row in supported_theorems)
+        if (
+            len(theorem_names) != len(set(theorem_names))
+            or set(theorem_names) != RELATIONAL_ACCEPTANCE_THEOREMS
+            or theorem != RELATIONAL_ACCEPTANCE_THEOREM
+        ):
+            raise SchemaError("interface manifest acceptance theorem inventory is incomplete")
         if acceptance.get("only_pass_authority") is not True:
             raise SchemaError("interface manifest must preserve the sole pass authority")
         return cls(
             format=str(payload["format"]),
             model=_required_string(payload, "model"),
             acceptance_theorem=theorem,
+            acceptance_theorems=theorem_names,
             schema_ids=unique_ids("schemas"),
             artifact_ids=unique_ids("artifacts"),
             workstream_ids=workstream_ids,

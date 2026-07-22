@@ -1741,6 +1741,22 @@ theorem PairedStackWordWriteClaim.valueRelated_of_checked
   exact claim.value.related_of_checked context world sourceInvariant checked.2
     originalState candidateState related
 
+def pairedStackWordAdjustment? (amount : Nat) : Option StackAdjustment :=
+  if amount = 0 then some .identity
+  else if amount < 2 ^ 31 then some (.add amount)
+  else if amount < 2 ^ 32 then some (.subtract (2 ^ 32 - amount))
+  else if amount <= 2 ^ 33 then some (.subtract (2 ^ 33 - amount))
+  else if amount = 2 ^ 34 then some (.add 0)
+  else none
+
+def StackAdjustment.stackWordChecked (adjustment : StackAdjustment)
+    (window : StackWindowPair) : Bool :=
+  match adjustment with
+  | .identity => decide (4 <= window.bytesAbove)
+  | .add amount => decide (amount + 4 <= window.bytesAbove) && amount % 4 == 0
+  | .subtract amount =>
+      decide (4 <= amount) && decide (amount <= window.bytesBelow) && amount % 4 == 0
+
 def pairedStackWordAddress (register : Reg) (amount : Nat) : Expr :=
   if amount = 0 then .inputReg register
   else .add (.inputReg register) (.constant amount)
@@ -1757,6 +1773,40 @@ theorem pairedStackWordAddress_eval (register : Reg) (amount : Nat)
   · subst amount
     simp [pairedStackWordAddress, Expr.eval]
   · simp [pairedStackWordAddress, zero, Expr.eval]
+
+theorem pairedStackWordLocation_at_adjustment
+    (context : StaticProofContext) (world : RelationalWorld)
+    (window : StackWindowPair) (original candidate : MachineState)
+    (rangesValid : world.stackRangesValid context = true)
+    (windowHolds : window.holds world original.registers candidate.registers = true)
+    (adjustment : StackAdjustment)
+    (adjustmentChecked : adjustment.stackWordChecked window = true) :
+    ∃ location : PairedStackWordLocation world,
+      location.originalAddress =
+          (adjustment.expression window.originalRegister).eval original ∧
+        location.candidateAddress =
+          (adjustment.expression window.candidateRegister).eval candidate := by
+  cases adjustment with
+  | identity =>
+      simp only [StackAdjustment.stackWordChecked, decide_eq_true_eq]
+        at adjustmentChecked
+      simpa [StackAdjustment.expression, Expr.eval] using
+        pairedStackWordLocation_above_window context world window original.registers
+          candidate.registers rangesValid windowHolds 0 (by decide) adjustmentChecked
+  | add amount =>
+      simp only [StackAdjustment.stackWordChecked, Bool.and_eq_true,
+        decide_eq_true_eq, beq_iff_eq] at adjustmentChecked
+      simpa [StackAdjustment.expression, Expr.eval] using
+        pairedStackWordLocation_above_window context world window original.registers
+          candidate.registers rangesValid windowHolds amount adjustmentChecked.2
+          adjustmentChecked.1
+  | subtract amount =>
+      simp only [StackAdjustment.stackWordChecked, Bool.and_eq_true,
+        decide_eq_true_eq, beq_iff_eq] at adjustmentChecked
+      simpa [StackAdjustment.expression, Expr.eval] using
+        pairedStackWordLocation_below_window_amount context world window
+          original.registers candidate.registers rangesValid windowHolds amount
+          adjustmentChecked.1.1 adjustmentChecked.2 adjustmentChecked.1.2
 
 theorem pairedDynamicWordAddress_eval (register : Reg) (amount : Nat)
     (state : MachineState) :
@@ -1855,6 +1905,86 @@ def StaticProofContext.staticDynamicPointerSlotById
     (context : StaticProofContext) (slotId : Nat) : Option StaticDynamicPointerSlotPair :=
   context.staticDynamicPointerSlots.find? fun slot => slot.id == slotId
 
+@[simp] def pairedPreparedStackWordAddress (register : Reg) (amount : Nat) : Expr :=
+  if amount = 0 then .inputReg register
+  else if amount < 2 ^ 32 then .add (.inputReg register) (.constant amount)
+  else if amount <= 2 ^ 33 then
+    .sub (.inputReg register) (.constant (2 ^ 33 - amount))
+  else if amount = 2 ^ 34 then .add (.inputReg register) (.constant 0)
+  else .add (.inputReg register) (.constant amount)
+
+@[simp] theorem pairedPreparedStackWordAddress_eval (register : Reg) (amount : Nat)
+    (state : MachineState) :
+    (pairedPreparedStackWordAddress register amount).eval state =
+      state.registers.get register + BitVec.ofNat 32 amount := by
+  unfold pairedPreparedStackWordAddress
+  split
+  · subst amount
+    simp [Expr.eval]
+  split
+  · simp [Expr.eval]
+  split <;> rename_i amountAtMost
+  · by_cases amountLower : amount = 2 ^ 32
+    · subst amount
+      simp [Expr.eval]
+    by_cases amountUpper : amount = 2 ^ 33
+    · subst amount
+      simp [Expr.eval]
+    · have amountAbove : 2 ^ 32 < amount := by omega
+      have subtractionFits : 2 ^ 33 - amount < 2 ^ 32 := by omega
+      rw [show (Expr.sub (.inputReg register) (.constant (2 ^ 33 - amount))).eval
+          state = state.registers.get register -
+            BitVec.ofNat 32 (2 ^ 33 - amount) by rfl]
+      rw [← word_add_ia32_twos_complement
+        (state.registers.get register) (2 ^ 33 - amount) subtractionFits]
+      congr 1
+      apply BitVec.eq_of_toNat_eq
+      simp only [BitVec.toNat_ofNat]
+      rw [Nat.mod_eq_of_lt (by omega :
+        2 ^ 32 - (2 ^ 33 - amount) < 2 ^ 32)]
+      have amountForm : amount = 2 ^ 32 + (amount - 2 ^ 32) := by omega
+      rw [amountForm]
+      simp [Nat.mod_eq_of_lt (by omega : amount - 2 ^ 32 < 2 ^ 32)]
+      omega
+  · split
+    · subst amount
+      simp [Expr.eval]
+    · simp [Expr.eval]
+
+theorem pairedPreparedStackWordAddress_matches_adjustment
+    (register : Reg) (amount : Nat) (adjustment : StackAdjustment)
+    (decoded : pairedStackWordAdjustment? amount = some adjustment) :
+    adjustment.expressionMatches register
+      (pairedPreparedStackWordAddress register amount) = true := by
+  unfold pairedStackWordAdjustment? at decoded
+  unfold pairedPreparedStackWordAddress
+  split at decoded
+  · injection decoded with adjustmentEq
+    subst adjustment
+    simp_all [StackAdjustment.expressionMatches, StackAdjustment.expression]
+  split at decoded
+  · have amountBelowWord : amount < 2 ^ 32 := by omega
+    injection decoded with adjustmentEq
+    subst adjustment
+    simp_all [StackAdjustment.expressionMatches, StackAdjustment.expression]
+  split at decoded
+  · have amountPositive : 0 < amount := by omega
+    have subtractionFits : 2 ^ 32 - amount < 2 ^ 32 := by omega
+    have complement : 2 ^ 32 - (2 ^ 32 - amount) = amount := by omega
+    injection decoded with adjustmentEq
+    subst adjustment
+    simp_all [StackAdjustment.expressionMatches, StackAdjustment.expression]
+  split at decoded
+  · have amountNotBelowWord : ¬amount < 2 ^ 32 := by omega
+    injection decoded with adjustmentEq
+    subst adjustment
+    simp_all [StackAdjustment.expressionMatches, StackAdjustment.expression]
+  split at decoded
+  · injection decoded with adjustmentEq
+    subst adjustment
+    simp_all [StackAdjustment.expressionMatches, StackAdjustment.expression]
+  · simp_all
+
 inductive PairedPreparedWordWriteItem where
   | stack (window : StackWindowPair) (amount : Nat)
       (value : PairedStackWordValueClaim)
@@ -1877,7 +2007,8 @@ def PairedPreparedWordWriteItem.kind :
 
 def PairedPreparedWordWriteItem.originalAddress :
     PairedPreparedWordWriteItem -> Expr
-  | .stack window amount _ => pairedStackWordAddress window.originalRegister amount
+  | .stack window amount _ =>
+      pairedPreparedStackWordAddress window.originalRegister amount
   | .staticWord _ originalAddress _ _ => .constant originalAddress
   | .dynamicWord source _ originalAmount _ _ =>
       pairedDynamicWordAddress source.original originalAmount
@@ -1885,7 +2016,8 @@ def PairedPreparedWordWriteItem.originalAddress :
 
 def PairedPreparedWordWriteItem.candidateAddress :
     PairedPreparedWordWriteItem -> Expr
-  | .stack window amount _ => pairedStackWordAddress window.candidateRegister amount
+  | .stack window amount _ =>
+      pairedPreparedStackWordAddress window.candidateRegister amount
   | .staticWord _ _ candidateAddress _ => .constant candidateAddress
   | .dynamicWord source _ _ candidateAmount _ =>
       pairedDynamicWordAddress source.candidate candidateAmount
@@ -1900,8 +2032,10 @@ def PairedPreparedWordWriteItem.checked (context : StaticProofContext)
     (sourceInvariant : StateInvariant) : PairedPreparedWordWriteItem -> Bool
   | .stack window amount value =>
       sourceInvariant.stackWindows.contains window &&
-        amount % 4 == 0 && amount + 4 <= window.bytesAbove &&
-        value.checked context sourceInvariant
+        match pairedStackWordAdjustment? amount with
+        | none => false
+        | some adjustment =>
+            adjustment.stackWordChecked window && value.checked context sourceInvariant
   | .staticWord slotId originalAddress candidateAddress value =>
       match context.staticWordRelationSlotById slotId with
       | none => false
@@ -2394,51 +2528,66 @@ theorem pairedPreparedWordUpdates_of_checkedItems
         ⟨updates, originalUpdates, candidateUpdates, updateKinds⟩
       cases item with
       | stack window amount value =>
-          simp only [PairedPreparedWordWriteItem.checked, Bool.and_eq_true,
-            beq_iff_eq, decide_eq_true_eq] at itemChecked
-          rcases itemChecked with
-            ⟨⟨⟨windowMember, amountAligned⟩, enoughAbove⟩, valueChecked⟩
-          have windowHolds := inputStackWindows window
-            (List.contains_iff_mem.mp windowMember)
-          rcases pairedStackWordLocation_above_window context world window
-              originalState.registers candidateState.registers rangesValid windowHolds
-              amount amountAligned enoughAbove with
-            ⟨location, originalLocation, candidateLocation⟩
-          have locationValid : location.range.disjointFromImages context = true := by
-            have validRows := rangesValid
-            simp only [RelationalWorld.stackRangesValid, Bool.and_eq_true,
-              List.all_eq_true] at validRows
-            exact (validRows.1.1.2 location.range location.rangeMember).1.1.1
-          have valuesRelated := PairedStackWordValueClaim.related_of_checked
-            context world sourceInvariant value valueChecked originalState candidateState
-            related
-          let stackUpdate : PairedStackWordUpdate context world := {
-            location
-            locationValid
-            originalValue := value.original.eval originalState
-            candidateValue := value.candidate.eval candidateState
-            valuesRelated
-          }
-          let update : PairedPreparedWordUpdate context world := .stack stackUpdate
-          refine ⟨update :: updates, ?_, ?_, ?_⟩
-          · simp only [List.map_cons]
-            rw [originalUpdates]
-            congr 1
-            simp [update, stackUpdate, PairedPreparedWordUpdate.originalWrite,
-              PairedStackWordUpdate.originalWrite,
-              PairedPreparedWordWriteItem.originalAddress,
-              PairedPreparedWordWriteItem.value, pairedStackWordAddress_eval,
-              originalLocation]
-          · simp only [List.map_cons]
-            rw [candidateUpdates]
-            congr 1
-            simp [update, stackUpdate, PairedPreparedWordUpdate.candidateWrite,
-              PairedStackWordUpdate.candidateWrite,
-              PairedPreparedWordWriteItem.candidateAddress,
-              PairedPreparedWordWriteItem.value, pairedStackWordAddress_eval,
-              candidateLocation]
-          · simp [update, PairedPreparedWordUpdate.kind,
-              PairedPreparedWordWriteItem.kind, updateKinds]
+          unfold PairedPreparedWordWriteItem.checked at itemChecked
+          simp only [Bool.and_eq_true] at itemChecked
+          have windowMember := itemChecked.1
+          cases adjustmentResult : pairedStackWordAdjustment? amount with
+          | none => simp [adjustmentResult] at itemChecked
+          | some adjustment =>
+            simp only [adjustmentResult, Bool.and_eq_true] at itemChecked
+            have adjustmentChecked := itemChecked.2.1
+            have valueChecked := itemChecked.2.2
+            have windowHolds := inputStackWindows window
+              (List.contains_iff_mem.mp windowMember)
+            rcases pairedStackWordLocation_at_adjustment context world window
+                originalState candidateState rangesValid windowHolds adjustment
+                adjustmentChecked with
+              ⟨location, originalLocation, candidateLocation⟩
+            have originalAddressEval := StackAdjustment.eval_expression_of_matches
+              adjustment window.originalRegister
+              (pairedPreparedStackWordAddress window.originalRegister amount)
+              originalState
+              (pairedPreparedStackWordAddress_matches_adjustment
+                window.originalRegister amount adjustment adjustmentResult)
+            have candidateAddressEval := StackAdjustment.eval_expression_of_matches
+              adjustment window.candidateRegister
+              (pairedPreparedStackWordAddress window.candidateRegister amount)
+              candidateState
+              (pairedPreparedStackWordAddress_matches_adjustment
+                window.candidateRegister amount adjustment adjustmentResult)
+            have locationValid : location.range.disjointFromImages context = true := by
+              have validRows := rangesValid
+              simp only [RelationalWorld.stackRangesValid, Bool.and_eq_true,
+                List.all_eq_true] at validRows
+              exact (validRows.1.1.2 location.range location.rangeMember).1.1.1
+            have valuesRelated := PairedStackWordValueClaim.related_of_checked
+              context world sourceInvariant value valueChecked originalState
+              candidateState related
+            let stackUpdate : PairedStackWordUpdate context world := {
+              location
+              locationValid
+              originalValue := value.original.eval originalState
+              candidateValue := value.candidate.eval candidateState
+              valuesRelated
+            }
+            let update : PairedPreparedWordUpdate context world := .stack stackUpdate
+            refine ⟨update :: updates, ?_, ?_, ?_⟩
+            · simp only [List.map_cons]
+              rw [originalUpdates]
+              simp only [update, stackUpdate, PairedPreparedWordUpdate.originalWrite,
+                PairedStackWordUpdate.originalWrite,
+                PairedPreparedWordWriteItem.originalAddress,
+                PairedPreparedWordWriteItem.value]
+              rw [originalLocation, ← originalAddressEval]
+            · simp only [List.map_cons]
+              rw [candidateUpdates]
+              simp only [update, stackUpdate, PairedPreparedWordUpdate.candidateWrite,
+                PairedStackWordUpdate.candidateWrite,
+                PairedPreparedWordWriteItem.candidateAddress,
+                PairedPreparedWordWriteItem.value]
+              rw [candidateLocation, ← candidateAddressEval]
+            · simp [update, PairedPreparedWordUpdate.kind,
+                PairedPreparedWordWriteItem.kind, updateKinds]
 
       | staticWord slotId originalAddress candidateAddress value =>
           unfold PairedPreparedWordWriteItem.checked at itemChecked
@@ -2715,14 +2864,14 @@ theorem pairedPreparedWordWritesSpillReadsBack
             PreparedDynamicStackRangeSpillClaim.item,
             PreparedDynamicStackRangeSpillClaim.value,
             PairedPreparedWordWriteItem.originalAddress,
-            PairedPreparedWordWriteItem.value, pairedStackWordAddress_eval,
+            PairedPreparedWordWriteItem.value, pairedPreparedStackWordAddress_eval,
             Expr.eval] at originalAddressExact originalValueExact
           simp only [PairedPreparedWordUpdate.candidateWrite,
             PairedStackWordUpdate.candidateWrite,
             PreparedDynamicStackRangeSpillClaim.item,
             PreparedDynamicStackRangeSpillClaim.value,
             PairedPreparedWordWriteItem.candidateAddress,
-            PairedPreparedWordWriteItem.value, pairedStackWordAddress_eval,
+            PairedPreparedWordWriteItem.value, pairedPreparedStackWordAddress_eval,
             Expr.eval] at candidateAddressExact candidateValueExact
           have restAllNonStack :
               rest.all (fun update => update.kind != .stack) = true := by
@@ -4249,6 +4398,104 @@ theorem StateRel.afterPairedMemoryFamiliesUpdate
       dynamicStackRangeRelationsHold_of_active context world
         targetInvariant.dynamicStackRangeRelations _ _ dynamicStacks,
       predicates⟩
+
+/-- Reusable framed-memory transition for a decoded list of paired word writes.
+The claim classifies each concrete write, while this theorem preserves every
+authoritative flat-memory relation before rebuilding `StateRel`. -/
+theorem StateRel.afterPairedPreparedWordWritesEvaluation
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalState candidateState : MachineState)
+    (originalBehavior candidateBehavior : RelationalBehavior)
+    (claim : PairedPreparedWordWritesClaim)
+    (contextValid : context.StructurallyValid)
+    (related : StateRel context world sourceInvariant originalState candidateState)
+    (claimChecked : claim.checked context sourceInvariant = true)
+    (originalWrites :
+      originalBehavior.writes = claim.originalWrites originalState)
+    (candidateWrites :
+      candidateBehavior.writes = claim.candidateWrites candidateState)
+    (originalNoX87 : originalBehavior.x87Effect = none)
+    (candidateNoX87 : candidateBehavior.x87Effect = none)
+    (registers : registerRelationsHold context.originalPe.imageBase
+      context.candidatePe.imageBase context.codeMap.entries.toList
+      (context.relationalValueTargets world) targetInvariant.registerRelations
+      originalBehavior.registers candidateBehavior.registers = true)
+    (bounds : boundsRelated targetInvariant.bounds originalBehavior.registers
+      candidateBehavior.registers = true)
+    (separations : addressSeparationsRelated targetInvariant.addressSeparations
+      originalBehavior.registers candidateBehavior.registers = true)
+    (stackWindows : stackWindowsRelated world targetInvariant.stackWindows
+      originalBehavior.registers candidateBehavior.registers = true)
+    (x87 : (originalBehavior.nextMachineState originalState).x87 =
+      (candidateBehavior.nextMachineState candidateState).x87)
+    (flags : flagsRelated targetInvariant.flagBits originalBehavior.eflags
+      candidateBehavior.eflags = true)
+    (importRegisters : importRegisterRelationsHold world
+      targetInvariant.importRegisterRelations originalBehavior.registers
+      candidateBehavior.registers = true)
+    (dynamicRegisters : activeDynamicRegisterRangeRelationsHold context world
+      targetInvariant.dynamicRegisterRangeRelations
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true)
+    (dynamicStacks : activeDynamicStackRangeRelationsHold context world
+      targetInvariant.dynamicStackRangeRelations
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true)
+    (predicates : pairedStatePredicatesHold targetInvariant.predicates
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true) :
+    StateRel context world targetInvariant
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) := by
+  simp only [PairedPreparedWordWritesClaim.checked, Bool.and_eq_true]
+    at claimChecked
+  have itemsChecked := claimChecked.2
+  have relatedForUpdates := related
+  have relatedForFinal := related
+  rcases related with
+    ⟨worldValid, stackRangesValid, stackMemory, importsStatic, _importsComplete,
+      importsMemory, originalImmutable, candidateImmutable, relatedCore,
+      _inputImportRegisters⟩
+  rcases relatedCore with
+    ⟨_inputRegisters, _inputBounds, _inputSeparations, _inputStackWindows,
+      inputMemory, inputDynamicMemory, _inputUndefined, _inputX87,
+      _inputFlags, _inputFsBase⟩
+  rcases pairedPreparedWordUpdates_of_checkedItems context world sourceInvariant
+      claim.writes originalState candidateState stackRangesValid itemsChecked
+      relatedForUpdates with
+    ⟨updates, originalUpdateWrites, candidateUpdateWrites, _updateKinds⟩
+  have worldDynamicValid : world.dynamicRangesValid context = true := by
+    simp only [RelationalWorld.valid, Bool.and_eq_true] at worldValid
+    exact worldValid.1.1.1.1
+  have staticSlotsValid : staticDynamicPointerSlotsValid context = true := by
+    rcases contextValid with
+      ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _, _⟩
+    exact slotsValid
+  have staticWordSlotsValid : staticWordRelationSlotsValid context = true := by
+    rcases contextValid with
+      ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _⟩
+    exact slotsValid
+  have memoryFamilies :=
+    RelationalMemoryFamiliesHold.afterPairedPreparedWordUpdates context world
+      stackRangesValid importsStatic worldDynamicValid staticSlotsValid
+      staticWordSlotsValid updates originalState.memory candidateState.memory {
+        stackRanges := stackMemory
+        importAddresses := importsMemory
+        originalImmutable := originalImmutable
+        candidateImmutable := candidateImmutable
+        ordinary := inputMemory
+        staticPointerSlots := inputDynamicMemory.staticPointerSlots
+        staticWordSlots := inputDynamicMemory.staticWordSlots
+      }
+  rw [originalUpdateWrites, candidateUpdateWrites] at memoryFamilies
+  exact StateRel.afterPairedMemoryFamiliesUpdate context world sourceInvariant
+    targetInvariant originalState candidateState originalBehavior candidateBehavior
+    (claim.originalWrites originalState) (claim.candidateWrites candidateState)
+    relatedForFinal
+    originalWrites candidateWrites originalNoX87 candidateNoX87 memoryFamilies
+    registers bounds separations stackWindows x87 flags importRegisters
+    dynamicRegisters dynamicStacks predicates
 
 theorem segmentTransitionClosed_of_no_write_with_transfers
     (context : StaticProofContext) (edge : RelationalSegmentEdge)

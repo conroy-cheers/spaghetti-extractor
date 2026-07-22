@@ -438,30 +438,9 @@ def MachineImportCallContract.matchesImport
     (contract : MachineImportCallContract) (imported : PEImport) : Bool :=
   contract.imported == normalizeImport imported
 
-def wordWriteAddressesProvablyDisjoint (left right : Expr) : Bool :=
-  (List.range 4).all fun leftOffset =>
-    (List.range 4).all fun rightOffset =>
-      (left.offset leftOffset).provablyUnequal (right.offset rightOffset)
-
-def exactWrite32WithDisjointTail? (address : Expr) :
-    List (Expr × Expr) -> Option Expr
-  | [] => none
-  | write :: tail =>
-      match exactWrite32WithDisjointTail? address tail with
-      | some value => some value
-      | none =>
-          if write.1 == address &&
-              tail.all fun later =>
-                wordWriteAddressesProvablyDisjoint address later.1 then
-            some write.2
-          else
-            none
-
 def machineCallStackArgument (behavior : SymbolicBehavior) (offset : Nat) : Expr :=
   let address := behavior.registers.esp.offset offset
-  match exactWrite32WithDisjointTail? address behavior.writes with
-  | some value => value
-  | none => symbolicRead32 behavior address
+  symbolicRead32 behavior address
 
 def MachineImportCallContract.arguments
     (contract : MachineImportCallContract) (behavior : SymbolicBehavior) : List Expr :=

@@ -264,7 +264,7 @@ from .schema import (
     MACHINE_CALL_WORLD_EFFECTS,
     REGISTERS,
     RELATION_CONTRACT_FORMAT,
-    RELATIONAL_ACCEPTANCE_THEOREM,
+    RELATIONAL_ACCEPTANCE_THEOREMS,
     RELATIONAL_APPROVED_AXIOMS,
     RELATIONAL_ENVIRONMENT_ID,
     RELATIONAL_KERNEL_MODULES,
@@ -273,7 +273,9 @@ from .schema import (
     RELATIONAL_SEGMENT_CERTIFICATE_FORMAT,
     STAGE_A_RELATIONAL_MODEL_ID,
     STAGE_A_RELATIONAL_PROFILE_ID,
+    SchemaError,
     integer as _integer,
+    selected_relational_acceptance_theorem,
 )
 
 _LEAN_SOURCE_ROOT = Path(__file__).resolve().parent.parent / "lean" / "StageA"
@@ -913,22 +915,6 @@ def stage_a_prove_relational(
         normalized, behaviors
     )
     stack_window_analysis["x87_exact_stack_reads"] = x87_stack_read_analysis
-    normalized, branch_exact_memory_analysis = (
-        _attach_branch_exact_memory_requirements(
-            normalized, behaviors, original_bin, candidate_bin
-        )
-    )
-    stack_window_analysis["branch_exact_memory_requirements"] = (
-        branch_exact_memory_analysis
-    )
-    normalized, bound_pullback_analysis = attach_no_write_bound_edge_pullbacks(
-        normalized, behaviors
-    )
-    stack_window_analysis["bound_edge_pullbacks"] = bound_pullback_analysis
-    normalized, predicate_pullback_analysis = attach_no_write_state_predicate_pullbacks(
-        normalized, behaviors
-    )
-    stack_window_analysis["state_predicate_pullbacks"] = predicate_pullback_analysis
     # Stack provenance is discovered from decoded memory accesses and runtime
     # frames after the initial edge analysis. Replay register synthesis so
     # stack-derived pointers flow forward as related words instead of exact
@@ -1050,6 +1036,26 @@ def stage_a_prove_relational(
         "converged": lifecycle_converged,
         "passes": static_pointer_passes,
     }
+    # Exact-memory predicates are a fallback for otherwise-unclassified branch
+    # reads. Infer dynamic/static pointer slots first so their stronger checked
+    # relation can discharge zero/nonzero guards without leaving a stale exact
+    # memory requirement in the cutpoint invariant.
+    normalized, branch_exact_memory_analysis = (
+        _attach_branch_exact_memory_requirements(
+            normalized, behaviors, original_bin, candidate_bin
+        )
+    )
+    stack_window_analysis["branch_exact_memory_requirements"] = (
+        branch_exact_memory_analysis
+    )
+    normalized, bound_pullback_analysis = attach_no_write_bound_edge_pullbacks(
+        normalized, behaviors
+    )
+    stack_window_analysis["bound_edge_pullbacks"] = bound_pullback_analysis
+    normalized, predicate_pullback_analysis = attach_no_write_state_predicate_pullbacks(
+        normalized, behaviors
+    )
+    stack_window_analysis["state_predicate_pullbacks"] = predicate_pullback_analysis
     write_json(
         out / "relational-dynamic-range-flow.json",
         dynamic_flow_analysis,
@@ -1499,9 +1505,15 @@ def stage_a_prove_relational(
     )
     replay = _run_sharded_relational(out / "lean", shard_modules)
     theorem = str(replay.get("theorem") or "")
+    acceptance = _read_json(out / "whole-program-acceptance.json")
+    try:
+        expected_theorem = selected_relational_acceptance_theorem(acceptance)
+    except SchemaError:
+        expected_theorem = None
     theorem_checked = (
         replay["status"] == "checked"
-        and theorem == RELATIONAL_ACCEPTANCE_THEOREM
+        and expected_theorem is not None
+        and theorem == expected_theorem
     )
     finalized_proof_ir = _finalize_local_proof_ir(
         proof_ir,
@@ -1550,6 +1562,74 @@ def stage_a_prepare_relational(
         out=out,
         _prepare_only=True,
     )
+
+
+def stage_a_preflight_relational(
+    *,
+    original: Path,
+    candidate: Path,
+    relation_contract: Path,
+) -> dict[str, Any]:
+    """Run the cheap, fail-closed structural and ISA eligibility checks.
+
+    This deliberately stops before extraction, invariant synthesis, proof
+    source generation, or Lean.  It has no acceptance authority; its output is
+    suitable only for deciding whether an expensive proof preparation is worth
+    starting.
+    """
+
+    started = time.monotonic()
+    try:
+        original_bin = _parse_stage_a_pe(Path(original))
+        candidate_bin = _parse_stage_a_pe(Path(candidate))
+        contract = _load_contract(Path(relation_contract))
+        normalized, structural_issues = _normalize_contract(
+            contract, original_bin, candidate_bin
+        )
+    except (OSError, StageAInputError, ValueError) as exc:
+        return {
+            "format": "stage-a-relational-static-preflight-v1",
+            "status": "incomplete",
+            "acceptance_authority": False,
+            "reason_code": "structural_validation_failed",
+            "issues": [{
+                "category": "structural_validation_failed",
+                "message": str(exc),
+            }],
+            "elapsed_seconds": round(time.monotonic() - started, 6),
+        }
+    if structural_issues:
+        return {
+            "format": "stage-a-relational-static-preflight-v1",
+            "status": "incomplete",
+            "acceptance_authority": False,
+            "reason_code": "contract_structural_validation_failed",
+            "issues": structural_issues,
+            "original_sha256": original_bin.sha256,
+            "candidate_sha256": candidate_bin.sha256,
+            "elapsed_seconds": round(time.monotonic() - started, 6),
+        }
+    semantic = _relational_semantic_preflight(
+        Path(original), Path(candidate), normalized
+    )
+    return {
+        "format": "stage-a-relational-static-preflight-v1",
+        "status": "ready" if semantic["status"] == "supported" else "incomplete",
+        "acceptance_authority": False,
+        "reason_code": (
+            None if semantic["status"] == "supported"
+            else "semantic_preflight_incomplete"
+        ),
+        "issues": semantic["issues"],
+        "counts": {
+            "regions": len(normalized.get("regions", [])),
+            "issues": len(semantic["issues"]),
+        },
+        "original_sha256": original_bin.sha256,
+        "candidate_sha256": candidate_bin.sha256,
+        "relation_contract_sha256": sha256_file(Path(relation_contract)),
+        "elapsed_seconds": round(time.monotonic() - started, 6),
+    }
 
 
 def stage_a_analyze_relational(
@@ -1943,6 +2023,10 @@ def stage_a_check_relational_proof(*, report: Path, out: Path | None = None) -> 
     acceptance = _read_json(report / "whole-program-acceptance.json")
     WholeProgramAcceptanceIR.parse(acceptance)
     try:
+        expected_theorem = selected_relational_acceptance_theorem(acceptance)
+    except SchemaError:
+        expected_theorem = None
+    try:
         module_graph = _validate_relational_module_graph(report)
     except StageAInputError:
         module_graph = None
@@ -1957,11 +2041,11 @@ def stage_a_check_relational_proof(*, report: Path, out: Path | None = None) -> 
         ),
         "acceptance_ready": (
             acceptance.get("status") == "ready"
-            and acceptance.get("theorem") == RELATIONAL_ACCEPTANCE_THEOREM
+            and expected_theorem in RELATIONAL_ACCEPTANCE_THEOREMS
         ),
         "reported_final_theorem_matches": (
             verdict.get("proof", {}).get("theorem")
-            == RELATIONAL_ACCEPTANCE_THEOREM
+            == expected_theorem
         ),
         "module_graph_hash_matches": (
             (report / "module-graph.json").is_file()
@@ -1973,7 +2057,7 @@ def stage_a_check_relational_proof(*, report: Path, out: Path | None = None) -> 
             module_graph is not None
             and module_graph.get("root_module") == "RelationalAcceptance"
             and module_graph.get("expected_final_theorem")
-                == RELATIONAL_ACCEPTANCE_THEOREM
+                == expected_theorem
         ),
         "proof_ir_satisfied": proof_ir.get("status") == "satisfied",
         "no_incomplete_assumptions": verdict.get("counts", {}).get("incomplete_assumptions") == 0,
@@ -2052,10 +2136,11 @@ def stage_a_check_relational_proof(*, report: Path, out: Path | None = None) -> 
                 report / "lean", bundle="RelationalAcceptance"
             )
             if replay.get("status") == "checked":
-                replay["theorem"] = RELATIONAL_ACCEPTANCE_THEOREM
+                replay["theorem"] = expected_theorem
     checks["lean_lrat_replay_checked"] = (
         replay.get("status") == "checked"
-        and replay.get("theorem") == RELATIONAL_ACCEPTANCE_THEOREM
+        and expected_theorem is not None
+        and replay.get("theorem") == expected_theorem
     )
     status = "pass" if all(checks.values()) else "incomplete"
     result = {
@@ -2966,15 +3051,16 @@ def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[st
     acceptance = (
         _read_json(acceptance_path) if acceptance_path.is_file() else {}
     )
-    acceptance_ready = (
-        acceptance.get("status") == "ready"
-        and acceptance.get("theorem") == RELATIONAL_ACCEPTANCE_THEOREM
-    )
+    try:
+        expected_theorem = selected_relational_acceptance_theorem(acceptance)
+    except SchemaError:
+        expected_theorem = None
+    acceptance_ready = expected_theorem in RELATIONAL_ACCEPTANCE_THEOREMS
     final_bundle = "RelationalAcceptance" if acceptance_ready else "RelationalBundle"
     final = _run_lean_relational(lean_dir, bundle=final_bundle)
     if final.get("status") == "checked":
         final["theorem"] = (
-            RELATIONAL_ACCEPTANCE_THEOREM
+            expected_theorem
             if acceptance_ready
             else "StageA.GeneratedRelational.candidateRelationalEvidenceBundle"
         )

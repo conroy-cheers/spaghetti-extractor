@@ -199,3 +199,7 @@ run it under a headless Wayland/X session.
 
 See [docs/stage-a-architecture.md](docs/stage-a-architecture.md) for the
 normative trust boundary and command authority.
+The bounded structured qualification workflow and its measured result are in
+[docs/stage-a-round-trip-fuzzing-plan.md](docs/stage-a-round-trip-fuzzing-plan.md)
+and
+[docs/stage-a-round-trip-fuzzing-report.md](docs/stage-a-round-trip-fuzzing-report.md).

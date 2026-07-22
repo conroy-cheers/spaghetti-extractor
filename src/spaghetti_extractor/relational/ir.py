@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from .schema import RELATIONAL_PROOF_IR_FORMAT, SchemaError, integer
+from .schema import (
+    RELATIONAL_PROOF_IR_FORMAT,
+    SchemaError,
+    integer,
+    selected_relational_acceptance_theorem,
+)
 
 
 def _object(value: Any, field: str) -> Mapping[str, Any]:
@@ -145,17 +150,20 @@ class WholeProgramAcceptanceIR:
     status: str
     profile: str
     required_theorem: str
+    theorem: str | None
     blockers: tuple[Mapping[str, Any], ...]
     raw: Mapping[str, Any]
 
     @classmethod
     def parse(cls, payload: Mapping[str, Any]) -> "WholeProgramAcceptanceIR":
         blockers = _objects(payload.get("blockers"), "blockers")
+        theorem = selected_relational_acceptance_theorem(payload)
         return cls(
             format=_string(payload.get("format"), "format"),
             status=_string(payload.get("status"), "status"),
             profile=_string(payload.get("profile"), "profile"),
             required_theorem=_string(payload.get("required_theorem"), "required_theorem"),
+            theorem=theorem,
             blockers=blockers,
             raw=MappingProxyType(dict(payload)),
         )

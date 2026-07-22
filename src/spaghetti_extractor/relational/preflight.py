@@ -92,6 +92,7 @@ def instruction_supported(insn: Any) -> bool:
         or (len(encoded) >= 4 and encoded[:3] == b"\xf0\x0f\xb1")
         or (opcode == 0xFF and modrm_group in {2, 4, 6})
         or 0x50 <= opcode <= 0x5F
+        or 0x91 <= opcode <= 0x97
         or (
             len(encoded) == 2
             and (

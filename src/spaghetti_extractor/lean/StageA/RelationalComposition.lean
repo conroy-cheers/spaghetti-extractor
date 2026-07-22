@@ -415,6 +415,31 @@ def DirectCallStackWritesClaim.runtimeFrame (claim : DirectCallStackWritesClaim)
       BitVec.ofNat 32 claim.stackAmount
 }
 
+def DirectCallPreparedWritesClaim.runtimeFrame
+    (claim : DirectCallPreparedWritesClaim)
+    (originalState candidateState : MachineState) : RelationalRuntimeCallFrame := {
+  continuationTargetId := claim.continuationTargetId
+  originalReturnAddress := BitVec.ofNat 32 claim.originalReturnAddress
+  candidateReturnAddress := BitVec.ofNat 32 claim.candidateReturnAddress
+  originalStackAddress :=
+    originalState.registers.get claim.returnWindow.originalRegister -
+      BitVec.ofNat 32 claim.stackAmount
+  candidateStackAddress :=
+    candidateState.registers.get claim.returnWindow.candidateRegister -
+      BitVec.ofNat 32 claim.stackAmount
+}
+
+structure DirectCallPreparedExactWordSeedClaim where
+  before : List PairedPreparedWordWriteItem
+  selected : PairedPreparedWordWriteItem
+  after : List PairedPreparedWordWriteItem
+  originalSelectedAddress : RegisterOffsetWitness
+  candidateSelectedAddress : RegisterOffsetWitness
+  originalAfterAddresses : List RegisterOffsetWitness
+  candidateAfterAddresses : List RegisterOffsetWitness
+  exactWord : ReturnSlotExactWordPair
+deriving Repr, DecidableEq
+
 def ReturnSlotExactWordPair.maxOffset : Nat := 65532
 
 def ReturnSlotExactWordPair.checked (word : ReturnSlotExactWordPair) : Bool :=
@@ -655,6 +680,365 @@ theorem ReturnSlotOffsetInventory.exactWordsHold_member
     (member : word ∈ inventory.exactWords) :
     word.holds frame original candidate :=
   holds word member
+
+inductive FrameExactExprWitness where
+  | constant (value : Nat)
+  | exactWordRead32 (location : ReturnSlotOffsetPair)
+      (word : ReturnSlotExactWordPair)
+      (originalAddress candidateAddress : RegisterOffsetWitness)
+  | binary (operation : PairedExactBinaryOp)
+      (left right : FrameExactExprWitness)
+deriving Repr, DecidableEq
+
+def FrameExactExprWitness.expression
+    (side : PairedExactExprSide) : FrameExactExprWitness -> Expr
+  | .constant value => .constant value
+  | .exactWordRead32 location _ originalAddress candidateAddress =>
+      match side with
+      | .original => .read32 (originalAddress.expression location.originalRegister)
+      | .candidate => .read32 (candidateAddress.expression location.candidateRegister)
+  | .binary operation left right =>
+      operation.expression (left.expression side) (right.expression side)
+
+def FrameExactExprWitness.checked
+    (inventory : ReturnSlotOffsetInventory) : FrameExactExprWitness -> Bool
+  | .constant _ => true
+  | .exactWordRead32 location word originalAddress candidateAddress =>
+      inventory.locations.contains location && inventory.exactWords.contains word &&
+        originalAddress.offset ==
+          location.originalOffset + BitVec.ofNat 32 word.originalOffset &&
+        candidateAddress.offset ==
+          location.candidateOffset + BitVec.ofNat 32 word.candidateOffset
+  | .binary _ left right =>
+      left.checked inventory && right.checked inventory
+
+theorem FrameExactExprWitness.eval_equal_of_checked
+    (inventory : ReturnSlotOffsetInventory)
+    (witness : FrameExactExprWitness)
+    (frame : RelationalRuntimeCallFrame)
+    (originalState candidateState : MachineState)
+    (checked : witness.checked inventory = true)
+    (locationsHold : inventory.holds frame originalState.registers
+      candidateState.registers)
+    (exactWordsHold : inventory.exactWordsHold frame originalState.memory
+      candidateState.memory) :
+    (witness.expression .original).eval originalState =
+      (witness.expression .candidate).eval candidateState := by
+  induction witness with
+  | constant value => rfl
+  | exactWordRead32 location word originalAddress candidateAddress =>
+      simp only [FrameExactExprWitness.checked, Bool.and_eq_true,
+        beq_iff_eq] at checked
+      rcases checked with
+        ⟨⟨⟨locationMember, wordMember⟩, originalOffset⟩, candidateOffset⟩
+      have locationHolds := locationsHold.2 location
+        (List.contains_iff_mem.mp locationMember)
+      have wordHolds := exactWordsHold word
+        (List.contains_iff_mem.mp wordMember)
+      have originalAddressEval :
+          (originalAddress.expression location.originalRegister).eval originalState =
+            frame.originalStackAddress + BitVec.ofNat 32 word.originalOffset := by
+        rw [originalAddress.eval_expression, originalOffset]
+        simpa [BitVec.add_assoc] using congrArg
+          (fun address => address + BitVec.ofNat 32 word.originalOffset)
+          locationHolds.1
+      have candidateAddressEval :
+          (candidateAddress.expression location.candidateRegister).eval candidateState =
+            frame.candidateStackAddress + BitVec.ofNat 32 word.candidateOffset := by
+        rw [candidateAddress.eval_expression, candidateOffset]
+        simpa [BitVec.add_assoc] using congrArg
+          (fun address => address + BitVec.ofNat 32 word.candidateOffset)
+          locationHolds.2
+      simpa [FrameExactExprWitness.expression, Expr.eval,
+        machineStateRead32_eq_memoryRead32, originalAddressEval,
+        candidateAddressEval, ReturnSlotExactWordPair.holds] using wordHolds
+  | binary operation left right leftInduction rightInduction =>
+      simp only [FrameExactExprWitness.checked, Bool.and_eq_true] at checked
+      have leftEqual := leftInduction checked.1
+      have rightEqual := rightInduction checked.2
+      cases operation <;> simp_all [FrameExactExprWitness.expression,
+        PairedExactBinaryOp.expression, Expr.eval]
+
+structure FrameExactWordValueClaim where
+  original : Expr
+  candidate : Expr
+  witness : FrameExactExprWitness
+deriving Repr, DecidableEq
+
+def FrameExactWordValueClaim.checked (inventory : ReturnSlotOffsetInventory)
+    (claim : FrameExactWordValueClaim) : Bool :=
+  claim.original == claim.witness.expression .original &&
+    claim.candidate == claim.witness.expression .candidate &&
+    claim.witness.checked inventory
+
+theorem FrameExactWordValueClaim.related_of_checked
+    (context : StaticProofContext) (world : RelationalWorld)
+    (inventory : ReturnSlotOffsetInventory) (claim : FrameExactWordValueClaim)
+    (frame : RelationalRuntimeCallFrame)
+    (originalState candidateState : MachineState)
+    (checked : claim.checked inventory = true)
+    (locationsHold : inventory.holds frame originalState.registers
+      candidateState.registers)
+    (exactWordsHold : inventory.exactWordsHold frame originalState.memory
+      candidateState.memory) :
+    wordRelated context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList (context.relationalValueTargets world)
+      (claim.original.eval originalState) (claim.candidate.eval candidateState) = true := by
+  simp only [FrameExactWordValueClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with ⟨⟨originalExpression, candidateExpression⟩,
+    witnessChecked⟩
+  have equal := claim.witness.eval_equal_of_checked inventory frame originalState
+    candidateState witnessChecked locationsHold exactWordsHold
+  rw [originalExpression, candidateExpression, equal]
+  exact wordRelated_self _ _ _ _ _
+
+structure FrameExactStackWordWriteItem where
+  window : StackWindowPair
+  amount : Nat
+  value : FrameExactWordValueClaim
+deriving Repr, DecidableEq
+
+def FrameExactStackWordWriteItem.originalAddress
+    (item : FrameExactStackWordWriteItem) : Expr :=
+  pairedPreparedStackWordAddress item.window.originalRegister item.amount
+
+def FrameExactStackWordWriteItem.candidateAddress
+    (item : FrameExactStackWordWriteItem) : Expr :=
+  pairedPreparedStackWordAddress item.window.candidateRegister item.amount
+
+def FrameExactStackWordWriteItem.checked
+    (sourceInvariant : StateInvariant) (inventory : ReturnSlotOffsetInventory)
+    (item : FrameExactStackWordWriteItem) : Bool :=
+  sourceInvariant.stackWindows.contains item.window &&
+    match pairedStackWordAdjustment? item.amount with
+    | none => false
+    | some adjustment =>
+        adjustment.stackWordChecked item.window && item.value.checked inventory
+
+structure FrameExactStackWordWritesClaim where
+  writes : List FrameExactStackWordWriteItem
+deriving Repr, DecidableEq
+
+def FrameExactStackWordWritesClaim.originalSymbolicWrites
+    (claim : FrameExactStackWordWritesClaim) : List (Expr × Expr) :=
+  claim.writes.map fun item => (item.originalAddress, item.value.original)
+
+def FrameExactStackWordWritesClaim.candidateSymbolicWrites
+    (claim : FrameExactStackWordWritesClaim) : List (Expr × Expr) :=
+  claim.writes.map fun item => (item.candidateAddress, item.value.candidate)
+
+def FrameExactStackWordWritesClaim.originalWrites
+    (claim : FrameExactStackWordWritesClaim) (state : MachineState) :
+    List (Word × Word) :=
+  evalNormalizedWrites state claim.originalSymbolicWrites
+
+def FrameExactStackWordWritesClaim.candidateWrites
+    (claim : FrameExactStackWordWritesClaim) (state : MachineState) :
+    List (Word × Word) :=
+  evalNormalizedWrites state claim.candidateSymbolicWrites
+
+def FrameExactStackWordWritesClaim.checked
+    (sourceInvariant : StateInvariant) (inventory : ReturnSlotOffsetInventory)
+    (claim : FrameExactStackWordWritesClaim) : Bool :=
+  !claim.writes.isEmpty && inventory.checked &&
+    claim.writes.all (FrameExactStackWordWriteItem.checked sourceInvariant inventory)
+
+theorem frameExactStackWordUpdates_of_checkedItems
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant) (inventory : ReturnSlotOffsetInventory)
+    (items : List FrameExactStackWordWriteItem)
+    (frame : RelationalRuntimeCallFrame)
+    (originalState candidateState : MachineState)
+    (rangesValid : world.stackRangesValid context = true)
+    (itemsChecked : items.all
+      (FrameExactStackWordWriteItem.checked sourceInvariant inventory) = true)
+    (related : StateRel context world sourceInvariant originalState candidateState)
+    (locationsHold : inventory.holds frame originalState.registers
+      candidateState.registers)
+  (exactWordsHold : inventory.exactWordsHold frame originalState.memory
+      candidateState.memory) :
+    ∃ updates : List (PairedPreparedWordUpdate context world),
+      (updates.map PairedPreparedWordUpdate.originalWrite =
+          items.map fun item =>
+            (item.originalAddress.eval originalState,
+              item.value.original.eval originalState)) ∧
+        (updates.map PairedPreparedWordUpdate.candidateWrite =
+          items.map fun item =>
+            (item.candidateAddress.eval candidateState,
+              item.value.candidate.eval candidateState)) := by
+  have relatedForWindows := related
+  rcases relatedForWindows with
+    ⟨_, _, _, _, _, _, _, _, relatedCore, _⟩
+  rcases relatedCore with
+    ⟨_, _, _, inputStackWindows, _, _, _, _, _, _⟩
+  simp only [stackWindowsRelated, List.all_eq_true] at inputStackWindows
+  induction items with
+  | nil => exact ⟨[], rfl, rfl⟩
+  | cons item rest induction =>
+      simp only [List.all_cons, Bool.and_eq_true] at itemsChecked
+      have itemChecked := itemsChecked.1
+      have restChecked := itemsChecked.2
+      rcases induction restChecked with
+        ⟨updates, originalUpdates, candidateUpdates⟩
+      simp only [FrameExactStackWordWriteItem.checked, Bool.and_eq_true]
+        at itemChecked
+      have windowMember := itemChecked.1
+      cases adjustmentResult : pairedStackWordAdjustment? item.amount with
+      | none => simp [adjustmentResult] at itemChecked
+      | some adjustment =>
+          simp only [adjustmentResult, Bool.and_eq_true] at itemChecked
+          have adjustmentChecked := itemChecked.2.1
+          have valueChecked := itemChecked.2.2
+          have windowHolds := inputStackWindows item.window
+            (List.contains_iff_mem.mp windowMember)
+          rcases pairedStackWordLocation_at_adjustment context world item.window
+              originalState candidateState rangesValid windowHolds adjustment
+              adjustmentChecked with
+            ⟨location, originalLocation, candidateLocation⟩
+          have locationValid : location.range.disjointFromImages context = true := by
+            have validRows := rangesValid
+            simp only [RelationalWorld.stackRangesValid, Bool.and_eq_true,
+              List.all_eq_true] at validRows
+            exact (validRows.1.1.2 location.range location.rangeMember).1.1.1
+          have valuesRelated := item.value.related_of_checked context world inventory
+            frame originalState candidateState valueChecked locationsHold exactWordsHold
+          let stackUpdate : PairedStackWordUpdate context world := {
+            location
+            locationValid
+            originalValue := item.value.original.eval originalState
+            candidateValue := item.value.candidate.eval candidateState
+            valuesRelated
+          }
+          let update : PairedPreparedWordUpdate context world := .stack stackUpdate
+          have originalAddressEval := StackAdjustment.eval_expression_of_matches
+            adjustment item.window.originalRegister item.originalAddress originalState
+            (pairedPreparedStackWordAddress_matches_adjustment
+              item.window.originalRegister item.amount adjustment adjustmentResult)
+          have candidateAddressEval := StackAdjustment.eval_expression_of_matches
+            adjustment item.window.candidateRegister item.candidateAddress candidateState
+            (pairedPreparedStackWordAddress_matches_adjustment
+              item.window.candidateRegister item.amount adjustment adjustmentResult)
+          refine ⟨update :: updates, ?_, ?_⟩
+          · simp only [List.map_cons]
+            rw [originalUpdates]
+            simp only [update, stackUpdate, PairedPreparedWordUpdate.originalWrite,
+              PairedStackWordUpdate.originalWrite]
+            rw [originalLocation, ← originalAddressEval]
+          · simp only [List.map_cons]
+            rw [candidateUpdates]
+            simp only [update, stackUpdate, PairedPreparedWordUpdate.candidateWrite,
+              PairedStackWordUpdate.candidateWrite]
+            rw [candidateLocation, ← candidateAddressEval]
+
+theorem StateRel.afterFrameExactStackWordWritesEvaluation
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (inventory : ReturnSlotOffsetInventory) (frame : RelationalRuntimeCallFrame)
+    (originalState candidateState : MachineState)
+    (originalBehavior candidateBehavior : RelationalBehavior)
+    (claim : FrameExactStackWordWritesClaim)
+    (contextValid : context.StructurallyValid)
+    (related : StateRel context world sourceInvariant originalState candidateState)
+    (claimChecked : claim.checked sourceInvariant inventory = true)
+    (locationsHold : inventory.holds frame originalState.registers
+      candidateState.registers)
+    (exactWordsHold : inventory.exactWordsHold frame originalState.memory
+      candidateState.memory)
+    (originalWrites : originalBehavior.writes = claim.originalWrites originalState)
+    (candidateWrites : candidateBehavior.writes = claim.candidateWrites candidateState)
+    (originalNoX87 : originalBehavior.x87Effect = none)
+    (candidateNoX87 : candidateBehavior.x87Effect = none)
+    (registers : registerRelationsHold context.originalPe.imageBase
+      context.candidatePe.imageBase context.codeMap.entries.toList
+      (context.relationalValueTargets world) targetInvariant.registerRelations
+      originalBehavior.registers candidateBehavior.registers = true)
+    (bounds : boundsRelated targetInvariant.bounds originalBehavior.registers
+      candidateBehavior.registers = true)
+    (separations : addressSeparationsRelated targetInvariant.addressSeparations
+      originalBehavior.registers candidateBehavior.registers = true)
+    (stackWindows : stackWindowsRelated world targetInvariant.stackWindows
+      originalBehavior.registers candidateBehavior.registers = true)
+    (x87 : (originalBehavior.nextMachineState originalState).x87 =
+      (candidateBehavior.nextMachineState candidateState).x87)
+    (flags : flagsRelated targetInvariant.flagBits originalBehavior.eflags
+      candidateBehavior.eflags = true)
+    (importRegisters : importRegisterRelationsHold world
+      targetInvariant.importRegisterRelations originalBehavior.registers
+      candidateBehavior.registers = true)
+    (dynamicRegisters : activeDynamicRegisterRangeRelationsHold context world
+      targetInvariant.dynamicRegisterRangeRelations
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true)
+    (dynamicStacks : activeDynamicStackRangeRelationsHold context world
+      targetInvariant.dynamicStackRangeRelations
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true)
+    (predicates : pairedStatePredicatesHold targetInvariant.predicates
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true) :
+    StateRel context world targetInvariant
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) := by
+  simp only [FrameExactStackWordWritesClaim.checked, Bool.and_eq_true]
+    at claimChecked
+  have itemsChecked := claimChecked.2
+  have relatedForUpdates := related
+  have relatedForFinal := related
+  rcases related with
+    ⟨worldValid, stackRangesValid, stackMemory, importsStatic, _importsComplete,
+      importsMemory, originalImmutable, candidateImmutable, relatedCore,
+      _inputImportRegisters⟩
+  rcases relatedCore with
+    ⟨_inputRegisters, _inputBounds, _inputSeparations, _inputStackWindows,
+      inputMemory, inputDynamicMemory, _inputUndefined, _inputX87,
+      _inputFlags, _inputFsBase⟩
+  rcases frameExactStackWordUpdates_of_checkedItems context world sourceInvariant
+      inventory claim.writes frame originalState candidateState stackRangesValid
+      itemsChecked relatedForUpdates locationsHold exactWordsHold with
+    ⟨updates, originalUpdateWrites, candidateUpdateWrites⟩
+  have worldDynamicValid : world.dynamicRangesValid context = true := by
+    simp only [RelationalWorld.valid, Bool.and_eq_true] at worldValid
+    exact worldValid.1.1.1.1
+  have staticSlotsValid : staticDynamicPointerSlotsValid context = true := by
+    rcases contextValid with
+      ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _, _⟩
+    exact slotsValid
+  have staticWordSlotsValid : staticWordRelationSlotsValid context = true := by
+    rcases contextValid with
+      ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _⟩
+    exact slotsValid
+  have memoryFamilies :=
+    RelationalMemoryFamiliesHold.afterPairedPreparedWordUpdates context world
+      stackRangesValid importsStatic worldDynamicValid staticSlotsValid
+      staticWordSlotsValid updates originalState.memory candidateState.memory {
+        stackRanges := stackMemory
+        importAddresses := importsMemory
+        originalImmutable := originalImmutable
+        candidateImmutable := candidateImmutable
+        ordinary := inputMemory
+        staticPointerSlots := inputDynamicMemory.staticPointerSlots
+        staticWordSlots := inputDynamicMemory.staticWordSlots
+      }
+  have originalUpdateWrites' :
+      updates.map PairedPreparedWordUpdate.originalWrite =
+        claim.originalWrites originalState := by
+    simpa [FrameExactStackWordWritesClaim.originalWrites,
+      FrameExactStackWordWritesClaim.originalSymbolicWrites,
+      evalNormalizedWrites] using originalUpdateWrites
+  have candidateUpdateWrites' :
+      updates.map PairedPreparedWordUpdate.candidateWrite =
+        claim.candidateWrites candidateState := by
+    simpa [FrameExactStackWordWritesClaim.candidateWrites,
+      FrameExactStackWordWritesClaim.candidateSymbolicWrites,
+      evalNormalizedWrites] using candidateUpdateWrites
+  rw [originalUpdateWrites', candidateUpdateWrites'] at memoryFamilies
+  exact StateRel.afterPairedMemoryFamiliesUpdate context world sourceInvariant
+    targetInvariant originalState candidateState originalBehavior candidateBehavior
+    (claim.originalWrites originalState) (claim.candidateWrites candidateState)
+    relatedForFinal originalWrites candidateWrites originalNoX87 candidateNoX87
+    memoryFamilies registers bounds separations stackWindows x87 flags
+    importRegisters dynamicRegisters dynamicStacks predicates
 
 def ReturnSlotOffsetInventory.preservedImportsHold
     (inventory : ReturnSlotOffsetInventory) (world : RelationalWorld)
@@ -1333,6 +1717,39 @@ theorem registerOffsetWitnessesAvoidWord_of_closed
             rw [← expression, witness.eval_expression] at overlap
             simpa only [BitVec.add_assoc] using overlap
           · exact ih writes tailClosed concreteWrite tailMember
+
+def DirectCallPreparedExactWordSeedClaim.checked
+    (claim : DirectCallPreparedWritesClaim)
+    (seed : DirectCallPreparedExactWordSeedClaim) : Bool :=
+  claim.preparedWrites.writes == seed.before ++ seed.selected :: seed.after &&
+    match seed.selected with
+    | .stack window _ value =>
+        window == claim.returnWindow &&
+          value.staticRelationCompatible .exact &&
+          seed.originalSelectedAddress.expression window.originalRegister ==
+            seed.selected.originalAddress &&
+          seed.candidateSelectedAddress.expression window.candidateRegister ==
+            seed.selected.candidateAddress &&
+          registerOffsetWitnessesAvoidWord window.originalRegister
+            seed.originalSelectedAddress.offset seed.originalAfterAddresses
+            (seed.after.map fun item =>
+              (item.originalAddress, item.value.original)) &&
+          registerOffsetWitnessesAvoidWord window.candidateRegister
+            seed.candidateSelectedAddress.offset seed.candidateAfterAddresses
+            (seed.after.map fun item =>
+              (item.candidateAddress, item.value.candidate)) &&
+          wordOffsetsDisjoint seed.originalSelectedAddress.offset
+            (BitVec.ofNat 32 (2 ^ 32 - claim.stackAmount)) &&
+          wordOffsetsDisjoint seed.candidateSelectedAddress.offset
+            (BitVec.ofNat 32 (2 ^ 32 - claim.stackAmount)) &&
+          seed.originalSelectedAddress.offset ==
+            BitVec.ofNat 32 (2 ^ 32 - claim.stackAmount) +
+              BitVec.ofNat 32 seed.exactWord.originalOffset &&
+          seed.candidateSelectedAddress.offset ==
+            BitVec.ofNat 32 (2 ^ 32 - claim.stackAmount) +
+              BitVec.ofNat 32 seed.exactWord.candidateOffset &&
+          seed.exactWord.checked
+    | _ => false
 
 /-- A checked bridge from one exact active-frame word to a register output.
 The address witnesses retain the exact decoded expression shape while their
@@ -2232,6 +2649,313 @@ theorem registerOffsetWitnessAvoidsWord
     [witness] [write] state closed
   exact avoids (write.1.eval state, write.2.eval state) (by
     simp [evalNormalizedWrites])
+
+theorem DirectCallPreparedExactWordSeedClaim.holds_of_checked
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant)
+    (originalNormalized candidateNormalized : NormalizedSymbolicBehavior)
+    (claim : DirectCallPreparedWritesClaim)
+    (seed : DirectCallPreparedExactWordSeedClaim)
+    (originalState candidateState : MachineState)
+    (claimChecked : claim.checked context sourceInvariant originalNormalized
+      candidateNormalized = true)
+    (seedChecked : seed.checked claim = true)
+    (related : StateRel context world sourceInvariant originalState candidateState) :
+    seed.exactWord.holds (claim.runtimeFrame originalState candidateState)
+      ((originalNormalized.eval originalState).nextMachineState originalState).memory
+      ((candidateNormalized.eval candidateState).nextMachineState candidateState).memory := by
+  simp only [DirectCallPreparedExactWordSeedClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at seedChecked
+  rcases seedChecked with ⟨writesExact, seedChecked⟩
+  simp only [DirectCallPreparedWritesClaim.checked, Bool.and_eq_true]
+    at claimChecked
+  have frameChecked := claimChecked.1.2
+  simp only [DirectCallPreparedWritesClaim.frameChecked, Bool.and_eq_true,
+    decide_eq_true_eq, beq_iff_eq] at frameChecked
+  rcases frameChecked with
+    ⟨⟨⟨⟨⟨⟨⟨_returnWindowMember, _stackAtLeast⟩, _stackAligned⟩,
+      stackFits⟩, _enoughBelow⟩, _calleePresent⟩, _continuationPair⟩,
+      _zeroAgreement⟩
+  cases selectedShape : seed.selected with
+  | stack window amount value =>
+      rw [selectedShape] at seedChecked writesExact
+      simp only [Bool.and_eq_true, beq_iff_eq] at seedChecked
+      rcases seedChecked with
+        ⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨windowExact, valueExact⟩, originalExpression⟩,
+          candidateExpression⟩, originalAfterChecked⟩, candidateAfterChecked⟩,
+          originalPushDisjoint⟩, candidatePushDisjoint⟩,
+          originalFrameOffset⟩, candidateFrameOffset⟩, _exactWordChecked⟩
+      subst window
+      have preparedChecked := claimChecked.1.1
+      simp only [PairedPreparedWordWritesClaim.checked, Bool.and_eq_true]
+        at preparedChecked
+      have itemsChecked := preparedChecked.2
+      simp only [List.all_eq_true] at itemsChecked
+      have selectedMember :
+          PairedPreparedWordWriteItem.stack claim.returnWindow amount value ∈
+            claim.preparedWrites.writes := by
+        rw [writesExact]
+        simp
+      have selectedChecked := itemsChecked _ selectedMember
+      simp only [PairedPreparedWordWriteItem.checked, Bool.and_eq_true]
+        at selectedChecked
+      have returnWindowMember := selectedChecked.1
+      cases adjustmentResult : pairedStackWordAdjustment? amount with
+      | none => simp [adjustmentResult] at selectedChecked
+      | some adjustment =>
+          simp only [adjustmentResult, Bool.and_eq_true] at selectedChecked
+          have adjustmentChecked := selectedChecked.2.1
+          have valueChecked := selectedChecked.2.2
+          have sourceWindows := StateRel.stackWindowsHold context world sourceInvariant
+            originalState candidateState related
+          simp only [stackWindowsRelated, List.all_eq_true] at sourceWindows
+          have windowHolds := sourceWindows claim.returnWindow
+            (List.contains_iff_mem.mp returnWindowMember)
+          have rangesValid := StateRel.stackRangesValid context world sourceInvariant
+            originalState candidateState related
+          rcases pairedStackWordLocation_at_adjustment context world claim.returnWindow
+              originalState candidateState rangesValid windowHolds adjustment
+              adjustmentChecked with
+            ⟨location, originalLocation, candidateLocation⟩
+          have locationFits := location.addressesFit context world rangesValid
+          have selectedValuesEqual := value.eval_equal_of_checked_exact
+            context world sourceInvariant valueChecked valueExact originalState
+            candidateState related
+          have originalAfterClosed := registerOffsetWitnessesAvoidWordClosed_of_checked
+            claim.returnWindow.originalRegister seed.originalSelectedAddress.offset
+            seed.originalAfterAddresses
+            (seed.after.map fun item =>
+              (item.originalAddress, item.value.original)) originalAfterChecked
+          have candidateAfterClosed := registerOffsetWitnessesAvoidWordClosed_of_checked
+            claim.returnWindow.candidateRegister seed.candidateSelectedAddress.offset
+            seed.candidateAfterAddresses
+            (seed.after.map fun item =>
+              (item.candidateAddress, item.value.candidate)) candidateAfterChecked
+          have originalAfterAvoids := registerOffsetWitnessesAvoidWord_of_closed
+            claim.returnWindow.originalRegister seed.originalSelectedAddress.offset
+            seed.originalAfterAddresses
+            (seed.after.map fun item =>
+              (item.originalAddress, item.value.original)) originalState
+            originalAfterClosed
+          have candidateAfterAvoids := registerOffsetWitnessesAvoidWord_of_closed
+            claim.returnWindow.candidateRegister seed.candidateSelectedAddress.offset
+            seed.candidateAfterAddresses
+            (seed.after.map fun item =>
+              (item.candidateAddress, item.value.candidate)) candidateState
+            candidateAfterClosed
+          let originalPushWitness : RegisterOffsetWitness :=
+            .addRight .input (2 ^ 32 - claim.stackAmount)
+          let candidatePushWitness : RegisterOffsetWitness :=
+            .addRight .input (2 ^ 32 - claim.stackAmount)
+          have originalPushAvoids := registerOffsetWitnessAvoidsWord
+            claim.returnWindow.originalRegister seed.originalSelectedAddress.offset
+            originalPushWitness
+            (claim.originalPushAddress, .constant claim.originalReturnAddress)
+            originalState (by simp [originalPushWitness,
+              RegisterOffsetWitness.expression,
+              DirectCallPreparedWritesClaim.originalPushAddress])
+            (by simpa [originalPushWitness, RegisterOffsetWitness.offset]
+              using originalPushDisjoint)
+          have candidatePushAvoids := registerOffsetWitnessAvoidsWord
+            claim.returnWindow.candidateRegister seed.candidateSelectedAddress.offset
+            candidatePushWitness
+            (claim.candidatePushAddress, .constant claim.candidateReturnAddress)
+            candidateState (by simp [candidatePushWitness,
+              RegisterOffsetWitness.expression,
+              DirectCallPreparedWritesClaim.candidatePushAddress])
+            (by simpa [candidatePushWitness, RegisterOffsetWitness.offset]
+              using candidatePushDisjoint)
+          have originalLaterAvoids : WritesAvoidWord
+              (seed.selected.originalAddress.eval originalState)
+              ((seed.after.map fun item =>
+                (item.originalAddress.eval originalState,
+                  item.value.original.eval originalState)) ++
+                [(claim.originalPushAddress.eval originalState,
+                  BitVec.ofNat 32 claim.originalReturnAddress)]) := by
+            rw [selectedShape, ← originalExpression,
+              seed.originalSelectedAddress.eval_expression]
+            intro write member
+            simp only [List.mem_append, List.mem_singleton] at member
+            rcases member with member | rfl
+            · exact originalAfterAvoids write (by
+                simpa [evalNormalizedWrites, Function.comp_apply] using member)
+            · exact originalPushAvoids
+          have candidateLaterAvoids : WritesAvoidWord
+              (seed.selected.candidateAddress.eval candidateState)
+              ((seed.after.map fun item =>
+                (item.candidateAddress.eval candidateState,
+                  item.value.candidate.eval candidateState)) ++
+                [(claim.candidatePushAddress.eval candidateState,
+                  BitVec.ofNat 32 claim.candidateReturnAddress)]) := by
+            rw [selectedShape, ← candidateExpression,
+              seed.candidateSelectedAddress.eval_expression]
+            intro write member
+            simp only [List.mem_append, List.mem_singleton] at member
+            rcases member with member | rfl
+            · exact candidateAfterAvoids write (by
+                simpa [evalNormalizedWrites, Function.comp_apply] using member)
+            · exact candidatePushAvoids
+          have originalBehaviorWrites :
+              (originalNormalized.eval originalState).writes =
+                claim.originalWrites originalState := by
+            have behaviorChecked := claimChecked.2
+            simp only [DirectCallPreparedWritesClaim.behaviorChecked,
+              Bool.and_eq_true, beq_iff_eq] at behaviorChecked
+            rcases behaviorChecked with
+              ⟨⟨⟨⟨⟨_originalOutcome, _candidateOutcome⟩, _originalEsp⟩,
+                _candidateEsp⟩, originalSymbolicWrites⟩,
+                _candidateSymbolicWrites⟩
+            simp [NormalizedSymbolicBehavior.eval, evalNormalizedWrites,
+              DirectCallPreparedWritesClaim.originalWrites,
+              DirectCallPreparedWritesClaim.originalSymbolicWrites,
+              PairedPreparedWordWritesClaim.originalWrites,
+              PairedPreparedWordWritesClaim.originalSymbolicWrites,
+              Expr.eval, originalSymbolicWrites]
+          have candidateBehaviorWrites :
+              (candidateNormalized.eval candidateState).writes =
+                claim.candidateWrites candidateState := by
+            have behaviorChecked := claimChecked.2
+            simp only [DirectCallPreparedWritesClaim.behaviorChecked,
+              Bool.and_eq_true, beq_iff_eq] at behaviorChecked
+            rcases behaviorChecked with
+              ⟨⟨⟨⟨⟨_originalOutcome, _candidateOutcome⟩, _originalEsp⟩,
+                _candidateEsp⟩, _originalSymbolicWrites⟩,
+                candidateSymbolicWrites⟩
+            simp [NormalizedSymbolicBehavior.eval, evalNormalizedWrites,
+              DirectCallPreparedWritesClaim.candidateWrites,
+              DirectCallPreparedWritesClaim.candidateSymbolicWrites,
+              PairedPreparedWordWritesClaim.candidateWrites,
+              PairedPreparedWordWritesClaim.candidateSymbolicWrites,
+              Expr.eval, candidateSymbolicWrites]
+          let originalBeforeWrites := seed.before.map fun item =>
+            (item.originalAddress.eval originalState,
+              item.value.original.eval originalState)
+          let candidateBeforeWrites := seed.before.map fun item =>
+            (item.candidateAddress.eval candidateState,
+              item.value.candidate.eval candidateState)
+          let originalAfterWrites := seed.after.map fun item =>
+            (item.originalAddress.eval originalState,
+              item.value.original.eval originalState)
+          let candidateAfterWrites := seed.after.map fun item =>
+            (item.candidateAddress.eval candidateState,
+              item.value.candidate.eval candidateState)
+          let originalPush := (claim.originalPushAddress.eval originalState,
+            BitVec.ofNat 32 claim.originalReturnAddress)
+          let candidatePush := (claim.candidatePushAddress.eval candidateState,
+            BitVec.ofNat 32 claim.candidateReturnAddress)
+          have originalWritesShape : claim.originalWrites originalState =
+              originalBeforeWrites ++
+                (seed.selected.originalAddress.eval originalState,
+                  seed.selected.value.original.eval originalState) ::
+                (originalAfterWrites ++ [originalPush]) := by
+            simp [DirectCallPreparedWritesClaim.originalWrites,
+              PairedPreparedWordWritesClaim.originalWrites, writesExact,
+              selectedShape, originalBeforeWrites, originalAfterWrites,
+              originalPush, evalNormalizedWrites, Function.comp_apply]
+          have candidateWritesShape : claim.candidateWrites candidateState =
+              candidateBeforeWrites ++
+                (seed.selected.candidateAddress.eval candidateState,
+                  seed.selected.value.candidate.eval candidateState) ::
+                (candidateAfterWrites ++ [candidatePush]) := by
+            simp [DirectCallPreparedWritesClaim.candidateWrites,
+              PairedPreparedWordWritesClaim.candidateWrites, writesExact,
+              selectedShape, candidateBeforeWrites, candidateAfterWrites,
+              candidatePush, evalNormalizedWrites, Function.comp_apply]
+          have originalSelectedLocation : location.originalAddress =
+              seed.selected.originalAddress.eval originalState := by
+            rw [selectedShape]
+            exact originalLocation.trans
+              (StackAdjustment.eval_expression_of_matches adjustment
+                claim.returnWindow.originalRegister
+                (pairedPreparedStackWordAddress
+                  claim.returnWindow.originalRegister amount) originalState
+                (pairedPreparedStackWordAddress_matches_adjustment
+                  claim.returnWindow.originalRegister amount adjustment
+                  adjustmentResult)).symm
+          have candidateSelectedLocation : location.candidateAddress =
+              seed.selected.candidateAddress.eval candidateState := by
+            rw [selectedShape]
+            exact candidateLocation.trans
+              (StackAdjustment.eval_expression_of_matches adjustment
+                claim.returnWindow.candidateRegister
+                (pairedPreparedStackWordAddress
+                  claim.returnWindow.candidateRegister amount) candidateState
+                (pairedPreparedStackWordAddress_matches_adjustment
+                  claim.returnWindow.candidateRegister amount adjustment
+                  adjustmentResult)).symm
+          have originalSelectedFits :
+              (seed.selected.originalAddress.eval originalState).toNat + 4 <=
+                2 ^ 32 := by
+            rw [← originalSelectedLocation]
+            exact locationFits.1
+          have candidateSelectedFits :
+              (seed.selected.candidateAddress.eval candidateState).toNat + 4 <=
+                2 ^ 32 := by
+            rw [← candidateSelectedLocation]
+            exact locationFits.2
+          have originalRead :
+              Memory.read32
+                ((originalNormalized.eval originalState).nextMachineState
+                  originalState).memory
+                (seed.selected.originalAddress.eval originalState) =
+              seed.selected.value.original.eval originalState := by
+            rw [show
+              ((originalNormalized.eval originalState).nextMachineState
+                originalState).memory = applyConcreteWrites originalState.memory
+                  (originalNormalized.eval originalState).writes by
+                    simp [RelationalBehavior.nextMachineState]]
+            rw [originalBehaviorWrites]
+            rw [originalWritesShape]
+            exact Memory.read32_applyConcreteWrites_selected originalState.memory
+              originalBeforeWrites (originalAfterWrites ++ [originalPush]) _ _
+              originalSelectedFits originalLaterAvoids
+          have candidateRead :
+              Memory.read32
+                ((candidateNormalized.eval candidateState).nextMachineState
+                  candidateState).memory
+                (seed.selected.candidateAddress.eval candidateState) =
+              seed.selected.value.candidate.eval candidateState := by
+            rw [show
+              ((candidateNormalized.eval candidateState).nextMachineState
+                candidateState).memory = applyConcreteWrites candidateState.memory
+                  (candidateNormalized.eval candidateState).writes by
+                    simp [RelationalBehavior.nextMachineState]]
+            rw [candidateBehaviorWrites]
+            rw [candidateWritesShape]
+            exact Memory.read32_applyConcreteWrites_selected candidateState.memory
+              candidateBeforeWrites (candidateAfterWrites ++ [candidatePush]) _ _
+              candidateSelectedFits candidateLaterAvoids
+          have originalFrameAddress :
+              (claim.runtimeFrame originalState candidateState).originalStackAddress +
+                  BitVec.ofNat 32 seed.exactWord.originalOffset =
+                seed.selected.originalAddress.eval originalState := by
+            rw [selectedShape, ← originalExpression,
+              seed.originalSelectedAddress.eval_expression, originalFrameOffset]
+            simp only [DirectCallPreparedWritesClaim.runtimeFrame]
+            rw [← BitVec.add_assoc,
+              ← word_add_ia32_twos_complement
+                (originalState.registers.get claim.returnWindow.originalRegister)
+                claim.stackAmount stackFits]
+          have candidateFrameAddress :
+              (claim.runtimeFrame originalState candidateState).candidateStackAddress +
+                  BitVec.ofNat 32 seed.exactWord.candidateOffset =
+                seed.selected.candidateAddress.eval candidateState := by
+            rw [selectedShape, ← candidateExpression,
+              seed.candidateSelectedAddress.eval_expression, candidateFrameOffset]
+            simp only [DirectCallPreparedWritesClaim.runtimeFrame]
+            rw [← BitVec.add_assoc,
+              ← word_add_ia32_twos_complement
+                (candidateState.registers.get claim.returnWindow.candidateRegister)
+                claim.stackAmount stackFits]
+          simp only [ReturnSlotExactWordPair.holds, originalFrameAddress,
+            candidateFrameAddress, originalRead, candidateRead]
+          simpa [selectedShape] using selectedValuesEqual
+  | staticWord slotId originalAddress candidateAddress value =>
+      simp [DirectCallPreparedExactWordSeedClaim.checked, selectedShape] at seedChecked
+  | dynamicWord source relation originalAmount candidateAmount value =>
+      simp [DirectCallPreparedExactWordSeedClaim.checked, selectedShape] at seedChecked
+  | staticDynamicPointer slotId originalAddress candidateAddress source value =>
+      simp [DirectCallPreparedExactWordSeedClaim.checked, selectedShape] at seedChecked
 
 theorem pairedStackWordLocation_avoids_static_slot
     (context : StaticProofContext) (world : RelationalWorld)
@@ -3623,6 +4347,9 @@ structure RelationalProductEdge where
   sourceTargetId : Nat
   targetTargetId : Nat
   kind : RelationalProductEdgeKind
+  /-- The candidate may reach the same paired target through the opposite
+  branch arm. Target and guard equality remain independently checked. -/
+  candidateKind : RelationalProductEdgeKind := kind
   originalGuard : BoolExpr
   candidateGuard : BoolExpr
   infeasible : Bool
@@ -8920,7 +9647,10 @@ theorem relatedWordZeroGuard_base_eval_of_true
         simp_all
 
 def normalizedBranchGuard (condition : BoolExpr) (taken : Bool) : BoolExpr :=
-  if taken then condition else .not condition
+  if taken then condition else
+    match condition with
+    | .not value => value
+    | _ => .not condition
 
 theorem normalizedBranchCondition_eval_of_guard_true
     (condition guard : BoolExpr) (taken : Bool) (state : MachineState)
@@ -8930,8 +9660,17 @@ theorem normalizedBranchCondition_eval_of_guard_true
   rw [guardShape] at guardTrue
   cases taken with
   | false =>
-      change (!(condition.eval state)) = true at guardTrue
-      cases value : condition.eval state <;> simp_all
+      by_cases isNot : ∃ value, condition = .not value
+      · rcases isNot with ⟨value, rfl⟩
+        change value.eval state = true at guardTrue
+        simp [BoolExpr.eval, guardTrue]
+      · have normalized :
+            normalizedBranchGuard condition false = .not condition := by
+          simp only [normalizedBranchGuard]
+          cases condition <;> simp_all
+        rw [normalized] at guardTrue
+        change (!(condition.eval state)) = true at guardTrue
+        cases value : condition.eval state <;> simp_all
   | true => simpa [normalizedBranchGuard] using guardTrue
 
 structure RelatedWordZeroGuardClaim where
@@ -9018,8 +9757,10 @@ def NormalizedOutcomeExpr.controlEdges? : NormalizedOutcomeExpr ->
       if taken = fallthrough then
         some [RelationalDecodedControlEdge.mk .jump taken unconditionalProductGuard]
       else
-        some [RelationalDecodedControlEdge.mk .branchTaken taken condition,
-          RelationalDecodedControlEdge.mk .branchFallthrough fallthrough (.not condition)]
+        some [RelationalDecodedControlEdge.mk .branchTaken taken
+            (normalizedBranchGuard condition true),
+          RelationalDecodedControlEdge.mk .branchFallthrough fallthrough
+            (normalizedBranchGuard condition false)]
   | .call target _ | .callUnmappedReturn target =>
       some [RelationalDecodedControlEdge.mk .call target
       unconditionalProductGuard]
@@ -9051,7 +9792,8 @@ def RelationalProductGraph.resolveOutgoingControlEdges
       let edge <- graph.getEdge? edgeId
       let rest <- graph.resolveOutgoingControlEdges candidate edgeIds
       let guard := if candidate then edge.candidateGuard else edge.originalGuard
-      pure (RelationalDecodedControlEdge.mk edge.kind edge.targetTargetId guard :: rest)
+      let kind := if candidate then edge.candidateKind else edge.kind
+      pure (RelationalDecodedControlEdge.mk kind edge.targetTargetId guard :: rest)
 
 def normalizedControlEdges? (candidate : Bool) (targets : List CodeTargetPair)
     (behavior : SymbolicBehavior) : Option (List RelationalDecodedControlEdge) := do
@@ -9065,8 +9807,12 @@ def decodedControlEdgesMatch (graph : RelationalProductGraph) (nodeId : Nat)
       normalizedControlEdges? false region.targets originalBehavior,
       normalizedControlEdges? true region.targets candidateBehavior with
   | some node, some originalEdges, some candidateEdges =>
-      graph.resolveOutgoingControlEdges false node.outgoingEdgeIds == some originalEdges &&
-        graph.resolveOutgoingControlEdges true node.outgoingEdgeIds == some candidateEdges
+      match graph.resolveOutgoingControlEdges false node.outgoingEdgeIds,
+          graph.resolveOutgoingControlEdges true node.outgoingEdgeIds with
+      | some submittedOriginal, some submittedCandidate =>
+          decide (submittedOriginal.Perm originalEdges) &&
+            decide (submittedCandidate.Perm candidateEdges)
+      | _, _ => false
   | _, _, _ => false
 
 /-- Control closure for an x87 singleton is derived from the exact PE bytes and

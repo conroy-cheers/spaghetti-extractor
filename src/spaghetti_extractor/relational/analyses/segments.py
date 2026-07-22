@@ -42,7 +42,7 @@ from .control import (
 from ..model import (
     _semantic_constant_word,
     _stack_window_transfer_claims,
-    _target_shaped_register_output_claims,
+    _target_shaped_register_output_claims_with_stack_windows,
 )
 from ..x87_profile import qualified_singleton_bytes, state_only_singleton_bytes
 
@@ -240,7 +240,7 @@ def _proof_ir(original: StageABinary, candidate: StageABinary, contract: dict[st
         ),
         "next_action": (
             "close every reachable product edge, invariant, and environment refinement, "
-            "then check candidatePE32ProgramsEquivalent"
+            "then check the selected whole-program acceptance theorem"
         ),
     })
     families = [
@@ -1111,8 +1111,11 @@ def _state_rel_register_output_claims(
             return None
         seen.add(register_pair)
 
-        ordinary = _target_shaped_register_output_claims(
-            source_registers, {"inputs": [target_relation]}
+        ordinary = _target_shaped_register_output_claims_with_stack_windows(
+            source_registers,
+            {"inputs": [target_relation]},
+            source_region,
+            behavior,
         )
         if ordinary is not None:
             if len(ordinary) != 1:
@@ -1433,6 +1436,70 @@ def _paired_stack_word_write_claim(
         "value": value_claim,
     }
 
+
+def _stack_word_address_adjustment(
+    expression: Any, register: str,
+) -> dict[str, Any] | None:
+    """Return a checked-grammar adjustment plus its exact-syntax encoding."""
+    register_expression = {"op": "input_reg", "reg": register}
+    if expression == register_expression:
+        return {
+            "adjustment": {"kind": "identity"},
+            "amount": 0,
+        }
+    if not isinstance(expression, dict):
+        return None
+    operation = expression.get("op")
+    left = expression.get("left") or {}
+    right = expression.get("right") or {}
+    if (
+        operation not in {"add", "sub"}
+        or not isinstance(left, dict)
+        or not isinstance(right, dict)
+        or left != register_expression
+        or right.get("op") != "constant"
+    ):
+        return None
+    amount = _integer(right.get("value"))
+    if amount is None or not 0 <= amount < 2**32:
+        return None
+    if operation == "sub":
+        return {
+            "adjustment": {"kind": "subtract", "amount": amount},
+            # The tag is congruent to -amount modulo 2^32 while retaining
+            # explicit-sub syntax for the generated Lean shape witness.
+            "amount": 2**33 - amount,
+        }
+    if amount == 0:
+        return {
+            "adjustment": {"kind": "add", "amount": 0},
+            "amount": 2**34,
+        }
+    if amount < 2**31:
+        adjustment = {"kind": "add", "amount": amount}
+    else:
+        adjustment = {"kind": "subtract", "amount": 2**32 - amount}
+    return {"adjustment": adjustment, "amount": amount}
+
+
+def _stack_word_adjustment_covered(
+    window: dict[str, Any], adjustment: dict[str, Any],
+) -> bool:
+    kind = adjustment.get("kind")
+    bytes_above = _integer(window.get("bytes_above"))
+    if kind == "identity":
+        return bytes_above is not None and 4 <= bytes_above
+    amount = _integer(adjustment.get("amount"))
+    if amount is None or amount < 0 or amount % 4 != 0:
+        return False
+    if kind == "add":
+        return bytes_above is not None and amount + 4 <= bytes_above
+    if kind == "subtract":
+        bytes_below = _integer(window.get("bytes_below"))
+        return bytes_below is not None and 4 <= amount <= bytes_below
+    return False
+
+
 def _paired_stack_word_writes_claim(
     source: dict[str, Any], behavior_pair: dict[str, Any],
     original_image_base: int | None = None,
@@ -1688,22 +1755,24 @@ def _paired_prepared_word_writes_claim(
 
         location_claims: list[dict[str, Any]] = []
         for window in source.get("stack_windows", []):
-            original_amount = register_offset(
+            original_adjustment = _stack_word_address_adjustment(
                 original_write.get("address"), str(window.get("original_register"))
             )
-            candidate_amount = register_offset(
+            candidate_adjustment = _stack_word_address_adjustment(
                 candidate_write.get("address"), str(window.get("candidate_register"))
             )
             if (
-                original_amount is not None
-                and original_amount == candidate_amount
-                and original_amount % 4 == 0
-                and original_amount + 4 <= int(window.get("bytes_above", -1))
+                original_adjustment is not None
+                and original_adjustment == candidate_adjustment
+                and _stack_word_adjustment_covered(
+                    window, original_adjustment["adjustment"]
+                )
             ):
                 location_claims.append({
                     "kind": "stack",
                     "window": window,
-                    "amount": original_amount,
+                    "amount": original_adjustment["amount"],
+                    "adjustment": original_adjustment["adjustment"],
                 })
 
         original_address = _semantic_constant_word(
@@ -1907,9 +1976,94 @@ def _direct_call_prepared_writes_claim(
         static_dynamic_pointer_slots,
     )
     if prepared_writes is None or not any(
-        item["kind"] == "static_word" for item in prepared_writes["writes"]
+        item["kind"] == "static_word"
+        or (
+            item["kind"] == "stack"
+            and item.get("adjustment", {}).get("kind") == "subtract"
+        )
+        for item in prepared_writes["writes"]
     ):
         return None
+
+    exact_word_seeds: list[dict[str, Any]] = []
+    prepared_items = prepared_writes["writes"]
+
+    def stack_frame_offset(item: dict[str, Any]) -> int | None:
+        if item.get("kind") != "stack":
+            return None
+        adjustment = item.get("adjustment") or {}
+        amount = _integer(adjustment.get("amount"))
+        if amount is None:
+            return None
+        kind = adjustment.get("kind")
+        if kind == "identity":
+            return stack_amount
+        if kind == "add":
+            return stack_amount + amount
+        if kind == "subtract" and amount <= stack_amount:
+            return stack_amount - amount
+        return None
+
+    for index, selected in enumerate(prepared_items):
+        frame_offset = stack_frame_offset(selected)
+        original_selected = _register_offset_witness(
+            original_writes[index].get("address"),
+            str(return_windows[0]["original_register"]),
+        )
+        candidate_selected = _register_offset_witness(
+            candidate_writes[index].get("address"),
+            str(return_windows[0]["candidate_register"]),
+        )
+        original_after = [
+            _register_offset_witness(
+                write.get("address"),
+                str(return_windows[0]["original_register"]),
+            )
+            for write in original_writes[index + 1:-1]
+        ]
+        candidate_after = [
+            _register_offset_witness(
+                write.get("address"),
+                str(return_windows[0]["candidate_register"]),
+            )
+            for write in candidate_writes[index + 1:-1]
+        ]
+        if (
+            frame_offset is None
+            or frame_offset > 65532
+            or original_selected is None
+            or candidate_selected is None
+            or any(item is None for item in original_after)
+            or any(item is None for item in candidate_after)
+            or not _static_word_value_claim_compatible(
+                "exact", selected["value"]
+            )
+        ):
+            continue
+        later_offsets = [
+            stack_frame_offset(item) for item in prepared_items[index + 1:]
+        ]
+        if any(
+            later is None
+            or not (frame_offset + 4 <= later or later + 4 <= frame_offset)
+            for later in later_offsets
+        ):
+            continue
+        exact_word_seeds.append({
+            "before": prepared_items[:index],
+            "selected": selected,
+            "after": prepared_items[index + 1:],
+            "exact_word": {
+                "original_offset": frame_offset,
+                "candidate_offset": frame_offset,
+            },
+            "original_selected_address": original_selected[0],
+            "candidate_selected_address": candidate_selected[0],
+            "original_after_addresses": [item[0] for item in original_after],
+            "candidate_after_addresses": [item[0] for item in candidate_after],
+        })
+        if len(exact_word_seeds) == 16:
+            break
     return {
         "profile": (
             "known_indirect_call_prepared_writes_v1"
@@ -1924,6 +2078,7 @@ def _direct_call_prepared_writes_claim(
         "original_return_address": int(call_claim["original_return_address"]),
         "candidate_return_address": int(call_claim["candidate_return_address"]),
         "indirect": bool(call_claim.get("indirect")),
+        "exact_word_seeds": exact_word_seeds,
     }
 
 
@@ -2312,6 +2467,11 @@ def _segment_refinement_candidates(
         candidate_successors = memory.get("candidate_successors", {})
         direct_targets = successors.get("direct", [])
         candidate_direct_targets = candidate_successors.get("direct", [])
+        direct_target_inventories_match = (
+            isinstance(direct_targets, list)
+            and isinstance(candidate_direct_targets, list)
+            and sorted(direct_targets) == sorted(candidate_direct_targets)
+        )
         true_guard = {"op": "bool_constant", "value": True}
         x87_state_only_singleton_supported = _state_only_x87_singleton_pair(
             original_bin, candidate_bin, source
@@ -2327,8 +2487,7 @@ def _segment_refinement_candidates(
             and edge.get("candidate_guard") == true_guard
             and successors.get("outcome") == "jump"
             and candidate_successors.get("outcome") == "jump"
-            and isinstance(direct_targets, list)
-            and direct_targets == candidate_direct_targets
+            and direct_target_inventories_match
             and int(target["numeric_id"]) in direct_targets
         )
         x87_exact_stack_memory_claim = _x87_exact_stack_memory_claim(
@@ -2362,8 +2521,7 @@ def _segment_refinement_candidates(
             and edge.get("candidate_guard") == true_guard
             and successors.get("outcome") == "jump"
             and candidate_successors.get("outcome") == "jump"
-            and isinstance(direct_targets, list)
-            and direct_targets == candidate_direct_targets
+            and direct_target_inventories_match
             and int(target["numeric_id"]) in direct_targets
         )
         target_flags = target.get("flag_inputs", list(FLAG_BITS))
@@ -2551,8 +2709,7 @@ def _segment_refinement_candidates(
                 (
                     successors.get("outcome") in {"jump", "branch"}
                     and candidate_successors.get("outcome") == successors.get("outcome")
-                    and isinstance(direct_targets, list)
-                    and direct_targets == candidate_direct_targets
+                    and direct_target_inventories_match
                     and int(target["numeric_id"]) in direct_targets
                 )
                 or (
@@ -2580,8 +2737,7 @@ def _segment_refinement_candidates(
             and memory.get("writes", {}).get("candidate_count") == 0
             and successors.get("outcome") == "branch"
             and candidate_successors.get("outcome") == "branch"
-            and isinstance(direct_targets, list)
-            and direct_targets == candidate_direct_targets
+            and direct_target_inventories_match
             and int(target["numeric_id"]) in direct_targets
             and not target.get("input_import_relations")
             and not target.get("input_dynamic_range_relations")
@@ -2651,7 +2807,7 @@ def _segment_refinement_candidates(
             and candidate_successors.get("outcome") == "call"
             and int(call_claim.get("callee_target_id", -1))
                 in direct_targets
-            and direct_targets == candidate_direct_targets
+            and direct_target_inventories_match
         ) if isinstance(call_claim, dict) else False
         call_prepared_writes_supported = (
             edge.get("kind") == "call"
@@ -2749,8 +2905,7 @@ def _segment_refinement_candidates(
                 == len(prepared_writes_claim["writes"])
             and successors.get("outcome") in {"jump", "branch"}
             and candidate_successors.get("outcome") == successors.get("outcome")
-            and isinstance(direct_targets, list)
-            and direct_targets == candidate_direct_targets
+            and direct_target_inventories_match
             and int(target["numeric_id"]) in direct_targets
             and not target.get("input_import_relations")
             and (
@@ -2767,8 +2922,7 @@ def _segment_refinement_candidates(
             and memory.get("writes", {}).get("candidate_count") == 1
             and successors.get("outcome") in {"jump", "branch"}
             and candidate_successors.get("outcome") == successors.get("outcome")
-            and isinstance(direct_targets, list)
-            and direct_targets == candidate_direct_targets
+            and direct_target_inventories_match
             and int(target["numeric_id"]) in direct_targets
             and not target.get("input_import_relations")
             and not target.get("input_dynamic_range_relations")
@@ -2784,8 +2938,7 @@ def _segment_refinement_candidates(
                 == len(stack_writes_claim["writes"])
             and successors.get("outcome") in {"jump", "branch"}
             and candidate_successors.get("outcome") == successors.get("outcome")
-            and isinstance(direct_targets, list)
-            and direct_targets == candidate_direct_targets
+            and direct_target_inventories_match
             and int(target["numeric_id"]) in direct_targets
             and not target.get("input_import_relations")
             and not target.get("input_dynamic_range_relations")
@@ -2804,8 +2957,7 @@ def _segment_refinement_candidates(
             and memory.get("writes", {}).get("candidate_count") == 0
             and successors.get("outcome") == "branch"
             and candidate_successors.get("outcome") == "branch"
-            and isinstance(direct_targets, list)
-            and direct_targets == candidate_direct_targets
+            and direct_target_inventories_match
             and int(target["numeric_id"]) in direct_targets
         )
         certificate_eligible = (
@@ -3009,8 +3161,7 @@ def _segment_refinement_candidates(
                     successors.get("outcome") in {"jump", "branch"}
                     and candidate_successors.get("outcome")
                         == successors.get("outcome")
-                    and isinstance(direct_targets, list)
-                    and direct_targets == candidate_direct_targets
+                    and direct_target_inventories_match
                     and int(target["numeric_id"]) in direct_targets,
                 )
                 require(
@@ -3066,6 +3217,9 @@ def _segment_refinement_candidates(
             "format": RELATIONAL_SEGMENT_CERTIFICATE_FORMAT,
             "edge_index": edge_index,
             "edge_kind": str(edge.get("kind")),
+            "candidate_edge_kind": str(
+                edge.get("candidate_kind", edge.get("kind"))
+            ),
             "source_region_index": source_index,
             "target_region_index": target_index,
             "source_target_id": int(source_target["id"]),
@@ -4108,6 +4262,22 @@ def _paired_exact_guard_claim(
     ) -> dict[str, Any] | None:
         if not isinstance(original, dict) or not isinstance(candidate, dict):
             return None
+        def normalize_not(expression: dict[str, Any]) -> dict[str, Any]:
+            count = 0
+            current = expression
+            while current.get("op") == "not" and isinstance(
+                current.get("value"), dict
+            ):
+                count += 1
+                current = current["value"]
+            return (
+                current
+                if count % 2 == 0
+                else {"op": "not", "value": current}
+            )
+
+        original = normalize_not(original)
+        candidate = normalize_not(candidate)
         operation = original.get("op")
         if operation != candidate.get("op"):
             return None
@@ -4612,6 +4782,9 @@ def _attach_branch_exact_memory_requirements(
             _paired_stack_guard_claim(source, original_guard, candidate_guard),
             _paired_stack_relative_guard_claim(
                 source, original_guard, candidate_guard
+            ),
+            _static_dynamic_pointer_slot_guard_claim(
+                contract, original_guard, candidate_guard
             ),
         )):
             continue

@@ -1051,6 +1051,70 @@ def _attach_stack_window_invariants(
             and candidate_output_counts[candidate_register] == 1
         }
 
+        # A related input register that is advanced by the same aligned amount
+        # on both sides can be represented by a checked paired stack range.
+        # Seed the source range here; backward propagation then sizes the range
+        # across ordinary edges and checked call/return continuations.  This is
+        # proposal logic only: Lean rechecks range membership, affine syntax,
+        # non-wrap, alignment, and the resulting related-word claim.
+        original_registers = behavior["original_ir"].get("registers") or {}
+        candidate_registers = behavior["candidate_ir"].get("registers") or {}
+        for output_relation in relation_row.get("outputs", []):
+            original_output = str(output_relation.get("original"))
+            candidate_output = str(output_relation.get("candidate"))
+            architectural_stack_pointer = (
+                original_output == "esp" and candidate_output == "esp"
+            )
+            if (
+                output_relation.get("relation") != "related_word"
+                and not architectural_stack_pointer
+            ):
+                continue
+            affine_sources: list[tuple[str, str, int]] = []
+            for input_relation in relation_row.get("inputs", []):
+                if (
+                    input_relation.get("relation") != "related_word"
+                    and not architectural_stack_pointer
+                ):
+                    continue
+                original_input = str(input_relation.get("original"))
+                candidate_input = str(input_relation.get("candidate"))
+                original_delta = stack_delta(
+                    original_registers.get(original_output), original_input
+                )
+                candidate_delta = stack_delta(
+                    candidate_registers.get(candidate_output), candidate_input
+                )
+                if (
+                    original_delta is not None
+                    and original_delta == candidate_delta
+                    and original_delta != 0
+                    and original_delta % 4 == 0
+                ):
+                    affine_sources.append(
+                        (original_input, candidate_input, original_delta)
+                    )
+            if len(affine_sources) != 1:
+                continue
+            original_input, candidate_input, delta = affine_sources[0]
+            if delta > 0:
+                add_requirement(
+                    region_index,
+                    original_input,
+                    candidate_input,
+                    delta + 1,
+                    "related_word_affine_output_seed",
+                )
+            else:
+                add_requirement(
+                    region_index,
+                    original_input,
+                    candidate_input,
+                    1,
+                    "related_word_affine_output_seed",
+                    -delta,
+                )
+
         def paired_access_is_dynamic(
             original_address: Any, candidate_address: Any, width: int,
         ) -> bool:

@@ -1,0 +1,266 @@
+{
+  "algorithm": "binary-entry-static-v2",
+  "counts": {
+    "proposal_frontier": 0,
+    "ready_for_proof": 4,
+    "required_templates": 4
+  },
+  "format": "stage-a-roundtrip-discovery-qualification-v1",
+  "status": "qualified_for_proof_handoff",
+  "templates": [
+    {
+      "artifacts": [
+        {
+          "path": "semantic-comparison.json",
+          "role": "discovery_comparison",
+          "sha256": "d1321eb489be159a52a1024e758a0931e9997564f998c1844118114f4d8d4c3a"
+        },
+        {
+          "path": "proposal/discovery-frontier.json",
+          "role": "discovery_frontier",
+          "sha256": "c9e87438f3951c9ac188f20af1928a15792a59d26384eeb7ead083d743266699"
+        },
+        {
+          "path": "proposal/discovery-result.json",
+          "role": "discovery_result",
+          "sha256": "fc16a8a4e050373d7ab724ac37b095e59a15af43631e9b99337f7eefeacf7fdd"
+        },
+        {
+          "path": "proposal/recovered-layout-contract.json",
+          "role": "recovered_layout_contract",
+          "sha256": "aa6749f0c3d47c2a7d2883fb88186b7704c3a7c99e6a98da9e024bafa0036195"
+        },
+        {
+          "path": "proposal/recovered-relation-contract.json",
+          "role": "recovered_relation_contract",
+          "sha256": "2777faf9c757308cc2dccaa709c3a8514dcaacda5f65b464c6fcacc8173ccda8"
+        },
+        {
+          "path": "proposal/recovered-proposal.json",
+          "role": "recovered_relation_proposal",
+          "sha256": "fa794a98ca4bbda7782a984c308e617010019ba9346570a57242c02adea3a994"
+        }
+      ],
+      "case_id": "spike-000-positive-straight-line-arithmetic",
+      "comparison_diagnostic_reason_codes": [
+        "recovered_relation_semantically_different"
+      ],
+      "comparison_status": "different",
+      "phases": {
+        "mapping-discovery": {
+          "artifact_sha256": "fc16a8a4e050373d7ab724ac37b095e59a15af43631e9b99337f7eefeacf7fdd",
+          "cache_key": "83f06ff0a99a15f25db40fa0508faa90151a2cc0b1e3eb3db5b11aa0c010963f",
+          "reason_code": null,
+          "status": "recovered"
+        },
+        "semantic-comparison": {
+          "artifact_sha256": "d1321eb489be159a52a1024e758a0931e9997564f998c1844118114f4d8d4c3a",
+          "cache_key": "978393f5596563a946880092d1e2fc1d611f57484663de651bfd8c9d79942357",
+          "reason_code": "recovered_relation_semantically_different",
+          "status": "different"
+        }
+      },
+      "proposal_frontier_reason_codes": [],
+      "proposal_ready": true,
+      "status": "ready_for_proof",
+      "template": "straight-line-arithmetic",
+      "trust": {
+        "closes_stage_a_proof": false,
+        "ordinary_stage_a_proof_required": true,
+        "proof_authority": false
+      }
+    },
+    {
+      "artifacts": [
+        {
+          "path": "semantic-comparison.json",
+          "role": "discovery_comparison",
+          "sha256": "0117d5aa94a732c7de82f9531762050295084bdc6b96accbbd65ee2d1f5c6426"
+        },
+        {
+          "path": "proposal/discovery-frontier.json",
+          "role": "discovery_frontier",
+          "sha256": "c9e87438f3951c9ac188f20af1928a15792a59d26384eeb7ead083d743266699"
+        },
+        {
+          "path": "proposal/discovery-result.json",
+          "role": "discovery_result",
+          "sha256": "f9db99e0e1e9cc5f8f245dde1edd849f817c59e24a495da762146d9df1662e99"
+        },
+        {
+          "path": "proposal/recovered-layout-contract.json",
+          "role": "recovered_layout_contract",
+          "sha256": "cad17ec28ffaf5064f99b4c6ec07a4a76b6dcea3e96aee38492f3ab8c33e2dd1"
+        },
+        {
+          "path": "proposal/recovered-relation-contract.json",
+          "role": "recovered_relation_contract",
+          "sha256": "ce6bfeca1c4ef65d29b8425695f11531d8833cf5cae630b07908242af5e1af42"
+        },
+        {
+          "path": "proposal/recovered-proposal.json",
+          "role": "recovered_relation_proposal",
+          "sha256": "c464cbd6692d06252f74abd486f53d4e1bfd369589cf8f461ace8ff9a0dd1cda"
+        }
+      ],
+      "case_id": "spike-001-positive-guarded-branch",
+      "comparison_diagnostic_reason_codes": [
+        "recovered_relation_semantically_different"
+      ],
+      "comparison_status": "different",
+      "phases": {
+        "mapping-discovery": {
+          "artifact_sha256": "f9db99e0e1e9cc5f8f245dde1edd849f817c59e24a495da762146d9df1662e99",
+          "cache_key": "a10ffb476d833587bab2f5c7e09a18993919cd30e330e231998ec4666b7405fd",
+          "reason_code": null,
+          "status": "recovered"
+        },
+        "semantic-comparison": {
+          "artifact_sha256": "0117d5aa94a732c7de82f9531762050295084bdc6b96accbbd65ee2d1f5c6426",
+          "cache_key": "256f7a28f8ef5a8766ec97832227c5ad9bc0b1d5caad3e4b28fa523713530f16",
+          "reason_code": "recovered_relation_semantically_different",
+          "status": "different"
+        }
+      },
+      "proposal_frontier_reason_codes": [],
+      "proposal_ready": true,
+      "status": "ready_for_proof",
+      "template": "guarded-branch",
+      "trust": {
+        "closes_stage_a_proof": false,
+        "ordinary_stage_a_proof_required": true,
+        "proof_authority": false
+      }
+    },
+    {
+      "artifacts": [
+        {
+          "path": "semantic-comparison.json",
+          "role": "discovery_comparison",
+          "sha256": "cdb9842d827f75850fb9f85113d5280c4a50c602e77cd7b27a0b4b5435cdbecd"
+        },
+        {
+          "path": "proposal/discovery-frontier.json",
+          "role": "discovery_frontier",
+          "sha256": "c9e87438f3951c9ac188f20af1928a15792a59d26384eeb7ead083d743266699"
+        },
+        {
+          "path": "proposal/discovery-result.json",
+          "role": "discovery_result",
+          "sha256": "1de373482ad58c85a187f6413ea0fd12c02bd37d764a94e258a198f1d039a7ea"
+        },
+        {
+          "path": "proposal/recovered-layout-contract.json",
+          "role": "recovered_layout_contract",
+          "sha256": "e9b807b0fd6eee0f863805c297bd8f9d31dc556452b072edc8df8110403556da"
+        },
+        {
+          "path": "proposal/recovered-relation-contract.json",
+          "role": "recovered_relation_contract",
+          "sha256": "70bc29cdd607cfacd266fe5fe5f7a4c2ceeb9fd078b8395b7abda2111f704b83"
+        },
+        {
+          "path": "proposal/recovered-proposal.json",
+          "role": "recovered_relation_proposal",
+          "sha256": "b0499713757356ca8de3a023c070a09416f057e2aa2dc0dfa196232182e358bf"
+        }
+      ],
+      "case_id": "spike-006-positive-bounded-loop",
+      "comparison_diagnostic_reason_codes": [
+        "recovered_relation_semantically_different"
+      ],
+      "comparison_status": "different",
+      "phases": {
+        "mapping-discovery": {
+          "artifact_sha256": "1de373482ad58c85a187f6413ea0fd12c02bd37d764a94e258a198f1d039a7ea",
+          "cache_key": "0f37400567de795ddf97cb5e06faf7d1b71510b9993957f9e32e35af13b4889a",
+          "reason_code": null,
+          "status": "recovered"
+        },
+        "semantic-comparison": {
+          "artifact_sha256": "cdb9842d827f75850fb9f85113d5280c4a50c602e77cd7b27a0b4b5435cdbecd",
+          "cache_key": "1203bdcacdf89ea5b14720c6d51db6d8dc02d8a2bdef222eb08ae43da2201360",
+          "reason_code": "recovered_relation_semantically_different",
+          "status": "different"
+        }
+      },
+      "proposal_frontier_reason_codes": [],
+      "proposal_ready": true,
+      "status": "ready_for_proof",
+      "template": "bounded-loop",
+      "trust": {
+        "closes_stage_a_proof": false,
+        "ordinary_stage_a_proof_required": true,
+        "proof_authority": false
+      }
+    },
+    {
+      "artifacts": [
+        {
+          "path": "semantic-comparison.json",
+          "role": "discovery_comparison",
+          "sha256": "a49ee4bd6a29ff0560985ce70b694f94d1d7c4430c26a8981f95cd969e4c1d65"
+        },
+        {
+          "path": "proposal/discovery-frontier.json",
+          "role": "discovery_frontier",
+          "sha256": "c9e87438f3951c9ac188f20af1928a15792a59d26384eeb7ead083d743266699"
+        },
+        {
+          "path": "proposal/discovery-result.json",
+          "role": "discovery_result",
+          "sha256": "aef345f6930bcc65c59ed471300c003d60135b7cd5c6f47bece13287e4d96fed"
+        },
+        {
+          "path": "proposal/recovered-layout-contract.json",
+          "role": "recovered_layout_contract",
+          "sha256": "be411a064991a0454cbeb7ef788b53e96f53f47d6983e8f751ef2a251cc72fd3"
+        },
+        {
+          "path": "proposal/recovered-relation-contract.json",
+          "role": "recovered_relation_contract",
+          "sha256": "3c5aba32bd1076e35e02f1595e8ebef326e5043b735b590f0d53a57b86d78a52"
+        },
+        {
+          "path": "proposal/recovered-proposal.json",
+          "role": "recovered_relation_proposal",
+          "sha256": "ba973682264610d15fb28a867a3eb0712cba764390386eb7f40989499ed7ab28"
+        }
+      ],
+      "case_id": "spike-003-positive-internal-call-stack",
+      "comparison_diagnostic_reason_codes": [
+        "recovered_relation_semantically_different"
+      ],
+      "comparison_status": "different",
+      "phases": {
+        "mapping-discovery": {
+          "artifact_sha256": "aef345f6930bcc65c59ed471300c003d60135b7cd5c6f47bece13287e4d96fed",
+          "cache_key": "067a3ae804e1847629766713108041cd0d2e77a3ddceddb6c1d69b26a008903f",
+          "reason_code": null,
+          "status": "recovered"
+        },
+        "semantic-comparison": {
+          "artifact_sha256": "a49ee4bd6a29ff0560985ce70b694f94d1d7c4430c26a8981f95cd969e4c1d65",
+          "cache_key": "f5fd6ab5cbdabc2f83bdace35f608e0061ef9fe3ecfdeed449a5c3fa8ff6d442",
+          "reason_code": "recovered_relation_semantically_different",
+          "status": "different"
+        }
+      },
+      "proposal_frontier_reason_codes": [],
+      "proposal_ready": true,
+      "status": "ready_for_proof",
+      "template": "internal-call-stack",
+      "trust": {
+        "closes_stage_a_proof": false,
+        "ordinary_stage_a_proof_required": true,
+        "proof_authority": false
+      }
+    }
+  ],
+  "trust": {
+    "closes_stage_a_proof": false,
+    "ordinary_stage_a_proof_required": true,
+    "proof_authority": false,
+    "qualification_is_diagnostic": true
+  }
+}

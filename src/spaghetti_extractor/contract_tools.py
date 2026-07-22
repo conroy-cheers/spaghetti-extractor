@@ -418,13 +418,15 @@ def stage_a_export_reference_contract(
         },
         "sidecars": _reference_contract_sidecar_paths(sidecar_dir, out.parent, unit_contract_dir=unit_contract_dir),
     }
+    # Sidecar rows bind the completed public contract, so materialize it before
+    # computing their reference_contract.sha256 fields.
+    write_json(out, contract)
     semantic_payload = _reference_semantic_contract_payloads(
         original_bin,
         map_contract["mappings"],
         contract,
         _reference_sidecar_contract_ref(out),
     )
-    write_json(out, contract)
     _write_reference_contract_sidecars(
         contract,
         out,
@@ -9940,6 +9942,26 @@ def _match_function_blocks(
     candidate_blocks: list[dict[str, Any]],
 ) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], list[dict[str, Any]]]:
     if len(original_blocks) != len(candidate_blocks):
+        original_cluster = _contiguous_function_path_cluster(
+            original, original_blocks
+        )
+        candidate_cluster = _contiguous_function_path_cluster(
+            candidate, candidate_blocks
+        )
+        if original_cluster is not None and candidate_cluster is not None:
+            original_cluster["match_key"] = {
+                "kind": "paired_function_path_cluster_v1",
+                "original_basic_block_count": len(original_blocks),
+                "candidate_basic_block_count": len(candidate_blocks),
+                "side": "original",
+            }
+            candidate_cluster["match_key"] = {
+                "kind": "paired_function_path_cluster_v1",
+                "original_basic_block_count": len(original_blocks),
+                "candidate_basic_block_count": len(candidate_blocks),
+                "side": "candidate",
+            }
+            return [(original_cluster, candidate_cluster)], []
         return [], [
             _incomplete_record(
                 category="ambiguous_block_match",
@@ -9956,6 +9978,43 @@ def _match_function_blocks(
             )
         ]
     return list(zip(original_blocks, candidate_blocks)), []
+
+
+def _contiguous_function_path_cluster(
+    binary: StageABinary,
+    blocks: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Collapse a recovered N-block path to one untrusted segment proposal.
+
+    The relation contract and Lean proof remain responsible for showing that
+    the paired paths are semantically related.  This helper establishes only
+    that each proposed side is a non-empty, exactly decodable, contiguous byte
+    range, so a compiler-introduced direct bridge may change block count
+    without being rejected by the mapping heuristic first.
+    """
+
+    if not blocks:
+        return None
+    ordered = sorted(blocks, key=lambda item: int(item["rva_start"]))
+    if any(
+        int(left["rva_end"]) != int(right["rva_start"])
+        for left, right in zip(ordered, ordered[1:])
+    ):
+        return None
+    start = int(ordered[0]["rva_start"])
+    end = int(ordered[-1]["rva_end"])
+    data = binary.pe.get_data(start, end - start)
+    if len(data) != end - start:
+        return None
+    decoded = _disassemble_block(binary, start, data)
+    if sum(int(instruction.size) for instruction in decoded) != len(data):
+        return None
+    return {
+        "rva_start": start,
+        "rva_end": end,
+        "bytes_sha256": sha256_bytes(data),
+        "match_key": {},
+    }
 
 def _ambiguous_block_match_details(
     *,

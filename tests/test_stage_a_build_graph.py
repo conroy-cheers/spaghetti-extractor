@@ -14,6 +14,7 @@ from spaghetti_extractor.relational.build import (
     _finalize_nix_proof_ir,
     _locked_flake_input,
     _relational_nix_build_command,
+    _relational_nix_work_reused,
     _relational_nix_realize_command,
     _relational_nix_expression,
     _relational_node_closure,
@@ -22,12 +23,32 @@ from spaghetti_extractor.relational.build import (
     _write_relational_module_graph,
     stage_a_build_relational_from_nix,
 )
-from spaghetti_extractor.relational.schema import RELATIONAL_ACCEPTANCE_THEOREM
+from spaghetti_extractor.relational.schema import (
+    RELATIONAL_ACCEPTANCE_THEOREM,
+    RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+)
+from spaghetti_extractor.relational.verdict import _write_relational_verdict
 
 
 class StageABuildGraphTests(unittest.TestCase):
     def setUp(self):
         self.repo = Path(__file__).parents[1]
+
+    def test_nix_reuse_is_classified_from_real_build_events(self):
+        self.assertTrue(_relational_nix_work_reused("", succeeded=True))
+        self.assertFalse(
+            _relational_nix_work_reused(
+                "building '/nix/store/example.drv' on 'acacia'\n",
+                succeeded=True,
+            )
+        )
+        self.assertFalse(
+            _relational_nix_work_reused(
+                "copying 14 paths from 'ssh://acacia'\n",
+                succeeded=True,
+            )
+        )
+        self.assertFalse(_relational_nix_work_reused("", succeeded=False))
 
     def test_target_closure_excludes_unrelated_semantic_phase(self):
         graph = {
@@ -120,6 +141,139 @@ class StageABuildGraphTests(unittest.TestCase):
             self.assertIn(
                 "RelationalAffineLinkedCallBindings", graph["modules"]
             )
+
+    def test_linked_acceptance_selects_linked_final_theorem(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prepared = Path(temporary)
+            stage_a = prepared / "lean" / "StageA"
+            stage_a.mkdir(parents=True)
+            (stage_a / "RelationalBundle.lean").write_text(
+                "def relationalBundle := 0\n", encoding="utf-8"
+            )
+            (stage_a / "RelationalAcceptance.lean").write_text(
+                "import StageA.RelationalBundle\ndef linkedAcceptance := relationalBundle\n",
+                encoding="utf-8",
+            )
+            (prepared / "whole-program-acceptance.json").write_text(
+                json.dumps({
+                    "format": "stage-a-whole-program-acceptance-v1",
+                    "status": "ready",
+                    "required_theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+                    "theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+                    "node_steps": [],
+                    "linked_acceptance": {
+                        "status": "ready",
+                        "theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+                    },
+                    "blockers": [],
+                }),
+                encoding="utf-8",
+            )
+
+            binary = SimpleNamespace(sha256="00" * 32)
+            graph = _write_relational_module_graph(
+                prepared,
+                original_bin=binary,
+                candidate_bin=binary,
+                trusted_base={"approved_axioms": []},
+            )
+
+            self.assertEqual(
+                graph["expected_final_theorem"],
+                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+            )
+            self.assertEqual(
+                _validate_relational_module_graph(prepared)[
+                    "expected_final_theorem"
+                ],
+                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+            )
+
+            graph["acceptance"]["theorem"] = RELATIONAL_ACCEPTANCE_THEOREM
+            with self.assertRaisesRegex(
+                StageAInputError, "does not match its requirement"
+            ):
+                _validate_relational_module_graph(prepared, graph)
+
+    def test_linked_final_theorem_projects_linked_certificate_fields(self):
+        finalized = _finalize_nix_proof_ir(
+            {
+                "obligations": [{
+                    "id": "obligation:return",
+                    "kind": "return_pop",
+                    "status": "incomplete",
+                }],
+            },
+            theorem_checked=True,
+            theorem=RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+            result_path=Path("/nix/store/checked-linked-proof"),
+        )
+
+        self.assertEqual(finalized["status"], "satisfied")
+        self.assertEqual(
+            finalized["obligations"][0]["evidence"]["certificate_field"],
+            "LinkedWholeProgramCertificate.runningProductNodesRefined",
+        )
+
+    def test_verdict_accepts_only_the_selected_linked_theorem(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            out = Path(temporary)
+            (out / "certificates").mkdir()
+            (out / "relation-contract.json").write_text("{}\n", encoding="utf-8")
+            (out / "trusted-base.json").write_text("{}\n", encoding="utf-8")
+            (out / "whole-program-acceptance.json").write_text(
+                json.dumps({
+                    "format": "stage-a-whole-program-acceptance-v1",
+                    "status": "ready",
+                    "required_theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+                    "theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+                    "linked_acceptance": {
+                        "status": "ready",
+                        "theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+                    },
+                }),
+                encoding="utf-8",
+            )
+            binary_path = out / "binary.exe"
+            binary_path.write_bytes(b"PE")
+            binary = SimpleNamespace(path=binary_path, sha256="00" * 32)
+            arguments = {
+                "out": out,
+                "started_at": "2026-07-22T00:00:00Z",
+                "original": binary,
+                "candidate": binary,
+                "contract": {"regions": []},
+                "proof_ir": {"obligations": []},
+                "trusted_base": {},
+                "certificates": [],
+                "blocker": None,
+            }
+
+            accepted = _write_relational_verdict(
+                **arguments,
+                verdict="pass",
+                lean={
+                    "status": "checked",
+                    "theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+                },
+            )
+            self.assertEqual(accepted["verdict"], "pass")
+            self.assertEqual(
+                accepted["expected_final_theorem"],
+                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+            )
+            self.assertTrue(accepted["claim_scope"]["acceptance_eligible"])
+
+            rejected = _write_relational_verdict(
+                **arguments,
+                verdict="pass",
+                lean={
+                    "status": "checked",
+                    "theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                },
+            )
+            self.assertEqual(rejected["verdict"], "incomplete")
+            self.assertFalse(rejected["claim_scope"]["acceptance_eligible"])
 
     def test_final_theorem_records_runtime_frame_and_launch_obligation_witnesses(self):
         obligations = [
@@ -397,6 +551,32 @@ class StageABuildGraphTests(unittest.TestCase):
                 + len(modules["CandidateDecode"].encode()),
             })
 
+    def test_nix_expression_can_select_input_addressed_scheduling(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prepared = Path(temporary)
+            stage_a = prepared / "lean" / "StageA"
+            stage_a.mkdir(parents=True)
+            (stage_a / "Root.lean").write_text("def root := 1\n", encoding="utf-8")
+            (prepared / "module-graph.json").write_text("{}\n", encoding="utf-8")
+            (prepared / "prepared-proof.json").write_text("{}\n", encoding="utf-8")
+            graph = {
+                "modules": {"Root": {"source": "lean/StageA/Root.lean"}},
+                "nodes": [{"id": "root", "modules": ["Root"], "dependencies": []}],
+            }
+            with mock.patch.dict(os.environ, {
+                "SPAGHETTI_EXTRACTOR_STAGE_A_NIX_CONTENT_ADDRESSED": "false"
+            }):
+                expression, _ = _relational_nix_expression(
+                    prepared=prepared,
+                    graph=graph,
+                    evaluator=self.repo / "nix" / "stage-a-lean-graph.nix",
+                    flake_root=self.repo,
+                    target_node=None,
+                    target_nodes=[],
+                )
+
+        self.assertIn("contentAddressed = false;", expression)
+
     def test_remote_build_command_disables_local_jobs_and_uses_substitutes(self):
         command = _relational_nix_build_command(
             "proof-expression", Path("/tmp/stage-a-builders")
@@ -422,6 +602,25 @@ class StageABuildGraphTests(unittest.TestCase):
         self.assertIn("--no-link", command)
         self.assertIn("--json", command)
         self.assertEqual(command[-1], ".#stage-a-example-preflight")
+
+    def test_remote_build_policy_can_select_qualified_substituters(self):
+        with mock.patch.dict(os.environ, {
+            "SPAGHETTI_EXTRACTOR_NIX_BUILDERS_USE_SUBSTITUTES": "false",
+            "SPAGHETTI_EXTRACTOR_NIX_SUBSTITUTERS": (
+                "https://cache.corncheese.org/nix-cache https://cache.nixos.org/"
+            ),
+        }):
+            command = _relational_nix_build_command(
+                "proof-expression", Path("/tmp/stage-a-builders")
+            )
+
+        self.assertEqual(
+            command[command.index("builders-use-substitutes") + 1], "false"
+        )
+        self.assertEqual(
+            command[command.index("substituters") + 1],
+            "https://cache.corncheese.org/nix-cache https://cache.nixos.org/",
+        )
 
     def test_realized_prepared_output_is_passed_to_dynamic_graph_builder(self):
         with tempfile.TemporaryDirectory() as temporary:

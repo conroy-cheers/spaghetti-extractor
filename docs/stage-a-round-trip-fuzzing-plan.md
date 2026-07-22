@@ -3,11 +3,13 @@
 ## Status And Scope
 
 This document is both the implementation plan and the qualification record for
-a structured, property-based Stage A and Stage B handoff. The full feasibility
-spike is not complete. Implemented pieces are called out below so an interface
-or schema being present is not mistaken for satisfying a proof gate.
+a structured, property-based Stage A and Stage B handoff. As of 2026-07-22,
+Phases 0-5 and the initial full-corpus qualification are complete for the
+bounded `structured-spike-v1` x86 PE32 profile. Phase 6 is deliberately a
+future capability-expansion program, not part of the initial feasibility
+decision.
 
-As of 2026-07-21, Phase 0 is complete. The repository contains:
+The repository now contains:
 
 - strict typed v1 corpus, case, semantic-program, run-result, violation-witness,
   violation-audit, and opaque Stage B provenance schemas;
@@ -19,28 +21,48 @@ As of 2026-07-21, Phase 0 is complete. The repository contains:
   lockstep Windows imports, and termination;
 - proof-core execution through the ordinary Stage A prepare and distributed
   Nix build interfaces, with final-theorem and zero-trust auditing;
+- corpus-wide preparation and result IFD barriers which preserve parallel Nix
+  scheduling while keeping generated graph evaluation deterministic;
 - content-bound warm reuse which invalidates generated proofs when the Stage A
   proof generator or Lean model changes;
-- strict validation of a future Lean-checked violation witness and an isolated
+- strict validation of Lean-checked violation witnesses and an isolated
   opaque-artifact Stage B input bundle;
 - a Lean-kernel-checked final
   `StageA.GeneratedRelational.candidatePE32ProgramsEquivalent` theorem for the
   independent LLVM/MSVC-compatible canary, with Lean trust zero and no
-  unexpected axioms.
+  unexpected axioms;
+- deterministic generation and proof orchestration for the four initial
+  semantic families, checked positive transformations, and isolated negative
+  mutations;
+- a 24-positive/12-negative feasibility spike and a promoted
+  50-positive/25-negative Nix corpus, with all positives accepted only by a
+  final whole-program Lean theorem and all negatives rejected by checked
+  violation witnesses;
+- a structure-aware deterministic reducer qualified against regenerated real
+  PE, map, and contract artifacts;
+- mapping discovery qualified for proof handoff on all four initial families,
+  without granting discovery output proof authority;
+- an opaque-artifact Stage B round trip from static Stage A evidence through a
+  generated state machine and ugly C to a MinGW PE32 candidate and final Lean
+  theorem; and
+- measured static, warm-proof, cache-reuse, and genericity gates, all
+  satisfied.
 
 The checked Phase 0 record is in
 [`stage-a-round-trip-phase0-report.md`](stage-a-round-trip-phase0-report.md).
-The initial 24-positive/12-negative corpus, automatic checked-violation proof
-production, reducer, discovery mode, and Stage B round trip remain
-unimplemented. The canary uses LLVM's MSVC target and lld-link, but currently
-resolves Windows imports through MinGW's `libkernel32.a`; a Windows SDK import
-library lane remains a later orthogonal toolchain qualification. The canary is
-also generated assembly, not compiler-generated C.
+The complete bounded-profile qualification and measurements are in
+[`stage-a-round-trip-fuzzing-report.md`](stage-a-round-trip-fuzzing-report.md),
+with machine-readable evidence in
+[`stage-a-round-trip-feasibility-report.json`](stage-a-round-trip-feasibility-report.json),
+[`stage-a-round-trip-qualification-evidence.json`](stage-a-round-trip-qualification-evidence.json),
+and
+[`stage-a-round-trip-discovery-qualification.json`](stage-a-round-trip-discovery-qualification.json).
 
-The immediate task is a bounded feasibility spike. The full corpus and command
-surface should be built only if that spike demonstrates that the approach is
-fast, discriminating, and capable of exercising generic proof machinery rather
-than encouraging more target-shaped handlers.
+This completion is a go decision for using the structured corpus as a rapid
+qualification layer. It is not a claim of complete IA-32, Windows, jq, or
+arbitrary compiler-output coverage. The Phase 0 canary also still resolves
+Windows imports through MinGW's `libkernel32.a`; a Windows SDK import-library
+lane remains an orthogonal future toolchain qualification.
 
 The system targets the supported 32-bit x86 PE profile. It is not a claim of
 complete IA-32 or Windows coverage. Unsupported instructions, environment
@@ -74,7 +96,7 @@ The repository already has useful pieces for addressing this:
 - batched Lean ISA evaluation and emulator conformance infrastructure;
 - content-addressed proof phases and Nix-distributed Lean builds.
 
-The missing piece is a fast way to generate many small, semantically controlled
+This plan supplies a fast way to generate many small, semantically controlled
 program pairs, prove expected-equivalent pairs, reject known inequivalent
 pairs, reduce failures, and measure whether support is coming from general
 proof constructs or an expanding collection of shape recognizers.
@@ -685,7 +707,7 @@ not treat mapping failure as a failed equivalence theorem.
 
 ## Implementation Sequence
 
-### Phase 0: Interface Inventory
+### Phase 0: Interface Inventory (Complete)
 
 - Identify the stable public Stage A prepare/build/audit interfaces.
 - Identify the canonical relation proposal and state-machine schemas.
@@ -700,7 +722,7 @@ through current public interfaces without proof-core shortcuts and reaching a
 Lean-kernel-checked final whole-program `pass`. Until this succeeds, later
 corpus cases are diagnostic and cannot satisfy feasibility pass-count gates.
 
-### Phase 1: Feasibility Generator
+### Phase 1: Feasibility Generator (Complete)
 
 - Implement the four semantic templates.
 - Implement the initial transformations and negative mutations.
@@ -711,7 +733,7 @@ corpus cases are diagnostic and cannot satisfy feasibility pass-count gates.
 Deliverable: deterministic real-PE corpus with byte-identical regeneration
 under the pinned toolchain.
 
-### Phase 2: Proof-Core Runner
+### Phase 2: Proof-Core Runner (Complete)
 
 - Add staged validation and content-addressed phase reuse.
 - Route known relation proposals through normal Stage A validation.
@@ -724,7 +746,7 @@ under the pinned toolchain.
 Deliverable: proof-core spike report and reduced examples for each unexpected
 failure family.
 
-### Phase 3: Feasibility Decision
+### Phase 3: Feasibility Decision (Complete)
 
 - Evaluate every spike gate.
 - Audit source changes for target/transformation/profile dispatch.
@@ -735,7 +757,7 @@ failure family.
 Deliverable: checked-in feasibility report. Do not proceed automatically when a
 gate fails.
 
-### Phase 4: Discovery Mode
+### Phase 4: Discovery Mode (Complete For Initial Families)
 
 - Withhold mappings at controlled levels.
 - Run ordinary proposal generation.
@@ -746,7 +768,7 @@ gate fails.
 Deliverable: per-family discovery success/frontier report with no change to
 proof authority.
 
-### Phase 5: Stage B Round Trip
+### Phase 5: Stage B Round Trip (Complete)
 
 - Export a state machine from a simple original fixture.
 - Generate semantic C through the normal Stage B backend.
@@ -759,7 +781,7 @@ proof authority.
 Deliverable: one reproducible end-to-end opaque-binary-style round trip, with
 manual repairs explicitly recorded if required.
 
-### Phase 6: Corpus Expansion
+### Phase 6: Corpus Expansion (Future Work)
 
 Only after the spike passes, add families in this order:
 
@@ -884,6 +906,12 @@ independent permissive diagnostic schema that can report closure absent from
 the formal proof graph.
 
 ## Definition Of Done
+
+All ten conditions below are satisfied for the bounded initial profile. The
+checked results and scope limitations are recorded in
+[`stage-a-round-trip-fuzzing-report.md`](stage-a-round-trip-fuzzing-report.md).
+Future Phase 6 families must qualify independently under the same conditions;
+they do not inherit support merely from this completion record.
 
 The feature is complete when:
 

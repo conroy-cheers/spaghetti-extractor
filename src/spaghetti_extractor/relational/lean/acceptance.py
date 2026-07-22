@@ -30,9 +30,13 @@ from ..analyses.frames import (
 from ..analyses.segments import (
     _import_register_transfer_claims,
     _paired_exact_guard_claim,
+    _paired_prepared_word_writes_claim,
+    _stack_word_address_adjustment,
+    _stack_word_adjustment_covered,
     _preserved_input_flags_claim,
 )
 from ..analyses.stack import _stack_window_transfer_claims
+from ..analyses.semantic_control import _normalized_branch_guard
 from ..analyses.registers import (
     _propose_internal_callsite_preservation_summaries,
 )
@@ -48,20 +52,25 @@ from ..contract import _raw_base_relocations
 from ..model import (
     _semantic_constant_bool,
     _semantic_hash,
-    _target_shaped_register_output_claims,
+    _target_shaped_register_output_claims_with_stack_windows,
 )
 from ..schema import (
     FLAG_BITS,
     RELATIONAL_ACCEPTANCE_THEOREM,
+    RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
     RELATIONAL_KERNEL_MODULES,
+    choose_relational_acceptance_theorem,
 )
 
 
 _LEAN_SOURCE_ROOT = Path(__file__).resolve().parents[2] / "lean" / "StageA"
 from .expressions import (
     _lean_acceptance_outcome,
+    _lean_direct_call_prepared_exact_word_seed_claim,
     _lean_external_target,
+    _lean_frame_exact_stack_word_writes_claim,
     _lean_paired_exact_expr_witness,
+    _lean_paired_prepared_word_writes_claim,
     _lean_register_offset_witness,
     _lean_register_output_claim,
     _lean_return_slot_offset_pair,
@@ -85,6 +94,120 @@ from .definitions import (
 )
 from .common import _lean_register_relation_pair
 from .callbacks import _lean_acceptance_callback_return_node
+
+
+def _frame_exact_expr_witness(
+    inventory: dict[str, Any], original: Any, candidate: Any,
+) -> dict[str, Any] | None:
+    if not isinstance(original, dict) or not isinstance(candidate, dict):
+        return None
+    operation = original.get("op")
+    if operation != candidate.get("op"):
+        return None
+    if operation == "constant":
+        if int(original.get("value", -1)) != int(candidate.get("value", -2)):
+            return None
+        return {"kind": "constant", "value": int(original["value"])}
+    if operation == "read32":
+        matches: list[dict[str, Any]] = []
+        for location in inventory.get("locations", []):
+            original_result = _register_offset_witness(
+                original.get("address"),
+                str(location.get("original_register", "esp")),
+            )
+            candidate_result = _register_offset_witness(
+                candidate.get("address"),
+                str(location.get("candidate_register", "esp")),
+            )
+            if original_result is None or candidate_result is None:
+                continue
+            original_address, original_offset = original_result
+            candidate_address, candidate_offset = candidate_result
+            for word in inventory.get("exact_words", []):
+                if (
+                    original_offset
+                        == (int(location["original"]) + int(word["original"]))
+                            % 2**32
+                    and candidate_offset
+                        == (int(location["candidate"]) + int(word["candidate"]))
+                            % 2**32
+                ):
+                    matches.append({
+                        "kind": "exact_word_read32",
+                        "location": location,
+                        "word": word,
+                        "original_address": original_address,
+                        "candidate_address": candidate_address,
+                    })
+        return matches[0] if len(matches) == 1 else None
+    if operation in {
+        "add", "sub", "bit_and", "bit_xor", "shift_left_by",
+        "shift_right_by", "shift_arithmetic_right_by", "bit_or",
+        "unsigned_less_value", "multiply", "multiply_high_unsigned",
+        "multiply_high_signed",
+    }:
+        left = _frame_exact_expr_witness(
+            inventory, original.get("left"), candidate.get("left")
+        )
+        right = _frame_exact_expr_witness(
+            inventory, original.get("right"), candidate.get("right")
+        )
+        if left is None or right is None:
+            return None
+        return {
+            "kind": "binary", "operation": operation,
+            "left": left, "right": right,
+        }
+    return None
+
+
+def _frame_exact_stack_word_writes_claim(
+    source: dict[str, Any], behavior_pair: dict[str, Any],
+    inventory: dict[str, Any],
+) -> dict[str, Any] | None:
+    original_writes = (behavior_pair.get("original_ir") or {}).get("writes") or []
+    candidate_writes = (behavior_pair.get("candidate_ir") or {}).get("writes") or []
+    if not original_writes or len(original_writes) != len(candidate_writes):
+        return None
+    items: list[dict[str, Any]] = []
+    for original_write, candidate_write in zip(
+        original_writes, candidate_writes, strict=True
+    ):
+        value_witness = _frame_exact_expr_witness(
+            inventory,
+            original_write.get("value"), candidate_write.get("value"),
+        )
+        if value_witness is None:
+            return None
+        location_matches = []
+        for window in source.get("stack_windows", []):
+            original_adjustment = _stack_word_address_adjustment(
+                original_write.get("address"), str(window.get("original_register"))
+            )
+            candidate_adjustment = _stack_word_address_adjustment(
+                candidate_write.get("address"), str(window.get("candidate_register"))
+            )
+            if (
+                original_adjustment is not None
+                and original_adjustment == candidate_adjustment
+                and _stack_word_adjustment_covered(
+                    window, original_adjustment["adjustment"]
+                )
+            ):
+                location_matches.append((window, original_adjustment))
+        if len(location_matches) != 1:
+            return None
+        window, adjustment = location_matches[0]
+        items.append({
+            "window": window,
+            "amount": int(adjustment["amount"]),
+            "value": {
+                "original": original_write["value"],
+                "candidate": candidate_write["value"],
+                "witness": value_witness,
+            },
+        })
+    return {"profile": "frame_exact_stack_word_writes_v1", "writes": items}
 
 
 def _lean_frame_exact_guard_claim(claim: dict[str, Any]) -> str:
@@ -2731,6 +2854,8 @@ def _whole_program_acceptance_plan(
                 return ()
             claim = matches[0].get("direct_call_stack_writes_claim")
             if not isinstance(claim, dict):
+                claim = matches[0].get("direct_call_prepared_writes_claim")
+            if not isinstance(claim, dict):
                 return ()
             words: list[tuple[int, int]] = []
             for seed in claim.get("exact_word_seeds", []):
@@ -2883,22 +3008,31 @@ def _whole_program_acceptance_plan(
                 candidate_condition = candidate_outcome.get("condition") or {}
                 original_constant = _semantic_constant_bool(original_condition)
                 candidate_constant = _semantic_constant_bool(candidate_condition)
-                if original_constant != candidate_constant:
+                def active_branch_targets(
+                    outcome: dict[str, Any], constant: bool | None,
+                ) -> tuple[int, ...]:
+                    if constant is True:
+                        return (int(outcome["taken"]),)
+                    if constant is False:
+                        return (int(outcome["fallthrough"]),)
+                    return tuple(dict.fromkeys((
+                        int(outcome["taken"]),
+                        int(outcome["fallthrough"]),
+                    )))
+
+                original_targets = active_branch_targets(
+                    original_outcome, original_constant
+                )
+                candidate_targets = active_branch_targets(
+                    candidate_outcome, candidate_constant
+                )
+                if set(original_targets) != set(candidate_targets):
                     state_incomplete = True
-                    fields = ()
-                elif original_constant is True:
-                    fields = ("taken",)
-                elif original_constant is False:
-                    fields = ("fallthrough",)
                 else:
-                    fields = ("taken", "fallthrough")
-                for field in fields:
-                    if original_outcome.get(field) != candidate_outcome.get(field):
-                        state_incomplete = True
-                        break
-                    successor_targets.append((
-                        int(original_outcome[field]), calls, "transfer",
-                    ))
+                    successor_targets.extend(
+                        (target, calls, "transfer")
+                        for target in original_targets
+                    )
             elif operation == "call":
                 if any(
                     original_outcome.get(field) != candidate_outcome.get(field)
@@ -3643,11 +3777,48 @@ def _whole_program_acceptance_plan(
                 )
                 continue
             if control_rows[0]["calls"]:
+                original_return_writes = (
+                    behaviors[node_id].get("original_ir", {}).get("writes") or []
+                )
+                candidate_return_writes = (
+                    behaviors[node_id].get("candidate_ir", {}).get("writes") or []
+                )
+                return_writes_claim = None
+                if original_return_writes or candidate_return_writes:
+                    return_writes_claim = _paired_prepared_word_writes_claim(
+                        region,
+                        behaviors[node_id],
+                        list(contract.get("static_word_relation_slots", [])),
+                        static_dynamic_pointer_slots=list(
+                            contract.get("static_dynamic_pointer_slots", [])
+                        ),
+                    )
                 return_cases: list[dict[str, Any]] = []
                 return_cases_complete = True
                 for control_row in control_rows:
                     calls = list(control_row["calls"])
                     active_inventory_payload = control_row["frame_offsets"][0]
+                    frame_exact_return_writes_claim = None
+                    if (
+                        (original_return_writes or candidate_return_writes)
+                        and return_writes_claim is None
+                    ):
+                        frame_exact_return_writes_claim = (
+                            _frame_exact_stack_word_writes_claim(
+                                region, behaviors[node_id],
+                                active_inventory_payload,
+                            )
+                        )
+                        if frame_exact_return_writes_claim is None:
+                            block(
+                                "return_paired_memory_update_incomplete",
+                                f"return node {node_id} has decoded writes outside "
+                                "the checked StateRel and runtime-frame update grammars",
+                                "classify each return-side write with a checked stack, "
+                                "static, dynamic, pointer-slot, or exact-frame witness",
+                            )
+                            return_cases_complete = False
+                            break
                     active_frame_imports = inventory_import_key(
                         active_inventory_payload
                     )
@@ -3801,11 +3972,13 @@ def _whole_program_acceptance_plan(
                         relation for relation in target_input_relations
                         if relation not in carried_register_relations
                     ]
-                    target_output_claims = _target_shaped_register_output_claims(
-                        relation_row, {
-                            **target_relation_row,
-                            "inputs": residual_target_inputs,
-                        }
+                    target_output_claims = (
+                        _target_shaped_register_output_claims_with_stack_windows(
+                            relation_row, {
+                                **target_relation_row,
+                                "inputs": residual_target_inputs,
+                            }, region, behaviors[node_id]
+                        )
                     )
                     if target_output_claims is None:
                         block(
@@ -3907,6 +4080,9 @@ def _whole_program_acceptance_plan(
                         "target_register_relations": target_input_relations,
                         "stack_window_transfers": stack_transfers,
                         "flag_transfer_claim": flag_transfer_claim,
+                        "paired_prepared_writes_claim": return_writes_claim,
+                        "frame_exact_stack_writes_claim":
+                            frame_exact_return_writes_claim,
                     })
                 if not return_cases_complete:
                     continue
@@ -4154,14 +4330,17 @@ def _whole_program_acceptance_plan(
                 seeded_exact_words = direct_call_exact_word_seeds(
                     node_id, target_node_id
                 )
-                exact_word_seed_claims = (
-                    segment.get("direct_call_stack_writes_claim", {}).get(
-                        "exact_word_seeds", []
-                    )
-                    if isinstance(
-                        segment.get("direct_call_stack_writes_claim"), dict
-                    ) else []
-                )
+                exact_word_seed_claims = []
+                for claim_key in (
+                    "direct_call_stack_writes_claim",
+                    "direct_call_prepared_writes_claim",
+                ):
+                    call_write_claim = segment.get(claim_key)
+                    if isinstance(call_write_claim, dict):
+                        exact_word_seed_claims = list(
+                            call_write_claim.get("exact_word_seeds", [])
+                        )
+                        break
                 call_cases: list[dict[str, Any]] = []
                 call_cases_complete = True
                 for control_row in control_rows:
@@ -4618,12 +4797,19 @@ def _whole_program_acceptance_plan(
 
         edge_rows = [edges[edge_id] for edge_id in outgoing]
         edge_by_kind = {edge.get("kind"): edge for edge in edge_rows}
+        candidate_edge_by_kind = {
+            edge.get("candidate_kind", edge.get("kind")): edge
+            for edge in edge_rows
+        }
         taken_edge = edge_by_kind.get("branchTaken")
         fallthrough_edge = edge_by_kind.get("branchFallthrough")
         if (
             len(edge_by_kind) != 2
+            or len(candidate_edge_by_kind) != 2
             or taken_edge is None
             or fallthrough_edge is None
+            or candidate_edge_by_kind.get("branchTaken") is None
+            or candidate_edge_by_kind.get("branchFallthrough") is None
             or any(bool(edge.get("infeasible")) for edge in edge_rows)
             or any(
                 candidate_by_edge.get(int(edge["id"]), {}).get("certificate_profile")
@@ -4651,13 +4837,28 @@ def _whole_program_acceptance_plan(
                 "regenerate the indexed product graph",
             )
             continue
-        expected_taken = int(taken_edge["target_target_id"])
-        expected_fallthrough = int(fallthrough_edge["target_target_id"])
-        if any(
-            outcome.get("op") != "branch"
-            or int(outcome.get("taken", -1)) != expected_taken
-            or int(outcome.get("fallthrough", -1)) != expected_fallthrough
-            for outcome in outcomes
+        original_outcome, candidate_outcome = outcomes
+        expected_original_taken = int(taken_edge["target_target_id"])
+        expected_original_fallthrough = int(
+            fallthrough_edge["target_target_id"]
+        )
+        expected_candidate_taken = int(
+            candidate_edge_by_kind["branchTaken"]["target_target_id"]
+        )
+        expected_candidate_fallthrough = int(
+            candidate_edge_by_kind["branchFallthrough"]["target_target_id"]
+        )
+        if (
+            original_outcome.get("op") != "branch"
+            or candidate_outcome.get("op") != "branch"
+            or int(original_outcome.get("taken", -1))
+                != expected_original_taken
+            or int(original_outcome.get("fallthrough", -1))
+                != expected_original_fallthrough
+            or int(candidate_outcome.get("taken", -1))
+                != expected_candidate_taken
+            or int(candidate_outcome.get("fallthrough", -1))
+                != expected_candidate_fallthrough
         ):
             block(
                 "decoded_branch_outcome_mismatch",
@@ -4667,13 +4868,19 @@ def _whole_program_acceptance_plan(
             continue
         original_condition = outcomes[0].get("condition")
         candidate_condition = outcomes[1].get("condition")
-        if (
-            taken_edge.get("original_guard") != original_condition
-            or taken_edge.get("candidate_guard") != candidate_condition
-            or fallthrough_edge.get("original_guard")
-                != {"op": "not", "value": original_condition}
-            or fallthrough_edge.get("candidate_guard")
-                != {"op": "not", "value": candidate_condition}
+        if any(
+            edge.get("original_guard")
+                != _normalized_branch_guard(
+                    original_condition,
+                    taken=edge["kind"] == "branchTaken",
+                )
+            or edge.get("candidate_guard")
+                != _normalized_branch_guard(
+                    candidate_condition,
+                    taken=edge.get("candidate_kind", edge["kind"])
+                        == "branchTaken",
+                )
+            for edge in edge_rows
         ):
             block(
                 "branch_guard_inventory_mismatch",
@@ -4819,6 +5026,9 @@ def _whole_program_acceptance_plan(
                     ],
                     "frame_guard_claim": frame_guard_claim,
                     "branch_value": edge.get("kind") == "branchTaken",
+                    "candidate_branch_value": edge.get(
+                        "candidate_kind", edge.get("kind")
+                    ) == "branchTaken",
                     "target_node_id": target_node_id,
                     "target_region_index": target_node_id,
                     "target_target_id": int(edge["target_target_id"]),
@@ -4852,6 +5062,10 @@ def _whole_program_acceptance_plan(
                     "target_node_id": int(edge["target_node_id"]),
                     "target_region_index": int(edge["target_node_id"]),
                     "target_target_id": int(edge["target_target_id"]),
+                    "branch_value": edge.get("kind") == "branchTaken",
+                    "candidate_branch_value": edge.get(
+                        "candidate_kind", edge.get("kind")
+                    ) == "branchTaken",
                 }
                 for edge in ordered_edges
             ]
@@ -6213,7 +6427,8 @@ def _lean_acceptance_linked_direct_call_node(
         "    (StateRel.stackRangesValid staticProofContext world\n"
         f"      region{region_index}.inputInvariant originalState candidateState\n"
         "      statesRelated) sourceWindowHolds (by decide) (by decide)\n"
-        "    (by decide) (by decide) (by simp [runtimeFrame])\n"
+        "    (by simp [runtimeFrame]) (by simp [runtimeFrame, sourceWindow])\n"
+        "    (by simp [runtimeFrame])\n"
         "    (by simp [runtimeFrame])\n"
         "have frameValid : runtimeFrame.valid staticProofContext = true := by\n"
         "  unfold RelationalRuntimeCallFrame.valid\n"
@@ -7211,7 +7426,12 @@ def _lean_acceptance_linked_active_branch_node(
         edge_id = int(edge["edge_id"])
         target_node_id = int(edge["target_node_id"])
         target_region_index = int(edge["target_region_index"])
-        condition_literal = "true" if condition else "false"
+        candidate_condition = bool(
+            edge.get("candidate_branch_value", condition)
+        )
+        candidate_condition_literal = (
+            "true" if candidate_condition else "false"
+        )
         claims = edge["return_slot_frame_transfer_claims"]
         frame_claim_payload = claims[0]
         target_active_payload = frame_claim_payload["target"]
@@ -7386,11 +7606,11 @@ def _lean_acceptance_linked_active_branch_node(
             "        exact originalGuard\n"
             f"      have candidateCondition : segmentRefinementEdge{edge_id}"
             "CandidateOutcomeCondition.eval\n"
-            f"          candidateState = {condition_literal} := by\n"
+            f"          candidateState = {candidate_condition_literal} := by\n"
             "        exact normalizedBranchCondition_eval_of_guard_true\n"
             f"          segmentRefinementEdge{edge_id}CandidateOutcomeCondition\n"
             f"          segmentRefinementEdge{edge_id}Spec.candidateGuard\n"
-            f"          {condition_literal} candidateState (by decide) "
+            f"          {candidate_condition_literal} candidateState (by decide) "
             "candidateGuard\n"
             f"      simp only [region{region_index}OutcomeCondition,\n"
             f"        segmentRefinementEdge{edge_id}CandidateOutcomeCondition] at\n"
@@ -7826,15 +8046,19 @@ def _lean_acceptance_running_node(
                 f"call edge {edge_id} has mismatched exact-word seed and "
                 "runtime-frame inventories"
             )
-        if exact_word_seed_claims and not combined_stack_writes:
+        if exact_word_seed_claims and not combined_prefix_writes:
             raise StageAInputError(
                 f"call edge {edge_id} seeds exact words without a checked "
-                "direct-call stack-write certificate"
+                "direct-call prepared-write certificate"
             )
         exact_seed_names = [
             f"segmentRefinementEdge{edge_id}DirectCallExactWordSeed{index}"
             for index in range(len(exact_word_seed_claims))
         ]
+        exact_seed_type = (
+            "DirectCallPreparedExactWordSeedClaim"
+            if combined_prepared_writes else "DirectCallStackExactWordSeedClaim"
+        )
         if not exact_seed_names:
             active_frame_exact_words = (
                 "  have activeFrameExactWords : "
@@ -7859,7 +8083,11 @@ def _lean_acceptance_running_node(
                 return (
                     prefix + "have seededWordHolds :=\n"
                     + continuation_prefix
-                    + "  DirectCallStackExactWordSeedClaim.holds_of_checked\n"
+                    + (
+                        "  DirectCallPreparedExactWordSeedClaim.holds_of_checked\n"
+                        if combined_prepared_writes else
+                        "  DirectCallStackExactWordSeedClaim.holds_of_checked\n"
+                    )
                     + continuation_prefix
                     + f"    staticProofContext world region{region_index}.inputInvariant\n"
                     + continuation_prefix
@@ -7867,11 +8095,20 @@ def _lean_acceptance_running_node(
                     + continuation_prefix
                     + f"    {writes_claim_name} {name} originalState candidateState\n"
                     + continuation_prefix
-                    + "    (by decide) (by decide) (by decide) statesRelated\n"
+                    + (
+                        "    (by decide) (by decide) statesRelated\n"
+                        if combined_prepared_writes else
+                        "    (by decide) (by decide) (by decide) statesRelated\n"
+                    )
                     + continuation_prefix
                     + "simpa [runtimeFrame, sourceWindow,\n"
                     + continuation_prefix
-                    + f"  {writes_claim_name}, DirectCallStackWritesClaim.runtimeFrame,\n"
+                    + f"  {writes_claim_name}, "
+                    + (
+                        "DirectCallPreparedWritesClaim.runtimeFrame,\n"
+                        if combined_prepared_writes else
+                        "DirectCallStackWritesClaim.runtimeFrame,\n"
+                    )
                     + continuation_prefix
                     + "  originalBehaviorSegment, candidateBehaviorSegment]\n"
                     + continuation_prefix
@@ -8466,6 +8703,112 @@ def _lean_acceptance_running_node(
             "target_region_index": target_region_index,
             "target_target_id": continuation,
         }
+        paired_writes_claim = step.get("paired_prepared_writes_claim")
+        frame_exact_writes_claim = step.get("frame_exact_stack_writes_claim")
+        if isinstance(paired_writes_claim, dict):
+            paired_writes_literal = _lean_paired_prepared_word_writes_claim(
+                paired_writes_claim
+            )
+            memory_transition = (
+                "    let pairedWritesClaim : PairedPreparedWordWritesClaim := "
+                + paired_writes_literal + "\n"
+                f"    have originalWritesField : {original_behavior}.writes =\n"
+                "        pairedWritesClaim.originalSymbolicWrites := by decide\n"
+                f"    have candidateWritesField : {candidate_behavior}.writes =\n"
+                "        pairedWritesClaim.candidateSymbolicWrites := by decide\n"
+                f"    have originalWrites : ({original_behavior}.eval originalState).writes =\n"
+                "        pairedWritesClaim.originalWrites originalState := by\n"
+                "      simp [originalWritesField, evalNormalizedWrites,\n"
+                "        PairedPreparedWordWritesClaim.originalSymbolicWrites,\n"
+                "        PairedPreparedWordWritesClaim.originalWrites]\n"
+                f"    have candidateWrites : ({candidate_behavior}.eval candidateState).writes =\n"
+                "        pairedWritesClaim.candidateWrites candidateState := by\n"
+                "      simp [candidateWritesField, evalNormalizedWrites,\n"
+                "        PairedPreparedWordWritesClaim.candidateSymbolicWrites,\n"
+                "        PairedPreparedWordWritesClaim.candidateWrites]\n"
+                "    have nextStatesRelated : StateRel staticProofContext world\n"
+                f"        region{target_region_index}.inputInvariant\n"
+                f"        (({original_behavior}.eval originalState).nextMachineState originalState)\n"
+                f"        (({candidate_behavior}.eval candidateState).nextMachineState candidateState) :=\n"
+                "      StateRel.afterPairedPreparedWordWritesEvaluation\n"
+                "        staticProofContext world\n"
+                f"        region{region_index}.inputInvariant region{target_region_index}.inputInvariant\n"
+                f"        originalState candidateState ({original_behavior}.eval originalState)\n"
+                f"        ({candidate_behavior}.eval candidateState) pairedWritesClaim\n"
+                "        staticProofContextChecked relatedForTransfer (by decide)\n"
+                "        originalWrites candidateWrites (by simp) (by simp)\n"
+                "        outputRegisters outputBounds outputSeparations\n"
+                "        outputStackWindows outputX87 outputFlags outputImports\n"
+                "        outputDynamic outputDynamicStack\n"
+                f"        (by simp [RegionRelation.inputInvariant, region{target_region_index},\n"
+                "          pairedStatePredicatesHold])\n"
+            )
+        elif isinstance(frame_exact_writes_claim, dict):
+            frame_exact_writes_literal = _lean_frame_exact_stack_word_writes_claim(
+                frame_exact_writes_claim
+            )
+            memory_transition = (
+                "    let frameExactWritesClaim : FrameExactStackWordWritesClaim := "
+                + frame_exact_writes_literal + "\n"
+                f"    have originalWritesField : {original_behavior}.writes =\n"
+                "        frameExactWritesClaim.originalSymbolicWrites := by decide\n"
+                f"    have candidateWritesField : {candidate_behavior}.writes =\n"
+                "        frameExactWritesClaim.candidateSymbolicWrites := by decide\n"
+                f"    have originalWrites : ({original_behavior}.eval originalState).writes =\n"
+                "        frameExactWritesClaim.originalWrites originalState := by\n"
+                "      simp [originalWritesField, evalNormalizedWrites,\n"
+                "        FrameExactStackWordWritesClaim.originalSymbolicWrites,\n"
+                "        FrameExactStackWordWritesClaim.originalWrites]\n"
+                f"    have candidateWrites : ({candidate_behavior}.eval candidateState).writes =\n"
+                "        frameExactWritesClaim.candidateWrites candidateState := by\n"
+                "      simp [candidateWritesField, evalNormalizedWrites,\n"
+                "        FrameExactStackWordWritesClaim.candidateSymbolicWrites,\n"
+                "        FrameExactStackWordWritesClaim.candidateWrites]\n"
+                "    have activeFrameExactWords : activeFrameInventory.exactWordsHold frame\n"
+                "        originalState.memory candidateState.memory := by\n"
+                "      simpa [activeFrameInventory] using stackHolds.2.2.2.2.2.1.2\n"
+                "    have nextStatesRelated : StateRel staticProofContext world\n"
+                f"        region{target_region_index}.inputInvariant\n"
+                f"        (({original_behavior}.eval originalState).nextMachineState originalState)\n"
+                f"        (({candidate_behavior}.eval candidateState).nextMachineState candidateState) :=\n"
+                "      StateRel.afterFrameExactStackWordWritesEvaluation\n"
+                "        staticProofContext world\n"
+                f"        region{region_index}.inputInvariant region{target_region_index}.inputInvariant\n"
+                "        activeFrameInventory frame originalState candidateState\n"
+                f"        ({original_behavior}.eval originalState)\n"
+                f"        ({candidate_behavior}.eval candidateState) frameExactWritesClaim\n"
+                "        staticProofContextChecked relatedForTransfer (by decide)\n"
+                "        (by simpa [activeFrameInventory] using frameOffsetsHold)\n"
+                "        activeFrameExactWords originalWrites candidateWrites\n"
+                "        (by simp) (by simp) outputRegisters outputBounds\n"
+                "        outputSeparations outputStackWindows outputX87 outputFlags\n"
+                "        outputImports outputDynamic outputDynamicStack\n"
+                f"        (by simp [RegionRelation.inputInvariant, region{target_region_index},\n"
+                "          pairedStatePredicatesHold])\n"
+            )
+        else:
+            memory_transition = (
+                f"    have originalWritesField : {original_behavior}.writes = [] := by decide\n"
+                f"    have candidateWritesField : {candidate_behavior}.writes = [] := by decide\n"
+                f"    have originalWrites : ({original_behavior}.eval originalState).writes = [] := by\n"
+                "      simp [originalWritesField, evalNormalizedWrites]\n"
+                f"    have candidateWrites : ({candidate_behavior}.eval candidateState).writes = [] := by\n"
+                "      simp [candidateWritesField, evalNormalizedWrites]\n"
+                "    have nextStatesRelated : StateRel staticProofContext world\n"
+                f"        region{target_region_index}.inputInvariant\n"
+                f"        (({original_behavior}.eval originalState).nextMachineState originalState)\n"
+                f"        (({candidate_behavior}.eval candidateState).nextMachineState candidateState) :=\n"
+                "      StateRel.afterNoWriteEvaluation staticProofContext world\n"
+                f"        region{region_index}.inputInvariant region{target_region_index}.inputInvariant\n"
+                f"        originalState candidateState ({original_behavior}.eval originalState)\n"
+                f"        ({candidate_behavior}.eval candidateState) relatedForTransfer\n"
+                "        originalWrites candidateWrites (by simp) (by simp)\n"
+                "        outputRegisters outputBounds\n"
+                "        outputSeparations outputStackWindows outputX87 outputFlags\n"
+                "        outputImports outputDynamic outputDynamicStack\n"
+                f"        (by simp [RegionRelation.inputInvariant, region{target_region_index},\n"
+                "          pairedStatePredicatesHold])\n"
+            )
         selected_control = (
             ""
             if step.get("control_already_selected") else
@@ -8648,12 +8991,6 @@ def _lean_acceptance_running_node(
             f"        ({candidate_behavior}.eval candidateState).eflags = true := by\n"
             f"      simp [RegionRelation.inputInvariant, region{target_region_index},\n"
             "        flagsRelated]\n"
-            f"    have originalWritesField : {original_behavior}.writes = [] := by decide\n"
-            f"    have candidateWritesField : {candidate_behavior}.writes = [] := by decide\n"
-            f"    have originalWrites : ({original_behavior}.eval originalState).writes = [] := by\n"
-            "      simp [originalWritesField, evalNormalizedWrites]\n"
-            f"    have candidateWrites : ({candidate_behavior}.eval candidateState).writes = [] := by\n"
-            "      simp [candidateWritesField, evalNormalizedWrites]\n"
             + import_output_proof
             + "    have outputDynamic : activeDynamicRegisterRangeRelationsHold "
             "staticProofContext world\n"
@@ -8671,21 +9008,8 @@ def _lean_acceptance_running_node(
             f"        (({candidate_behavior}.eval candidateState).nextMachineState candidateState) = true := by\n"
             f"      simp [RegionRelation.inputInvariant, region{target_region_index},\n"
             "        activeDynamicStackRangeRelationsHold]\n"
-            "    have nextStatesRelated : StateRel staticProofContext world\n"
-            f"        region{target_region_index}.inputInvariant\n"
-            f"        (({original_behavior}.eval originalState).nextMachineState originalState)\n"
-            f"        (({candidate_behavior}.eval candidateState).nextMachineState candidateState) :=\n"
-            "      StateRel.afterNoWriteEvaluation staticProofContext world\n"
-            f"        region{region_index}.inputInvariant region{target_region_index}.inputInvariant\n"
-            f"        originalState candidateState ({original_behavior}.eval originalState)\n"
-            f"        ({candidate_behavior}.eval candidateState) relatedForTransfer\n"
-            "        originalWrites candidateWrites (by simp) (by simp)\n"
-            "        outputRegisters outputBounds\n"
-            "        outputSeparations outputStackWindows outputX87 outputFlags\n"
-            "        outputImports outputDynamic outputDynamicStack\n"
-            f"        (by simp [RegionRelation.inputInvariant, region{target_region_index},\n"
-            "          pairedStatePredicatesHold])\n"
-            "    have stackHoldsNext := outerStackHolds\n"
+            + memory_transition
+            + "    have stackHoldsNext := outerStackHolds\n"
             "    have outerTargetsReachable : RelationalRuntimeCallTargetsMapped\n"
             "        relationalProductGraph relationalProductReachabilityEvidence\n"
             f"        {target_calls_literal} := by\n"
@@ -10189,7 +10513,12 @@ def _lean_acceptance_running_node(
     def branch_case(edge: dict[str, Any], condition: bool) -> str:
         edge_id = int(edge["edge_id"])
         target_region_index = int(edge["target_region_index"])
-        condition_literal = "true" if condition else "false"
+        candidate_condition = bool(
+            edge.get("candidate_branch_value", condition)
+        )
+        candidate_condition_literal = (
+            "true" if candidate_condition else "false"
+        )
         candidate_condition_name = (
             f"segmentRefinementEdge{edge_id}CandidateOutcomeCondition"
         )
@@ -10277,11 +10606,11 @@ def _lean_acceptance_running_node(
             f"      rw [← transition{edge_id}.1]\n"
             "      exact originalGuard\n"
             f"    have candidateCondition : {candidate_condition_name}.eval\n"
-            f"        candidateState = {condition_literal} := by\n"
+            f"        candidateState = {candidate_condition_literal} := by\n"
             "      exact normalizedBranchCondition_eval_of_guard_true\n"
             f"        {candidate_condition_name}\n"
             f"        segmentRefinementEdge{edge_id}Spec.candidateGuard\n"
-            f"        {condition_literal} candidateState (by decide) candidateGuard\n"
+            f"        {candidate_condition_literal} candidateState (by decide) candidateGuard\n"
             f"    have transitioned := transition{edge_id}.2 originalGuard\n"
             "    have nextStatesRelated : StateRel staticProofContext world\n"
             f"        region{target_region_index}.inputInvariant\n"
@@ -10547,20 +10876,12 @@ def _segment_module_ownership(
 def _acceptance_segment_imports(
     selected_steps: list[dict[str, Any]], segment_module_by_edge: Mapping[int, str]
 ) -> str:
-    edge_ids: set[int] = set()
-
-    def collect(value: Any) -> None:
-        if isinstance(value, dict):
-            for key, child in value.items():
-                if key == "edge_id":
-                    edge_ids.add(int(child))
-                else:
-                    collect(child)
-        elif isinstance(value, list):
-            for child in value:
-                collect(child)
-
-    collect(selected_steps)
+    edge_ids = {
+        int(edge["edge_id"])
+        for step in selected_steps
+        if step.get("kind") not in {"external_call", "external_protocol"}
+        for edge in step.get("edges", [])
+    }
     missing = sorted(edge_ids - segment_module_by_edge.keys())
     if missing:
         raise StageAInputError(
@@ -11108,7 +11429,7 @@ def _write_relational_acceptance_modules(
         "status": "ready" if linked_acceptance_ready else "incomplete",
         "profile": linked_acceptance_mode,
         "theorem": (
-            "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
+            RELATIONAL_LINKED_ACCEPTANCE_THEOREM
             if linked_acceptance_ready else None
         ),
         "blockers": [] if linked_acceptance_ready else [
@@ -11125,7 +11446,36 @@ def _write_relational_acceptance_modules(
             }
         ],
     }
+    if plan["status"] == "ready":
+        selected_theorem = choose_relational_acceptance_theorem(
+            ordinary_ready=ordinary_acceptance_ready,
+            linked_ready=linked_acceptance_ready,
+        )
+        if selected_theorem is None:
+            plan = {
+                **plan,
+                "status": "incomplete",
+                "theorem": None,
+                "blockers": [
+                    *plan.get("blockers", []),
+                    {
+                        "code": "whole_program_acceptance_theorem_pending",
+                        "message": (
+                            "no supported generated whole-program theorem closes "
+                            "the selected control model"
+                        ),
+                        "next_action": (
+                            "complete either ordinary or linked whole-program "
+                            "acceptance for every reachable node"
+                        ),
+                    },
+                ],
+            }
+        else:
+            plan["required_theorem"] = selected_theorem
+            plan["theorem"] = selected_theorem
     write_json(lean_dir.parent / "whole-program-acceptance.json", plan)
+    acceptance_ready = plan["status"] == "ready"
     root_invariant = _lean_region_input_invariant(root_region)
     terminal_region_index = int(plan["terminal_region_index"])
     terminal_invariant = _lean_state_invariant(plan["terminal_invariant"])
@@ -12418,7 +12768,16 @@ def _write_relational_acceptance_modules(
                     f"region{region_index}.targets state {side}Behavior{region_index} "
                     f"{normalized_name} {normalized_checked}"
                 )
-            if ordinary_acceptance_ready and not uses_deferred_guard:
+            native_case = linked_native_cases_by_node.get(node_id)
+            linked_termination_reuses_ordinary_node = bool(
+                linked_acceptance_ready
+                and linked_acceptance_mode == "native-linked-call-return-v1"
+                and native_case is not None
+                and native_case[0] == "empty_terminate"
+            )
+            if (
+                ordinary_acceptance_ready or linked_termination_reuses_ordinary_node
+            ) and not uses_deferred_guard:
                 definitions.append(_lean_acceptance_running_node(
                     step, contract["regions"], behaviors,
                     parameterized_environment=parameterized_environment,
@@ -12436,7 +12795,6 @@ def _write_relational_acceptance_modules(
                     + "environmentRefines"
                     if parameterized_environment else linked_running
                 )
-                native_case = linked_native_cases_by_node.get(node_id)
                 if linked_acceptance_mode == "native-linked-call-return-v1":
                     if native_case is None:
                         raise StageAInputError(
