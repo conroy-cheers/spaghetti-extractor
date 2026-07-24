@@ -383,18 +383,18 @@ content address, and reused the existing consumer store path without rebuilding
 the consumer. This proves the required early-cutoff behavior locally. The
 consumer was then copied to a local file binary cache; a clean disposable store
 rebuilt only a third producer revision, resolved the same semantic address, and
-substituted the unchanged consumer from that cache. The system daemon and
-`acacia` now enable `ca-derivations`. A production remote qualification under
-Nix 2.34.8 rebuilt two distinct producer revisions on `acacia`; both resolved
-to the same semantic output, and the second build reused the existing consumer
-without rebuilding it. `banksia` does not currently advertise
-`ca-derivations`, so CA pack nodes are scheduled on `acacia` while ordinary
-proof nodes remain eligible for both hosts. `nix/stage-a-builders` retains the
-10-job memory-safe Lean profile. `nix/stage-a-lightweight-ca-builders` exposes
-24 one-core slots for the low-memory register workers. Worker derivations
-prefer remote execution and the lightweight aggregate prefers local execution;
-`--max-jobs 0` remains available when a run must prohibit all local work.
-Qualification through the production binary cache remains outstanding.
+substituted the unchanged consumer from that cache. An earlier Nix 2.34.8
+qualification also exercised this remotely on `acacia`. The current remote
+daemon rejects CA derivations, however, so CA execution is not part of the
+supported round-trip build path. The ordinary input-addressed Lean graph runs
+on both `acacia` and `banksia`; `nix/stage-a-builders` advertises only the
+`big-parallel` feature and retains the 10-job memory-safe Lean profile. The
+separate `nix/stage-a-lightweight-ca-builders` inventory is experimental and is
+usable only when the named daemon has independently enabled `ca-derivations`.
+Worker derivations prefer remote execution and the lightweight aggregate
+prefers local execution; `--max-jobs 0` remains available when a run must
+prohibit all local work. Qualification through the production binary cache
+remains outstanding.
 
 Introducing the three-output pack contract required one graph-wide production
 qualification because every pack recipe changed. Rebuilding 237 packs plus the

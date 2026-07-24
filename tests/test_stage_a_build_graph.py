@@ -622,6 +622,26 @@ class StageABuildGraphTests(unittest.TestCase):
             "https://cache.corncheese.org/nix-cache https://cache.nixos.org/",
         )
 
+    def test_remote_build_command_authenticates_signed_builder_outputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            keys = Path(temporary) / "builder-public-keys"
+            keys.write_text(
+                "builder-a-1:QUJDRA==\n"
+                "# a comment\n"
+                "builder-b-1:RUZHSA==\n",
+                encoding="utf-8",
+            )
+            command = _relational_nix_build_command(
+                "proof-expression",
+                Path("/tmp/stage-a-builders"),
+                keys,
+            )
+
+        self.assertEqual(
+            command[command.index("extra-trusted-public-keys") + 1],
+            "builder-a-1:QUJDRA== builder-b-1:RUZHSA==",
+        )
+
     def test_realized_prepared_output_is_passed_to_dynamic_graph_builder(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

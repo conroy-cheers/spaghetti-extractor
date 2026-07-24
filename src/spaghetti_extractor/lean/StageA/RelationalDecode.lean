@@ -431,8 +431,7 @@ def MachineImportCallContract.shapeValid
           contract.resultRegisterRelations.isEmpty &&
           contract.worldEffect == .none
     | .protocol =>
-        contract.worldEffect == .none &&
-          contract.memoryEffect != .relationalState
+        contract.worldEffect == .none
 
 def MachineImportCallContract.matchesImport
     (contract : MachineImportCallContract) (imported : PEImport) : Bool :=

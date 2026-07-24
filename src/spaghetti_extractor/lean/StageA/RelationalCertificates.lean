@@ -1,13 +1,18 @@
 import StageA.RelationalAffineFrames
+import StageA.RelationalCallableExternalExecution
+import StageA.RelationalCallRefinement
 import StageA.RelationalExecution
 import StageA.RelationalISAQualification
 import StageA.RelationalImage
+import StageA.RelationalIndirectExitAdapters
 import StageA.RelationalLinkedFrames
 import StageA.RelationalPEExecution
 
 namespace StageA.Relational
 
 open StageA.Formal
+open StageA.Relational.CallableExternalCapability
+open StageA.Relational.CallableExternalExecution
 
 inductive ModeledFault where
   | checkedContinue
@@ -29,11 +34,16 @@ inductive ExecutionBlock where
   | missingRuntimeContinuation
   | unmappedReturnCall (targetId : Nat)
   | unmappedIndirectControl (target : Word)
+  | callableExternalUnavailable (sourceRva : Nat) (target : Word)
+  | missingNativeIndirectTargetSet (sourceRva : Nat) (target : Word)
+  | invalidNativeReturn (observed expected : Word)
+  | unclassifiedNativeFault (rva : Nat)
 deriving Repr, DecidableEq
 
 inductive WorldRelationalObservable where
   | external (world : RelationalWorld) (imported : ExternalTarget)
       (arguments : List Word)
+  | callableExternal (event : CallableExternalObservation)
   | returned (world : RelationalWorld) (result : Word)
   | callback (world : RelationalWorld) (targetId : Nat)
   | fault (cause : ModeledFault)
@@ -48,6 +58,12 @@ def worldRelationalObservationsRelated (context : StaticProofContext) :
       originalWorld = candidateWorld ∧ originalImport = candidateImport ∧
         externalCallArgumentsRelated context originalWorld
           originalArguments candidateArguments = true
+  | some (.callableExternal original), some (.callableExternal candidate) =>
+      original.globalExternalIndex = candidate.globalExternalIndex ∧
+        original.identity = candidate.identity ∧
+        original.world = candidate.world ∧
+        externalCallArgumentsRelated context original.world
+          original.arguments candidate.arguments = true
   | some (.returned originalWorld originalResult),
       some (.returned candidateWorld candidateResult) =>
       originalWorld = candidateWorld ∧ originalResult = candidateResult
@@ -58,18 +74,47 @@ def worldRelationalObservationsRelated (context : StaticProofContext) :
       originalCause = candidateCause
   | _, _ => False
 
+theorem worldRelationalObservationsRelated_sameShape
+    (context : StaticProofContext)
+    (original candidate : Option WorldRelationalObservable)
+    (related : worldRelationalObservationsRelated context original candidate) :
+    original.isSome = candidate.isSome := by
+  cases original <;> cases candidate <;>
+    simp_all [worldRelationalObservationsRelated]
+
 structure DecodedWorldProgram where
   candidate : Bool
   context : StaticProofContext
   regions : List RegionRelation
   externalCallSites : List ExternalCallSiteContract
   environment : WorldExternalEnvironment
+  callableProgram : Option OriginalCallableProgram := none
+  callableEnvironment : Option OriginalCallableExternalEnvironment := none
   protocolEnvironment : WorldExternalProtocolEnvironment := {
     action := fun request => .returned { state := request.state, world := request.world }
   }
 
-def decodedWorldRegionBehavior (program : DecodedWorldProgram)
-    (targetId : Nat) (state : MachineState) : Option RelationalBehavior := do
+def DecodedWorldProgram.machineImportContractsAt
+    (program : DecodedWorldProgram) (targetId : Nat)
+    (calls : List Nat) : List MachineImportCallContract :=
+  let sourceSites := program.externalCallSites.filter fun site =>
+    site.sourceTargetId == targetId
+  let selectedSites :=
+    match sourceSites with
+    | [site] => [site]
+    | _ =>
+        match calls with
+        | [] => []
+        | continuation :: _ => sourceSites.filter fun site =>
+            site.continuationTargetId == continuation
+  match selectedSites.filterMap fun site =>
+      machineImportCallContractById? program.context site.machineContractId with
+  | [contract] => [contract]
+  | _ => []
+
+def decodedWorldRegionBehaviorWithCalls (program : DecodedWorldProgram)
+    (targetId : Nat) (state : MachineState) (calls : List Nat) :
+    Option RelationalBehavior := do
   let region <- regionById program.regions targetId
   let span := if program.candidate then region.candidate else region.original
   let pe := if program.candidate then
@@ -85,14 +130,19 @@ def decodedWorldRegionBehavior (program : DecodedWorldProgram)
       region.targets state
   else do
     let behavior <- regionBehaviorWithMachineCallContracts pe imports
-      program.context.machineImportCallContracts span
+      (program.machineImportContractsAt targetId calls) span
     evalBehavior program.candidate region.targets state behavior
+
+def decodedWorldRegionBehavior (program : DecodedWorldProgram)
+    (targetId : Nat) (state : MachineState) : Option RelationalBehavior :=
+  decodedWorldRegionBehaviorWithCalls program targetId state []
 
 /-- Execute a cutpoint region by independently fetching each instruction from
 the exact PE image, then apply the same machine-level import contract layer as
 the compositional decoder. -/
-def pe32WorldRegionBehavior (program : DecodedWorldProgram)
-    (targetId : Nat) (state : MachineState) : Option RelationalBehavior := do
+def pe32WorldRegionBehaviorWithCalls (program : DecodedWorldProgram)
+    (targetId : Nat) (state : MachineState) (calls : List Nat) :
+    Option RelationalBehavior := do
   let region <- regionById program.regions targetId
   let span := if program.candidate then region.candidate else region.original
   let pe := if program.candidate then
@@ -109,17 +159,21 @@ def pe32WorldRegionBehavior (program : DecodedWorldProgram)
   else do
     let behavior <- executePE32SymbolicSpan pe imports span
     let behavior <- applyMachineImportCallContracts
-      program.context.machineImportCallContracts behavior
+      (program.machineImportContractsAt targetId calls) behavior
     evalBehavior program.candidate region.targets state behavior
+
+def pe32WorldRegionBehavior (program : DecodedWorldProgram)
+    (targetId : Nat) (state : MachineState) : Option RelationalBehavior :=
+  pe32WorldRegionBehaviorWithCalls program targetId state []
 
 /-- The generated cutpoint model may be used in acceptance only when it agrees
 pointwise with exact PE instruction fetching for every target and machine
 state. -/
 def DecodedWorldProgram.InstructionSemanticsAdequate
     (program : DecodedWorldProgram) : Prop :=
-  ∀ targetId state,
-    pe32WorldRegionBehavior program targetId state =
-      decodedWorldRegionBehavior program targetId state
+  ∀ targetId state calls,
+    pe32WorldRegionBehaviorWithCalls program targetId state calls =
+      decodedWorldRegionBehaviorWithCalls program targetId state calls
 
 def DecodedWorldProgram.instructionSemanticsAdequateChecked
     (program : DecodedWorldProgram) : Bool :=
@@ -139,10 +193,11 @@ theorem DecodedWorldProgram.instructionSemanticsAdequate_of_checked
     (program : DecodedWorldProgram)
     (checked : program.instructionSemanticsAdequateChecked = true) :
     program.InstructionSemanticsAdequate := by
-  intro targetId state
+  intro targetId state calls
   cases regionResult : regionById program.regions targetId with
   | none =>
-      simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult]
+      simp [pe32WorldRegionBehaviorWithCalls, decodedWorldRegionBehaviorWithCalls,
+        regionResult]
   | some region =>
       have regionMember : region ∈ program.regions := by
         have found := regionResult
@@ -161,7 +216,8 @@ theorem DecodedWorldProgram.instructionSemanticsAdequate_of_checked
         by_cases isX87 :
             StageA.Relational.X87.spanStartsWithX87Command
               program.context.originalPe region.original = true
-        · simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
+        · simp [pe32WorldRegionBehaviorWithCalls, decodedWorldRegionBehaviorWithCalls,
+            regionResult,
             candidateValue, isX87]
         · have ordinaryChecked :
               regionInstructionAdequateChecked program.context.originalPe
@@ -172,7 +228,8 @@ theorem DecodedWorldProgram.instructionSemanticsAdequate_of_checked
             program.context.originalPe program.context.originalImports
             region.original ordinaryChecked
           rcases adequate with ⟨symbolic, executed, decoded⟩
-          simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
+          simp [pe32WorldRegionBehaviorWithCalls, decodedWorldRegionBehaviorWithCalls,
+            regionResult,
             candidateValue, isX87,
             regionBehaviorWithMachineCallContracts, executed, decoded]
       case true =>
@@ -187,7 +244,8 @@ theorem DecodedWorldProgram.instructionSemanticsAdequate_of_checked
         by_cases isX87 :
             StageA.Relational.X87.spanStartsWithX87Command
               program.context.candidatePe region.candidate = true
-        · simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
+        · simp [pe32WorldRegionBehaviorWithCalls, decodedWorldRegionBehaviorWithCalls,
+            regionResult,
             candidateValue, isX87]
         · have ordinaryChecked :
               regionInstructionAdequateChecked program.context.candidatePe
@@ -198,7 +256,8 @@ theorem DecodedWorldProgram.instructionSemanticsAdequate_of_checked
             program.context.candidatePe program.context.candidateImports
             region.candidate ordinaryChecked
           rcases adequate with ⟨symbolic, executed, decoded⟩
-          simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
+          simp [pe32WorldRegionBehaviorWithCalls, decodedWorldRegionBehaviorWithCalls,
+            regionResult,
             candidateValue, isX87,
             regionBehaviorWithMachineCallContracts, executed, decoded]
 
@@ -211,10 +270,11 @@ theorem DecodedWorldProgram.instructionSemanticsAdequate_of_regions
         else program.context.originalImports)
       program.candidate program.regions) :
     program.InstructionSemanticsAdequate := by
-  intro targetId state
+  intro targetId state calls
   cases regionResult : regionById program.regions targetId with
   | none =>
-      simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult]
+      simp [pe32WorldRegionBehaviorWithCalls, decodedWorldRegionBehaviorWithCalls,
+        regionResult]
   | some region =>
       have regionMember : region ∈ program.regions := by
         have found := regionResult
@@ -241,13 +301,15 @@ theorem DecodedWorldProgram.instructionSemanticsAdequate_of_regions
             (StageA.Relational.X87.decodeSingletonCommand pe span).isSome = true := by
           simpa [pe, imports, span, RegionInstructionAdequateWithX87,
             isX87] using regionAdequate
-        simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
+        simp [pe32WorldRegionBehaviorWithCalls, decodedWorldRegionBehaviorWithCalls,
+          regionResult,
           pe, span, isX87, decoded]
       · have ordinaryAdequate : RegionInstructionAdequate pe imports span := by
           simpa [pe, imports, span, RegionInstructionAdequateWithX87,
             isX87] using regionAdequate
         rcases ordinaryAdequate with ⟨symbolic, executed, decoded⟩
-        simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
+        simp [pe32WorldRegionBehaviorWithCalls, decodedWorldRegionBehaviorWithCalls,
+          regionResult,
           pe, imports, span, isX87,
           regionBehaviorWithMachineCallContracts, executed, decoded]
 
@@ -431,6 +493,131 @@ def suspendWorldExternalProtocol (program : DecodedWorldProgram)
         world
       } callbacks
 
+def applyWorldResolvedCallableCall
+    (callableEnvironment : OriginalCallableExternalEnvironment)
+    (capability : CallableExternalCapability)
+    (abi : ResolvedExternalABIContract)
+    (target : Word) (continuation : Nat) (state : MachineState)
+    (calls : List Nat) (eventIndex : Nat) (world : RelationalWorld)
+    (callbacks : List WorldExternalCallbackRuntime) :
+    RelatedTransition WorldExecution WorldRelationalObservable :=
+  let arguments := abi.argumentSources.map fun source => source.eval state
+  let runtimeEvent : CallableRuntimeExternalEvent := {
+    identity := .resolved capability.id capability.resourceId abi.id .call
+    arguments
+    target := some target
+    state
+    world
+  }
+  let result := callableEnvironment.result eventIndex runtimeEvent
+  { next := resumeWorldExecution callbacks continuation result.state calls
+      (eventIndex + 1) result.world,
+    observation := some (.callableExternal (runtimeEvent.observe eventIndex)) }
+
+def applyWorldResolvedCallableTail
+    (callableEnvironment : OriginalCallableExternalEnvironment)
+    (capability : CallableExternalCapability)
+    (abi : ResolvedExternalABIContract)
+    (target : Word) (state : MachineState)
+    (calls : List Nat) (eventIndex : Nat) (world : RelationalWorld)
+    (callbacks : List WorldExternalCallbackRuntime) :
+    RelatedTransition WorldExecution WorldRelationalObservable :=
+  match calls with
+  | [] => blockedWorldTransition .missingRuntimeContinuation
+  | continuation :: tail =>
+      let arguments := abi.argumentSources.map fun source => source.eval state
+      let runtimeEvent : CallableRuntimeExternalEvent := {
+        identity := .resolved capability.id capability.resourceId abi.id .jump
+        arguments
+        target := some target
+        state
+        world
+      }
+      let result := callableEnvironment.result eventIndex runtimeEvent
+      { next := resumeWorldExecution callbacks continuation result.state tail
+          (eventIndex + 1) result.world,
+        observation := some (.callableExternal (runtimeEvent.observe eventIndex)) }
+
+def transitionFromWorldIndirectImportCall (program : DecodedWorldProgram)
+    (sourceTargetId : Nat) (state : MachineState) (calls : List Nat)
+    (eventIndex : Nat) (world : RelationalWorld)
+    (callbacks : List WorldExternalCallbackRuntime)
+    (imported : ExternalTarget) (arguments : List Word)
+    (continuation : Nat) :
+    RelatedTransition WorldExecution WorldRelationalObservable :=
+  match resolveExternalCallSite program.context program.externalCallSites
+      sourceTargetId continuation imported with
+  | none => blockedWorldTransition
+      (.missingExternalSite sourceTargetId continuation)
+  | some siteId =>
+      match resolvedExternalCallContract? program.context
+          program.externalCallSites siteId with
+      | none => blockedWorldTransition (.missingExternalContract siteId)
+      | some contract =>
+          match contract.disposition with
+          | .terminates =>
+              { next := .terminated world,
+                observation := some (.external world imported arguments) }
+          | .protocol =>
+              { next := suspendWorldExternalProtocol program sourceTargetId siteId
+                  imported arguments continuation
+                  (normalizeImportReturnSlotState state) calls eventIndex world
+                  callbacks,
+                observation := some (.external world imported arguments) }
+          | .returns =>
+              let event : WorldExternalEvent := {
+                siteId
+                imported
+                arguments
+                state := normalizeImportReturnSlotState state
+                world
+              }
+              let result := program.environment.result eventIndex event
+              { next := resumeWorldExecution callbacks continuation result.state
+                    calls (eventIndex + 1) result.world,
+                observation := some (.external world imported arguments) }
+
+def transitionFromWorldIndirectImportTail (program : DecodedWorldProgram)
+    (sourceTargetId : Nat) (state : MachineState) (calls : List Nat)
+    (eventIndex : Nat) (world : RelationalWorld)
+    (callbacks : List WorldExternalCallbackRuntime)
+    (imported : ExternalTarget) (arguments : List Word) :
+    RelatedTransition WorldExecution WorldRelationalObservable :=
+  match calls with
+  | [] => blockedWorldTransition .missingRuntimeContinuation
+  | continuation :: tail =>
+      match resolveExternalCallSite program.context program.externalCallSites
+          sourceTargetId continuation imported with
+      | none => blockedWorldTransition
+          (.missingExternalSite sourceTargetId continuation)
+      | some siteId =>
+          match resolvedExternalCallContract? program.context
+              program.externalCallSites siteId with
+          | none => blockedWorldTransition (.missingExternalContract siteId)
+          | some contract =>
+              match contract.disposition with
+              | .terminates =>
+                  { next := .terminated world,
+                    observation := some (.external world imported arguments) }
+              | .protocol =>
+                  { next := suspendWorldExternalProtocol program sourceTargetId
+                      siteId imported arguments continuation
+                      (normalizeImportReturnSlotState state) tail eventIndex world
+                      callbacks,
+                    observation := some (.external world imported arguments) }
+              | .returns =>
+                  let event : WorldExternalEvent := {
+                    siteId
+                    imported
+                    arguments
+                    state := normalizeImportReturnSlotState state
+                    world
+                  }
+                  let result := program.environment.result eventIndex event
+                  { next := resumeWorldExecution callbacks continuation result.state
+                        tail (eventIndex + 1) result.world,
+                    observation := some (.external world imported arguments) }
+
 def transitionFromWorldOutcome (program : DecodedWorldProgram)
     (sourceTargetId : Nat) (state : MachineState) (calls : List Nat)
     (eventIndex : Nat) (world : RelationalWorld)
@@ -548,89 +735,86 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
           eventIndex world,
         observation := none }
   | .indirectCall target continuation =>
-      match program.context.codeMap.resolveRawEip program.candidate
-          (if program.candidate then program.context.candidatePe.imageBase
-           else program.context.originalPe.imageBase) target with
-      | some resolved =>
-          { next := resumeWorldExecution callbacks resolved state (continuation :: calls)
-              eventIndex world,
-            observation := none }
-      | none =>
-          match resolveWorldImportCall program.candidate program.context world target state with
-          | none => blockedWorldTransition (.unmappedIndirectControl target)
-          | some (imported, arguments) =>
-              match resolveExternalCallSite program.context program.externalCallSites
-                  sourceTargetId continuation imported with
-              | none => blockedWorldTransition (.missingExternalSite sourceTargetId continuation)
-              | some siteId =>
-                  match resolvedExternalCallContract? program.context
-                      program.externalCallSites siteId with
-                  | none => blockedWorldTransition (.missingExternalContract siteId)
-                  | some contract =>
-                      match contract.disposition with
-                      | .terminates =>
-                          { next := .terminated world,
-                            observation := some (.external world imported arguments) }
-                      | .protocol =>
-                          { next := suspendWorldExternalProtocol program sourceTargetId siteId imported
-                              arguments continuation (normalizeImportReturnSlotState state)
-                              calls eventIndex world callbacks,
-                            observation := some (.external world imported arguments) }
-                      | .returns =>
-                          let event : WorldExternalEvent := {
-                            siteId
-                            imported
-                            arguments
-                            state := normalizeImportReturnSlotState state
-                            world
-                          }
-                          let result := program.environment.result eventIndex event
-                          { next := resumeWorldExecution callbacks continuation result.state calls
-                                (eventIndex + 1) result.world,
-                            observation := some (.external world imported arguments) }
-  | .indirectJump target =>
-      match program.context.codeMap.resolveRawEip program.candidate
-          (if program.candidate then program.context.candidatePe.imageBase
-           else program.context.originalPe.imageBase) target with
-      | some resolved =>
-          { next := resumeWorldExecution callbacks resolved state calls eventIndex world,
-            observation := none }
-      | none =>
-          match calls with
-          | [] => blockedWorldTransition (.unmappedIndirectControl target)
-          | continuation :: tail =>
-              match resolveWorldImportCall program.candidate program.context world target state with
+      match program.callableProgram, program.callableEnvironment with
+      | some callableProgram, some callableEnvironment =>
+          match resolveDecodedCallableIndirect program.candidate callableProgram
+              world target .call with
+          | .internal resolved =>
+              { next := resumeWorldExecution callbacks resolved state
+                  (continuation :: calls) eventIndex world,
+                observation := none }
+          | .imported _binding =>
+              match resolveWorldImportCall program.candidate program.context world
+                  target state with
+              | none => blockedWorldTransition
+                  (.callableExternalUnavailable sourceTargetId target)
+              | some (imported, arguments) =>
+                  transitionFromWorldIndirectImportCall program sourceTargetId
+                    state calls eventIndex world callbacks imported arguments
+                    continuation
+          | .callable capability abi _resource =>
+              applyWorldResolvedCallableCall callableEnvironment capability abi
+                target continuation state calls eventIndex world callbacks
+          | .invalidWorld | .unmapped | .invalidCallable | .ambiguous =>
+              blockedWorldTransition
+                (.callableExternalUnavailable sourceTargetId target)
+      | none, none =>
+          match program.context.codeMap.resolveRawEip program.candidate
+              (if program.candidate then program.context.candidatePe.imageBase
+               else program.context.originalPe.imageBase) target with
+          | some resolved =>
+              { next := resumeWorldExecution callbacks resolved state
+                  (continuation :: calls) eventIndex world,
+                observation := none }
+          | none =>
+              match resolveWorldImportCall program.candidate program.context world
+                  target state with
               | none => blockedWorldTransition (.unmappedIndirectControl target)
               | some (imported, arguments) =>
-                  match resolveExternalCallSite program.context program.externalCallSites
-                      sourceTargetId continuation imported with
-                  | none => blockedWorldTransition (.missingExternalSite sourceTargetId continuation)
-                  | some siteId =>
-                      match resolvedExternalCallContract? program.context
-                          program.externalCallSites siteId with
-                      | none => blockedWorldTransition (.missingExternalContract siteId)
-                      | some contract =>
-                          match contract.disposition with
-                          | .terminates =>
-                              { next := .terminated world,
-                                observation := some (.external world imported arguments) }
-                          | .protocol =>
-                              { next := suspendWorldExternalProtocol program sourceTargetId siteId imported
-                                  arguments continuation (normalizeImportReturnSlotState state)
-                                  tail eventIndex world callbacks,
-                                observation := some (.external world imported arguments) }
-                          | .returns =>
-                              let event : WorldExternalEvent := {
-                                siteId
-                                imported
-                                arguments
-                                state := normalizeImportReturnSlotState state
-                                world
-                              }
-                              let result := program.environment.result eventIndex event
-                              { next := resumeWorldExecution callbacks continuation result.state tail
-                                    (eventIndex + 1) result.world,
-                                observation := some (.external world imported arguments) }
+                  transitionFromWorldIndirectImportCall program sourceTargetId state
+                    calls eventIndex world callbacks imported arguments continuation
+      | _, _ => blockedWorldTransition
+          (.callableExternalUnavailable sourceTargetId target)
+  | .indirectJump target =>
+      match program.callableProgram, program.callableEnvironment with
+      | some callableProgram, some callableEnvironment =>
+          match resolveDecodedCallableIndirect program.candidate callableProgram
+              world target .jump with
+          | .internal resolved =>
+              { next := resumeWorldExecution callbacks resolved state calls
+                  eventIndex world,
+                observation := none }
+          | .imported _binding =>
+              match resolveWorldImportCall program.candidate program.context world
+                  target state with
+              | none => blockedWorldTransition
+                  (.callableExternalUnavailable sourceTargetId target)
+              | some (imported, arguments) =>
+                  transitionFromWorldIndirectImportTail program sourceTargetId
+                    state calls eventIndex world callbacks imported arguments
+          | .callable capability abi _resource =>
+              applyWorldResolvedCallableTail callableEnvironment capability abi
+                target state calls eventIndex world callbacks
+          | .invalidWorld | .unmapped | .invalidCallable | .ambiguous =>
+              blockedWorldTransition
+                (.callableExternalUnavailable sourceTargetId target)
+      | none, none =>
+          match program.context.codeMap.resolveRawEip program.candidate
+              (if program.candidate then program.context.candidatePe.imageBase
+               else program.context.originalPe.imageBase) target with
+          | some resolved =>
+              { next := resumeWorldExecution callbacks resolved state calls
+                  eventIndex world,
+                observation := none }
+          | none =>
+              match resolveWorldImportCall program.candidate program.context world
+                  target state with
+              | none => blockedWorldTransition (.unmappedIndirectControl target)
+              | some (imported, arguments) =>
+                  transitionFromWorldIndirectImportTail program sourceTargetId state
+                    calls eventIndex world callbacks imported arguments
+      | _, _ => blockedWorldTransition
+          (.callableExternalUnavailable sourceTargetId target)
   | .checkedContinue valid continuation =>
       if valid then
         { next := resumeWorldExecution callbacks continuation state calls eventIndex world,
@@ -678,7 +862,7 @@ def stepWorldExternalSuspension (program : DecodedWorldProgram)
 def stepWorldExecution (program : DecodedWorldProgram) :
     WorldExecution -> RelatedTransition WorldExecution WorldRelationalObservable
   | .running targetId state calls eventIndex world =>
-      match decodedWorldRegionBehavior program targetId state with
+      match decodedWorldRegionBehaviorWithCalls program targetId state calls with
       | none => blockedWorldTransition (.missingRegionBehavior targetId)
       | some behavior =>
           transitionFromWorldBehavior program targetId state calls eventIndex world [] behavior
@@ -688,7 +872,7 @@ def stepWorldExecution (program : DecodedWorldProgram) :
   | .awaitingExternal suspension callbacks =>
       stepWorldExternalSuspension program suspension callbacks
   | .callbackRunning targetId state calls eventIndex world callbacks =>
-      match decodedWorldRegionBehavior program targetId state with
+      match decodedWorldRegionBehaviorWithCalls program targetId state calls with
       | none => blockedWorldTransition (.missingRegionBehavior targetId)
       | some behavior =>
           transitionFromWorldBehavior program targetId state calls eventIndex world callbacks
@@ -702,7 +886,7 @@ decoded proof model. -/
 def stepPE32WorldExecution (program : DecodedWorldProgram) :
     WorldExecution -> RelatedTransition WorldExecution WorldRelationalObservable
   | .running targetId state calls eventIndex world =>
-      match pe32WorldRegionBehavior program targetId state with
+      match pe32WorldRegionBehaviorWithCalls program targetId state calls with
       | none => blockedWorldTransition (.missingRegionBehavior targetId)
       | some behavior =>
           transitionFromWorldBehavior program targetId state calls eventIndex world [] behavior
@@ -712,7 +896,7 @@ def stepPE32WorldExecution (program : DecodedWorldProgram) :
   | .awaitingExternal suspension callbacks =>
       stepWorldExternalSuspension program suspension callbacks
   | .callbackRunning targetId state calls eventIndex world callbacks =>
-      match pe32WorldRegionBehavior program targetId state with
+      match pe32WorldRegionBehaviorWithCalls program targetId state calls with
       | none => blockedWorldTransition (.missingRegionBehavior targetId)
       | some behavior =>
           transitionFromWorldBehavior program targetId state calls eventIndex world callbacks
@@ -728,13 +912,13 @@ theorem stepPE32WorldExecution_eq_stepWorldExecution
   cases execution with
   | running targetId state calls eventIndex world =>
       simp only [stepPE32WorldExecution, stepWorldExecution]
-      rw [adequate targetId state]
+      rw [adequate targetId state calls]
   | returned state world => rfl
   | terminated world => rfl
   | awaitingExternal suspension callbacks => rfl
   | callbackRunning targetId state calls eventIndex world callbacks =>
       simp only [stepPE32WorldExecution, stepWorldExecution]
-      rw [adequate targetId state]
+      rw [adequate targetId state calls]
   | fault cause => rfl
   | blocked reason => rfl
 
@@ -4255,6 +4439,29 @@ def PE32ProgramsObservationallyEquivalent (context : StaticProofContext)
         candidate.pe32TransitionSystem
         executionRelation (worldRelationalObservationsRelated context)
 
+/-- Whole-program observational equivalence modulo finite internal execution.
+
+Unlike the original region-lockstep proposition above, this is suitable for
+candidate block splitting/merging and verified interpreter candidates.  Each
+chunk consumes at least one exact PE transition on both sides and retains all
+external observations in order. -/
+def PE32ProgramsChunkObservationallyEquivalent (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : ProductControlProfile)
+    (launch : PE32ConsoleLaunchV2)
+    (original candidate : DecodedWorldProgram) : Prop :=
+  launch.Realizable context graph reachability ∧
+    exists executionRelation : WorldExecution -> WorldExecution -> Prop,
+      (forall world originalState candidateState,
+        launch.StatesRelated context graph reachability world originalState candidateState ->
+        executionRelation
+          (.running launch.rootTargetId originalState launch.continuationTargetIds 0 world)
+          (.running launch.rootTargetId candidateState launch.continuationTargetIds 0 world)) ∧
+      ChunkedRelationalBisimulation original.pe32TransitionSystem
+        candidate.pe32TransitionSystem executionRelation
+        (worldRelationalObservationsRelated context)
+
 structure WholeProgramCertificate (context : StaticProofContext)
     (graph : RelationalProductGraph) (regions : List RegionRelation)
     (invariants : ProductInvariantTable)
@@ -4430,6 +4637,24 @@ theorem pe32ProgramsEquivalent (context : StaticProofContext)
           candidate.pe32TransitionSystem_eq_transitionSystem
           certificate.candidateInstructionSemanticsAdequate]
         exact decodedBisimulation
+
+theorem PE32ProgramsObservationallyEquivalent.chunked
+    (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : ProductControlProfile) (launch : PE32ConsoleLaunchV2)
+    (original candidate : DecodedWorldProgram)
+    (equivalent : PE32ProgramsObservationallyEquivalent context graph invariants
+      reachability control launch original candidate) :
+    PE32ProgramsChunkObservationallyEquivalent context graph invariants reachability
+      control launch original candidate := by
+  rcases equivalent with
+    ⟨launchRealizable, executionRelation, initialStatesRelated, lockstep⟩
+  exact ⟨launchRealizable, executionRelation, initialStatesRelated,
+    chunkedRelationalBisimulation_of_lockstep original.pe32TransitionSystem
+      candidate.pe32TransitionSystem executionRelation
+      (worldRelationalObservationsRelated context)
+      (worldRelationalObservationsRelated_sameShape context) lockstep⟩
 
 def PE32ProgramsTraceRelated (context : StaticProofContext)
     (original candidate : DecodedWorldProgram)

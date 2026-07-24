@@ -105,7 +105,7 @@ class StageAExternalStatefulMemoryTests(unittest.TestCase):
             ["machine_import_call_contract_invalid"],
         )
 
-    def test_relational_state_contract_rejects_nonreturning_disposition(self):
+    def test_relational_state_contract_accepts_protocol_disposition(self):
         binary = self._binary()
         contract = {**self._contract(), "disposition": "protocol"}
         issues: list[dict] = []
@@ -114,11 +114,9 @@ class StageAExternalStatefulMemoryTests(unittest.TestCase):
             [contract], binary, binary, issues
         )
 
-        self.assertEqual(normalized, [])
-        self.assertEqual(
-            [issue["category"] for issue in issues],
-            ["machine_import_call_contract_invalid"],
-        )
+        self.assertEqual(issues, [])
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0]["disposition"], "protocol")
 
     def test_msvcrt_profile_has_unique_stateful_fflush_contract(self):
         profile_path = (

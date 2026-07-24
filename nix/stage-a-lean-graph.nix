@@ -5,10 +5,14 @@
 , sourceRoot ? prepared
 , standaloneSourceRoot ? null
 , standaloneModules ? []
+, standaloneModuleResources ? {}
 , targetNode ? null
 , targetNodes ? []
 , targetBundle ? false
+, targetAxiomAudit ? null
+, graphSmoke ? false
 , contentAddressed ? true
+, measureResources ? false
 }:
 
 let
@@ -45,13 +49,17 @@ let
       }
     ) standaloneModules);
     nodes = map (module:
-      let sourceSha256 = builtins.hashFile "sha256" (standaloneSource module);
+      let
+        sourceSha256 = builtins.hashFile "sha256" (standaloneSource module);
+        resources = standaloneModuleResources.${module} or {
+          resource_class = "light";
+          estimated_memory_mb = 512;
+        };
       in {
         id = module;
         modules = [ module ];
         dependencies = lib.sort builtins.lessThan (standaloneImports module);
-        resource_class = "light";
-        estimated_memory_mb = 512;
+        inherit (resources) resource_class estimated_memory_mb;
         source_sha256 = builtins.hashString "sha256" sourceSha256;
       }
     ) standaloneModules;
@@ -116,6 +124,16 @@ let
         ) node.modules)));
       in node.dependencies == expected
     ) graph.nodes;
+  graphNodeResourcesValid = builtins.all (node:
+    builtins.elem node.resource_class [
+      "light"
+      "medium"
+      "large-memory"
+      "high-memory"
+    ]
+    && builtins.isInt node.estimated_memory_mb
+    && node.estimated_memory_mb > 0
+  ) graph.nodes;
 
   nodeDrvs = lib.fix (self:
     builtins.listToAttrs (map (node:
@@ -132,9 +150,23 @@ let
         value = pkgs.runCommand
           (lib.strings.sanitizeDerivationName "stage-a-lean-${node.id}")
           ({
-            nativeBuildInputs = [ pkgs.lean4 pkgs.python3 pkgs.coreutils ];
+            nativeBuildInputs = [ pkgs.lean4 pkgs.python3 pkgs.coreutils ]
+              ++ lib.optionals measureResources [ pkgs.time ];
             preferLocalBuild = false;
             allowSubstitutes = true;
+            requiredSystemFeatures =
+              if node.resource_class == "high-memory" then [
+                "big-parallel"
+                # The builders file gives genuinely exceptional modules a
+                # dedicated one-slot lane.
+                "benchmark"
+              ] else lib.optionals
+                (node.resource_class == "large-memory") [
+                  "big-parallel"
+                  # Proof-heavy but bounded modules use a separate two-slot
+                  # lane instead of serializing behind exceptional modules.
+                  "large-memory"
+                ];
           } // lib.optionalAttrs contentAddressed { __contentAddressed = true; })
           ''
             mkdir -p "$out/StageA" "$out/logs" source/StageA deps/StageA
@@ -176,15 +208,22 @@ let
             sort -u inherited-olean-index > "$out/inherited-olean-index"
             sort -u inherited-node-result-index > "$out/inherited-node-result-index"
             export LEAN_PATH="$PWD/deps"
+            export LC_ALL=C
             ${lib.concatMapStringsSep "\n" (module:
               ''cp "${moduleSources.${module}}" "source/StageA/${module}.lean"''
             ) node.modules}
             ${if builtins.length node.modules == 1 then
               let
                 module = builtins.head node.modules;
-                leanJobs = if node.resource_class == "high-memory" then "1" else "2";
+                leanJobs = if builtins.elem node.resource_class [
+                  "large-memory"
+                  "high-memory"
+                ] then "1" else "2";
               in ''
-                lean -j ${leanJobs} \
+                ${lib.optionalString measureResources ''
+                  ${pkgs.time}/bin/time -v \
+                    -o "$out/logs/${module}.resource" \
+                ''}lean -j ${leanJobs} --trust=0 \
                   -R source \
                   -o "deps/StageA/${module}.olean" \
                   "source/StageA/${module}.lean" \
@@ -196,17 +235,23 @@ let
               if [ "$compile_jobs" -eq 0 ]; then
                 compile_jobs="$(nproc)"
               fi
-              ${lib.optionalString (node.resource_class == "high-memory") ''
+              ${lib.optionalString (builtins.elem node.resource_class [
+                "large-memory"
+                "high-memory"
+              ]) ''
                 # Nix already schedules several independent graph nodes per
-                # builder. A jq-sized high-memory module can consume 5-16 GiB,
-                # so compiling two packed modules per derivation can multiply
-                # the machine-level concurrency past its memory capacity.
+                # builder. Memory-heavy proof modules are kept sequential
+                # inside each derivation so the scheduler lane remains the only
+                # source of machine-level concurrency.
                 compile_jobs=1
               ''}
               printf '%s\n' ${lib.escapeShellArgs node.modules} | \
                 xargs -r -P "$compile_jobs" -n 1 bash -c '
                   module="$1"
-                  lean -j 1 \
+                  ${lib.optionalString measureResources ''
+                    ${pkgs.time}/bin/time -v \
+                      -o "$out/logs/$module.resource" \
+                  ''}lean -j 1 --trust=0 \
                     -R source \
                     -o "deps/StageA/$module.olean" \
                     "source/StageA/$module.lean" \
@@ -238,6 +283,7 @@ let
                 source = (stage_a / f"{module}.lean").read_text(encoding="utf-8")
                 stdout_path = logs / f"{module}.stdout"
                 stderr_path = logs / f"{module}.stderr"
+                resource_path = logs / f"{module}.resource"
                 combined = "\n".join((
                     stdout_path.read_text(encoding="utf-8"),
                     stderr_path.read_text(encoding="utf-8"),
@@ -267,6 +313,28 @@ let
                     ), None)
                     for request in requested
                 }
+                resource_usage = None
+                if resource_path.is_file():
+                    fields = {}
+                    for line in resource_path.read_text(encoding="utf-8").splitlines():
+                        parts = line.strip().rsplit(": ", 1)
+                        if len(parts) == 2:
+                            key, value = parts
+                            fields[key] = value.strip()
+                    resource_usage = {
+                        "elapsed_wall_clock": fields.get(
+                            "Elapsed (wall clock) time (h:mm:ss or m:ss)"
+                        ),
+                        "user_seconds": float(fields["User time (seconds)"]),
+                        "system_seconds": float(fields["System time (seconds)"]),
+                        "maximum_resident_kib": int(
+                            fields["Maximum resident set size (kbytes)"]
+                        ),
+                        "log": f"logs/{module}.resource",
+                        "log_sha256": hashlib.sha256(
+                            resource_path.read_bytes()
+                        ).hexdigest(),
+                    }
                 outputs.append({
                     "module": module,
                     "olean_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -279,6 +347,7 @@ let
                     "compile_stderr_sha256": hashlib.sha256(
                         stderr_path.read_bytes()
                     ).hexdigest(),
+                    "resource_usage": resource_usage,
                     "axiom_audit": {
                         "requested": requested,
                         "inventories": matched,
@@ -461,6 +530,19 @@ let
   approvedAxioms = builtins.toJSON graph.approved_axioms;
   selectedTargetNodes =
     if targetNode != null then [ targetNode ] else targetNodes;
+  targetAxiomAuditValid = targetAxiomAudit == null || (
+    builtins.isAttrs targetAxiomAudit
+    && targetAxiomAudit ? module
+    && builtins.isString targetAxiomAudit.module
+    && targetAxiomAudit ? declaration
+    && builtins.isString targetAxiomAudit.declaration
+    && targetAxiomAudit ? approved_axioms
+    && builtins.isList targetAxiomAudit.approved_axioms
+    && builtins.all builtins.isString targetAxiomAudit.approved_axioms
+    && builtins.length targetAxiomAudit.approved_axioms
+      == builtins.length (lib.unique targetAxiomAudit.approved_axioms)
+  );
+  targetAxiomAuditJson = builtins.toJSON targetAxiomAudit;
   ordinaryAcceptanceReady =
     acceptanceNodeStepsValid
     && graph.acceptance.status == "ready"
@@ -535,7 +617,8 @@ let
         node_index=$((node_index + 1))
       done
       lean_version="$(lean --version | head -n 1)"
-      python3 - "$out/node-results" "$out/bundle.json" "$lean_version" <<'PY'
+      python3 - "$out/node-results" "$out/bundle.json" "$lean_version" \
+        ${lib.escapeShellArg targetAxiomAuditJson} "$out/axiom-audit.json" <<'PY'
       import json
       import pathlib
       import sys
@@ -548,16 +631,81 @@ let
       node_ids = [node.get("id") for node in nodes]
       if len(node_ids) != len(set(node_ids)):
           raise SystemExit("target bundle contains duplicate node provenance")
+      audit_config = json.loads(sys.argv[4])
+      audit = None
+      if audit_config is not None:
+          matching_outputs = [
+              output
+              for node in nodes
+              for output in node.get("outputs", [])
+              if output.get("module") == audit_config["module"]
+          ]
+          if len(matching_outputs) != 1:
+              raise SystemExit(
+                  "target axiom audit module is absent or ambiguous"
+              )
+          declaration = audit_config["declaration"]
+          inventory = matching_outputs[0].get("axiom_audit", {})
+          observed = inventory.get("inventories", {}).get(declaration)
+          if observed is None:
+              raise SystemExit(
+                  "target axiom audit declaration was not emitted by Lean"
+              )
+          approved = audit_config["approved_axioms"]
+          unexpected = sorted(set(observed) - set(approved))
+          audit = {
+              "format": "stage-a-lean-target-axiom-audit-v1",
+              "status": "checked" if not unexpected else "rejected",
+              "module": audit_config["module"],
+              "declaration": declaration,
+              "lean_trust": 0,
+              "approved_axioms": approved,
+              "observed_axioms": observed,
+              "unexpected_axioms": unexpected,
+          }
+          pathlib.Path(sys.argv[5]).write_text(
+              json.dumps(audit, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          if unexpected:
+              raise SystemExit("target theorem depends on unapproved axioms")
       pathlib.Path(sys.argv[2]).write_text(
           json.dumps({
               "format": "stage-a-lean-target-bundle-v1",
               "lean_trust": 0,
               "lean_version": sys.argv[3],
+              "axiom_audit": audit,
               "nodes": nodes,
           }, indent=2, sort_keys=True) + "\n",
           encoding="utf-8",
       )
       PY
+    '';
+  graphSmokeMetadata = {
+    format = "stage-a-lean-graph-smoke-v1";
+    status = "ready";
+    lean_trust = graph.lean.trust;
+    graph_sha256 = builtins.hashString "sha256" (builtins.toJSON graph);
+    content_addressed = contentAddressed;
+    module_count = builtins.length (builtins.attrNames graph.modules);
+    node_count = builtins.length graph.nodes;
+    target_nodes = selectedTargetNodes;
+    modules = builtins.attrNames graph.modules;
+    nodes = map (node: {
+      inherit (node) id modules dependencies resource_class estimated_memory_mb;
+    }) graph.nodes;
+  };
+  graphSmokeResult = pkgs.runCommand "stage-a-lean-graph-smoke"
+    {
+      preferLocalBuild = true;
+      allowSubstitutes = true;
+      passthru.graphManifest = graphSmokeMetadata;
+    }
+    ''
+      mkdir -p "$out"
+      cat > "$out/graph-smoke.json" <<'JSON'
+      ${builtins.toJSON graphSmokeMetadata}
+      JSON
     '';
 in
 assert graph.format == "stage-a-lean-module-graph-v1";
@@ -567,6 +715,7 @@ assert graphNodeIdsUnique;
 assert graphModuleImportsValid;
 assert graphModuleOwnershipValid;
 assert graphNodeDependenciesValid;
+assert graphNodeResourcesValid;
 assert !standalone || (standaloneModules != [] && standaloneImportsValid);
 assert !standalone
   || builtins.length standaloneModules
@@ -574,9 +723,11 @@ assert !standalone
 assert standalone || (effectiveGraphFile != null && sourceRoot != null);
 assert builtins.length selectedTargetNodes
   == builtins.length (lib.unique selectedTargetNodes);
+assert targetAxiomAuditValid;
+assert targetAxiomAudit == null || targetBundle;
 assert builtins.all (node: builtins.hasAttr node nodeDrvs) selectedTargetNodes;
-assert selectedTargetNodes != [] || acceptanceReady;
-if selectedTargetNodes != [] then
+assert graphSmoke || selectedTargetNodes != [] || acceptanceReady;
+if graphSmoke then graphSmokeResult else if selectedTargetNodes != [] then
   if targetBundle then selectedTargetBundle else selectedNodeResults
 else
 pkgs.runCommand "stage-a-relational-proof-audit"
@@ -596,7 +747,7 @@ pkgs.runCommand "stage-a-relational-proof-audit"
     sha256sum --check --strict root-source-hashes
     ${lib.concatMapStringsSep "\n" (module: ''
       cp "${moduleSources.${module}}" "source/StageA/${module}.lean"
-      lean -j 2 \
+      lean -j 2 --trust=0 \
         -R source \
         -o "deps/StageA/${module}.olean" \
         "source/StageA/${module}.lean" \

@@ -1617,23 +1617,25 @@ class StageARelationalContractTests(StageARelationalTestBase):
         evaluator = (
             Path(__file__).parents[1] / "nix" / "stage-a-lean-graph.nix"
         ).read_text(encoding="utf-8")
+        proof_nodes = evaluator.split("nodeDrvs =", 1)[1].split(
+            "\n  rootNode =", 1
+        )[0]
 
-        self.assertNotIn("preferLocalBuild = true", evaluator)
+        self.assertNotIn("preferLocalBuild = true", proof_nodes)
         self.assertGreaterEqual(evaluator.count("preferLocalBuild = false"), 3)
         self.assertEqual(evaluator.count("lean -j 2"), 2)
         self.assertIn(
-            'leanJobs = if node.resource_class == "high-memory" then "1" else "2";',
+            'leanJobs = if builtins.elem node.resource_class [',
             evaluator,
         )
+        self.assertIn('"large-memory"', evaluator)
+        self.assertIn('"high-memory"', evaluator)
         self.assertIn("lean -j ${leanJobs}", evaluator)
         self.assertEqual(
             evaluator.count("ulimit -s unlimited 2>/dev/null || true"), 2
         )
-        high_memory_scheduler = evaluator.split(
-            'node.resource_class == "high-memory"', 1
-        )[1].split("''}", 1)[0]
-        self.assertIn("compile_jobs=1", high_memory_scheduler)
-        self.assertNotIn("compile_jobs=2", high_memory_scheduler)
+        self.assertIn("compile_jobs=1", evaluator)
+        self.assertNotIn("compile_jobs=2", evaluator)
         self.assertNotIn("dependencyClosures", evaluator)
         self.assertIn("node.dependencies", evaluator)
         self.assertIn("inherited-olean-index", evaluator)
@@ -1927,6 +1929,43 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 [valid],
             )
             self.assertEqual(issues, [])
+
+            finite = {
+                **valid,
+                "relation": "finite_origins",
+                "finite_alternative_budget": 2,
+                "origins": [
+                    {"kind": "exact_bits", "value": 0},
+                    {"kind": "opaque_resource", "resource_id": 23},
+                ],
+            }
+            finite_issues: list[dict] = []
+            self.assertEqual(
+                _static_word_relation_slots(
+                    [finite], [], original, candidate, finite_issues
+                ),
+                [finite],
+            )
+            self.assertEqual(finite_issues, [])
+
+            duplicate_origins = {
+                **finite,
+                "origins": [
+                    {"kind": "opaque_resource", "resource_id": 23},
+                    {"kind": "opaque_resource", "resource_id": 23},
+                ],
+            }
+            duplicate_issues: list[dict] = []
+            self.assertEqual(
+                _static_word_relation_slots(
+                    [duplicate_origins], [], original, candidate, duplicate_issues
+                ),
+                [],
+            )
+            self.assertIn(
+                "static_word_relation_slot_invalid",
+                {issue["category"] for issue in duplicate_issues},
+            )
 
             pointer_slot = {
                 "id": 4,

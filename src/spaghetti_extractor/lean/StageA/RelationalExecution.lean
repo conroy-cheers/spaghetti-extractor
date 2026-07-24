@@ -130,6 +130,194 @@ def RelationalWeakBisimulation
       (candidate.step candidateValue).observation ∧
     stateRelation (original.step originalValue).next (candidate.step candidateValue).next
 
+/-! `RelationalWeakBisimulation` above is intentionally the small one-step
+kernel used by the original product-graph proof.  It is stronger than ordinary
+weak bisimulation: the two programs must take the same number of internal
+steps.  A compiled interpreter, a split block, or a merged block needs the
+observation-preserving finite-path interface below instead.
+
+Every chunk consumes at least one concrete transition on both sides.  Internal
+`none` observations are erased, but every actual observation is retained in
+order and related pointwise.  Consequently the relation cannot hide an import,
+return, callback, or fault by placing it inside a larger chunk. -/
+
+def runRelatedSteps {state observation : Type}
+    (system : RelatedTransitionSystem state observation) :
+    Nat -> state -> state × List observation
+  | 0, value => (value, [])
+  | fuel + 1, value =>
+      let transition := system.step value
+      let tail := runRelatedSteps system fuel transition.next
+      (tail.1, transition.observation.toList ++ tail.2)
+
+def NonemptyRelatedPath {state observation : Type}
+    (system : RelatedTransitionSystem state observation)
+    (before : state) (observations : List observation) (after : state) : Prop :=
+  ∃ fuel, 0 < fuel ∧ runRelatedSteps system fuel before = (after, observations)
+
+theorem nonemptyRelatedPath_one {state observation : Type}
+    (system : RelatedTransitionSystem state observation) (before : state) :
+    NonemptyRelatedPath system before
+      (system.step before).observation.toList (system.step before).next := by
+  refine ⟨1, Nat.zero_lt_succ 0, ?_⟩
+  simp [runRelatedSteps]
+
+theorem runRelatedSteps_add {state observation : Type}
+    (system : RelatedTransitionSystem state observation)
+    (left right : Nat) (before : state) :
+    runRelatedSteps system (left + right) before =
+      let first := runRelatedSteps system left before
+      let second := runRelatedSteps system right first.1
+      (second.1, first.2 ++ second.2) := by
+  induction left generalizing before with
+  | zero => simp [runRelatedSteps]
+  | succ left induction =>
+      simp only [Nat.succ_add, runRelatedSteps]
+      rw [induction]
+      simp [List.append_assoc]
+
+theorem NonemptyRelatedPath.trans {state observation : Type}
+    {system : RelatedTransitionSystem state observation}
+    {before middle after : state} {left right : List observation}
+    (first : NonemptyRelatedPath system before left middle)
+    (second : NonemptyRelatedPath system middle right after) :
+    NonemptyRelatedPath system before (left ++ right) after := by
+  rcases first with ⟨firstFuel, firstPositive, firstRun⟩
+  rcases second with ⟨secondFuel, secondPositive, secondRun⟩
+  refine ⟨firstFuel + secondFuel, Nat.add_pos_left firstPositive secondFuel, ?_⟩
+  rw [runRelatedSteps_add, firstRun]
+  simp only
+  rw [secondRun]
+
+def RelatedObservationLists
+    {originalObservation candidateObservation : Type}
+    (observationRelation :
+      Option originalObservation -> Option candidateObservation -> Prop) :
+    List originalObservation -> List candidateObservation -> Prop
+  | [], [] => True
+  | original :: originalTail, candidate :: candidateTail =>
+      observationRelation (some original) (some candidate) ∧
+        RelatedObservationLists observationRelation originalTail candidateTail
+  | _, _ => False
+
+/-- Observation-preserving weak bisimulation over nonempty finite chunks.
+
+The transition systems are deterministic functions, so an actual finite path
+is fixed by its start state and length.  Requiring a successor chunk for every
+related pair gives a common infinite decomposition (or repeated terminal
+steps), while positive path lengths prevent a vacuous zero-step certificate. -/
+def ChunkedRelationalBisimulation
+    {originalState candidateState originalObservation candidateObservation : Type}
+    (original : RelatedTransitionSystem originalState originalObservation)
+    (candidate : RelatedTransitionSystem candidateState candidateObservation)
+    (stateRelation : originalState -> candidateState -> Prop)
+    (observationRelation :
+      Option originalObservation -> Option candidateObservation -> Prop) : Prop :=
+  ∀ originalBefore candidateBefore,
+    stateRelation originalBefore candidateBefore ->
+      ∃ originalObservations candidateObservations originalAfter candidateAfter,
+        NonemptyRelatedPath original originalBefore originalObservations originalAfter ∧
+          NonemptyRelatedPath candidate candidateBefore candidateObservations
+            candidateAfter ∧
+          RelatedObservationLists observationRelation originalObservations
+            candidateObservations ∧
+          stateRelation originalAfter candidateAfter
+
+def ChunkedRelatedTrace
+    {originalState candidateState originalObservation candidateObservation : Type}
+    (original : RelatedTransitionSystem originalState originalObservation)
+    (candidate : RelatedTransitionSystem candidateState candidateObservation)
+    (stateRelation : originalState -> candidateState -> Prop)
+    (observationRelation :
+      Option originalObservation -> Option candidateObservation -> Prop) :
+    Nat -> originalState -> candidateState -> Prop
+  | 0, originalValue, candidateValue => stateRelation originalValue candidateValue
+  | fuel + 1, originalValue, candidateValue =>
+      ∃ originalObservations candidateObservations originalAfter candidateAfter,
+        NonemptyRelatedPath original originalValue originalObservations originalAfter ∧
+          NonemptyRelatedPath candidate candidateValue candidateObservations candidateAfter ∧
+          RelatedObservationLists observationRelation originalObservations
+            candidateObservations ∧
+          ChunkedRelatedTrace original candidate stateRelation observationRelation fuel
+            originalAfter candidateAfter
+
+theorem chunkedRelationalBisimulation_trace
+    {originalState candidateState originalObservation candidateObservation : Type}
+    (original : RelatedTransitionSystem originalState originalObservation)
+    (candidate : RelatedTransitionSystem candidateState candidateObservation)
+    (stateRelation : originalState -> candidateState -> Prop)
+    (observationRelation :
+      Option originalObservation -> Option candidateObservation -> Prop)
+    (bisimulation : ChunkedRelationalBisimulation original candidate stateRelation
+      observationRelation) :
+    ∀ fuel originalValue candidateValue,
+      stateRelation originalValue candidateValue ->
+        ChunkedRelatedTrace original candidate stateRelation observationRelation fuel
+          originalValue candidateValue := by
+  intro fuel
+  induction fuel with
+  | zero =>
+      intro originalValue candidateValue related
+      exact related
+  | succ fuel induction =>
+      intro originalValue candidateValue related
+      rcases bisimulation originalValue candidateValue related with
+        ⟨originalObservations, candidateObservations, originalAfter, candidateAfter,
+          originalPath, candidatePath, observationsRelated, afterRelated⟩
+      exact ⟨originalObservations, candidateObservations, originalAfter, candidateAfter,
+        originalPath, candidatePath, observationsRelated,
+        induction originalAfter candidateAfter afterRelated⟩
+
+/-- Existing one-step proofs are a special case of chunked refinement.  The
+shape premise rules out a relation that equates an internal step with a real
+observation; Stage A's observational relations all satisfy it. -/
+theorem chunkedRelationalBisimulation_of_lockstep
+    {originalState candidateState originalObservation candidateObservation : Type}
+    (original : RelatedTransitionSystem originalState originalObservation)
+    (candidate : RelatedTransitionSystem candidateState candidateObservation)
+    (stateRelation : originalState -> candidateState -> Prop)
+    (observationRelation :
+      Option originalObservation -> Option candidateObservation -> Prop)
+    (sameObservationShape : ∀ originalObservation candidateObservation,
+      observationRelation originalObservation candidateObservation ->
+        originalObservation.isSome = candidateObservation.isSome)
+    (bisimulation : RelationalWeakBisimulation original candidate stateRelation
+      observationRelation) :
+    ChunkedRelationalBisimulation original candidate stateRelation
+      observationRelation := by
+  intro originalBefore candidateBefore beforeRelated
+  have stepRelated := bisimulation originalBefore candidateBefore beforeRelated
+  cases originalStep : original.step originalBefore with
+  | mk originalAfter originalObservation =>
+      cases candidateStep : candidate.step candidateBefore with
+      | mk candidateAfter candidateObservation =>
+          simp only [originalStep, candidateStep] at stepRelated
+          have shape := sameObservationShape originalObservation candidateObservation
+            stepRelated.1
+          cases originalObservation with
+          | none =>
+              cases candidateObservation with
+              | none =>
+                  refine ⟨[], [], originalAfter, candidateAfter, ?_, ?_, ?_,
+                    stepRelated.2⟩
+                  · simpa [originalStep] using
+                      nonemptyRelatedPath_one original originalBefore
+                  · simpa [candidateStep] using
+                      nonemptyRelatedPath_one candidate candidateBefore
+                  · trivial
+              | some candidateValue => simp at shape
+          | some originalValue =>
+              cases candidateObservation with
+              | none => simp at shape
+              | some candidateValue =>
+                  refine ⟨[originalValue], [candidateValue], originalAfter,
+                    candidateAfter, ?_, ?_, ?_, stepRelated.2⟩
+                  · simpa [originalStep] using
+                      nonemptyRelatedPath_one original originalBefore
+                  · simpa [candidateStep] using
+                      nonemptyRelatedPath_one candidate candidateBefore
+                  · exact ⟨stepRelated.1, trivial⟩
+
 def RelatedTrace
     {originalState candidateState originalObservation candidateObservation : Type}
     (original : RelatedTransitionSystem originalState originalObservation)

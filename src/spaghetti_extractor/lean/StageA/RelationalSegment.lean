@@ -39,6 +39,13 @@ theorem StateRel.withX87Physical
   have trailing' :
       importRegisterRelationsHold world invariant.importRegisterRelations
           original.registers candidate.registers = true ∧
+        registerValueOriginRelationsHold context world
+          invariant.registerValueOriginRelations original.registers
+          candidate.registers = true ∧
+        memoryValueOriginRelationsHold context world
+          invariant.memoryValueOriginRelations
+          { original with x87Physical := originalPhysical }
+          { candidate with x87Physical := candidatePhysical } = true ∧
         dynamicRegisterRangeRelationsHold world invariant.dynamicRegisterRangeRelations
           original.registers candidate.registers = true ∧
         dynamicStackRangeRelationsHold world invariant.dynamicStackRangeRelations
@@ -48,8 +55,28 @@ theorem StateRel.withX87Physical
           { original with x87Physical := originalPhysical }
           { candidate with x87Physical := candidatePhysical } = true := by
     rcases trailing with
-      ⟨importRegisters, dynamicRegisters, dynamicStacks, predicates⟩
-    refine ⟨importRegisters, dynamicRegisters, ?_, ?_⟩
+      ⟨importRegisters, originRegisters, memoryOrigins, dynamicRegisters,
+        dynamicStacks, predicates⟩
+    refine ⟨importRegisters, originRegisters, ?_, dynamicRegisters, ?_, ?_⟩
+    · have originalAgreement : MachineExpressionAgreement original
+          { original with x87Physical := originalPhysical } := by
+        exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
+      have candidateAgreement : MachineExpressionAgreement candidate
+          { candidate with x87Physical := candidatePhysical } := by
+        exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
+      simp only [memoryValueOriginRelationsHold, List.all_eq_true] at memoryOrigins ⊢
+      intro relation member
+      have source := memoryOrigins relation member
+      simp only [MemoryValueOriginRelation.holds, List.any_eq_true] at source ⊢
+      rcases source with ⟨origin, originMember, originMatches⟩
+      refine ⟨origin, originMember, ?_⟩
+      rw [← Expr.eval_eq_of_expressionAgreement original
+          { original with x87Physical := originalPhysical }
+          originalAgreement relation.originalAddress]
+      rw [← Expr.eval_eq_of_expressionAgreement candidate
+          { candidate with x87Physical := candidatePhysical }
+          candidateAgreement relation.candidateAddress]
+      exact originMatches
     · simpa [dynamicStackRangeRelationsHold, DynamicStackRangeRelation.holds] using
         dynamicStacks
     · have originalAgreement : MachineExpressionAgreement original
@@ -158,6 +185,72 @@ theorem codeAddressMatches_iff_mem_codeTargetAddresses (candidate : Bool)
         rcases found with found | ⟨alias, member, found⟩
         · exact Or.inl found
         · exact Or.inr ⟨alias, member, found.symm⟩
+
+theorem StaticCodeMap.resolveRawEip_of_codeAddressMatches
+    (candidate : Bool) (originalPe candidatePe : PE32)
+    (mapping : StaticCodeMap)
+    (indexed : mapping.IndexedValid originalPe candidatePe)
+    (targetId : Nat) (target : CodeTargetPair) (value : Word)
+    (targetFound : mapping.get? targetId = some target)
+    (addressMatches : codeAddressMatches
+      (if candidate then candidatePe.imageBase else originalPe.imageBase)
+      (if candidate then target.candidateRva else target.originalRva)
+      (if candidate then target.candidateAliases else target.originalAliases)
+      value = true) :
+    mapping.resolveRawEip candidate
+      (if candidate then candidatePe.imageBase else originalPe.imageBase)
+      value = some targetId := by
+  have targetBefore : targetId < mapping.entries.size :=
+    FiniteIndex.get?_eq_some_implies_lt_size
+      mapping.entries targetId target targetFound
+  rcases indexed with
+    ⟨_entriesStructural, _originalStructural, _candidateStructural,
+      _entriesValid, _originalSize, _candidateSize, _originalAddresses,
+      _candidateAddresses, originalRoundTrips, candidateRoundTrips⟩
+  cases candidate with
+  | false =>
+      have checked := originalRoundTrips targetId targetBefore
+      simp only [StaticCodeMap.targetAddressesRoundTripAt, targetFound, if_false,
+        Bool.and_eq_true, beq_iff_eq, List.all_eq_true] at checked
+      simp only [codeAddressMatches, if_false, Bool.or_eq_true, beq_iff_eq,
+        List.any_eq_true] at addressMatches
+      rcases addressMatches with canonical | ⟨alias, member, aliasAddress⟩
+      · simpa [canonical] using checked.1
+      · rw [aliasAddress]
+        exact checked.2 alias member
+  | true =>
+      have checked := candidateRoundTrips targetId targetBefore
+      simp only [StaticCodeMap.targetAddressesRoundTripAt, targetFound, if_true,
+        Bool.and_eq_true, beq_iff_eq, List.all_eq_true] at checked
+      simp only [codeAddressMatches, if_true, Bool.or_eq_true, beq_iff_eq,
+        List.any_eq_true] at addressMatches
+      rcases addressMatches with canonical | ⟨alias, member, aliasAddress⟩
+      · simpa [canonical] using checked.1
+      · rw [aliasAddress]
+        exact checked.2 alias member
+
+theorem StaticCodeMap.resolveRawEip_of_codeAddressMatchesAt
+    (candidate : Bool) (originalPe candidatePe : PE32)
+    (mapping : StaticCodeMap)
+    (indexed : mapping.IndexedValid originalPe candidatePe)
+    (targetId : Nat) (value : Word)
+    (addressMatches : match mapping.get? targetId with
+      | none => false
+      | some target =>
+          codeAddressMatches
+            (if candidate then candidatePe.imageBase else originalPe.imageBase)
+            (if candidate then target.candidateRva else target.originalRva)
+            (if candidate then target.candidateAliases else target.originalAliases)
+            value) :
+    mapping.resolveRawEip candidate
+      (if candidate then candidatePe.imageBase else originalPe.imageBase)
+      value = some targetId := by
+  cases targetResult : mapping.get? targetId with
+  | none => simp [targetResult] at addressMatches
+  | some target =>
+      exact mapping.resolveRawEip_of_codeAddressMatches candidate
+        originalPe candidatePe indexed targetId target value targetResult
+        (by simpa [targetResult] using addressMatches)
 
 def knownIndirectCodeTargetChecked (context : StaticProofContext)
     (targetId : Nat) : Bool :=
@@ -1532,6 +1625,8 @@ theorem PairedStackWordValueClaim.staticRelationHolds_of_checked
                     (BitVec.ofNat 32 candidateWord) checked.1)
       | dynamicRange relation =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
+  | finiteOrigins finiteAlternativeBudget origins =>
+      simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
 
 theorem PairedStackWordValueClaim.eval_equal_of_checked_exact
     (context : StaticProofContext) (world : RelationalWorld)
@@ -2994,6 +3089,13 @@ def NoWriteSegmentStateTransferClosed (context : StaticProofContext)
               (candidateResult.nextMachineState candidateState).x87 ∧
           flagsRelated targetInvariant.flagBits originalResult.eflags
               candidateResult.eflags = true ∧
+          registerValueOriginRelationsHold context world
+              targetInvariant.registerValueOriginRelations originalResult.registers
+              candidateResult.registers = true ∧
+          memoryValueOriginRelationsHold context world
+              targetInvariant.memoryValueOriginRelations
+              (originalResult.nextMachineState originalState)
+              (candidateResult.nextMachineState candidateState) = true ∧
           pairedStatePredicatesHold targetInvariant.predicates
               (originalResult.nextMachineState originalState)
               (candidateResult.nextMachineState candidateState) = true
@@ -3030,6 +3132,13 @@ def NoWriteSegmentStateTransferBodyClosed (context : StaticProofContext)
               (candidateResult.nextMachineState candidateState).x87 ∧
           flagsRelated targetInvariant.flagBits originalResult.eflags
               candidateResult.eflags = true ∧
+          registerValueOriginRelationsHold context world
+              targetInvariant.registerValueOriginRelations originalResult.registers
+              candidateResult.registers = true ∧
+          memoryValueOriginRelationsHold context world
+              targetInvariant.memoryValueOriginRelations
+              (originalResult.nextMachineState originalState)
+              (candidateResult.nextMachineState candidateState) = true ∧
           pairedStatePredicatesHold targetInvariant.predicates
               (originalResult.nextMachineState originalState)
               (candidateResult.nextMachineState candidateState) = true
@@ -4188,6 +4297,13 @@ theorem StateRel.afterNoWriteEvaluation
     (importRegisters : importRegisterRelationsHold world
       targetInvariant.importRegisterRelations originalBehavior.registers
       candidateBehavior.registers = true)
+    (originRegisters : registerValueOriginRelationsHold context world
+      targetInvariant.registerValueOriginRelations originalBehavior.registers
+      candidateBehavior.registers = true)
+    (memoryOrigins : memoryValueOriginRelationsHold context world
+      targetInvariant.memoryValueOriginRelations
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true)
     (dynamicRegisters : activeDynamicRegisterRangeRelationsHold context world
       targetInvariant.dynamicRegisterRangeRelations
       (originalBehavior.nextMachineState originalState)
@@ -4270,6 +4386,9 @@ theorem StateRel.afterNoWriteEvaluation
     · simpa [RelationalBehavior.nextMachineState] using inputFsBase
   · exact ⟨by simpa [RelationalBehavior.nextMachineState, originalNoX87,
         candidateNoX87] using importRegisters,
+      by simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using originRegisters,
+      memoryOrigins,
       dynamicRegisterRangeRelationsHold_of_active context world
         targetInvariant.dynamicRegisterRangeRelations _ _ dynamicRegisters,
       dynamicStackRangeRelationsHold_of_active context world
@@ -4307,6 +4426,13 @@ theorem StateRel.afterPairedMemoryFamiliesUpdate
     (importRegisters : importRegisterRelationsHold world
       targetInvariant.importRegisterRelations originalBehavior.registers
       candidateBehavior.registers = true)
+    (originRegisters : registerValueOriginRelationsHold context world
+      targetInvariant.registerValueOriginRelations originalBehavior.registers
+      candidateBehavior.registers = true)
+    (memoryOrigins : memoryValueOriginRelationsHold context world
+      targetInvariant.memoryValueOriginRelations
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true)
     (dynamicRegisters : activeDynamicRegisterRangeRelationsHold context world
       targetInvariant.dynamicRegisterRangeRelations
       (originalBehavior.nextMachineState originalState)
@@ -4393,11 +4519,113 @@ theorem StateRel.afterPairedMemoryFamiliesUpdate
     · simpa [RelationalBehavior.nextMachineState] using inputFsBase
   · exact ⟨by simpa [RelationalBehavior.nextMachineState, originalNoX87,
         candidateNoX87] using importRegisters,
+      by simpa [RelationalBehavior.nextMachineState, originalNoX87,
+        candidateNoX87] using originRegisters,
+      memoryOrigins,
       dynamicRegisterRangeRelationsHold_of_active context world
         targetInvariant.dynamicRegisterRangeRelations _ _ dynamicRegisters,
       dynamicStackRangeRelationsHold_of_active context world
         targetInvariant.dynamicStackRangeRelations _ _ dynamicStacks,
       predicates⟩
+
+/-- Rebuild `StateRel` after an already checked list of paired framed updates.
+The update constructors carry the value relation and location evidence; exact
+decoded write equality prevents this theorem from authorizing an omitted or
+invented memory effect. -/
+theorem StateRel.afterPairedPreparedWordUpdatesEvaluation
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalState candidateState : MachineState)
+    (originalBehavior candidateBehavior : RelationalBehavior)
+    (updates : List (PairedPreparedWordUpdate context world))
+    (contextValid : context.StructurallyValid)
+    (related : StateRel context world sourceInvariant originalState candidateState)
+    (originalWrites :
+      originalBehavior.writes =
+        updates.map PairedPreparedWordUpdate.originalWrite)
+    (candidateWrites :
+      candidateBehavior.writes =
+        updates.map PairedPreparedWordUpdate.candidateWrite)
+    (originalNoX87 : originalBehavior.x87Effect = none)
+    (candidateNoX87 : candidateBehavior.x87Effect = none)
+    (registers : registerRelationsHold context.originalPe.imageBase
+      context.candidatePe.imageBase context.codeMap.entries.toList
+      (context.relationalValueTargets world) targetInvariant.registerRelations
+      originalBehavior.registers candidateBehavior.registers = true)
+    (bounds : boundsRelated targetInvariant.bounds originalBehavior.registers
+      candidateBehavior.registers = true)
+    (separations : addressSeparationsRelated targetInvariant.addressSeparations
+      originalBehavior.registers candidateBehavior.registers = true)
+    (stackWindows : stackWindowsRelated world targetInvariant.stackWindows
+      originalBehavior.registers candidateBehavior.registers = true)
+    (x87 : (originalBehavior.nextMachineState originalState).x87 =
+      (candidateBehavior.nextMachineState candidateState).x87)
+    (flags : flagsRelated targetInvariant.flagBits originalBehavior.eflags
+      candidateBehavior.eflags = true)
+    (importRegisters : importRegisterRelationsHold world
+      targetInvariant.importRegisterRelations originalBehavior.registers
+      candidateBehavior.registers = true)
+    (originRegisters : registerValueOriginRelationsHold context world
+      targetInvariant.registerValueOriginRelations originalBehavior.registers
+      candidateBehavior.registers = true)
+    (memoryOrigins : memoryValueOriginRelationsHold context world
+      targetInvariant.memoryValueOriginRelations
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true)
+    (dynamicRegisters : activeDynamicRegisterRangeRelationsHold context world
+      targetInvariant.dynamicRegisterRangeRelations
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true)
+    (dynamicStacks : activeDynamicStackRangeRelationsHold context world
+      targetInvariant.dynamicStackRangeRelations
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true)
+    (predicates : pairedStatePredicatesHold targetInvariant.predicates
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true) :
+    StateRel context world targetInvariant
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) := by
+  have relatedForFinal := related
+  rcases related with
+    ⟨worldValid, stackRangesValid, stackMemory, importsStatic, _importsComplete,
+      importsMemory, originalImmutable, candidateImmutable, relatedCore,
+      _inputImportRegisters⟩
+  rcases relatedCore with
+    ⟨_inputRegisters, _inputBounds, _inputSeparations, _inputStackWindows,
+      inputMemory, inputDynamicMemory, _inputUndefined, _inputX87,
+      _inputFlags, _inputFsBase⟩
+  have worldDynamicValid : world.dynamicRangesValid context = true := by
+    simp only [RelationalWorld.valid, Bool.and_eq_true] at worldValid
+    exact worldValid.1.1.1.1
+  have staticSlotsValid : staticDynamicPointerSlotsValid context = true := by
+    rcases contextValid with
+      ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _, _⟩
+    exact slotsValid
+  have staticWordSlotsValid : staticWordRelationSlotsValid context = true := by
+    rcases contextValid with
+      ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _⟩
+    exact slotsValid
+  have memoryFamilies :=
+    RelationalMemoryFamiliesHold.afterPairedPreparedWordUpdates context world
+      stackRangesValid importsStatic worldDynamicValid staticSlotsValid
+      staticWordSlotsValid updates originalState.memory candidateState.memory {
+        stackRanges := stackMemory
+        importAddresses := importsMemory
+        originalImmutable := originalImmutable
+        candidateImmutable := candidateImmutable
+        ordinary := inputMemory
+        staticPointerSlots := inputDynamicMemory.staticPointerSlots
+        staticWordSlots := inputDynamicMemory.staticWordSlots
+      }
+  exact StateRel.afterPairedMemoryFamiliesUpdate context world sourceInvariant
+    targetInvariant originalState candidateState originalBehavior candidateBehavior
+    (updates.map PairedPreparedWordUpdate.originalWrite)
+    (updates.map PairedPreparedWordUpdate.candidateWrite)
+    relatedForFinal
+    originalWrites candidateWrites originalNoX87 candidateNoX87 memoryFamilies
+    registers bounds separations stackWindows x87 flags importRegisters
+    originRegisters memoryOrigins dynamicRegisters dynamicStacks predicates
 
 /-- Reusable framed-memory transition for a decoded list of paired word writes.
 The claim classifies each concrete write, while this theorem preserves every
@@ -4434,6 +4662,13 @@ theorem StateRel.afterPairedPreparedWordWritesEvaluation
     (importRegisters : importRegisterRelationsHold world
       targetInvariant.importRegisterRelations originalBehavior.registers
       candidateBehavior.registers = true)
+    (originRegisters : registerValueOriginRelationsHold context world
+      targetInvariant.registerValueOriginRelations originalBehavior.registers
+      candidateBehavior.registers = true)
+    (memoryOrigins : memoryValueOriginRelationsHold context world
+      targetInvariant.memoryValueOriginRelations
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true)
     (dynamicRegisters : activeDynamicRegisterRangeRelationsHold context world
       targetInvariant.dynamicRegisterRangeRelations
       (originalBehavior.nextMachineState originalState)
@@ -4452,50 +4687,22 @@ theorem StateRel.afterPairedPreparedWordWritesEvaluation
     at claimChecked
   have itemsChecked := claimChecked.2
   have relatedForUpdates := related
-  have relatedForFinal := related
   rcases related with
-    ⟨worldValid, stackRangesValid, stackMemory, importsStatic, _importsComplete,
-      importsMemory, originalImmutable, candidateImmutable, relatedCore,
-      _inputImportRegisters⟩
-  rcases relatedCore with
-    ⟨_inputRegisters, _inputBounds, _inputSeparations, _inputStackWindows,
-      inputMemory, inputDynamicMemory, _inputUndefined, _inputX87,
-      _inputFlags, _inputFsBase⟩
+    ⟨_worldValid, stackRangesValid, _stackMemory, _importsStatic,
+      _importsComplete, _importsMemory, _originalImmutable,
+      _candidateImmutable, _relatedCore, _inputImportRegisters⟩
   rcases pairedPreparedWordUpdates_of_checkedItems context world sourceInvariant
       claim.writes originalState candidateState stackRangesValid itemsChecked
       relatedForUpdates with
     ⟨updates, originalUpdateWrites, candidateUpdateWrites, _updateKinds⟩
-  have worldDynamicValid : world.dynamicRangesValid context = true := by
-    simp only [RelationalWorld.valid, Bool.and_eq_true] at worldValid
-    exact worldValid.1.1.1.1
-  have staticSlotsValid : staticDynamicPointerSlotsValid context = true := by
-    rcases contextValid with
-      ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _, _⟩
-    exact slotsValid
-  have staticWordSlotsValid : staticWordRelationSlotsValid context = true := by
-    rcases contextValid with
-      ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _⟩
-    exact slotsValid
-  have memoryFamilies :=
-    RelationalMemoryFamiliesHold.afterPairedPreparedWordUpdates context world
-      stackRangesValid importsStatic worldDynamicValid staticSlotsValid
-      staticWordSlotsValid updates originalState.memory candidateState.memory {
-        stackRanges := stackMemory
-        importAddresses := importsMemory
-        originalImmutable := originalImmutable
-        candidateImmutable := candidateImmutable
-        ordinary := inputMemory
-        staticPointerSlots := inputDynamicMemory.staticPointerSlots
-        staticWordSlots := inputDynamicMemory.staticWordSlots
-      }
-  rw [originalUpdateWrites, candidateUpdateWrites] at memoryFamilies
-  exact StateRel.afterPairedMemoryFamiliesUpdate context world sourceInvariant
-    targetInvariant originalState candidateState originalBehavior candidateBehavior
-    (claim.originalWrites originalState) (claim.candidateWrites candidateState)
-    relatedForFinal
-    originalWrites candidateWrites originalNoX87 candidateNoX87 memoryFamilies
-    registers bounds separations stackWindows x87 flags importRegisters
-    dynamicRegisters dynamicStacks predicates
+  exact StateRel.afterPairedPreparedWordUpdatesEvaluation context world
+    sourceInvariant targetInvariant originalState candidateState originalBehavior
+    candidateBehavior updates contextValid relatedForUpdates
+    (originalWrites.trans originalUpdateWrites.symm)
+    (candidateWrites.trans candidateUpdateWrites.symm)
+    originalNoX87 candidateNoX87 registers bounds separations stackWindows x87
+    flags importRegisters originRegisters memoryOrigins dynamicRegisters dynamicStacks
+    predicates
 
 theorem segmentTransitionClosed_of_no_write_with_transfers
     (context : StaticProofContext) (edge : RelationalSegmentEdge)
@@ -4552,7 +4759,8 @@ theorem segmentTransitionClosed_of_no_write_with_transfers
   | internal target =>
       rcases stateTransfer world originalState candidateState originalResult
           candidateResult related originalEval candidateEval guardTrue with
-        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
+        ⟨registers, bounds, separations, stackWindows, x87, flags,
+          originRegisters, memoryOrigins, predicates⟩
       have outputImports := importTransfer world originalState candidateState
         originalResult candidateResult relatedForImports originalEval candidateEval
       have outputDynamic := dynamicTransfer world originalState candidateState
@@ -4563,8 +4771,8 @@ theorem segmentTransitionClosed_of_no_write_with_transfers
       exact StateRel.afterNoWriteEvaluation context world sourceInvariant
         targetInvariant originalState candidateState originalResult candidateResult
         relatedForTransfer originalWrites candidateWrites originalNoX87 candidateNoX87
-        registers bounds separations stackWindows x87 flags outputImports outputDynamic
-        outputDynamicStack predicates
+        registers bounds separations stackWindows x87 flags outputImports
+        originRegisters memoryOrigins outputDynamic outputDynamicStack predicates
   | external imported => trivial
   | returned => trivial
   | fault => trivial
@@ -4620,7 +4828,8 @@ theorem segmentTransitionBodyClosed_of_no_write_with_transfers
   | internal target =>
       rcases stateTransfer world originalState candidateState originalResult
           candidateResult related originalEval candidateEval guardsAgree guardTrue with
-        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
+        ⟨registers, bounds, separations, stackWindows, x87, flags,
+          originRegisters, memoryOrigins, predicates⟩
       have outputImports := importTransfer world originalState candidateState
         originalResult candidateResult relatedForImports originalEval candidateEval
       have outputDynamic := dynamicTransfer world originalState candidateState
@@ -4631,8 +4840,8 @@ theorem segmentTransitionBodyClosed_of_no_write_with_transfers
       exact StateRel.afterNoWriteEvaluation context world sourceInvariant
         targetInvariant originalState candidateState originalResult candidateResult
         relatedForTransfer originalWrites candidateWrites originalNoX87 candidateNoX87
-        registers bounds separations stackWindows x87 flags outputImports outputDynamic
-        outputDynamicStack predicates
+        registers bounds separations stackWindows x87 flags outputImports
+        originRegisters memoryOrigins outputDynamic outputDynamicStack predicates
   | external imported => trivial
   | returned => trivial
   | fault => trivial
@@ -4762,7 +4971,8 @@ theorem segmentTransitionClosed_of_direct_call_with_transfers
         at outputMemoryFamilies
       rcases stateTransfer world originalState candidateState originalResult
           candidateResult related originalEval candidateEval guardTrue with
-        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
+        ⟨registers, bounds, separations, stackWindows, x87, flags,
+          originRegisters, memoryOrigins, predicates⟩
       have outputImports := importTransfer world originalState candidateState
         originalResult candidateResult relatedForImports originalEval candidateEval
       have outputDynamic := dynamicTransfer world originalState candidateState
@@ -4789,6 +4999,8 @@ theorem segmentTransitionClosed_of_direct_call_with_transfers
       · exact x87
       · exact flags
       · exact outputImports
+      · exact originRegisters
+      · exact memoryOrigins
       · exact outputDynamic
       · exact outputDynamicStack
       · exact predicates
@@ -4923,7 +5135,8 @@ theorem segmentTransitionClosed_of_paired_stack_word_write_with_transfers
         at outputMemoryFamilies
       rcases stateTransfer world originalState candidateState originalResult
           candidateResult related originalEval candidateEval guardTrue with
-        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
+        ⟨registers, bounds, separations, stackWindows, x87, flags,
+          originRegisters, memoryOrigins, predicates⟩
       have outputImports := importTransfer world originalState candidateState
         originalResult candidateResult relatedForImports originalEval candidateEval
       have outputDynamic := dynamicTransfer world originalState candidateState
@@ -4948,6 +5161,8 @@ theorem segmentTransitionClosed_of_paired_stack_word_write_with_transfers
       · exact x87
       · exact flags
       · exact outputImports
+      · exact originRegisters
+      · exact memoryOrigins
       · exact outputDynamic
       · exact outputDynamicStack
       · exact predicates
@@ -5104,7 +5319,8 @@ theorem segmentTransitionClosed_of_paired_stack_word_writes_with_transfers
       rw [originalUpdateWrites, candidateUpdateWrites] at outputMemoryFamilies
       rcases stateTransfer world originalState candidateState originalResult
           candidateResult related originalEval candidateEval guardTrue with
-        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
+        ⟨registers, bounds, separations, stackWindows, x87, flags,
+          originRegisters, memoryOrigins, predicates⟩
       have outputImports := importTransfer world originalState candidateState
         originalResult candidateResult relatedForImports originalEval candidateEval
       have outputDynamic := dynamicTransfer world originalState candidateState
@@ -5115,7 +5331,8 @@ theorem segmentTransitionClosed_of_paired_stack_word_writes_with_transfers
         (claim.originalWrites originalState) (claim.candidateWrites candidateState)
         related originalWrites candidateWrites originalNoX87 candidateNoX87
         outputMemoryFamilies registers bounds
-        separations stackWindows x87 flags outputImports outputDynamic
+        separations stackWindows x87 flags outputImports originRegisters memoryOrigins
+        outputDynamic
         (by simp [targetDynamicStackRelationsEmpty, activeDynamicStackRangeRelationsHold])
         predicates
   | external imported => trivial
@@ -5223,7 +5440,8 @@ theorem segmentTransitionClosed_of_paired_prepared_word_writes_with_transfers
       rw [originalUpdateWrites, candidateUpdateWrites] at outputMemoryFamilies
       rcases stateTransfer world originalState candidateState originalResult
           candidateResult related originalEval candidateEval guardTrue with
-        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
+        ⟨registers, bounds, separations, stackWindows, x87, flags,
+          originRegisters, memoryOrigins, predicates⟩
       have outputImports := importTransfer world originalState candidateState
         originalResult candidateResult relatedForImports originalEval candidateEval
       have outputDynamic := dynamicTransfer world originalState candidateState
@@ -5237,7 +5455,9 @@ theorem segmentTransitionClosed_of_paired_prepared_word_writes_with_transfers
         (claim.originalWrites originalState) (claim.candidateWrites candidateState)
         related originalWrites candidateWrites originalNoX87 candidateNoX87
         outputMemoryFamilies registers bounds
-        separations stackWindows x87 flags outputImports outputDynamic outputDynamicStack
+        separations stackWindows x87 flags outputImports originRegisters memoryOrigins
+        outputDynamic
+        outputDynamicStack
         predicates
   | external imported => trivial
   | returned => trivial
@@ -5403,7 +5623,8 @@ theorem segmentTransitionClosed_of_direct_call_stack_writes_with_transfers
       rw [originalUpdateWrites, candidateUpdateWrites] at outputMemoryFamilies
       rcases stateTransfer world originalState candidateState originalResult
           candidateResult related originalEval candidateEval guardTrue with
-        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
+        ⟨registers, bounds, separations, stackWindows, x87, flags,
+          originRegisters, memoryOrigins, predicates⟩
       have outputImports := importTransfer world originalState candidateState
         originalResult candidateResult relatedForImports originalEval candidateEval
       have outputDynamic := dynamicTransfer world originalState candidateState
@@ -5414,7 +5635,8 @@ theorem segmentTransitionClosed_of_direct_call_stack_writes_with_transfers
         (claim.originalWrites originalState) (claim.candidateWrites candidateState)
         related originalWrites candidateWrites originalNoX87 candidateNoX87
         outputMemoryFamilies registers bounds
-        separations stackWindows x87 flags outputImports outputDynamic
+        separations stackWindows x87 flags outputImports originRegisters memoryOrigins
+        outputDynamic
         (by simp [targetDynamicStackRelationsEmpty, activeDynamicStackRangeRelationsHold])
         predicates
   | external imported => trivial
@@ -5585,7 +5807,8 @@ theorem segmentTransitionClosed_of_direct_call_prepared_writes_with_transfers
       rw [originalUpdateWrites, candidateUpdateWrites] at outputMemoryFamilies
       rcases stateTransfer world originalState candidateState originalResult
           candidateResult related originalEval candidateEval guardTrue with
-        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
+        ⟨registers, bounds, separations, stackWindows, x87, flags,
+          originRegisters, memoryOrigins, predicates⟩
       have outputImports := importTransfer world originalState candidateState
         originalResult candidateResult relatedForImports originalEval candidateEval
       have outputDynamic := dynamicTransfer world originalState candidateState
@@ -5596,7 +5819,8 @@ theorem segmentTransitionClosed_of_direct_call_prepared_writes_with_transfers
         (claim.originalWrites originalState) (claim.candidateWrites candidateState)
         related originalWrites candidateWrites originalNoX87 candidateNoX87
         outputMemoryFamilies registers bounds
-        separations stackWindows x87 flags outputImports outputDynamic
+        separations stackWindows x87 flags outputImports originRegisters memoryOrigins
+        outputDynamic
         (by simp [targetDynamicStackRelationsEmpty, activeDynamicStackRangeRelationsHold])
         predicates
   | external imported => trivial

@@ -35,7 +35,11 @@ from .schema import (
     STAGE_A_RELATIONAL_MODEL_ID,
     integer as _integer,
 )
-from .x87_profile import instruction_is_x87
+from .semantic_cutpoints import (
+    decode_semantic_cutpoint_span as _decode_semantic_cutpoint_span,
+    paired_semantic_cutpoint_spans as _semantic_cutpoint_spans,
+    semantic_cutpoint_spans_for_side as _semantic_cutpoint_spans_for_side,
+)
 
 
 def _raw_base_relocations(binary: StageABinary) -> list[dict[str, int]]:
@@ -71,98 +75,6 @@ def _load_contract(path: Path) -> dict[str, Any]:
             f"relation contract format must be {RELATION_CONTRACT_FORMAT}"
         )
     return payload
-
-
-def _decode_semantic_cutpoint_span(
-    binary: StageABinary,
-    span: dict[str, int],
-    block_id: str,
-    *,
-    detail: bool = False,
-) -> list[Any]:
-    data = binary.pe.get_data(span["rva_start"], span["size"])
-    disassembler = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
-    disassembler.detail = detail
-    decoded = list(disassembler.disasm(data, binary.image_base + span["rva_start"]))
-    if not decoded or sum(int(instruction.size) for instruction in decoded) != len(data):
-        raise StageAInputError(
-            f"mapping block {block_id} does not decode exactly for semantic cutpoint projection"
-        )
-    return decoded
-
-
-def _semantic_cutpoint_spans_for_side(
-    binary: StageABinary,
-    span: dict[str, int],
-    block_id: str,
-    *,
-    periodic: bool = True,
-) -> list[dict[str, int]]:
-    decoded = _decode_semantic_cutpoint_span(binary, span, block_id)
-    boundaries = [0]
-    for instruction_index, instruction in enumerate(decoded, start=1):
-        instruction_start = int(
-            instruction.address - binary.image_base - span["rva_start"]
-        )
-        instruction_stop = instruction_start + int(instruction.size)
-        if instruction_is_x87(instruction):
-            if instruction_start > boundaries[-1]:
-                boundaries.append(instruction_start)
-            if instruction_stop < span["size"]:
-                boundaries.append(instruction_stop)
-            continue
-        semantic = instruction.mnemonic in {
-            "rep movsd",
-            "movsd",
-            "div",
-            "idiv",
-            "lock cmpxchg",
-        }
-        if semantic or (periodic and instruction_index % 4 == 0):
-            offset = instruction_stop
-            if offset < span["size"] and offset != boundaries[-1]:
-                boundaries.append(offset)
-    boundaries.append(span["size"])
-    return [
-        {
-            "rva_start": span["rva_start"] + boundaries[index],
-            "rva_end": span["rva_start"] + boundaries[index + 1],
-            "size": boundaries[index + 1] - boundaries[index],
-        }
-        for index in range(len(boundaries) - 1)
-    ]
-
-
-def _semantic_cutpoint_spans(
-    original: StageABinary,
-    candidate: StageABinary,
-    original_span: dict[str, int],
-    candidate_span: dict[str, int],
-    block_id: str,
-) -> list[tuple[dict[str, int], dict[str, int]]]:
-    periodic = len(
-        _decode_semantic_cutpoint_span(original, original_span, block_id)
-    ) == len(
-        _decode_semantic_cutpoint_span(candidate, candidate_span, block_id)
-    )
-    original_spans = _semantic_cutpoint_spans_for_side(
-        original, original_span, block_id, periodic=periodic
-    )
-    candidate_spans = _semantic_cutpoint_spans_for_side(
-        candidate, candidate_span, block_id, periodic=periodic
-    )
-    original_boundaries = [original_spans[0]["rva_start"]] + [
-        span["rva_end"] for span in original_spans
-    ]
-    candidate_boundaries = [candidate_spans[0]["rva_start"]] + [
-        span["rva_end"] for span in candidate_spans
-    ]
-    if len(original_boundaries) != len(candidate_boundaries):
-        raise StageAInputError(
-            f"mapping block {block_id} has mismatched semantic cutpoint counts: "
-            f"original={len(original_boundaries) - 2}, candidate={len(candidate_boundaries) - 2}"
-        )
-    return list(zip(original_spans, candidate_spans, strict=True))
 
 
 def _split_relocation_backed_internal_cutpoints(
@@ -1390,6 +1302,7 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         candidate,
         issues,
         normalized_targets,
+        normalized_value_targets,
     )
     normalized_machine_import_call_contracts = _machine_import_call_contracts(
         machine_import_call_contracts, original, candidate, issues,
@@ -2357,6 +2270,7 @@ def _static_word_relation_slots(
     candidate: StageABinary,
     issues: list[dict[str, Any]],
     code_targets: list[dict[str, Any]] | None = None,
+    data_targets: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     ids: set[int] = set()
@@ -2398,7 +2312,102 @@ def _static_word_relation_slots(
         "fixedCodePointer": "fixed_code_pointer",
         "data_pointer": "data_pointer",
         "dataPointer": "data_pointer",
+        "finite_origins": "finite_origins",
+        "finiteOrigins": "finite_origins",
     }
+    code_target_ids = {int(target["id"]) for target in (code_targets or [])}
+    data_target_ids = {int(target["id"]) for target in (data_targets or [])}
+    original_imports = {
+        identity
+        for imported in original.imports
+        if (identity := _import_identity(imported)) is not None
+    }
+    candidate_imports = {
+        identity
+        for imported in candidate.imports
+        if (identity := _import_identity(imported)) is not None
+    }
+
+    def normalize_origin(origin: Any) -> dict[str, Any] | None:
+        if not isinstance(origin, dict):
+            return None
+        kind = {
+            "exact_bits": "exact_bits",
+            "exactBits": "exact_bits",
+            "static_code_target": "static_code_target",
+            "staticCodeTarget": "static_code_target",
+            "static_data_location": "static_data_location",
+            "staticDataLocation": "static_data_location",
+            "import_target": "import_target",
+            "importTarget": "import_target",
+            "stack_frame_location": "stack_frame_location",
+            "stackFrameLocation": "stack_frame_location",
+            "dynamic_range_location": "dynamic_range_location",
+            "dynamicRangeLocation": "dynamic_range_location",
+            "opaque_resource": "opaque_resource",
+            "opaqueResource": "opaque_resource",
+            "registered_callback": "registered_callback",
+            "registeredCallback": "registered_callback",
+        }.get(str(origin.get("kind")))
+        if kind == "exact_bits":
+            value = _integer(origin.get("value"))
+            return (
+                {"kind": kind, "value": value}
+                if value is not None and 0 <= value < 2**32
+                else None
+            )
+        if kind in {"static_code_target", "static_data_location"}:
+            target_id = _integer(origin.get("target_id"))
+            offset = _integer(origin.get("offset", 0))
+            valid_ids = (
+                code_target_ids if kind == "static_code_target" else data_target_ids
+            )
+            return (
+                {"kind": kind, "target_id": target_id, "offset": offset}
+                if target_id is not None
+                and target_id in valid_ids
+                and offset is not None
+                and 0 <= offset < 2**32
+                else None
+            )
+        if kind == "import_target":
+            identity = _import_identity(origin.get("import"))
+            if (
+                identity is None
+                or identity not in original_imports
+                or identity not in candidate_imports
+            ):
+                return None
+            imported: dict[str, Any] = {"dll": identity[0]}
+            imported[identity[1]] = identity[2]
+            return {"kind": kind, "import": imported}
+        if kind in {"stack_frame_location", "dynamic_range_location"}:
+            range_id = _integer(origin.get("range_id"))
+            offset = _integer(origin.get("offset", 0))
+            return (
+                {"kind": kind, "range_id": range_id, "offset": offset}
+                if range_id is not None
+                and range_id >= 0
+                and offset is not None
+                and 0 <= offset < 2**32
+                else None
+            )
+        if kind == "opaque_resource":
+            resource_id = _integer(origin.get("resource_id"))
+            return (
+                {"kind": kind, "resource_id": resource_id}
+                if resource_id is not None and resource_id >= 0
+                else None
+            )
+        if kind == "registered_callback":
+            target_id = _integer(origin.get("target_id"))
+            return (
+                {"kind": kind, "target_id": target_id}
+                if target_id is not None and target_id in code_target_ids
+                else None
+            )
+        return None
+
     for index, item in enumerate(value):
         slot_id = _integer(item.get("id")) if isinstance(item, dict) else None
         original_address = (
@@ -2413,6 +2422,34 @@ def _static_word_relation_slots(
         )
         target_id = (
             _integer(item.get("target_id")) if isinstance(item, dict) else None
+        )
+        finite_alternative_budget = (
+            _integer(item.get("finite_alternative_budget"))
+            if isinstance(item, dict)
+            else None
+        )
+        raw_origins = (
+            item.get("origins") if isinstance(item, dict) else None
+        )
+        normalized_origins = (
+            [normalize_origin(origin) for origin in raw_origins]
+            if isinstance(raw_origins, list)
+            else []
+        )
+        finite_origins_valid = (
+            relation != "finite_origins"
+            or (
+                finite_alternative_budget is not None
+                and finite_alternative_budget > 0
+                and isinstance(raw_origins, list)
+                and bool(raw_origins)
+                and len(raw_origins) <= finite_alternative_budget
+                and all(origin is not None for origin in normalized_origins)
+                and len({
+                    json.dumps(origin, sort_keys=True)
+                    for origin in normalized_origins
+                }) == len(normalized_origins)
+            )
         )
         if (
             slot_id is None or slot_id < 0 or slot_id in ids
@@ -2429,6 +2466,7 @@ def _static_word_relation_slots(
                     )
                 )
             )
+            or not finite_origins_valid
         ):
             issues.append({
                 "category": "static_word_relation_slot_invalid",
@@ -2437,7 +2475,8 @@ def _static_word_relation_slots(
                 "item": item,
                 "next_action": (
                     "declare a unique paired writable-static word with one of "
-                    "exact, related_word, code_pointer, fixed_code_pointer, or data_pointer"
+                    "exact, related_word, code_pointer, fixed_code_pointer, "
+                    "data_pointer, or a bounded duplicate-free finite_origins inventory"
                 ),
             })
             continue
@@ -2497,6 +2536,9 @@ def _static_word_relation_slots(
         }
         if relation == "fixed_code_pointer":
             normalized["target_id"] = target_id
+        if relation == "finite_origins":
+            normalized["finite_alternative_budget"] = finite_alternative_budget
+            normalized["origins"] = normalized_origins
         result.append(normalized)
     return sorted(result, key=lambda slot: slot["id"])
 
@@ -2928,10 +2970,6 @@ def _machine_import_call_contracts(
             or set(preserved).union(clobbered) != MACHINE_CALL_ABI_REGISTERS
             or memory_effect not in MACHINE_CALL_MEMORY_EFFECTS
             or not memory_shape_valid
-            or (
-                memory_effect == "relationalState"
-                and disposition != "returns"
-            )
             or not result_relations_valid
             or disposition not in MACHINE_CALL_DISPOSITIONS
             or world_effect not in MACHINE_CALL_WORLD_EFFECTS

@@ -187,7 +187,7 @@ Run the promoted release gate through the configured remote builders:
 NIX_SSHOPTS='-o IdentitiesOnly=yes -o BatchMode=yes' \
 nix build --no-link .#stage-a-roundtrip-promoted-check \
   --max-jobs 0 --cores 2 \
-  --builders "$(paste -sd';' nix/stage-a-builders)" \
+  --builders "@$(realpath nix/stage-a-builders)" \
   --option builders-use-substitutes true \
   --option substituters \
     'https://cache.corncheese.org/nix-cache https://cache.nixos.org/'

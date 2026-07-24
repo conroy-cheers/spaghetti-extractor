@@ -58,6 +58,27 @@ example (context : StaticProofContext) (world : RelationalWorld)
   exact staticWordRelationSlotsMemoryHold_of_indexed_holds context world
     original candidate certificate checked
 
+example (context : StaticProofContext) (world : RelationalWorld) :
+    (StaticWordRelationKind.finiteOrigins 1 [.exactBits 17]).holds
+      context world (BitVec.ofNat 32 17) (BitVec.ofNat 32 17) = true := by
+  simp [StaticWordRelationKind.holds, ValueOriginAtom.matches]
+
+def resource : OpaqueResourcePair := {
+  id := 23
+  original := BitVec.ofNat 32 40960
+  candidate := BitVec.ofNat 32 45056
+}
+
+def resourceWorld : RelationalWorld := {
+  opaqueResources := [resource]
+}
+
+example (context : StaticProofContext) :
+    (StaticWordRelationKind.finiteOrigins 1 [.opaqueResource 23]).holds
+      context resourceWorld resource.original resource.candidate = true := by
+  simp [StaticWordRelationKind.holds, ValueOriginAtom.matches, resourceWorld,
+    resource]
+
 end StageA.StaticWordSlotCertificate
 """,
                 encoding="utf-8",

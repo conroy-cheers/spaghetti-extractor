@@ -448,21 +448,24 @@ class StageABoundedTableCallGenerationTests(unittest.TestCase):
         self.assertEqual(graph["nodes"][0]["outgoing_edge_ids"], [0])
         self.assertEqual(graph["edges"][0]["kind"], "call")
         self.assertEqual(graph["edges"][0]["target_node_id"], 2)
-        self.assertEqual(graph["edges"][0]["original_guard"], {
-            "op": "equal",
-            "left": {"op": "input_reg", "reg": "eax"},
-            "right": {"op": "constant", "value": 0},
-        })
-        self.assertEqual(graph["edges"][0]["candidate_guard"], {
-            "op": "equal",
-            "left": {"op": "input_reg", "reg": "eax"},
-            "right": {"op": "constant", "value": 0},
-        })
+        self.assertEqual(
+            graph["edges"][0]["original_guard"],
+            {"op": "bool_constant", "value": True},
+        )
+        self.assertEqual(
+            graph["edges"][0]["candidate_guard"],
+            {"op": "bool_constant", "value": True},
+        )
         self.assertEqual(
             graph["evidence"][
                 "bounded_immutable_code_pointer_table_call_edge_groups"
             ],
-            [{"source_node_id": 0, "candidate_index": 0, "edge_ids": [0]}],
+            [{
+                "source_node_id": 0,
+                "candidate_index": 0,
+                "edge_ids": [0],
+                "target_ids": [2],
+            }],
         )
         self.assertIn(0, graph["evidence"]["decoded_control_complete_node_ids"])
         self.assertEqual(
@@ -476,8 +479,12 @@ class StageABoundedTableCallGenerationTests(unittest.TestCase):
         self.assertIn("import StageA.RelationalStaticContext\n", decoded_source)
         self.assertIn("BoundedImmutableCodePointerTableCallClaim", decoded_source)
         self.assertIn("BoundedImmutableCodePointerTableCallTargetsClosed", decoded_source)
+        self.assertIn("CheckedIndirectExitCertificate", decoded_source)
         self.assertIn(
-            "NodeBoundedImmutableCodePointerTableCallEdgesComplete", decoded_source
+            "checkedBoundedTableCallIndirectCertificate", decoded_source
+        )
+        self.assertIn(
+            "nodeControlEdgesComplete_of_checkedIndirectExit", decoded_source
         )
         self.assertIn("valueTargetId := 0", decoded_source)
         self.assertIn("tableOffset := 0", decoded_source)
@@ -567,11 +574,10 @@ class StageABoundedTableCallGenerationTests(unittest.TestCase):
         self.assertEqual(graph["nodes"][0]["outgoing_edge_ids"], [0])
         self.assertEqual(graph["edges"][0]["kind"], "call")
         self.assertEqual(graph["edges"][0]["target_node_id"], 2)
-        self.assertEqual(graph["edges"][0]["original_guard"], {
-            "op": "equal",
-            "left": {"op": "input_reg", "reg": "eax"},
-            "right": {"op": "constant", "value": 1},
-        })
+        self.assertEqual(
+            graph["edges"][0]["original_guard"],
+            {"op": "bool_constant", "value": True},
+        )
 
     def test_reverse_sentinel_empty_table_generates_impossible_call_claim(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -613,7 +619,12 @@ class StageABoundedTableCallGenerationTests(unittest.TestCase):
             graph["evidence"][
                 "bounded_immutable_code_pointer_table_call_edge_groups"
             ],
-            [{"source_node_id": 0, "candidate_index": 0, "edge_ids": []}],
+            [{
+                "source_node_id": 0,
+                "candidate_index": 0,
+                "edge_ids": [],
+                "target_ids": [],
+            }],
         )
 
     def test_reverse_sentinel_empty_source_is_uninhabited_before_register_synthesis(

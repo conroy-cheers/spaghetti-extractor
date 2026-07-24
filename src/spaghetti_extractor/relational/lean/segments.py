@@ -146,6 +146,7 @@ def _lean_state_invariant_weakening(
         f"theorem {name} : StateInvariantWeakening {source} {target} := {{\n"
         "  registerRelations := by decide\n"
         "  importRegisterRelations := by decide\n"
+        "  registerValueOriginRelations := by decide\n"
         "  dynamicRegisterRangeRelations := by decide\n"
         "  dynamicStackRangeRelations := by decide\n"
         "  flagBits := by decide\n"
@@ -4355,7 +4356,7 @@ def _write_relational_segment_refinement_modules(
                         "inputStackWindows, inputMemory, _inputDynamicWords, inputUndefined, inputX87, inputFlags, "
                         "inputFsBase⟩\n"
                         + stack_window_setup
-                        + "  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩\n"
+                        + "  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩\n"
                         + register_transfer_proof
                         + (
                             "  · exact InvariantWP."
@@ -4408,6 +4409,16 @@ def _write_relational_segment_refinement_modules(
                         "StageA.Formal.X87Expr.eval, StageA.Formal.Expr.eval]\n"
                         + flag_proof
                         + "\n"
+                        + (
+                            f"  · simp [RegionRelation.inputInvariant, "
+                            f"region{target_index}, "
+                            "registerValueOriginRelationsHold]\n"
+                        )
+                        + (
+                            f"  · simp [RegionRelation.inputInvariant, "
+                            f"region{target_index}, "
+                            "memoryValueOriginRelationsHold]\n"
+                        )
                         + (
                             "  · exact "
                             "reverseSentinelScannerPostconditionClosed_of_checked\n"

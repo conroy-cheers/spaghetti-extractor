@@ -132,6 +132,24 @@ twenty concurrent elaborators per host. Host inventories with different memory
 profiles should adjust their machines-file job count rather than weakening the
 per-node resource classification.
 
+The ordinary relational Lean graph is input-addressed and requires only the
+`big-parallel` system feature. The checked-in inventory deliberately does not
+advertise `ca-derivations`: listing a feature in a machines file does not enable
+it in the remote daemon, and a false declaration causes the build to be
+scheduled remotely only to fail during derivation instantiation. Use an
+absolute machines-file reference when invoking Nix directly:
+
+```sh
+nix build .#stage-a-roundtrip-lean-remote-smoke --no-link \
+  --max-jobs 0 \
+  --builders "@$(realpath nix/stage-a-builders)" \
+  --option builders-use-substitutes true
+```
+
+The `stage-a-gnu-hello-proof` app selects the same input-addressed mode before
+it invokes the dynamic graph coordinator. Content-addressed experiments use a
+separate builder inventory and are not a prerequisite for round-trip proofs.
+
 The final derivation imports the generated bundle and runs Lean with
 `--trust=0`, which type-checks imported modules rather than trusting remote
 `.olean` files. It also rejects final-theorem dependencies outside the approved
@@ -141,17 +159,16 @@ This avoids transferring thousands of individual files to the final builder
 and prevents the audit result from retaining the complete intermediate store
 closure.
 
-The repository builders file currently allows 16 derivations on each of two
-32-thread, roughly 96 GiB hosts. A live jq graph build showed no local Lean
-processes and concurrent compilation on both hosts. Sixteen two-thread Lean
-jobs can occupy all 32 hardware threads. The latest focused external-call
-rebuild reached 16 `.lean-wrapped` processes on both hosts. Static-code-map
-leaves used about 1.2-4.5 GiB RSS, and the busier host retained about 46 GiB
-available memory. The original and candidate proof-base modules used about
-5.3-5.7 GiB RSS in that run, while graph width made only one such module ready
-per host. The current profile is therefore safe for this jq graph, although a
-future graph that exposes sixteen 6+ GiB nodes at once will need stricter
-resource-class scheduling. The
+The repository builders file currently allows ten derivations on each of two
+32-thread, roughly 96 GiB hosts, for at most twenty ordinary Lean elaborators
+per host. A live jq graph build under an earlier 16-job profile showed no local
+Lean processes and concurrent compilation on both hosts; it reached 16
+`.lean-wrapped` processes on each builder. Static-code-map leaves used about
+1.2-4.5 GiB RSS, and the busier host retained about 46 GiB available memory.
+The original and candidate proof-base modules used about 5.3-5.7 GiB RSS in
+that run, while graph width made only one such module ready per host. The
+current ten-job profile leaves additional memory headroom for graphs exposing
+several high-memory nodes concurrently. The
 first dependency waves may contain only the original proof, candidate proof,
 and global mapping context; low process counts there reflect graph width, not
 unused scheduler slots. Nodes now declare only their direct graph parents and

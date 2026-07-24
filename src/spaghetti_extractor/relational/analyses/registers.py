@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
-from typing import Any
+from typing import Any, Literal
 
 from ...errors import StageAInputError
 from ...stage_binary import StageABinary
@@ -83,6 +84,824 @@ _PE32_EXTERNAL_REGISTER_POLICY_ID = "win32-cdecl-stdcall-registers-v1"
 _PE32_EXTERNAL_PRESERVED_REGISTERS = frozenset({
     "ebx", "esi", "edi", "ebp", "esp",
 })
+
+
+RegisterControlAtomKind = Literal[
+    "exact_code_pointer", "static_code_pointer", "import_return",
+]
+RegisterControlEdgeKind = Literal["direct", "call_return"]
+
+REGISTER_CONTROL_UNKNOWN_CALL = "register_control_unknown_call"
+REGISTER_CONTROL_AMBIGUOUS_WRITABLE_LOAD = (
+    "register_control_ambiguous_writable_load"
+)
+REGISTER_CONTROL_DISJUNCTION_BUDGET_EXCEEDED = (
+    "register_control_finite_disjunction_budget_exceeded"
+)
+REGISTER_CONTROL_UNKNOWN_OR_CLOBBERED = (
+    "register_control_unknown_or_clobbered"
+)
+REGISTER_CONTROL_PAIR_MISMATCH = "register_control_register_pair_mismatch"
+REGISTER_CONTROL_FIXED_POINT_INCOMPLETE = (
+    "register_control_fixed_point_not_converged"
+)
+REGISTER_CONTROL_INVALID_CONTROL_ATOM = (
+    "register_control_invalid_indirect_control_atom"
+)
+
+
+def _checked_register_name(register: str) -> str:
+    value = str(register).lower()
+    if value not in _X86_GENERAL_REGISTERS:
+        raise ValueError(f"unsupported x86 register: {register!r}")
+    return value
+
+
+@dataclass(frozen=True)
+class RegisterControlRegisterPair:
+    original: str
+    candidate: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "original", _checked_register_name(self.original))
+        object.__setattr__(self, "candidate", _checked_register_name(self.candidate))
+
+    def to_payload(self) -> dict[str, str]:
+        return {"original": self.original, "candidate": self.candidate}
+
+
+@dataclass(frozen=True)
+class RegisterControlProvenanceAtom:
+    """Finite, auditable origin for a register value used by control analysis."""
+
+    kind: RegisterControlAtomKind
+    producer_region_index: int
+    register_pair: RegisterControlRegisterPair
+    target_id: int | None = None
+    claim_kind: str | None = None
+    machine_contract_id: int | None = None
+    import_identity: tuple[str, str, str | int] | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.producer_region_index, int)
+            or isinstance(self.producer_region_index, bool)
+            or self.producer_region_index < 0
+        ):
+            raise ValueError("producer region index must be non-negative")
+        if self.kind in {"exact_code_pointer", "static_code_pointer"}:
+            if (
+                not isinstance(self.target_id, int)
+                or isinstance(self.target_id, bool)
+                or self.target_id < 0
+                or not isinstance(self.claim_kind, str)
+                or not self.claim_kind
+                or self.machine_contract_id is not None
+                or self.import_identity is not None
+            ):
+                raise ValueError("code-pointer atom is not exact and canonical")
+            return
+        if self.kind != "import_return":
+            raise ValueError(f"unsupported register-control atom kind: {self.kind!r}")
+        identity = self.import_identity
+        if (
+            self.target_id is not None
+            or self.claim_kind is not None
+            or not isinstance(self.machine_contract_id, int)
+            or isinstance(self.machine_contract_id, bool)
+            or self.machine_contract_id < 0
+            or not isinstance(identity, tuple)
+            or len(identity) != 3
+            or not isinstance(identity[0], str)
+            or not identity[0]
+            or identity[1] not in {"symbol", "ordinal"}
+            or (
+                identity[1] == "symbol"
+                and (not isinstance(identity[2], str) or not identity[2])
+            )
+            or (
+                identity[1] == "ordinal"
+                and (
+                    not isinstance(identity[2], int)
+                    or isinstance(identity[2], bool)
+                    or identity[2] < 0
+                )
+            )
+        ):
+            raise ValueError("import-return atom is not exact and canonical")
+        object.__setattr__(
+            self, "import_identity",
+            (identity[0].lower(), identity[1], identity[2]),
+        )
+
+    def sort_key(self) -> tuple[Any, ...]:
+        return (
+            self.kind,
+            -1 if self.target_id is None else self.target_id,
+            -1 if self.machine_contract_id is None else self.machine_contract_id,
+            self.import_identity or ("", "", ""),
+            self.producer_region_index,
+            self.register_pair.original,
+            self.register_pair.candidate,
+            self.claim_kind or "",
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "kind": self.kind,
+            "producer_region_index": self.producer_region_index,
+            "register_pair": self.register_pair.to_payload(),
+        }
+        if self.kind in {"exact_code_pointer", "static_code_pointer"}:
+            payload.update({
+                "target_id": self.target_id,
+                "claim_kind": self.claim_kind,
+            })
+        else:
+            assert self.import_identity is not None
+            imported: dict[str, Any] = {"dll": self.import_identity[0]}
+            imported[self.import_identity[1]] = self.import_identity[2]
+            payload.update({
+                "machine_contract_id": self.machine_contract_id,
+                "import": imported,
+            })
+        payload["atom_id"] = sha256_bytes(json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode())
+        return payload
+
+
+@dataclass(frozen=True)
+class RegisterControlCopy:
+    output: RegisterControlRegisterPair
+    source: RegisterControlRegisterPair
+
+
+@dataclass(frozen=True)
+class RegisterControlBlockedOutput:
+    output: RegisterControlRegisterPair
+    reason_code: str
+
+    def __post_init__(self) -> None:
+        if self.reason_code != REGISTER_CONTROL_AMBIGUOUS_WRITABLE_LOAD:
+            raise ValueError("blocked output must use a checked fail-closed reason")
+
+
+@dataclass(frozen=True)
+class RegisterControlRegionTransfer:
+    region_index: int
+    copies: tuple[RegisterControlCopy, ...] = ()
+    producers: tuple[RegisterControlProvenanceAtom, ...] = ()
+    blocked_outputs: tuple[RegisterControlBlockedOutput, ...] = ()
+    preserve_unmentioned: bool = False
+
+
+@dataclass(frozen=True)
+class RegisterControlImportResult:
+    register_pair: RegisterControlRegisterPair
+    import_identity: tuple[str, str, str | int]
+
+    def __post_init__(self) -> None:
+        identity = self.import_identity
+        if (
+            not isinstance(identity, tuple)
+            or len(identity) != 3
+            or not isinstance(identity[0], str)
+            or not identity[0]
+            or identity[1] not in {"symbol", "ordinal"}
+            or (
+                identity[1] == "symbol"
+                and (not isinstance(identity[2], str) or not identity[2])
+            )
+            or (
+                identity[1] == "ordinal"
+                and (
+                    not isinstance(identity[2], int)
+                    or isinstance(identity[2], bool)
+                    or identity[2] < 0
+                )
+            )
+        ):
+            raise ValueError("import result identity is not exact and canonical")
+        object.__setattr__(
+            self, "import_identity",
+            (identity[0].lower(), identity[1], identity[2]),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        imported: dict[str, Any] = {"dll": self.import_identity[0]}
+        imported[self.import_identity[1]] = self.import_identity[2]
+        return {
+            "register_pair": self.register_pair.to_payload(),
+            "import": imported,
+        }
+
+
+@dataclass(frozen=True)
+class RegisterControlCallContract:
+    contract_id: int
+    preserved_registers: tuple[RegisterControlRegisterPair, ...] = ()
+    import_results: tuple[RegisterControlImportResult, ...] = ()
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.contract_id, int)
+            or isinstance(self.contract_id, bool)
+            or self.contract_id < 0
+        ):
+            raise ValueError("machine call contract id must be non-negative")
+        if len(set(self.preserved_registers)) != len(self.preserved_registers):
+            raise ValueError("call contract has duplicate preserved registers")
+        result_pairs = [result.register_pair for result in self.import_results]
+        if len(set(result_pairs)) != len(result_pairs):
+            raise ValueError("call contract has ambiguous import results")
+
+
+@dataclass(frozen=True)
+class RegisterControlEdge:
+    source_region_index: int
+    target_region_index: int
+    kind: RegisterControlEdgeKind = "direct"
+    machine_contract_id: int | None = None
+
+
+@dataclass(frozen=True)
+class RegisterControlUse:
+    region_index: int
+    register_pair: RegisterControlRegisterPair
+    purpose: Literal["register_state", "indirect_control"] = "register_state"
+
+
+@dataclass(frozen=True)
+class _RegisterControlValue:
+    atoms: tuple[RegisterControlProvenanceAtom, ...] = ()
+    blockers: tuple[str, ...] = ()
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "atoms": [atom.to_payload() for atom in self.atoms],
+            "blockers": list(self.blockers),
+        }
+
+
+@dataclass(frozen=True)
+class RegisterControlProvenanceWitness:
+    payload: dict[str, Any]
+
+    @property
+    def status(self) -> str:
+        return str(self.payload["status"])
+
+    @property
+    def blockers(self) -> tuple[dict[str, Any], ...]:
+        return tuple(self.payload["blockers"])
+
+    def to_payload(self) -> dict[str, Any]:
+        return json.loads(json.dumps(self.payload))
+
+
+def build_register_control_provenance_witness(
+    *,
+    region_count: int,
+    register_pairs: tuple[RegisterControlRegisterPair, ...],
+    entry_region_indices: tuple[int, ...],
+    transfers: tuple[RegisterControlRegionTransfer, ...],
+    edges: tuple[RegisterControlEdge, ...],
+    call_contracts: tuple[RegisterControlCallContract, ...] = (),
+    uses: tuple[RegisterControlUse, ...] = (),
+    finite_disjunction_budget: int = _REGISTER_CODE_POINTER_DISJUNCTION_BUDGET,
+) -> RegisterControlProvenanceWitness:
+    """Build a fail-closed register-control witness over a finite product graph.
+
+    The result is proposal evidence only. A later planner may serialize it into
+    proof IR, but Lean must replay the transfer, call contracts, SCC closure,
+    and control-use checks before any acceptance claim can depend on it.
+    """
+    if (
+        not isinstance(region_count, int)
+        or isinstance(region_count, bool)
+        or region_count <= 0
+    ):
+        raise ValueError("register-control region count must be positive")
+    if (
+        not isinstance(finite_disjunction_budget, int)
+        or isinstance(finite_disjunction_budget, bool)
+        or finite_disjunction_budget <= 0
+    ):
+        raise ValueError("register-control disjunction budget must be positive")
+    if not register_pairs or len(set(register_pairs)) != len(register_pairs):
+        raise ValueError("register-control register pairs must be unique")
+    if len({pair.original for pair in register_pairs}) != len(register_pairs):
+        raise ValueError("original register mapping is ambiguous")
+    if len({pair.candidate for pair in register_pairs}) != len(register_pairs):
+        raise ValueError("candidate register mapping is ambiguous")
+    register_pairs = tuple(sorted(
+        register_pairs, key=lambda pair: (pair.original, pair.candidate),
+    ))
+    pair_set = frozenset(register_pairs)
+
+    def checked_region(index: int, label: str) -> int:
+        if (
+            not isinstance(index, int)
+            or isinstance(index, bool)
+            or not 0 <= index < region_count
+        ):
+            raise ValueError(f"{label} is outside the region inventory")
+        return index
+
+    entry_regions = frozenset(
+        checked_region(index, "entry region") for index in entry_region_indices
+    )
+    transfer_by_region: dict[int, RegisterControlRegionTransfer] = {}
+    for transfer in transfers:
+        region_index = checked_region(transfer.region_index, "transfer region")
+        if region_index in transfer_by_region:
+            raise ValueError("duplicate register-control region transfer")
+        if not isinstance(transfer.preserve_unmentioned, bool):
+            raise ValueError("preserve-unmentioned must be Boolean")
+        mentioned: set[RegisterControlRegisterPair] = set()
+        for copy in transfer.copies:
+            if copy.output not in pair_set or copy.source not in pair_set:
+                raise ValueError("register-control copy uses an unknown register pair")
+            if copy.output in mentioned:
+                raise ValueError("register-control output transfer is ambiguous")
+            mentioned.add(copy.output)
+        producer_outputs: set[RegisterControlRegisterPair] = set()
+        for atom in transfer.producers:
+            if atom.producer_region_index != region_index:
+                raise ValueError("producer atom names the wrong region")
+            if atom.register_pair not in pair_set:
+                raise ValueError("producer atom uses an unknown register pair")
+            producer_outputs.add(atom.register_pair)
+        if mentioned & producer_outputs:
+            raise ValueError("register-control output has copy and producer rules")
+        mentioned.update(producer_outputs)
+        for blocked in transfer.blocked_outputs:
+            if blocked.output not in pair_set:
+                raise ValueError("blocked output uses an unknown register pair")
+            if blocked.output in mentioned:
+                raise ValueError("register-control output has conflicting rules")
+            mentioned.add(blocked.output)
+        transfer_by_region[region_index] = transfer
+    for region_index in range(region_count):
+        transfer_by_region.setdefault(
+            region_index, RegisterControlRegionTransfer(region_index),
+        )
+
+    contracts_by_id: dict[int, RegisterControlCallContract] = {}
+    for contract in call_contracts:
+        if contract.contract_id in contracts_by_id:
+            raise ValueError("duplicate register-control machine contract id")
+        if any(pair not in pair_set for pair in contract.preserved_registers):
+            raise ValueError("call contract preserves an unknown register pair")
+        if any(
+            result.register_pair not in pair_set
+            for result in contract.import_results
+        ):
+            raise ValueError("call contract returns an unknown register pair")
+        contracts_by_id[contract.contract_id] = contract
+
+    incoming: list[list[tuple[int, RegisterControlEdge]]] = [
+        [] for _ in range(region_count)
+    ]
+    successors: list[set[int]] = [set() for _ in range(region_count)]
+    normalized_edges: list[RegisterControlEdge] = []
+    for edge_index, edge in enumerate(edges):
+        source = checked_region(edge.source_region_index, "edge source")
+        target = checked_region(edge.target_region_index, "edge target")
+        if edge.kind not in {"direct", "call_return"}:
+            raise ValueError("unsupported register-control edge kind")
+        if edge.kind == "direct" and edge.machine_contract_id is not None:
+            raise ValueError("direct register-control edge cannot name a call contract")
+        incoming[target].append((edge_index, edge))
+        successors[source].add(target)
+        normalized_edges.append(edge)
+
+    unknown = _RegisterControlValue(
+        blockers=(REGISTER_CONTROL_UNKNOWN_OR_CLOBBERED,),
+    )
+
+    def atom_value(atoms: list[RegisterControlProvenanceAtom]) -> _RegisterControlValue:
+        unique = {atom.sort_key(): atom for atom in atoms}
+        ordered = tuple(unique[key] for key in sorted(unique))
+        if len(ordered) > finite_disjunction_budget:
+            return _RegisterControlValue(
+                blockers=(REGISTER_CONTROL_DISJUNCTION_BUDGET_EXCEEDED,),
+            )
+        return _RegisterControlValue(atoms=ordered)
+
+    def join_values(values: list[_RegisterControlValue]) -> _RegisterControlValue:
+        if not values:
+            return unknown
+        blockers = sorted({code for value in values for code in value.blockers})
+        if blockers:
+            return _RegisterControlValue(blockers=tuple(blockers))
+        return atom_value([atom for value in values for atom in value.atoms])
+
+    def transfer_output(
+        region_index: int,
+        input_state: dict[RegisterControlRegisterPair, _RegisterControlValue],
+    ) -> dict[RegisterControlRegisterPair, _RegisterControlValue]:
+        transfer = transfer_by_region[region_index]
+        copies = {copy.output: copy.source for copy in transfer.copies}
+        producers: dict[
+            RegisterControlRegisterPair, list[RegisterControlProvenanceAtom]
+        ] = {}
+        for atom in transfer.producers:
+            producers.setdefault(atom.register_pair, []).append(atom)
+        blocked = {
+            item.output: item.reason_code for item in transfer.blocked_outputs
+        }
+        result = {}
+        for pair in register_pairs:
+            if pair in copies:
+                result[pair] = input_state[copies[pair]]
+            elif pair in producers:
+                result[pair] = atom_value(producers[pair])
+            elif pair in blocked:
+                result[pair] = _RegisterControlValue(
+                    blockers=(blocked[pair],),
+                )
+            elif transfer.preserve_unmentioned:
+                result[pair] = input_state[pair]
+            else:
+                result[pair] = unknown
+        return result
+
+    def edge_value(
+        edge: RegisterControlEdge,
+        pair: RegisterControlRegisterPair,
+        source_state: dict[
+            RegisterControlRegisterPair, _RegisterControlValue
+        ],
+    ) -> _RegisterControlValue:
+        if edge.kind == "direct":
+            return source_state[pair]
+        contract = contracts_by_id.get(edge.machine_contract_id)
+        if contract is None:
+            return _RegisterControlValue(blockers=(REGISTER_CONTROL_UNKNOWN_CALL,))
+        import_results = [
+            result for result in contract.import_results
+            if result.register_pair == pair
+        ]
+        if import_results:
+            return atom_value([
+                RegisterControlProvenanceAtom(
+                    kind="import_return",
+                    producer_region_index=edge.source_region_index,
+                    register_pair=pair,
+                    machine_contract_id=contract.contract_id,
+                    import_identity=import_results[0].import_identity,
+                )
+            ])
+        if pair in contract.preserved_registers:
+            return source_state[pair]
+        return unknown
+
+    initial_inputs: list[
+        dict[RegisterControlRegisterPair, _RegisterControlValue] | None
+    ] = [
+        ({pair: unknown for pair in register_pairs}
+         if region_index in entry_regions else None)
+        for region_index in range(region_count)
+    ]
+    initial_outputs: list[
+        dict[RegisterControlRegisterPair, _RegisterControlValue] | None
+    ] = [None] * region_count
+
+    def evaluate_output(
+        region_index: int,
+        input_state: dict[RegisterControlRegisterPair, _RegisterControlValue],
+        previous_output: dict[
+            RegisterControlRegisterPair, _RegisterControlValue
+        ] | None,
+    ) -> tuple[
+        dict[RegisterControlRegisterPair, _RegisterControlValue],
+        dict[RegisterControlRegisterPair, tuple[str, ...]],
+    ]:
+        proposed = transfer_output(region_index, input_state)
+        if previous_output is not None:
+            proposed = {
+                pair: join_values([previous_output[pair], proposed[pair]])
+                for pair in register_pairs
+            }
+        return proposed, {
+            pair: proposed[pair].blockers for pair in register_pairs
+        }
+
+    def recompute_input(
+        region_index: int,
+        outputs: list[
+            dict[RegisterControlRegisterPair, _RegisterControlValue] | None
+        ] | tuple[
+            dict[RegisterControlRegisterPair, _RegisterControlValue] | None, ...
+        ],
+    ) -> dict[RegisterControlRegisterPair, _RegisterControlValue] | None:
+        available = [
+            (edge, outputs[edge.source_region_index])
+            for _edge_index, edge in incoming[region_index]
+            if outputs[edge.source_region_index] is not None
+        ]
+        if not available and region_index not in entry_regions:
+            return None
+        result = {}
+        for pair in register_pairs:
+            values = [
+                edge_value(edge, pair, source_state)
+                for edge, source_state in available
+                if source_state is not None
+            ]
+            if region_index in entry_regions:
+                values.append(unknown)
+            result[pair] = join_values(values)
+        return result
+
+    fixed_point = solve_monotone_fixed_point_by_scc(
+        initial_input_states=initial_inputs,
+        initial_output_states=initial_outputs,
+        initial_output_reason_states=[None] * region_count,
+        successors=[tuple(sorted(items)) for items in successors],
+        evaluate_output=evaluate_output,
+        recompute_input=recompute_input,
+        max_iterations=(
+            region_count * len(register_pairs)
+            * (finite_disjunction_budget + 2) + 1
+        ),
+    )
+
+    blockers: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+    def add_blocker(
+        code: str,
+        *,
+        region_index: int,
+        direction: str,
+        pair: RegisterControlRegisterPair | None = None,
+        edge_index: int | None = None,
+    ) -> None:
+        row = {
+            "code": code,
+            "region_index": region_index,
+            "direction": direction,
+        }
+        if pair is not None:
+            row["register_pair"] = pair.to_payload()
+        if edge_index is not None:
+            row["edge_index"] = edge_index
+        key = (
+            code, region_index, direction,
+            pair.original if pair is not None else "",
+            pair.candidate if pair is not None else "",
+            -1 if edge_index is None else edge_index,
+        )
+        blockers[key] = row
+
+    for region_index, transfer in sorted(transfer_by_region.items()):
+        for blocked in transfer.blocked_outputs:
+            add_blocker(
+                blocked.reason_code,
+                region_index=region_index,
+                direction="output",
+                pair=blocked.output,
+            )
+    for edge_index, edge in enumerate(normalized_edges):
+        if edge.kind == "call_return" and (
+            edge.machine_contract_id not in contracts_by_id
+        ):
+            add_blocker(
+                REGISTER_CONTROL_UNKNOWN_CALL,
+                region_index=edge.target_region_index,
+                direction="edge",
+                edge_index=edge_index,
+            )
+    if not fixed_point.converged:
+        add_blocker(
+            REGISTER_CONTROL_FIXED_POINT_INCOMPLETE,
+            region_index=min(entry_regions, default=0),
+            direction="graph",
+        )
+
+    def state_payload(
+        state: dict[
+            RegisterControlRegisterPair, _RegisterControlValue
+        ] | None,
+    ) -> list[dict[str, Any]]:
+        if state is None:
+            return []
+        return [
+            {
+                "register_pair": pair.to_payload(),
+                **state[pair].to_payload(),
+            }
+            for pair in register_pairs
+        ]
+
+    use_rows = []
+    for use_index, use in enumerate(uses):
+        region_index = checked_region(use.region_index, "control-use region")
+        if use.purpose not in {"register_state", "indirect_control"}:
+            raise ValueError("unsupported register-control use purpose")
+        if use.register_pair not in pair_set:
+            add_blocker(
+                REGISTER_CONTROL_PAIR_MISMATCH,
+                region_index=region_index,
+                direction="use",
+            )
+            continue
+        state = fixed_point.input_states[region_index]
+        value = state.get(use.register_pair, unknown) if state is not None else unknown
+        use_blockers = list(value.blockers)
+        if (
+            not use_blockers
+            and use.purpose == "indirect_control"
+            and any(atom.kind == "import_return" for atom in value.atoms)
+        ):
+            use_blockers.append(REGISTER_CONTROL_INVALID_CONTROL_ATOM)
+        for code in use_blockers:
+            add_blocker(
+                code,
+                region_index=region_index,
+                direction="use",
+                pair=use.register_pair,
+            )
+        use_rows.append({
+            "use_index": use_index,
+            "region_index": region_index,
+            "register_pair": use.register_pair.to_payload(),
+            "purpose": use.purpose,
+            "status": "resolved" if not use_blockers else "incomplete",
+            **value.to_payload(),
+        })
+
+    partition = strongly_connected_components(
+        [tuple(sorted(items)) for items in successors]
+    )
+    scc_rows = []
+    for component_id, members in enumerate(partition.components):
+        local_edges = [
+            index for index, edge in enumerate(normalized_edges)
+            if edge.source_region_index in members
+            and edge.target_region_index in members
+        ]
+        local_payload = {
+            "component_id": component_id,
+            "region_indices": list(members),
+            "predecessor_component_ids": list(
+                partition.predecessor_component_ids[component_id]
+            ),
+            "successor_component_ids": list(
+                partition.successor_component_ids[component_id]
+            ),
+            "edge_indices": local_edges,
+            "cyclic": (
+                len(members) > 1
+                or any(
+                    normalized_edges[index].source_region_index
+                    == normalized_edges[index].target_region_index
+                    for index in local_edges
+                )
+            ),
+            "input_states": [
+                {
+                    "region_index": region_index,
+                    "registers": state_payload(
+                        fixed_point.input_states[region_index]
+                    ),
+                }
+                for region_index in members
+            ],
+            "output_states": [
+                {
+                    "region_index": region_index,
+                    "registers": state_payload(
+                        fixed_point.output_states[region_index]
+                    ),
+                }
+                for region_index in members
+            ],
+        }
+        local_payload["evidence_sha256"] = sha256_bytes(json.dumps(
+            local_payload, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode())
+        scc_rows.append(local_payload)
+
+    blocker_rows = [blockers[key] for key in sorted(blockers)]
+    body: dict[str, Any] = {
+        "format": "stage-a-register-control-provenance-witness-v1",
+        "status": (
+            "proposal_requires_generated_lean_replay"
+            if fixed_point.converged and not blocker_rows else "incomplete"
+        ),
+        "acceptance_authority": False,
+        "finite_disjunction_budget": finite_disjunction_budget,
+        "fixed_point": {
+            "solver": "scc_monotone_fixed_point_v1",
+            "converged": fixed_point.converged,
+            "iterations": fixed_point.iterations,
+            "transfer_evaluations": fixed_point.transfer_evaluations,
+            "component_order": list(partition.topological_component_ids),
+        },
+        "register_pairs": [pair.to_payload() for pair in register_pairs],
+        "entry_region_indices": sorted(entry_regions),
+        "transfers": [
+            {
+                "region_index": region_index,
+                "copies": [
+                    {
+                        "output": copy.output.to_payload(),
+                        "source": copy.source.to_payload(),
+                    }
+                    for copy in sorted(
+                        transfer_by_region[region_index].copies,
+                        key=lambda item: (
+                            item.output.original, item.output.candidate,
+                            item.source.original, item.source.candidate,
+                        ),
+                    )
+                ],
+                "producers": [
+                    atom.to_payload() for atom in sorted(
+                        transfer_by_region[region_index].producers,
+                        key=RegisterControlProvenanceAtom.sort_key,
+                    )
+                ],
+                "blocked_outputs": [
+                    {
+                        "output": item.output.to_payload(),
+                        "reason_code": item.reason_code,
+                    }
+                    for item in sorted(
+                        transfer_by_region[region_index].blocked_outputs,
+                        key=lambda blocked: (
+                            blocked.output.original,
+                            blocked.output.candidate,
+                            blocked.reason_code,
+                        ),
+                    )
+                ],
+                "preserve_unmentioned": (
+                    transfer_by_region[region_index].preserve_unmentioned
+                ),
+            }
+            for region_index in range(region_count)
+        ],
+        "call_contracts": [
+            {
+                "contract_id": contract_id,
+                "preserved_registers": [
+                    pair.to_payload()
+                    for pair in sorted(
+                        contracts_by_id[contract_id].preserved_registers,
+                        key=lambda item: (item.original, item.candidate),
+                    )
+                ],
+                "import_results": [
+                    result.to_payload()
+                    for result in sorted(
+                        contracts_by_id[contract_id].import_results,
+                        key=lambda item: (
+                            item.register_pair.original,
+                            item.register_pair.candidate,
+                            item.import_identity,
+                        ),
+                    )
+                ],
+            }
+            for contract_id in sorted(contracts_by_id)
+        ],
+        "edges": [
+            {
+                "edge_index": edge_index,
+                "source_region_index": edge.source_region_index,
+                "target_region_index": edge.target_region_index,
+                "kind": edge.kind,
+                "machine_contract_id": edge.machine_contract_id,
+                "contract_status": (
+                    "not_applicable" if edge.kind == "direct"
+                    else "checked" if edge.machine_contract_id in contracts_by_id
+                    else "missing"
+                ),
+            }
+            for edge_index, edge in enumerate(normalized_edges)
+        ],
+        "regions": [
+            {
+                "region_index": region_index,
+                "inputs": state_payload(fixed_point.input_states[region_index]),
+                "outputs": state_payload(fixed_point.output_states[region_index]),
+            }
+            for region_index in range(region_count)
+        ],
+        "sccs": scc_rows,
+        "uses": use_rows,
+        "blockers": blocker_rows,
+    }
+    body["witness_sha256"] = sha256_bytes(json.dumps(
+        body, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode())
+    return RegisterControlProvenanceWitness(body)
+
+
 def _machine_result_invariant_relation(relation: dict[str, Any]) -> str:
     return "exact" if relation.get("relation") == "exact" else "related_word"
 
@@ -587,10 +1406,14 @@ def _translate_callsite_behavior(
     behavior: dict[str, Any],
     region_by_target_id: dict[int, int],
 ) -> tuple[dict[str, Any], list[str]]:
-    translated = json.loads(json.dumps(behavior))
-    outcome = translated.get("outcome")
+    # Only control targets are rewritten.  Keep the large normalized register
+    # and memory trees shared and copy the path that this function mutates.
+    translated = dict(behavior)
+    source_outcome = behavior.get("outcome")
+    outcome = dict(source_outcome) if isinstance(source_outcome, dict) else None
     if not isinstance(outcome, dict):
         return translated, ["normalized_outcome_missing"]
+    translated["outcome"] = outcome
     operation = outcome.get("op")
     target_fields: tuple[str, ...]
     if operation == "jump":

@@ -26,11 +26,57 @@ from spaghetti_extractor.relational.side_extraction_artifact import (
     parse_result_unbound,
     result_payload,
 )
-from spaghetti_extractor.stage_binary import StageAInputError
+from spaghetti_extractor.stage_binary import (
+    BlockSide,
+    StageAInputError,
+    _direct_cfg_edges,
+    _parse_stage_a_pe,
+)
 from spaghetti_extractor.util import sha256_file, write_json
 
 
 class StageABinaryInventoryTests(StageARelationalTestBase):
+    def test_direct_cfg_edges_do_not_dereference_writable_control_slot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            binary_path = Path(temporary) / "writable-jump.exe"
+            binary_path.write_bytes(
+                _pe32_image_with_immutable_indirect_call(
+                    0x2000,
+                    callee_rva=0x1030,
+                    writable=True,
+                    jump=True,
+                )
+            )
+            binary = _parse_stage_a_pe(binary_path)
+
+            self.assertEqual(
+                _direct_cfg_edges(binary, BlockSide(0x1000, 0x1006)),
+                [],
+            )
+
+    def test_direct_cfg_edges_may_resolve_readonly_control_slot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            binary_path = Path(temporary) / "readonly-jump.exe"
+            binary_path.write_bytes(
+                _pe32_image_with_immutable_indirect_call(
+                    0x2000,
+                    callee_rva=0x1030,
+                    writable=False,
+                    jump=True,
+                )
+            )
+            binary = _parse_stage_a_pe(binary_path)
+
+            self.assertEqual(
+                _direct_cfg_edges(binary, BlockSide(0x1000, 0x1006)),
+                [{
+                    "kind": "jump",
+                    "target_rva": 0x1030,
+                    "instruction_rva": 0x1000,
+                    "mnemonic": "jmp",
+                }],
+            )
+
     def test_raw_extraction_identity_covers_driver_kernel_and_toolchain(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

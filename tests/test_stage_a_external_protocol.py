@@ -233,14 +233,22 @@ class StageAExternalProtocolTests(unittest.TestCase):
         self.assertEqual(lead_byte["memory_footprints"], [])
         self.assertEqual(lead_byte["world_effect"], "none")
 
-        for symbol, base_argument, nullable in (
-            ("GetModuleHandleA", 0, True),
-            ("GetProcAddress", 1, False),
+        for symbol, base_argument, nullable, result_relations in (
+            (
+                "GetModuleHandleA",
+                0,
+                True,
+                [{"register": "eax", "relation": "related_word"}],
+            ),
+            ("GetProcAddress", 1, False, []),
         ):
             loader = self._kernel32_contract(symbol)
             self.assertEqual(loader["abi_template"], "pe32-stdcall-v1")
             self.assertEqual(loader["memory_effect"], "readOnly")
-            self.assertEqual(loader["world_effect"], "tlsState")
+            self.assertEqual(loader["world_effect"], "opaqueResources")
+            self.assertEqual(
+                loader["result_register_relations"], result_relations
+            )
             self.assertEqual(len(loader["memory_footprints"]), 1)
             footprint = loader["memory_footprints"][0]
             self.assertEqual(footprint["base_argument"], base_argument)

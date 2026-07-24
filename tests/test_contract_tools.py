@@ -9,6 +9,7 @@ from spaghetti_extractor.cli import _build_parser
 from spaghetti_extractor.contract_tools import (
     BlockMapping,
     _semantic_transfer_contract,
+    _semantic_transfer_contracts,
     _symbolic_execute,
     _unit_contract_ids_for_obligation,
     _unit_contract_obligation_lookup,
@@ -25,6 +26,7 @@ from spaghetti_extractor.util import sha256_file
 
 from contract_fixtures import write_relational_report
 from pe_fixtures import pe32_image, pe32_import_image
+from stage_a_relational_support import _pe32_image_with_immutable_indirect_call
 
 
 class ContractToolTests(unittest.TestCase):
@@ -391,6 +393,83 @@ class ContractToolTests(unittest.TestCase):
                 {"family": "external", "instruction_rva": 0x1000, **event},
             )
 
+    def test_semantic_transfer_keeps_writable_refptr_jump_indirect(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            original.write_bytes(_pe32_image_with_immutable_indirect_call(
+                0x2000, callee_rva=0x1030, writable=True, jump=True,
+            ))
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1006)
+            mapping = BlockMapping(
+                id="writable-refptr-jump",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "writable_refptr_jump"},
+            )
+
+            transfer = _semantic_transfer_contract(
+                binary,
+                mapping,
+                "writable_refptr_jump",
+                {"model": REFERENCE_CONTRACT_MODEL_ID},
+            )
+
+            self.assertEqual(transfer["status"], "reimplementable", transfer)
+            self.assertEqual(transfer["outcome"], {
+                "kind": "indirect_jump",
+                "target": {
+                    "op": "load",
+                    "width": 4,
+                    "address": {
+                        "op": "const",
+                        "width": 32,
+                        "value": binary.image_base + 0x2000,
+                    },
+                },
+            })
+            self.assertEqual(transfer["edge_conditions"], [])
+
+    def test_semantic_transfer_may_normalize_immutable_refptr_jump(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            original.write_bytes(_pe32_image_with_immutable_indirect_call(
+                0x2000, callee_rva=0x1030, writable=False, jump=True,
+            ))
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1006)
+            mapping = BlockMapping(
+                id="immutable-refptr-jump",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "immutable_refptr_jump"},
+            )
+
+            transfer = _semantic_transfer_contract(
+                binary,
+                mapping,
+                "immutable_refptr_jump",
+                {"model": REFERENCE_CONTRACT_MODEL_ID},
+            )
+
+            self.assertEqual(transfer["status"], "reimplementable", transfer)
+            self.assertEqual(
+                transfer["outcome"],
+                {"kind": "jump", "target_rva": 0x1030},
+            )
+            self.assertEqual(transfer["edge_conditions"], [{
+                "target_rva": 0x1030,
+                "condition": {"op": "true"},
+            }])
+
     def test_semantic_transfer_models_signed_divide_and_fault_condition(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -426,6 +505,97 @@ class ContractToolTests(unittest.TestCase):
             register_writes = {item["register"]: item["value"] for item in transfer["register_writes"]}
             self.assertIn("udiv_quot32", json.dumps(register_writes["eax"]))
             self.assertIn("udiv_rem32", json.dumps(register_writes["edx"]))
+
+    def test_semantic_transfers_split_at_divide_checked_continuation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytes.fromhex(
+                "31d2"          # xor edx, edx
+                "b808000000"    # mov eax, 8
+                "b902000000"    # mov ecx, 2
+                "f7f1"          # div ecx
+                "890424"        # mov [esp], eax
+                "c3"            # ret
+            )
+            original = self._write_pe(root / "original.exe", code)
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1000 + len(code))
+            mapping = BlockMapping(
+                id="divide-then-store",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "divide_then_store"},
+            )
+
+            transfers = _semantic_transfer_contracts(
+                binary,
+                [mapping],
+                {"model": REFERENCE_CONTRACT_MODEL_ID},
+            )
+
+            self.assertEqual(len(transfers), 2, transfers)
+            divide, returned = sorted(
+                transfers,
+                key=lambda transfer: transfer["original"]["rva_start"],
+            )
+            self.assertEqual(divide["original"], {
+                "rva_start": 0x1000,
+                "rva_end": 0x100E,
+                "size": 0xE,
+            })
+            self.assertEqual(
+                divide["outcome"],
+                {"kind": "fallthrough", "target_rva": 0x100E},
+            )
+            self.assertEqual(divide["counts"]["faults"], 1)
+            self.assertEqual(divide["faults"][0]["kind"], "divide_error")
+            self.assertEqual(divide["faults"][0]["instruction_rva"], 0x100C)
+            self.assertEqual(
+                divide["semantic_cutpoint"],
+                {
+                    "index": 0,
+                    "parent_block_id": "divide-then-store",
+                    "policy": "formal_stopping_instruction_v1",
+                },
+            )
+            self.assertEqual(returned["original"]["rva_start"], 0x100E)
+            self.assertEqual(returned["outcome"]["kind"], "return")
+
+    def test_unsigned_divide_fault_values_are_guarded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", bytes.fromhex("f7f1"))
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1002)
+            mapping = BlockMapping(
+                id="div-register",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "div_register"},
+            )
+
+            transfer = _semantic_transfer_contract(
+                binary,
+                mapping,
+                "div_register",
+                {"model": REFERENCE_CONTRACT_MODEL_ID},
+            )
+
+            self.assertEqual(transfer["counts"]["faults"], 1)
+            self.assertEqual(transfer["faults"][0]["kind"], "divide_error")
+            register_writes = {
+                item["register"]: item["value"]
+                for item in transfer["register_writes"]
+            }
+            self.assertEqual(register_writes["eax"]["op"], "ite")
+            self.assertEqual(register_writes["edx"]["op"], "ite")
+            self.assertIn("udiv_valid32", json.dumps(register_writes["eax"]))
 
     def test_semantic_shift_preserves_flags_for_zero_count_and_updates_parity(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -22,6 +22,7 @@ from .isa_conformance_80386 import import_singlestep_80386_json
 from .relational.mapping import stage_a_generate_map
 from .relational.interfaces import stage_a_export_interface_manifest
 from .roundtrip_fuzz.phase0 import generate_phase0_corpus
+from .roundtrip_fuzz.image_contract import load_stage_a_load_image_contract
 from .roundtrip_fuzz.generator import SPIKE_CASES, generate_spike_corpus
 from .roundtrip_fuzz.discovery import (
     compare_discovery_proposals,
@@ -76,7 +77,33 @@ from .stage_b_functional import (
 )
 from .stage_b_provenance import StageBProvenanceInputError, stage_b_generate_candidate_provenance
 from .stage_b_c_backend import stage_b_generate_semantic_c_from_state_machine
+from .stage_b_interpreter_backend import write_stage_b_interpreter_package
+from .stage_b_interpreter_native_build import (
+    build_stage_b_interpreter_native_candidate,
+)
+from .stage_b_native_engine import write_stage_b_native_engine_package
+from .stage_b_native_runtime import write_stage_b_native_runtime_package
+from .stage_b_reachable_slice import write_stage_b_reachable_slice
 from .stage_b_skeleton import stage_b_generate_link_roots, stage_b_generate_skeleton
+from .relational.engine_segments import write_engine_segment_evidence
+from .relational.lean.interpreter_kernel import (
+    write_relational_interpreter_kernel_bundle,
+)
+from .relational.lean.interpreter_kernel_invoke import (
+    write_relational_interpreter_kernel_invoke_bundle,
+)
+from .relational.lean.interpreter_kernel_run import (
+    write_relational_interpreter_kernel_run_bundle,
+)
+from .relational.lean.interpreter_kernel_step import (
+    write_relational_interpreter_kernel_step_bundle,
+)
+from .relational.lean.interpreter_kernel_summary import (
+    write_relational_interpreter_kernel_summary_bundle,
+)
+from .relational.lean.interpreter_mixed_kernel_binding import (
+    generate_interpreter_mixed_kernel_binding,
+)
 from .workspace import workspace_prune
 
 
@@ -420,6 +447,14 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         ),
     )
     build_relational.add_argument(
+        "--builder-trusted-public-keys-file",
+        type=Path,
+        help=(
+            "newline-delimited Nix public keys used to authenticate outputs "
+            "returned by remote builders"
+        ),
+    )
+    build_relational.add_argument(
         "--target-node",
         action="append",
         help=(
@@ -606,6 +641,197 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         help="checked relation contract or stage-b-machine-call-catalog-v1 JSON used to emit exact import adapters",
     )
     semantic_c.set_defaults(func=_cmd_stage_b_generate_semantic_c)
+
+    reachable_slice = subcommands.add_parser(
+        "stage-b-select-reachable-transfers",
+        help="select transfers only from a final-theorem-ready rooted reachability proof",
+    )
+    reachable_slice.add_argument("--prepared-proof", type=Path, required=True)
+    reachable_slice.add_argument("--product-graph", type=Path, required=True)
+    reachable_slice.add_argument(
+        "--whole-program-acceptance", type=Path, required=True
+    )
+    reachable_slice.add_argument("--state-machine", type=Path, required=True)
+    reachable_slice.add_argument("--out-dir", type=Path, required=True)
+    reachable_slice.set_defaults(
+        func=lambda args: write_stage_b_reachable_slice(
+            prepared_proof=args.prepared_proof,
+            product_graph=args.product_graph,
+            whole_program_acceptance=args.whole_program_acceptance,
+            state_machine=args.state_machine,
+            out_dir=args.out_dir,
+        )
+    )
+
+    interpreter = subcommands.add_parser(
+        "stage-b-generate-interpreter",
+        help="generate the stable semantic-IR interpreter and immutable program data",
+    )
+    interpreter.add_argument("--state-machine", type=Path, required=True)
+    interpreter.add_argument("--out-dir", type=Path, required=True)
+    interpreter.set_defaults(
+        func=lambda args: write_stage_b_interpreter_package(
+            state_machine=args.state_machine,
+            out=args.out_dir,
+        )
+    )
+
+    native_engine = subcommands.add_parser(
+        "stage-b-generate-native-engine",
+        help="generate the hash-bound PE32 bridge for a semantic interpreter",
+    )
+    native_engine.add_argument("--state-machine", type=Path, required=True)
+    native_engine.add_argument("--entry-rva", type=_auto_int, required=True)
+    native_engine.add_argument(
+        "--load-image-contract",
+        type=Path,
+        help="derive exact import-IAT and TLS-callback ABI evidence",
+    )
+    native_engine.add_argument(
+        "--reference-contract",
+        type=Path,
+        help="bind relocation evidence to the exact Stage A reference contract",
+    )
+    native_engine.add_argument("--callback-rva", type=_auto_int, action="append", default=[])
+    native_engine.add_argument("--out-dir", type=Path, required=True)
+    native_engine.set_defaults(
+        func=_cmd_stage_b_generate_native_engine
+    )
+
+    native_runtime = subcommands.add_parser(
+        "stage-b-generate-native-runtime",
+        help="bind interpreter and native-engine packages into a fail-closed runtime",
+    )
+    native_runtime.add_argument("--interpreter-package", type=Path, required=True)
+    native_runtime.add_argument("--native-engine-package", type=Path, required=True)
+    native_runtime.add_argument("--out-dir", type=Path, required=True)
+    native_runtime.set_defaults(
+        func=lambda args: write_stage_b_native_runtime_package(
+            interpreter_package=args.interpreter_package,
+            native_engine_package=args.native_engine_package,
+            out=args.out_dir,
+        )
+    )
+
+    interpreter_candidate = subcommands.add_parser(
+        "stage-b-build-interpreter-candidate",
+        help="compile and compose a freestanding PE32 semantic-interpreter candidate",
+    )
+    interpreter_candidate.add_argument("--interpreter-package", type=Path, required=True)
+    interpreter_candidate.add_argument("--native-engine-package", type=Path, required=True)
+    interpreter_candidate.add_argument("--native-runtime-package", type=Path, required=True)
+    interpreter_candidate.add_argument("--load-image-contract", type=Path, required=True)
+    interpreter_candidate.add_argument(
+        "--anchor-manifest",
+        type=Path,
+        help="optional checked anchor override; otherwise derive roots from linked symbols",
+    )
+    interpreter_candidate.add_argument("--compiler", default="i686-w64-mingw32-gcc")
+    interpreter_candidate.add_argument("--entry-symbol", default="stage_b_payload_entry")
+    interpreter_candidate.add_argument("--payload-rva", type=_auto_int)
+    interpreter_candidate.add_argument("--out-dir", type=Path, required=True)
+    interpreter_candidate.set_defaults(
+        func=lambda args: build_stage_b_interpreter_native_candidate(
+            interpreter_package=args.interpreter_package,
+            native_engine_package=args.native_engine_package,
+            native_runtime_package=args.native_runtime_package,
+            load_image_contract=args.load_image_contract,
+            anchor_manifest=args.anchor_manifest,
+            compiler=args.compiler,
+            entry_symbol=args.entry_symbol,
+            payload_rva=args.payload_rva,
+            out_dir=args.out_dir,
+        )
+    )
+
+    engine_segments = subcommands.add_parser(
+        "stage-a-generate-engine-segments",
+        help="bind semantic transfers to exact interpreter data and candidate kernel bytes",
+    )
+    engine_segments.add_argument("--semantic-transfers", type=Path, required=True)
+    engine_segments.add_argument("--interpreter-program", type=Path, required=True)
+    engine_segments.add_argument("--interpreter-package", type=Path, required=True)
+    engine_segments.add_argument("--candidate", type=Path, required=True)
+    engine_segments.add_argument("--linker-map", type=Path, required=True)
+    engine_segments.add_argument("--engine-layout", type=Path, required=True)
+    engine_segments.add_argument(
+        "--kernel-callback-plan",
+        type=Path,
+        help="optional exact finite target inventory for candidate indirect calls",
+    )
+    engine_segments.add_argument("--product-cutpoint", type=_auto_int, action="append", default=[])
+    engine_segments.add_argument("--out", type=Path, required=True)
+    engine_segments.set_defaults(func=_cmd_stage_a_generate_engine_segments)
+
+    interpreter_kernel = subcommands.add_parser(
+        "stage-a-generate-interpreter-kernel",
+        help="emit exact candidate-kernel structure and Lean proof obligations",
+    )
+    interpreter_kernel.add_argument("--candidate", type=Path, required=True)
+    interpreter_kernel.add_argument("--linker-map", type=Path, required=True)
+    interpreter_kernel.add_argument(
+        "--interpreter-program-manifest", type=Path, required=True
+    )
+    interpreter_kernel.add_argument("--engine-layout", type=Path, required=True)
+    interpreter_kernel.add_argument(
+        "--native-build-manifest", type=Path, required=True
+    )
+    interpreter_kernel.add_argument("--out-dir", type=Path, required=True)
+    interpreter_kernel.set_defaults(
+        func=lambda args: write_relational_interpreter_kernel_bundle(
+            candidate_pe=args.candidate,
+            linker_map=args.linker_map,
+            interpreter_program_manifest=args.interpreter_program_manifest,
+            engine_layout=args.engine_layout,
+            native_build_manifest=args.native_build_manifest,
+            out=args.out_dir,
+        ).payload()
+    )
+
+    kernel_lookup = subcommands.add_parser(
+        "stage-a-generate-interpreter-kernel-lookup",
+        help="reflect the exact compiled programLookup operation",
+    )
+    kernel_lookup.add_argument("--kernel-plan", type=Path, required=True)
+    kernel_lookup.add_argument("--kernel-data-inventory", type=Path, required=True)
+    kernel_lookup.add_argument("--out-dir", type=Path, required=True)
+    kernel_lookup.set_defaults(func=_cmd_stage_a_generate_interpreter_kernel_lookup)
+
+    kernel_step = subcommands.add_parser(
+        "stage-a-generate-interpreter-kernel-step",
+        help="reflect the exact compiled interpreterStep operation",
+    )
+    kernel_step.add_argument("--kernel-plan", type=Path, required=True)
+    kernel_step.add_argument("--out-dir", type=Path, required=True)
+    kernel_step.set_defaults(func=_cmd_stage_a_generate_interpreter_kernel_step)
+
+    kernel_invoke = subcommands.add_parser(
+        "stage-a-generate-interpreter-kernel-invoke",
+        help="reflect the exact compiled invokeCall operation",
+    )
+    kernel_invoke.add_argument("--kernel-plan", type=Path, required=True)
+    kernel_invoke.add_argument("--candidate", type=Path, required=True)
+    kernel_invoke.add_argument("--out-dir", type=Path, required=True)
+    kernel_invoke.set_defaults(func=_cmd_stage_a_generate_interpreter_kernel_invoke)
+
+    kernel_run = subcommands.add_parser(
+        "stage-a-generate-interpreter-kernel-run",
+        help="reflect the exact compiled runFunction operation",
+    )
+    kernel_run.add_argument("--kernel-plan", type=Path, required=True)
+    kernel_run.add_argument("--candidate", type=Path, required=True)
+    kernel_run.add_argument("--out-dir", type=Path, required=True)
+    kernel_run.set_defaults(func=_cmd_stage_a_generate_interpreter_kernel_run)
+
+    mixed_kernel_binding = subcommands.add_parser(
+        "stage-a-generate-interpreter-mixed-kernel-binding",
+        help="assemble exact mixed-kernel component proofs into the acceptance term",
+    )
+    mixed_kernel_binding.add_argument("--manifest", type=Path, required=True)
+    mixed_kernel_binding.add_argument("--out-dir", type=Path, required=True)
+    mixed_kernel_binding.set_defaults(
+        func=_cmd_stage_a_generate_interpreter_mixed_kernel_binding
+    )
 
     roots = subcommands.add_parser("stage-b-generate-link-roots", help="generate linker root flags for a candidate object")
     roots.add_argument("--original", type=Path, required=True)
@@ -818,6 +1044,9 @@ def _cmd_stage_a_build_relational(args: Any) -> dict[str, Any]:
         "executor": args.executor,
         "flake": args.flake,
         "builders_file": args.builders_file,
+        "builder_trusted_public_keys_file": (
+            args.builder_trusted_public_keys_file
+        ),
         "target_nodes": args.target_node,
         "out": args.out,
     }
@@ -1202,6 +1431,172 @@ def _cmd_stage_b_explain_delta(args: Any) -> dict[str, Any]:
     )
 
 
+def _cmd_stage_b_generate_native_engine(args: Any) -> dict[str, Any]:
+    callback_targets: list[int | dict[str, Any]] = list(args.callback_rva)
+    import_iat_vas: dict[tuple[str, str | int], int] | None = None
+    base_relocation_evidence: dict[str, Any] | None = None
+    if args.load_image_contract is not None:
+        if args.reference_contract is None:
+            raise ValueError(
+                "--reference-contract is required with --load-image-contract"
+            )
+        contract = load_stage_a_load_image_contract(args.load_image_contract)
+        if args.entry_rva != contract.identity.entry_rva:
+            raise ValueError(
+                "native-engine entry RVA differs from the load-image contract"
+            )
+        import_iat_vas = {}
+        for descriptor in contract.imports:
+            for cell in descriptor.cells:
+                identity: str | int
+                if cell.symbol is not None:
+                    identity = cell.symbol
+                elif cell.ordinal is not None:
+                    identity = cell.ordinal
+                else:
+                    raise ValueError("load-image import cell has no identity")
+                key = (descriptor.dll.lower(), identity)
+                value = contract.identity.preferred_base + cell.iat_rva
+                previous = import_iat_vas.setdefault(key, value)
+                if previous != value:
+                    raise ValueError(
+                        f"load-image contract has ambiguous IAT cells for {key!r}"
+                    )
+        tls_rvas = set()
+        if contract.tls is not None:
+            for callback in contract.tls.callbacks:
+                tls_rvas.add(callback.rva)
+                callback_targets.append(
+                    {
+                        "rva": callback.rva,
+                        "kind": "tls_callback",
+                        "stack_cleanup_bytes": 12,
+                    }
+                )
+        duplicate_tls = sorted(tls_rvas.intersection(args.callback_rva))
+        if duplicate_tls:
+            raise ValueError(
+                "TLS callback RVAs must not also be passed via --callback-rva: "
+                + ", ".join(f"{rva:#x}" for rva in duplicate_tls)
+            )
+        relocation_rows = []
+        for block in contract.relocations:
+            for relocation in block.relocations:
+                if (
+                    relocation.target_rva is None
+                    or relocation.preferred_value is None
+                    or relocation.width == 0
+                ):
+                    continue
+                relocation_rows.append(
+                    {
+                        "source_rva": relocation.target_rva,
+                        "type": relocation.type,
+                        "kind": relocation.kind,
+                        "width": relocation.width,
+                        "preferred_value": relocation.preferred_value,
+                    }
+                )
+        base_relocation_evidence = {
+            "format": "stage-b-pe32-base-relocation-evidence-v1",
+            "complete": contract.completeness.complete,
+            "pe_sha256": contract.identity.pe_sha256,
+            "reference_contract_sha256": sha256_file(args.reference_contract),
+            "image_base": contract.identity.preferred_base,
+            "relocations": relocation_rows,
+        }
+    return write_stage_b_native_engine_package(
+        state_machine=args.state_machine,
+        entry_rva=args.entry_rva,
+        callback_targets=callback_targets,
+        import_iat_vas=import_iat_vas,
+        base_relocation_evidence=base_relocation_evidence,
+        out=args.out_dir,
+    )
+
+
+def _cmd_stage_a_generate_engine_segments(args: Any) -> dict[str, Any]:
+    evidence = write_engine_segment_evidence(
+        semantic_transfers=args.semantic_transfers,
+        interpreter_program_manifest=args.interpreter_program,
+        interpreter_package_manifest=args.interpreter_package,
+        candidate_pe=args.candidate,
+        linker_map=args.linker_map,
+        engine_layout=args.engine_layout,
+        kernel_callback_plan=args.kernel_callback_plan,
+        product_cutpoints=args.product_cutpoint,
+        out=args.out,
+    )
+    return evidence.to_payload()
+
+
+def _kernel_operation_generation_result(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": "ready",
+        "operation": operation,
+        "diagnostic_status": payload.get("status", "unknown"),
+        "acceptance_authority": False,
+        "artifact_sha256": payload.get("artifact_sha256"),
+    }
+
+
+def _cmd_stage_a_generate_interpreter_kernel_lookup(args: Any) -> dict[str, Any]:
+    plan = write_relational_interpreter_kernel_summary_bundle(
+        kernel_plan=args.kernel_plan,
+        data_inventory=args.kernel_data_inventory,
+        out=args.out_dir,
+    )
+    return _kernel_operation_generation_result("programLookup", plan.payload())
+
+
+def _cmd_stage_a_generate_interpreter_kernel_step(args: Any) -> dict[str, Any]:
+    plan = write_relational_interpreter_kernel_step_bundle(
+        kernel_plan=args.kernel_plan,
+        out=args.out_dir,
+    )
+    return _kernel_operation_generation_result("interpreterStep", plan.payload())
+
+
+def _cmd_stage_a_generate_interpreter_kernel_invoke(args: Any) -> dict[str, Any]:
+    plan = write_relational_interpreter_kernel_invoke_bundle(
+        kernel_plan=args.kernel_plan,
+        candidate_pe=args.candidate,
+        out=args.out_dir,
+    )
+    return _kernel_operation_generation_result("invokeCall", plan.payload())
+
+
+def _cmd_stage_a_generate_interpreter_kernel_run(args: Any) -> dict[str, Any]:
+    plan = write_relational_interpreter_kernel_run_bundle(
+        kernel_plan=args.kernel_plan,
+        candidate_pe=args.candidate,
+        out=args.out_dir,
+    )
+    return _kernel_operation_generation_result("runFunction", plan.payload())
+
+
+def _cmd_stage_a_generate_interpreter_mixed_kernel_binding(
+    args: Any,
+) -> dict[str, Any]:
+    plan = generate_interpreter_mixed_kernel_binding(args.manifest, args.out_dir)
+    payload = plan.to_json()
+    return {
+        **payload,
+        "binding_plan_status": payload["status"],
+        "status": "generated" if plan.complete else "incomplete",
+    }
+
+
+def _auto_int(value: str) -> int:
+    try:
+        result = int(value, 0)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from exc
+    if not 0 <= result < 2**32:
+        raise argparse.ArgumentTypeError("integer must fit in an unsigned 32-bit value")
+    return result
+
+
 def _json_object_arg(text: str | None, path: Path | None) -> dict[str, Any] | None:
     if text and path is not None:
         raise ValueError("provide --proof-metadata-json or --proof-metadata, not both")
@@ -1244,6 +1639,7 @@ def _exit_status(result: dict[str, Any]) -> int:
         "pass",
         "passed",
         "generated",
+        "candidate-generated",
         "prepared",
         "analyzed",
         "checked",

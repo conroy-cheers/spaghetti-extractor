@@ -94,6 +94,13 @@ from .definitions import (
 )
 from .common import _lean_register_relation_pair
 from .callbacks import _lean_acceptance_callback_return_node
+from .lockstep_environment import relational_exact_lockstep_acceptance_source
+from .opaque_lockstep_environment import (
+    OPAQUE_LOCKSTEP_ENVIRONMENT_FORMAT,
+    parse_opaque_lockstep_environment_artifact,
+    relational_opaque_lockstep_acceptance_source,
+    relational_opaque_lockstep_environment_source,
+)
 
 
 def _frame_exact_expr_witness(
@@ -341,6 +348,69 @@ def _compact_acceptance_blockers(
     return list(grouped.values())
 
 
+def _retain_checked_linked_control_links(
+    linked_control: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Retain links satisfying Lean's depth-one resume-state clause."""
+    states = list(linked_control.get("states", []))
+    retained_links: list[dict[str, Any]] = []
+    rejected_links: list[dict[str, Any]] = []
+    for link in linked_control.get("links", []):
+        matching_states = [
+            state for state in states
+            if state.get("node_id") == link.get("resume_node_id")
+            and state.get("continuation_target_id")
+                == link.get("resume_continuation")
+            and state.get("active_frame") == link.get("resume_inventory")
+        ]
+        if any(
+            type(state.get("minimum_depth")) is int
+            and int(state["minimum_depth"]) == 1
+            for state in matching_states
+        ):
+            retained_links.append(dict(link))
+            continue
+        rejected_links.append({
+            "reason": "resume_state_depth_one_witness_missing",
+            "call_source_target_id": link.get("call_source_target_id"),
+            "resume_node_id": link.get("resume_node_id"),
+            "resume_target_id": link.get("resume_target_id"),
+            "resume_continuation": link.get("resume_continuation"),
+            "candidate_minimum_depths": sorted({
+                int(state["minimum_depth"])
+                for state in matching_states
+                if type(state.get("minimum_depth")) is int
+            }),
+        })
+
+    gaps = [
+        *linked_control.get("link_gaps", []),
+        *rejected_links,
+    ]
+    counts = dict(linked_control.get("counts", {}))
+    counts["link_candidates"] = len(retained_links)
+    counts["link_gaps"] = len(gaps)
+    counts["rejected_link_candidates"] = len(rejected_links)
+    return (
+        {
+            **linked_control,
+            "links": retained_links,
+            "link_gaps": gaps,
+            "counts": counts,
+        },
+        rejected_links,
+    )
+
+
+def _checked_infeasible_branch_edge(edge: Mapping[str, Any]) -> bool:
+    """Require both decoded guards to prove an infeasible edge impossible."""
+    return (
+        edge.get("infeasible") is True
+        and _semantic_constant_bool(edge.get("original_guard") or {}) is False
+        and _semantic_constant_bool(edge.get("candidate_guard") or {}) is False
+    )
+
+
 def _frame_relations_requiring_internal_preservation(
     frame_relations: tuple[tuple[str, ...], ...], frame_operation: str,
 ) -> tuple[tuple[str, ...], ...]:
@@ -450,6 +520,474 @@ def _paired_frame_expression_witness(
         return None
 
     return build(original_expression, candidate_expression)
+
+
+def _opaque_argument_source(expression: Any) -> dict[str, Any] | None:
+    if not isinstance(expression, Mapping):
+        return None
+    operation = expression.get("op")
+    if operation == "constant":
+        value = expression.get("value")
+        if type(value) is int and 0 <= value < 2**32:
+            return {"kind": "constant", "value": int(value)}
+        return None
+    if operation == "input_reg":
+        register = expression.get("reg")
+        if register in {
+            "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp",
+        }:
+            return {"kind": "register", "register": str(register)}
+        return None
+    if operation != "read32":
+        return None
+    witness = _register_offset_witness(expression.get("address"), "esp")
+    if witness is None:
+        return None
+    return {"kind": "stack_word", "offset": int(witness[1])}
+
+
+def _opaque_region_input_invariant(region: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "register_relations": list(region.get("input_relations", [])),
+        "import_register_relations": list(region.get("input_import_relations", [])),
+        "dynamic_register_range_relations": list(
+            region.get("input_dynamic_range_relations", [])
+        ),
+        "dynamic_stack_range_relations": list(
+            region.get("input_dynamic_stack_range_relations", [])
+        ),
+        "flag_bits": list(region.get("flag_inputs", FLAG_BITS)),
+        "bounds": list(region.get("bounds", [])),
+        "address_separations": list(region.get("address_separations", [])),
+        "stack_windows": list(region.get("stack_windows", [])),
+        "predicates": list(region.get("state_predicates", [])),
+    }
+
+
+def _opaque_import_iat_rvas(
+    binary: StageABinary,
+    identity: tuple[str, str, str | int],
+) -> list[int]:
+    matches: list[int] = []
+    for imported in binary.imports:
+        candidate = (
+            imported.dll.lower(),
+            "symbol" if imported.symbol is not None else "ordinal",
+            imported.symbol if imported.symbol is not None else imported.ordinal,
+        )
+        if candidate == identity and imported.thunk_rva is not None:
+            matches.append(int(imported.thunk_rva))
+    return sorted(matches)
+
+
+def _opaque_lockstep_inventory_plan(
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+    contract: Mapping[str, Any],
+    behaviors: list[dict[str, Any]],
+    plan: Mapping[str, Any],
+    external_site_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Propose a complete reachable opaque inventory without proof authority."""
+    transitions: list[dict[str, Any]] = []
+    protocol_count = 0
+    for parent in plan.get("node_steps", []):
+        kind = parent.get("kind")
+        if kind == "external_protocol":
+            protocol_count += 1
+            continue
+        if kind not in {"external_call", "external_jump", "external_terminate"}:
+            continue
+        cases = parent.get("cases")
+        if isinstance(cases, list):
+            for case_index, case in enumerate(cases):
+                transitions.append({
+                    "kind": kind,
+                    "node_id": int(parent["node_id"]),
+                    "case_index": case_index,
+                    "step": {**parent, **case},
+                })
+        else:
+            transitions.append({
+                "kind": kind,
+                "node_id": int(parent["node_id"]),
+                "case_index": None,
+                "step": parent,
+            })
+
+    callback_states = list(plan.get("protocol_callback_states") or [])
+    tls_root_ids = list(
+        (plan.get("launch") or {}).get("tls_callback_node_ids", [])
+    )
+    # Protocol-only and callback-only graphs remain the responsibility of the
+    # existing prototype-dependent exact-lockstep profile.  Once an opaque
+    # transition is selected, however, every mixed protocol/callback frontier
+    # must be represented by the same opaque event and nested-frame model.
+    if not transitions:
+        return {
+            "status": "not_applicable",
+            "required_site_ids": [],
+            "site_bindings": [],
+            "counts": {
+                "returning_or_tail_or_terminal": 0,
+                "covered": 0,
+                "protocol": protocol_count,
+                "callback_states": len(callback_states),
+                "tls_roots": len(tls_root_ids),
+            },
+            "gaps": [],
+        }
+
+    gaps: list[dict[str, Any]] = []
+
+    def gap(
+        code: str,
+        message: str,
+        *,
+        node_id: int | None = None,
+        edge_id: int | None = None,
+        count: int | None = None,
+    ) -> None:
+        item: dict[str, Any] = {
+            "code": code,
+            "message": message,
+            "next_action": (
+                "supply one statically extractable normalized event identity, "
+                "paired machine argument sources, and bounded memory observations"
+            ),
+        }
+        if node_id is not None:
+            item["node_id"] = node_id
+        if edge_id is not None:
+            item["edge_id"] = edge_id
+        if count is not None:
+            item["count"] = count
+        gaps.append(item)
+
+    if protocol_count:
+        gap(
+            "opaque_lockstep_protocol_callback_frame_unsupported",
+            f"{protocol_count} reachable protocol external nodes require an exact "
+            "opaque callback/action and nested-frame refinement",
+            count=protocol_count,
+        )
+    if callback_states:
+        gap(
+            "opaque_lockstep_callback_entry_frame_unsupported",
+            f"{len(callback_states)} reachable callback control states are not bound "
+            "to opaque event identities and nested continuation frames",
+            count=len(callback_states),
+        )
+    if tls_root_ids:
+        gap(
+            "opaque_lockstep_tls_entry_frame_unsupported",
+            f"{len(tls_root_ids)} reachable TLS callback roots are not bound to "
+            "opaque nested entry and continuation frames",
+            count=len(tls_root_ids),
+        )
+
+    candidates_by_edge: dict[int, list[dict[str, Any]]] = {}
+    candidates_by_id: dict[int, list[dict[str, Any]]] = {}
+    for candidate in external_site_candidates:
+        candidate_id = candidate.get("id")
+        if type(candidate_id) is int:
+            candidates_by_id.setdefault(int(candidate_id), []).append(candidate)
+        edge_index = candidate.get("edge_index")
+        if type(edge_index) is int:
+            candidates_by_edge.setdefault(int(edge_index), []).append(candidate)
+    contracts_by_id = {
+        int(item["id"]): item
+        for item in contract.get("machine_import_call_contracts", [])
+        if isinstance(item, Mapping) and type(item.get("id")) is int
+    }
+
+    sites_by_id: dict[int, dict[str, Any]] = {}
+    site_bindings: list[dict[str, Any]] = []
+    covered_transitions = 0
+    for transition in transitions:
+        kind = str(transition["kind"])
+        node_id = int(transition["node_id"])
+        step = transition["step"]
+        planned_site = step.get("external_site")
+        if not isinstance(planned_site, Mapping):
+            gap(
+                "opaque_lockstep_site_evidence_missing",
+                f"external node {node_id} has no checked call-site evidence",
+                node_id=node_id,
+            )
+            continue
+
+        edge_id: int | None = None
+        if kind == "external_call":
+            edges = step.get("edges", [])
+            if not isinstance(edges, list) or len(edges) != 1:
+                gap(
+                    "opaque_lockstep_external_edge_ambiguous",
+                    f"external node {node_id} does not have one returning edge",
+                    node_id=node_id,
+                )
+                continue
+            edge_id = int(edges[0]["edge_id"])
+            matches = candidates_by_edge.get(edge_id, [])
+        else:
+            site_id_value = planned_site.get("id")
+            matches = (
+                candidates_by_id.get(int(site_id_value), [])
+                if type(site_id_value) is int else []
+            )
+        if len(matches) != 1 or matches[0] != planned_site:
+            location = f"edge {edge_id}" if edge_id is not None else f"node {node_id}"
+            gap(
+                "opaque_lockstep_site_evidence_ambiguous",
+                f"external {location} has {len(matches)} matching call-site candidates",
+                node_id=node_id,
+                edge_id=edge_id,
+            )
+            continue
+        site = matches[0]
+        dispatch_profile = site.get("dispatch_profile")
+        if dispatch_profile not in {
+            "decoded_external_call",
+            "checked_import_register",
+            "checked_direct_import_thunk",
+        }:
+            gap(
+                "opaque_lockstep_indirect_identity_unsupported",
+                f"external node {node_id} has unresolved dispatch profile "
+                f"{dispatch_profile!r}",
+                node_id=node_id,
+                edge_id=edge_id,
+            )
+            continue
+
+        source_index = int(site["source_region_index"])
+        target_index = int(site["target_region_index"])
+        original_outcome = behaviors[source_index].get("original_ir", {}).get(
+            "outcome", {}
+        )
+        candidate_outcome = behaviors[source_index].get("candidate_ir", {}).get(
+            "outcome", {}
+        )
+        machine_contract = contracts_by_id.get(int(site["machine_contract_id"]))
+        identity = (
+            _machine_import_call_contract_identity(machine_contract)
+            if machine_contract is not None else None
+        )
+        expected_disposition = "terminates" if kind == "external_terminate" else "returns"
+        decoded_identity = _semantic_external_target_identity(
+            step.get("decoded_import") or original_outcome.get("import")
+        )
+        paired_decoded_identity = _semantic_external_target_identity(
+            candidate_outcome.get("import")
+        )
+        decoded_operation_ok = (
+            original_outcome.get("op") == candidate_outcome.get("op")
+            and (
+                original_outcome.get("op") == "external_call"
+                if dispatch_profile == "decoded_external_call"
+                else original_outcome.get("op") == "indirect_call"
+                if dispatch_profile == "checked_import_register"
+                else original_outcome.get("op") == "external_jump"
+            )
+        )
+        if (
+            machine_contract is None
+            or identity is None
+            or decoded_identity != identity
+            or (
+                paired_decoded_identity is not None
+                and paired_decoded_identity != identity
+            )
+            or machine_contract.get("disposition") != expected_disposition
+            or not decoded_operation_ok
+        ):
+            gap(
+                "opaque_lockstep_import_identity_unextractable",
+                f"external node {node_id} lacks one normalized {expected_disposition} "
+                "import identity and disposition",
+                node_id=node_id,
+                edge_id=edge_id,
+            )
+            continue
+
+        original_iats = _opaque_import_iat_rvas(original_bin, identity)
+        candidate_iats = _opaque_import_iat_rvas(candidate_bin, identity)
+        if len(original_iats) != 1 or len(candidate_iats) != 1:
+            gap(
+                "opaque_lockstep_iat_identity_ambiguous",
+                f"external node {node_id} resolves to {len(original_iats)} original "
+                f"and {len(candidate_iats)} candidate IAT slots",
+                node_id=node_id,
+                edge_id=edge_id,
+            )
+            continue
+
+        if dispatch_profile == "checked_import_register":
+            original_arguments = site.get("argument_expressions")
+            candidate_arguments = site.get("argument_expressions")
+        else:
+            original_arguments = original_outcome.get("arguments")
+            candidate_arguments = candidate_outcome.get("arguments")
+        if (
+            not isinstance(original_arguments, list)
+            or not isinstance(candidate_arguments, list)
+            or len(original_arguments) != len(candidate_arguments)
+            or len(site.get("argument_relation_claims") or [])
+                != len(original_arguments)
+        ):
+            gap(
+                "opaque_lockstep_argument_inventory_unextractable",
+                f"external node {node_id} has no unique paired argument inventory",
+                node_id=node_id,
+                edge_id=edge_id,
+            )
+            continue
+        argument_sources: list[dict[str, Any]] = []
+        argument_failed = False
+        for argument_index, (original_argument, candidate_argument) in enumerate(
+            zip(original_arguments, candidate_arguments, strict=True)
+        ):
+            original_source = _opaque_argument_source(original_argument)
+            candidate_source = _opaque_argument_source(candidate_argument)
+            if original_source is None or candidate_source is None:
+                gap(
+                    "opaque_lockstep_argument_source_unextractable",
+                    f"external node {node_id} argument {argument_index} is not one "
+                    "register, stack word, or constant per side",
+                    node_id=node_id,
+                    edge_id=edge_id,
+                )
+                argument_failed = True
+                break
+            argument_sources.append({
+                "original": original_source,
+                "candidate": candidate_source,
+            })
+        if argument_failed:
+            continue
+
+        memory_observations: list[dict[str, Any]] = []
+        memory_failed = False
+        footprints = machine_contract.get("memory_footprints")
+        memory_effect = machine_contract.get("memory_effect")
+        if not isinstance(footprints, list) or memory_effect == "relationalState":
+            footprints = []
+            memory_failed = True
+        if memory_effect in {"readOnly", "argumentRanges"} and not footprints:
+            memory_failed = True
+        for footprint in footprints:
+            size = footprint.get("size") if isinstance(footprint, Mapping) else None
+            offset = footprint.get("offset") if isinstance(footprint, Mapping) else None
+            base_argument = (
+                footprint.get("base_argument")
+                if isinstance(footprint, Mapping) else None
+            )
+            if (
+                not isinstance(size, Mapping)
+                or size.get("kind") != "fixed"
+                or type(size.get("bytes")) is not int
+                or int(size["bytes"]) <= 0
+                or type(offset) is not int
+                or int(offset) < 0
+                or type(base_argument) is not int
+                or not 0 <= int(base_argument) < len(argument_sources)
+            ):
+                memory_failed = True
+                break
+            memory_observations.append({
+                "argument_index": int(base_argument),
+                "original_offset": int(offset),
+                "candidate_offset": int(offset),
+                "bytes": int(size["bytes"]),
+                "relation": "exact_bytes",
+            })
+        if len({json.dumps(item, sort_keys=True) for item in memory_observations}) != len(
+            memory_observations
+        ):
+            memory_failed = True
+        if memory_failed:
+            gap(
+                "opaque_lockstep_memory_observation_unextractable",
+                f"external node {node_id} lacks one bounded memory observation inventory",
+                node_id=node_id,
+                edge_id=edge_id,
+            )
+            continue
+
+        imported: dict[str, Any] = {"dll": identity[0]}
+        imported[identity[1]] = identity[2]
+        target_invariant = _opaque_region_input_invariant(
+            contract["regions"][target_index]
+        )
+        if site.get("site_kind") == "direct_import_thunk":
+            target_invariant["import_register_relations"] = []
+        site_payload = {
+            "id": int(site["id"]),
+            "source_target_id": int(site["source_target_id"]),
+            "continuation_target_id": int(site["continuation_target_id"]),
+            "disposition": expected_disposition,
+            "import": imported,
+            "original_iat_rva": original_iats[0],
+            "candidate_iat_rva": candidate_iats[0],
+            "argument_sources": argument_sources,
+            "memory_observations": memory_observations,
+            "boundary_invariant": site["boundary_invariant"],
+            "target_invariant": target_invariant,
+        }
+        prior = sites_by_id.setdefault(int(site["id"]), site_payload)
+        if prior != site_payload:
+            gap(
+                "opaque_lockstep_site_identity_ambiguous",
+                f"opaque site {site['id']} has inconsistent reachable definitions",
+                node_id=node_id,
+                edge_id=edge_id,
+            )
+            continue
+        binding = {
+            "node_id": node_id,
+            "kind": kind,
+            "case_index": transition["case_index"],
+            "site_id": int(site["id"]),
+        }
+        if edge_id is not None:
+            binding["edge_id"] = edge_id
+        site_bindings.append(binding)
+        covered_transitions += 1
+
+    sites = sorted(sites_by_id.values(), key=lambda item: int(item["id"]))
+    required_site_ids = [int(site["id"]) for site in sites]
+    if covered_transitions != len(transitions):
+        gap(
+            "opaque_lockstep_reachable_coverage_incomplete",
+            f"covered {covered_transitions} of {len(transitions)} reachable returning, "
+            "tail, or terminating external transitions",
+            count=len(transitions) - covered_transitions,
+        )
+    summary = {
+        "required_site_ids": required_site_ids,
+        "site_bindings": site_bindings,
+        "counts": {
+            "returning_or_tail_or_terminal": len(transitions),
+            "covered": covered_transitions,
+            "protocol": protocol_count,
+            "callback_states": len(callback_states),
+            "tls_roots": len(tls_root_ids),
+        },
+    }
+    if gaps:
+        return {"status": "incomplete", **summary, "gaps": gaps}
+
+    artifact = {
+        "format": OPAQUE_LOCKSTEP_ENVIRONMENT_FORMAT,
+        "call_sites": sites,
+    }
+    parse_opaque_lockstep_environment_artifact(artifact)
+    return {
+        "status": "ready",
+        **summary,
+        "artifact": artifact,
+        "gaps": [],
+    }
 
 
 def _whole_program_acceptance_plan(
@@ -3439,9 +3977,22 @@ def _whole_program_acceptance_plan(
                     successor_imports, successor_relations, successor_exact_words,
                 ))
 
-    linked_control = project_linked_control_profile(
-        control_witness_states, behaviors=behaviors, nodes=nodes
+    linked_control, rejected_linked_control_links = (
+        _retain_checked_linked_control_links(
+            project_linked_control_profile(
+                control_witness_states, behaviors=behaviors, nodes=nodes
+            )
+        )
     )
+    for rejected_link in rejected_linked_control_links:
+        block(
+            "linked_control_resume_state_profile_unmet",
+            "linked control link from target "
+            f"{rejected_link['call_source_target_id']} to resume node "
+            f"{rejected_link['resume_node_id']} has no checked depth-one "
+            "resume-state witness",
+            "construct a checked depth-one resume state before admitting the link",
+        )
     linked_control["fixed_point"] = {
         "status": "reached",
         "profile_state_count": len(represented_linked_control_states),
@@ -3465,6 +4016,9 @@ def _whole_program_acceptance_plan(
     control_witness_expansion_keys = {
         linked_control_expansion_key(state)
         for state in control_witness_states
+    }
+    control_profile_node_ids = {
+        int(state["node_id"]) for state in control_states
     }
 
     register_edge_by_source_target = {
@@ -3537,9 +4091,35 @@ def _whole_program_acceptance_plan(
             behaviors[node_id].get("original_ir", {}).get("outcome", {}),
             behaviors[node_id].get("candidate_ir", {}).get("outcome", {}),
         ]
+        control_rows = control_states_by_node.get(node_id, [])
+        if (
+            not control_rows
+            and node_id not in control_profile_node_ids
+            and node_id not in protocol_callback_contract_by_node
+        ):
+            node_steps.append({
+                "kind": "control_unrepresented",
+                "profile": "control-state-unrepresented-v1",
+                "node_id": node_id,
+                "region_index": node_id,
+                "target_id": target_id,
+                "edges": [
+                    {
+                        "edge_id": edge_id,
+                        "target_node_id": int(edges[edge_id]["target_node_id"]),
+                        "target_region_index": int(
+                            edges[edge_id]["target_node_id"]
+                        ),
+                        "target_target_id": int(
+                            edges[edge_id]["target_target_id"]
+                        ),
+                    }
+                    for edge_id in outgoing
+                ],
+            })
+            continue
         if not outgoing:
             relation_row = register_relations.get("regions", [])[node_id]
-            control_rows = control_states_by_node.get(node_id, [])
             if all(outcome.get("op") == "external_jump" for outcome in outcomes):
                 if not control_rows or any(
                     not control_row["calls"] for control_row in control_rows
@@ -4810,7 +5390,11 @@ def _whole_program_acceptance_plan(
             or fallthrough_edge is None
             or candidate_edge_by_kind.get("branchTaken") is None
             or candidate_edge_by_kind.get("branchFallthrough") is None
-            or any(bool(edge.get("infeasible")) for edge in edge_rows)
+            or any(
+                bool(edge.get("infeasible"))
+                and not _checked_infeasible_branch_edge(edge)
+                for edge in edge_rows
+            )
             or any(
                 candidate_by_edge.get(int(edge["id"]), {}).get("certificate_profile")
                     not in {
@@ -4918,6 +5502,24 @@ def _whole_program_acceptance_plan(
             planned_edges = []
             for edge in ordered_edges:
                 target_node_id = int(edge["target_node_id"])
+                segment_candidate = candidate_by_edge[int(edge["id"])]
+                if _checked_infeasible_branch_edge(edge):
+                    planned_edges.append({
+                        "edge_id": int(edge["id"]),
+                        "certificate_profile": segment_candidate[
+                            "certificate_profile"
+                        ],
+                        "frame_guard_claim": None,
+                        "infeasible": True,
+                        "branch_value": edge.get("kind") == "branchTaken",
+                        "candidate_branch_value": edge.get(
+                            "candidate_kind", edge.get("kind")
+                        ) == "branchTaken",
+                        "target_node_id": target_node_id,
+                        "target_region_index": target_node_id,
+                        "target_target_id": int(edge["target_target_id"]),
+                    })
+                    continue
                 target_rows = [
                     row for row in control_states_by_node.get(
                         target_node_id, []
@@ -4976,7 +5578,6 @@ def _whole_program_acceptance_plan(
                     )
                     branch_cases_complete = False
                     break
-                segment_candidate = candidate_by_edge[int(edge["id"])]
                 frame_guard_claim = None
                 if segment_candidate.get("certificate_profile") == (
                     "composable_local_no_write_deferred_guard_v1"
@@ -5954,10 +6555,20 @@ def _lean_acceptance_linked_shallow_node(
             "shallow linked acceptance does not yet support protocol environments"
         )
     node_id = int(step["node_id"])
+    acceptance_environment = (
+        step.get("kind") == "external_call"
+        or bool(step.get("opaque_lockstep_profile"))
+        or "opaque_lockstep_site_id" in step
+    )
     environment_binders = (
         "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
-        "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
-        "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+        + (
+            "    (environmentRefines : AcceptanceExternalEnvironmentsRefine\n"
+            "      originalEnvironment candidateEnvironment) :\n"
+            if acceptance_environment else
+            "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
+            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+        )
         if parameterized_environment else "    :\n"
     )
     original_program = (
@@ -7834,6 +8445,11 @@ def _lean_acceptance_running_node(
         + ")"
         if parameterized_environment else "candidateWorldProgram"
     )
+    acceptance_environment = (
+        step.get("kind") == "external_call"
+        or bool(step.get("opaque_lockstep_profile"))
+        or "opaque_lockstep_site_id" in step
+    )
     environment_binders = (
         "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
         + (
@@ -7841,8 +8457,13 @@ def _lean_acceptance_running_node(
             "WorldExternalProtocolEnvironment)\n"
             if parameterized_protocol_environment else ""
         )
-        + "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
-        "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+        + (
+            "    (environmentRefines : AcceptanceExternalEnvironmentsRefine\n"
+            "      originalEnvironment candidateEnvironment) :\n"
+            if acceptance_environment else
+            "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
+            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+        )
         if parameterized_environment else ""
     )
     behavior_rewrite_arguments = (
@@ -7877,6 +8498,23 @@ def _lean_acceptance_running_node(
         "  have controlMember := controlAllowed\n"
         "  simp only [ProductControlProfile.Allows, Bool.and_eq_true] at controlMember\n"
     )
+    if step["kind"] == "control_unrepresented":
+        return (
+            prefix
+            + "  have stateMember :\n"
+            "      (show ProductControlState from\n"
+            f"        {{ nodeId := {node_id}, calls := calls, "
+            "frameOffsets := frameOffsets }) \u2208\n"
+            "        productControlProfile.states :=\n"
+            "    List.contains_iff_mem.mp controlMember.2\n"
+            "  have stateAbsent :\n"
+            "      (show ProductControlState from\n"
+            f"        {{ nodeId := {node_id}, calls := calls, "
+            "frameOffsets := frameOffsets }) \u2209\n"
+            "        productControlProfile.states := by\n"
+            "    simp [productControlProfile]\n"
+            "  exact False.elim (stateAbsent stateMember)\n"
+        )
     prefix += (
         "  unfold DecodedWorldProgram.transitionSystem\n"
         "  simp only [stepWorldExecution]\n"
@@ -8177,20 +8815,28 @@ def _lean_acceptance_running_node(
                 "NormalizedOutcomeExpr.eval, PureOutcome.indirectCall.injEq] "
                 "at normalizedOutcome\n"
                 "    exact normalizedOutcome.1\n"
-                "  have originalTargetResolved : resolveMappedCodeTarget false\n"
-                "      staticProofContext.originalPe.imageBase\n"
-                "      staticProofContext.codeMap.entries.toList originalTarget =\n"
+                "  have originalTargetResolved :\n"
+                "      staticProofContext.codeMap.resolveRawEip false\n"
+                "        staticProofContext.originalPe.imageBase originalTarget =\n"
                 f"      some {indirect_target_id} := by\n"
-                "    simpa using knownIndirectCodeTargetResolved staticProofContext "
-                f"{indirect_target_id} false originalTarget (by decide)\n"
-                "      (by simpa using originalTargetMatches)\n"
-                "  have candidateTargetResolved : resolveMappedCodeTarget true\n"
-                "      staticProofContext.candidatePe.imageBase\n"
-                "      staticProofContext.codeMap.entries.toList candidateTarget =\n"
+                "    exact StaticCodeMap.resolveRawEip_of_codeAddressMatchesAt false\n"
+                "      staticProofContext.originalPe staticProofContext.candidatePe\n"
+                "      staticProofContext.codeMap\n"
+                "      (StaticProofContext.codeMapIndexed_of_structurallyValid\n"
+                "        staticProofContext staticProofContextChecked)\n"
+                f"      {indirect_target_id} originalTarget "
+                "(by simpa using originalTargetMatches)\n"
+                "  have candidateTargetResolved :\n"
+                "      staticProofContext.codeMap.resolveRawEip true\n"
+                "        staticProofContext.candidatePe.imageBase candidateTarget =\n"
                 f"      some {indirect_target_id} := by\n"
-                "    simpa using knownIndirectCodeTargetResolved staticProofContext "
-                f"{indirect_target_id} true candidateTarget (by decide)\n"
-                "      (by simpa using candidateTargetMatches)\n"
+                "    exact StaticCodeMap.resolveRawEip_of_codeAddressMatchesAt true\n"
+                "      staticProofContext.originalPe staticProofContext.candidatePe\n"
+                "      staticProofContext.codeMap\n"
+                "      (StaticProofContext.codeMapIndexed_of_structurallyValid\n"
+                "        staticProofContext staticProofContextChecked)\n"
+                f"      {indirect_target_id} candidateTarget "
+                "(by simpa using candidateTargetMatches)\n"
             )
             known_indirect_dispatch = (
                 "  rw [originalTargetExpression, candidateTargetExpression]\n"
@@ -9050,6 +9696,22 @@ def _lean_acceptance_running_node(
             "dll": decoded_import_identity[0],
             decoded_import_identity[1]: decoded_import_identity[2],
         })
+        opaque_site_id = step.get("opaque_lockstep_site_id")
+        terminal_opaque_source = ""
+        boundary_for_observation = "boundaryKnown"
+        if opaque_site_id is not None:
+            terminal_opaque_source = (
+                "  have opaqueTerminal :=\n"
+                "    OpaqueLockstepExternalEnvironmentsRefine.atTerminating\n"
+                "      staticProofContext externalCallSites opaqueLockstepCallSites\n"
+                "      (opaqueLockstepCallSites.map fun site => site.id)\n"
+                "      originalEnvironment candidateEnvironment environmentRefines\n"
+                f"      externalCallSite{site_id} externalJumpSite{site_id}MachineContract\n"
+                f"      opaqueLockstepCallSite{int(opaque_site_id)} (by decide) (by decide)\n"
+                f"      externalJumpSite{site_id}MachineContractResolved (by decide) (by decide)\n"
+                "      eventIndex originalEvent candidateEvent boundaryKnown\n"
+            )
+            boundary_for_observation = "opaqueTerminal.2"
         control_calls = [
             int(call) for call in step["control_state"]["calls"]
         ]
@@ -9128,7 +9790,8 @@ def _lean_acceptance_running_node(
             "      originalEvent candidateEvent := by\n"
             "    simpa [originalEvent, candidateEvent, originalBehaviorCommon,\n"
             "      candidateBehaviorCommon] using boundary\n"
-            "  have argumentsRelated := boundaryKnown.2.2.2.2.2.2\n"
+            + terminal_opaque_source
+            + f"  have argumentsRelated := {boundary_for_observation}.2.2.2.2.2.2\n"
             "  have observationRelated : worldRelationalObservationsRelated\n"
             "      staticProofContext\n"
             f"      (some (.external world externalJumpSite{site_id}MachineContract.imported\n"
@@ -9168,6 +9831,51 @@ def _lean_acceptance_running_node(
             "dll": decoded_import_identity[0],
             decoded_import_identity[1]: decoded_import_identity[2],
         })
+        opaque_site_id = step.get("opaque_lockstep_site_id")
+        if opaque_site_id is not None:
+            tail_environment_source = (
+                "    have environmentAt := ExternalEnvironmentRefines.at staticProofContext\n"
+                "      externalCallSites originalEnvironment candidateEnvironment\n"
+                f"      environmentRefines.externalRefines externalCallSite{site_id}\n"
+                f"      externalJumpSite{site_id}MachineContract (by decide)\n"
+                f"      externalJumpSite{site_id}MachineContractResolved\n"
+                "    have results := externalCallResultsRelated staticProofContext\n"
+                f"      externalCallSite{site_id} externalJumpSite{site_id}MachineContract\n"
+                "      originalEnvironment candidateEnvironment environmentAt (by decide) eventIndex\n"
+                "      originalEvent candidateEvent boundaryKnown\n"
+                "    have opaqueResults :=\n"
+                "      OpaqueLockstepExternalEnvironmentsRefine.atReturning\n"
+                "        staticProofContext externalCallSites opaqueLockstepCallSites\n"
+                "        (opaqueLockstepCallSites.map fun site => site.id)\n"
+                "        originalEnvironment candidateEnvironment environmentRefines\n"
+                f"        externalCallSite{site_id} externalJumpSite{site_id}MachineContract\n"
+                f"        opaqueLockstepCallSite{int(opaque_site_id)} (by decide) (by decide)\n"
+                f"        externalJumpSite{site_id}MachineContractResolved (by decide) (by decide)\n"
+                "        eventIndex originalEvent candidateEvent boundaryKnown\n"
+                "    dsimp only at results opaqueResults\n"
+                "    rcases results with\n"
+                "      ⟨_ordinaryWorldsEqual, _originalConforms, _candidateConforms,\n"
+                "        _resultRegistersRelated, _ordinaryStatesRelated,\n"
+                "        _ordinaryFramesPreserved⟩\n"
+                "    rcases opaqueResults with\n"
+                "      ⟨resultWorldsEqual, nextStatesRelated, framesPreserved⟩\n"
+            )
+        else:
+            tail_environment_source = (
+                "    have environmentAt := ExternalEnvironmentRefines.at staticProofContext\n"
+                "      externalCallSites originalEnvironment candidateEnvironment\n"
+                f"      environmentRefines externalCallSite{site_id}\n"
+                f"      externalJumpSite{site_id}MachineContract (by decide)\n"
+                f"      externalJumpSite{site_id}MachineContractResolved\n"
+                "    have results := externalCallResultsRelated staticProofContext\n"
+                f"      externalCallSite{site_id} externalJumpSite{site_id}MachineContract\n"
+                "      originalEnvironment candidateEnvironment environmentAt (by decide) eventIndex\n"
+                "      originalEvent candidateEvent boundaryKnown\n"
+                "    dsimp only at results\n"
+                "    rcases results with\n"
+                "      ⟨resultWorldsEqual, _originalConforms, _candidateConforms,\n"
+                "        _resultRegistersRelated, nextStatesRelated, framesPreserved⟩\n"
+            )
         control_calls = [
             int(call) for call in step["control_state"]["calls"]
         ]
@@ -9282,20 +9990,8 @@ def _lean_acceptance_running_node(
             "        originalEvent candidateEvent := by\n"
             "      simpa [originalEvent, candidateEvent, originalBehaviorCommon,\n"
             "        candidateBehaviorCommon] using boundary\n"
-            "    have environmentAt := ExternalEnvironmentRefines.at staticProofContext\n"
-            "      externalCallSites originalEnvironment candidateEnvironment\n"
-            f"      environmentRefines externalCallSite{site_id}\n"
-            f"      externalJumpSite{site_id}MachineContract (by decide)\n"
-            f"      externalJumpSite{site_id}MachineContractResolved\n"
-            "    have results := externalCallResultsRelated staticProofContext\n"
-            f"      externalCallSite{site_id} externalJumpSite{site_id}MachineContract\n"
-            "      originalEnvironment candidateEnvironment environmentAt (by decide) eventIndex\n"
-            "      originalEvent candidateEvent boundaryKnown\n"
-            "    dsimp only at results\n"
-            "    rcases results with\n"
-            "      ⟨resultWorldsEqual, _originalConforms, _candidateConforms,\n"
-            "        _resultRegistersRelated, nextStatesRelated, framesPreserved⟩\n"
-            "    have outerSourceFacts := RelationalRuntimeCallFactsHold.tail\n"
+            + tail_environment_source
+            + "    have outerSourceFacts := RelationalRuntimeCallFactsHold.tail\n"
             "      staticProofContext world activeFrameInventory _ _ _\n"
             "      (by simpa [activeFrameInventory] using frameImportsHold)\n"
             "    have outerFactsAfterInternal :=\n"
@@ -9853,21 +10549,56 @@ def _lean_acceptance_running_node(
                 "  · simp [WorldExternalCallbackRuntimesRelated]\n"
                 "  · simp [WorldExternalCallbackFramesHold]\n"
             )
-        return common + (
-            "  have environmentAt := ExternalEnvironmentRefines.at staticProofContext\n"
-            "    externalCallSites originalEnvironment candidateEnvironment\n"
-            f"    environmentRefines externalCallSite{edge_id}\n"
-            f"    externalCallEdge{edge_id}MachineContract (by decide)\n"
-            f"    externalCallEdge{edge_id}MachineContractResolved\n"
-            "  have results := externalCallResultsRelated staticProofContext\n"
-            f"    externalCallSite{edge_id} externalCallEdge{edge_id}MachineContract\n"
-            "    originalEnvironment candidateEnvironment environmentAt (by decide) eventIndex\n"
-            "    originalEvent candidateEvent boundaryKnown\n"
-            "  dsimp only at results\n"
-            "  rcases results with\n"
-            "    ⟨resultWorldsEqual, _originalConforms, _candidateConforms,\n"
-            "      _resultRegistersRelated, nextStatesRelated, framesPreserved⟩\n"
-            + result_abi_bridge
+        opaque_site_id = step.get("opaque_lockstep_site_id")
+        if opaque_site_id is not None:
+            environment_result_source = (
+                "  have environmentAt := ExternalEnvironmentRefines.at staticProofContext\n"
+                "    externalCallSites originalEnvironment candidateEnvironment\n"
+                "    environmentRefines.externalRefines\n"
+                f"    externalCallSite{edge_id} externalCallEdge{edge_id}MachineContract\n"
+                "    (by decide) externalCallEdge"
+                f"{edge_id}MachineContractResolved\n"
+                "  have results := externalCallResultsRelated staticProofContext\n"
+                f"    externalCallSite{edge_id} externalCallEdge{edge_id}MachineContract\n"
+                "    originalEnvironment candidateEnvironment environmentAt (by decide) eventIndex\n"
+                "    originalEvent candidateEvent boundaryKnown\n"
+                "  have opaqueResults :=\n"
+                "    OpaqueLockstepExternalEnvironmentsRefine.atReturning\n"
+                "      staticProofContext externalCallSites opaqueLockstepCallSites\n"
+                "      (opaqueLockstepCallSites.map fun site => site.id)\n"
+                "      originalEnvironment candidateEnvironment environmentRefines\n"
+                f"      externalCallSite{edge_id} externalCallEdge{edge_id}MachineContract\n"
+                f"      opaqueLockstepCallSite{int(opaque_site_id)} (by decide) (by decide)\n"
+                f"      externalCallEdge{edge_id}MachineContractResolved (by decide) (by decide)\n"
+                "      eventIndex originalEvent candidateEvent boundaryKnown\n"
+                "  dsimp only at results opaqueResults\n"
+                "  rcases results with\n"
+                "    ⟨_ordinaryWorldsEqual, _originalConforms, _candidateConforms,\n"
+                "      _resultRegistersRelated, _ordinaryStatesRelated,\n"
+                "      _ordinaryFramesPreserved⟩\n"
+                "  rcases opaqueResults with\n"
+                "    ⟨resultWorldsEqual, nextStatesRelated, framesPreserved⟩\n"
+            )
+        else:
+            environment_result_source = (
+                "  have environmentAt :=\n"
+                "    ExactLockstepExternalEnvironmentsRefine.atReturning\n"
+                "      staticProofContext externalCallSites originalEnvironment\n"
+                "      candidateEnvironment environmentRefines\n"
+                f"      externalCallSite{edge_id}\n"
+                f"      externalCallEdge{edge_id}MachineContract (by decide)\n"
+                f"      externalCallEdge{edge_id}MachineContractResolved (by decide)\n"
+                "  have results := externalCallResultsRelated staticProofContext\n"
+                f"    externalCallSite{edge_id} externalCallEdge{edge_id}MachineContract\n"
+                "    originalEnvironment candidateEnvironment environmentAt (by decide) eventIndex\n"
+                "    originalEvent candidateEvent boundaryKnown\n"
+                "  dsimp only at results\n"
+                "  rcases results with\n"
+                "    ⟨resultWorldsEqual, _originalConforms, _candidateConforms,\n"
+                "      _resultRegistersRelated, nextStatesRelated, framesPreserved⟩\n"
+            )
+        return common + environment_result_source + (
+            result_abi_bridge
             + "  have frameFactsAtBoundary : RelationalRuntimeCallFactsHold\n"
             "      staticProofContext world\n"
             f"      {target_offsets_literal} originalEvent.state.registers\n"
@@ -10512,6 +11243,11 @@ def _lean_acceptance_running_node(
 
     def branch_case(edge: dict[str, Any], condition: bool) -> str:
         edge_id = int(edge["edge_id"])
+        if edge.get("infeasible") is True:
+            return (
+                f"    simp [region{region_index}OutcomeCondition, BoolExpr.eval, "
+                "Expr.eval] at originalCondition\n"
+            )
         target_region_index = int(edge["target_region_index"])
         candidate_condition = bool(
             edge.get("candidate_branch_value", condition)
@@ -10535,11 +11271,13 @@ def _lean_acceptance_running_node(
                 f"segmentRefinementEdge{edge_id}CandidateNormalizedBehavior"
             )
         original_guard = (
-            f"      change region{region_index}OutcomeCondition.eval originalState = true\n"
-            "      exact originalCondition\n"
-            if condition else
-            f"      change (!region{region_index}OutcomeCondition.eval originalState) = true\n"
-            "      simp [originalCondition]\n"
+            "      rw [show "
+            f"segmentRefinementEdge{edge_id}Spec.originalGuard = "
+            f"normalizedBranchGuard region{region_index}OutcomeCondition "
+            f"{'true' if condition else 'false'} by decide]\n"
+            "      exact normalizedBranchGuard_eval_of_condition "
+            f"region{region_index}OutcomeCondition "
+            f"{'true' if condition else 'false'} originalState originalCondition\n"
         )
         frame_claims_literal = "[" + ", ".join(
             _lean_return_slot_frame_inventory_transfer_claim(item)
@@ -10879,7 +11617,9 @@ def _acceptance_segment_imports(
     edge_ids = {
         int(edge["edge_id"])
         for step in selected_steps
-        if step.get("kind") not in {"external_call", "external_protocol"}
+        if step.get("kind") not in {
+            "external_call", "external_protocol", "control_unrepresented",
+        }
         for edge in step.get("edges", [])
     }
     missing = sorted(edge_ids - segment_module_by_edge.keys())
@@ -10920,6 +11660,14 @@ def _write_relational_acceptance_modules(
         *stage_a.glob("RelationalAffineLinkedControl*.olean"),
     ]:
         path.unlink()
+    _write_text_if_changed(
+        stage_a / "RelationalAcceptanceExactLockstep.lean",
+        relational_exact_lockstep_acceptance_source(),
+    )
+    _write_text_if_changed(
+        stage_a / "RelationalAcceptanceOpaqueLockstep.lean",
+        relational_opaque_lockstep_acceptance_source(),
+    )
     all_segment_candidates = (
         segment_candidates + list(deferred_guard_segment_candidates or [])
     )
@@ -11012,6 +11760,58 @@ def _write_relational_acceptance_modules(
             ),
         },
     )
+    opaque_inventory = _opaque_lockstep_inventory_plan(
+        original_bin,
+        candidate_bin,
+        contract,
+        behaviors,
+        plan,
+        external_site_candidates,
+    )
+    plan["opaque_lockstep_environment"] = {
+        key: value
+        for key, value in opaque_inventory.items()
+        if key != "artifact"
+    }
+    opaque_profile = opaque_inventory["status"] == "ready"
+    if opaque_profile:
+        opaque_artifact = opaque_inventory["artifact"]
+        write_json(lean_dir.parent / "opaque-lockstep-environment.json", opaque_artifact)
+        _write_text_if_changed(
+            stage_a / "RelationalAcceptanceOpaqueLockstepData.lean",
+            relational_opaque_lockstep_environment_source(opaque_artifact),
+        )
+        bindings_by_node_case = {
+            (int(item["node_id"]), item.get("case_index")): int(item["site_id"])
+            for item in opaque_inventory["site_bindings"]
+        }
+        for step in plan.get("node_steps", []):
+            node_id = int(step["node_id"])
+            cases = step.get("cases")
+            if isinstance(cases, list):
+                annotated = False
+                for case_index, case in enumerate(cases):
+                    site_id = bindings_by_node_case.get((node_id, case_index))
+                    if site_id is not None:
+                        case["opaque_lockstep_site_id"] = site_id
+                        annotated = True
+                if annotated:
+                    step["opaque_lockstep_profile"] = True
+            else:
+                site_id = bindings_by_node_case.get((node_id, None))
+                if site_id is not None:
+                    step["opaque_lockstep_site_id"] = site_id
+                    step["opaque_lockstep_profile"] = True
+    elif opaque_inventory["status"] == "incomplete":
+        plan = {
+            **plan,
+            "status": "incomplete",
+            "theorem": None,
+            "blockers": _compact_acceptance_blockers([
+                *plan.get("blockers", []),
+                *opaque_inventory["gaps"],
+            ]),
+        }
     launch_plan = plan.get("launch") or {}
     launch_root_node_id = plan.get("root_node_id", launch_plan.get("root_node_id"))
     if launch_root_node_id is not None:
@@ -11602,6 +12402,22 @@ def _write_relational_acceptance_modules(
             "    productControlProfile linkedProductControlProfile\n"
             "    productControlProfilesShallowEquivalentChecked\n\n"
         )
+    opaque_acceptance_import = (
+        "import StageA.RelationalAcceptanceOpaqueLockstepData\n"
+        if opaque_profile else ""
+    )
+    acceptance_environment_alias = (
+        "abbrev AcceptanceExternalEnvironmentsRefine\n"
+        "    (original candidate : WorldExternalEnvironment) : Prop :=\n"
+        "  OpaqueLockstepExternalEnvironmentsRefine staticProofContext\n"
+        "    externalCallSites opaqueLockstepCallSites\n"
+        "    (opaqueLockstepCallSites.map fun site => site.id) original candidate\n\n"
+        if opaque_profile else
+        "abbrev AcceptanceExternalEnvironmentsRefine\n"
+        "    (original candidate : WorldExternalEnvironment) : Prop :=\n"
+        "  ExactLockstepExternalEnvironmentsRefine staticProofContext\n"
+        "    externalCallSites original candidate\n\n"
+    )
     context_source = (
         "import StageA.RelationalCertificates\n"
         "import StageA.RelationalLinkedExecution\n"
@@ -11618,11 +12434,18 @@ def _write_relational_acceptance_modules(
         "import StageA.RelationalImportRegisterSeedCertificate\n"
         "import StageA.RelationalDynamicRangeIndirectCallCertificate\n"
         "import StageA.RelationalExternalCallRefinementCertificate\n"
-        "import StageA.RelationalExternalJumpRefinementCertificate\n\n"
+        "import StageA.RelationalExternalJumpRefinementCertificate\n"
+        "import StageA.RelationalAcceptanceExactLockstep\n"
+        "import StageA.RelationalAcceptanceOpaqueLockstep\n"
+        + opaque_acceptance_import
+        + "\n"
+        +
         "namespace StageA.GeneratedRelational\n\n"
         "open StageA.Formal StageA.Relational\n\n"
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
         "set_option linter.unusedSimpArgs false\n\n"
+        + acceptance_environment_alias
+        +
         f"def terminalInvariant : StateInvariant := {terminal_invariant}\n\n"
         "def productInvariantTable : ProductInvariantTable := {\n"
         f"  nodeInvariants := #[{invariant_rows}]\n"
@@ -12636,13 +13459,21 @@ def _write_relational_acceptance_modules(
             uses_deferred_guard = _step_uses_deferred_guard(step)
             running = f"acceptanceRunningNode{node_id}Refined"
             if not uses_deferred_guard:
+                running_environment = (
+                    "environmentRefines"
+                    if (
+                        step.get("kind") == "external_call"
+                        or bool(step.get("opaque_lockstep_profile"))
+                    )
+                    else "environmentRefines.externalRefines"
+                )
                 running_theorems.append(
                     f"{running} originalEnvironment candidateEnvironment "
                     + (
                         "originalProtocolEnvironment candidateProtocolEnvironment "
                         if parameterized_protocol_environment else ""
                     )
-                    + "environmentRefines"
+                    + running_environment
                     if parameterized_environment else running
                 )
             for side in ("original", "candidate"):
@@ -12688,16 +13519,18 @@ def _write_relational_acceptance_modules(
                 ):
                     definitions.append(
                         f"theorem {side}WorldBehaviorNode{node_id}"
-                        f"{world_behavior_binder} (state : MachineState) :\n"
-                        f"    decodedWorldRegionBehavior {world_program} "
-                        f"{target_id} state =\n"
+                        f"{world_behavior_binder} (state : MachineState) "
+                        "(calls : List Nat) :\n"
+                        f"    decodedWorldRegionBehaviorWithCalls {world_program} "
+                        f"{target_id} state calls =\n"
                         "      StageA.Relational.X87.executeSingletonCommand "
                         f"{side_bool} staticProofContext.{side}Pe "
                         f"segmentRefinementEdge{int(step['edges'][0]['edge_id'])}Spec.{side}Span "
                         f"region{region_index}.targets state := by\n"
                         f"  have regionFound : regionById allRegions {target_id} = "
                         f"some region{region_index} := by decide\n"
-                        f"  unfold decodedWorldRegionBehavior {side}WorldProgram\n"
+                        "  unfold decodedWorldRegionBehaviorWithCalls "
+                        f"{side}WorldProgram\n"
                         "  rw [regionFound]\n"
                         "  simp only [Bool.false_eq_true, if_false, if_true]\n"
                         "  rfl"
@@ -12746,12 +13579,14 @@ def _write_relational_acceptance_modules(
                     )
                 definitions.append(
                     f"theorem {side}WorldBehaviorNode{node_id}{world_behavior_binder} "
-                    "(state : MachineState) :\n"
-                    f"    decodedWorldRegionBehavior {world_program} {target_id} state =\n"
+                    "(state : MachineState) (calls : List Nat) :\n"
+                    f"    decodedWorldRegionBehaviorWithCalls {world_program} "
+                    f"{target_id} state calls =\n"
                     f"      some ({normalized_name}.eval state) := by\n"
                     f"  have regionFound : regionById allRegions {target_id} = "
                     f"some region{region_index} := by decide\n"
-                    f"  unfold decodedWorldRegionBehavior {side}WorldProgram\n"
+                    "  unfold decodedWorldRegionBehaviorWithCalls "
+                    f"{side}WorldProgram\n"
                     "  rw [regionFound]\n"
                     f"  change (regionBehaviorWithMachineCallContracts {side}Pe "
                     f"{side}Imports machineImportCallContracts region{region_index}.{side}).bind\n"
@@ -12786,13 +13621,27 @@ def _write_relational_acceptance_modules(
                 ))
             if linked_acceptance_ready:
                 linked_running = f"acceptanceLinkedRunningNode{node_id}Refined"
+                linked_environment = (
+                    "environmentRefines"
+                    if (
+                        linked_acceptance_mode in {
+                            "lean-checked-shallow-profile-compatibility-v1",
+                            "lean-checked-shallow-with-native-frame-guards-v1",
+                        }
+                        and (
+                            step.get("kind") == "external_call"
+                            or bool(step.get("opaque_lockstep_profile"))
+                        )
+                    )
+                    else "environmentRefines.externalRefines"
+                )
                 linked_running_theorems.append(
                     f"{linked_running} originalEnvironment candidateEnvironment "
                     + (
                         "originalProtocolEnvironment candidateProtocolEnvironment "
                         if parameterized_protocol_environment else ""
                     )
-                    + "environmentRefines"
+                    + linked_environment
                     if parameterized_environment else linked_running
                 )
                 if linked_acceptance_mode == "native-linked-call-return-v1":
@@ -12902,12 +13751,14 @@ def _write_relational_acceptance_modules(
                 definitions.extend(
                     _lean_acceptance_execution_edge(step=step, edge=edge)
                     for edge in step["edges"]
+                    if edge.get("infeasible") is not True
                 )
         node_ids = [int(step["node_id"]) for step in selected]
         edge_ids = [
             int(edge["edge_id"])
             for step in selected
             for edge in step["edges"]
+            if edge.get("infeasible") is not True
         ]
         edge_ids.sort()
         ordinary_edge_ids = [
@@ -12915,6 +13766,7 @@ def _write_relational_acceptance_modules(
             for step in selected
             if not _step_uses_deferred_guard(step)
             for edge in step["edges"]
+            if edge.get("infeasible") is not True
         ]
         ordinary_edge_ids.sort()
         edge_theorems = [
@@ -12937,8 +13789,8 @@ def _write_relational_acceptance_modules(
                         "WorldExternalProtocolEnvironment)\n"
                         if parameterized_protocol_environment else ""
                     )
-                    + "    (environmentRefines : ExternalEnvironmentRefines "
-                    "staticProofContext externalCallSites\n"
+                    + "    (environmentRefines : "
+                    "AcceptanceExternalEnvironmentsRefine\n"
                     "      originalEnvironment candidateEnvironment)"
                     if parameterized_environment else ""
                 )
@@ -12986,8 +13838,8 @@ def _write_relational_acceptance_modules(
                         "WorldExternalProtocolEnvironment)\n"
                         if parameterized_protocol_environment else ""
                     )
-                    + "    (environmentRefines : ExternalEnvironmentRefines "
-                    "staticProofContext externalCallSites\n"
+                    + "    (environmentRefines : "
+                    "AcceptanceExternalEnvironmentsRefine\n"
                     "      originalEnvironment candidateEnvironment)"
                     if parameterized_environment else ""
                 )
@@ -13174,8 +14026,8 @@ def _write_relational_acceptance_modules(
                 "WorldExternalProtocolEnvironment)\n"
                 if parameterized_protocol_environment else ""
             )
-            + "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
-            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+            + "    (environmentRefines : AcceptanceExternalEnvironmentsRefine\n"
+            "      originalEnvironment candidateEnvironment) :\n"
             "    AllListedLinkedRunningProductNodesRefined staticProofContext\n"
             "      relationalProductGraph productInvariantTable\n"
             "      relationalProductReachabilityEvidence linkedProductControlProfile\n"
@@ -13190,8 +14042,8 @@ def _write_relational_acceptance_modules(
                 "WorldExternalProtocolEnvironment)\n"
                 if parameterized_protocol_environment else ""
             )
-            + "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
-            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+            + "    (environmentRefines : AcceptanceExternalEnvironmentsRefine\n"
+            "      originalEnvironment candidateEnvironment) :\n"
             "    ReachableLinkedRunningProductNodesRefined staticProofContext\n"
             "      relationalProductGraph productInvariantTable\n"
             "      relationalProductReachabilityEvidence linkedProductControlProfile\n"
@@ -13250,8 +14102,8 @@ def _write_relational_acceptance_modules(
                 if parameterized_protocol_environment else ""
             )
             +
-            "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
-            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+            "    (environmentRefines : AcceptanceExternalEnvironmentsRefine\n"
+            "      originalEnvironment candidateEnvironment) :\n"
             "    AllListedRunningProductNodesRefined staticProofContext\n"
             "      relationalProductGraph productInvariantTable\n"
             "      relationalProductReachabilityEvidence productControlProfile\n"
@@ -13267,8 +14119,8 @@ def _write_relational_acceptance_modules(
                 if parameterized_protocol_environment else ""
             )
             +
-            "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
-            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+            "    (environmentRefines : AcceptanceExternalEnvironmentsRefine\n"
+            "      originalEnvironment candidateEnvironment) :\n"
             "    ReachableRunningProductNodesRefined staticProofContext\n"
             "      relationalProductGraph productInvariantTable\n"
             "      relationalProductReachabilityEvidence productControlProfile\n"
@@ -13300,8 +14152,8 @@ def _write_relational_acceptance_modules(
                 "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
                 "    (originalProtocolEnvironment candidateProtocolEnvironment : "
                 "WorldExternalProtocolEnvironment)\n"
-                "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
-                "      externalCallSites originalEnvironment candidateEnvironment)\n"
+                "    (environmentRefines : AcceptanceExternalEnvironmentsRefine\n"
+                "      originalEnvironment candidateEnvironment)\n"
                 "    (protocolRefines : WorldExternalProtocolEnvironmentsRefine\n"
                 "      staticProofContext relationalProductGraph productInvariantTable\n"
                 "      relationalProductReachabilityEvidence productControlProfile\n"
@@ -13332,7 +14184,7 @@ def _write_relational_acceptance_modules(
                 "  decodedControlComplete := reachableProductLocalCertificate.reachableControlComplete\n"
                 "  reachableEdgesRefined := reachableProductLocalCertificate.reachableEdgesRefined\n"
                 "  reachableExecutionEdgesRefined := allAcceptanceExecutionEdgesRefined\n"
-                "  environmentsRefined := environmentRefines\n"
+                "  environmentsRefined := environmentRefines.externalRefines\n"
                 "  protocolEnvironmentsRefined := protocolRefines\n"
                 "  launchValid := consoleLaunchValid\n"
                 "  launchRealizable := consoleLaunchRealizable\n"
@@ -13343,7 +14195,7 @@ def _write_relational_acceptance_modules(
                 "  callbackRunningProductNodesRefined :=\n"
                 "    allAcceptanceCallbackRunningNodesRefined originalEnvironment\n"
                 "      candidateEnvironment originalProtocolEnvironment\n"
-                "      candidateProtocolEnvironment environmentRefines\n"
+                "      candidateProtocolEnvironment environmentRefines.externalRefines\n"
                 "  originalInstructionSemanticsAdequate := by\n"
                 "    apply DecodedWorldProgram.instructionSemanticsAdequate_of_regions\n"
                 "    simpa [originalWorldProgram, allRegions] using\n"
@@ -13357,8 +14209,8 @@ def _write_relational_acceptance_modules(
                 "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
                 "    (originalProtocolEnvironment candidateProtocolEnvironment : "
                 "WorldExternalProtocolEnvironment)\n"
-                "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
-                "      externalCallSites originalEnvironment candidateEnvironment)\n"
+                "    (environmentRefines : AcceptanceExternalEnvironmentsRefine\n"
+                "      originalEnvironment candidateEnvironment)\n"
                 "    (protocolRefines : WorldExternalProtocolEnvironmentsRefine\n"
                 "      staticProofContext relationalProductGraph productInvariantTable\n"
                 "      relationalProductReachabilityEvidence productControlProfile\n"
@@ -13387,8 +14239,8 @@ def _write_relational_acceptance_modules(
             "  by decide\n\n"
             "def wholeProgramCertificate\n"
             "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
-            "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
-            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+            "    (environmentRefines : AcceptanceExternalEnvironmentsRefine\n"
+            "      originalEnvironment candidateEnvironment) :\n"
             "    WholeProgramCertificate staticProofContext relationalProductGraph\n"
             "      allRegions productInvariantTable relationalProductReachabilityEvidence\n"
             "      productControlProfile protocolCallbackTargets externalCallSites consoleLaunch\n"
@@ -13414,7 +14266,7 @@ def _write_relational_acceptance_modules(
             "  decodedControlComplete := reachableProductLocalCertificate.reachableControlComplete\n"
             "  reachableEdgesRefined := reachableProductLocalCertificate.reachableEdgesRefined\n"
             "  reachableExecutionEdgesRefined := allAcceptanceExecutionEdgesRefined\n"
-            "  environmentsRefined := environmentRefines\n"
+            "  environmentsRefined := environmentRefines.externalRefines\n"
             "  protocolEnvironmentsRefined :=\n"
             "    WorldExternalProtocolEnvironmentsRefine.of_no_protocol_sites\n"
             "      staticProofContext relationalProductGraph productInvariantTable\n"
@@ -13445,8 +14297,8 @@ def _write_relational_acceptance_modules(
             "}\n\n"
             "theorem candidatePE32ProgramsEquivalent\n"
             "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
-            "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
-            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+            "    (environmentRefines : AcceptanceExternalEnvironmentsRefine\n"
+            "      originalEnvironment candidateEnvironment) :\n"
             "    PE32RawProgramsObservationallyEquivalent staticProofContext\n"
             "      relationalProductGraph productInvariantTable\n"
             "      relationalProductReachabilityEvidence productControlProfile consoleLaunch\n"
@@ -13603,8 +14455,8 @@ def _write_relational_acceptance_modules(
         linked_acceptance_certificate_source = (
             "def linkedWholeProgramCertificate\n"
             "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
-            "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
-            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+            "    (environmentRefines : AcceptanceExternalEnvironmentsRefine\n"
+            "      originalEnvironment candidateEnvironment) :\n"
             "    LinkedWholeProgramCertificate staticProofContext relationalProductGraph\n"
             "      allRegions productInvariantTable relationalProductReachabilityEvidence\n"
             "      linkedProductControlProfile protocolCallbackTargets externalCallSites consoleLaunch\n"
@@ -13629,7 +14481,7 @@ def _write_relational_acceptance_modules(
             "  reachabilityClosed := generatedDeclaredGraphReachabilityCertificateChecked\n"
             "  decodedControlComplete := "
             "reachableProductLocalCertificate.reachableControlComplete\n"
-            "  environmentsRefined := environmentRefines\n"
+            "  environmentsRefined := environmentRefines.externalRefines\n"
             "  protocolEnvironmentsRefined :=\n"
             "    LinkedWorldExternalProtocolEnvironmentsRefine.of_no_protocol_sites\n"
             "      staticProofContext relationalProductGraph productInvariantTable\n"
@@ -13664,8 +14516,8 @@ def _write_relational_acceptance_modules(
             "}\n\n"
             "theorem candidatePE32ProgramsEquivalentLinked\n"
             "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
-            "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
-            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+            "    (environmentRefines : AcceptanceExternalEnvironmentsRefine\n"
+            "      originalEnvironment candidateEnvironment) :\n"
             "    PE32RawProgramsLinkedObservationallyEquivalent staticProofContext\n"
             "      relationalProductGraph productInvariantTable\n"
             "      relationalProductReachabilityEvidence linkedProductControlProfile consoleLaunch\n"

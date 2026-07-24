@@ -1,8 +1,9 @@
-import StageA.RelationalSegment
+import StageA.RelationalValueProvenance
 
 namespace StageA.Relational
 
 open StageA.Formal
+open StageA.Relational.ValueProvenance
 
 inductive RelationalProductEdgeKind where
   | jump
@@ -966,6 +967,13 @@ theorem StateRel.afterFrameExactStackWordWritesEvaluation
     (importRegisters : importRegisterRelationsHold world
       targetInvariant.importRegisterRelations originalBehavior.registers
       candidateBehavior.registers = true)
+    (originRegisters : registerValueOriginRelationsHold context world
+      targetInvariant.registerValueOriginRelations originalBehavior.registers
+      candidateBehavior.registers = true)
+    (memoryOrigins : memoryValueOriginRelationsHold context world
+      targetInvariant.memoryValueOriginRelations
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true)
     (dynamicRegisters : activeDynamicRegisterRangeRelationsHold context world
       targetInvariant.dynamicRegisterRangeRelations
       (originalBehavior.nextMachineState originalState)
@@ -1038,7 +1046,8 @@ theorem StateRel.afterFrameExactStackWordWritesEvaluation
     (claim.originalWrites originalState) (claim.candidateWrites candidateState)
     relatedForFinal originalWrites candidateWrites originalNoX87 candidateNoX87
     memoryFamilies registers bounds separations stackWindows x87 flags
-    importRegisters dynamicRegisters dynamicStacks predicates
+    importRegisters originRegisters memoryOrigins dynamicRegisters dynamicStacks
+    predicates
 
 def ReturnSlotOffsetInventory.preservedImportsHold
     (inventory : ReturnSlotOffsetInventory) (world : RelationalWorld)
@@ -1100,7 +1109,8 @@ theorem StateRel.withAdditionalImportRegisterRelations
     ⟨registers, bounds, separations, stackWindows, ordinaryMemory,
       dynamicMemory, undefinedValue, x87, flags, fsBase⟩
   rcases trailing with
-    ⟨importRegisters, dynamicRegisters, dynamicStacks, predicates⟩
+    ⟨importRegisters, originRegisters, memoryOrigins, dynamicRegisters,
+      dynamicStacks, predicates⟩
   have strengthenedImports := importRegisterRelationsHold_append_of_holds
     world invariant.importRegisterRelations relations original.registers
     candidate.registers importRegisters additionalHold
@@ -1120,7 +1130,11 @@ theorem StateRel.withAdditionalImportRegisterRelations
             dynamicMemory.active.stackRanges
       }
     }
-  · refine ⟨strengthenedImports, ?_, ?_, ?_⟩
+  · refine ⟨strengthenedImports, ?_, ?_, ?_, ?_, ?_⟩
+    · simpa [StateInvariant.withAdditionalImportRegisterRelations] using
+        originRegisters
+    · simpa [StateInvariant.withAdditionalImportRegisterRelations] using
+        memoryOrigins
     · simpa [StateInvariant.withAdditionalImportRegisterRelations] using
         dynamicRegisters
     · simpa [StateInvariant.withAdditionalImportRegisterRelations] using
@@ -7792,7 +7806,7 @@ theorem dynamicRegisterRangePreserveOutputHolds_of_checked
     ⟨_worldValid, _stackRangesValid, _stackMemory, _importsStatic,
       _importsComplete, _importsMemory, _originalImmutable,
       _candidateImmutable, _relatedCore, _importAndDynamicRegisters⟩
-  have dynamicRegisters := _importAndDynamicRegisters.2.1
+  have dynamicRegisters := _importAndDynamicRegisters.2.2.2.1
   simp only [dynamicRegisterRangeRelationsHold, List.all_eq_true]
       at dynamicRegisters
   have sourceHolds := dynamicRegisters claim.sourceRelation
@@ -9075,15 +9089,12 @@ theorem dynamicRegisterRangeHolds_relatedWord_of_zero_offsets
     simpa using rangeValid.1.1.1.1.2
   have mapped : mappedValueRelated (context.relationalValueTargets world)
       range.originalBase range.candidateBase = true := by
-    unfold StaticProofContext.relationalValueTargets
-    simp only [mappedValueRelated, List.any_append, Bool.or_eq_true]
-    apply Or.inr
-    unfold RelationalWorld.runtimeValueTargets
-    simp only [List.any_append, Bool.or_eq_true]
-    apply Or.inl
-    unfold RelationalWorld.dynamicValueTargets
-    simp only [List.any_map, List.any_eq_true]
-    refine ⟨range, rangeMember, ?_⟩
+    simp only [mappedValueRelated, List.any_eq_true]
+    refine ⟨range.valueTarget, ?_, ?_⟩
+    · simp only [StaticProofContext.relationalValueTargets,
+        RelationalWorld.runtimeValueTargets,
+        RelationalWorld.dynamicValueTargets, List.mem_append, List.mem_map]
+      exact Or.inr (Or.inl (Or.inl ⟨range, rangeMember, rfl⟩))
     by_cases zero : range.size = 0
     · simp [DynamicAddressRangePair.valueTarget, zero]
     · simp [DynamicAddressRangePair.valueTarget, zero]
@@ -9652,6 +9663,21 @@ def normalizedBranchGuard (condition : BoolExpr) (taken : Bool) : BoolExpr :=
     | .not value => value
     | _ => .not condition
 
+theorem normalizedBranchGuard_eval_of_condition
+    (condition : BoolExpr) (taken : Bool) (state : MachineState)
+    (conditionValue : condition.eval state = taken) :
+    (normalizedBranchGuard condition taken).eval state = true := by
+  cases taken with
+  | true => simpa [normalizedBranchGuard] using conditionValue
+  | false =>
+      cases condition <;>
+        simp [normalizedBranchGuard, BoolExpr.eval] at conditionValue ⊢
+      all_goals try assumption
+      case and left right =>
+        cases leftValue : left.eval state <;>
+          cases rightValue : right.eval state <;>
+          simp_all
+
 theorem normalizedBranchCondition_eval_of_guard_true
     (condition guard : BoolExpr) (taken : Bool) (state : MachineState)
     (guardShape : guard = normalizedBranchGuard condition taken)
@@ -9851,6 +9877,80 @@ def immutableIndirectCallEdgesMatch (graph : RelationalProductGraph) (nodeId : N
       graph.resolveOutgoingControlEdges false node.outgoingEdgeIds == expected &&
         graph.resolveOutgoingControlEdges true node.outgoingEdgeIds == expected
 
+def indirectExitInternalEdge? (candidate : Bool)
+    (context : StaticProofContext) (certificate : IndirectExitCertificate)
+    (destination : IndirectDestination) :
+    Option RelationalDecodedControlEdge := do
+  let .internalCode targetId := destination | none
+  let target <- context.codeMap.get? targetId
+  let expression :=
+    if candidate then certificate.target.candidate
+    else certificate.target.original
+  let imageBase :=
+    if candidate then context.candidatePe.imageBase
+    else context.originalPe.imageBase
+  let primaryRva :=
+    if candidate then target.candidateRva else target.originalRva
+  let aliases :=
+    if candidate then target.candidateAliases else target.originalAliases
+  let guard :=
+    if certificate.destinations.length == 1 then unconditionalProductGuard
+    else codeTargetProductGuard imageBase expression primaryRva aliases
+  let kind :=
+    match certificate.transfer with
+    | .call _ => RelationalProductEdgeKind.call
+    | .jump => RelationalProductEdgeKind.jump
+  pure (RelationalDecodedControlEdge.mk kind targetId guard)
+
+/-- Project the destinations that remain inside either PE into the static
+product graph.  Opaque callable destinations are external transitions rather
+than code-map nodes.  In particular, an external tail resumes the top runtime
+call frame, so inventing one fixed graph destination here would be unsound.
+
+This projection is only the decoded intra-image control check.  Final
+acceptance separately requires `RunningProductNodeStepRefined`, which must
+discharge every opaque destination with exact external/call-frame semantics. -/
+def indirectExitIntraProgramEdges? (candidate : Bool)
+    (context : StaticProofContext) (certificate : IndirectExitCertificate) :
+    List IndirectDestination -> Option (List RelationalDecodedControlEdge)
+  | [] => some []
+  | destination :: destinations => do
+      let rest <- indirectExitIntraProgramEdges? candidate context certificate
+        destinations
+      match destination with
+      | .internalCode _ => do
+          let edge <- indirectExitInternalEdge? candidate context certificate
+            destination
+          pure (edge :: rest)
+      | .opaqueResource _ => pure rest
+      | .imported _ => none
+
+def indirectExitExpectedEdges? (candidate : Bool)
+    (context : StaticProofContext) (certificate : IndirectExitCertificate) :
+    Option (List RelationalDecodedControlEdge) :=
+  match certificate.destinations, certificate.transfer with
+  | [.imported _], .call continuation =>
+      some [RelationalDecodedControlEdge.mk .externalCall continuation
+        unconditionalProductGuard]
+  | destinations, _ =>
+      indirectExitIntraProgramEdges? candidate context certificate destinations
+
+/-- The submitted graph is compared with every intra-image edge derived from
+the certificate's checked finite destination inventory.  Dynamic external
+destinations are intentionally absent from the static graph and remain
+mandatory obligations in reachable-node operational refinement. -/
+def indirectExitEdgesMatch (graph : RelationalProductGraph) (nodeId : Nat)
+    (context : StaticProofContext) (certificate : IndirectExitCertificate) : Bool :=
+  match graph.getNode? nodeId,
+      indirectExitExpectedEdges? false context certificate,
+      indirectExitExpectedEdges? true context certificate with
+  | some node, some originalExpected, some candidateExpected =>
+      graph.resolveOutgoingControlEdges false node.outgoingEdgeIds ==
+          some originalExpected &&
+        graph.resolveOutgoingControlEdges true node.outgoingEdgeIds ==
+          some candidateExpected
+  | _, _, _ => false
+
 def boundedImmutableCodePointerTableCallExpectedEdges (candidate : Bool)
     (claim : BoundedImmutableCodePointerTableCallClaim) :
     List RelationalDecodedControlEdge :=
@@ -9984,6 +10084,82 @@ def NodeDecodedControlEdgesComplete (graph : RelationalProductGraph) (nodeId : N
       region.candidate =
       some candidateBehavior ∧
     decodedControlEdgesMatch graph nodeId region originalBehavior candidateBehavior = true
+
+def NodeIndirectExitEdgesComplete (graph : RelationalProductGraph)
+    (nodeId : Nat) (context : StaticProofContext) (region : RegionRelation)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (originalNormalized candidateNormalized : NormalizedSymbolicBehavior)
+    (checked : CheckedIndirectExitCertificate context region.inputInvariant
+      originalNormalized candidateNormalized) : Prop :=
+  regionBehaviorWithMachineCallContracts context.originalPe context.originalImports
+      context.machineImportCallContracts region.original =
+      some originalBehavior ∧
+    regionBehaviorWithMachineCallContracts context.candidatePe context.candidateImports
+      context.machineImportCallContracts region.candidate =
+      some candidateBehavior ∧
+    normalizeSymbolicBehavior false region.targets originalBehavior =
+      some originalNormalized ∧
+    normalizeSymbolicBehavior true region.targets candidateBehavior =
+      some candidateNormalized ∧
+    indirectExitEdgesMatch graph nodeId context checked.certificate = true
+
+theorem nodeIndirectExitEdgesComplete
+    (graph : RelationalProductGraph) (nodeId : Nat)
+    (context : StaticProofContext) (region : RegionRelation)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (originalNormalized candidateNormalized : NormalizedSymbolicBehavior)
+    (checked : CheckedIndirectExitCertificate context region.inputInvariant
+      originalNormalized candidateNormalized)
+    (originalDecoded :
+      regionBehaviorWithMachineCallContracts context.originalPe context.originalImports
+        context.machineImportCallContracts region.original = some originalBehavior)
+    (candidateDecoded :
+      regionBehaviorWithMachineCallContracts context.candidatePe context.candidateImports
+        context.machineImportCallContracts region.candidate = some candidateBehavior)
+    (originalNormalizedChecked :
+      normalizeSymbolicBehavior false region.targets originalBehavior =
+        some originalNormalized)
+    (candidateNormalizedChecked :
+      normalizeSymbolicBehavior true region.targets candidateBehavior =
+        some candidateNormalized)
+    (edgesChecked :
+      indirectExitEdgesMatch graph nodeId context checked.certificate = true) :
+    NodeIndirectExitEdgesComplete graph nodeId context region originalBehavior
+      candidateBehavior originalNormalized candidateNormalized checked :=
+  ⟨originalDecoded, candidateDecoded, originalNormalizedChecked,
+    candidateNormalizedChecked, edgesChecked⟩
+
+def SourceInvariantUninhabited
+    (context : StaticProofContext) (sourceInvariant : StateInvariant) : Prop :=
+  ∀ world originalState candidateState,
+    StateRel context world sourceInvariant originalState candidateState → False
+
+theorem sourceInvariantUninhabited_of_contains
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (contains :
+      sourceInvariant.predicates.contains uninhabitedStatePredicate = true) :
+    SourceInvariantUninhabited context sourceInvariant := by
+  intro world originalState candidateState related
+  have bottomHolds := pairedStatePredicatesHold_member
+    sourceInvariant.predicates uninhabitedStatePredicate originalState
+      candidateState (List.contains_iff_mem.mp contains)
+      related.predicatesHold
+  simp [uninhabitedStatePredicate, PairedStatePredicate.holds,
+    BoolExpr.eval, Expr.eval] at bottomHolds
+
+def noOutgoingControlEdgesMatch
+    (graph : RelationalProductGraph) (nodeId : Nat) : Bool :=
+  match graph.getNode? nodeId with
+  | none => false
+  | some node =>
+      graph.resolveOutgoingControlEdges false node.outgoingEdgeIds == some [] &&
+        graph.resolveOutgoingControlEdges true node.outgoingEdgeIds == some []
+
+def NodeUninhabitedControlEdgesComplete
+    (graph : RelationalProductGraph) (nodeId : Nat)
+    (context : StaticProofContext) (region : RegionRelation) : Prop :=
+  SourceInvariantUninhabited context region.inputInvariant ∧
+    noOutgoingControlEdgesMatch graph nodeId = true
 
 def NodeImmutableIndirectCallEdgesComplete (graph : RelationalProductGraph)
     (nodeId : Nat) (context : StaticProofContext) (region : RegionRelation)
@@ -10204,31 +10380,53 @@ def NodeControlEdgesComplete (graph : RelationalProductGraph) (nodeId : Nat)
       context.originalImports context.candidateImports context.machineImportCallContracts
       region originalBehavior
       candidateBehavior ∨
-    (∃ originalNormalized candidateNormalized claim,
-      NodeImmutableIndirectCallEdgesComplete graph nodeId context region originalBehavior
-        candidateBehavior originalNormalized candidateNormalized claim) ∨
-    (∃ originalNormalized candidateNormalized claim,
-      NodeBoundedImmutableCodePointerTableCallEdgesComplete graph nodeId context region
-        originalBehavior candidateBehavior originalNormalized candidateNormalized claim) ∨
-    (∃ originalNormalized candidateNormalized claim,
-      NodeImportRegisterIndirectCallEdgesComplete graph nodeId context region originalBehavior
-        candidateBehavior originalNormalized candidateNormalized claim) ∨
-    (∃ originalNormalized candidateNormalized claim,
-      NodeFixedCodePointerRegisterIndirectCallEdgesComplete graph nodeId context region
-        originalBehavior candidateBehavior originalNormalized candidateNormalized claim) ∨
-    (∃ originalNormalized candidateNormalized claim firstEdgeId,
-      NodeDynamicRangeIndirectCallEdgesComplete graph nodeId context region originalBehavior
-        candidateBehavior originalNormalized candidateNormalized claim firstEdgeId) ∨
-    (∃ originalNormalized candidateNormalized claim,
-      NodeImmutableIndirectJumpEdgesComplete graph nodeId context region originalBehavior
-        candidateBehavior originalNormalized candidateNormalized claim) ∨
-    (∃ originalNormalized candidateNormalized claim,
-      NodeFixedCodeAddressIndirectJumpEdgesComplete graph nodeId context region
-        originalBehavior candidateBehavior originalNormalized candidateNormalized claim) ∨
     NodeX87SingletonControlEdgesComplete graph nodeId context region ∨
-    (∃ originalNormalized candidateNormalized claim,
-      NodeBoundedImmutableRelocationTableJumpEdgesComplete graph nodeId context region
-        originalBehavior candidateBehavior originalNormalized candidateNormalized claim)
+    NodeUninhabitedControlEdgesComplete graph nodeId context region ∨
+    (∃ originalNormalized candidateNormalized checked,
+      NodeIndirectExitEdgesComplete graph nodeId context region originalBehavior
+        candidateBehavior originalNormalized candidateNormalized checked)
+
+theorem nodeControlEdgesComplete_of_checkedIndirectExit
+    (graph : RelationalProductGraph) (nodeId : Nat)
+    (context : StaticProofContext) (region : RegionRelation)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (originalNormalized candidateNormalized : NormalizedSymbolicBehavior)
+    (checked : CheckedIndirectExitCertificate context region.inputInvariant
+      originalNormalized candidateNormalized)
+    (originalDecoded :
+      regionBehaviorWithMachineCallContracts context.originalPe context.originalImports
+        context.machineImportCallContracts region.original = some originalBehavior)
+    (candidateDecoded :
+      regionBehaviorWithMachineCallContracts context.candidatePe context.candidateImports
+        context.machineImportCallContracts region.candidate = some candidateBehavior)
+    (originalNormalizedChecked :
+      normalizeSymbolicBehavior false region.targets originalBehavior =
+        some originalNormalized)
+    (candidateNormalizedChecked :
+      normalizeSymbolicBehavior true region.targets candidateBehavior =
+        some candidateNormalized)
+    (edgesChecked :
+      indirectExitEdgesMatch graph nodeId context checked.certificate = true) :
+    NodeControlEdgesComplete graph nodeId context region originalBehavior
+      candidateBehavior :=
+  Or.inr (Or.inr (Or.inr ⟨originalNormalized, candidateNormalized, checked,
+    nodeIndirectExitEdgesComplete graph nodeId context region originalBehavior
+      candidateBehavior originalNormalized candidateNormalized checked
+      originalDecoded candidateDecoded originalNormalizedChecked
+      candidateNormalizedChecked edgesChecked⟩))
+
+theorem nodeControlEdgesComplete_of_uninhabited
+    (graph : RelationalProductGraph) (nodeId : Nat)
+    (context : StaticProofContext) (region : RegionRelation)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (contains :
+      region.inputInvariant.predicates.contains uninhabitedStatePredicate = true)
+    (noOutgoing : noOutgoingControlEdgesMatch graph nodeId = true) :
+    NodeControlEdgesComplete graph nodeId context region originalBehavior
+      candidateBehavior :=
+  Or.inr (Or.inr (Or.inl
+    ⟨sourceInvariantUninhabited_of_contains context region.inputInvariant contains,
+      noOutgoing⟩))
 
 def strictlyIncreasingNatsAux : Option Nat -> List Nat -> Bool
   | _, [] => true

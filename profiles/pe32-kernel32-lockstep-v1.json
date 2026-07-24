@@ -145,7 +145,7 @@
       "argument_words": 1,
       "memory_effect": "none",
       "memory_footprints": [],
-      "world_effect": "tlsState"
+      "world_effect": "opaqueResources"
     },
     {
       "id": 10,
@@ -270,16 +270,14 @@
           "nullable": true
         }
       ],
-      "world_effect": "tlsState"
+      "world_effect": "opaqueResources"
     },
     {
       "id": 14,
       "import": {"dll": "kernel32.dll", "symbol": "GetProcAddress"},
       "abi_template": "pe32-stdcall-v1",
       "argument_words": 2,
-      "result_register_relations": [
-        {"register": "eax", "relation": "related_word"}
-      ],
+      "result_register_relations": [],
       "memory_effect": "readOnly",
       "memory_footprints": [
         {
@@ -297,7 +295,7 @@
           "nullable": false
         }
       ],
-      "world_effect": "tlsState"
+      "world_effect": "opaqueResources"
     }
   ]
 }

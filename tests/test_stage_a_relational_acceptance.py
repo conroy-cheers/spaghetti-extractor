@@ -4117,6 +4117,41 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 [step["kind"] for step in result["acceptance"]["node_steps"]],
                 ["external_call", "jump"],
             )
+            generated_acceptance = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted((prepared / "lean" / "StageA").glob(
+                    "RelationalAcceptance*.lean"
+                ))
+            )
+            self.assertIn(
+                "OpaqueLockstepExternalEnvironmentsRefine staticProofContext",
+                generated_acceptance,
+            )
+            self.assertIn(
+                "OpaqueLockstepExternalEnvironmentsRefine.atReturning",
+                generated_acceptance,
+            )
+            self.assertIn(
+                "CheckedOpaqueLockstepEnvironment.at",
+                generated_acceptance,
+            )
+            opaque_inventory = json.loads(
+                (prepared / "opaque-lockstep-environment.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                opaque_inventory["format"],
+                "stage-a-relational-opaque-lockstep-environment-v2",
+            )
+            self.assertEqual(
+                [site["disposition"] for site in opaque_inventory["call_sites"]],
+                ["returns"],
+            )
+            self.assertIn(
+                "environmentsRefined := environmentRefines.externalRefines",
+                generated_acceptance,
+            )
             lean = _run_lean_relational(
                 prepared / "lean", bundle="RelationalAcceptance"
             )

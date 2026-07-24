@@ -1,0 +1,93 @@
+{
+  "format": "stage-a-gnu-hello-machine-import-blockers-v1",
+  "status": "ready_for_mixed_composition",
+  "authority": {
+    "exact_pe_import_inventory_checked": true,
+    "profile_status_fields_trusted": false,
+    "whole_path_evidence_accepted": false,
+    "synthetic_lean_boundary_checks_passed": true,
+    "nested_callback_frames_kernel_checked": true,
+    "mixed_original_site_projection_kernel_checked": true
+  },
+  "snapshot": {
+    "original_sha256": "71b228f2babc9d3b4095ecf355db676c8ed8b45a7c8a7d350f47e962b4bf554c",
+    "reference_contract_sha256": "4d5ece49e214b38751ecce8c3c16b5cd1dfd30be3234582578daf539b77c6869",
+    "state_machine_sha256": "c74d658fdf57c1c7b1e85606db2f5b37b98135d8ef7d3834e487a93c2cc8ae38",
+    "prior_requested_import_count": 54,
+    "current_rooted_import_count": 59,
+    "newly_reachable_since_prior_inventory": [
+      "kernel32.dll!WideCharToMultiByte",
+      "msvcrt.dll!atoi",
+      "msvcrt.dll!calloc",
+      "msvcrt.dll!vfprintf",
+      "msvcrt.dll!wcslen"
+    ]
+  },
+  "counts": {
+    "exact_pe_imports": 75,
+    "required_reachable_imports": 59,
+    "lean_profile_signatures": 59,
+    "checked_boundary_proposals": 192,
+    "imports_with_boundary_proposals": 59,
+    "blockers": 0,
+    "blocker_categories": 0
+  },
+  "blocker_counts": {},
+  "blocked_imports": [],
+  "global_contract_export": {
+    "status": "incomplete",
+    "reason": "the legacy one-contract-per-import list cannot represent per-call-site variadic arity or nested external frames",
+    "residuals": [
+      {
+        "import": "msvcrt.dll!_cexit",
+        "reason_code": "nested_frames_require_boundary_contract"
+      },
+      {
+        "import": "msvcrt.dll!_initterm",
+        "reason_code": "nested_frames_require_boundary_contract"
+      },
+      {
+        "import": "msvcrt.dll!exit",
+        "reason_code": "nested_frames_require_boundary_contract"
+      },
+      {
+        "import": "msvcrt.dll!fprintf",
+        "reason_code": "variadic_requires_boundary_contract"
+      },
+      {
+        "import": "msvcrt.dll!fwprintf",
+        "reason_code": "variadic_requires_boundary_contract"
+      }
+    ]
+  },
+  "boundary_contract_export": {
+    "status": "generated_with_checked_mixed_original_projection",
+    "lean_symbol": "generatedMachineImportBoundaryCallContracts",
+    "lean_type": "List StaticMachineImportResolvedBoundary",
+    "entries": 192,
+    "verification": {
+      "synthetic_lean_routes": "checked_with_approved_axioms",
+      "full_gnu_lean_module": "scheduled_as_a_remote granular Nix proof graph"
+    },
+    "properties": [
+      "each entry is indexed by a unique boundary id rather than import identity",
+      "each entry carries its exact recovered argument-word inventory",
+      "the generated certificate requires direct, register-IAT, caller-to-import-thunk, and enclosing-call-frame tail routes to be re-decoded from exact PE bytes",
+      "variadic arity is never replaced by minimum arity",
+      "nested callback protocols retain explicit external suspensions and callback frames",
+      "mixed-original source and continuation target IDs are resolved back to the exact boundary RVAs in Lean"
+    ],
+    "remaining_composition_work": [
+      "compile the full generated GNU boundary and mixed-original modules through the remote Nix graph",
+      "close the remaining rooted indirect-control and missing-successor frontiers",
+      "connect exact external chunks, runtime invariants, and roots to the mixed whole-program theorem"
+    ]
+  },
+  "blockers": [],
+  "remaining_premises": [
+    "the remote Nix proof graph must compile the generated GNU boundary and mixed-original certificates",
+    "rooted indirect controls and the one missing direct successor must close without widening reachability",
+    "the mixed environment must prove related successor worlds and runtime states at every callback boundary",
+    "the final mixed theorem must compose launch, semantic, external, callback, and termination chunks"
+  ]
+}

@@ -678,6 +678,184 @@ def _discover_direct_call_stack_return_summaries(
     }
 
 
+def _discover_bounded_call_frame_returns(
+    relation_rows: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    entry_region_indices: tuple[int, ...],
+) -> dict[str, Any]:
+    """Propose finite return nodes without assuming that a callee is closed.
+
+    Nested calls are traversed through their checked continuation rather than
+    through the nested callee.  This discovers where the current runtime frame
+    can be popped while leaving completeness, external effects, and every
+    local transfer for Lean to check separately.
+    """
+    region_count = len(relation_rows)
+    outgoing: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for edge in edges:
+        source = edge.get("source_region_index")
+        target = edge.get("target_region_index")
+        if (
+            not isinstance(source, int)
+            or isinstance(source, bool)
+            or not 0 <= source < region_count
+            or not isinstance(target, int)
+            or isinstance(target, bool)
+            or not 0 <= target < region_count
+        ):
+            continue
+        outgoing[source].append(edge)
+    for source_edges in outgoing.values():
+        source_edges.sort(key=lambda edge: (
+            int(edge.get("target_region_index", -1)),
+            str(edge.get("kind", "")),
+        ))
+
+    entries: list[dict[str, Any]] = []
+    for entry in sorted(set(entry_region_indices)):
+        if not 0 <= entry < region_count:
+            entries.append({
+                "entry_region_index": entry,
+                "status": "incomplete",
+                "return_region_indices": [],
+                "visited_region_indices": [],
+                "frontier": [{"reason": "entry_region_missing"}],
+            })
+            continue
+
+        pending = [entry]
+        visited: set[int] = set()
+        returns: set[int] = set()
+        frontier: list[dict[str, Any]] = []
+        while pending:
+            source = pending.pop()
+            if source in visited:
+                continue
+            visited.add(source)
+            row = relation_rows[source]
+            if row.get("is_return"):
+                if isinstance(row.get("return_pop_claim"), dict):
+                    returns.add(source)
+                else:
+                    frontier.append({
+                        "region_index": source,
+                        "reason": "return_pop_claim_missing",
+                    })
+                continue
+
+            source_edges = outgoing.get(source, [])
+            if not source_edges:
+                frontier.append({
+                    "region_index": source,
+                    "reason": "non_return_terminal",
+                })
+                continue
+
+            push_edges = [
+                edge for edge in source_edges
+                if isinstance(
+                    edge.get("direct_call_push_claim")
+                    or edge.get("indirect_call_push_claim"),
+                    dict,
+                )
+            ]
+            if push_edges:
+                continuations = {
+                    int(claim["continuation_region_index"])
+                    for edge in push_edges
+                    for claim in [
+                        edge.get("direct_call_push_claim")
+                        or edge.get("indirect_call_push_claim")
+                    ]
+                    if (
+                        isinstance(claim, dict)
+                        and isinstance(
+                            claim.get("continuation_region_index"), int
+                        )
+                        and not isinstance(
+                            claim.get("continuation_region_index"), bool
+                        )
+                        and 0 <= int(claim["continuation_region_index"])
+                            < region_count
+                    )
+                }
+                if len(push_edges) != len(source_edges) or len(continuations) != 1:
+                    frontier.append({
+                        "region_index": source,
+                        "reason": "nested_call_continuation_ambiguous",
+                    })
+                    continue
+                pending.append(next(iter(continuations)))
+                continue
+
+            if any(
+                edge.get("kind") == "call"
+                or edge.get("requires_call_stack_proof") is True
+                for edge in source_edges
+            ):
+                frontier.append({
+                    "region_index": source,
+                    "reason": "unchecked_nested_call",
+                })
+                continue
+
+            unresolved_indirect = [
+                edge for edge in source_edges
+                if edge.get("indirect_target_profile") in {
+                    "all_mapped_targets_v1",
+                    "unresolved_indirect_control_v1",
+                }
+            ]
+            if unresolved_indirect:
+                frontier.append({
+                    "region_index": source,
+                    "reason": "unbounded_indirect_target_set",
+                })
+                continue
+
+            pending.extend(
+                int(edge["target_region_index"])
+                for edge in reversed(source_edges)
+            )
+
+        entries.append({
+            "entry_region_index": entry,
+            "status": (
+                "candidate_requires_generated_lean_replay"
+                if returns else "incomplete"
+            ),
+            "return_region_indices": sorted(returns),
+            "visited_region_indices": sorted(visited),
+            "frontier": frontier,
+        })
+
+    return {
+        "format": "stage-a-bounded-call-frame-returns-v1",
+        "status": "proposal_requires_generated_lean_replay",
+        "acceptance_authority": False,
+        "entries": entries,
+        "counts": {
+            "entries": len(entries),
+            "entries_with_returns": sum(
+                bool(entry["return_region_indices"]) for entry in entries
+            ),
+            "return_candidates": sum(
+                len(entry["return_region_indices"]) for entry in entries
+            ),
+            "frontier_items": sum(len(entry["frontier"]) for entry in entries),
+        },
+        "trust": {
+            "role": "bounded_return_candidate_proposal_only",
+            "acceptance_rule": (
+                "each return pop, ESP adjustment, source stack window, and "
+                "continuation stack window must be replayed from decoded "
+                "behavior by Lean; this inventory does not prove callee "
+                "closure or reachability"
+            ),
+        },
+    }
+
+
 
 def _attach_return_write_address_separations(
     contract: dict[str, Any],
@@ -1393,6 +1571,24 @@ def _attach_stack_window_invariants(
             "entry_summaries", []
         )
     }
+    bounded_call_frame_returns = _discover_bounded_call_frame_returns(
+        relation_rows,
+        register_relations.get("edges", []),
+        tuple(sorted({
+            *tls_callback_region_indices,
+            *(
+                int(edge["target_region_index"])
+                for edge in checked_call_edges_by_source.values()
+            ),
+        })),
+    )
+    bounded_returns_by_entry = {
+        int(entry["entry_region_index"]): tuple(
+            int(region_index)
+            for region_index in entry.get("return_region_indices", [])
+        )
+        for entry in bounded_call_frame_returns["entries"]
+    }
     for source_index, behavior in enumerate(behaviors):
         original_outcome = behavior["original_ir"].get("outcome") or {}
         candidate_outcome = behavior["candidate_ir"].get("outcome") or {}
@@ -1514,27 +1710,24 @@ def _attach_stack_window_invariants(
                 if direct_return_summary is not None
                 else 0
             ),
-            "return_predecessors": (
-                [
-                    {
-                        "region_index": return_index,
-                        "stack_delta": stack_delta(
-                            (
-                                behaviors[return_index]["original_ir"].get(
-                                    "registers"
-                                )
-                                or {}
-                            ).get("esp"),
-                            "esp",
-                        ),
-                    }
-                    for return_index in direct_return_summary.get(
-                        "return_region_indices", []
-                    )
-                ]
-                if direct_return_summary is not None
-                else []
-            ),
+            "return_predecessors": [
+                {
+                    "region_index": return_index,
+                    "stack_delta": stack_delta(
+                        (
+                            behaviors[return_index]["original_ir"].get(
+                                "registers"
+                            )
+                            or {}
+                        ).get("esp"),
+                        "esp",
+                    ),
+                    "source": "bounded_call_frame_return_candidate_v1",
+                }
+                for return_index in bounded_returns_by_entry.get(
+                    callee_index, ()
+                )
+            ],
         })
     call_window_adjacency = {
         continuation: {
@@ -1594,18 +1787,21 @@ def _attach_stack_window_invariants(
                 "pe32_tls_launch_frame_span",
             )
             return_summary = affine_return_summary_by_entry.get(callback_index)
-            if return_summary is None:
-                continue
             checked_call_continuations[continuation_index].append({
                 "source_region_index": callback_index,
                 "callee_region_index": callback_index,
                 "entry_stack_delta": 0,
-                "return_stack_delta": int(return_summary["return_delta"]),
-                "return_summary_bytes_below": int(
-                    return_summary["bytes_below"]
+                "return_stack_delta": (
+                    int(return_summary["return_delta"])
+                    if return_summary is not None else None
                 ),
-                "return_summary_bytes_above": int(
-                    return_summary["bytes_above"]
+                "return_summary_bytes_below": (
+                    int(return_summary["bytes_below"])
+                    if return_summary is not None else 0
+                ),
+                "return_summary_bytes_above": (
+                    int(return_summary["bytes_above"])
+                    if return_summary is not None else 0
                 ),
                 "return_predecessors": [
                     {
@@ -1619,10 +1815,11 @@ def _attach_stack_window_invariants(
                             ).get("esp"),
                             "esp",
                         ),
+                        "source": "bounded_call_frame_return_candidate_v1",
                     }
-                    for return_index in return_summary[
-                        "return_region_indices"
-                    ]
+                    for return_index in bounded_returns_by_entry.get(
+                        callback_index, ()
+                    )
                 ],
                 "recursive": 0,
                 "source": "pe32_tls_launch_continuation",
@@ -1718,18 +1915,6 @@ def _attach_stack_window_invariants(
                     ))
                     if source_key not in transfer_seen:
                         transfer_pending.append(source_key)
-                    for predecessor in call.get("return_predecessors", []):
-                        predecessor_delta = predecessor.get("stack_delta")
-                        if not isinstance(predecessor_delta, int):
-                            continue
-                        predecessor_key = (
-                            int(predecessor["region_index"]), "esp", "esp",
-                        )
-                        transfer_adjacency[target_key].append((
-                            predecessor_key, predecessor_delta,
-                        ))
-                        if predecessor_key not in transfer_seen:
-                            transfer_pending.append(predecessor_key)
     for transfers in transfer_adjacency.values():
         transfers.sort()
     unbounded_cycle_nodes = _reachable_weighted_nonzero_cycle_nodes(
@@ -1830,77 +2015,37 @@ def _attach_stack_window_invariants(
                         "bytes_above": bytes_above,
                         "reason": "direct_call_window_requires_return_summary",
                     })
-                    continue
-                has_checked_return_predecessor = True
-                callee_key = (
-                    int(call["callee_region_index"]),
-                    original_register,
-                    candidate_register,
-                )
-                callee_below = max(
-                    bytes_below - return_stack_delta,
-                    int(call.get("return_summary_bytes_below", 0)),
-                    0,
-                )
-                callee_above = max(
-                    bytes_above + return_stack_delta,
-                    int(call.get("return_summary_bytes_above", 0)),
-                    1,
-                )
-                prior_below, prior_above = requirements.get(callee_key, (0, 0))
-                required = (
-                    max(prior_below, callee_below),
-                    max(prior_above, callee_above),
-                )
-                if required != (prior_below, prior_above):
-                    requirements[callee_key] = required
-                    seed_sources.setdefault(callee_key, set()).add(
-                        "direct_call_continuation_window"
-                    )
-                    requirement_updates += 1
-                    if callee_key not in queued:
-                        queue.append(callee_key)
-                        queued.add(callee_key)
-                for predecessor in call.get("return_predecessors", []):
-                    predecessor_delta = predecessor.get("stack_delta")
-                    if not isinstance(predecessor_delta, int):
-                        add_frontier({
-                            "region_index": target_index,
-                            "source_region_index": int(call["source_region_index"]),
-                            "callee_region_index": int(call["callee_region_index"]),
-                            "return_region_index": int(predecessor["region_index"]),
-                            "original_register": original_register,
-                            "candidate_register": candidate_register,
-                            "bytes_below": bytes_below,
-                            "bytes_above": bytes_above,
-                            "reason": "return_predecessor_stack_delta_unsupported",
-                        })
-                        continue
-                    predecessor_key = (
-                        int(predecessor["region_index"]),
+                else:
+                    has_checked_return_predecessor = True
+                    callee_key = (
+                        int(call["callee_region_index"]),
                         original_register,
                         candidate_register,
                     )
-                    predecessor_required = (
-                        max(bytes_below - predecessor_delta, 0),
-                        max(bytes_above + predecessor_delta, 1),
+                    callee_below = max(
+                        bytes_below - return_stack_delta,
+                        int(call.get("return_summary_bytes_below", 0)),
+                        0,
                     )
-                    prior_below, prior_above = requirements.get(
-                        predecessor_key, (0, 0)
+                    callee_above = max(
+                        bytes_above + return_stack_delta,
+                        int(call.get("return_summary_bytes_above", 0)),
+                        1,
                     )
+                    prior_below, prior_above = requirements.get(callee_key, (0, 0))
                     required = (
-                        max(prior_below, predecessor_required[0]),
-                        max(prior_above, predecessor_required[1]),
+                        max(prior_below, callee_below),
+                        max(prior_above, callee_above),
                     )
                     if required != (prior_below, prior_above):
-                        requirements[predecessor_key] = required
-                        seed_sources.setdefault(predecessor_key, set()).add(
-                            "direct_call_return_predecessor_window"
+                        requirements[callee_key] = required
+                        seed_sources.setdefault(callee_key, set()).add(
+                            "direct_call_continuation_window"
                         )
                         requirement_updates += 1
-                        if predecessor_key not in queued:
-                            queue.append(predecessor_key)
-                            queued.add(predecessor_key)
+                        if callee_key not in queued:
+                            queue.append(callee_key)
+                            queued.add(callee_key)
         edges = incoming.get(target_index, [])
         if not edges:
             if has_checked_return_predecessor:
@@ -1955,6 +2100,148 @@ def _attach_stack_window_invariants(
                 if source_key not in queued:
                     queue.append(source_key)
                     queued.add(source_key)
+
+    frame_edges: list[dict[str, Any]] = []
+    frame_adjacency: dict[
+        tuple[int, str, str],
+        list[tuple[tuple[int, str, str], int]],
+    ] = defaultdict(list)
+    bounded_frame_rejections: list[dict[str, Any]] = []
+    for continuation_index, calls in sorted(checked_call_continuations.items()):
+        target_key = (continuation_index, "esp", "esp")
+        for call in calls:
+            if bool(call.get("recursive")):
+                bounded_frame_rejections.append({
+                    "continuation_region_index": continuation_index,
+                    "callee_region_index": int(call["callee_region_index"]),
+                    "reason": "recursive_call_requires_inductive_frame",
+                })
+                continue
+            for predecessor in call.get("return_predecessors", []):
+                return_index = int(predecessor["region_index"])
+                predecessor_delta = predecessor.get("stack_delta")
+                if (
+                    not isinstance(predecessor_delta, int)
+                    or isinstance(predecessor_delta, bool)
+                    or not 0 <= predecessor_delta < 2**31
+                    or predecessor_delta % 4 != 0
+                ):
+                    bounded_frame_rejections.append({
+                        "continuation_region_index": continuation_index,
+                        "callee_region_index": int(call["callee_region_index"]),
+                        "return_region_index": return_index,
+                        "reason": "return_predecessor_stack_delta_unsupported",
+                    })
+                    continue
+                source_key = (return_index, "esp", "esp")
+                frame_adjacency[target_key].append((
+                    source_key, predecessor_delta,
+                ))
+                frame_edges.append({
+                    "continuation_region_index": continuation_index,
+                    "callsite_region_index": int(call["source_region_index"]),
+                    "callee_region_index": int(call["callee_region_index"]),
+                    "return_region_index": return_index,
+                    "stack_delta": predecessor_delta,
+                    "source": str(predecessor.get(
+                        "source", "checked_return_summary"
+                    )),
+                })
+    for transfers in frame_adjacency.values():
+        transfers.sort()
+    frame_cycle_nodes = _reachable_weighted_nonzero_cycle_nodes(
+        frame_adjacency, set(requirements)
+    )
+    frame_pending = deque(sorted(
+        key for key in requirements if key in frame_adjacency
+    ))
+    frame_queued = set(frame_pending)
+    bounded_frame_iterations = 0
+    while frame_pending:
+        target_key = frame_pending.popleft()
+        frame_queued.discard(target_key)
+        bounded_frame_iterations += 1
+        if target_key in frame_cycle_nodes:
+            continue
+        bytes_below, bytes_above = requirements[target_key]
+        for source_key, predecessor_delta in frame_adjacency[target_key]:
+            if source_key in frame_cycle_nodes:
+                continue
+            required = (
+                max(bytes_below - predecessor_delta, 0),
+                max(bytes_above + predecessor_delta, 1),
+            )
+            prior = requirements.get(source_key, (0, 0))
+            joined = (max(prior[0], required[0]), max(prior[1], required[1]))
+            if joined == prior:
+                continue
+            requirements[source_key] = joined
+            seed_sources.setdefault(source_key, set()).add(
+                "bounded_call_frame_return_window"
+            )
+            requirement_updates += 1
+            if source_key in frame_adjacency and source_key not in frame_queued:
+                frame_pending.append(source_key)
+                frame_queued.add(source_key)
+
+    bounded_frame_transfers: list[dict[str, Any]] = []
+    seen_frame_transfers: set[tuple[int, int, int]] = set()
+    for frame_edge in frame_edges:
+        continuation_index = int(frame_edge["continuation_region_index"])
+        return_index = int(frame_edge["return_region_index"])
+        stack_delta_value = int(frame_edge["stack_delta"])
+        target_key = (continuation_index, "esp", "esp")
+        source_key = (return_index, "esp", "esp")
+        edge_key = (continuation_index, return_index, stack_delta_value)
+        if edge_key in seen_frame_transfers:
+            continue
+        seen_frame_transfers.add(edge_key)
+        if target_key in frame_cycle_nodes or source_key in frame_cycle_nodes:
+            bounded_frame_rejections.append({
+                **frame_edge,
+                "reason": "nonzero_frame_transfer_cycle",
+            })
+            continue
+        if target_key not in requirements or source_key not in requirements:
+            bounded_frame_rejections.append({
+                **frame_edge,
+                "reason": "stack_window_requirement_missing",
+            })
+            continue
+        source_below, source_above = requirements[source_key]
+        target_below, target_above = requirements[target_key]
+        if (
+            source_below < max(target_below - stack_delta_value, 0)
+            or source_above < max(target_above + stack_delta_value, 1)
+        ):
+            bounded_frame_rejections.append({
+                **frame_edge,
+                "reason": "source_window_does_not_cover_transfer",
+            })
+            continue
+        bounded_frame_transfers.append({
+            **frame_edge,
+            "profile": "bounded_call_frame_stack_transfer_v1",
+            "status": "candidate_requires_generated_lean_replay",
+            "source_window": {
+                "range_id": 0,
+                "original_register": "esp",
+                "candidate_register": "esp",
+                "bytes_below": source_below,
+                "bytes_above": source_above,
+            },
+            "target_window": {
+                "range_id": 0,
+                "original_register": "esp",
+                "candidate_register": "esp",
+                "bytes_below": target_below,
+                "bytes_above": target_above,
+            },
+            "adjustment": {
+                "kind": "add" if stack_delta_value else "identity",
+                "amount": stack_delta_value,
+            },
+        })
 
     windows_by_region: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for (region_index, original_register, candidate_register), (
@@ -2013,6 +2300,32 @@ def _attach_stack_window_invariants(
         "unproven_stack_address_seeds": len(unproven_stack_seeds),
         "duplicate_frontier_observations": duplicate_frontier_observations,
         "direct_call_return_summary_analysis": direct_call_return_summary_analysis,
+        "bounded_call_frame_returns": bounded_call_frame_returns,
+        "bounded_call_frame_stack_transfers": {
+            "format": "stage-a-bounded-call-frame-stack-transfers-v1",
+            "status": "proposal_requires_generated_lean_replay",
+            "acceptance_authority": False,
+            "iterations": bounded_frame_iterations,
+            "nonzero_cycle_nodes": [
+                {
+                    "region_index": region_index,
+                    "original_register": original_register,
+                    "candidate_register": candidate_register,
+                }
+                for region_index, original_register, candidate_register
+                in sorted(frame_cycle_nodes)
+            ],
+            "transfers": bounded_frame_transfers,
+            "rejections": bounded_frame_rejections,
+            "trust": {
+                "role": "return_stack_transfer_proposal_only",
+                "acceptance_rule": (
+                    "Lean must check each source and target window membership, "
+                    "the decoded paired ESP expression, and the affine window "
+                    "coverage inequality"
+                ),
+            },
+        },
         "stack_index_bounds": stack_index_bound_analysis,
         "frontier": frontier,
     }

@@ -1579,6 +1579,15 @@ def _resolved_branch_target(binary: StageABinary, insn: Any) -> int | None:
     pointer_rva = _absolute_mem_operand_rva(binary, operand)
     if pointer_rva is None:
         return None
+    pointer_section = _section_for_rva(binary, pointer_rva)
+    if (
+        pointer_section is None
+        or not pointer_section.readable
+        or pointer_section.writable
+    ):
+        # The file image supplies only the launch-time value of a mutable slot.
+        # Runtime control through that slot remains indirect.
+        return None
     width = 8 if binary.bitness == 64 else 4
     data = binary.pe.get_data(pointer_rva, width)
     if len(data) != width:

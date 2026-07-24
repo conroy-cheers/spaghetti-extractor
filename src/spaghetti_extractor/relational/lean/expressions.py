@@ -1103,6 +1103,34 @@ def _lean_state_invariant(invariant: dict[str, Any]) -> str:
         _lean_register_relation_pair(pair)
         for pair in invariant.get("register_relations", [])
     )
+    register_value_origin_relations = ", ".join(
+        "{ original := ." + str(relation["original"])
+        + ", candidate := ." + str(relation["candidate"])
+        + ", finiteAlternativeBudget := "
+        + str(int(relation["finite_alternative_budget"]))
+        + ", origins := ["
+        + ", ".join(
+            _lean_value_origin_atom(origin)
+            for origin in relation.get("origins", [])
+        )
+        + "] }"
+        for relation in invariant.get("register_value_origin_relations", [])
+    )
+    memory_value_origin_relations = ", ".join(
+        "{ originalAddress := "
+        + _lean_semantic_expr(relation["original_address"])
+        + ", candidateAddress := "
+        + _lean_semantic_expr(relation["candidate_address"])
+        + ", finiteAlternativeBudget := "
+        + str(int(relation["finite_alternative_budget"]))
+        + ", origins := ["
+        + ", ".join(
+            _lean_value_origin_atom(origin)
+            for origin in relation.get("origins", [])
+        )
+        + "] }"
+        for relation in invariant.get("memory_value_origin_relations", [])
+    )
     import_relations = ", ".join(
         "{ original := ." + str(pair["original"])
         + ", candidate := ." + str(pair["candidate"])
@@ -1144,6 +1172,10 @@ def _lean_state_invariant(invariant: dict[str, Any]) -> str:
     return (
         "{ registerRelations := [" + register_relations
         + "], importRegisterRelations := [" + import_relations
+        + "], registerValueOriginRelations := ["
+        + register_value_origin_relations
+        + "], memoryValueOriginRelations := ["
+        + memory_value_origin_relations
         + "], dynamicRegisterRangeRelations := [" + dynamic_relations
         + "], dynamicStackRangeRelations := [" + dynamic_stack_relations
         + "], bounds := [" + bounds
@@ -1222,6 +1254,16 @@ def _lean_static_word_relation_slot(slot: dict[str, Any]) -> str:
         if str(slot["relation"]) in {"fixed_code_pointer", "fixedCodePointer"}:
             target_id = int(slot["target_id"])
             relation = f"fixedCodePointer {target_id}"
+        elif str(slot["relation"]) in {"finite_origins", "finiteOrigins"}:
+            origins = ", ".join(
+                _lean_value_origin_atom(origin)
+                for origin in slot.get("origins", [])
+            )
+            relation = (
+                "finiteOrigins "
+                + str(int(slot["finite_alternative_budget"]))
+                + " [" + origins + "]"
+            )
         else:
             raise StageAInputError(
                 f"unsupported static word relation {slot['relation']!r}"
@@ -1234,6 +1276,39 @@ def _lean_static_word_relation_slot(slot: dict[str, Any]) -> str:
         + str(int(slot["candidate_address"]))
         + ", relation := ." + relation + " }"
     )
+
+
+def _lean_value_origin_atom(origin: dict[str, Any]) -> str:
+    kind = str(origin["kind"])
+    if kind in {"exact_bits", "exactBits"}:
+        return f".exactBits {int(origin['value'])}"
+    if kind in {"static_code_target", "staticCodeTarget"}:
+        return (
+            f".staticCodeTarget {int(origin['target_id'])} "
+            f"{int(origin.get('offset', 0))}"
+        )
+    if kind in {"static_data_location", "staticDataLocation"}:
+        return (
+            f".staticDataLocation {int(origin['target_id'])} "
+            f"{int(origin.get('offset', 0))}"
+        )
+    if kind in {"import_target", "importTarget"}:
+        return ".importTarget " + _lean_external_target(origin["import"])
+    if kind in {"stack_frame_location", "stackFrameLocation"}:
+        return (
+            f".stackFrameLocation {int(origin['range_id'])} "
+            f"{int(origin.get('offset', 0))}"
+        )
+    if kind in {"dynamic_range_location", "dynamicRangeLocation"}:
+        return (
+            f".dynamicRangeLocation {int(origin['range_id'])} "
+            f"{int(origin.get('offset', 0))}"
+        )
+    if kind in {"opaque_resource", "opaqueResource"}:
+        return f".opaqueResource {int(origin['resource_id'])}"
+    if kind in {"registered_callback", "registeredCallback"}:
+        return f".registeredCallback {int(origin['target_id'])}"
+    raise StageAInputError(f"unsupported value origin kind {kind!r}")
 
 def _lean_stack_adjustment(adjustment: dict[str, Any]) -> str:
     kind = str(adjustment["kind"])

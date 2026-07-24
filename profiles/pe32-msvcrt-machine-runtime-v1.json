@@ -1,0 +1,340 @@
+{
+  "format": "stage-a-static-machine-import-profile-v1",
+  "id": "pe32-msvcrt-machine-runtime-v1",
+  "includes": [
+    "pe32-kernel32-lockstep-v1.json",
+    "pe32-msvcrt-lockstep-v1.json"
+  ],
+  "machine_import_signatures": [
+    {
+      "import": {"dll": "kernel32.dll", "symbol": "VirtualQuery"},
+      "override": true,
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 3},
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {
+          "access": "write",
+          "base_argument": 1,
+          "offset": 0,
+          "size": {"kind": "argument", "argument": 2, "scale": 1},
+          "nullable": false
+        }
+      ],
+      "world_effect": "none"
+    },
+    {
+      "import": {"dll": "kernel32.dll", "symbol": "VirtualProtect"},
+      "override": true,
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 4},
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {
+          "access": "write",
+          "base_argument": 3,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 4},
+          "nullable": false
+        }
+      ],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "kernel32.dll", "symbol": "GetLastError"},
+      "override": true,
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 0},
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "tlsState"
+    },
+    {
+      "import": {"dll": "kernel32.dll", "symbol": "TlsGetValue"},
+      "override": true,
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "tlsState"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "atexit"},
+      "override": true,
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "callback_behavior": "registration",
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "callbackRegistration",
+      "world_effect_argument": 0
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "atoi"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {
+          "access": "read",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {
+            "kind": "bounded_terminated",
+            "source_argument": 0,
+            "source_offset": 0,
+            "unit_bytes": 1,
+            "sentinel": [0],
+            "max_units": 1048576
+          },
+          "nullable": false
+        }
+      ],
+      "world_effect": "none"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "localeconv"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 0},
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {"kind": "fixed", "bytes": 8},
+          "minimum_size": 8,
+          "required_words": [
+            {"offset": 0, "relation": "nullable_dynamic_pointer"},
+            {"offset": 4, "relation": "nullable_dynamic_pointer"}
+          ],
+          "nullable": false
+        }
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "exit"},
+      "override": true,
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "protocol",
+      "callback_behavior": "nested_frames",
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "__getmainargs"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 5},
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "__setusermatherr"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "callback_behavior": "registration",
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "callbackRegistration",
+      "world_effect_argument": 0
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "_cexit"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 0},
+      "disposition": "protocol",
+      "callback_behavior": "nested_frames",
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "_fileno"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "_get_osfhandle"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "_initterm"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "disposition": "protocol",
+      "callback_behavior": "nested_frames",
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "_unlock"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "fprintf"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {
+        "kind": "variadic",
+        "minimum_words": 2,
+        "format_argument": 1,
+        "format_unit_bytes": 1
+      },
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "fputc"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "fputwc"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "fwprintf"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {
+        "kind": "variadic",
+        "minimum_words": 2,
+        "format_argument": 1,
+        "format_unit_bytes": 2
+      },
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "fwrite"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 4},
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "getenv"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "putc"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "setlocale"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "strerror"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "tlsState"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "vfprintf"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 3},
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "none"
+    }
+  ]
+}

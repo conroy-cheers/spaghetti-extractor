@@ -32,6 +32,7 @@ from .ir import CompositionProgressIR, RelationalProofIR, WholeProgramAcceptance
 
 
 _LEAN_SOURCE_ROOT = Path(__file__).resolve().parent.parent / "lean" / "StageA"
+_NIX_PUBLIC_KEY_RE = re.compile(r"^[^:\s]+:[A-Za-z0-9+/]+={0,2}$")
 
 
 def _remove_relational_build_output(path: Path) -> None:
@@ -47,17 +48,39 @@ def _remove_relational_build_output(path: Path) -> None:
     shutil.rmtree(path)
 
 
-def _relational_nix_build_command(
-    expression: str,
-    builders_file: Path | None,
+def _trusted_builder_public_keys(
+    trusted_public_keys_file: Path | None,
 ) -> list[str]:
-    command = ["nix", "build"]
-    if builders_file is not None:
-        command.extend([
-            "--max-jobs", "0", "--cores", "2",
-            "--builders", f"@{builders_file}",
-        ])
-    command.extend(["--no-link", "--json"])
+    inline = os.environ.get(
+        "SPAGHETTI_EXTRACTOR_NIX_TRUSTED_PUBLIC_KEYS", ""
+    ).split()
+    file_keys: list[str] = []
+    if trusted_public_keys_file is not None:
+        key_path = Path(trusted_public_keys_file).resolve()
+        if not key_path.is_file():
+            raise StageAInputError(
+                f"Nix builder public-key file does not exist: {key_path}"
+            )
+        file_keys = [
+            line.strip()
+            for line in key_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+    keys = list(dict.fromkeys([*file_keys, *inline]))
+    invalid = [key for key in keys if _NIX_PUBLIC_KEY_RE.fullmatch(key) is None]
+    if invalid:
+        raise StageAInputError(
+            "invalid Nix builder public key(s): " + ", ".join(repr(key) for key in invalid)
+        )
+    return keys
+
+
+def _append_relational_remote_options(
+    command: list[str],
+    *,
+    builders_file: Path | None,
+    trusted_public_keys_file: Path | None,
+) -> list[str]:
     if builders_file is not None:
         command.extend([
             "--option",
@@ -69,6 +92,31 @@ def _relational_nix_build_command(
     substituters = os.environ.get("SPAGHETTI_EXTRACTOR_NIX_SUBSTITUTERS")
     if substituters:
         command.extend(["--option", "substituters", substituters])
+    trusted_keys = _trusted_builder_public_keys(trusted_public_keys_file)
+    if trusted_keys:
+        command.extend([
+            "--option", "extra-trusted-public-keys", " ".join(trusted_keys)
+        ])
+    return command
+
+
+def _relational_nix_build_command(
+    expression: str,
+    builders_file: Path | None,
+    trusted_public_keys_file: Path | None = None,
+) -> list[str]:
+    command = ["nix", "build"]
+    if builders_file is not None:
+        command.extend([
+            "--max-jobs", "0", "--cores", "2",
+            "--builders", f"@{builders_file}",
+        ])
+    command.extend(["--no-link", "--json"])
+    _append_relational_remote_options(
+        command,
+        builders_file=builders_file,
+        trusted_public_keys_file=trusted_public_keys_file,
+    )
     command.extend(["--impure", "--expr", expression])
     return command
 
@@ -97,6 +145,7 @@ def _relational_nix_work_reused(stderr: str, *, succeeded: bool) -> bool:
 def _relational_nix_realize_command(
     flake_ref: str,
     builders_file: Path | None,
+    trusted_public_keys_file: Path | None = None,
 ) -> list[str]:
     command = ["nix", "build"]
     if builders_file is not None:
@@ -105,17 +154,11 @@ def _relational_nix_realize_command(
             "--builders", f"@{builders_file}",
         ])
     command.extend(["--no-link", "--json"])
-    if builders_file is not None:
-        command.extend([
-            "--option",
-            "builders-use-substitutes",
-            os.environ.get(
-                "SPAGHETTI_EXTRACTOR_NIX_BUILDERS_USE_SUBSTITUTES", "true"
-            ),
-        ])
-    substituters = os.environ.get("SPAGHETTI_EXTRACTOR_NIX_SUBSTITUTERS")
-    if substituters:
-        command.extend(["--option", "substituters", substituters])
+    _append_relational_remote_options(
+        command,
+        builders_file=builders_file,
+        trusted_public_keys_file=trusted_public_keys_file,
+    )
     command.append(flake_ref)
     return command
 
@@ -243,6 +286,7 @@ def stage_a_build_relational_from_nix(
     executor: str = "nix",
     flake: Path | None = None,
     builders_file: Path | None = None,
+    builder_trusted_public_keys_file: Path | None = None,
     target_node: str | None = None,
     target_nodes: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -269,7 +313,15 @@ def stage_a_build_relational_from_nix(
         builders_path = Path(builders_file).resolve()
         if not builders_path.is_file():
             raise StageAInputError(f"Nix builders file does not exist: {builders_path}")
-    command = _relational_nix_realize_command(prepared_nix_ref, builders_path)
+    trusted_keys_path = (
+        Path(builder_trusted_public_keys_file).resolve()
+        if builder_trusted_public_keys_file is not None
+        else None
+    )
+    trusted_keys = _trusted_builder_public_keys(trusted_keys_path)
+    command = _relational_nix_realize_command(
+        prepared_nix_ref, builders_path, trusted_keys_path
+    )
     started = time.monotonic()
     process = subprocess.run(
         command,
@@ -317,6 +369,7 @@ def stage_a_build_relational_from_nix(
         executor=executor,
         flake=flake_root,
         builders_file=builders_path,
+        builder_trusted_public_keys_file=trusted_keys_path,
         target_node=target_node,
         target_nodes=target_nodes,
     )
@@ -328,6 +381,7 @@ def stage_a_build_relational_from_nix(
         "result_path": str(result_path),
         "prepared_path": str(prepared),
         "builders_file": str(builders_path) if builders_path is not None else None,
+        "builder_trusted_public_keys": trusted_keys,
         "local_derivation_builds": builders_path is None,
         "elapsed_seconds": realization_elapsed,
     }
@@ -490,6 +544,7 @@ def stage_a_build_relational(
     executor: str = "nix",
     flake: Path | None = None,
     builders_file: Path | None = None,
+    builder_trusted_public_keys_file: Path | None = None,
     target_node: str | None = None,
     target_nodes: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -567,7 +622,15 @@ def stage_a_build_relational(
         builders_path = Path(builders_file).resolve()
         if not builders_path.is_file():
             raise StageAInputError(f"Nix builders file does not exist: {builders_path}")
-    command = _relational_nix_build_command(expression, builders_path)
+    trusted_keys_path = (
+        Path(builder_trusted_public_keys_file).resolve()
+        if builder_trusted_public_keys_file is not None
+        else None
+    )
+    trusted_keys = _trusted_builder_public_keys(trusted_keys_path)
+    command = _relational_nix_build_command(
+        expression, builders_path, trusted_keys_path
+    )
     started = time.monotonic()
     process = subprocess.run(
         command,
@@ -802,6 +865,7 @@ def stage_a_build_relational(
         "executor": executor,
         "flake": str(flake_root),
         "builders_file": str(Path(builders_file).resolve()) if builders_file is not None else None,
+        "builder_trusted_public_keys": trusted_keys,
         "local_derivation_builds": builders_file is None,
         "flake_lock_sha256": sha256_file(flake_root / "flake.lock"),
         "evaluator_sha256": sha256_file(evaluator),

@@ -4,8 +4,10 @@ from types import SimpleNamespace
 
 from spaghetti_extractor.relational.analyses.stack import (
     _attach_stack_window_invariants,
+    _discover_bounded_call_frame_returns,
     _discover_direct_call_stack_return_summaries,
     _return_pop_claim,
+    _stack_window_transfer_claims,
 )
 
 
@@ -163,6 +165,90 @@ def _fixture() -> tuple[
 
 
 class StageACallReturnSummaryTests(unittest.TestCase):
+    def test_bounded_frame_returns_keep_known_returns_and_fail_closed(self):
+        contract, behaviors, rows, edges = _fixture()
+        edges[1]["environment_barrier"] = True
+        edges[1]["kind"] = "external_call"
+        rows.append({
+            "region_index": 6,
+            "is_return": False,
+            "return_pop_claim": None,
+        })
+        edges.append({
+            "source_region_index": 2,
+            "target_region_index": 6,
+            "kind": "branch_fallthrough",
+            "environment_barrier": False,
+            "requires_call_stack_proof": False,
+        })
+        edges.append({
+            "source_region_index": 6,
+            "target_region_index": 2,
+            "kind": "indirect_jump",
+            "environment_barrier": False,
+            "requires_call_stack_proof": False,
+            "indirect_target_profile": "unresolved_indirect_control_v1",
+        })
+
+        analysis = _discover_bounded_call_frame_returns(
+            rows, edges, (1,)
+        )
+
+        entry = analysis["entries"][0]
+        self.assertEqual(entry["return_region_indices"], [3, 4])
+        self.assertEqual(entry["status"], "candidate_requires_generated_lean_replay")
+        self.assertIn(
+            "unbounded_indirect_target_set",
+            {item["reason"] for item in entry["frontier"]},
+        )
+        self.assertFalse(analysis["acceptance_authority"])
+
+    def test_incomplete_callee_emits_checked_return_frame_window_transfer(self):
+        contract, behaviors, rows, edges = _fixture()
+        edges[1]["environment_barrier"] = True
+        edges[1]["kind"] = "external_call"
+        binary = SimpleNamespace(
+            image_base=0x400000,
+            pe=SimpleNamespace(
+                OPTIONAL_HEADER=SimpleNamespace(SizeOfImage=0x10000),
+            ),
+        )
+
+        refined, analysis = _attach_stack_window_invariants(
+            contract,
+            behaviors,
+            {
+                "regions": rows,
+                "edges": edges,
+                "return_slot_analysis": {
+                    "call_summary_analysis": {"summaries": []},
+                },
+            },
+            binary,
+            binary,
+        )
+
+        direct_summary = analysis["direct_call_return_summary_analysis"]
+        self.assertEqual(direct_summary["summaries"][0]["status"], "incomplete")
+        transfers = analysis["bounded_call_frame_stack_transfers"]
+        self.assertFalse(transfers["acceptance_authority"])
+        return_transfers = [
+            item for item in transfers["transfers"]
+            if item["return_region_index"] in {3, 4}
+            and item["continuation_region_index"] == 5
+        ]
+        self.assertEqual(len(return_transfers), 2)
+        for return_index in (3, 4):
+            claims = _stack_window_transfer_claims(
+                refined["regions"][return_index],
+                refined["regions"][5],
+                behaviors[return_index],
+            )
+            self.assertIsNotNone(claims)
+            self.assertEqual(claims[0]["adjustment"], {
+                "kind": "add", "amount": 12,
+            })
+
     def test_explicit_machine_entry_gets_a_checked_affine_return_summary(self):
         contract, behaviors, rows, edges = _fixture()
         edges = [edge for edge in edges if edge["source_region_index"] != 0]

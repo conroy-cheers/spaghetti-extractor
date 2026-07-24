@@ -71,7 +71,7 @@ def invalidFootprintContract : MachineImportCallContract := {
   }]
 }
 
-def invalidProtocolContract : MachineImportCallContract := {
+def protocolContract : MachineImportCallContract := {
   contract with
   disposition := .protocol
 }
@@ -87,7 +87,7 @@ example : contract.shapeValid = true := by decide
 
 example : invalidFootprintContract.shapeValid = false := by decide
 
-example : invalidProtocolContract.shapeValid = false := by decide
+example : protocolContract.shapeValid = true := by decide
 
 example : Not (beforeMemory = afterMemory) := by
   intro equalMemory

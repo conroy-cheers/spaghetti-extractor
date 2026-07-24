@@ -75,11 +75,11 @@ static kernel to every case:
 
 ```sh
 nix build .#stage-a-relational-tests --no-link \
-  --builders "$(cat nix/stage-a-builders)" --max-jobs 0
+  --builders "@$(realpath nix/stage-a-builders)" --max-jobs 0
 ```
 
-GNU hello uses content-addressed preparation followed by a dynamically generated
-Lean derivation graph. Run the two cached Nix phases through the coordinator:
+GNU hello uses cached input-addressed preparation followed by a dynamically
+generated Lean derivation graph. Run the two phases through the coordinator:
 
 ```sh
 nix run .#stage-a-gnu-hello-proof
@@ -89,10 +89,10 @@ The first phase is also a normal flake check and can be built independently:
 
 ```sh
 nix build .#stage-a-gnu-hello-preflight --no-link \
-  --builders "$(cat nix/stage-a-builders)" --max-jobs 0
+  --builders "@$(realpath nix/stage-a-builders)" --max-jobs 0
 ```
 
-The proof app realizes that CA output, validates its prepared-proof hashes, and
+The proof app realizes that output, validates its prepared-proof hashes, and
 then asks Nix to build the focused Lean launch-certificate graph remotely. GNU
 hello remains incomplete, so this checks an intermediate launch certificate and
 the truthful whole-program frontier; it does not claim final equivalence.
@@ -102,7 +102,7 @@ Build and validate the full Windows x86 jq alignment-pair contract:
 ```sh
 nix build .#stage-a-jq-fixtures --no-link
 nix build .#stage-a-jq-fixtures-check --no-link \
-  --builders "$(cat nix/stage-a-builders)" --max-jobs 0
+  --builders "@$(realpath nix/stage-a-builders)" --max-jobs 0
 ```
 
 The jq path is split into independently cacheable derivations:

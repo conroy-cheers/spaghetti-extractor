@@ -172,6 +172,59 @@ def _paired_pure_expression_witness(
     return None
 
 
+def _generic_indirect_control_definitions(
+    *,
+    node_id: int,
+    region_index: int,
+    theorem_name: str,
+    original_normalized: str,
+    candidate_normalized: str,
+    adapter_term: str,
+) -> list[str]:
+    certificate_name = f"productNode{node_id}IndirectExitCertificate"
+    return [
+        (
+            f"def {certificate_name} :\n"
+            "    StageA.Relational.ValueProvenance.CheckedIndirectExitCertificate "
+            f"staticProofContext region{region_index}.inputInvariant "
+            f"{original_normalized} {candidate_normalized} :=\n"
+            f"  {adapter_term}"
+        ),
+        (
+            f"theorem {theorem_name} :\n"
+            "    NodeControlEdgesComplete relationalProductGraph "
+            f"{node_id} staticProofContext region{region_index} "
+            f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
+            "  exact nodeControlEdgesComplete_of_checkedIndirectExit\n"
+            f"    relationalProductGraph {node_id} staticProofContext "
+            f"region{region_index} originalBehavior{region_index} "
+            f"candidateBehavior{region_index} {original_normalized} "
+            f"{candidate_normalized} {certificate_name}\n"
+            f"    originalBehavior{region_index}CheckedDecoded "
+            f"candidateBehavior{region_index}CheckedDecoded "
+            "(by decide) (by decide) (by decide)"
+        ),
+    ]
+
+
+def _uninhabited_control_definition(
+    *,
+    node_id: int,
+    region_index: int,
+    theorem_name: str,
+) -> str:
+    return (
+        f"theorem {theorem_name} :\n"
+        "    NodeControlEdgesComplete relationalProductGraph "
+        f"{node_id} staticProofContext region{region_index} "
+        f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
+        "  exact nodeControlEdgesComplete_of_uninhabited\n"
+        f"    relationalProductGraph {node_id} staticProofContext "
+        f"region{region_index} originalBehavior{region_index} "
+        f"candidateBehavior{region_index} (by decide) (by decide)"
+    )
+
+
 def _write_reachable_product_local_certificate(
     lean_dir: Path,
     product_graph: dict[str, Any],
@@ -1086,8 +1139,7 @@ def _write_relational_product_graph_modules(
                     "    NodeControlEdgesComplete relationalProductGraph "
                     f"{node_id} staticProofContext region{region_index} "
                     f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
-                    "  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr "
-                    "(Or.inr (Or.inr (Or.inl ⟨by decide, by decide, by decide⟩))))))))"
+                    "  exact Or.inr (Or.inl ⟨by decide, by decide, by decide⟩)"
                 )
             elif candidate.get("profile") == "immutable_relocated_function_pointer_call_v1":
                 original_normalized = f"productNode{node_id}OriginalNormalized"
@@ -1148,14 +1200,20 @@ def _write_relational_product_graph_modules(
                     "  immutableIndirectCallTargetsClosed_of_checked staticProofContext "
                     f"region{region_index}.inputInvariant {original_normalized} "
                     f"{candidate_normalized} {claim_name} (by decide)",
-                    f"theorem {theorem_name} :\n"
-                    "    NodeControlEdgesComplete relationalProductGraph "
-                    f"{node_id} staticProofContext region{region_index} "
-                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
-                    f"  exact Or.inr (Or.inl ⟨{original_normalized}, {candidate_normalized}, "
-                    f"{claim_name}, ⟨originalBehavior{region_index}CheckedDecoded, "
-                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
-                    f"by decide, {closed_name}⟩⟩)",
+                    *_generic_indirect_control_definitions(
+                        node_id=node_id,
+                        region_index=region_index,
+                        theorem_name=theorem_name,
+                        original_normalized=original_normalized,
+                        candidate_normalized=candidate_normalized,
+                        adapter_term=(
+                            "StageA.Relational.IndirectExitAdapters."
+                            "checkedImmutableCallIndirectCertificate "
+                            f"staticProofContext region{region_index}.inputInvariant "
+                            f"{original_normalized} {candidate_normalized} "
+                            f"{claim_name} (by decide) (by decide)"
+                        ),
+                    ),
                 ])
             elif candidate.get("profile") == "fixed_static_function_pointer_call_v1":
                 original_normalized = f"productNode{node_id}OriginalNormalized"
@@ -1234,14 +1292,20 @@ def _write_relational_product_graph_modules(
                     f"staticProofContext region{region_index}.inputInvariant "
                     f"{original_normalized} {candidate_normalized} {static_claim_name} "
                     f"{static_closed_name}",
-                    f"theorem {theorem_name} :\n"
-                    "    NodeControlEdgesComplete relationalProductGraph "
-                    f"{node_id} staticProofContext region{region_index} "
-                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
-                    f"  exact Or.inr (Or.inl ⟨{original_normalized}, {candidate_normalized}, "
-                    f"{claim_name}, ⟨originalBehavior{region_index}CheckedDecoded, "
-                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
-                    f"by decide, {closed_name}⟩⟩)",
+                    *_generic_indirect_control_definitions(
+                        node_id=node_id,
+                        region_index=region_index,
+                        theorem_name=theorem_name,
+                        original_normalized=original_normalized,
+                        candidate_normalized=candidate_normalized,
+                        adapter_term=(
+                            "StageA.Relational.IndirectExitAdapters."
+                            "checkedStaticWordSlotIndirectCertificate "
+                            f"staticProofContext region{region_index}.inputInvariant "
+                            f"{original_normalized} {candidate_normalized} "
+                            f"{static_claim_name} (by decide) (by decide)"
+                        ),
+                    ),
                 ])
             elif candidate.get("profile") == "fixed_static_function_pointer_jump_v1":
                 original_normalized = f"productNode{node_id}OriginalNormalized"
@@ -1335,16 +1399,20 @@ def _write_relational_product_graph_modules(
                     f"staticProofContext region{region_index}.inputInvariant "
                     f"{original_normalized} {candidate_normalized} {static_claim_name} "
                     f"{static_closed_name}",
-                    f"theorem {theorem_name} :\n"
-                    "    NodeControlEdgesComplete relationalProductGraph "
-                    f"{node_id} staticProofContext region{region_index} "
-                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
-                    f"  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr "
-                    "(Or.inl "
-                    f"⟨{original_normalized}, {candidate_normalized}, {claim_name}, "
-                    f"⟨originalBehavior{region_index}CheckedDecoded, "
-                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
-                    f"by decide, {closed_name}⟩⟩))))))",
+                    *_generic_indirect_control_definitions(
+                        node_id=node_id,
+                        region_index=region_index,
+                        theorem_name=theorem_name,
+                        original_normalized=original_normalized,
+                        candidate_normalized=candidate_normalized,
+                        adapter_term=(
+                            "StageA.Relational.IndirectExitAdapters."
+                            "checkedStaticWordSlotJumpIndirectCertificate "
+                            f"staticProofContext region{region_index}.inputInvariant "
+                            f"{original_normalized} {candidate_normalized} "
+                            f"{static_claim_name} (by decide) (by decide)"
+                        ),
+                    ),
                 ])
             elif candidate.get("profile") == "immutable_relocated_function_pointer_jump_v1":
                 original_normalized = f"productNode{node_id}OriginalNormalized"
@@ -1420,16 +1488,20 @@ def _write_relational_product_graph_modules(
                     "  immutableIndirectJumpTargetsClosed_of_checked staticProofContext "
                     f"region{region_index}.inputInvariant {original_normalized} "
                     f"{candidate_normalized} {claim_name} (by decide)",
-                    f"theorem {theorem_name} :\n"
-                    "    NodeControlEdgesComplete relationalProductGraph "
-                    f"{node_id} staticProofContext region{region_index} "
-                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
-                    f"  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr "
-                    "(Or.inl "
-                    f"⟨{original_normalized}, {candidate_normalized}, {claim_name}, "
-                    f"⟨originalBehavior{region_index}CheckedDecoded, "
-                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
-                    f"by decide, {closed_name}⟩⟩))))))",
+                    *_generic_indirect_control_definitions(
+                        node_id=node_id,
+                        region_index=region_index,
+                        theorem_name=theorem_name,
+                        original_normalized=original_normalized,
+                        candidate_normalized=candidate_normalized,
+                        adapter_term=(
+                            "StageA.Relational.IndirectExitAdapters."
+                            "checkedImmutableJumpIndirectCertificate "
+                            f"staticProofContext region{region_index}.inputInvariant "
+                            f"{original_normalized} {candidate_normalized} "
+                            f"{claim_name} (by decide) (by decide)"
+                        ),
+                    ),
                 ])
             elif candidate.get("profile") == "fixed_code_address_indirect_jump_v1":
                 original_normalized = f"productNode{node_id}OriginalNormalized"
@@ -1474,15 +1546,20 @@ def _write_relational_product_graph_modules(
                     f"staticProofContext region{region_index}.inputInvariant "
                     f"{original_normalized} {candidate_normalized} {claim_name} "
                     "(by decide)",
-                    f"theorem {theorem_name} :\n"
-                    "    NodeControlEdgesComplete relationalProductGraph "
-                    f"{node_id} staticProofContext region{region_index} "
-                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
-                    f"  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr "
-                    f"(Or.inr (Or.inl ⟨{original_normalized}, {candidate_normalized}, "
-                    f"{claim_name}, ⟨originalBehavior{region_index}CheckedDecoded, "
-                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
-                    f"by decide, {closed_name}⟩⟩)))))))",
+                    *_generic_indirect_control_definitions(
+                        node_id=node_id,
+                        region_index=region_index,
+                        theorem_name=theorem_name,
+                        original_normalized=original_normalized,
+                        candidate_normalized=candidate_normalized,
+                        adapter_term=(
+                            "StageA.Relational.IndirectExitAdapters."
+                            "checkedFixedAddressJumpIndirectCertificate "
+                            f"staticProofContext region{region_index}.inputInvariant "
+                            f"{original_normalized} {candidate_normalized} "
+                            f"{claim_name} (by decide) (by decide)"
+                        ),
+                    ),
                 ])
             elif candidate.get("profile") == (
                 "bounded_immutable_relocation_table_jump_v1"
@@ -1627,14 +1704,21 @@ def _write_relational_product_graph_modules(
                     f"candidateBehavior{region_index}CheckedDecoded "
                     f"{original_normalized}Checked {candidate_normalized}Checked "
                     "(by decide) (by decide)",
-                    f"theorem {theorem_name} :\n"
-                    "    NodeControlEdgesComplete relationalProductGraph "
-                    f"{node_id} staticProofContext region{region_index} "
-                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
-                    "  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr "
-                    "(Or.inr (Or.inr (Or.inr "
-                    f"⟨{original_normalized}, {candidate_normalized}, {claim_name}, "
-                    f"{node_closed_name}⟩))))))))",
+                    *_generic_indirect_control_definitions(
+                        node_id=node_id,
+                        region_index=region_index,
+                        theorem_name=theorem_name,
+                        original_normalized=original_normalized,
+                        candidate_normalized=candidate_normalized,
+                        adapter_term=(
+                            "StageA.Relational.IndirectExitAdapters."
+                            "checkedBoundedTableJumpIndirectCertificate "
+                            f"staticProofContext region{region_index}.inputInvariant "
+                            f"{original_normalized} {candidate_normalized} "
+                            f"{claim_name} staticProofContextChecked "
+                            "(by decide) (by decide)"
+                        ),
+                    ),
                 ])
             elif (
                 candidate.get("profile")
@@ -1707,18 +1791,31 @@ def _write_relational_product_graph_modules(
                     f"candidateBehavior{region_index}CheckedDecoded "
                     f"{original_normalized}Checked {candidate_normalized}Checked "
                     "(by decide) (by decide)",
-                    f"theorem {theorem_name} :\n"
-                    "    NodeControlEdgesComplete relationalProductGraph "
-                    f"{node_id} staticProofContext region{region_index} "
-                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
-                    f"  have bounded : NodeBoundedImmutableCodePointerTableCallEdgesComplete "
-                    f"relationalProductGraph {node_id} staticProofContext "
-                    f"region{region_index} originalBehavior{region_index} "
-                    f"candidateBehavior{region_index} {original_normalized} "
-                    f"{candidate_normalized} {claim_name} := {node_closed_name}\n"
-                    "  exact Or.inr (Or.inr (Or.inl "
-                    f"⟨{original_normalized}, {candidate_normalized}, "
-                    f"{claim_name}, bounded⟩))",
+                    *(
+                        [
+                            _uninhabited_control_definition(
+                                node_id=node_id,
+                                region_index=region_index,
+                                theorem_name=theorem_name,
+                            )
+                        ]
+                        if not candidate["rows"]
+                        else _generic_indirect_control_definitions(
+                            node_id=node_id,
+                            region_index=region_index,
+                            theorem_name=theorem_name,
+                            original_normalized=original_normalized,
+                            candidate_normalized=candidate_normalized,
+                            adapter_term=(
+                                "StageA.Relational.IndirectExitAdapters."
+                                "checkedBoundedTableCallIndirectCertificate "
+                                f"staticProofContext region{region_index}.inputInvariant "
+                                f"{original_normalized} {candidate_normalized} "
+                                f"{claim_name} staticProofContextChecked "
+                                "(by decide) (by decide)"
+                            ),
+                        )
+                    ),
                 ])
             elif candidate.get("profile") == "dynamic_range_code_pointer_call_v1":
                 original_normalized = f"productNode{node_id}OriginalNormalized"
@@ -1743,16 +1840,21 @@ def _write_relational_product_graph_modules(
                     "  dynamicRangeIndirectCallFiniteTargetsClosed_of_checked "
                     f"region{region_index}.inputInvariant {original_normalized} "
                     f"{candidate_normalized} {claim_name} (by decide)",
-                    f"theorem {theorem_name} :\n"
-                    "    NodeControlEdgesComplete relationalProductGraph "
-                    f"{node_id} staticProofContext region{region_index} "
-                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
-                    f"  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inl "
-                    f"⟨{original_normalized}, "
-                    f"{candidate_normalized}, {claim_name}, {first_edge_name}, "
-                    f"⟨originalBehavior{region_index}CheckedDecoded, "
-                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
-                    f"{match_name}, {closed_name}⟩⟩)))))",
+                    *_generic_indirect_control_definitions(
+                        node_id=node_id,
+                        region_index=region_index,
+                        theorem_name=theorem_name,
+                        original_normalized=original_normalized,
+                        candidate_normalized=candidate_normalized,
+                        adapter_term=(
+                            "StageA.Relational.IndirectExitAdapters."
+                            "checkedDynamicRangeIndirectCertificate "
+                            f"staticProofContext region{region_index}.inputInvariant "
+                            f"{original_normalized} {candidate_normalized} "
+                            f"{claim_name} staticProofContextChecked "
+                            "(by decide) (by decide)"
+                        ),
+                    ),
                 ])
             elif candidate.get("profile") in {
                 "inductive_iat_register_call_v1",
@@ -1806,15 +1908,21 @@ def _write_relational_product_graph_modules(
                     f"{original_normalized} "
                     f"{candidate_normalized} {claim_name} :=\n"
                     f"{closed_proof}",
-                    f"theorem {theorem_name} :\n"
-                    "    NodeControlEdgesComplete relationalProductGraph "
-                    f"{node_id} staticProofContext region{region_index} "
-                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
-                    f"  exact Or.inr (Or.inr (Or.inr (Or.inl ⟨{original_normalized}, "
-                    f"{candidate_normalized}, {claim_name}, "
-                    f"⟨originalBehavior{region_index}CheckedDecoded, "
-                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
-                    f"by decide, {closed_name}⟩⟩)))",
+                    *_generic_indirect_control_definitions(
+                        node_id=node_id,
+                        region_index=region_index,
+                        theorem_name=theorem_name,
+                        original_normalized=original_normalized,
+                        candidate_normalized=candidate_normalized,
+                        adapter_term=(
+                            "StageA.Relational.IndirectExitAdapters."
+                            "checkedImportRegisterIndirectCertificate_of_closed "
+                            f"staticProofContext region{region_index}.inputInvariant "
+                            f"{original_normalized} {candidate_normalized} "
+                            f"{claim_name} (by decide) (by decide) "
+                            f"{closed_name} (by decide)"
+                        ),
+                    ),
                 ])
             elif candidate.get("profile") == (
                 "inductive_fixed_code_pointer_register_call_v1"
@@ -1845,15 +1953,21 @@ def _write_relational_product_graph_modules(
                     f"staticProofContext region{region_index}.inputInvariant "
                     f"{original_normalized} {candidate_normalized} {claim_name} "
                     "(by decide)",
-                    f"theorem {theorem_name} :\n"
-                    "    NodeControlEdgesComplete relationalProductGraph "
-                    f"{node_id} staticProofContext region{region_index} "
-                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
-                    f"  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inl "
-                    f"⟨{original_normalized}, {candidate_normalized}, {claim_name}, "
-                    f"⟨originalBehavior{region_index}CheckedDecoded, "
-                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
-                    f"by decide, {closed_name}⟩⟩))))",
+                    *_generic_indirect_control_definitions(
+                        node_id=node_id,
+                        region_index=region_index,
+                        theorem_name=theorem_name,
+                        original_normalized=original_normalized,
+                        candidate_normalized=candidate_normalized,
+                        adapter_term=(
+                            "StageA.Relational.IndirectExitAdapters."
+                            "checkedFixedRegisterIndirectCertificate "
+                            f"staticProofContext region{region_index}.inputInvariant "
+                            f"{original_normalized} {candidate_normalized} "
+                            f"{claim_name} staticProofContextChecked "
+                            "(by decide) (by decide)"
+                        ),
+                    ),
                 ])
             else:
                 definitions.append(
@@ -1866,6 +1980,7 @@ def _write_relational_product_graph_modules(
                 )
         source = (
             "import StageA.RelationalProductGraphContext\n"
+            "import StageA.RelationalIndirectExitAdapters\n"
             + "".join(f"import StageA.{item}\n" for item in sorted(extra_imports))
             + "".join(
                 f"import StageA.RelationalProofOriginalDecodeChunk{index}\n"

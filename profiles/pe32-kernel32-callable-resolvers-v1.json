@@ -1,0 +1,118 @@
+{
+  "format": "stage-a-callable-external-profile-v1",
+  "id": "pe32-kernel32-callable-resolvers-v1",
+  "resolvers": [
+    {
+      "id": 0,
+      "import": {
+        "dll": "kernel32.dll",
+        "symbol": "GetProcAddress"
+      },
+      "result_register": "eax",
+      "identity_argument_indices": [
+        1
+      ],
+      "nullable": true
+    }
+  ],
+  "targets": [
+    {
+      "id": 0,
+      "resolver_id": 0,
+      "identity_arguments": [
+        {
+          "kind": "canonical_static_string",
+          "index": 1,
+          "bytes": [
+            95,
+            95,
+            95,
+            108,
+            99,
+            95,
+            99,
+            111,
+            100,
+            101,
+            112,
+            97,
+            103,
+            101,
+            95,
+            102,
+            117,
+            110,
+            99
+          ]
+        }
+      ],
+      "abis": [
+        {
+          "transfer": "jump",
+          "argument_sources": [],
+          "stack_result_delta": 4,
+          "preserved_registers": [
+            "ebp",
+            "ebx",
+            "edi",
+            "esi"
+          ],
+          "clobbered_registers": [
+            "eax",
+            "ecx",
+            "edx"
+          ],
+          "memory_effect": "none",
+          "memory_footprints": [],
+          "world_effect": "none"
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "resolver_id": 0,
+      "identity_arguments": [
+        {
+          "kind": "canonical_static_string",
+          "index": 1,
+          "bytes": [
+            95,
+            95,
+            108,
+            99,
+            95,
+            99,
+            111,
+            100,
+            101,
+            112,
+            97,
+            103,
+            101
+          ]
+        }
+      ],
+      "abis": [
+        {
+          "transfer": "jump",
+          "argument_sources": [],
+          "stack_result_delta": 4,
+          "preserved_registers": [
+            "ebp",
+            "ebx",
+            "edi",
+            "esi"
+          ],
+          "clobbered_registers": [
+            "eax",
+            "ecx",
+            "edx"
+          ],
+          "memory_effect": "none",
+          "memory_footprints": [],
+          "world_effect": "none"
+        }
+      ]
+    }
+  ]
+}

@@ -73,6 +73,78 @@ _SUPPORTED_OPS = _LEAF_OPS | {
     "shift_of",
     "sbb_borrow",
     "sbb_overflow",
+    "fpu_add",
+    "fpu_bits_hi32",
+    "fpu_bits_lo32",
+    "fpu_cmp_cf",
+    "fpu_cmp_pf",
+    "fpu_cmp_zf",
+    "fpu_const",
+    "fpu_control",
+    "fpu_control_init",
+    "fpu_control_load",
+    "fpu_control_word",
+    "fpu_div",
+    "fpu_divr",
+    "fpu_empty",
+    "fpu_fxam",
+    "fpu_int",
+    "fpu_int32",
+    "fpu_instruction_pointer",
+    "fpu_code_selector",
+    "fpu_data_pointer",
+    "fpu_data_selector",
+    "fpu_last_opcode",
+    "fpu_mem",
+    "fpu_mem64",
+    "fpu_mul",
+    "fpu_neg",
+    "fpu_reg",
+    "fpu_status",
+    "fpu_status_init",
+    "fpu_status_word",
+    "fpu_pending_exception",
+    "fpu_tag",
+    "fpu_sub",
+    "fpu_subr",
+}
+_X87_VALUE_OPS = {
+    "fpu_add",
+    "fpu_const",
+    "fpu_div",
+    "fpu_divr",
+    "fpu_empty",
+    "fpu_int",
+    "fpu_mem",
+    "fpu_mem64",
+    "fpu_mul",
+    "fpu_neg",
+    "fpu_reg",
+    "fpu_sub",
+    "fpu_subr",
+}
+_X87_WORD_OPS = {
+    "fpu_bits_hi32",
+    "fpu_bits_lo32",
+    "fpu_cmp_cf",
+    "fpu_cmp_pf",
+    "fpu_cmp_zf",
+    "fpu_control",
+    "fpu_control_init",
+    "fpu_control_load",
+    "fpu_control_word",
+    "fpu_fxam",
+    "fpu_int32",
+    "fpu_instruction_pointer",
+    "fpu_code_selector",
+    "fpu_data_pointer",
+    "fpu_data_selector",
+    "fpu_last_opcode",
+    "fpu_pending_exception",
+    "fpu_status",
+    "fpu_status_init",
+    "fpu_status_word",
+    "fpu_tag",
 }
 _SUPPORTED_OUTCOMES = {"fallthrough", "jump", "branch", "return", "indirect_jump", "external_jump"}
 _CALL_EVENT_KINDS = {"external_call", "internal_call", "indirect_call"}
@@ -340,6 +412,14 @@ def write_stage_b_semantic_c_backend(
             "manual_repairs_must_preserve_transfer_bindings": True,
             "external_events_supported": "through_explicit_runtime_protocol_contract",
             "x87_supported": False,
+            "x87_semantics": "checked_replay_interpreter_required",
+            "x87_exactness": "no host floating-point lowering is generated",
+            "x87_missing_metadata_policy": "fail_closed_per_transfer",
+            "native_call_boundary_state": (
+                "full_machine_state_including_x87_physical_state; handler output "
+                "becomes the post-call state"
+            ),
+            "terminal_control_api": "stage_b_run_function_result",
             "mixed_memory_read_write_supported": "requires_complete_ordered_events",
         },
     }
@@ -404,8 +484,9 @@ def _row_blockers(row: dict[str, Any]) -> list[str]:
         blockers.append("incomplete_transfer")
     if row.get("expression_model") != "stage-a-semantic-ir-v1":
         blockers.append("unsupported_expression_model")
-    if row.get("fpu_state") is not None:
-        blockers.append("x87_state")
+    fpu_state = row.get("fpu_state")
+    if fpu_state is not None:
+        blockers.extend(("x87_state", "x87_checked_replay_required"))
     memory_events = row.get("memory_events") if isinstance(row.get("memory_events"), list) else []
     reads = any(isinstance(event, dict) and event.get("kind") == "read" for event in memory_events)
     writes = any(isinstance(event, dict) and event.get("kind") == "write" for event in memory_events)
@@ -415,6 +496,11 @@ def _row_blockers(row: dict[str, Any]) -> list[str]:
     ordered_external = [event for event in ordered_events if isinstance(event, dict) and event.get("family") == "external"]
     faults = row.get("faults") if isinstance(row.get("faults"), list) else []
     external_events = row.get("external_events") if isinstance(row.get("external_events"), list) else []
+    if fpu_state is not None and any(
+        isinstance(event, dict) and event.get("kind") in _CALL_EVENT_KINDS
+        for event in external_events
+    ):
+        blockers.append("call_event_x87_post_state_order_missing")
     complete_order = (
         len(ordered_memory) == len(memory_events)
         and len(ordered_faults) == len(faults)
@@ -464,6 +550,8 @@ def _row_blockers(row: dict[str, Any]) -> list[str]:
     outcome = row.get("outcome") if isinstance(row.get("outcome"), dict) else {}
     if outcome.get("kind") not in _SUPPORTED_OUTCOMES:
         blockers.append("unsupported_outcome")
+    elif outcome.get("kind") == "external_jump":
+        blockers.append("external_jump_target_materialization_missing")
     expression_ops = _row_expression_ops(row)
     unsupported_ops = sorted(expression_ops - _SUPPORTED_OPS)
     blockers.extend(f"unsupported_expression:{op}" for op in unsupported_ops)
@@ -507,7 +595,15 @@ def _row_expression_ops(row: dict[str, Any]) -> set[str]:
             for nested in value:
                 visit(nested)
 
-    for key in ("register_writes", "flag_writes", "memory_events", "faults", "ordered_events", "outcome"):
+    for key in (
+        "register_writes",
+        "flag_writes",
+        "memory_events",
+        "faults",
+        "ordered_events",
+        "fpu_state",
+        "outcome",
+    ):
         visit(row.get(key))
     return result
 
@@ -733,10 +829,35 @@ def _runtime_header() -> str:
 
 #include <stdint.h>
 
+typedef struct stage_b_x87_value {
+  uint8_t value_bytes[10];
+  uint32_t empty;
+  uint8_t tag;
+} stage_b_x87_value;
+
 typedef struct stage_b_machine_state {
   uint32_t eax, ebx, ecx, edx, esi, edi, ebp, esp;
   uint32_t cf, zf, sf, of, pf, df;
+  stage_b_x87_value x87_stack[8];
+  uint16_t x87_control;
+  uint16_t x87_status;
+  uint8_t x87_pending_exception;
+  uint16_t x87_last_opcode;
+  uint32_t x87_instruction_pointer;
+  uint16_t x87_code_selector;
+  uint32_t x87_data_pointer;
+  uint16_t x87_data_selector;
+  uint32_t eflags;
+  uint32_t fs_base;
+  uint32_t original_rva;
 } stage_b_machine_state;
+
+_Static_assert(sizeof(((stage_b_x87_value *)0)->value_bytes) == 10U,
+    "x87 payload must be exactly 80 bits");
+_Static_assert(sizeof(((stage_b_x87_value *)0)->empty) == 4U,
+    "x87 occupancy must match EngineField.x87Empty");
+_Static_assert(sizeof(((stage_b_x87_value *)0)->tag) == 1U,
+    "x87 tag must match EngineField.x87Tag");
 
 typedef struct stage_b_stack_input {
   uint32_t offset;
@@ -791,7 +912,9 @@ struct stage_b_runtime {
   void *context;
   uint32_t (*read)(void *context, uint32_t address, uint32_t width, uint32_t *fault);
   void (*write)(void *context, uint32_t address, uint32_t width, uint32_t value, uint32_t *fault);
-  uint32_t (*undefined_value)(void *context, uint32_t slot);
+  uint32_t (*undefined_value)(
+      void *context, uint32_t slot, const stage_b_machine_state *input,
+      uint32_t defined_value);
   stage_b_external_call_handler external_call_fallback;
   stage_b_code_target_resolver resolve_code_target;
 };
@@ -959,6 +1082,7 @@ def _dispatch_source(rows: list[tuple[dict[str, Any], str, bool, list[str]]]) ->
             "  const stage_b_transfer_descriptor *entry = stage_b_lookup_transfer(source_rva);",
             "  if (entry == 0 || entry->step == 0)",
             "    return (stage_b_step_result){ STAGE_B_UNIMPLEMENTED, source_rva, 0U };",
+            "  state->original_rva = source_rva;",
             "  return entry->step(rt, state);",
             "}",
             "",
@@ -971,6 +1095,17 @@ def _engine_header() -> str:
 #define STAGE_B_STATE_MACHINE_ENGINE_H
 
 #include "state-machine-dispatch.h"
+
+typedef struct stage_b_engine_result {
+  stage_b_call_status status;
+  stage_b_step_result control;
+} stage_b_engine_result;
+
+stage_b_engine_result stage_b_run_function_result(
+    stage_b_runtime *runtime,
+    uint32_t entry_rva,
+    const stage_b_machine_state *input,
+    stage_b_machine_state *output);
 
 stage_b_call_status stage_b_run_function(
     stage_b_runtime *runtime,
@@ -996,14 +1131,26 @@ static stage_b_call_status stage_b_resolve_code_target(
   return STAGE_B_CALL_OK;
 }
 
-stage_b_call_status stage_b_run_function(
+static stage_b_engine_result stage_b_engine_result_make(
+    stage_b_call_status status,
+    stage_b_step_result control) {
+  stage_b_engine_result result;
+  result.status = status;
+  result.control = control;
+  return result;
+}
+
+stage_b_engine_result stage_b_run_function_result(
     stage_b_runtime *runtime,
     uint32_t entry_rva,
     const stage_b_machine_state *input,
     stage_b_machine_state *output) {
   stage_b_machine_state state;
   uint32_t current_rva;
-  if (input == 0 || output == 0) return STAGE_B_CALL_UNIMPLEMENTED;
+  if (input == 0 || output == 0)
+    return stage_b_engine_result_make(
+        STAGE_B_CALL_UNIMPLEMENTED,
+        (stage_b_step_result){ STAGE_B_UNIMPLEMENTED, entry_rva, 0U });
   state = *input;
   current_rva = entry_rva;
   for (;;) {
@@ -1016,24 +1163,34 @@ stage_b_call_status stage_b_run_function(
         break;
       case STAGE_B_INDIRECT_JUMP: {
         stage_b_call_status status = stage_b_resolve_code_target(runtime, result.value, &current_rva);
-        if (status != STAGE_B_CALL_OK) return status;
+        if (status != STAGE_B_CALL_OK)
+          return stage_b_engine_result_make(status, result);
         break;
       }
       case STAGE_B_RETURN:
       case STAGE_B_EXTERNAL_JUMP:
         *output = state;
-        return STAGE_B_CALL_OK;
+        return stage_b_engine_result_make(STAGE_B_CALL_OK, result);
       case STAGE_B_DIVIDE_ERROR:
-        return STAGE_B_CALL_DIVIDE_ERROR;
+        return stage_b_engine_result_make(STAGE_B_CALL_DIVIDE_ERROR, result);
       case STAGE_B_MEMORY_FAULT:
-        return STAGE_B_CALL_MEMORY_FAULT;
+        return stage_b_engine_result_make(STAGE_B_CALL_MEMORY_FAULT, result);
       case STAGE_B_EXTERNAL_FAULT:
-        return STAGE_B_CALL_EXTERNAL_FAULT;
+        return stage_b_engine_result_make(STAGE_B_CALL_EXTERNAL_FAULT, result);
       case STAGE_B_UNIMPLEMENTED:
       default:
-        return STAGE_B_CALL_UNIMPLEMENTED;
+        return stage_b_engine_result_make(STAGE_B_CALL_UNIMPLEMENTED, result);
     }
   }
+}
+
+stage_b_call_status stage_b_run_function(
+    stage_b_runtime *runtime,
+    uint32_t entry_rva,
+    const stage_b_machine_state *input,
+    stage_b_machine_state *output) {
+  return stage_b_run_function_result(
+      runtime, entry_rva, input, output).status;
 }
 
 stage_b_call_status stage_b_invoke_call(
@@ -1047,9 +1204,11 @@ stage_b_call_status stage_b_invoke_call(
     case STAGE_B_CALL_INTERNAL_DIRECT:
       return stage_b_run_function(runtime, event->target_rva, input, output);
     case STAGE_B_CALL_INDIRECT: {
-      stage_b_call_status status = stage_b_resolve_code_target(runtime, event->target_rva, &target_rva);
-      if (status != STAGE_B_CALL_OK) return status;
-      return stage_b_run_function(runtime, target_rva, input, output);
+      stage_b_call_status status = stage_b_resolve_code_target(
+          runtime, event->target_rva, &target_rva);
+      if (status == STAGE_B_CALL_OK)
+        return stage_b_run_function(runtime, target_rva, input, output);
+      return stage_b_dispatch_external_call(runtime, event, input, output);
     }
     case STAGE_B_CALL_EXTERNAL_IMPORT:
       return stage_b_dispatch_external_call(runtime, event, input, output);
@@ -1080,9 +1239,9 @@ def _api_adapters_source(signatures: list[MachineCallSignature]) -> str:
     lines = [
         '#include "state-machine-api-adapters.h"',
         "",
-        "static uint32_t stage_b_api_undefined(stage_b_runtime *runtime, uint32_t slot) {",
+        "static uint32_t stage_b_api_undefined(stage_b_runtime *runtime, uint32_t slot, const stage_b_machine_state *input, uint32_t defined_value) {",
         "  return runtime != 0 && runtime->undefined_value != 0",
-        "      ? runtime->undefined_value(runtime->context, slot) : slot;",
+        "      ? runtime->undefined_value(runtime->context, slot, input, defined_value) : slot;",
         "}",
         "",
         "static uint32_t stage_b_api_read_word(",
@@ -1184,10 +1343,14 @@ def _render_api_adapter(index: int, signature: MachineCallSignature) -> list[str
             continue
         if register in _REGISTER_NAMES:
             slot = _stable_slot(f"api:{signature.dll}:{signature.symbol}:{register}")
-            lines.append(f"  output->{register} = stage_b_api_undefined(runtime, {slot}U);")
+            lines.append(
+                f"  output->{register} = stage_b_api_undefined(runtime, {slot}U, input, 0U);"
+            )
     for flag in _FLAG_NAMES:
         slot = _stable_slot(f"api:{signature.dll}:{signature.symbol}:{flag}")
-        lines.append(f"  output->{flag} = stage_b_api_undefined(runtime, {slot}U) & 1U;")
+        lines.append(
+            f"  output->{flag} = stage_b_api_undefined(runtime, {slot}U, input, 0U) & 1U;"
+        )
     lines.extend(
         [
             f"  output->esp = input->esp + {signature.stack_result_delta}U;",
@@ -1262,7 +1425,7 @@ def _c_string(value: str) -> str:
 
 
 def _runtime_helpers() -> str:
-    return """static uint32_t stage_b_mask(uint32_t width) {
+    helpers = """static uint32_t stage_b_mask(uint32_t width) {
   return width >= 32U ? 0xffffffffU : ((1U << width) - 1U);
 }
 
@@ -1276,8 +1439,23 @@ static void stage_b_write(stage_b_runtime *rt, uint32_t address, uint32_t width,
   rt->write(rt->context, address, width, value, fault);
 }
 
-static uint32_t stage_b_undefined(stage_b_runtime *rt, uint32_t slot) {
-  return rt != 0 && rt->undefined_value != 0 ? rt->undefined_value(rt->context, slot) : slot;
+static uint32_t stage_b_undefined(stage_b_runtime *rt, uint32_t slot,
+    const stage_b_machine_state *input, uint32_t defined_value) {
+  return rt != 0 && rt->undefined_value != 0
+      ? rt->undefined_value(rt->context, slot, input, defined_value) : slot;
+}
+
+static void stage_b_sync_eflags(stage_b_machine_state *state) {
+  const uint32_t represented =
+      (1U << 0) | (1U << 2) | (1U << 6) | (1U << 7) |
+      (1U << 10) | (1U << 11);
+  state->eflags = (state->eflags & ~represented) |
+      ((state->cf & 1U) << 0) |
+      ((state->pf & 1U) << 2) |
+      ((state->zf & 1U) << 6) |
+      ((state->sf & 1U) << 7) |
+      ((state->df & 1U) << 10) |
+      ((state->of & 1U) << 11);
 }
 
 static uint32_t stage_b_sign_extend(uint32_t width, uint32_t value) {
@@ -1318,19 +1496,41 @@ static uint32_t stage_b_mul_high(uint32_t left, uint32_t right) {
   return (uint32_t)(((uint64_t)left * (uint64_t)right) >> 32U);
 }
 
+static uint32_t stage_b_udiv_pair(
+    uint32_t high, uint32_t low, uint32_t divisor, uint32_t *remainder) {
+  uint64_t rest = high;
+  uint32_t quotient = 0U;
+  uint32_t index;
+  if (divisor == 0U || high >= divisor) {
+    if (remainder != 0) *remainder = 0U;
+    return 0U;
+  }
+  for (index = 0U; index < 32U; ++index) {
+    rest = (rest << 1U) | ((low >> 31U) & 1U);
+    low <<= 1U;
+    quotient <<= 1U;
+    if (rest >= divisor) {
+      rest -= divisor;
+      quotient |= 1U;
+    }
+  }
+  if (remainder != 0) *remainder = (uint32_t)rest;
+  return quotient;
+}
+
 static uint32_t stage_b_udiv_quot(uint32_t high, uint32_t low, uint32_t divisor) {
-  uint64_t dividend = ((uint64_t)high << 32U) | low;
-  return divisor == 0U ? 0U : (uint32_t)(dividend / divisor);
+  return stage_b_udiv_pair(high, low, divisor, 0);
 }
 
 static uint32_t stage_b_udiv_rem(uint32_t high, uint32_t low, uint32_t divisor) {
-  uint64_t dividend = ((uint64_t)high << 32U) | low;
-  return divisor == 0U ? 0U : (uint32_t)(dividend % divisor);
+  uint32_t remainder = 0U;
+  (void)stage_b_udiv_pair(high, low, divisor, &remainder);
+  return remainder;
 }
 
 static uint32_t stage_b_udiv_valid(uint32_t high, uint32_t low, uint32_t divisor) {
-  uint64_t dividend = ((uint64_t)high << 32U) | low;
-  return divisor != 0U && dividend / divisor < (1ULL << 32U);
+  (void)low;
+  return divisor != 0U && high < divisor;
 }
 
 static uint32_t stage_b_bsr(uint32_t value) {
@@ -1378,14 +1578,26 @@ static uint32_t stage_b_sbb_overflow(
   return ((((left & mask) ^ (right & mask)) & ((left & mask) ^ (result & mask)))
       >> (width - 1U)) & 1U;
 }"""
+    prefix = """#if defined(__GNUC__) || defined(__clang__)
+#define STAGE_B_INTERNAL_HELPER static __attribute__((unused))
+#else
+#define STAGE_B_INTERNAL_HELPER static
+#endif
+
+"""
+    return prefix + helpers.replace("static ", "STAGE_B_INTERNAL_HELPER ") + (
+        "\n#undef STAGE_B_INTERNAL_HELPER\n"
+    )
 
 
 @dataclass
 class _ExpressionRenderer:
     lines: list[str] = field(default_factory=list)
     memo: dict[str, str] = field(default_factory=dict)
+    x87_memo: dict[str, str] = field(default_factory=dict)
     call_outputs: set[int] = field(default_factory=set)
     counter: int = 0
+    x87_counter: int = 0
 
     def render(self, expr: Any) -> str:
         if not isinstance(expr, dict):
@@ -1416,7 +1628,9 @@ class _ExpressionRenderer:
             return "0U"
         if op in {"undefined_bv", "undefined_flag"}:
             slot = _stable_slot(str(expr.get("id") or expr.get("reason") or "undefined"))
-            return f"stage_b_undefined(rt, {slot}U)"
+            defined_value = expr.get("defined_value")
+            rendered = "0U" if defined_value is None else self.render(defined_value)
+            return f"stage_b_undefined(rt, {slot}U, &input, {rendered})"
         if op == "call_response":
             call_index = _required_nonnegative_int(expr.get("call_index"), "call_response call_index")
             register = str(expr.get("register") or "")
@@ -1433,6 +1647,10 @@ class _ExpressionRenderer:
             if call_index not in self.call_outputs:
                 raise ValueError(f"call_flag references unavailable call index {call_index}")
             return f"call_output_{call_index}.{flag}"
+        if op in _X87_WORD_OPS:
+            raise ValueError("x87 expressions require the checked replay interpreter")
+        if op in _X87_VALUE_OPS:
+            raise ValueError(f"x87 value operation {op!r} used as a 32-bit expression")
         if op in {"shift_cf", "shift_of"}:
             raw_args = expr.get("args") if isinstance(expr.get("args"), list) else []
             expected = 4 if op == "shift_cf" else 5
@@ -1462,11 +1680,155 @@ class _ExpressionRenderer:
         value = self._operation(op, expr, rendered)
         return self._bind(key, value)
 
+    def render_x87(self, expr: Any) -> str:
+        if not isinstance(expr, dict):
+            raise ValueError(f"unsupported x87 expression leaf {expr!r}")
+        key = json.dumps(expr, sort_keys=True, separators=(",", ":"))
+        if key in self.x87_memo:
+            return self.x87_memo[key]
+        op = str(expr.get("op") or "")
+        args = self._x87_args(expr, op)
+        if op == "fpu_reg":
+            self._require_x87_arg_count(op, args, 1)
+            index = args[0]
+            if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < 8:
+                raise ValueError("fpu_reg index must be an integer from 0 through 7")
+            return f"input.x87_stack[{index}]"
+        if op == "fpu_empty":
+            self._require_x87_arg_count(op, args, 1)
+            slot = args[0]
+            if not isinstance(slot, int) or isinstance(slot, bool) or not 0 <= slot < 8:
+                raise ValueError("fpu_empty slot must be an integer from 0 through 7")
+            return self._bind_x87(key, f"stage_b_x87_empty({slot}U)")
+        if op == "fpu_const":
+            self._require_x87_arg_count(op, args, 1)
+            if args[0] not in {"0", "1"}:
+                raise ValueError(f"unsupported fpu_const value {args[0]!r}")
+            return self._bind_x87(key, f"stage_b_x87_number({args[0]}.0L)")
+        if op in {"fpu_mem", "fpu_int"}:
+            self._require_x87_arg_count(op, args, 2)
+            width = args[0]
+            if not isinstance(width, int) or isinstance(width, bool):
+                raise ValueError(f"{op} width must be an integer")
+            raw = self.render(args[1])
+            if op == "fpu_mem":
+                if width != 32:
+                    raise ValueError(f"unsupported fpu_mem width {width}")
+                value = f"stage_b_x87_mem32({raw})"
+            else:
+                if width not in {8, 16, 32}:
+                    raise ValueError(f"unsupported fpu_int width {width}")
+                value = f"stage_b_x87_int({width}U, {raw}, &x87_fault)"
+            return self._bind_x87(key, value)
+        if op == "fpu_mem64":
+            self._require_x87_arg_count(op, args, 2)
+            low = self.render(args[0])
+            high = self.render(args[1])
+            return self._bind_x87(key, f"stage_b_x87_mem64({low}, {high})")
+        if op == "fpu_neg":
+            self._require_x87_arg_count(op, args, 1)
+            value = self.render_x87(args[0])
+            return self._bind_x87(key, f"stage_b_x87_neg({value}, &x87_fault)")
+        if op in {"fpu_add", "fpu_sub", "fpu_subr", "fpu_mul", "fpu_div", "fpu_divr"}:
+            self._require_x87_arg_count(op, args, 2)
+            operation = {
+                "fpu_add": 0,
+                "fpu_sub": 1,
+                "fpu_subr": 1,
+                "fpu_mul": 2,
+                "fpu_div": 3,
+                "fpu_divr": 3,
+            }[op]
+            left = self.render_x87(args[0])
+            right = self.render_x87(args[1])
+            return self._bind_x87(
+                key,
+                f"stage_b_x87_binary({operation}U, {left}, {right}, &x87_fault)",
+            )
+        raise ValueError(f"unsupported x87 value operation {op!r}")
+
+    def _render_x87_word(self, key: str, op: str, expr: dict[str, Any]) -> str:
+        args = self._x87_args(expr, op)
+        if op in {"fpu_control", "fpu_control_init", "fpu_status", "fpu_status_init"}:
+            self._require_x87_arg_count(op, args, 0)
+            return {
+                "fpu_control": "input.x87_control",
+                "fpu_control_init": "0x037fU",
+                "fpu_status": "input.x87_status",
+                "fpu_status_init": "0U",
+            }[op]
+        if op == "fpu_tag":
+            self._require_x87_arg_count(op, args, 1)
+            index = args[0]
+            if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < 8:
+                raise ValueError("fpu_tag index must be an integer from 0 through 7")
+            return f"input.x87_stack[{index}].tag"
+        metadata_inputs = {
+            "fpu_pending_exception": "input.x87_pending_exception",
+            "fpu_last_opcode": "input.x87_last_opcode",
+            "fpu_instruction_pointer": "input.x87_instruction_pointer",
+            "fpu_code_selector": "input.x87_code_selector",
+            "fpu_data_pointer": "input.x87_data_pointer",
+            "fpu_data_selector": "input.x87_data_selector",
+        }
+        if op in metadata_inputs:
+            self._require_x87_arg_count(op, args, 0)
+            return metadata_inputs[op]
+        if op in {"fpu_control_load", "fpu_control_word", "fpu_status_word"}:
+            self._require_x87_arg_count(op, args, 1)
+            return self._bind(key, f"({self.render(args[0])}) & 0xffffU")
+        if op in {"fpu_bits_lo32", "fpu_bits_hi32"}:
+            self._require_x87_arg_count(op, args, 1)
+            value = self.render_x87(args[0])
+            high = 1 if op == "fpu_bits_hi32" else 0
+            return self._bind(key, f"stage_b_x87_bits({value}, {high}U, &x87_fault)")
+        if op in {"fpu_cmp_cf", "fpu_cmp_pf", "fpu_cmp_zf"}:
+            self._require_x87_arg_count(op, args, 2)
+            bit = {"fpu_cmp_cf": 0, "fpu_cmp_pf": 1, "fpu_cmp_zf": 2}[op]
+            left = self.render_x87(args[0])
+            right = self.render_x87(args[1])
+            return self._bind(
+                key,
+                f"stage_b_x87_compare({bit}U, {left}, {right}, &x87_fault)",
+            )
+        if op == "fpu_fxam":
+            self._require_x87_arg_count(op, args, 1)
+            value = self.render_x87(args[0])
+            return self._bind(key, f"stage_b_x87_fxam({value}, input.x87_status)")
+        if op == "fpu_int32":
+            self._require_x87_arg_count(op, args, 2)
+            value = self.render_x87(args[0])
+            control = self.render(args[1])
+            return self._bind(
+                key,
+                f"stage_b_x87_int32({value}, {control}, &x87_fault)",
+            )
+        raise ValueError(f"unsupported x87 word operation {op!r}")
+
+    @staticmethod
+    def _x87_args(expr: dict[str, Any], op: str) -> list[Any]:
+        args = expr.get("args")
+        if not isinstance(args, list):
+            raise ValueError(f"{op} args must be a list")
+        return args
+
+    @staticmethod
+    def _require_x87_arg_count(op: str, args: list[Any], expected: int) -> None:
+        if len(args) != expected:
+            raise ValueError(f"{op} requires {expected} arguments, got {len(args)}")
+
     def _bind(self, key: str, value: str) -> str:
         name = f"v{self.counter}"
         self.counter += 1
         self.lines.append(f"  uint32_t {name} = {value};")
         self.memo[key] = name
+        return name
+
+    def _bind_x87(self, key: str, value: str) -> str:
+        name = f"x87_v{self.x87_counter}"
+        self.x87_counter += 1
+        self.lines.append(f"  stage_b_x87_value {name} = {value};")
+        self.x87_memo[key] = name
         return name
 
     def _operation(self, op: str, expr: dict[str, Any], args: list[str]) -> str:
@@ -1567,6 +1929,10 @@ def _render_transfer(row: dict[str, Any], symbol: str) -> str:
         if flag in _FLAG_NAMES:
             updates.append(f"  state->{flag} = ({renderer.render(write.get('value'))}) & 1U;")
 
+    fpu_state = row.get("fpu_state")
+    if fpu_state is not None:
+        raise ValueError("x87_checked_replay_required")
+
     outcome = row.get("outcome") if isinstance(row.get("outcome"), dict) else {}
     result = _render_outcome(renderer, outcome)
     identity = _c_comment(str(row.get("id") or row.get("block_id") or symbol))
@@ -1574,11 +1940,14 @@ def _render_transfer(row: dict[str, Any], symbol: str) -> str:
         f"/* {identity} */",
         f"stage_b_step_result {symbol}(stage_b_runtime *rt, stage_b_machine_state *state) {{",
         "  stage_b_machine_state input = *state;",
+        "  (void)rt;",
+        "  (void)input;",
         "  uint32_t memory_fault = 0U;",
         *renderer.lines,
         "  if (memory_fault) return (stage_b_step_result){ STAGE_B_MEMORY_FAULT, 0U, 0U };",
     ]
     body.extend(updates)
+    body.append("  stage_b_sync_eflags(state);")
     body.append(f"  return {result};")
     body.append("}")
     return "\n".join(body)
@@ -1619,7 +1988,7 @@ def _render_ordered_external_event(
     if not isinstance(register_inputs, dict) or not isinstance(flag_inputs, dict):
         raise ValueError(f"call event {event_index} has incomplete machine-state inputs")
 
-    renderer.lines.append(f"  stage_b_machine_state call_input_{event_index} = input;")
+    renderer.lines.append(f"  stage_b_machine_state call_input_{event_index} = *state;")
     for register in _REGISTER_NAMES:
         if register not in register_inputs:
             raise ValueError(f"call event {event_index} is missing register input {register}")
@@ -1690,6 +2059,7 @@ def _render_ordered_external_event(
             "    return (stage_b_step_result){ STAGE_B_MEMORY_FAULT, 0U, 0U };",
             f"  if (call_status_{event_index} != STAGE_B_CALL_OK)",
             "    return (stage_b_step_result){ STAGE_B_EXTERNAL_FAULT, 0U, 0U };",
+            f"  *state = call_output_{event_index};",
         ]
     )
     renderer.call_outputs.add(event_index)

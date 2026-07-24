@@ -18,9 +18,11 @@ from ..contract_tools import (
 from ..stage_binary import StageAInputError, _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, write_json
 from .contract import (
-    _decode_semantic_cutpoint_span,
     _raw_base_relocations,
-    _semantic_cutpoint_spans_for_side,
+)
+from .semantic_cutpoints import (
+    decode_semantic_cutpoint_span,
+    semantic_cutpoint_spans_for_side,
 )
 from .schema import STAGE_A_RELATIONAL_MODEL_ID, STAGE_A_RELATIONAL_PROFILE_ID
 from .side_extraction_artifact import parse_request
@@ -96,7 +98,7 @@ def _relocation_split_spans(
     relocation_starts: set[int],
     block_id: str,
 ) -> list[dict[str, int]]:
-    decoded = _decode_semantic_cutpoint_span(parsed, span, block_id)
+    decoded = decode_semantic_cutpoint_span(parsed, span, block_id)
     instruction_starts = {
         int(instruction.address) - parsed.image_base for instruction in decoded
     }
@@ -488,13 +490,13 @@ def stage_a_inventory_binary(
     for row in raw_rows:
         start, stop = _span_key(row)
         try:
-            periodic_spans = _semantic_cutpoint_spans_for_side(
+            periodic_spans = semantic_cutpoint_spans_for_side(
                 parsed,
                 {"rva_start": start, "rva_end": stop, "size": stop - start},
                 f"{side}-{start:x}-{stop:x}",
                 periodic=True,
             )
-            semantic_spans = _semantic_cutpoint_spans_for_side(
+            semantic_spans = semantic_cutpoint_spans_for_side(
                 parsed,
                 {"rva_start": start, "rva_end": stop, "size": stop - start},
                 f"{side}-{start:x}-{stop:x}",

@@ -12,6 +12,7 @@ import platform
 import re
 import shutil
 import sys
+from bisect import bisect_left
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
@@ -35,6 +36,7 @@ from .stage_binary import (
     _parse_stage_a_pe,
     _section_for_rva,
 )
+from .relational.semantic_cutpoints import semantic_cutpoint_spans_for_side
 from .util import sha256_bytes, sha256_file, utc_now, write_json
 
 CHECKED_GENERATED_MAPPING_PROOF_RULES = {
@@ -1351,7 +1353,41 @@ def _semantic_transfer_contracts(
             continue
         source = _mapping_source(mapped)
         function_name = source.get("function") if isinstance(source.get("function"), str) and source.get("function") else mapped.id
-        rows.append(_semantic_transfer_contract(binary, mapped, function_name, contract_ref))
+        spans = semantic_cutpoint_spans_for_side(
+            binary,
+            {
+                "rva_start": mapped.original.rva_start,
+                "rva_end": mapped.original.rva_end,
+                "size": mapped.original.size,
+            },
+            mapped.id,
+            periodic=False,
+        )
+        for cut_index, span in enumerate(spans):
+            split = len(spans) > 1
+            block_id = (
+                f"{mapped.id}~semantic-{cut_index:04d}"
+                if split
+                else mapped.id
+            )
+            row = _semantic_transfer_contract(
+                binary,
+                mapped,
+                function_name,
+                contract_ref,
+                semantic_side=BlockSide(
+                    span["rva_start"],
+                    span["rva_end"],
+                ),
+                semantic_block_id=block_id,
+            )
+            if split:
+                row["semantic_cutpoint"] = {
+                    "index": cut_index,
+                    "parent_block_id": mapped.id,
+                    "policy": "formal_stopping_instruction_v1",
+                }
+            rows.append(row)
     return sorted(rows, key=lambda item: (str(item.get("function") or ""), str(item.get("block_id") or "")))
 
 def _semantic_transfer_contract(
@@ -1359,19 +1395,23 @@ def _semantic_transfer_contract(
     mapped: BlockMapping,
     function_name: str,
     contract_ref: dict[str, Any],
+    *,
+    semantic_side: BlockSide | None = None,
+    semantic_block_id: str | None = None,
 ) -> dict[str, Any]:
-    side = mapped.original
+    side = semantic_side or mapped.original
+    block_id = semantic_block_id or mapped.id
     data = binary.pe.get_data(side.rva_start, side.size)
     instructions = _semantic_disassemble_block(binary, side, data)
     base_row: dict[str, Any] = {
         "format": "stage-a-semantic-transfer-contract-v1",
-        "id": f"semantic-transfer:{_safe_gap_part(mapped.id)}",
+        "id": f"semantic-transfer:{_safe_gap_part(block_id)}",
         "unit_kind": "semantic_transfer",
         "expression_model": "stage-a-semantic-ir-v1",
         "status": "incomplete",
         "reference_contract": contract_ref,
         "function": function_name or None,
-        "block_id": mapped.id,
+        "block_id": block_id,
         "reachable": mapped.reachable,
         "original": _range_report(side),
         "instruction_bytes_sha256": sha256_bytes(data),
@@ -1385,6 +1425,17 @@ def _semantic_transfer_contract(
         "ordered_events": [],
         "edge_conditions": [],
         "outcome": {"kind": "unknown"},
+        "stack_delta": None,
+        "fpu_state": None,
+        "counts": {
+            "register_writes": 0,
+            "flag_writes": 0,
+            "memory_events": 0,
+            "external_events": 0,
+            "faults": 0,
+            "ordered_events": 0,
+            "edge_conditions": 0,
+        },
         "acceptance": "guidance contract only; final acceptance requires Stage A binary proof",
     }
     if len(data) != side.size:
@@ -1394,21 +1445,66 @@ def _semantic_transfer_contract(
             "blocker": f"expected {side.size} block bytes, read {len(data)}",
             "next_action": "fix block range or PE section mapping before generating a semantic transfer contract",
         }
-    symbolic = _symbolic_execute(binary, side, data, "original", mapped)
+    instruction_effect_schedule: dict[str, Any] | None = None
+    if _semantic_transfer_inventory_contains_x87(instructions):
+        instruction_effect_schedule, symbolic = (
+            _semantic_x87_instruction_effect_schedule(
+                binary,
+                side,
+                data,
+                instructions,
+                mapped,
+            )
+        )
+    else:
+        symbolic = _symbolic_execute(binary, side, data, "original", mapped)
     if symbolic.get("status") != "ok":
         instruction = symbolic.get("instruction") if isinstance(symbolic.get("instruction"), dict) else None
-        return {
+        blocked = {
             **base_row,
             "blocker_category": symbolic.get("category") or "unsupported_semantics",
             "blocker": symbolic.get("blocker") or "block is outside the current semantic transfer model",
             "next_action": symbolic.get("next_action") or "add instruction semantics or a checked cluster summary",
             "blocking_instruction": instruction,
         }
+        if instruction_effect_schedule is not None:
+            blocked["instruction_effect_schedule"] = instruction_effect_schedule
+        return blocked
     observables = symbolic.get("observables") if isinstance(symbolic.get("observables"), dict) else {}
+    native_exact_command_replay = None
+    if instruction_effect_schedule is not None:
+        native_exact_command_replay = _semantic_x87_replay_binding(
+            binary,
+            side,
+            data,
+            instructions,
+            instruction_effect_schedule=instruction_effect_schedule,
+        )
     effects = _semantic_effects_from_observables(
         observables,
         ordered_events=symbolic.get("ordered_events"),
+        native_exact_command_replay=native_exact_command_replay,
     )
+    fpu_state = effects.get("fpu_state")
+    if (
+        isinstance(fpu_state, dict)
+        and fpu_state.get("model") == _X87_REPLAY_OBLIGATION_MODEL
+    ):
+        return {
+            **base_row,
+            "blocker_category": "x87_physical_state_requires_native_exact_command_replay",
+            "blocker": (
+                "legacy symbolic x87 observables do not contain the physical "
+                "StageA.X87.PhysicalState required by Stage B"
+            ),
+            "next_action": (
+                "replay each exact x87 singleton with the checked Lean decoder and "
+                "executor according to the instruction effect schedule, then export "
+                "every physical state field"
+            ),
+            "instruction_effect_schedule": instruction_effect_schedule,
+            **effects,
+        }
     return {
         **base_row,
         "status": "reimplementable",
@@ -1436,6 +1532,7 @@ def _semantic_effects_from_observables(
     observables: dict[str, Any],
     *,
     ordered_events: Any = None,
+    native_exact_command_replay: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     register_writes = []
     flag_writes = []
@@ -1463,7 +1560,10 @@ def _semantic_effects_from_observables(
         "external_events": external_events,
         "faults": faults,
         "ordered_events": ordered,
-        "fpu_state": _semantic_fpu_state_from_observables(observables),
+        "fpu_state": _semantic_fpu_state_from_observables(
+            observables,
+            native_exact_command_replay=native_exact_command_replay,
+        ),
         "edge_conditions": _semantic_edge_conditions(outcome),
         "outcome": outcome,
         "stack_delta": _semantic_stack_delta_from_observables(observables),
@@ -1505,16 +1605,566 @@ def _semantic_ordered_event_json(event: Any) -> dict[str, Any]:
         result = {"kind": "unknown", "raw": _expr_json(payload)}
     return {"family": str(family), "instruction_rva": int(instruction_rva), **result}
 
-def _semantic_fpu_state_from_observables(observables: dict[str, Any]) -> dict[str, Any] | None:
-    if "fpu_stack" not in observables and "fpu_control" not in observables and "fpu_status" not in observables:
-        return None
-    stack = observables.get("fpu_stack")
-    return {
-        "stack": [_semantic_expr_json(item) for item in stack] if isinstance(stack, tuple) else [],
-        "control": _semantic_expr_json(observables.get("fpu_control")),
-        "status": _semantic_expr_json(observables.get("fpu_status")),
-        "model": "symbolic_x87_stack_v1",
+_X87_PHYSICAL_OBSERVABLE_FIELDS = (
+    ("stack", "fpu_stack"),
+    ("tags", "fpu_tags"),
+    ("control", "fpu_control"),
+    ("status", "fpu_status"),
+    ("pending_exception", "fpu_pending_exception"),
+    ("last_opcode", "fpu_last_opcode"),
+    ("instruction_pointer", "fpu_instruction_pointer"),
+    ("code_selector", "fpu_code_selector"),
+    ("data_pointer", "fpu_data_pointer"),
+    ("data_selector", "fpu_data_selector"),
+)
+_X87_REPLAY_OBLIGATION_MODEL = "native_exact_x87_command_replay_obligation_v1"
+_X87_SINGLETON_CHECKED_DECODER = "StageA.Relational.X87.decodeSingletonCommand"
+_X87_SINGLETON_CHECKED_EXECUTOR = "StageA.Relational.X87.executeSingletonCommand"
+_ORDINARY_CHECKED_DECODER = "StageA.Formal.decodeInstructionExact"
+_ORDINARY_CHECKED_EXECUTOR = "StageA.Formal.executeInstruction"
+_SEMANTIC_X87_SINGLETON_MNEMONICS = frozenset(
+    {
+        "wait",
+        "fld",
+        "fld1",
+        "fldz",
+        "fild",
+        "fst",
+        "fstp",
+        "fist",
+        "fistp",
+        "fisttp",
+        "fadd",
+        "faddp",
+        "fsub",
+        "fsubp",
+        "fsubr",
+        "fsubrp",
+        "fmul",
+        "fmulp",
+        "fdiv",
+        "fdivp",
+        "fdivr",
+        "fdivrp",
+        "fxch",
+        "fchs",
+        "fxam",
+        "fnstcw",
+        "fldcw",
+        "fnstsw",
+        "fcomi",
+        "fcomip",
+        "fucomi",
+        "fucomip",
+        "fcompi",
+        "fucompi",
+        "fninit",
     }
+)
+
+
+def _semantic_fpu_state_from_observables(
+    observables: dict[str, Any],
+    *,
+    native_exact_command_replay: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    present = {
+        output_name: observables[input_name]
+        for output_name, input_name in _X87_PHYSICAL_OBSERVABLE_FIELDS
+        if input_name in observables
+    }
+    if not present:
+        return None
+
+    converted = {
+        name: (
+            [_semantic_expr_json(item) for item in value]
+            if name in {"stack", "tags"} and isinstance(value, (list, tuple))
+            else _semantic_expr_json(value)
+        )
+        for name, value in present.items()
+    }
+    missing_or_invalid = [
+        output_name
+        for output_name, _input_name in _X87_PHYSICAL_OBSERVABLE_FIELDS
+        if not _semantic_x87_physical_field_valid(output_name, converted.get(output_name))
+    ]
+    if not missing_or_invalid:
+        return {
+            "model": "symbolic_x87_stack_v1",
+            **converted,
+        }
+
+    logical_guidance = {
+        name: converted[name]
+        for name in ("stack", "control", "status")
+        if name in converted
+    }
+    return {
+        "model": _X87_REPLAY_OBLIGATION_MODEL,
+        "status": "required",
+        "authoritative_state_type": "StageA.X87.PhysicalState",
+        "required_fields": [
+            output_name for output_name, _input_name in _X87_PHYSICAL_OBSERVABLE_FIELDS
+        ],
+        "missing_or_invalid_fields": missing_or_invalid,
+        "logical_state_guidance": logical_guidance,
+        "replay": {
+            "format": "stage-a-native-exact-x87-command-replay-obligation-v1",
+            "checked_decoder": _X87_SINGLETON_CHECKED_DECODER,
+            "checked_decoder_scope": "each_x87_singleton_instruction",
+            "checked_executor": _X87_SINGLETON_CHECKED_EXECUTOR,
+            "checked_executor_scope": "each_x87_singleton_instruction",
+            **(native_exact_command_replay or {}),
+        },
+    }
+
+
+def _semantic_x87_physical_field_valid(name: str, value: Any) -> bool:
+    if name in {"stack", "tags"}:
+        return (
+            isinstance(value, list)
+            and len(value) == 8
+            and all(_semantic_x87_expression_valid(item) for item in value)
+        )
+    return _semantic_x87_expression_valid(value)
+
+
+def _semantic_x87_expression_valid(value: Any) -> bool:
+    return isinstance(value, dict) and isinstance(value.get("op"), str)
+
+
+def _semantic_x87_replay_binding(
+    binary: StageABinary,
+    side: BlockSide,
+    data: bytes,
+    instructions: list[dict[str, Any]],
+    *,
+    instruction_effect_schedule: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "architecture": "x86",
+        "bitness": binary.bitness,
+        "image_base": binary.image_base,
+        "rva_start": side.rva_start,
+        "rva_end": side.rva_end,
+        "bytes": data.hex(),
+        "bytes_sha256": sha256_bytes(data),
+        "instruction_effect_schedule": instruction_effect_schedule,
+        "instructions": [
+            {
+                key: instruction[key]
+                for key in ("rva", "size", "bytes")
+                if key in instruction
+            }
+            for instruction in instructions
+        ],
+    }
+
+
+def _semantic_transfer_inventory_contains_x87(
+    instructions: list[dict[str, Any]],
+) -> bool:
+    return any(
+        str(instruction.get("mnemonic") or "").lower()
+        in _SEMANTIC_X87_SINGLETON_MNEMONICS
+        for instruction in instructions
+        if isinstance(instruction, dict)
+    )
+
+
+def _semantic_x87_instruction_effect_schedule(
+    binary: StageABinary,
+    side: BlockSide,
+    data: bytes,
+    instructions: list[dict[str, Any]],
+    mapped: BlockMapping,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Propose an exact-byte instruction ledger for checked Lean replay.
+
+    Capstone reports are inventory hints only.  Every classification remains bound
+    to exact PE bytes and names the Lean decoder/executor that must replay it.
+    """
+
+    transfer_digest = sha256_bytes(data)
+    records: list[dict[str, Any]] = []
+    blockers: list[dict[str, Any]] = []
+    expected_rva = side.rva_start
+    external_call_index = 0
+    final_symbolic: dict[str, Any] = {
+        "status": "incomplete",
+        "category": "x87_instruction_effect_schedule_incomplete",
+        "blocker": "x87 instruction effect schedule contains no instructions",
+        "next_action": "export at least one exact decoded instruction",
+    }
+
+    for index, instruction in enumerate(instructions):
+        instruction_rva = instruction.get("rva")
+        instruction_size = instruction.get("size")
+        instruction_hex = instruction.get("bytes")
+        mnemonic = str(instruction.get("mnemonic") or "").lower()
+        if (
+            not isinstance(instruction_rva, int)
+            or not isinstance(instruction_size, int)
+            or instruction_size <= 0
+            or not isinstance(instruction_hex, str)
+        ):
+            blocker_rva = instruction_rva if isinstance(instruction_rva, int) else expected_rva
+            final_symbolic = _symbolic_incomplete(
+                "original",
+                "x87_instruction_effect_schedule_incomplete",
+                blocker_rva,
+                mnemonic or "<decode>",
+                str(instruction.get("op_str") or ""),
+                "decoded instruction inventory lacks exact RVA, size, or bytes",
+            )
+            blockers.append(
+                _semantic_instruction_effect_blocker(index, instruction, final_symbolic)
+            )
+            break
+        try:
+            instruction_bytes = bytes.fromhex(instruction_hex)
+        except ValueError:
+            instruction_bytes = b""
+        if (
+            instruction_rva != expected_rva
+            or len(instruction_bytes) != instruction_size
+            or data[
+                instruction_rva - side.rva_start :
+                instruction_rva - side.rva_start + instruction_size
+            ]
+            != instruction_bytes
+        ):
+            final_symbolic = _symbolic_incomplete(
+                "original",
+                "x87_instruction_effect_schedule_incomplete",
+                instruction_rva,
+                mnemonic or "<decode>",
+                str(instruction.get("op_str") or ""),
+                "decoded instruction inventory does not reconstruct the exact PE span",
+            )
+            blockers.append(
+                _semantic_instruction_effect_blocker(index, instruction, final_symbolic)
+            )
+            break
+
+        instruction_end = instruction_rva + instruction_size
+        instruction_side = BlockSide(instruction_rva, instruction_end)
+        instruction_mapping = BlockMapping(
+            id=f"{mapped.id}~instruction-{index}",
+            original=instruction_side,
+            candidate=instruction_side,
+            kind=mapped.kind,
+            reachable=mapped.reachable,
+            invariant_checked=mapped.invariant_checked,
+            source=mapped.source,
+        )
+        instruction_symbolic = _symbolic_execute(
+            binary,
+            instruction_side,
+            instruction_bytes,
+            "original",
+            instruction_mapping,
+            external_call_index_base=external_call_index,
+        )
+        if instruction_symbolic.get("status") != "ok":
+            blockers.append(
+                _semantic_instruction_effect_blocker(
+                    index, instruction, instruction_symbolic
+                )
+            )
+            break
+
+        current_observables = instruction_symbolic.get("observables")
+        current_ordered_events = instruction_symbolic.get("ordered_events")
+        if not isinstance(current_observables, dict) or not isinstance(
+            current_ordered_events, tuple
+        ):
+            final_symbolic = _symbolic_incomplete(
+                "original",
+                "x87_instruction_effect_schedule_incomplete",
+                instruction_rva,
+                mnemonic or "<decode>",
+                str(instruction.get("op_str") or ""),
+                "symbolic instruction prefix did not emit structured observables",
+            )
+            blockers.append(
+                _semantic_instruction_effect_blocker(index, instruction, final_symbolic)
+            )
+            break
+
+        local_pre_state = _semantic_initial_instruction_observables(instruction_rva)
+        effects = _semantic_instruction_effect_delta(
+            local_pre_state,
+            current_observables,
+            (),
+            current_ordered_events,
+        )
+        if effects is None:
+            final_symbolic = _symbolic_incomplete(
+                "original",
+                "x87_instruction_effect_schedule_incomplete",
+                instruction_rva,
+                mnemonic or "<decode>",
+                str(instruction.get("op_str") or ""),
+                "symbolic prefix effects are not a stable extension of the prior instruction",
+            )
+            blockers.append(
+                _semantic_instruction_effect_blocker(index, instruction, final_symbolic)
+            )
+            break
+
+        instruction_class = (
+            "x87_singleton_checked_replay"
+            if mnemonic in _SEMANTIC_X87_SINGLETON_MNEMONICS
+            else "ordinary_symbolic_instruction"
+        )
+        checked_decoder = (
+            _X87_SINGLETON_CHECKED_DECODER
+            if instruction_class == "x87_singleton_checked_replay"
+            else _ORDINARY_CHECKED_DECODER
+        )
+        checked_executor = (
+            _X87_SINGLETON_CHECKED_EXECUTOR
+            if instruction_class == "x87_singleton_checked_replay"
+            else _ORDINARY_CHECKED_EXECUTOR
+        )
+        record: dict[str, Any] = {
+            "index": index,
+            "rva_start": instruction_rva,
+            "rva_end": instruction_end,
+            "bytes": instruction_bytes.hex(),
+            "bytes_sha256": sha256_bytes(instruction_bytes),
+            "transfer_bytes_sha256": transfer_digest,
+            "instruction_class": instruction_class,
+            "classification": {
+                "status": "proposal_requires_lean_exact_byte_replay",
+                "source": "normalized_symbolic_equivalence_v1",
+                "proof_authority": False,
+                "mnemonic_guidance": mnemonic,
+                "operand_guidance": str(instruction.get("op_str") or ""),
+                "checked_decoder": checked_decoder,
+                "checked_executor": checked_executor,
+            },
+            "symbolic_pre_state_sha256": _semantic_json_sha256(local_pre_state),
+            "symbolic_post_state_sha256": _semantic_json_sha256(current_observables),
+            "effects": effects,
+        }
+        if instruction_class == "x87_singleton_checked_replay":
+            record["x87_singleton_replay"] = {
+                "rva_start": instruction_rva,
+                "rva_end": instruction_end,
+                "bytes": instruction_bytes.hex(),
+                "bytes_sha256": sha256_bytes(instruction_bytes),
+                "checked_decoder": _X87_SINGLETON_CHECKED_DECODER,
+                "checked_executor": _X87_SINGLETON_CHECKED_EXECUTOR,
+                "physical_state_effect": (
+                    "produced_by_checked_executor_not_inferred_by_exporter"
+                ),
+            }
+        record["record_sha256"] = _semantic_json_sha256(record)
+        records.append(record)
+        external_call_index += len(current_observables.get("external_events", ()))
+        expected_rva = instruction_end
+
+    if not blockers and expected_rva != side.rva_end:
+        final_symbolic = _symbolic_incomplete(
+            "original",
+            "x87_instruction_effect_schedule_incomplete",
+            expected_rva,
+            "<decode>",
+            "",
+            "decoded instruction inventory does not cover the complete transfer span",
+        )
+        blockers.append(
+            _semantic_instruction_effect_blocker(len(records), {}, final_symbolic)
+        )
+
+    if not blockers:
+        final_symbolic = _symbolic_execute(
+            binary,
+            side,
+            data,
+            "original",
+            mapped,
+        )
+        if final_symbolic.get("status") != "ok":
+            blockers.append(
+                _semantic_instruction_effect_blocker(
+                    len(records), instructions[-1] if instructions else {}, final_symbolic
+                )
+            )
+
+    schedule: dict[str, Any] = {
+        "format": "stage-a-instruction-ordered-effect-schedule-v1",
+        "status": "complete" if not blockers else "incomplete",
+        "proof_authority": False,
+        "ordering": "strict_contiguous_rva_order",
+        "rva_start": side.rva_start,
+        "rva_end": side.rva_end,
+        "transfer_bytes_sha256": transfer_digest,
+        "records": records,
+        "blockers": blockers,
+        "counts": {
+            "instructions": len(records),
+            "x87_singletons": sum(
+                record.get("instruction_class") == "x87_singleton_checked_replay"
+                for record in records
+            ),
+            "ordinary_instructions": sum(
+                record.get("instruction_class") == "ordinary_symbolic_instruction"
+                for record in records
+            ),
+            "blockers": len(blockers),
+        },
+    }
+    schedule["schedule_sha256"] = _semantic_json_sha256(schedule)
+    return schedule, final_symbolic
+
+
+def _semantic_initial_instruction_observables(rva: int) -> dict[str, Any]:
+    observables = {
+        f"reg:{name}": ("reg", name)
+        for name in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+    }
+    observables.update(
+        {
+            f"flag:{name}": ("flag", name)
+            for name in ("cf", "zf", "sf", "of", "pf", "df")
+        }
+    )
+    observables.update(
+        {
+            "outcome": ("fallthrough", rva),
+            "memory_events": (),
+            "external_events": (),
+            "fault_conditions": (),
+        }
+    )
+    return observables
+
+
+def _semantic_instruction_effect_delta(
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    previous_ordered: tuple[Any, ...],
+    current_ordered: tuple[Any, ...],
+) -> dict[str, Any] | None:
+    sequence_names = ("memory_events", "external_events", "fault_conditions")
+    deltas: dict[str, tuple[Any, ...]] = {}
+    for name in sequence_names:
+        before = previous.get(name, ())
+        after = current.get(name, ())
+        if (
+            not isinstance(before, tuple)
+            or not isinstance(after, tuple)
+            or after[: len(before)] != before
+        ):
+            return None
+        deltas[name] = after[len(before) :]
+    if current_ordered[: len(previous_ordered)] != previous_ordered:
+        return None
+
+    register_writes = []
+    defined_flag_writes = []
+    undefined_flags = []
+    undefined_flag_writes = []
+    for key, value in sorted(current.items()):
+        if key.startswith("reg:") and previous.get(key) != value:
+            register_writes.append(
+                {"register": key.split(":", 1)[1], "value": _semantic_expr_json(value)}
+            )
+        elif key.startswith("flag:") and previous.get(key) != value:
+            name = key.split(":", 1)[1]
+            converted = _semantic_expr_json(value)
+            if _semantic_json_contains_op(converted, "undefined_flag"):
+                undefined_flags.append(name)
+                undefined_flag_writes.append({"flag": name, "value": converted})
+            else:
+                defined_flag_writes.append({"flag": name, "value": converted})
+
+    memory_events = [
+        _semantic_memory_event_json(event) for event in deltas["memory_events"]
+    ]
+    call_effects = [
+        _semantic_external_event_json(event) for event in deltas["external_events"]
+    ]
+    faults = [_semantic_fault_json(event) for event in deltas["fault_conditions"]]
+    ordered_events = [
+        _semantic_ordered_event_json(event)
+        for event in current_ordered[len(previous_ordered) :]
+    ]
+    result = {
+        "register_writes": register_writes,
+        "defined_flag_writes": defined_flag_writes,
+        "undefined_flags": undefined_flags,
+        "undefined_flag_writes": undefined_flag_writes,
+        "memory_events": memory_events,
+        "faults": faults,
+        "control": _semantic_outcome_json(current.get("outcome")),
+        "call_effects": call_effects,
+        "ordered_events": ordered_events,
+    }
+    result["counts"] = {
+        name: len(result[name])
+        for name in (
+            "register_writes",
+            "defined_flag_writes",
+            "undefined_flags",
+            "undefined_flag_writes",
+            "memory_events",
+            "faults",
+            "call_effects",
+            "ordered_events",
+        )
+    }
+    return result
+
+
+def _semantic_instruction_effect_blocker(
+    index: int,
+    instruction: dict[str, Any],
+    symbolic: dict[str, Any],
+) -> dict[str, Any]:
+    rva = instruction.get("rva")
+    blocking_instruction = symbolic.get("instruction")
+    if not isinstance(rva, int) and isinstance(blocking_instruction, dict):
+        rva = blocking_instruction.get("rva")
+    raw_bytes = instruction.get("bytes")
+    try:
+        exact_bytes = bytes.fromhex(raw_bytes) if isinstance(raw_bytes, str) else b""
+    except ValueError:
+        exact_bytes = b""
+    blocker = {
+        "index": index,
+        "rva": rva,
+        "bytes": exact_bytes.hex(),
+        "bytes_sha256": sha256_bytes(exact_bytes),
+        "category": symbolic.get("category")
+        or "x87_instruction_effect_schedule_incomplete",
+        "blocker": symbolic.get("blocker")
+        or "instruction effects could not be represented",
+        "next_action": symbolic.get("next_action")
+        or "add checked per-instruction semantics",
+    }
+    blocker["blocker_sha256"] = _semantic_json_sha256(blocker)
+    return blocker
+
+
+def _semantic_json_contains_op(value: Any, operation: str) -> bool:
+    if isinstance(value, dict):
+        if value.get("op") == operation:
+            return True
+        return any(_semantic_json_contains_op(item, operation) for item in value.values())
+    if isinstance(value, list):
+        return any(_semantic_json_contains_op(item, operation) for item in value)
+    return False
+
+
+def _semantic_json_sha256(value: Any) -> str:
+    return sha256_bytes(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
 
 def _semantic_expr_json(value: Any) -> Any:
     if not isinstance(value, tuple) or not value:
@@ -1543,7 +2193,15 @@ def _semantic_expr_json(value: Any) -> Any:
     if op == "call_flag":
         return {"op": "call_flag", "call_index": int(value[1]), "flag": str(value[2])}
     if op == "undefined_bv":
-        return {"op": "undefined_bv", "width": 32, "reason": str(value[1]), "id": str(value[2])}
+        result = {
+            "op": "undefined_bv",
+            "width": 32,
+            "reason": str(value[1]),
+            "id": str(value[2]),
+        }
+        if len(value) == 4:
+            result["defined_value"] = _semantic_expr_json(value[3])
+        return result
     if op == "undefined_flag":
         return {"op": "undefined_flag", "reason": str(value[1]), "id": str(value[2])}
     if op in {"true", "false"}:
@@ -10100,6 +10758,18 @@ def _recover_basic_blocks(binary: StageABinary, rva_start: int, rva_end: int) ->
 
     insn_by_rva = {int(insn.address - binary.image_base): insn for insn in instructions}
     starts: set[int] = {rva_start}
+    declared_roots = {binary.entrypoint_rva}
+    if binary.tls_callback_rvas is not None:
+        declared_roots.update(binary.tls_callback_rvas)
+    if binary.exports is not None:
+        declared_roots.update(
+            exported.rva
+            for exported in binary.exports
+            if exported.kind == "code"
+        )
+    starts.update(
+        root for root in declared_roots if rva_start <= root < rva_end
+    )
     for insn in instructions:
         rva = int(insn.address - binary.image_base)
         next_rva = rva + int(insn.size)
@@ -10130,15 +10800,18 @@ def _recover_basic_blocks(binary: StageABinary, rva_start: int, rva_end: int) ->
     for index, start in enumerate(ordered_starts):
         next_start = ordered_starts[index + 1] if index + 1 < len(ordered_starts) else rva_end
         block_end = next_start
-        for insn_rva in instruction_rvas:
-            if insn_rva < start:
-                continue
-            if insn_rva >= next_start:
-                break
+        instruction_start = bisect_left(instruction_rvas, start)
+        instruction_stop = bisect_left(
+            instruction_rvas, next_start, lo=instruction_start
+        )
+        for insn_rva in instruction_rvas[instruction_start:instruction_stop]:
             insn = insn_by_rva[insn_rva]
             insn_end = insn_rva + int(insn.size)
             if _instruction_ends_basic_block(insn) or _is_noreturn_import_call(binary, insn):
                 block_end = insn_end
+                instruction_stop = bisect_left(
+                    instruction_rvas, block_end, lo=instruction_start
+                )
                 break
         if block_end <= start:
             continue
@@ -10155,7 +10828,7 @@ def _recover_basic_blocks(binary: StageABinary, rva_start: int, rva_end: int) ->
                     "function_rva_start": rva_start,
                     "function_rva_end": rva_end,
                     "block_index": len(blocks),
-                    "instruction_count": sum(1 for item in instructions if start <= int(item.address - binary.image_base) < block_end),
+                    "instruction_count": instruction_stop - instruction_start,
                     "range_size": len(block_data),
                 },
             }
@@ -10872,6 +11545,16 @@ def _resolved_branch_target(binary: StageABinary, insn: Any) -> int | None:
     pointer_rva = _absolute_mem_operand_rva(binary, operand)
     if pointer_rva is None:
         return None
+    pointer_section = _section_for_rva(binary, pointer_rva)
+    if (
+        pointer_section is None
+        or not pointer_section.readable
+        or pointer_section.writable
+    ):
+        # A mapped image word is a runtime control value, not a direct edge,
+        # when execution can replace it.  Import/IAT transfers are classified
+        # separately before this resolver is used.
+        return None
     width = 8 if binary.bitness == 64 else 4
     data = binary.pe.get_data(pointer_rva, width)
     if len(data) != width:
@@ -11040,6 +11723,8 @@ def _symbolic_execute(
     data: bytes,
     binary_name: str,
     mapped: BlockMapping,
+    *,
+    external_call_index_base: int = 0,
 ) -> dict[str, Any]:
     if binary.bitness != 32:
         return {
@@ -11084,7 +11769,7 @@ def _symbolic_execute(
         if mnemonic in {"jmp", "ljmp"}:
             imported_jump = _external_import_jump(binary, insn)
             if imported_jump is not None:
-                event_index = len(external_events)
+                event_index = external_call_index_base + len(external_events)
                 external_events.append(
                     _external_import_call_event(
                         event_index,
@@ -11134,9 +11819,9 @@ def _symbolic_execute(
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported call operand shape")
             imported = _external_import_call(binary, insn)
             if imported is not None:
-                contract = _external_call_contract(mapped, len(external_events))
+                event_index = external_call_index_base + len(external_events)
+                contract = _external_call_contract(mapped, event_index)
                 if contract is None:
-                    event_index = len(external_events)
                     external_events.append(
                         _external_import_call_event(
                             event_index,
@@ -11173,7 +11858,7 @@ def _symbolic_execute(
                     tuple(args),
                 )
                 external_events.append(event)
-                registers["eax"] = ("env_response", len(external_events) - 1)
+                registers["eax"] = ("env_response", event_index)
                 stack_adjust = _parse_external_stack_adjust(contract)
                 if stack_adjust:
                     registers["esp"] = _expr_add(registers["esp"], ("const", stack_adjust))
@@ -11183,7 +11868,7 @@ def _symbolic_execute(
                 target_expr = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
                 if target_expr is None:
                     return _symbolic_incomplete(binary_name, "unknown_target", rva, mnemonic, insn.op_str, "indirect call target expression is not modeled")
-                event_index = len(external_events)
+                event_index = external_call_index_base + len(external_events)
                 external_events.append(
                     _indirect_call_event(
                         event_index,
@@ -11201,7 +11886,7 @@ def _symbolic_execute(
                 for name in flags:
                     flags[name] = ("call_flag", event_index, name)
                 continue
-            event_index = len(external_events)
+            event_index = external_call_index_base + len(external_events)
             external_events.append(
                 _internal_call_event(
                     event_index,
@@ -11375,9 +12060,19 @@ def _symbolic_execute(
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported div source operand")
             dividend_high = registers["edx"]
             dividend_low = registers["eax"]
-            registers["eax"] = ("udiv_quot", dividend_high, dividend_low, divisor)
-            registers["edx"] = ("udiv_rem", dividend_high, dividend_low, divisor)
+            valid = ("udiv_valid", dividend_high, dividend_low, divisor)
+            registers["eax"] = _expr_ite(
+                valid,
+                ("udiv_quot", dividend_high, dividend_low, divisor),
+                ("undefined_bv", "div_fault", f"0x{rva:x}:eax"),
+            )
+            registers["edx"] = _expr_ite(
+                valid,
+                ("udiv_rem", dividend_high, dividend_low, divisor),
+                ("undefined_bv", "div_fault", f"0x{rva:x}:edx"),
+            )
             flags.update(_undefined_arithmetic_flags("div", rva))
+            fault_conditions.append(("divide_error", _bool_not(valid), rva))
             continue
         if mnemonic == "idiv":
             if len(operands) != 1:
@@ -11558,7 +12253,11 @@ def _symbolic_execute(
             if src is None or current is None:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported bit-scan operand")
             if mnemonic == "bsr":
-                result = _expr_ite(("eq", src, ("const", 0)), _undefined_bv("bsr-zero-source", rva, dst), ("bsr_index", 32, src))
+                result = _expr_ite(
+                    ("eq", src, ("const", 0)),
+                    _undefined_bv("bsr-zero-source", rva, dst, current),
+                    ("bsr_index", 32, src),
+                )
                 flags.update(_undefined_arithmetic_flags("bsr", rva, keep={"zf": ("eq", src, ("const", 0))}))
             else:
                 result = ("tzcnt", 32, src)
@@ -11571,7 +12270,7 @@ def _symbolic_execute(
             if mnemonic == "rep movsd":
                 ecx_value = _canonical_expr(registers["ecx"])
                 if not (isinstance(ecx_value, tuple) and len(ecx_value) == 2 and ecx_value[0] == "const"):
-                    event_index = len(external_events)
+                    event_index = external_call_index_base + len(external_events)
                     df = flags.get("df", ("flag", "df"))
                     external_events.append(("rep_movsd", event_index, registers["edi"], registers["esi"], registers["ecx"], df))
                     delta = _expr_mul(registers["ecx"], ("const", 4))
@@ -12059,8 +12758,14 @@ def _shift_flags(
 def _undefined_flag(reason: str, rva: int, name: str) -> tuple[Any, ...]:
     return ("undefined_flag", reason, f"{rva:x}:{name}")
 
-def _undefined_bv(reason: str, rva: int, name: str) -> tuple[Any, ...]:
-    return ("undefined_bv", reason, f"{rva:x}:{name}")
+def _undefined_bv(
+    reason: str,
+    rva: int,
+    name: str,
+    defined_value: tuple[Any, ...] | None = None,
+) -> tuple[Any, ...]:
+    base = ("undefined_bv", reason, f"{rva:x}:{name}")
+    return base if defined_value is None else (*base, defined_value)
 
 def _undefined_arithmetic_flags(reason: str, rva: int, *, keep: dict[str, tuple[Any, ...]] | None = None) -> dict[str, tuple[Any, ...]]:
     keep = keep or {}

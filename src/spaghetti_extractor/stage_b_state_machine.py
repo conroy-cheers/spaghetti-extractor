@@ -49,6 +49,11 @@ _TRANSFER_FIELDS = (
     "next_action",
 )
 
+_OPTIONAL_TRANSFER_FIELDS = (
+    "instruction_effect_schedule",
+    "semantic_cutpoint",
+)
+
 
 @dataclass(frozen=True)
 class StageAReferenceContractBinding:
@@ -162,7 +167,7 @@ def normalize_stage_a_semantic_transfer(
 
     normalized = {
         key: _json_value(row[key])
-        for key in _TRANSFER_FIELDS
+        for key in (*_TRANSFER_FIELDS, *_OPTIONAL_TRANSFER_FIELDS)
         if key in row
     }
     source_bytes = _canonical_json(normalized)
@@ -511,8 +516,9 @@ def _load_stage_a_semantic_transfer_rows(
             ) from exc
         row = _object(raw, f"Stage A semantic-transfer line {line_number}")
         expected_fields = set(_TRANSFER_FIELDS) | {"reference_contract"}
+        allowed_fields = expected_fields | set(_OPTIONAL_TRANSFER_FIELDS)
         missing = sorted(expected_fields - set(row))
-        extra = sorted(set(row) - expected_fields)
+        extra = sorted(set(row) - allowed_fields)
         if missing or extra:
             raise StageAInputError(
                 f"Stage A semantic-transfer line {line_number} has schema drift: "
@@ -545,6 +551,35 @@ def _load_stage_a_semantic_transfer_rows(
             if not isinstance(row.get(field), list):
                 raise StageAInputError(
                     f"Stage A semantic-transfer line {line_number}.{field} must be a list"
+                )
+        if "instruction_effect_schedule" in row and not isinstance(
+            row["instruction_effect_schedule"], dict
+        ):
+            raise StageAInputError(
+                f"Stage A semantic-transfer line {line_number}."
+                "instruction_effect_schedule must be an object"
+            )
+        if "semantic_cutpoint" in row:
+            cutpoint = _object(
+                row["semantic_cutpoint"],
+                f"Stage A semantic-transfer line {line_number}.semantic_cutpoint",
+            )
+            if set(cutpoint) != {"index", "parent_block_id", "policy"}:
+                raise StageAInputError(
+                    f"Stage A semantic-transfer line {line_number} has an invalid "
+                    "semantic-cutpoint schema"
+                )
+            if (
+                not isinstance(cutpoint["index"], int)
+                or isinstance(cutpoint["index"], bool)
+                or cutpoint["index"] < 0
+                or not isinstance(cutpoint["parent_block_id"], str)
+                or not cutpoint["parent_block_id"]
+                or cutpoint["policy"] != "formal_stopping_instruction_v1"
+            ):
+                raise StageAInputError(
+                    f"Stage A semantic-transfer line {line_number} has invalid "
+                    "semantic-cutpoint evidence"
                 )
         instruction_bytes = bytearray()
         for instruction_index, instruction_raw in enumerate(row["instructions"]):

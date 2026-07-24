@@ -250,6 +250,23 @@ def StaticCodeMap.resolveRawEip (candidate : Bool) (imageBase : Nat)
   | [targetId] => some targetId
   | _ => none
 
+theorem StaticCodeMap.rawEipMatches_eq_singleton_of_resolveRawEip
+    (candidate : Bool) (imageBase : Nat) (mapping : StaticCodeMap)
+    (eip : Word) (targetId : Nat)
+    (resolved :
+      mapping.resolveRawEip candidate imageBase eip = some targetId) :
+    mapping.rawEipMatches candidate imageBase eip = [targetId] := by
+  cases matchesEq : mapping.rawEipMatches candidate imageBase eip with
+  | nil =>
+      simp [StaticCodeMap.resolveRawEip, matchesEq] at resolved
+  | cons head tail =>
+      cases tail with
+      | nil =>
+          simp [StaticCodeMap.resolveRawEip, matchesEq] at resolved
+          simpa [resolved] using matchesEq
+      | cons next rest =>
+          simp [StaticCodeMap.resolveRawEip, matchesEq] at resolved
+
 def StaticCodeMap.canonicalRawEip? (candidate : Bool) (imageBase : Nat)
     (mapping : StaticCodeMap) (targetId : Nat) : Option Word := do
   let target <- mapping.get? targetId
@@ -417,6 +434,29 @@ def StaticCodeMap.IndexedValid (originalPe candidatePe : PE32)
     mapping.TargetAddressesRoundTrip false originalPe.imageBase ∧
     mapping.TargetAddressesRoundTrip true candidatePe.imageBase
 
+theorem StaticCodeMap.get?_eq_some_of_mem
+    (mapping : StaticCodeMap) (originalPe candidatePe : PE32)
+    (indexed : mapping.IndexedValid originalPe candidatePe)
+    (target : CodeTargetPair) (member : target ∈ mapping.entries.toList) :
+    mapping.get? target.id = some target := by
+  rcases indexed with
+    ⟨entriesStructural, _originalStructural, _candidateStructural,
+      entriesValid, _originalSize, _candidateSize, _originalAddresses,
+      _candidateAddresses, _originalRoundTrip, _candidateRoundTrip⟩
+  have sizesSound : mapping.entries.sizesSound = true := by
+    simp only [FiniteIndex.structurallyValid, Bool.and_eq_true]
+      at entriesStructural
+    exact entriesStructural.1.1.1
+  obtain ⟨position, found⟩ :=
+    FiniteIndex.mem_toList_implies_exists_get? mapping.entries target
+      sizesSound member
+  have inside :=
+    FiniteIndex.get?_eq_some_implies_lt_size mapping.entries position target found
+  have entryValid := entriesValid position inside
+  simp only [StaticCodeMap.entryAtValid, StaticCodeMap.get?, found,
+    beq_iff_eq] at entryValid
+  simpa [entryValid] using found
+
 structure StaticDataMap where
   entries : Array ValueTargetPair
   originalOrder : List Nat
@@ -546,12 +586,28 @@ structure StaticDynamicPointerSlotPair where
   requiredWords : List DynamicWordRelation
 deriving Repr, DecidableEq
 
+/-! Value origins are checked witnesses over concrete paired words.  They are
+shared by state relations, indirect-exit certificates, and framed updates;
+storage classes do not define a second provenance language. -/
+inductive ValueOriginAtom where
+  | exactBits (value : Nat)
+  | staticCodeTarget (targetId offset : Nat)
+  | staticDataLocation (targetId offset : Nat)
+  | importTarget (identity : ExternalTarget)
+  | stackFrameLocation (rangeId offset : Nat)
+  | dynamicRangeLocation (rangeId offset : Nat)
+  | opaqueResource (resourceId : Nat)
+  | registeredCallback (targetId : Nat)
+deriving Repr, DecidableEq
+
 inductive StaticWordRelationKind where
   | exact
   | relatedWord
   | codePointer
   | fixedCodePointer (targetId : Nat)
   | dataPointer
+  | finiteOrigins (finiteAlternativeBudget : Nat)
+      (origins : List ValueOriginAtom)
 deriving Repr, DecidableEq
 
 structure StaticWordRelationSlotPair where
@@ -652,6 +708,27 @@ def opaqueResourceIdsUnique (resources : List OpaqueResourcePair) : Bool :=
   resources.all fun resource =>
     (resources.filter (fun other => other.id == resource.id)).length == 1
 
+theorem opaqueResource_eq_of_same_id
+    (resources : List OpaqueResourcePair)
+    (unique : opaqueResourceIdsUnique resources = true)
+    (left right : OpaqueResourcePair)
+    (leftMember : left ∈ resources) (rightMember : right ∈ resources)
+    (sameId : left.id = right.id) :
+    left = right := by
+  simp only [opaqueResourceIdsUnique, List.all_eq_true] at unique
+  have singletonLength := unique left leftMember
+  simp only [beq_iff_eq] at singletonLength
+  have leftFiltered :
+      left ∈ resources.filter (fun other => other.id == left.id) := by
+    exact List.mem_filter.mpr ⟨leftMember, by simp⟩
+  have rightFiltered :
+      right ∈ resources.filter (fun other => other.id == left.id) := by
+    exact List.mem_filter.mpr ⟨rightMember, by simp [sameId]⟩
+  rcases List.length_eq_one_iff.mp singletonLength with ⟨only, filtered⟩
+  rw [filtered] at leftFiltered rightFiltered
+  simp only [List.mem_singleton] at leftFiltered rightFiltered
+  exact leftFiltered.trans rightFiltered.symm
+
 def opaqueResourceValuesUniqueOn (candidate : Bool)
     (resources : List OpaqueResourcePair) : Bool :=
   resources.all fun resource =>
@@ -666,6 +743,13 @@ def RelationalWorld.opaqueResourcesValid (world : RelationalWorld) : Bool :=
     world.opaqueResources.all fun resource =>
       resource.original != BitVec.ofNat 32 0 &&
         resource.candidate != BitVec.ofNat 32 0
+
+def RelationalWorld.opaqueResourcesAvoidImportsOn
+    (candidate : Bool) (world : RelationalWorld) : Bool :=
+  world.opaqueResources.all fun resource =>
+    world.importAddresses.all fun binding =>
+      (if candidate then resource.candidate else resource.original) !=
+        (if candidate then binding.candidateAddress else binding.originalAddress)
 
 def DynamicAddressRangePair.wordRelationsValid
     (range : DynamicAddressRangePair) : Bool :=
@@ -725,7 +809,6 @@ def machineImportCallTargetsUnique
 def machineImportCallContractsValid (imports : List PEImport)
     (contracts : List MachineImportCallContract) : Bool :=
   machineImportCallContractIdsUnique contracts &&
-    machineImportCallTargetsUnique contracts &&
     contracts.all fun contract =>
       contract.shapeValid && imports.any fun imported =>
         contract.matchesImport imported
@@ -834,6 +917,36 @@ def StaticWordRelationSlotPair.valid (context : StaticProofContext)
     !staticWordOverlapsImmutableSection context.candidatePe slot.candidateAddress &&
     match slot.relation with
     | .fixedCodePointer targetId => (context.codeMap.get? targetId).isSome
+    | .finiteOrigins finiteAlternativeBudget origins =>
+        finiteAlternativeBudget > 0 &&
+          !origins.isEmpty &&
+          origins.length <= finiteAlternativeBudget &&
+          origins.length == origins.eraseDups.length &&
+          origins.all fun origin =>
+            match origin with
+            | .exactBits value => value < 2 ^ 32
+            | .staticCodeTarget targetId offset =>
+                match context.codeMap.get? targetId with
+                | none => false
+                | some target =>
+                    rvaInExecutableSection context.originalPe
+                        (target.originalRva + offset) &&
+                      rvaInExecutableSection context.candidatePe
+                        (target.candidateRva + offset)
+            | .staticDataLocation targetId offset =>
+                match context.dataMap.get? targetId with
+                | none => false
+                | some target => offset < max 1 target.mappedSize
+            | .importTarget identity =>
+                (context.originalImportCertificate.imports.any fun imported =>
+                  normalizeImport imported == identity) &&
+                (context.candidateImportCertificate.imports.any fun imported =>
+                  normalizeImport imported == identity)
+            | .stackFrameLocation _ _
+            | .dynamicRangeLocation _ _
+            | .opaqueResource _ => true
+            | .registeredCallback targetId =>
+                (context.codeMap.get? targetId).isSome
     | _ => true
 
 def staticWordRelationSlotIdsUnique
@@ -982,11 +1095,87 @@ def RelationalWorld.registeredCallbacksValid (context : StaticProofContext)
     (world : RelationalWorld) : Bool :=
   world.registeredCallbacks.all (RegisteredCallbackPair.valid context)
 
+def RelationalWorld.opaqueResourcesAvoidCodeOn
+    (candidate : Bool) (context : StaticProofContext)
+    (world : RelationalWorld) : Bool :=
+  let imageBase :=
+    if candidate then context.candidatePe.imageBase
+    else context.originalPe.imageBase
+  world.opaqueResources.all fun resource =>
+    context.codeMap.rawEipMatches candidate imageBase
+      (if candidate then resource.candidate else resource.original) == []
+
+/-- Opaque resources remain abstract concrete words, but values admitted into
+the relational world must not be ambiguous with another executable category.
+This strict first profile can later be extended with checked same-identity
+aliases without weakening indirect-control classification. -/
+def RelationalWorld.opaqueResourceControlValuesValid
+    (context : StaticProofContext) (world : RelationalWorld) : Bool :=
+  world.opaqueResourcesValid &&
+    world.opaqueResourcesAvoidCodeOn false context &&
+    world.opaqueResourcesAvoidCodeOn true context &&
+    world.opaqueResourcesAvoidImportsOn false &&
+    world.opaqueResourcesAvoidImportsOn true
+
 def RelationalWorld.valid (context : StaticProofContext)
     (world : RelationalWorld) : Bool :=
   world.dynamicRangesValid context && world.stackRangesValid context &&
-    world.opaqueResourcesValid && world.registeredCallbacksValid context &&
+    world.opaqueResourceControlValuesValid context &&
+      world.registeredCallbacksValid context &&
     world.tlsStateValid context
+
+theorem RelationalWorld.opaqueResourceControlValuesValid_of_valid
+    (context : StaticProofContext) (world : RelationalWorld)
+    (valid : world.valid context = true) :
+    world.opaqueResourceControlValuesValid context = true := by
+  have unpacked := valid
+  simp only [RelationalWorld.valid, Bool.and_eq_true] at unpacked
+  exact unpacked.1.1.2
+
+theorem RelationalWorld.opaqueResourcesValid_of_valid
+    (context : StaticProofContext) (world : RelationalWorld)
+    (valid : world.valid context = true) :
+    world.opaqueResourcesValid = true := by
+  have controlValid :=
+    world.opaqueResourceControlValuesValid_of_valid context valid
+  simp only [RelationalWorld.opaqueResourceControlValuesValid,
+    Bool.and_eq_true] at controlValid
+  exact controlValid.1.1.1.1
+
+theorem RelationalWorld.opaqueResourceValuesUniqueOn_of_valid
+    (candidate : Bool) (context : StaticProofContext) (world : RelationalWorld)
+    (valid : world.valid context = true) :
+    opaqueResourceValuesUniqueOn candidate world.opaqueResources = true := by
+  have resourcesValid := world.opaqueResourcesValid_of_valid context valid
+  simp only [RelationalWorld.opaqueResourcesValid, Bool.and_eq_true]
+    at resourcesValid
+  cases candidate with
+  | false => exact resourcesValid.1.1.2
+  | true => exact resourcesValid.1.2
+
+theorem RelationalWorld.opaqueResourcesAvoidCodeOn_of_valid
+    (candidate : Bool) (context : StaticProofContext) (world : RelationalWorld)
+    (valid : world.valid context = true) :
+    world.opaqueResourcesAvoidCodeOn candidate context = true := by
+  have controlValid :=
+    world.opaqueResourceControlValuesValid_of_valid context valid
+  simp only [RelationalWorld.opaqueResourceControlValuesValid,
+    Bool.and_eq_true] at controlValid
+  cases candidate with
+  | false => exact controlValid.1.1.1.2
+  | true => exact controlValid.1.1.2
+
+theorem RelationalWorld.opaqueResourcesAvoidImportsOn_of_valid
+    (candidate : Bool) (context : StaticProofContext) (world : RelationalWorld)
+    (valid : world.valid context = true) :
+    world.opaqueResourcesAvoidImportsOn candidate = true := by
+  have controlValid :=
+    world.opaqueResourceControlValuesValid_of_valid context valid
+  simp only [RelationalWorld.opaqueResourceControlValuesValid,
+    Bool.and_eq_true] at controlValid
+  cases candidate with
+  | false => exact controlValid.1.2
+  | true => exact controlValid.2
 
 def DynamicAddressRangePair.valueTarget
     (range : DynamicAddressRangePair) : ValueTargetPair := {
@@ -1007,9 +1196,28 @@ def RelationalWorld.stackValueTargets
     (world : RelationalWorld) : List ValueTargetPair :=
   world.stackRanges.map DynamicAddressRangePair.valueTarget
 
+/-- Opaque resources are scalar paired values rather than mapped address
+ranges.  Including them in `relatedWord` lets checked handles and resolver
+results move through registers, stack words, and writable slots without
+claiming that surrounding addresses are related. -/
+def OpaqueResourcePair.valueTarget
+    (resource : OpaqueResourcePair) : ValueTargetPair := {
+  id := resource.id
+  originalValue := resource.original.toNat
+  candidateValue := resource.candidate.toNat
+  originalRelocationRva := 0
+  candidateRelocationRva := 0
+  mappedSize := 0
+}
+
+def RelationalWorld.opaqueResourceValueTargets
+    (world : RelationalWorld) : List ValueTargetPair :=
+  world.opaqueResources.map OpaqueResourcePair.valueTarget
+
 def RelationalWorld.runtimeValueTargets
     (world : RelationalWorld) : List ValueTargetPair :=
-  world.dynamicValueTargets ++ world.stackValueTargets
+  world.dynamicValueTargets ++ world.stackValueTargets ++
+    world.opaqueResourceValueTargets
 
 def TerminalReturnAddressPair.valid (context : StaticProofContext)
     (pair : TerminalReturnAddressPair) : Bool :=
@@ -1272,6 +1480,15 @@ def StaticProofContext.StructurallyValid (context : StaticProofContext) : Prop :
     observationProfileValid context.observations = true ∧
     preferredBaseLoaderImageValid context.originalPe = true ∧
     preferredBaseLoaderImageValid context.candidatePe = true
+
+theorem StaticProofContext.codeMapIndexed_of_structurallyValid
+    (context : StaticProofContext)
+    (valid : context.StructurallyValid) :
+    context.codeMap.IndexedValid context.originalPe context.candidatePe := by
+  rcases valid with
+    ⟨_originalParsed, _candidateParsed, _originalImports, _candidateImports,
+      _originalRelocations, _candidateRelocations, codeMapIndexed, _rest⟩
+  exact codeMapIndexed
 
 theorem StaticProofContext.structurallyValid_of_components
     (context : StaticProofContext)

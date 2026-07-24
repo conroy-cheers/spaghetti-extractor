@@ -571,6 +571,58 @@ def StaticDynamicPointerSlotsMemoryHold (context : StaticProofContext)
   ∀ slot, slot ∈ context.staticDynamicPointerSlots →
     slot.memoryHolds world original candidate = true
 
+def ValueOriginAtom.matches (context : StaticProofContext)
+    (world : RelationalWorld) (originalWord candidateWord : Word) :
+    ValueOriginAtom → Bool
+  | .exactBits value =>
+      originalWord == BitVec.ofNat 32 value &&
+        candidateWord == BitVec.ofNat 32 value
+  | .staticCodeTarget targetId offset =>
+      match context.codeMap.get? targetId with
+      | none => false
+      | some target =>
+          if offset == 0 then
+            codeAddressMatches context.originalPe.imageBase
+                target.originalRva target.originalAliases originalWord &&
+              codeAddressMatches context.candidatePe.imageBase
+                target.candidateRva target.candidateAliases candidateWord
+          else
+            originalWord == BitVec.ofNat 32
+                (context.originalPe.imageBase + target.originalRva + offset) &&
+              candidateWord == BitVec.ofNat 32
+                (context.candidatePe.imageBase + target.candidateRva + offset)
+  | .staticDataLocation targetId offset =>
+      match context.dataMap.get? targetId with
+      | none => false
+      | some target =>
+          originalWord == BitVec.ofNat 32 (target.originalValue + offset) &&
+            candidateWord == BitVec.ofNat 32 (target.candidateValue + offset)
+  | .importTarget identity =>
+      world.importAddresses.any fun imported =>
+        imported.imported == identity &&
+          originalWord == imported.originalAddress &&
+          candidateWord == imported.candidateAddress
+  | .stackFrameLocation rangeId offset =>
+      world.stackRanges.any fun range =>
+        range.id == rangeId && offset < range.size &&
+          originalWord == range.originalBase + BitVec.ofNat 32 offset &&
+          candidateWord == range.candidateBase + BitVec.ofNat 32 offset
+  | .dynamicRangeLocation rangeId offset =>
+      world.dynamicRanges.any fun range =>
+        range.id == rangeId && offset < range.size &&
+          originalWord == range.originalBase + BitVec.ofNat 32 offset &&
+          candidateWord == range.candidateBase + BitVec.ofNat 32 offset
+  | .opaqueResource resourceId =>
+      world.opaqueResources.any fun resource =>
+        resource.id == resourceId &&
+          originalWord == resource.original &&
+          candidateWord == resource.candidate
+  | .registeredCallback targetId =>
+      world.registeredCallbacks.any fun callback =>
+        callback.targetId == targetId &&
+          originalWord == callback.originalAddress &&
+          candidateWord == callback.candidateAddress
+
 def StaticWordRelationKind.holds (context : StaticProofContext)
     (world : RelationalWorld) (relation : StaticWordRelationKind)
     (originalWord candidateWord : Word) : Bool :=
@@ -590,6 +642,8 @@ def StaticWordRelationKind.holds (context : StaticProofContext)
       (originalWord == BitVec.ofNat 32 0 && candidateWord == BitVec.ofNat 32 0) ||
         mappedValueRelated (context.relationalValueTargets world)
           originalWord candidateWord
+  | .finiteOrigins _ origins =>
+      origins.any (ValueOriginAtom.matches context world originalWord candidateWord)
 
 def StaticWordRelationSlotPair.memoryHolds (context : StaticProofContext)
     (world : RelationalWorld) (slot : StaticWordRelationSlotPair)
@@ -674,11 +728,10 @@ theorem DynamicAddressRangePair.offsetAddressesWordRelated
   have candidateAddressBefore : range.candidateBase.toNat + offset < 2 ^ 32 := by
     omega
   have targetMember : range.valueTarget ∈ context.relationalValueTargets world := by
-    unfold StaticProofContext.relationalValueTargets
-    unfold RelationalWorld.runtimeValueTargets
-    unfold RelationalWorld.stackValueTargets
-    simp only [List.mem_append, List.mem_map]
-    exact Or.inr (Or.inr ⟨range, rangeMember, rfl⟩)
+    simp only [StaticProofContext.relationalValueTargets,
+      RelationalWorld.runtimeValueTargets, RelationalWorld.stackValueTargets,
+      List.mem_append, List.mem_map]
+    exact Or.inr (Or.inl (Or.inr ⟨range, rangeMember, rfl⟩))
   have candidateContained : valueTargetContainsCandidate range.valueTarget
       (range.candidateBase + BitVec.ofNat 32 offset) = true := by
     simp only [valueTargetContainsCandidate, DynamicAddressRangePair.valueTarget,
@@ -4971,6 +5024,95 @@ structure RegisterRelationPair where
   relation : RegisterValueRelation
 deriving Repr, DecidableEq
 
+/-- A world-dependent register relation over the canonical value-origin
+language.  Ordinary register relations remain world independent; this
+inventory is for values such as resolver-issued callables, dynamic addresses,
+and callbacks whose concrete words may differ between executions. -/
+structure RegisterValueOriginRelation where
+  original : Reg
+  candidate : Reg
+  finiteAlternativeBudget : Nat
+  origins : List ValueOriginAtom
+deriving Repr, DecidableEq
+
+def RegisterValueOriginRelation.shapeChecked
+    (relation : RegisterValueOriginRelation) : Bool :=
+  relation.finiteAlternativeBudget > 0 &&
+    !relation.origins.isEmpty &&
+    relation.origins.length <= relation.finiteAlternativeBudget &&
+    relation.origins.length == relation.origins.eraseDups.length
+
+def RegisterValueOriginRelation.holds
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relation : RegisterValueOriginRelation)
+    (original candidate : PureState) : Bool :=
+  relation.origins.any fun origin =>
+    origin.matches context world (original.get relation.original)
+      (candidate.get relation.candidate)
+
+def registerValueOriginRelationsHold
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relations : List RegisterValueOriginRelation)
+    (original candidate : PureState) : Bool :=
+  relations.all fun relation => relation.holds context world original candidate
+
+theorem registerValueOriginRelationsHold_member
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relations : List RegisterValueOriginRelation)
+    (original candidate : PureState)
+    (relation : RegisterValueOriginRelation)
+    (holds : registerValueOriginRelationsHold context world relations
+      original candidate = true)
+    (member : relation ∈ relations) :
+    relation.holds context world original candidate = true := by
+  exact List.all_eq_true.mp holds relation member
+
+/-- A value-origin relation attached to a concrete paired memory word.
+Unlike storage-specific pointer mechanisms, this uses the same origin atoms as
+registers and indirect exits.  Address expressions permit stack, static, and
+dynamic locations without treating those storage classes as semantic types. -/
+structure MemoryValueOriginRelation where
+  originalAddress : Expr
+  candidateAddress : Expr
+  finiteAlternativeBudget : Nat
+  origins : List ValueOriginAtom
+deriving Repr, DecidableEq
+
+def MemoryValueOriginRelation.shapeChecked
+    (relation : MemoryValueOriginRelation) : Bool :=
+  relation.finiteAlternativeBudget > 0 &&
+    !relation.origins.isEmpty &&
+    relation.origins.length <= relation.finiteAlternativeBudget &&
+    relation.origins.length == relation.origins.eraseDups.length
+
+def MemoryValueOriginRelation.holds
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relation : MemoryValueOriginRelation)
+    (original candidate : MachineState) : Bool :=
+  relation.origins.any fun origin =>
+    origin.matches context world
+      (Memory.read32 original.memory
+        (relation.originalAddress.eval original))
+      (Memory.read32 candidate.memory
+        (relation.candidateAddress.eval candidate))
+
+def memoryValueOriginRelationsHold
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relations : List MemoryValueOriginRelation)
+    (original candidate : MachineState) : Bool :=
+  relations.all fun relation => relation.holds context world original candidate
+
+theorem memoryValueOriginRelationsHold_member
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relations : List MemoryValueOriginRelation)
+    (original candidate : MachineState)
+    (relation : MemoryValueOriginRelation)
+    (holds : memoryValueOriginRelationsHold context world relations
+      original candidate = true)
+    (member : relation ∈ relations) :
+    relation.holds context world original candidate = true := by
+  exact List.all_eq_true.mp holds relation member
+
 structure ImportRegisterRelation where
   original : Reg
   candidate : Reg
@@ -5089,15 +5231,12 @@ theorem DynamicRegisterRangeRelation.relatedWord_of_zero_offsets
     simpa using rangeValid.1.1.1.1.2
   have mapped : mappedValueRelated (context.relationalValueTargets world)
       range.originalBase range.candidateBase = true := by
-    unfold StaticProofContext.relationalValueTargets
-    simp only [mappedValueRelated, List.any_append, Bool.or_eq_true]
-    apply Or.inr
-    unfold RelationalWorld.runtimeValueTargets
-    simp only [List.any_append, Bool.or_eq_true]
-    apply Or.inl
-    unfold RelationalWorld.dynamicValueTargets
-    simp only [List.any_map, List.any_eq_true]
-    refine ⟨range, rangeMember, ?_⟩
+    simp only [mappedValueRelated, List.any_eq_true]
+    refine ⟨range.valueTarget, ?_, ?_⟩
+    · simp only [StaticProofContext.relationalValueTargets,
+        RelationalWorld.runtimeValueTargets,
+        RelationalWorld.dynamicValueTargets, List.mem_append, List.mem_map]
+      exact Or.inr (Or.inl (Or.inl ⟨range, rangeMember, rfl⟩))
     by_cases zero : range.size = 0
     · simp [DynamicAddressRangePair.valueTarget, zero]
     · simp [DynamicAddressRangePair.valueTarget, zero]
@@ -5259,6 +5398,7 @@ structure RegisterOffsetWrite where
   register : Reg
   offset : Nat
   value : Expr
+  subtract : Bool := false
 deriving Repr, DecidableEq
 
 structure StackWindowPair where
@@ -5446,11 +5586,10 @@ theorem StackWindowPair.relatedWord_of_holds
           (candidate.get window.candidateRegister) = true := by
         simp only [mappedValueRelated, List.any_eq_true]
         refine ⟨range.valueTarget, ?_, ?_⟩
-        · unfold StaticProofContext.relationalValueTargets
-          unfold RelationalWorld.runtimeValueTargets
-          unfold RelationalWorld.stackValueTargets
-          simp only [List.mem_append, List.mem_map]
-          exact Or.inr (Or.inr ⟨range, rangeMember, rfl⟩)
+        · simp only [StaticProofContext.relationalValueTargets,
+            RelationalWorld.runtimeValueTargets,
+            RelationalWorld.stackValueTargets, List.mem_append, List.mem_map]
+          exact Or.inr (Or.inl (Or.inr ⟨range, rangeMember, rfl⟩))
         · simp only [DynamicAddressRangePair.valueTarget,
             if_neg (Nat.ne_of_gt rangeNonempty), Bool.or_eq_true,
             Bool.and_eq_true, beq_iff_eq]
@@ -5812,6 +5951,10 @@ def addressInsidePe (pe : PE32) (address : Nat) : Bool :=
 
 def RegisterOffsetWrite.address (write : RegisterOffsetWrite) : Expr :=
   if write.offset = 0 then .inputReg write.register
+  else if write.subtract then
+    if write.offset < 2 ^ 32 then
+      .sub (.inputReg write.register) (.constant (2 ^ 32 - write.offset))
+    else .add (.inputReg write.register) (.constant write.offset)
   else .add (.inputReg write.register) (.constant write.offset)
 
 def RegisterOffsetWrite.toWrite (write : RegisterOffsetWrite) : Expr × Expr :=
@@ -5823,7 +5966,19 @@ def RegisterOffsetWrite.toWrite (write : RegisterOffsetWrite) : Expr × Expr :=
       state.registers.get write.register + BitVec.ofNat 32 write.offset := by
   by_cases zero : write.offset = 0
   · simp [RegisterOffsetWrite.address, zero, Expr.eval]
-  · simp [RegisterOffsetWrite.address, zero, Expr.eval]
+  · cases subtract : write.subtract
+    · simp [RegisterOffsetWrite.address, zero, subtract, Expr.eval]
+    · by_cases fits : write.offset < 2 ^ 32
+      · simp only [RegisterOffsetWrite.address, zero, subtract, fits, if_false,
+          if_true, Expr.eval]
+        have complementFits : 2 ^ 32 - write.offset < 2 ^ 32 := by omega
+        rw [← word_add_ia32_twos_complement
+          (state.registers.get write.register) (2 ^ 32 - write.offset)
+          complementFits]
+        have complement : 2 ^ 32 - (2 ^ 32 - write.offset) = write.offset := by
+          omega
+        rw [complement]
+      · simp [RegisterOffsetWrite.address, zero, subtract, fits, Expr.eval]
 
 def AddressSeparationPair.sideRegister (candidate : Bool)
     (separation : AddressSeparationPair) : Reg :=
@@ -6109,6 +6264,8 @@ def exactRegisterRelations : List RegisterPair -> List RegisterRelationPair
 
 structure StateInvariant where
   registerRelations : List RegisterRelationPair
+  registerValueOriginRelations : List RegisterValueOriginRelation := []
+  memoryValueOriginRelations : List MemoryValueOriginRelation := []
   importRegisterRelations : List ImportRegisterRelation := []
   dynamicRegisterRangeRelations : List DynamicRegisterRangeRelation := []
   dynamicStackRangeRelations : List DynamicStackRangeRelation := []
@@ -6123,6 +6280,12 @@ structure StateInvariantWeakening
     (source target : StateInvariant) : Prop where
   registerRelations :
     target.registerRelations.all source.registerRelations.contains = true
+  registerValueOriginRelations :
+    target.registerValueOriginRelations.all
+      source.registerValueOriginRelations.contains = true
+  memoryValueOriginRelations :
+    target.memoryValueOriginRelations.all
+      source.memoryValueOriginRelations.contains = true
   importRegisterRelations :
     target.importRegisterRelations.all source.importRegisterRelations.contains = true
   dynamicRegisterRangeRelations :
@@ -7410,6 +7573,11 @@ def StateRel (context : StaticProofContext) (world : RelationalWorld)
     StateRelCoreWithImportMask context world invariant original candidate ∧
     (importRegisterRelationsHold world invariant.importRegisterRelations
         original.registers candidate.registers = true ∧
+      registerValueOriginRelationsHold context world
+        invariant.registerValueOriginRelations original.registers
+        candidate.registers = true ∧
+      memoryValueOriginRelationsHold context world
+        invariant.memoryValueOriginRelations original candidate = true ∧
       dynamicRegisterRangeRelationsHold world invariant.dynamicRegisterRangeRelations
         original.registers candidate.registers = true ∧
       dynamicStackRangeRelationsHold world invariant.dynamicStackRangeRelations
@@ -7447,7 +7615,8 @@ theorem StateRel.weakenInvariant
     ⟨registers, bounds, separations, stackWindows, ordinaryMemory,
       dynamicMemory, undefinedValue, x87, flags, fsBase⟩
   rcases trailing with
-    ⟨importRegisters, dynamicRegisters, dynamicStacks, predicates⟩
+    ⟨importRegisters, originRegisters, memoryOrigins, dynamicRegisters,
+      dynamicStacks, predicates⟩
   have targetRegisters :
       registerRelationsHold context.originalPe.imageBase
         context.candidatePe.imageBase context.codeMap.entries.toList
@@ -7488,6 +7657,19 @@ theorem StateRel.weakenInvariant
         original.registers candidate.registers = true :=
     listAll_of_contains source.importRegisterRelations target.importRegisterRelations _
       weakening.importRegisterRelations importRegisters
+  have targetOriginRegisters :
+      registerValueOriginRelationsHold context world
+        target.registerValueOriginRelations original.registers
+        candidate.registers = true :=
+    listAll_of_contains source.registerValueOriginRelations
+      target.registerValueOriginRelations _
+      weakening.registerValueOriginRelations originRegisters
+  have targetMemoryOrigins :
+      memoryValueOriginRelationsHold context world
+        target.memoryValueOriginRelations original candidate = true :=
+    listAll_of_contains source.memoryValueOriginRelations
+      target.memoryValueOriginRelations _
+      weakening.memoryValueOriginRelations memoryOrigins
   have targetDynamicRegisters :
       dynamicRegisterRangeRelationsHold world target.dynamicRegisterRangeRelations
         original.registers candidate.registers = true :=
@@ -7517,8 +7699,8 @@ theorem StateRel.weakenInvariant
         stackRanges := targetActiveStacks
       }
     }
-  · exact ⟨targetImportRegisters, targetDynamicRegisters,
-      targetDynamicStacks, targetPredicates⟩
+  · exact ⟨targetImportRegisters, targetOriginRegisters, targetMemoryOrigins,
+      targetDynamicRegisters, targetDynamicStacks, targetPredicates⟩
 
 theorem StateRel.machineX87Related
     (context : StaticProofContext) (world : RelationalWorld)
@@ -7550,7 +7732,7 @@ theorem StateRel.dynamicRegisterRangesHold
     (related : StateRel context world invariant original candidate) :
     dynamicRegisterRangeRelationsHold world invariant.dynamicRegisterRangeRelations
       original.registers candidate.registers = true :=
-  related.2.2.2.2.2.2.2.2.2.2.1
+  related.2.2.2.2.2.2.2.2.2.2.2.2.1
 
 theorem StateRel.dynamicStackRangesHold
     (context : StaticProofContext) (world : RelationalWorld)
@@ -7558,14 +7740,31 @@ theorem StateRel.dynamicStackRangesHold
     (related : StateRel context world invariant original candidate) :
     dynamicStackRangeRelationsHold world invariant.dynamicStackRangeRelations
       original candidate = true :=
-  related.2.2.2.2.2.2.2.2.2.2.2.1
+  related.2.2.2.2.2.2.2.2.2.2.2.2.2.1
 
 theorem StateRel.predicatesHold
     (context : StaticProofContext) (world : RelationalWorld)
     (invariant : StateInvariant) (original candidate : MachineState)
     (related : StateRel context world invariant original candidate) :
     pairedStatePredicatesHold invariant.predicates original candidate = true :=
-  related.2.2.2.2.2.2.2.2.2.2.2.2
+  related.2.2.2.2.2.2.2.2.2.2.2.2.2.2
+
+theorem StateRel.registerValueOriginsHold
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (related : StateRel context world invariant original candidate) :
+    registerValueOriginRelationsHold context world
+      invariant.registerValueOriginRelations original.registers
+      candidate.registers = true :=
+  related.2.2.2.2.2.2.2.2.2.2.1
+
+theorem StateRel.memoryValueOriginsHold
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (related : StateRel context world invariant original candidate) :
+    memoryValueOriginRelationsHold context world
+      invariant.memoryValueOriginRelations original candidate = true :=
+  related.2.2.2.2.2.2.2.2.2.2.2.1
 
 theorem StateRel.exactMemoryRead
     (context : StaticProofContext) (world : RelationalWorld)
@@ -7898,6 +8097,10 @@ structure RegionRelation where
   outputs : List RegisterPair
   inputRelations : List RegisterRelationPair := []
   outputRelations : List RegisterRelationPair := []
+  inputValueOriginRelations : List RegisterValueOriginRelation := []
+  outputValueOriginRelations : List RegisterValueOriginRelation := []
+  inputMemoryValueOriginRelations : List MemoryValueOriginRelation := []
+  outputMemoryValueOriginRelations : List MemoryValueOriginRelation := []
   inputImportRelations : List ImportRegisterRelation := []
   outputImportRelations : List ImportRegisterRelation := []
   inputDynamicRangeRelations : List DynamicRegisterRangeRelation := []
@@ -7916,6 +8119,8 @@ deriving Repr, DecidableEq
 
 def RegionRelation.inputInvariant (region : RegionRelation) : StateInvariant := {
   registerRelations := region.inputRelations
+  registerValueOriginRelations := region.inputValueOriginRelations
+  memoryValueOriginRelations := region.inputMemoryValueOriginRelations
   importRegisterRelations := region.inputImportRelations
   dynamicRegisterRangeRelations := region.inputDynamicRangeRelations
   dynamicStackRangeRelations := region.inputDynamicStackRangeRelations
@@ -7928,6 +8133,8 @@ def RegionRelation.inputInvariant (region : RegionRelation) : StateInvariant := 
 
 def RegionRelation.outputInvariant (region : RegionRelation) : StateInvariant := {
   registerRelations := region.outputRelations
+  registerValueOriginRelations := region.outputValueOriginRelations
+  memoryValueOriginRelations := region.outputMemoryValueOriginRelations
   importRegisterRelations := region.outputImportRelations
   dynamicRegisterRangeRelations := region.outputDynamicRangeRelations
   dynamicStackRangeRelations := region.outputDynamicStackRangeRelations
