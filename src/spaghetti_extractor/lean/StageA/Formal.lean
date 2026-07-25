@@ -3234,16 +3234,31 @@ theorem eval_highestSetBit_compact (state : MachineState) (value : Expr) :
   rw [eval_highestSetBitExpression]
   rfl
 
-def x87LoadExpression (pe : PE32) (format : X87LoadFormat)
+structure SymbolicImageContext where
+  imageBase : Nat
+  immutableImageWord : Nat -> Nat -> Option Nat
+
+def SymbolicImageContext.ofPE (pe : PE32) : SymbolicImageContext := {
+  imageBase := pe.imageBase
+  immutableImageWord := readImmutableImageWord pe
+}
+
+def x87LoadExpressionInContext (context : SymbolicImageContext)
+    (format : X87LoadFormat)
     (address control : Expr) : X87Expr :=
   match address with
   | .constant absolute =>
-      match readImmutableImageWord pe absolute format.byteWidth with
+      match context.immutableImageWord absolute format.byteWidth with
       | some raw => .imageLoad format raw control
       | none => .load format address control
   | _ => .load format address control
 
-def executeInstruction (pe : PE32) (imports : List PEImport)
+def x87LoadExpression (pe : PE32) (format : X87LoadFormat)
+    (address control : Expr) : X87Expr :=
+  x87LoadExpressionInContext (.ofPE pe) format address control
+
+def executeInstructionWithContext (context : SymbolicImageContext)
+    (imports : List PEImport)
     (pc undefinedSlot : Nat) (decoded : DecodedInstruction)
     (state : SymbolicBehavior) : Option InstructionResult :=
   let nextRva := pc + decoded.size
@@ -3342,26 +3357,30 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
       })
   | .callRel32 displacement =>
       let stack := state.registers.esp.offset (2 ^ 32 - 4)
-      let state := state.write32 stack (.constant (pe.imageBase + nextRva))
+      let state := state.write32 stack
+        (.constant (context.imageBase + nextRva))
       some (.stop {
         state with
         registers := state.registers.set .esp stack
-        outcome := some (.call (relativeTarget32 nextRva displacement) nextRva (pe.imageBase + nextRva))
+        outcome := some (.call (relativeTarget32 nextRva displacement) nextRva
+          (context.imageBase + nextRva))
       })
   | .callImport absoluteAddress =>
-      match importAtAbsoluteAddressFrom pe.imageBase imports absoluteAddress with
+      match importAtAbsoluteAddressFrom context.imageBase imports absoluteAddress with
       | some imported => some (.stop { state with outcome := some (.externalCall imported [] nextRva) })
       | none =>
           let target := symbolicRead32 state (.constant absoluteAddress)
           let stack := state.registers.esp.offset (2 ^ 32 - 4)
-          let state := state.write32 stack (.constant (pe.imageBase + nextRva))
+          let state := state.write32 stack
+            (.constant (context.imageBase + nextRva))
           some (.stop {
             state with
             registers := state.registers.set .esp stack
-            outcome := some (.indirectCall target nextRva (pe.imageBase + nextRva))
+            outcome := some (.indirectCall target nextRva
+              (context.imageBase + nextRva))
           })
   | .jumpImport absoluteAddress =>
-      match importAtAbsoluteAddressFrom pe.imageBase imports absoluteAddress with
+      match importAtAbsoluteAddressFrom context.imageBase imports absoluteAddress with
       | some imported => some (.stop { state with outcome := some (.externalJump imported []) })
       | none => some (.stop {
           state with outcome := some (.indirectJump (symbolicRead32 state (.constant absoluteAddress)))
@@ -3766,7 +3785,8 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
       some (.next { state with x87 := nextX87, flags := some flags, comparison := none })
   | .x87LoadMemory format source =>
       let address := source.expression state.registers
-      let value := x87LoadExpression pe format address state.x87.control
+      let value :=
+        x87LoadExpressionInContext context format address state.x87.control
       some (.next { state with x87 := state.x87.push value })
   | .x87StoreMemory format destination pop => do
       let top <- state.x87.get 0
@@ -3794,7 +3814,8 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
   | .x87BinaryMemory operation format source => do
       let top <- state.x87.get 0
       let address := source.expression state.registers
-      let right := x87LoadExpression pe format address state.x87.control
+      let right :=
+        x87LoadExpressionInContext context format address state.x87.control
       let value := X87Expr.binary operation top right state.x87.control
       let nextX87 <- state.x87.set 0 value
       some (.next { state with x87 := nextX87 })
@@ -3839,11 +3860,13 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
   | .callIndirect target =>
       let target := readOperand32 state target
       let stack := state.registers.esp.offset (2 ^ 32 - 4)
-      let state := state.write32 stack (.constant (pe.imageBase + nextRva))
+      let state := state.write32 stack
+        (.constant (context.imageBase + nextRva))
       some (.stop {
         state with
         registers := state.registers.set .esp stack
-        outcome := some (.indirectCall target nextRva (pe.imageBase + nextRva))
+        outcome := some (.indirectCall target nextRva
+          (context.imageBase + nextRva))
       })
   | .jumpIndirect target =>
       some (.stop { state with outcome := some (.indirectJump (readOperand32 state target)) })
@@ -3916,6 +3939,11 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
         outcome := some (.atomicCompareExchange address expected replacement nextRva)
       })
 
+def executeInstruction (pe : PE32) (imports : List PEImport)
+    (pc undefinedSlot : Nat) (decoded : DecodedInstruction)
+    (state : SymbolicBehavior) : Option InstructionResult :=
+  executeInstructionWithContext (.ofPE pe) imports pc undefinedSlot decoded state
+
 def decodedDirectJumpTarget? (pc : Nat) (decoded : DecodedInstruction) : Option Nat :=
   let nextRva := pc + decoded.size
   match decoded.instruction with
@@ -3923,15 +3951,19 @@ def decodedDirectJumpTarget? (pc : Nat) (decoded : DecodedInstruction) : Option 
   | .jumpRel32 displacement => some (relativeTarget32 nextRva displacement)
   | _ => none
 
-def executeCode (pe : PE32) (imports : List PEImport) :
+def executeCodeWithContext (context : SymbolicImageContext)
+    (imports : List PEImport) :
     Nat -> Nat -> Nat -> Bytes -> SymbolicBehavior -> Option (SymbolicBehavior × Bytes)
   | 0, _, _, _, _ => none
   | _ + 1, _, _, [], state => some (state, [])
   | fuel + 1, undefinedSlot, pc, bytes, state => do
       let decoded <- decodeInstructionExact bytes
-      let result <- executeInstruction pe imports pc undefinedSlot decoded state
+      let result <-
+        executeInstructionWithContext context imports pc undefinedSlot decoded state
       match result with
-      | .next nextState => executeCode pe imports fuel (undefinedSlot + 1) (pc + decoded.size) decoded.trailing nextState
+      | .next nextState =>
+          executeCodeWithContext context imports fuel (undefinedSlot + 1)
+            (pc + decoded.size) decoded.trailing nextState
       | .stop finalState =>
           -- A direct jump to the immediately following instruction is an
           -- internal path boundary, not an observable segment exit.  Folding
@@ -3940,8 +3972,9 @@ def executeCode (pe : PE32) (imports : List PEImport) :
           match finalState.outcome with
           | some (.jump target) =>
               if target == pc + decoded.size then
-                executeCode pe imports fuel (undefinedSlot + 1) target decoded.trailing
-                  { finalState with outcome := none }
+                executeCodeWithContext context imports fuel
+                  (undefinedSlot + 1) target decoded.trailing
+                    { finalState with outcome := none }
               else
                 pure (finalState, decoded.trailing)
           | some (.branch condition trueTarget falseTarget) =>
@@ -3963,6 +3996,11 @@ def executeCode (pe : PE32) (imports : List PEImport) :
                   | none => pure (finalState, decoded.trailing)
               | none => pure (finalState, decoded.trailing)
           | _ => pure (finalState, decoded.trailing)
+
+def executeCode (pe : PE32) (imports : List PEImport) :
+    Nat -> Nat -> Nat -> Bytes -> SymbolicBehavior ->
+      Option (SymbolicBehavior × Bytes) :=
+  executeCodeWithContext (.ofPE pe) imports
 
 def paddingByte (byte : Byte) : Bool :=
   byte == 0 || byte == 0x90 || byte == 0xcc
@@ -4092,16 +4130,26 @@ def spanBytes (pe : PE32) (span : Span) : Option Bytes := do
   let raw <- pe.bytes.readBytes (sec.rawPointer + offset) rawCount
   pure (raw ++ List.replicate (span.size - rawCount) 0)
 
-def regionBehaviorWithImports (pe : PE32) (imports : List PEImport)
-    (span : Span) : Option SymbolicBehavior := do
-  let bytes <- spanBytes pe span
-  let (behavior, trailing) <- executeCode pe imports (bytes.length + 1) 0 span.start bytes initialSymbolic
+def finalizeRegionBehavior (span : Span)
+    (result : SymbolicBehavior × Bytes) : Option SymbolicBehavior :=
+  let (behavior, trailing) := result
   -- Linker-derived regions may end with unreachable alignment bytes after a
   -- stopping control transfer.  They are admissible only through the same
   -- reviewed padding grammar used for complete entry decoding.
   if !paddingBytes trailing then none else
   if behavior.outcome.isSome then pure behavior else
   pure { behavior with outcome := some (.jump span.stop) }
+
+def regionBehaviorFromBytesWithContext (context : SymbolicImageContext)
+    (imports : List PEImport) (span : Span)
+    (bytes : Bytes) : Option SymbolicBehavior :=
+  executeCodeWithContext context imports (bytes.length + 1) 0 span.start bytes
+      initialSymbolic >>= finalizeRegionBehavior span
+
+def regionBehaviorWithImports (pe : PE32) (imports : List PEImport)
+    (span : Span) : Option SymbolicBehavior := do
+  let bytes <- spanBytes pe span
+  regionBehaviorFromBytesWithContext (.ofPE pe) imports span bytes
 
 def regionBehavior (pe : PE32) (span : Span) : Option SymbolicBehavior := do
   let imports <- parseImports pe

@@ -536,6 +536,14 @@ def regionBehaviorWithMachineCallContracts (pe : PE32) (imports : List PEImport)
   let behavior <- regionBehaviorWithImports pe imports span
   applyMachineImportCallContracts contracts behavior
 
+def regionBehaviorFromBytesWithMachineCallContracts
+    (context : SymbolicImageContext) (imports : List PEImport)
+    (contracts : List MachineImportCallContract) (span : Span)
+    (bytes : Bytes) : Option SymbolicBehavior := do
+  let behavior <-
+    regionBehaviorFromBytesWithContext context imports span bytes
+  applyMachineImportCallContracts contracts behavior
+
 inductive PureOutcome where
   | returned (target : Word)
   | jump (target : Nat)

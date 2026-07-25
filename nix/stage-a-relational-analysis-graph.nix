@@ -8,6 +8,7 @@
   tools,
   extraReportArtifacts ? [ ],
   dataflowFineGrained ? true,
+  dataflowContentAddressed ? false,
   extractionJobs ? 8,
   extractionBatch ? 4,
   normalizationJobs ? 8,
@@ -481,6 +482,7 @@ rec {
     dataflowWorker = tools.dataflowWorker;
     planned = registerDataflowPlan;
     fineGrained = dataflowFineGrained;
+    contentAddressed = dataflowContentAddressed;
   };
 
   registerReplay =
@@ -559,7 +561,7 @@ rec {
           .acceptance_authority == false and
           .isa_mode == "side_artifacts" and
           (.products_sha256 | type == "string") and
-          (.files | length) == 6
+          (.files | length) == 7
         ' "$out/composition-products-manifest.json" >/dev/null
       '';
 

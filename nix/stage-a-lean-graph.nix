@@ -2,6 +2,7 @@
 , prepared ? null
 , graphFile ? null
 , preparedManifest ? null
+, artifactManifest ? null
 , sourceRoot ? prepared
 , standaloneSourceRoot ? null
 , standaloneModules ? []
@@ -11,7 +12,7 @@
 , targetBundle ? false
 , targetAxiomAudit ? null
 , graphSmoke ? false
-, contentAddressed ? true
+, contentAddressed ? false
 , measureResources ? false
 }:
 
@@ -72,8 +73,17 @@ let
     if preparedManifest != null then preparedManifest
     else if prepared != null then prepared + "/prepared-proof.json"
     else null;
+  effectiveArtifactManifest =
+    if artifactManifest != null then artifactManifest
+    else if prepared != null && builtins.pathExists (prepared + "/artifact-manifest.json")
+      then prepared + "/artifact-manifest.json"
+    else null;
   graph = if standalone then standaloneGraph else
     builtins.fromJSON (builtins.readFile effectiveGraphFile);
+  graphV2 = graph.format == "stage-a-lean-module-graph-v2";
+  checkedArtifactManifest =
+    if graphV2 then builtins.fromJSON (builtins.readFile effectiveArtifactManifest)
+    else null;
   moduleSources = lib.mapAttrs (module: metadata:
     builtins.path {
       path = (if standalone then standaloneSourceRoot else sourceRoot)
@@ -134,17 +144,46 @@ let
     && builtins.isInt node.estimated_memory_mb
     && node.estimated_memory_mb > 0
   ) graph.nodes;
+  checkedArtifactIds =
+    if graphV2 then map (artifact: artifact.identity.artifact_id)
+      checkedArtifactManifest.artifacts
+    else [];
+  graphCheckedArtifactManifestValid = !graphV2 || (
+    effectiveArtifactManifest != null
+    && checkedArtifactManifest.format == "stage-a-checked-artifact-manifest-v1"
+    && graph.artifacts.checked_manifest.path == "artifact-manifest.json"
+    && builtins.hashFile "sha256" effectiveArtifactManifest
+      == graph.artifacts.checked_manifest.sha256
+    && checkedArtifactManifest.authoritative
+      == graph.artifacts.checked_manifest.authoritative
+    && builtins.length checkedArtifactIds
+      == builtins.length (lib.unique checkedArtifactIds)
+  );
+  graphNodeArtifactMetadataValid = builtins.all (node:
+    if !graphV2 then true else
+      builtins.isString node.kind
+      && node.kind != ""
+      && builtins.isString node.stable_key
+      && node.stable_key != ""
+      && builtins.isString node.checker_version
+      && node.checker_version == "stage-a-checked-artifact-checkers-v1"
+      && builtins.isList node.artifact_ids
+      && builtins.all (artifact:
+        builtins.elem artifact checkedArtifactIds) node.artifact_ids
+  ) graph.nodes;
 
   nodeDrvs = lib.fix (self:
     builtins.listToAttrs (map (node:
       let
         dependencies = map (dependency: self.${dependency}) node.dependencies;
         dependencyArgs = lib.escapeShellArgs (map toString dependencies);
-        metadata = builtins.toJSON {
+        metadata = builtins.toJSON ({
           format = "stage-a-lean-node-result-v1";
           id = node.id;
           inherit (node) modules dependencies resource_class estimated_memory_mb source_sha256;
-        };
+        } // lib.optionalAttrs graphV2 {
+          inherit (node) kind stable_key artifact_ids checker_version;
+        });
       in {
         name = node.id;
         value = pkgs.runCommand
@@ -708,7 +747,10 @@ let
       JSON
     '';
 in
-assert graph.format == "stage-a-lean-module-graph-v1";
+assert builtins.elem graph.format [
+  "stage-a-lean-module-graph-v1"
+  "stage-a-lean-module-graph-v2"
+];
 assert graph.lean.trust == 0;
 assert builtins.length graph.nodes > 0;
 assert graphNodeIdsUnique;
@@ -716,6 +758,8 @@ assert graphModuleImportsValid;
 assert graphModuleOwnershipValid;
 assert graphNodeDependenciesValid;
 assert graphNodeResourcesValid;
+assert graphCheckedArtifactManifestValid;
+assert graphNodeArtifactMetadataValid;
 assert !standalone || (standaloneModules != [] && standaloneImportsValid);
 assert !standalone
   || builtins.length standaloneModules
@@ -904,4 +948,7 @@ pkgs.runCommand "stage-a-relational-proof-audit"
     cp ${rootDependencyPack}/pack.json "$out/dependency-pack.json"
     cp "${effectiveGraphFile}" "$out/module-graph.json"
     cp "${effectivePreparedManifest}" "$out/prepared-proof.json"
+    ${lib.optionalString graphV2 ''
+      cp "${effectiveArtifactManifest}" "$out/artifact-manifest.json"
+    ''}
   ''

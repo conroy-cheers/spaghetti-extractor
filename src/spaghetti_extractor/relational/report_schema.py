@@ -5,6 +5,7 @@ RELATIONAL_PREPARED_REPORT_FILES = (
     "prepared-proof.json",
     "relational-analysis-manifest.json",
     "stage-a-interface-manifest.json",
+    "artifact-manifest.json",
     "module-graph.json",
     "relation-contract.json",
     "relational-proof-ir.json",

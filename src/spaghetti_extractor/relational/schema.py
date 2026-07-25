@@ -11,6 +11,12 @@ RELATION_CONTRACT_FORMAT = "stage-a-relation-contract-v1"
 EXTERNAL_ENVIRONMENT_PROFILE_FORMAT = "stage-a-external-environment-profile-v1"
 PROTOCOL_CALLBACK_CONTROL_FORMAT = "stage-a-protocol-callback-control-v1"
 STAGE_A_INTERFACE_MANIFEST_FORMAT = "stage-a-interface-manifest-v1"
+LEAN_MODULE_GRAPH_V1_FORMAT = "stage-a-lean-module-graph-v1"
+LEAN_MODULE_GRAPH_V2_FORMAT = "stage-a-lean-module-graph-v2"
+LEAN_MODULE_GRAPH_FORMATS = frozenset({
+    LEAN_MODULE_GRAPH_V1_FORMAT,
+    LEAN_MODULE_GRAPH_V2_FORMAT,
+})
 RELATIONAL_PROOF_IR_FORMAT = "stage-a-relational-proof-ir-v1"
 RELATIONAL_SEGMENT_CERTIFICATE_FORMAT = (
     "stage-a-relational-segment-certificate-v1"
@@ -64,6 +70,8 @@ RELATIONAL_ANALYSIS_KERNEL_MODULES = (
     "RelationalX87Decode",
     "ISAQualification",
     "RelationalDecode",
+    "RelationalSemanticsChecker",
+    "RelationalCheckedArtifacts",
     "RelationalLoader",
     "RelationalFiniteIndex",
     "RelationalMachine",
@@ -80,6 +88,8 @@ RELATIONAL_KERNEL_MODULES = (
     "RelationalX87Decode",
     "ISAQualification",
     "RelationalDecode",
+    "RelationalSemanticsChecker",
+    "RelationalCheckedArtifacts",
     "RelationalLoader",
     "RelationalFiniteIndex",
     "RelationalMachine",
@@ -456,12 +466,42 @@ class ModuleGraphNode:
     source_sha256: str
     resource_class: str
     estimated_memory_mb: int
+    kind: str | None
+    stable_key: str | None
+    artifact_ids: tuple[str, ...]
+    checker_version: str | None
 
     @classmethod
     def parse(cls, payload: Mapping[str, Any]) -> "ModuleGraphNode":
         memory = integer(payload.get("estimated_memory_mb"))
         if memory is None or memory <= 0:
             raise SchemaError("estimated_memory_mb must be positive")
+        kind = payload.get("kind")
+        stable_key = payload.get("stable_key")
+        checker_version = payload.get("checker_version")
+        artifact_ids_value = payload.get("artifact_ids", [])
+        if kind is not None and (not isinstance(kind, str) or not kind):
+            raise SchemaError("module graph node kind must be a non-empty string")
+        if stable_key is not None and (
+            not isinstance(stable_key, str) or not stable_key
+        ):
+            raise SchemaError(
+                "module graph node stable_key must be a non-empty string"
+            )
+        if checker_version is not None and (
+            not isinstance(checker_version, str) or not checker_version
+        ):
+            raise SchemaError(
+                "module graph node checker_version must be a non-empty string"
+            )
+        if not isinstance(artifact_ids_value, list) or any(
+            not isinstance(item, str) or len(item) != 64
+            for item in artifact_ids_value
+        ):
+            raise SchemaError("module graph artifact_ids must be SHA-256 strings")
+        artifact_ids = tuple(artifact_ids_value)
+        if len(artifact_ids) != len(set(artifact_ids)):
+            raise SchemaError("module graph artifact_ids must be unique")
         return cls(
             id=_required_string(payload, "id"),
             modules=_string_tuple(payload, "modules"),
@@ -469,6 +509,10 @@ class ModuleGraphNode:
             source_sha256=_required_string(payload, "source_sha256"),
             resource_class=_required_string(payload, "resource_class"),
             estimated_memory_mb=memory,
+            kind=kind,
+            stable_key=stable_key,
+            artifact_ids=artifact_ids,
+            checker_version=checker_version,
         )
 
 
@@ -481,6 +525,9 @@ class ModuleGraph:
 
     @classmethod
     def parse(cls, payload: Mapping[str, Any]) -> "ModuleGraph":
+        format_id = _required_string(payload, "format")
+        if format_id not in LEAN_MODULE_GRAPH_FORMATS:
+            raise SchemaError("unsupported Lean module graph format")
         raw_nodes = payload.get("nodes")
         if not isinstance(raw_nodes, list):
             raise SchemaError("nodes must be a list")
@@ -494,13 +541,22 @@ class ModuleGraph:
         ids = [node.id for node in nodes]
         if len(ids) != len(set(ids)):
             raise SchemaError("module graph node ids must be unique")
+        if format_id == LEAN_MODULE_GRAPH_V2_FORMAT and any(
+            node.kind is None
+            or node.stable_key is None
+            or node.checker_version is None
+            for node in nodes
+        ):
+            raise SchemaError(
+                "v2 Lean module graph nodes require typed artifact metadata"
+            )
         theorem = payload.get("expected_final_theorem")
         if theorem is not None and not isinstance(theorem, str):
             raise SchemaError("expected_final_theorem must be a string or null")
         if theorem is not None and theorem not in RELATIONAL_ACCEPTANCE_THEOREMS:
             raise SchemaError("expected_final_theorem is not a supported acceptance theorem")
         return cls(
-            format=_required_string(payload, "format"),
+            format=format_id,
             root_module=_required_string(payload, "root_module"),
             expected_final_theorem=theorem,
             nodes=nodes,
@@ -525,6 +581,7 @@ class PreparedProofDigests:
     invariants: str
     whole_program_acceptance: str
     composition_progress: str
+    artifact_manifest: str | None
     module_graph: str
 
     @classmethod
@@ -548,10 +605,16 @@ class PreparedProofDigests:
             "composition_progress": "composition_progress_sha256",
             "module_graph": "module_graph_sha256",
         }
-        return cls(**{
+        parsed = {
             name: _required_string(payload, field)
             for name, field in fields.items()
-        })
+        }
+        artifact_manifest = payload.get("artifact_manifest_sha256")
+        if artifact_manifest is not None:
+            artifact_manifest = _required_string(
+                payload, "artifact_manifest_sha256"
+            )
+        return cls(**parsed, artifact_manifest=artifact_manifest)
 
 
 @dataclass(frozen=True)

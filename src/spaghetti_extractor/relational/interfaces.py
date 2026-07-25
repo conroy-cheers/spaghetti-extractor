@@ -281,6 +281,17 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "consumers": ["distributed-nix-execution"],
                 "cache_boundary": True,
             },
+            {
+                "id": "checked-artifact-manifest",
+                "path": "artifact-manifest.json",
+                "producer": "lean-source-generation",
+                "consumers": [
+                    "distributed-nix-execution",
+                    "acceptance-integration",
+                    "axiom-audit",
+                ],
+                "cache_boundary": True,
+            },
         ],
         "lean_interfaces": [
             {
@@ -293,6 +304,18 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                     "PE32InstructionExecution",
                     "stepPE32Instruction",
                     "RegionInstructionAdequate",
+                ],
+            },
+            {
+                "module": "StageA.RelationalCheckedArtifacts",
+                "declarations": [
+                    "ArtifactId",
+                    "TransitionEffects",
+                    "RegionSemanticInput",
+                    "CheckedLocalRegionSemantics",
+                    "CheckedRegionImageBinding",
+                    "CheckedRegionSemantics",
+                    "CheckedContractedRegionSemantics",
                 ],
             },
             {

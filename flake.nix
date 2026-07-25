@@ -92,6 +92,27 @@
                 relationalLeanModuleEntries.${file} == "regular"
                 && pkgs.lib.hasSuffix ".lean" file)
               (builtins.attrNames relationalLeanModuleEntries));
+          relationalLeanImports = module:
+            pkgs.lib.unique (pkgs.lib.filter (dependency: dependency != null)
+              (map
+                (line:
+                  let
+                    matched = builtins.match
+                      "^import StageA\\.([A-Za-z0-9_]+)$" line;
+                  in
+                    if matched == null then null else builtins.head matched)
+                (pkgs.lib.splitString "\n"
+                  (builtins.readFile
+                    (relationalLeanModuleDirectory + "/${module}.lean")))));
+          relationalLeanModuleClosure = roots:
+            pkgs.lib.sort builtins.lessThan (map
+              (entry: entry.key)
+              (builtins.genericClosure {
+                startSet = map (module: { key = module; }) roots;
+                operator = entry:
+                  map (dependency: { key = dependency; })
+                    (relationalLeanImports entry.key);
+              }));
           relationalRoundtripRequiredModules = [
             "RelationalEngine"
             "RelationalDefinedness"
@@ -176,17 +197,20 @@
               estimated_memory_mb = 12288;
             };
           };
-          relationalAnalysisKernelModules = [
+          relationalAnalysisKernelModules = relationalLeanModuleClosure [
             "X87"
             "RelationalX87"
             "Formal"
             "RelationalX87Decode"
             "ISAQualification"
             "RelationalDecode"
+            "RelationalSemanticsChecker"
+            "RelationalCheckedArtifacts"
             "RelationalLoader"
             "RelationalFiniteIndex"
             "RelationalMachine"
             "Relational"
+            "RelationalEngine"
             "RelationalX87Machine"
             "RelationalPEExecution"
             "RelationalISAQualification"
@@ -345,6 +369,7 @@
               ./src/spaghetti_extractor/relational/proposal_artifact.py
               ./src/spaghetti_extractor/relational/register_replay_artifact.py
               ./src/spaghetti_extractor/relational/register_replay_format.py
+              ./src/spaghetti_extractor/relational/runtime_frame_artifact.py
               ./src/spaghetti_extractor/relational/schema.py
               ./src/spaghetti_extractor/relational/semantic_products_artifact.py
               ./src/spaghetti_extractor/relational/semantic_products_format.py
@@ -509,6 +534,7 @@
               ./src/spaghetti_extractor/relational/proposal_artifact.py
               ./src/spaghetti_extractor/relational/register_replay_artifact.py
               ./src/spaghetti_extractor/relational/register_replay_format.py
+              ./src/spaghetti_extractor/relational/runtime_frame_artifact.py
               ./src/spaghetti_extractor/relational/schema.py
               ./src/spaghetti_extractor/relational/semantic_products_artifact.py
               ./src/spaghetti_extractor/relational/semantic_products_format.py
@@ -517,7 +543,9 @@
               ./src/spaghetti_extractor/relational/side_isa_artifact.py
               ./src/spaghetti_extractor/relational/analyses/__init__.py
               ./src/spaghetti_extractor/relational/analyses/control.py
+              ./src/spaghetti_extractor/relational/analyses/dataflow.py
               ./src/spaghetti_extractor/relational/analyses/external.py
+              ./src/spaghetti_extractor/relational/analyses/frames.py
               ./src/spaghetti_extractor/relational/analyses/invariants.py
               ./src/spaghetti_extractor/relational/analyses/predicates.py
               ./src/spaghetti_extractor/relational/analyses/semantic_control.py
@@ -639,26 +667,18 @@
               exec python -m spaghetti_extractor.relational.register_dataflow_problem_cli "$@"
             '';
           };
-          spaghettiExtractorPreparationPythonFiles = spaghettiExtractorAnalysisPythonFiles ++ [
-            ./src/spaghetti_extractor/relational/build.py
-            ./src/spaghetti_extractor/relational/preparation_cli.py
-            ./src/spaghetti_extractor/relational/analyses/callbacks.py
-            ./src/spaghetti_extractor/relational/analyses/frames.py
-            ./src/spaghetti_extractor/relational/analyses/linked_control.py
-            ./src/spaghetti_extractor/relational/lean/acceptance.py
-            ./src/spaghetti_extractor/relational/lean/affine_frames.py
-            ./src/spaghetti_extractor/relational/lean/affine_linked_control.py
-            ./src/spaghetti_extractor/relational/lean/callbacks.py
-            ./src/spaghetti_extractor/relational/lean/composition.py
-            ./src/spaghetti_extractor/relational/lean/definitions.py
-            ./src/spaghetti_extractor/relational/lean/generation.py
-            ./src/spaghetti_extractor/relational/lean/scanner.py
-            ./src/spaghetti_extractor/relational/lean/segments.py
-          ];
           spaghettiExtractorPreparationSource = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
-              (pkgs.lib.fileset.unions spaghettiExtractorPreparationPythonFiles)
+              ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/contract_tools.py
+              ./src/spaghetti_extractor/errors.py
+              ./src/spaghetti_extractor/pe.py
+              ./src/spaghetti_extractor/stage_binary.py
+              ./src/spaghetti_extractor/util.py
+              (pkgs.lib.fileset.difference
+                ./src/spaghetti_extractor/relational
+                ./src/spaghetti_extractor/relational/executor.py)
               ./src/spaghetti_extractor/lean/StageA
             ];
           };
@@ -1071,6 +1091,7 @@
                 test ! -e "$proposal/relational/composition_products.py"
                 test ! -e "$proposal/relational/composition_products_artifact.py"
                 test ! -e "$proposal/relational/analyses/invariants.py"
+                test ! -e "$proposal/relational/lean/axiom_audit.py"
                 ${spaghetti-extractor-proposal}/bin/spaghetti-extractor-proposal --help >/dev/null
                 replay="${spaghettiExtractorRegisterReplaySource}/src/spaghetti_extractor"
                 test -f "$replay/relational/register_replay.py"
@@ -1084,6 +1105,7 @@
                 test ! -e "$replay/relational/pipeline.py"
                 test ! -e "$replay/relational/assembly.py"
                 test ! -e "$replay/relational/proposal_cli.py"
+                test ! -e "$replay/relational/lean/axiom_audit.py"
                 ${spaghetti-extractor-register-replay}/bin/spaghetti-extractor-register-replay --help >/dev/null
                 semantics="${spaghettiExtractorSemanticProductsSource}/src/spaghetti_extractor"
                 test -f "$semantics/relational/semantic_products.py"
@@ -1094,6 +1116,7 @@
                 test ! -e "$semantics/relational/pipeline.py"
                 test ! -e "$semantics/relational/assembly.py"
                 test ! -e "$semantics/relational/register_replay.py"
+                test ! -e "$semantics/relational/lean/axiom_audit.py"
                 ${spaghetti-extractor-semantic-products}/bin/spaghetti-extractor-semantic-products --help >/dev/null
                 memory="${spaghettiExtractorMemoryProductsSource}/src/spaghetti_extractor"
                 test -f "$memory/relational/memory_products.py"
@@ -1102,6 +1125,7 @@
                 test ! -e "$memory/relational/pipeline.py"
                 test ! -e "$memory/relational/assembly.py"
                 test ! -e "$memory/relational/semantic_products.py"
+                test ! -e "$memory/relational/lean/axiom_audit.py"
                 ${spaghetti-extractor-memory-products}/bin/spaghetti-extractor-memory-products --help >/dev/null
                 composition="${spaghettiExtractorCompositionProductsSource}/src/spaghetti_extractor"
                 test -f "$composition/relational/composition_products.py"
@@ -1110,12 +1134,14 @@
                 test -f "$composition/relational/analyses/control.py"
                 test -f "$composition/relational/analyses/semantic_control.py"
                 test -f "$composition/relational/analyses/segments.py"
-                test "$(find "$composition/lean/StageA" -type f -name '*.lean' | wc -l)" -eq 13
+                test "$(find "$composition/lean/StageA" -type f -name '*.lean' | wc -l)" \
+                  -eq ${toString (builtins.length relationalAnalysisKernelModules)}
                 test ! -e "$composition/relational/pipeline.py"
                 test ! -e "$composition/relational/assembly.py"
                 test ! -e "$composition/relational/register_replay.py"
                 test ! -e "$composition/relational/semantic_products.py"
                 test ! -e "$composition/relational/memory_products.py"
+                test ! -e "$composition/relational/lean/axiom_audit.py"
                 ${spaghetti-extractor-composition-products}/bin/spaghetti-extractor-composition-products --help >/dev/null
                 problem="${spaghettiExtractorRegisterDataflowProblemSource}/src/spaghetti_extractor"
                 test -f "$problem/relational/register_dataflow_compile.py"
@@ -1127,6 +1153,7 @@
                 test ! -e "$problem/relational/register_dataflow_solution.py"
                 test ! -e "$problem/relational/register_dataflow_aggregate.py"
                 test ! -e "$problem/relational/analyses/invariants.py"
+                test ! -e "$problem/relational/lean/axiom_audit.py"
                 ${spaghetti-extractor-register-dataflow-problem}/bin/spaghetti-extractor-register-dataflow-problem --help >/dev/null
                 preparation="${spaghettiExtractorPreparationSource}/src/spaghetti_extractor"
                 test -f "$preparation/relational/build.py"
@@ -1135,6 +1162,7 @@
                 test -f "$preparation/relational/report_schema.py"
                 test -f "$preparation/relational/lean/generation.py"
                 test -f "$preparation/relational/lean/acceptance.py"
+                test -f "$preparation/relational/lean/axiom_audit.py"
                 test -f "$preparation/relational/lean/affine_frames.py"
                 test -f "$preparation/relational/lean/affine_linked_control.py"
                 test -f "$preparation/relational/analyses/affine_linked_control.py"
@@ -1142,7 +1170,8 @@
                 test ! -e "$preparation/cli.py"
                 test ! -e "$preparation/stage_b.py"
                 test ! -e "$preparation/relational/executor.py"
-                test "$(find "$preparation/lean/StageA" -type f -name '*.lean' | wc -l)" -eq 32
+                test "$(find "$preparation/lean/StageA" -type f -name '*.lean' | wc -l)" \
+                  -eq ${toString (builtins.length relationalLeanModules)}
                 ${spaghetti-extractor-preparation}/bin/spaghetti-extractor-preparation --help >/dev/null
                 side="${spaghettiExtractorSideSource}/src/spaghetti_extractor"
                 test -f "$side/relational/side_extraction.py"
@@ -2714,7 +2743,7 @@
                   .acceptance_authority == false and
                   .isa_mode == "side_artifacts" and
                   (.products_sha256 | type == "string") and
-                  (.files | length) == 6
+                  (.files | length) == 7
                 ' "$out/composition-products-manifest.json" >/dev/null
               '';
           stage-a-gnu-hello-analysis =
@@ -3287,7 +3316,7 @@
               ) relationalAnalysisKernelModules
             );
           };
-          relationalKernelModules = pkgs.lib.unique ([
+          relationalKernelModules = relationalLeanModuleClosure ([
             "X87"
             "RelationalX87"
             "Formal"
@@ -3296,6 +3325,8 @@
             "ISAConformance"
             "ISAConformanceRunner"
             "RelationalDecode"
+            "RelationalSemanticsChecker"
+            "RelationalCheckedArtifacts"
             "RelationalLoader"
             "RelationalFiniteIndex"
             "RelationalMachine"

@@ -11,6 +11,8 @@ from unittest import mock
 
 from spaghetti_extractor.stage_binary import StageAInputError
 from spaghetti_extractor.relational.build import (
+    _ca_builder_stores,
+    _check_remote_ca_build_trace_compatibility,
     _finalize_nix_proof_ir,
     _locked_flake_input,
     _relational_nix_build_command,
@@ -588,6 +590,91 @@ class StageABuildGraphTests(unittest.TestCase):
         self.assertIn("@/tmp/stage-a-builders", command)
         self.assertIn("builders-use-substitutes", command)
         self.assertEqual(command[command.index("builders-use-substitutes") + 1], "true")
+
+    def test_ca_builder_inventory_ignores_non_ca_exceptional_lanes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            builders = Path(temporary) / "builders"
+            builders.write_text(
+                "ssh-ng://root@primary x86_64-linux /tmp/key 20 2 "
+                "big-parallel,ca-derivations - key\n"
+                "ssh-ng://root@exceptional x86_64-linux /tmp/key 1 2 "
+                "big-parallel,large-memory - key\n",
+                encoding="utf-8",
+            )
+
+            stores = _ca_builder_stores(builders)
+
+        self.assertEqual(
+            stores,
+            ["ssh-ng://root@primary?ssh-key=%2Ftmp%2Fkey"],
+        )
+
+    def test_ca_remote_build_rejects_nix_235_protocol_boundary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            builders = Path(temporary) / "builders"
+            builders.write_text(
+                "ssh-ng://root@builder x86_64-linux /tmp/key 20 2 "
+                "big-parallel,ca-derivations - key\n",
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "spaghetti_extractor.relational.build._nix_store_version",
+                side_effect=[
+                    (2, 34, "2.34.8"),
+                    (2, 35, "2.35.2"),
+                ],
+            ):
+                with self.assertRaisesRegex(
+                    StageAInputError,
+                    "Upgrade the coordinating local Nix daemon",
+                ):
+                    _check_remote_ca_build_trace_compatibility(builders)
+
+    def test_ca_remote_build_accepts_matching_build_trace_protocols(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            builders = Path(temporary) / "builders"
+            builders.write_text(
+                "ssh-ng://root@builder x86_64-linux /tmp/key 20 2 "
+                "big-parallel,ca-derivations - key\n",
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "spaghetti_extractor.relational.build._nix_store_version",
+                side_effect=[
+                    (2, 35, "2.35.2"),
+                    (2, 35, "2.35.2"),
+                ],
+            ):
+                _check_remote_ca_build_trace_compatibility(builders)
+
+    def test_analysis_dataflow_ca_is_explicit_and_optional(self):
+        dataflow_graph = (
+            self.repo / "nix" / "stage-a-register-dataflow-graph.nix"
+        ).read_text(encoding="utf-8")
+        analysis_graph = (
+            self.repo / "nix" / "stage-a-relational-analysis-graph.nix"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(", contentAddressed ? false", dataflow_graph)
+        self.assertEqual(
+            dataflow_graph.count("lib.optionalAttrs contentAddressed {"),
+            2,
+        )
+        self.assertEqual(dataflow_graph.count("__contentAddressed = true;"), 2)
+        self.assertIn("dataflowContentAddressed ? false", analysis_graph)
+        self.assertIn(
+            "contentAddressed = dataflowContentAddressed;",
+            analysis_graph,
+        )
+
+    def test_downstream_uses_canonical_machine_call_contract_inventory(self):
+        for relative in (
+            "src/spaghetti_extractor/relational/lean/acceptance.py",
+            "src/spaghetti_extractor/relational/lean/segments.py",
+        ):
+            source = (self.repo / relative).read_text(encoding="utf-8")
+            self.assertNotIn("MachineImportCallContractsChunk", source)
+            self.assertNotIn("MachineImportCallContractsDecodeChunk", source)
 
     def test_prepared_realization_command_uses_same_remote_builder_policy(self):
         command = _relational_nix_realize_command(

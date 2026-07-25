@@ -8,11 +8,17 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from ..stage_binary import StageABinary, StageAInputError
 from ..util import sha256_bytes, sha256_file, write_json
 from .analysis_artifact import validate_relational_analysis
 from .artifacts import read_json_object as _read_json
+from .checked_artifacts import (
+    CHECKED_ARTIFACT_CHECKER_VERSION,
+    CheckedArtifactManifest,
+    write_checked_artifact_manifest,
+)
 from .contract import _load_contract
 from .report_schema import RELATIONAL_PREPARED_REPORT_FILES
 from .schema import (
@@ -20,6 +26,8 @@ from .schema import (
     RELATIONAL_ACCEPTANCE_THEOREM,
     RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
     RELATIONAL_KERNEL_MODULES,
+    LEAN_MODULE_GRAPH_FORMATS,
+    LEAN_MODULE_GRAPH_V2_FORMAT,
     STAGE_A_RELATIONAL_MODEL_ID,
     STAGE_A_RELATIONAL_PROFILE_ID,
     ModuleGraph,
@@ -33,6 +41,104 @@ from .ir import CompositionProgressIR, RelationalProofIR, WholeProgramAcceptance
 
 _LEAN_SOURCE_ROOT = Path(__file__).resolve().parent.parent / "lean" / "StageA"
 _NIX_PUBLIC_KEY_RE = re.compile(r"^[^:\s]+:[A-Za-z0-9+/]+={0,2}$")
+_LEAN_IMPORT_PATTERN = re.compile(
+    r"^import StageA\.([A-Za-z0-9_]+)$", re.MULTILINE
+)
+_NIX_VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)(?:\.\d+)?")
+_NIX_BUILD_TRACE_V3_VERSION = (2, 35)
+
+
+def _content_addressed_derivations_requested() -> bool:
+    value = os.environ.get(
+        "SPAGHETTI_EXTRACTOR_STAGE_A_NIX_CONTENT_ADDRESSED", "false"
+    ).lower()
+    if value not in {"true", "false"}:
+        raise StageAInputError(
+            "SPAGHETTI_EXTRACTOR_STAGE_A_NIX_CONTENT_ADDRESSED must be true or false"
+        )
+    return value == "true"
+
+
+def _nix_store_version(*, store: str | None = None) -> tuple[int, int, str]:
+    command = ["nix", "store", "info", "--json"]
+    if store is not None:
+        command.extend(["--store", store])
+    process = subprocess.run(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if process.returncode != 0:
+        location = store or "the local Nix daemon"
+        raise StageAInputError(
+            f"cannot query Nix store version for {location}:\n"
+            + process.stderr[-4000:]
+        )
+    try:
+        payload = json.loads(process.stdout)
+        version = payload["version"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise StageAInputError("Nix returned malformed store-version metadata") from exc
+    if not isinstance(version, str):
+        raise StageAInputError("Nix store-version metadata omits a string version")
+    match = _NIX_VERSION_PATTERN.fullmatch(version)
+    if match is None:
+        raise StageAInputError(f"unsupported Nix store version {version!r}")
+    return int(match.group(1)), int(match.group(2)), version
+
+
+def _ca_builder_stores(builders_file: Path) -> list[str]:
+    stores: list[str] = []
+    for line_number, raw_line in enumerate(
+        builders_file.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        if len(fields) < 6:
+            raise StageAInputError(
+                f"malformed Nix builder entry at {builders_file}:{line_number}"
+            )
+        features = set(fields[5].split(","))
+        if "ca-derivations" not in features:
+            continue
+        uri = fields[0]
+        ssh_key = fields[2]
+        if ssh_key != "-":
+            separator = "&" if "?" in uri else "?"
+            uri += separator + urlencode({"ssh-key": ssh_key})
+        stores.append(uri)
+    return list(dict.fromkeys(stores))
+
+
+def _check_remote_ca_build_trace_compatibility(builders_file: Path) -> None:
+    """Reject the incompatible Nix 2.35 build-trace protocol boundary.
+
+    Nix 2.35 replaced realisations with build-trace-v3 identities. A pre-2.35
+    coordinating daemon can copy a 2.35 CA output from an ssh-ng builder, but
+    cannot register that output as the realization of its derivation.
+    """
+
+    local_major, local_minor, local_version = _nix_store_version()
+    local_v3 = (local_major, local_minor) >= _NIX_BUILD_TRACE_V3_VERSION
+    incompatible: list[str] = []
+    for store in _ca_builder_stores(builders_file):
+        remote_major, remote_minor, remote_version = _nix_store_version(store=store)
+        remote_v3 = (remote_major, remote_minor) >= _NIX_BUILD_TRACE_V3_VERSION
+        if local_v3 != remote_v3:
+            incompatible.append(f"{store} uses Nix {remote_version}")
+    if incompatible:
+        raise StageAInputError(
+            "content-addressed remote proof builds cross the incompatible Nix "
+            f"2.35 build-trace boundary: local daemon uses Nix {local_version}; "
+            + "; ".join(incompatible)
+            + ". Upgrade the coordinating local Nix daemon to 2.35 or newer, "
+            "or temporarily set "
+            "SPAGHETTI_EXTRACTOR_STAGE_A_NIX_CONTENT_ADDRESSED=false."
+        )
 
 
 def _remove_relational_build_output(path: Path) -> None:
@@ -482,12 +588,15 @@ def _relational_nix_expression(
     target_node: str | None,
     target_nodes: list[str],
 ) -> tuple[str, dict[str, Any] | None]:
-    content_addressed = os.environ.get(
-        "SPAGHETTI_EXTRACTOR_STAGE_A_NIX_CONTENT_ADDRESSED", "true"
+    content_addressed = (
+        "true" if _content_addressed_derivations_requested() else "false"
+    )
+    measure_resources = os.environ.get(
+        "SPAGHETTI_EXTRACTOR_STAGE_A_NIX_MEASURE_RESOURCES", "false"
     ).lower()
-    if content_addressed not in {"true", "false"}:
+    if measure_resources not in {"true", "false"}:
         raise StageAInputError(
-            "SPAGHETTI_EXTRACTOR_STAGE_A_NIX_CONTENT_ADDRESSED must be true or false"
+            "SPAGHETTI_EXTRACTOR_STAGE_A_NIX_MEASURE_RESOURCES must be true or false"
         )
     requested_target_nodes = ([target_node] if target_node is not None else []) + list(
         target_nodes
@@ -511,6 +620,16 @@ def _relational_nix_expression(
         }
 
     locked_nixpkgs = _locked_flake_input(flake_root / "flake.lock", "nixpkgs")
+    artifact_manifest_lines = (
+        [
+            "  artifactManifest = builtins.path {",
+            f"    path = builtins.toPath {json.dumps(str(prepared / 'artifact-manifest.json'))};",
+            '    name = "stage-a-checked-artifact-manifest.json";',
+            "  };",
+        ]
+        if graph.get("format") == LEAN_MODULE_GRAPH_V2_FORMAT
+        else ["  artifactManifest = null;"]
+    )
     return "\n".join([
         "let",
         f"  nixpkgs = builtins.fetchTree (builtins.fromJSON {json.dumps(json.dumps(locked_nixpkgs, sort_keys=True))});",
@@ -523,6 +642,7 @@ def _relational_nix_expression(
         f"    path = builtins.toPath {json.dumps(str(prepared / 'prepared-proof.json'))};",
         '    name = "stage-a-prepared-proof.json";',
         "  };",
+        *artifact_manifest_lines,
         f"  sourceRoot = builtins.toPath {json.dumps(str(prepared))};",
         "  targetNode = " + (
             "null" if target_node is None else json.dumps(target_node)
@@ -531,8 +651,9 @@ def _relational_nix_expression(
         + " ".join(json.dumps(node) for node in requested_target_nodes)
         + " ];",
         f"in import (builtins.toPath {json.dumps(str(evaluator))}) {{",
-        "  inherit pkgs graphFile preparedManifest sourceRoot targetNode targetNodes;",
+        "  inherit pkgs graphFile preparedManifest artifactManifest sourceRoot targetNode targetNodes;",
         f"  contentAddressed = {content_addressed};",
+        f"  measureResources = {measure_resources};",
         "}",
     ]), focused_input
 
@@ -622,6 +743,11 @@ def stage_a_build_relational(
         builders_path = Path(builders_file).resolve()
         if not builders_path.is_file():
             raise StageAInputError(f"Nix builders file does not exist: {builders_path}")
+    if (
+        builders_path is not None
+        and _content_addressed_derivations_requested()
+    ):
+        _check_remote_ca_build_trace_compatibility(builders_path)
     trusted_keys_path = (
         Path(builder_trusted_public_keys_file).resolve()
         if builder_trusted_public_keys_file is not None
@@ -1464,6 +1590,77 @@ def _check_nix_relational_report(
     return result
 
 
+def _validate_checked_artifact_source_boundaries(
+    sources: dict[str, Path],
+) -> None:
+    """Keep expensive semantics below a narrow, mechanically checked boundary."""
+    raw_full_image_calls = (
+        "regionBehaviorWithImports",
+        "regionBehaviorWithMachineCallContracts",
+    )
+
+    def replays_raw_semantics(source: str) -> bool:
+        for call in raw_full_image_calls:
+            if re.search(
+                rf"\b(?:def|abbrev)\b[^\n]*:=\s*{call}\b",
+                source,
+            ):
+                return True
+            if re.search(
+                rf"{call}\b[^:]{{0,2048}}?:=\s*by\s+"
+                r"(?:native_)?decide\b",
+                source,
+            ):
+                return True
+        return False
+
+    for module, path in sources.items():
+        if module in RELATIONAL_KERNEL_MODULES:
+            continue
+        source = path.read_text(encoding="utf-8")
+        if re.fullmatch(
+            r"RelationalProof(?:Original|Candidate)Semantic"
+            r"(?:Chunk[0-9]+|Pack[0-9a-f]+)",
+            module,
+        ):
+            forbidden_imports = tuple(
+                imported
+                for imported in _LEAN_IMPORT_PATTERN.findall(source)
+                if imported.startswith("RelationalDefinitionsShard")
+                or imported in {
+                    "RelationalProofOriginal",
+                    "RelationalProofCandidate",
+                }
+            )
+            if forbidden_imports:
+                raise StageAInputError(
+                    f"checked semantic leaf StageA.{module} imports broad "
+                    f"artifacts: {forbidden_imports!r}"
+                )
+            if any(call in source for call in raw_full_image_calls):
+                raise StageAInputError(
+                    f"checked semantic leaf StageA.{module} replays full-image "
+                    "semantics"
+                )
+            if ".evaluate" not in source or "CheckedLocalRegionSemantics" not in source:
+                raise StageAInputError(
+                    f"checked semantic leaf StageA.{module} lacks a local replay"
+                )
+            continue
+        if "DecodeChunk" in module:
+            # Exact-image bindings and explicitly marked legacy x87 leaves are
+            # the only generated modules allowed to mention the full-PE API.
+            continue
+        if any(call in source for call in raw_full_image_calls) and (
+            replays_raw_semantics(source)
+            or "CheckedDecoded" not in source
+        ):
+            raise StageAInputError(
+                f"downstream generated module StageA.{module} replays raw "
+                "region semantics"
+            )
+
+
 def _write_relational_module_graph(
     prepared: Path,
     *,
@@ -1473,6 +1670,8 @@ def _write_relational_module_graph(
 ) -> dict[str, Any]:
     stage_a = prepared / "lean" / "StageA"
     sources = {path.stem: path for path in stage_a.glob("*.lean")}
+    if (prepared / "checked-region-artifacts.json").is_file():
+        _validate_checked_artifact_source_boundaries(sources)
     acceptance_path = prepared / "whole-program-acceptance.json"
     acceptance = _read_json(acceptance_path) if acceptance_path.is_file() else {
         "format": "stage-a-whole-program-acceptance-v1",
@@ -1499,9 +1698,8 @@ def _write_relational_module_graph(
     if root not in sources:
         raise StageAInputError(f"prepared proof is missing StageA.{root}")
 
-    import_pattern = re.compile(r"^import StageA\.([A-Za-z0-9_]+)$", re.MULTILINE)
     imports = {
-        module: import_pattern.findall(path.read_text(encoding="utf-8"))
+        module: _LEAN_IMPORT_PATTERN.findall(path.read_text(encoding="utf-8"))
         for module, path in sources.items()
     }
     reachable: set[str] = set()
@@ -1550,6 +1748,47 @@ def _write_relational_module_graph(
         }
         for module in sorted(reachable)
     }
+    artifact_manifest = None
+    if (prepared / "checked-region-artifacts.json").is_file():
+        try:
+            artifact_manifest = write_checked_artifact_manifest(
+                destination=prepared / "artifact-manifest.json",
+                model=STAGE_A_RELATIONAL_MODEL_ID,
+                original_sha256=original_bin.sha256,
+                candidate_sha256=candidate_bin.sha256,
+                root_module=root,
+                expected_final_theorem=selected_acceptance_theorem,
+                module_sources={
+                    module: sources[module] for module in sorted(reachable)
+                },
+                # The checked-artifact graph remains a parity path until its
+                # theorem and frontier audit matches the existing acceptance root.
+                authoritative=False,
+            )
+        except SchemaError as exc:
+            raise StageAInputError(
+                f"cannot construct checked artifact manifest: {exc}"
+            ) from exc
+    artifact_ids_by_module: dict[str, list[str]] = {
+        module: [] for module in reachable
+    }
+    if artifact_manifest is not None:
+        for artifact in artifact_manifest.artifacts:
+            for module in artifact.modules:
+                if module in artifact_ids_by_module:
+                    artifact_ids_by_module[module].append(
+                        artifact.identity.artifact_id
+                    )
+    legacy_full_image_replay_modules = (
+        set()
+        if artifact_manifest is None
+        else {
+            module
+            for artifact in artifact_manifest.artifacts
+            if artifact.metadata.get("legacy_full_image_replay") is True
+            for module in artifact.modules
+        }
+    )
 
     raw_nodes = _relational_raw_build_nodes(reachable)
 
@@ -1636,9 +1875,62 @@ def _write_relational_module_graph(
             # Each checker reduces indexed lookups through the full imported jq
             # graph. Six GiB is conservative for the bounded 16-entry chunks.
             return "high-memory", max(6144, source_bytes // 1024 * 3)
+        if re.search(
+            r"RelationalProof(?:Original|Candidate)Semantic"
+            r"(?:Chunk[0-9]+|Pack[0-9a-f]+)",
+            names,
+        ):
+            # These leaves evaluate compact local bytes and no longer import a
+            # whole PE or shared definition inventory.
+            return "medium", max(2048, source_bytes // 1024 * 2)
+        if "DecodeChunk" in names:
+            if any(
+                module in legacy_full_image_replay_modules
+                for module in modules
+            ):
+                return "high-memory", max(4096, source_bytes // 1024 * 3)
+            # Ordinary decode chunks only bind an already-checked local
+            # semantic artifact to exact PE bytes. A representative measured
+            # 1.12 GiB peak and 1.84 seconds, so these should use the wide
+            # medium lane instead of serializing with legacy full-PE replay.
+            return "medium", max(2048, source_bytes // 1024 * 2)
+        if any(
+            re.fullmatch(
+                r"RelationalProof(?:Original|Candidate)ImagePack[0-9]+",
+                module,
+            )
+            for module in modules
+        ):
+            # Exact image payloads are intentionally bounded so a changed PE
+            # rebuilds several independent byte leaves instead of one
+            # multi-gigabyte elaboration.
+            return "medium", max(2048, source_bytes // 1024 * 3)
+        if any(
+            module in {"RelationalProofOriginal", "RelationalProofCandidate"}
+            for module in modules
+        ):
+            # Compatibility facades only re-export the three independent
+            # image-attestation phases.
+            return "light", max(512, source_bytes // 1024 + 256)
+        if any(
+            re.fullmatch(
+                r"RelationalProof(?:Original|Candidate)Image",
+                module,
+            )
+            for module in modules
+        ):
+            return "medium", max(3072, source_bytes // 1024 * 3)
+        if any(
+            re.fullmatch(
+                r"RelationalProof(?:Original|Candidate)"
+                r"(?:Imports|Relocations)Attestation",
+                module,
+            )
+            for module in modules
+        ):
+            return "high-memory", max(8192, source_bytes // 1024 * 3)
         if (
-            "DecodeChunk" in names
-            or "InstructionAdequacyChunk" in names
+            "InstructionAdequacyChunk" in names
             or "RelationalInstructionAdequacyCertificate" in modules
             or "StructuralPadding" in names
             or "StructuralCoverage" in names
@@ -1675,7 +1967,7 @@ def _write_relational_module_graph(
             if module_node[dependency] != raw["id"]
         })
         classification, estimated_memory_mb = resource_class(raw["modules"])
-        nodes.append({
+        node = {
             "id": raw["id"],
             "modules": raw["modules"],
             "dependencies": dependencies,
@@ -1684,7 +1976,80 @@ def _write_relational_module_graph(
             "source_sha256": sha256_bytes("".join(
                 logical_modules[module]["source_sha256"] for module in raw["modules"]
             ).encode("ascii")),
-        })
+        }
+        if artifact_manifest is not None:
+            node.update({
+                "kind": (
+                    "checked-region-semantics"
+                    if any(
+                        re.fullmatch(
+                            r"RelationalProof(?:Original|Candidate)Semantic"
+                            r"(?:Chunk[0-9]+|Pack[0-9a-f]+)",
+                            module,
+                        )
+                        for module in raw["modules"]
+                    )
+                    else "exact-image-binding"
+                    if any(
+                        "DecodeChunk" in module for module in raw["modules"]
+                    )
+                    else "exact-image-chunk"
+                    if any(
+                        re.fullmatch(
+                            r"RelationalProof(?:Original|Candidate)"
+                            r"ImagePack[0-9]+",
+                            module,
+                        )
+                        for module in raw["modules"]
+                    )
+                    else "exact-image-attestation"
+                    if any(
+                        re.fullmatch(
+                            r"RelationalProof(?:Original|Candidate)Image",
+                            module,
+                        )
+                        for module in raw["modules"]
+                    )
+                    else "exact-import-attestation"
+                    if any(
+                        re.fullmatch(
+                            r"RelationalProof(?:Original|Candidate)"
+                            r"ImportsAttestation",
+                            module,
+                        )
+                        for module in raw["modules"]
+                    )
+                    else "exact-relocation-attestation"
+                    if any(
+                        re.fullmatch(
+                            r"RelationalProof(?:Original|Candidate)"
+                            r"RelocationsAttestation",
+                            module,
+                        )
+                        for module in raw["modules"]
+                    )
+                    else "checked-segment-refinement"
+                    if any(
+                        "SegmentRefinement" in module
+                        for module in raw["modules"]
+                    )
+                    else "checked-product-graph"
+                    if any(
+                        "ProductGraph" in module for module in raw["modules"]
+                    )
+                    else "whole-program-acceptance"
+                    if root in raw["modules"]
+                    else "lean-module-pack"
+                ),
+                "stable_key": raw["id"],
+                "artifact_ids": sorted({
+                    artifact_id
+                    for module in raw["modules"]
+                    for artifact_id in artifact_ids_by_module[module]
+                }),
+                "checker_version": CHECKED_ARTIFACT_CHECKER_VERSION,
+            })
+        nodes.append(node)
 
     lean_version = None
     lean_githash = None
@@ -1699,7 +2064,11 @@ def _write_relational_module_graph(
             stderr=subprocess.STDOUT, check=False,
         ).stdout.strip()
     graph = {
-        "format": "stage-a-lean-module-graph-v1",
+        "format": (
+            LEAN_MODULE_GRAPH_V2_FORMAT
+            if artifact_manifest is not None
+            else "stage-a-lean-module-graph-v1"
+        ),
         "profile": STAGE_A_RELATIONAL_PROFILE_ID,
         "model": STAGE_A_RELATIONAL_MODEL_ID,
         "root_module": root,
@@ -1712,6 +2081,11 @@ def _write_relational_module_graph(
         "artifacts": {
             "original": {"path": "artifacts/original.pe", "sha256": original_bin.sha256},
             "candidate": {"path": "artifacts/candidate.pe", "sha256": candidate_bin.sha256},
+            **({} if artifact_manifest is None else {"checked_manifest": {
+                "path": "artifact-manifest.json",
+                "sha256": sha256_file(prepared / "artifact-manifest.json"),
+                "authoritative": artifact_manifest.authoritative,
+            }}),
         },
         "modules": logical_modules,
         "nodes": sorted(nodes, key=lambda node: node["id"]),
@@ -1725,6 +2099,32 @@ def _write_relational_module_graph(
                 logical_modules, "RelationalProofShard"
             )),
             "decode_modules": sum("DecodeChunk" in module for module in logical_modules),
+            "semantic_modules": sum(
+                re.fullmatch(
+                    r"RelationalProof(?:Original|Candidate)Semantic"
+                    r"(?:Chunk[0-9]+|Pack[0-9a-f]+)",
+                    module,
+                )
+                is not None
+                for module in logical_modules
+            ),
+            "image_chunk_modules": sum(
+                re.fullmatch(
+                    r"RelationalProof(?:Original|Candidate)ImagePack[0-9]+",
+                    module,
+                )
+                is not None
+                for module in logical_modules
+            ),
+            "image_attestation_modules": sum(
+                re.fullmatch(
+                    r"RelationalProof(?:Original|Candidate)"
+                    r"(?:Image|ImportsAttestation|RelocationsAttestation)",
+                    module,
+                )
+                is not None
+                for module in logical_modules
+            ),
             "instruction_adequacy_modules": sum(
                 "InstructionAdequacy" in module for module in logical_modules
             ),
@@ -1746,7 +2146,7 @@ def _validate_relational_module_graph(
         typed_graph = ModuleGraph.parse(graph)
     except SchemaError as exc:
         raise StageAInputError(f"malformed prepared Lean module graph: {exc}") from exc
-    if graph.get("format") != "stage-a-lean-module-graph-v1":
+    if graph.get("format") not in LEAN_MODULE_GRAPH_FORMATS:
         raise StageAInputError("unsupported prepared Lean module graph format")
     if typed_graph.root_module != graph.get("root_module"):
         raise StageAInputError("prepared Lean module graph has an invalid root module")
@@ -1756,7 +2156,6 @@ def _validate_relational_module_graph(
         raise StageAInputError("prepared Lean module graph is empty or malformed")
     assigned: dict[str, str] = {}
     node_by_id: dict[str, dict[str, Any]] = {}
-    import_pattern = re.compile(r"^import StageA\.([A-Za-z0-9_]+)$", re.MULTILINE)
     for module, metadata in modules.items():
         if not re.fullmatch(r"[A-Za-z0-9_]+", module) or not isinstance(metadata, dict):
             raise StageAInputError(f"invalid generated Lean module name {module!r}")
@@ -1766,7 +2165,9 @@ def _validate_relational_module_graph(
         source = prepared / relative
         if not source.is_file() or sha256_file(source) != metadata.get("source_sha256"):
             raise StageAInputError(f"module {module} source hash does not match")
-        observed_imports = import_pattern.findall(source.read_text(encoding="utf-8"))
+        observed_imports = _LEAN_IMPORT_PATTERN.findall(
+            source.read_text(encoding="utf-8")
+        )
         if observed_imports != metadata.get("imports"):
             raise StageAInputError(f"module {module} import inventory does not match source")
         if any(dependency not in modules for dependency in observed_imports):
@@ -1784,6 +2185,40 @@ def _validate_relational_module_graph(
             assigned[module] = node_id
     if set(assigned) != set(modules):
         raise StageAInputError("not every Lean module is assigned to a build node")
+    if graph.get("format") == LEAN_MODULE_GRAPH_V2_FORMAT:
+        manifest_path = prepared / "artifact-manifest.json"
+        try:
+            manifest_payload = _read_json(manifest_path)
+            artifact_manifest = CheckedArtifactManifest.parse(manifest_payload)
+        except (StageAInputError, SchemaError) as exc:
+            raise StageAInputError(
+                f"prepared checked artifact manifest is invalid: {exc}"
+            ) from exc
+        checked_manifest = graph.get("artifacts", {}).get("checked_manifest")
+        if (
+            not isinstance(checked_manifest, dict)
+            or checked_manifest.get("path") != "artifact-manifest.json"
+            or checked_manifest.get("sha256") != sha256_file(manifest_path)
+            or checked_manifest.get("authoritative")
+                is not artifact_manifest.authoritative
+        ):
+            raise StageAInputError(
+                "prepared graph does not exactly bind its checked artifact manifest"
+            )
+        declared_artifact_ids = {
+            artifact.identity.artifact_id
+            for artifact in artifact_manifest.artifacts
+        }
+        for node in typed_graph.nodes:
+            if node.checker_version != CHECKED_ARTIFACT_CHECKER_VERSION:
+                raise StageAInputError(
+                    f"prepared graph node {node.id} has a stale checker version"
+                )
+            unknown = set(node.artifact_ids) - declared_artifact_ids
+            if unknown:
+                raise StageAInputError(
+                    f"prepared graph node {node.id} names unknown checked artifacts"
+                )
     for node_id, node in node_by_id.items():
         module_positions = {module: index for index, module in enumerate(node["modules"])}
         for module in node["modules"]:
@@ -1868,7 +2303,10 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
         PreparedProofDigests.parse(manifest)
     except SchemaError as exc:
         raise StageAInputError(f"malformed prepared relational proof: {exc}") from exc
-    if manifest.get("format") != "stage-a-prepared-relational-v1":
+    if manifest.get("format") not in {
+        "stage-a-prepared-relational-v1",
+        "stage-a-prepared-relational-v2",
+    }:
         raise StageAInputError("unsupported prepared relational proof format")
     if manifest.get("status") != "prepared":
         raise StageAInputError("relational proof preparation did not complete")
@@ -1909,6 +2347,14 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
         "composition_progress_sha256": prepared / "composition-progress.json",
         "module_graph_sha256": prepared / "module-graph.json",
     }
+    if graph.get("format") == LEAN_MODULE_GRAPH_V2_FORMAT:
+        if manifest.get("format") != "stage-a-prepared-relational-v2":
+            raise StageAInputError(
+                "checked-artifact graph requires a v2 prepared proof manifest"
+            )
+        expected_hashes["artifact_manifest_sha256"] = (
+            prepared / "artifact-manifest.json"
+        )
     for field, path in expected_hashes.items():
         if not path.is_file() or manifest.get(field) != sha256_file(path):
             raise StageAInputError(f"prepared relational proof hash mismatch for {path.name}")

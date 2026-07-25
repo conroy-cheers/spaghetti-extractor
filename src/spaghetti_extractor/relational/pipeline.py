@@ -424,7 +424,7 @@ def _prepared_relational_payload(
     composition_progress: dict[str, Any],
 ) -> dict[str, Any]:
     return {
-        "format": "stage-a-prepared-relational-v1",
+        "format": "stage-a-prepared-relational-v2",
         "status": "prepared",
         "profile": STAGE_A_RELATIONAL_PROFILE_ID,
         "model": STAGE_A_RELATIONAL_MODEL_ID,
@@ -467,6 +467,9 @@ def _prepared_relational_payload(
         ),
         "composition_progress_sha256": sha256_file(
             out / "composition-progress.json"
+        ),
+        "artifact_manifest_sha256": sha256_file(
+            out / "artifact-manifest.json"
         ),
         "module_graph_sha256": sha256_file(out / "module-graph.json"),
         "expected_final_theorem": graph["expected_final_theorem"],

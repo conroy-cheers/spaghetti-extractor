@@ -3220,6 +3220,59 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 relation_contract=contract, out=report,
             )
             self.assertEqual(result["status"], "prepared", result)
+            module_graph = json.loads(
+                (report / "module-graph.json").read_text(encoding="utf-8")
+            )
+            semantic_nodes = [
+                node for node in module_graph["nodes"]
+                if node.get("kind") == "checked-region-semantics"
+            ]
+            image_binding_nodes = [
+                node for node in module_graph["nodes"]
+                if node.get("kind") == "exact-image-binding"
+            ]
+            image_chunk_nodes = [
+                node for node in module_graph["nodes"]
+                if node.get("kind") == "exact-image-chunk"
+            ]
+            self.assertTrue(semantic_nodes)
+            self.assertTrue(image_binding_nodes)
+            self.assertEqual(len(image_chunk_nodes), 2)
+            self.assertTrue(all(
+                node["resource_class"] == "medium"
+                and all("SemanticPack" in module for module in node["modules"])
+                for node in semantic_nodes
+            ))
+            self.assertTrue(all(
+                node["resource_class"] == "medium"
+                for node in image_binding_nodes
+            ))
+            self.assertTrue(all(
+                node["resource_class"] == "medium"
+                and all("ImagePack" in module for module in node["modules"])
+                for node in image_chunk_nodes
+            ))
+            candidate_image_source = (
+                report / "lean/StageA/RelationalProofCandidateImage.lean"
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                "import StageA.RelationalProofCandidateImagePack0000",
+                candidate_image_source,
+            )
+            self.assertNotIn("def candidateBytesChunk", candidate_image_source)
+            candidate_binding_source = next(
+                (report / "lean/StageA").glob(
+                    "RelationalProofCandidateDecodeChunk*.lean"
+                )
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                "import StageA.RelationalProofCandidateImage",
+                candidate_binding_source,
+            )
+            self.assertNotIn(
+                "import StageA.RelationalProofCandidate\n",
+                candidate_binding_source,
+            )
             indirect = json.loads(
                 (report / "relational-indirect-call-targets.json").read_text(
                     encoding="utf-8"

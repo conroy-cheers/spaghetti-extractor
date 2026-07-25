@@ -7,6 +7,7 @@
 , packsRoot ? planned + "/packs"
 , transferContextFile ? planned + "/transfer-context.json"
 , fineGrained ? false
+, contentAddressed ? false
 }:
 
 let
@@ -54,8 +55,7 @@ let
       node = pkgs.runCommand
         (lib.strings.sanitizeDerivationName
           "stage-a-register-dataflow-${pack.id}")
-        {
-          __contentAddressed = true;
+        ({
           outputs = [ "out" "solution" "audit" ];
           nativeBuildInputs = [
             dataflowSummary
@@ -64,7 +64,9 @@ let
           ];
           preferLocalBuild = false;
           allowSubstitutes = true;
-        }
+        } // lib.optionalAttrs contentAddressed {
+          __contentAddressed = true;
+        })
         ''
           mkdir -p "$out" "$solution" "$audit"
           predecessor_args=()
@@ -111,13 +113,14 @@ let
   summaryArgs = lib.escapeShellArgs (map
     (packId: "${nodeDrvs.${packId}.summary}/summary.json") packIds);
   fineAggregate = pkgs.runCommand "stage-a-register-dataflow-aggregate-fine"
-    {
-      __contentAddressed = true;
+    ({
       outputs = [ "out" "audit" ];
       nativeBuildInputs = [ dataflowAggregator pkgs.jq ];
       preferLocalBuild = true;
       allowSubstitutes = true;
-    }
+    } // lib.optionalAttrs contentAddressed {
+      __contentAddressed = true;
+    })
     ''
       mkdir -p "$out" "$audit"
       result_args=()

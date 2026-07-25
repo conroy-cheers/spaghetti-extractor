@@ -47,6 +47,10 @@ from .register_replay_artifact import (
     REGISTER_REPLAY_RELATIONS,
     validate_register_replay,
 )
+from .runtime_frame_artifact import (
+    RUNTIME_FRAME_AFFINE_VIABILITY_FILE,
+    runtime_frame_affine_viability_payload,
+)
 from .semantic_products_artifact import (
     INVARIANTS_FILE,
     SEMANTIC_IR_FILE,
@@ -489,6 +493,34 @@ def stage_a_produce_composition_products(
     )
     if not assembled["product_graph"]:
         raise StageAInputError("relational composition produced no graph")
+    runtime_frame_affine_seed = _read_json(
+        proposal / RUNTIME_FRAME_AFFINE_VIABILITY_FILE
+    )
+    runtime_frame_affine_budgets = runtime_frame_affine_seed.get("budgets")
+    if not isinstance(runtime_frame_affine_budgets, dict):
+        raise StageAInputError("runtime frame affine budgets are malformed")
+    runtime_frame_affine = runtime_frame_affine_viability_payload(
+        original_sha256=original_bin.sha256,
+        candidate_sha256=candidate_bin.sha256,
+        relation_contract_sha256=sha256_file(
+            proposal / "relation-contract.json"
+        ),
+        decoded_behaviors_sha256=sha256_file(
+            proposal / "relational-decoded-behaviors.json"
+        ),
+        register_relations_sha256=sha256_file(
+            register_replay / REGISTER_REPLAY_RELATIONS
+        ),
+        behaviors=behaviors,
+        register_relations=register_relations,
+        product_graph=assembled["product_graph"],
+        max_shapes=int(runtime_frame_affine_budgets.get("max_shapes", 0)),
+        max_families=int(runtime_frame_affine_budgets.get("max_families", 0)),
+    )
+    write_json(
+        out / RUNTIME_FRAME_AFFINE_VIABILITY_FILE,
+        runtime_frame_affine,
+    )
     for upstream_file in (
         EXTERNAL_CALL_SITES_FILE,
         SEMANTIC_IR_FILE,

@@ -425,6 +425,36 @@ def _run_lean_relational(
         combined = "".join(stdout) + "\n" + "".join(stderr)
         match = re.search(r"depends on axioms: \[(.*?)\]", combined, re.DOTALL)
         if match is None:
+            from .axiom_audit import run_separate_axiom_audit
+
+            audit = run_separate_axiom_audit(
+                lean=lean,
+                lean_dir=lean_dir,
+                bundle=bundle,
+                memory_arguments=tuple(_lean_memory_arguments()),
+            )
+            if audit is not None:
+                audit_command = list(audit.command)
+                commands.append(audit_command)
+                command_elapsed.append(audit.elapsed_seconds)
+                stdout.append(audit.stdout)
+                stderr.append(audit.stderr)
+                if audit.returncode != 0:
+                    return finish(
+                        {
+                            "status": "failed",
+                            "command": commands,
+                            "failed_command": audit_command,
+                            "returncode": audit.returncode,
+                            "stdout": "".join(stdout),
+                            "stderr": "".join(stderr),
+                        }
+                    )
+                combined = "".join(stdout) + "\n" + "".join(stderr)
+                match = re.search(
+                    r"depends on axioms: \[(.*?)\]", combined, re.DOTALL
+                )
+        if match is None:
             return finish(
                 {
                     "status": "axioms_missing",

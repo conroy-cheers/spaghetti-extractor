@@ -21,6 +21,7 @@ COMPOSITION_PRODUCTS_REQUIRED_FILES = frozenset({
     "relational-product-graph.json",
     "isa-requirements.json",
     "relational-segment-candidates.json",
+    "relational-runtime-frame-affine-viability.json",
 })
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 

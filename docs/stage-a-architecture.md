@@ -384,17 +384,103 @@ the consumer. This proves the required early-cutoff behavior locally. The
 consumer was then copied to a local file binary cache; a clean disposable store
 rebuilt only a third producer revision, resolved the same semantic address, and
 substituted the unchanged consumer from that cache. An earlier Nix 2.34.8
-qualification also exercised this remotely on `acacia`. The current remote
-daemon rejects CA derivations, however, so CA execution is not part of the
-supported round-trip build path. The ordinary input-addressed Lean graph runs
-on both `acacia` and `banksia`; `nix/stage-a-builders` advertises only the
-`big-parallel` feature and retains the 10-job memory-safe Lean profile. The
-separate `nix/stage-a-lightweight-ca-builders` inventory is experimental and is
-usable only when the named daemon has independently enabled `ca-derivations`.
-Worker derivations prefer remote execution and the lightweight aggregate
-prefers local execution; `--max-jobs 0` remains available when a run must
-prohibit all local work. Qualification through the production binary cache
-remains outstanding.
+qualification also exercised this remotely on `acacia`.
+
+Both `acacia` and `banksia` now advertise `ca-derivations` under Nix 2.35.2.
+Nix 2.35 changed floating-output build traces and the daemon protocol used to
+transfer them. The local coordinating daemon is still Nix 2.34.8: it can copy a
+2.35-produced CA store path, but cannot register the new build-trace identity,
+and reports `some outputs are unexpectedly invalid`. The executor now queries
+the local and CA-capable remote stores before evaluation and rejects this
+protocol-boundary mismatch with an exact remediation. The checked Lean graph
+defaults to ordinary input-addressed derivations until the coordinator is also
+Nix 2.35 or newer. CA remains an optimization rather than a correctness
+dependency.
+
+The register-dataflow pack graph follows the same rule. It previously forced
+floating CA outputs for every fine-grained pack, bypassing the Lean executor's
+compatibility check. `stage-a-register-dataflow-graph.nix` now takes an
+explicit `contentAddressed` switch and the analysis graph defaults it to
+`false`. Input-addressed packs retain remote parallelism and ordinary Nix
+caching. Deployments with protocol-compatible daemons can enable CA early
+cutoff deliberately.
+
+The ordinary input-addressed Lean graph runs on both hosts. Each has a 20-job
+general lane plus a separate one-job exceptional-memory lane. The 96 GiB hosts
+can therefore schedule compact semantic and exact-binding leaves widely while
+keeping monolithic PE and jq-sized indexed proofs constrained. Worker
+derivations prefer remote execution and `--max-jobs 0` remains available when a
+run must prohibit all local work. Qualification through the production binary
+cache remains outstanding.
+
+The relational Lean graph also has a checked-artifact v2 path. Ordinary regions
+are split into:
+
+- deterministic 32 KiB exact-image packs, assembled into one checked image
+  attestation per side;
+- a stable hash-bucketed semantic pack containing only local bytes, compact
+  imports, machine-call contracts, the proposed behavior, and one Lean replay;
+- a small exact-image binding that proves those local bytes and image base are
+  the selected PE span and exports the existing decoded-behavior theorem;
+- downstream relational proofs that consume the exported theorem and never
+  invoke raw region decoding or symbolic execution.
+
+Every exact-image binding exports its decoded-behavior theorem against the
+single canonical `machineImportCallContracts` inventory. Semantic packs and
+the legacy x87 replay may use private pack-local aliases internally, but
+acceptance and composition do not know those names. This prevents proof
+consumers from acquiring a second machine-call-contract authority.
+
+Import-table and relocation-table attestations are independent siblings of the
+checked image attestation. Exact region bindings depend on the image
+attestation, but not on those table attestations. Full acceptance still depends
+on all three. This removes expensive whole-table validation from ordinary
+candidate-region iteration without weakening the final gate.
+
+The bucket is selected from the stable semantic key, not behavior contents or
+region order. A controlled candidate mutation changed exactly one semantic
+pack; two unrelated candidate packs and every original pack retained identical
+Nix paths. Building an unchanged pack took 6.52 seconds cold and 0.49 seconds
+after the mutation. A representative exact-image binding itself took 1.84
+seconds and peaked at 1.12 GiB, so ordinary bindings use the medium parallel
+lane. Legacy x87 regions still use full-image replay and remain high-memory
+until they migrate to context-independent local semantic summaries.
+
+On the full GNU hello pair, the previous monolithic candidate PE authority made
+one cold exact binding take 441.3 seconds and drove the PE attestation to about
+12 GiB RSS. Image packing alone reduced that cold path to 295.9 seconds. After
+separating image metadata from imports and relocations, the same 81-node,
+171-module exact-binding closure checked remotely in 57.5 seconds. A fully warm
+replay performs no Lean work and reports 9.48 seconds in the executor. The
+separate candidate import and relocation attestations took 140.3 seconds cold
+when built together; they are cached independently and no longer sit on every
+region-binding path.
+
+The same graph shape scales to jq. Its current prepared proof contains 8 exact
+image chunks, 128 semantic-pack derivations, 128 exact-binding derivations,
+8,794 checked semantic artifacts, and 8,512 exact decode bindings. Of the
+semantic artifacts, 282 x87 regions still use legacy full-image replay. A
+representative 12-region candidate binding has a 32-node, 54-module, 6.1 MB
+focused closure: it checked cold in 61.6 seconds and replayed fully warm in
+3.41 seconds. The truthful jq composition inventory currently has 4,402
+potential nodes, 407 rooted nodes, 458 rooted feasible edges, 242 refined
+segments, and no unsupported instructions.
+
+Final-theorem axiom auditing is now a lazy, separate source module as well as a
+separate Nix node. Static extraction reuses the Lean compiler but does not
+contain that audit policy. A controlled edit to only `axiom_audit.py` kept the
+jq region-facts derivation at the identical store path while changing the
+prepared-proof derivation. After the one-time source-ownership migration, jq
+requalification rebuilt only semantic, register, memory, composition, and
+preparation descendants in 59.0 seconds; extraction, normalization, region
+facts, proposal discovery, and the fine-grained dataflow solve were reused.
+The immediate prepared-proof replay took 0.10 seconds. With those dependencies
+warm, the changed representative exact binding checked in 12.9 seconds and
+then replayed in 3.42 seconds with `nix_work_reused = true`.
+After the boundary was established, a change confined to segment generation
+rebuilt exactly the preparation package and jq prepared-proof derivation in
+34.3 seconds. The unchanged representative exact-binding artifact retained its
+Nix identity and replayed in 3.38 seconds.
 
 Introducing the three-output pack contract required one graph-wide production
 qualification because every pack recipe changed. Rebuilding 237 packs plus the

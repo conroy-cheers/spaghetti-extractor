@@ -12,6 +12,11 @@ from ..analyses.external import _semantic_external_target_identity
 from ..analyses.segments import _segment_refinement_candidates
 from ..analyses.stack import _stack_window_transfer_claims
 from ..artifacts import write_text_if_changed as _write_text_if_changed
+from ..checked_artifacts import (
+    CheckedArtifactIdentity,
+    CheckedArtifactKind,
+    checked_image_identity,
+)
 from ..contract import _raw_base_relocations
 from ..model import _semantic_hash, _target_shaped_register_output_claims
 from ..schema import (
@@ -101,6 +106,88 @@ from .common import (
     _lean_relation_constructor,
     _sorted_span_certificate,
 )
+
+
+def _checked_region_semantic_identity(
+    *,
+    side: str,
+    binary: StageABinary,
+    region: Mapping[str, Any],
+    behavior: Mapping[str, Any],
+    machine_call_contracts: list[dict[str, Any]],
+) -> CheckedArtifactIdentity:
+    span = region[side]
+    start = int(span["rva_start"])
+    size = int(span["size"])
+    data = bytes(binary.pe.get_data(start, size))
+    if len(data) != size:
+        raise StageAInputError(
+            f"{side} checked semantic region 0x{start:x} is not file-backed"
+        )
+    normalized = {
+        "behavior": behavior[side],
+        "image_base": binary.image_base,
+        "imports": _lean_import_certificate(binary),
+        "semantic_ir": behavior[f"{side}_ir"],
+        "machine_call_contracts": machine_call_contracts,
+        "span": {"rva_start": start, "size": size},
+    }
+    return CheckedArtifactIdentity.create(
+        kind=CheckedArtifactKind.REGION_SEMANTICS,
+        semantic_key=f"pe32-region:{side}:{start:08x}:{size}",
+        dependency_ids=(),
+        relevant_input_sha256=sha256_bytes(data),
+        normalized_data_sha256=sha256_bytes(
+            json.dumps(
+                normalized, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ),
+    )
+
+
+def _checked_region_binding_identity(
+    *,
+    side: str,
+    binary: StageABinary,
+    region: Mapping[str, Any],
+    semantics: CheckedArtifactIdentity,
+) -> CheckedArtifactIdentity:
+    span = region[side]
+    normalized = {
+        "side": side,
+        "span": {
+            "rva_start": int(span["rva_start"]),
+            "size": int(span["size"]),
+        },
+        "semantic_artifact_id": semantics.artifact_id,
+    }
+    image = checked_image_identity(side=side, binary_sha256=binary.sha256)
+    return CheckedArtifactIdentity.create(
+        kind=CheckedArtifactKind.REGION_DECODE,
+        semantic_key=(
+            f"pe32-region-binding:{side}:"
+            f"{int(span['rva_start']):08x}:{int(span['size'])}"
+        ),
+        dependency_ids=(image.artifact_id, semantics.artifact_id),
+        relevant_input_sha256=binary.sha256,
+        normalized_data_sha256=sha256_bytes(
+            json.dumps(
+                normalized, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ),
+    )
+
+
+def _checked_semantic_pack_index(
+    identity: CheckedArtifactIdentity, *, pack_count: int
+) -> int:
+    """Assign semantic artifacts without order-dependent pack reshuffling."""
+    if pack_count < 1:
+        raise StageAInputError("checked semantic pack count must be positive")
+    semantic_digest = sha256_bytes(identity.semantic_key.encode("utf-8"))
+    return int(semantic_digest[:16], 16) % pack_count
+
+
 from .expressions import (
     _lean_acceptance_outcome,
     _lean_address_separation,
@@ -402,7 +489,6 @@ def _write_relational_isa_requirement_replay_modules(
         "  originalReplayed := allOriginalISARequirementsReplay\n"
         "  candidateReplayed := allCandidateISARequirementsReplay\n"
         "}\n\n"
-        "#print axioms isaRequirementReplayCertificate\n\n"
         "end StageA.GeneratedRelational\n"
     )
     aggregate_module = "RelationalISARequirementReplayCertificate"
@@ -434,12 +520,22 @@ def _write_sharded_relational_proof(
     certificates: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], int]:
     certificate_by_region = {entry.get("region_id"): entry for entry in certificates or []}
+    checked_region_artifacts: list[dict[str, Any]] = []
     x87_region_indices = {
         int(candidate["source_region_index"])
         for candidate in segment_candidates
         if str(candidate.get("certificate_profile", "")).startswith(
             "composable_x87_"
         )
+    }
+    legacy_full_image_regions = {
+        side: x87_region_indices
+        | {
+            index
+            for index, behavior in enumerate(behaviors)
+            if "X87Expr.imageLoad" in str(behavior[side])
+        }
+        for side in ("original", "candidate")
     }
     standalone_fwait_regions = {
         side: {
@@ -503,9 +599,10 @@ def _write_sharded_relational_proof(
     ):
         module_side = side.capitalize()
         _write_text_if_changed(
-            lean_dir / "StageA" / f"RelationalProof{module_side}.lean",
-            _lean_pe_side_source(side, binary, data),
+            lean_dir / "StageA" / f"RelationalProof{module_side}Imports.lean",
+            _lean_pe_import_source(side, binary),
         )
+        _write_pe_side_modules(lean_dir, side, binary, data)
     base = (
         "import StageA.RelationalProofOriginal\n"
         "import StageA.RelationalProofCandidate\n"
@@ -626,7 +723,6 @@ def _write_sharded_relational_proof(
     shards_per_decode_chunk = (
         len(shard_groups) + decode_chunk_count - 1
     ) // decode_chunk_count
-    decode_modules: list[str] = []
     decode_chunk_regions: list[list[int]] = []
     decode_chunk_shards: list[list[int]] = []
     for chunk_index, shard_offset in enumerate(
@@ -643,6 +739,138 @@ def _write_sharded_relational_proof(
         ]
         decode_chunk_shards.append(selected_shard_indices)
         decode_chunk_regions.append(selected_region_indices)
+
+    semantic_pack_count = max(
+        1,
+        int(
+            os.environ.get(
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_SEMANTIC_PACKS",
+                "64",
+            )
+        ),
+    )
+    semantic_entries: dict[tuple[str, int], dict[str, Any]] = {}
+    semantic_pack_declarations: dict[
+        tuple[str, int], list[tuple[str, tuple[str, ...]]]
+    ] = {}
+    for side, binary in (
+        ("original", original_bin),
+        ("candidate", candidate_bin),
+    ):
+        module_side = side.capitalize()
+        for index, region in enumerate(contract["regions"]):
+            if index in standalone_fwait_regions[side]:
+                continue
+            identity = _checked_region_semantic_identity(
+                side=side,
+                binary=binary,
+                region=region,
+                behavior=behaviors[index],
+                machine_call_contracts=contract.get(
+                    "machine_import_call_contracts", []
+                ),
+            )
+            entry: dict[str, Any] = {"identity": identity}
+            semantic_entries[(side, index)] = entry
+            if index in legacy_full_image_regions[side]:
+                continue
+
+            pack_index = _checked_semantic_pack_index(
+                identity, pack_count=semantic_pack_count
+            )
+            pack_suffix = f"{pack_index:02x}"
+            semantic_module = (
+                f"RelationalProof{module_side}SemanticPack{pack_suffix}"
+            )
+            contracts_name = (
+                f"{side}MachineImportCallContractsPack{pack_suffix}"
+            )
+            stable_suffix = sha256_bytes(identity.semantic_key.encode("utf-8"))
+            expected_name = f"{side}RegionSemantic{stable_suffix}Expected"
+            input_name = f"{side}RegionSemantic{stable_suffix}Input"
+            replay_name = f"{side}RegionSemantic{stable_suffix}ReplayChecked"
+            semantic_name = f"{side}RegionSemantic{stable_suffix}Checked"
+            span = region[side]
+            start = int(span["rva_start"])
+            size = int(span["size"])
+            region_bytes = bytes(binary.pe.get_data(start, size))
+            binding_identity = _checked_region_binding_identity(
+                side=side,
+                binary=binary,
+                region=region,
+                semantics=identity,
+            )
+            declarations = (
+                f"def {expected_name} : SymbolicBehavior := "
+                f"{behaviors[index][side]}",
+                f"def {input_name} : RegionSemanticInput := {{\n"
+                f"  imageBase := {binary.image_base}\n"
+                f"  span := {_lean_span(span)}\n"
+                f"  bytes := {_lean_bytes(region_bytes)}\n"
+                "}",
+                f"theorem {replay_name} :\n"
+                f"    {input_name}.evaluate {side}Imports "
+                f"{contracts_name} = some {expected_name} := by\n"
+                "  decide",
+                f"def {semantic_name} :\n"
+                f"    CheckedLocalRegionSemantics {input_name} "
+                f"{side}Imports {contracts_name} :=\n"
+                "  CheckedLocalRegionSemantics.ofReplay "
+                f"{input_name} {side}Imports {contracts_name}\n"
+                f"    {{ value := \"{identity.artifact_id}\" }} "
+                f"{expected_name} {replay_name}",
+                f"theorem {semantic_name}EffectsExact :\n"
+                f"    {semantic_name}.effects =\n"
+                "      TransitionEffects.ofBehavior "
+                f"{semantic_name}.behavior :=\n"
+                f"  {semantic_name}.effectsExact",
+            )
+            semantic_pack_declarations.setdefault(
+                (side, pack_index), []
+            ).append((identity.semantic_key, declarations))
+            entry.update({
+                "binding_identity": binding_identity,
+                "contracts_name": contracts_name,
+                "input_name": input_name,
+                "module": semantic_module,
+                "replay_name": replay_name,
+                "semantic_name": semantic_name,
+            })
+
+    for (side, pack_index), packed in sorted(
+        semantic_pack_declarations.items()
+    ):
+        module_side = side.capitalize()
+        pack_suffix = f"{pack_index:02x}"
+        semantic_module = (
+            f"RelationalProof{module_side}SemanticPack{pack_suffix}"
+        )
+        contracts_name = f"{side}MachineImportCallContractsPack{pack_suffix}"
+        semantic_source = (
+            f"import StageA.RelationalProof{module_side}Imports\n"
+            "import StageA.RelationalMachineImportCallContracts\n"
+            "import StageA.RelationalCheckedArtifacts\n"
+            + "\n\nnamespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n"
+            "open StageA.Relational.CheckedArtifacts\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
+            "set_option linter.unusedSimpArgs false\n\n"
+            f"def {contracts_name} : List MachineImportCallContract := "
+            "machineImportCallContracts\n\n"
+            + "\n\n".join(
+                declaration
+                for _, declarations in sorted(packed)
+                for declaration in declarations
+            )
+            + "\n\nend StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(
+            lean_dir / "StageA" / f"{semantic_module}.lean",
+            semantic_source,
+        )
+
+    for chunk_index, selected_region_indices in enumerate(decode_chunk_regions):
+        selected_shard_indices = decode_chunk_shards[chunk_index]
         definition_imports = "\n".join(
             f"import StageA.{definition_modules[shard_index]}"
             for shard_index in selected_shard_indices
@@ -650,32 +878,105 @@ def _write_sharded_relational_proof(
         for side in ("original", "candidate"):
             module_side = side.capitalize()
             module = f"RelationalProof{module_side}DecodeChunk{chunk_index}"
-            decode_modules.append(module)
-            contracts_name = f"{side}MachineImportCallContractsChunk{chunk_index}"
-            decode_theorems = "\n\n".join(
-                f"theorem {side}Behavior{index}CheckedDecoded : "
-                f"regionBehaviorWithMachineCallContracts {side}Pe {side}Imports "
-                f"{contracts_name} region{index}.{side} = "
-                f"some {side}Behavior{index} := by decide"
-                for index in selected_region_indices
-                if index not in standalone_fwait_regions[side]
-            )
-            source = (
-                f"import StageA.RelationalProof{module_side}\n"
-                "import StageA.RelationalMachineImportCallContracts\n"
+            binding_declarations: list[str] = []
+            semantic_imports: set[str] = set()
+            for index in selected_region_indices:
+                if index in standalone_fwait_regions[side]:
+                    continue
+                entry = semantic_entries[(side, index)]
+                identity = entry["identity"]
+                theorem = f"{side}Behavior{index}CheckedDecoded"
+                artifact_row: dict[str, Any] = {
+                    "identity": identity.payload(),
+                    "side": side,
+                    "region_index": index,
+                    "region_id": contract["regions"][index]["id"],
+                    "span": dict(contract["regions"][index][side]),
+                    "decoded_theorem": theorem,
+                }
+                if index not in legacy_full_image_regions[side]:
+                    semantic_module = entry["module"]
+                    semantic_imports.add(semantic_module)
+                    contracts_name = entry["contracts_name"]
+                    semantic_name = entry["semantic_name"]
+                    replay_name = entry["replay_name"]
+                    binding_name = f"{side}Region{index}ImageBinding"
+                    binding_identity = entry["binding_identity"]
+                    binding_declarations.extend((
+                        f"def {binding_name} :\n"
+                        f"    CheckedRegionImageBinding {side}Pe {side}Imports "
+                        f"{contracts_name} {semantic_name} := {{\n"
+                        f"  artifactId := {{ value := "
+                        f"\"{binding_identity.artifact_id}\" }}\n"
+                        "  spanBytesExact := by decide\n"
+                        "  imageBaseExact := rfl\n"
+                        "  imageContextIndependent := by decide\n"
+                        "}",
+                        f"theorem {theorem} : "
+                        f"regionBehaviorWithMachineCallContracts {side}Pe "
+                        f"{side}Imports machineImportCallContracts "
+                        f"region{index}.{side} = "
+                        f"some {side}Behavior{index} := by\n"
+                        f"  simpa [{contracts_name}] using "
+                        f"{binding_name}.behavior_exact",
+                    ))
+                    artifact_row.update({
+                        "binding_identity": binding_identity.payload(),
+                        "binding_module": module,
+                        "image_binding_definition": binding_name,
+                        "legacy_full_image_replay": False,
+                        "module": semantic_module,
+                        "semantic_replay_theorem": replay_name,
+                        "semantic_definition": semantic_name,
+                    })
+                else:
+                    semantic_name = f"{side}Region{index}CheckedSemantics"
+                    binding_declarations.extend((
+                        f"theorem {theorem} : "
+                        f"regionBehaviorWithMachineCallContracts {side}Pe "
+                        f"{side}Imports machineImportCallContracts "
+                        f"region{index}.{side} = "
+                        f"some {side}Behavior{index} := by decide",
+                        f"def {semantic_name} :\n"
+                        "    CheckedContractedRegionSemantics "
+                        f"{side}Pe {side}Imports machineImportCallContracts :=\n"
+                        "  CheckedContractedRegionSemantics.ofDecoded "
+                        f"{side}Pe {side}Imports machineImportCallContracts\n"
+                        f"    {{ value := \"{identity.artifact_id}\" }} "
+                        f"region{index}.{side} {side}Behavior{index}\n"
+                        f"    {theorem}",
+                        f"theorem {semantic_name}EffectsExact :\n"
+                        f"    {semantic_name}.effects =\n"
+                        "      TransitionEffects.ofBehavior "
+                        f"{semantic_name}.behavior :=\n"
+                        f"  {semantic_name}.effectsExact",
+                    ))
+                    artifact_row.update({
+                        "legacy_full_image_replay": True,
+                        "module": module,
+                        "semantic_definition": semantic_name,
+                    })
+                checked_region_artifacts.append(artifact_row)
+
+            binding_source = (
+                f"import StageA.RelationalProof{module_side}Image\n"
+                + "".join(
+                    f"import StageA.{semantic_module}\n"
+                    for semantic_module in sorted(semantic_imports)
+                )
+                + "import StageA.RelationalMachineImportCallContracts\n"
                 + definition_imports
                 + "\n\nnamespace StageA.GeneratedRelational\n\n"
-                "open StageA.Formal StageA.Relational\n\n"
+                "open StageA.Formal StageA.Relational\n"
+                "open StageA.Relational.CheckedArtifacts\n\n"
                 "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
                 "set_option linter.unusedSimpArgs false\n\n"
-                f"def {contracts_name} : List MachineImportCallContract := "
-                "machineImportCallContracts\n\n"
-                + decode_theorems
+                + "\n\n".join(binding_declarations)
                 + "\n\nend StageA.GeneratedRelational\n"
             )
             _write_text_if_changed(
                 lean_dir / "StageA" / f"{module}.lean",
-                source,
+                binding_source,
             )
 
     region_chunk_names = [
@@ -1661,7 +1962,7 @@ def _write_sharded_relational_proof(
         "    generatedX87LoadPullbackCertificateChecked,\n"
         "    generatedExactRegisterRelationCertificateChecked,\n"
         "    generatedSegmentRefinementCertificateChecked⟩\n\n"
-        "#print axioms candidateRelationalEvidenceBundle\n\nend StageA.GeneratedRelational\n"
+        "end StageA.GeneratedRelational\n"
     )
     _write_text_if_changed(lean_dir / "StageA" / "RelationalBundle.lean", final)
     _write_relational_acceptance_modules(
@@ -1679,6 +1980,16 @@ def _write_sharded_relational_proof(
         deferred_guard_segment_candidates=deferred_guard_segment_candidates,
         segment_refinement_modules=segment_refinement_modules,
     )
+    write_json(
+        lean_dir.parent / "checked-region-artifacts.json",
+        {
+            "format": "stage-a-checked-region-artifacts-v1",
+            "artifacts": sorted(
+                checked_region_artifacts,
+                key=lambda row: (row["side"], row["region_index"]),
+            ),
+        },
+    )
     return (
         shard_modules
         + [item["module"] for item in stack_separation_modules]
@@ -1688,24 +1999,179 @@ def _write_sharded_relational_proof(
         shard_size,
     )
 
-def _lean_pe_side_source(side: str, binary: StageABinary, data: bytes) -> str:
+def _lean_named_byte_tree(packs: list[tuple[str, int]]) -> str:
+    if not packs:
+        return ".empty"
+    if len(packs) == 1:
+        return packs[0][0]
+    midpoint = len(packs) // 2
+    left = packs[:midpoint]
+    right = packs[midpoint:]
+    left_size = sum(size for _, size in left)
+    total_size = left_size + sum(size for _, size in right)
     return (
-        "import StageA.Formal\n\nnamespace StageA.GeneratedRelational\n\n"
+        f".node {total_size} {left_size} "
+        f"({_lean_named_byte_tree(left)}) ({_lean_named_byte_tree(right)})"
+    )
+
+
+def _lean_pe_image_pack_source(name: str, data: bytes) -> str:
+    return (
+        "import StageA.Formal\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal\n\n"
+        "set_option maxRecDepth 1000000\n\n"
+        + _lean_byte_tree_definitions(name, data)
+        + "\n\nend StageA.GeneratedRelational\n"
+    )
+
+
+def _write_pe_side_modules(
+    lean_dir: Path,
+    side: str,
+    binary: StageABinary,
+    data: bytes,
+) -> list[str]:
+    pack_size = max(
+        1024,
+        int(
+            os.environ.get(
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_IMAGE_PACK_BYTES",
+                str(32 * 1024),
+            )
+        ),
+    )
+    module_side = side.capitalize()
+    packs: list[tuple[str, str, int]] = []
+    for index, offset in enumerate(range(0, len(data), pack_size)):
+        pack_data = data[offset : offset + pack_size]
+        module = f"RelationalProof{module_side}ImagePack{index:04d}"
+        name = f"{side}ImagePack{index:04d}"
+        _write_text_if_changed(
+            lean_dir / "StageA" / f"{module}.lean",
+            _lean_pe_image_pack_source(name, pack_data),
+        )
+        packs.append((module, name, len(pack_data)))
+    image_module = f"RelationalProof{module_side}Image"
+    _write_text_if_changed(
+        lean_dir / "StageA" / f"{image_module}.lean",
+        _lean_pe_side_source(side, binary, data, image_packs=packs),
+    )
+    imports_attestation = f"RelationalProof{module_side}ImportsAttestation"
+    relocations_attestation = (
+        f"RelationalProof{module_side}RelocationsAttestation"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / f"{imports_attestation}.lean",
+        _lean_pe_import_attestation_source(side),
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / f"{relocations_attestation}.lean",
+        _lean_pe_relocation_attestation_source(side, binary),
+    )
+    facade = f"RelationalProof{module_side}"
+    _write_text_if_changed(
+        lean_dir / "StageA" / f"{facade}.lean",
+        (
+            f"import StageA.{image_module}\n"
+            f"import StageA.{imports_attestation}\n"
+            f"import StageA.{relocations_attestation}\n"
+        ),
+    )
+    return [
+        *(module for module, _, _ in packs),
+        image_module,
+        imports_attestation,
+        relocations_attestation,
+        facade,
+    ]
+
+
+def _lean_pe_side_source(
+    side: str,
+    binary: StageABinary,
+    data: bytes,
+    *,
+    image_packs: list[tuple[str, str, int]] | None = None,
+) -> str:
+    module_side = side.capitalize()
+    pack_imports = ""
+    byte_definitions = _lean_byte_tree_definitions(f"{side}Bytes", data)
+    if image_packs is not None:
+        pack_imports = "".join(
+            f"import StageA.{module}\n" for module, _, _ in image_packs
+        )
+        byte_definitions = (
+            f"def {side}Bytes : ByteTree := "
+            + _lean_named_byte_tree(
+                [(name, size) for _, name, size in image_packs]
+            )
+        )
+    return (
+        "import StageA.Formal\n"
+        + pack_imports
+        + "\n"
+        + "namespace StageA.GeneratedRelational\n\n"
         "open StageA.Formal\n\nset_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
         "set_option linter.unusedSimpArgs false\n\n"
-        + _lean_byte_tree_definitions(f"{side}Bytes", data)
+        + byte_definitions
         + "\n\n"
         + f"def {side}Pe : PE32 := {_lean_pe(binary, f'{side}Bytes')}\n\n"
-        + f"def {side}ImportCertificate : ImportTableCertificate := {_lean_import_certificate(binary)}\n\n"
-        + f"def {side}Imports : List PEImport := {side}ImportCertificate.imports\n\n"
-        + f"def {side}Relocations : List BaseRelocation := {_lean_relocations(binary)}\n\n"
         + f"theorem {side}MetadataParsed : parsePEMetadataTree {side}Bytes = some {side}Pe.metadata := by decide\n\n"
         + f"theorem {side}Parsed : parsePE32Tree {side}Bytes = some {side}Pe := by\n"
         + f"  simp [parsePE32Tree, {side}MetadataParsed, PE32.metadata, PEMetadata.toPE32, {side}Pe]\n\n"
-        + f"theorem {side}ImportsChecked : importTableValid {side}Pe {side}ImportCertificate = true := by decide\n\n"
-        + f"theorem {side}RelocationsParsed : parseRelocations {side}Pe = some {side}Relocations := by decide\n\n"
         + "end StageA.GeneratedRelational\n"
     )
+
+
+def _lean_pe_import_attestation_source(side: str) -> str:
+    module_side = side.capitalize()
+    return (
+        f"import StageA.RelationalProof{module_side}Image\n"
+        f"import StageA.RelationalProof{module_side}Imports\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        + f"theorem {side}ImportsChecked : "
+        f"importTableValid {side}Pe {side}ImportCertificate = true := by\n"
+        "  decide\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+
+
+def _lean_pe_relocation_attestation_source(
+    side: str,
+    binary: StageABinary,
+) -> str:
+    module_side = side.capitalize()
+    return (
+        f"import StageA.RelationalProof{module_side}Image\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        + f"def {side}Relocations : List BaseRelocation := "
+        + _lean_relocations(binary)
+        + "\n\n"
+        + f"theorem {side}RelocationsParsed : "
+        f"parseRelocations {side}Pe = some {side}Relocations := by\n"
+        "  decide\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+
+
+def _lean_pe_import_source(side: str, binary: StageABinary) -> str:
+    return (
+        "import StageA.Formal\n\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        + f"def {side}ImportCertificate : ImportTableCertificate := "
+        + _lean_import_certificate(binary)
+        + "\n\n"
+        + f"def {side}Imports : List PEImport := "
+        + f"{side}ImportCertificate.imports\n\n"
+        + "end StageA.GeneratedRelational\n"
+    )
+
 
 def _partition_proof_shards(
     region_costs: list[int],

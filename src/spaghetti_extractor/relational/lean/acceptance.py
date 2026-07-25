@@ -13377,11 +13377,6 @@ def _write_relational_acceptance_modules(
     if not acceptance_ready:
         return plan
 
-    decode_chunk_by_region = {
-        region_index: chunk_index
-        for chunk_index, region_indices in enumerate(decode_chunk_regions)
-        for region_index in region_indices
-    }
     chunk_size = max(
         1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_ACCEPTANCE_CHUNK", "1"))
     )
@@ -13455,7 +13450,6 @@ def _write_relational_acceptance_modules(
             node_id = int(step["node_id"])
             region_index = int(step["region_index"])
             target_id = int(step["target_id"])
-            decode_chunk = decode_chunk_by_region[region_index]
             uses_deferred_guard = _step_uses_deferred_guard(step)
             running = f"acceptanceRunningNode{node_id}Refined"
             if not uses_deferred_guard:
@@ -13594,8 +13588,7 @@ def _write_relational_acceptance_modules(
                     f"  have decoded : regionBehaviorWithMachineCallContracts {side}Pe "
                     f"{side}Imports machineImportCallContracts region{region_index}.{side} =\n"
                     f"      some {side}Behavior{region_index} := by\n"
-                    f"    simpa [{side}MachineImportCallContractsChunk{decode_chunk}] using\n"
-                    f"      {side}Behavior{region_index}CheckedDecoded\n"
+                    f"    exact {side}Behavior{region_index}CheckedDecoded\n"
                     "  rw [decoded]\n"
                     f"  change evalBehavior {side_bool} region{region_index}.targets state "
                     f"{side}Behavior{region_index} = some ({normalized_name}.eval state)\n"
@@ -14230,7 +14223,6 @@ def _write_relational_acceptance_modules(
                 "      (wholeProgramCertificate originalEnvironment candidateEnvironment\n"
                 "        originalProtocolEnvironment candidateProtocolEnvironment\n"
                 "        environmentRefines protocolRefines)\n\n"
-                "#print axioms candidatePE32ProgramsEquivalent\n\n"
             )
         else:
             acceptance_certificate_source = (
@@ -14312,7 +14304,6 @@ def _write_relational_acceptance_modules(
             "      inertWorldProtocolEnvironment inertWorldProtocolEnvironment\n"
             "      (wholeProgramCertificate originalEnvironment candidateEnvironment\n"
             "        environmentRefines)\n\n"
-            "#print axioms candidatePE32ProgramsEquivalent\n\n"
         )
     else:
         running_closure_source = (
@@ -14420,7 +14411,6 @@ def _write_relational_acceptance_modules(
             "      consoleLaunch inertWorldEnvironment inertWorldEnvironment\n"
             "      inertWorldProtocolEnvironment inertWorldProtocolEnvironment\n"
             "      wholeProgramCertificate\n\n"
-            "#print axioms candidatePE32ProgramsEquivalent\n\n"
         )
     linked_environment_support_source = ""
     if linked_acceptance_ready and not ordinary_acceptance_ready:
@@ -14531,7 +14521,6 @@ def _write_relational_acceptance_modules(
             "      inertWorldProtocolEnvironment inertWorldProtocolEnvironment\n"
             "      (linkedWholeProgramCertificate originalEnvironment candidateEnvironment\n"
             "        environmentRefines)\n\n"
-            "#print axioms candidatePE32ProgramsEquivalentLinked\n\n"
         )
     elif linked_acceptance_ready:
         linked_acceptance_certificate_source = (
@@ -14604,7 +14593,6 @@ def _write_relational_acceptance_modules(
             "      consoleLaunch inertWorldEnvironment inertWorldEnvironment\n"
             "      inertWorldProtocolEnvironment inertWorldProtocolEnvironment\n"
             "      linkedWholeProgramCertificate\n\n"
-            "#print axioms candidatePE32ProgramsEquivalentLinked\n\n"
         )
     ordinary_execution_closure_source = ""
     if ordinary_acceptance_ready:

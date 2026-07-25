@@ -962,6 +962,8 @@ Prepared Nix reports additionally contain:
 prepared-proof/
   prepared-proof.json
   module-graph.json
+  artifact-manifest.json
+  checked-region-artifacts.json
   relation-contract.json
   relational-proof-ir.json
   relational-semantic-ir.json
@@ -985,6 +987,68 @@ report/
   lean.stdout
   lean.stderr
 ```
+
+`module-graph.json` is v2 when checked region artifacts are present. It records
+typed node kinds, stable keys, artifact IDs, checker version, and resource
+class. Ordinary non-x87 region semantics are replayed once in stable
+hash-bucketed `SemanticPack` modules over local bytes. Separate `DecodeChunk`
+modules bind those checked summaries to exact PE spans. Generated-source
+validation rejects semantic packs that import a monolithic PE or definitions
+shard and rejects raw semantic replay anywhere downstream of the exact binding.
+This makes a candidate-region edit invalidate its semantic pack, image binding,
+and proof descendants without recompiling unrelated semantic packs.
+
+The exact PE authority is also a DAG. Deterministic `ImagePack` modules contain
+bounded byte trees; a side-specific `Image` module assembles those packs and
+checks PE metadata once. Independent `ImportsAttestation` and
+`RelocationsAttestation` modules validate their respective tables. The
+compatibility facade imports all three, while ordinary `DecodeChunk` bindings
+import only `Image`. Full acceptance retains imports and relocations, but a
+candidate-region edit no longer serializes unrelated table checks before its
+exact binding can compile. Decode bindings expose the checked behavior against
+the canonical `machineImportCallContracts` inventory; private semantic-pack
+aliases are not visible to acceptance or composition.
+
+GNU hello currently emits six image packs per side, 128 stable semantic packs,
+15,132 ordinary checked semantic artifacts, and 38 x87 artifacts that
+deliberately retain the legacy full-image replay. The representative candidate
+binding's cold remote time fell from 441.3 seconds on the monolithic PE source
+to 57.5 seconds after image and attestation splitting. Its warm Nix replay
+reports 9.48 seconds with `nix_work_reused = true`. Import plus relocation
+attestation checks remain a 140.3-second cold release-gate branch, rather than
+hot-loop dependencies.
+
+Floating content-addressed outputs are optional. The executor fail-fast checks
+the Nix build-trace protocol generation of the coordinating daemon and every
+CA-capable remote builder. In particular, Nix 2.34 and 2.35 cannot be mixed for
+this graph because 2.35 replaced realisation identities with build-trace-v3
+identities. Input-addressed remote execution remains the default and exercises
+the same Lean proofs. Fine-grained register-dataflow packs likewise use an
+explicit `contentAddressed` parameter and default to input-addressed outputs;
+they no longer bypass this deployment constraint.
+
+The current jq graph provides a larger validation point for the artifact split:
+8 image chunks, 128 semantic packs, 128 exact bindings, 8,794 checked semantic
+artifacts, and 8,512 exact decode bindings. A compact 12-region candidate
+binding checked a cold 32-node, 54-module closure in 61.6 seconds and replayed
+warm in 3.41 seconds. The graph remains fail-closed: its 407 rooted nodes and
+458 rooted feasible edges include 216 segment-refinement frontiers, 45
+unresolved indirect-control nodes, and explicit call-frame and environment
+frontiers. These counts describe proof progress, not acceptance.
+
+Axiom policy is now isolated in a lazy final-audit module. It is present in the
+preparation source closure and absent from extraction, region-fact, register,
+semantic-product, memory-product, and composition source closures. A
+controlled audit-only edit preserved the jq region-facts derivation path while
+changing the prepared-proof path. The one-time migration requalification then
+rebuilt only downstream semantic/register/memory/composition products and
+preparation in 59.0 seconds; a fully warm prepared-proof build took 0.10
+seconds. Against that warm dependency graph, the changed representative
+exact-binding derivation checked in 12.9 seconds and replayed in 3.42 seconds
+with `nix_work_reused = true`.
+A subsequent segment-generator-only change rebuilt exactly preparation and the
+jq prepared-proof derivation in 34.3 seconds. The unchanged representative
+exact binding kept its Nix identity and replayed in 3.38 seconds.
 
 Failed Nix builds persist complete `nix.stdout`, `nix.stderr`, and an
 `incomplete` verdict in the requested output directory instead of returning
