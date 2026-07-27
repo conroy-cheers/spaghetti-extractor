@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -190,7 +192,10 @@ from spaghetti_extractor.relational.lean.interpreter_mixed_original import (
     OriginalModuleBindings,
     OriginalPERecoveryInput,
     OriginalRegisterControlCallContractProposal,
+    OriginalRegisterStaticWordSeedAuthority,
+    OriginalStaticWordSlotBinding,
     QualifiedLeanSymbol,
+    augment_direct_call_summary_requests_from_runtime_value_carry_hints,
     derive_direct_call_summary_requests_from_register_authority,
     derive_mixed_original_direct_call_summary_requests,
     load_checked_direct_call_summary_contract_proposals,
@@ -200,6 +205,7 @@ from spaghetti_extractor.relational.lean.interpreter_mixed_original import (
     write_relational_interpreter_mixed_original,
     write_relational_interpreter_mixed_original_base,
     write_relational_interpreter_mixed_original_final,
+    write_register_finite_origin_call_entry_authorities,
 )
 from spaghetti_extractor.relational.lean.callable_external_capability import (
     relational_callable_external_capability_source,
@@ -231,21 +237,6 @@ from spaghetti_extractor.relational.lean.interpreter_original_carrier_binding im
     OriginalCarrierBindingSpec,
     generate_original_carrier_binding,
     write_original_carrier_binding,
-)
-from spaghetti_extractor.relational.lean.internal_direct_call_mixed_original_integration import (
-    INTERNAL_DIRECT_CALL_MIXED_ORIGINAL_INTEGRATION_FORMAT,
-    DirectCallMixedOriginalAuthorityBinding,
-    direct_call_mixed_original_integration_source,
-)
-from spaghetti_extractor.relational.lean.internal_direct_call_register_summary import (
-    InternalDirectCallRegisterSummaryLeanBindings,
-    LeanFiniteOriginTailTarget,
-    internal_direct_call_register_summary_module_dag,
-)
-from spaghetti_extractor.relational.lean.internal_direct_call_summary_proposal import (
-    FiniteOriginCallAuthorityBinding,
-    FiniteOriginTailAuthorityBinding,
-    construct_internal_direct_call_summary_proposals,
 )
 from spaghetti_extractor.relational.lean.relocated_writable_static_pointer_slot_authority import (
     consume_relocated_writable_static_pointer_slot_authorities,
@@ -312,6 +303,10 @@ from spaghetti_extractor.relational.lean.static_machine_import_contracts import 
     plan_static_machine_import_contracts,
     write_static_machine_import_contracts,
 )
+from spaghetti_extractor.relational.direct_call_proposal_ir import (
+    direct_call_proposal_ir_from_plans,
+    load_direct_call_proposal_ir,
+)
 from spaghetti_extractor.roundtrip_fuzz.image_contract import (
     write_stage_a_load_image_contract,
 )
@@ -344,6 +339,19 @@ X87_KERNEL_EXECUTION_REMAINING_PROOF_PREMISES = (
     "endpoint_certificate.returnRun",
     "endpoint_certificate.frameEffect",
 )
+
+
+def _direct_call_integration_module(
+    callsite_rva: int,
+    edge_index: int,
+) -> str:
+    """Load the hot direct-call emitter only for phases that need it."""
+
+    from spaghetti_extractor.relational.lean.internal_direct_call_semantics_bundle import (
+        direct_call_integration_module,
+    )
+
+    return direct_call_integration_module(callsite_rva, edge_index)
 
 
 def _jsonl(path: Path) -> list[dict[str, Any]]:
@@ -1276,6 +1284,7 @@ def _mixed_original_spec(
         OriginalMachineImportBoundarySiteProposal, ...
     ] = (),
     static_data_bindings=(),
+    static_word_call_seed_authorities=(),
 ) -> InterpreterMixedOriginalSpec:
     entry_rva, tls_callback_rvas = _launch_roots(load_image_contract)
     contract_symbol = _static_import_symbol(
@@ -1310,6 +1319,9 @@ def _mixed_original_spec(
         terminal_boundary_proposals=terminal_boundary_proposals,
         machine_import_boundary_sites=machine_import_boundary_sites,
         register_control_call_contracts=register_control_call_contracts,
+        static_word_call_seed_authorities=tuple(
+            static_word_call_seed_authorities
+        ),
         static_data_bindings=tuple(static_data_bindings),
     )
 
@@ -1485,6 +1497,9 @@ def _mixed_original_plan_layers(
     direct_call_contracts: tuple[
         OriginalRegisterControlCallContractProposal, ...
     ] = (),
+    *,
+    baseline_plan=None,
+    writable_references=None,
 ):
     original = Path(args.original)
     reference_contract = Path(args.reference_contract)
@@ -1511,23 +1526,24 @@ def _mixed_original_plan_layers(
         if callable_proposal is None
         else callable_proposal.static_data_bindings
     )
-    baseline_plan = plan_interpreter_mixed_original(
-        state_machine,
-        _mixed_original_spec(
-            original=original,
-            reference_contract=reference_contract,
-            load_image_contract=load_image_contract,
-            with_boundary_bindings=True,
-            shard_size=args.shard_size,
-            terminal_boundary_proposals=terminal_proposals,
-            machine_import_boundary_sites=boundary_sites,
-            register_control_call_contracts=machine_contracts,
-            static_data_bindings=static_data_bindings,
-        ),
-    )
+    if baseline_plan is None:
+        baseline_plan = plan_interpreter_mixed_original(
+            state_machine,
+            _mixed_original_spec(
+                original=original,
+                reference_contract=reference_contract,
+                load_image_contract=load_image_contract,
+                with_boundary_bindings=True,
+                shard_size=args.shard_size,
+                terminal_boundary_proposals=terminal_proposals,
+                machine_import_boundary_sites=boundary_sites,
+                register_control_call_contracts=machine_contracts,
+                static_data_bindings=static_data_bindings,
+            ),
+        )
     authority_report = getattr(args, "writable_slot_authority_report", None)
-    references = ()
-    if authority_report is not None:
+    references = writable_references
+    if references is None and authority_report is not None:
         references = load_relocated_writable_static_pointer_slot_authorities(
             authority_report,
             original_sha256=sha256_file(original),
@@ -1535,8 +1551,19 @@ def _mixed_original_plan_layers(
             machine_import_report_sha256=sha256_file(machine_import_report),
             mixed_original_plan=baseline_plan,
         )
+    if references is None:
+        references = ()
     plan = baseline_plan
     if direct_call_contracts:
+        static_word_call_seed_authorities = tuple(
+            OriginalRegisterStaticWordSeedAuthority(
+                source_rva=reference.key.source_rva,
+                instruction_rva=reference.key.instruction_rva,
+                binding=reference.static_binding,
+            )
+            for reference in references
+            if isinstance(reference.static_binding, OriginalStaticWordSlotBinding)
+        )
         plan = plan_interpreter_mixed_original(
             state_machine,
             _mixed_original_spec(
@@ -1552,6 +1579,9 @@ def _mixed_original_plan_layers(
                     *direct_call_contracts,
                 ),
                 static_data_bindings=static_data_bindings,
+                static_word_call_seed_authorities=(
+                    static_word_call_seed_authorities
+                ),
             ),
         )
     if references:
@@ -1727,6 +1757,29 @@ def _mixed_original_writable_slot_authority(
         baseline_plan, references
     )
     write_relational_interpreter_mixed_original_base(out, consumed.plan)
+    direct_call_proposal_ir = direct_call_proposal_ir_from_plans(
+        authority_base_plan=baseline_plan,
+        consumed_plan=consumed.plan,
+        input_paths={
+            "base_plan": (
+                out / "interpreter-mixed-original-base-plan.json"
+            ),
+            "load_image_contract": Path(args.load_image_contract),
+            "machine_import_report": machine_import_report,
+            "original_pe": original,
+            "reference_contract": Path(args.reference_contract),
+            "state_machine": state_machine,
+            "writable_slot_authority_report": authority_report,
+        },
+    )
+    write_json(
+        out / "direct-call-proposal-ir.json",
+        direct_call_proposal_ir.to_json(),
+    )
+    write_json(
+        out / "original-cutpoint-graph-ir.json",
+        direct_call_proposal_ir.original_cutpoint_graph.to_json(),
+    )
     decomposition = decompose_interpreter_mixed_original_base(
         out, consumed.plan
     )
@@ -1786,6 +1839,10 @@ def _mixed_original_writable_slot_authority(
         public_outputs={
             "authority_report": authority_report.name,
             "base_plan": "interpreter-mixed-original-base-plan.json",
+            "direct_call_proposal_ir": "direct-call-proposal-ir.json",
+            "original_cutpoint_graph_ir": (
+                "original-cutpoint-graph-ir.json"
+            ),
             "base_module": (
                 "StageA/"
                 f"{INTERPRETER_MIXED_ORIGINAL_BASE_MODULE}.lean"
@@ -2004,7 +2061,106 @@ def _internal_direct_call_summary_module_resource(
     }
 
 
+def _direct_call_contract_id(callsite_rva: int) -> int:
+    if (
+        not isinstance(callsite_rva, int)
+        or isinstance(callsite_rva, bool)
+        or not 0 <= callsite_rva < 2**32
+    ):
+        raise ValueError("direct-call contract callsite is outside PE32")
+    digest = sha256(
+        b"stage-a-direct-call-contract-v1\0"
+        + callsite_rva.to_bytes(4, "big")
+    ).digest()
+    return 0x80000000 | (int.from_bytes(digest[:4], "big") & 0x7FFFFFFF)
+
+
+def _mixed_original_plan_for_direct_contracts(
+    args: argparse.Namespace,
+    direct_call_contracts: tuple[
+        OriginalRegisterControlCallContractProposal, ...
+    ],
+    writable_references,
+):
+    """Re-run only the authority-sensitive plan from a checked baseline IR."""
+
+    if not direct_call_contracts:
+        raise ValueError(
+            "authority-sensitive direct-call replanning requires contracts"
+        )
+    original = Path(args.original)
+    reference_contract = Path(args.reference_contract)
+    state_machine = Path(args.state_machine)
+    load_image_contract = Path(args.load_image_contract)
+    machine_import_report = Path(args.machine_import_report)
+    terminal_proposals = load_interpreter_mixed_terminal_proposals(
+        machine_import_report,
+        original_sha256=sha256_file(original),
+        reference_contract_sha256=sha256_file(reference_contract),
+        state_machine_sha256=sha256_file(state_machine),
+    )
+    machine_contracts = load_original_register_control_call_contract_proposals(
+        machine_import_report,
+        original_sha256=sha256_file(original),
+        state_machine_sha256=sha256_file(state_machine),
+    )
+    boundary_sites = _machine_import_boundary_site_proposals(
+        machine_import_report
+    )
+    callable_proposal = _callable_external_proposal(args)
+    static_data_bindings = (
+        ()
+        if callable_proposal is None
+        else callable_proposal.static_data_bindings
+    )
+    static_word_call_seed_authorities = tuple(
+        OriginalRegisterStaticWordSeedAuthority(
+            source_rva=reference.key.source_rva,
+            instruction_rva=reference.key.instruction_rva,
+            binding=reference.static_binding,
+        )
+        for reference in writable_references
+        if isinstance(reference.static_binding, OriginalStaticWordSlotBinding)
+    )
+    plan = plan_interpreter_mixed_original(
+        state_machine,
+        _mixed_original_spec(
+            original=original,
+            reference_contract=reference_contract,
+            load_image_contract=load_image_contract,
+            with_boundary_bindings=True,
+            shard_size=args.shard_size,
+            terminal_boundary_proposals=terminal_proposals,
+            machine_import_boundary_sites=boundary_sites,
+            register_control_call_contracts=(
+                *machine_contracts,
+                *direct_call_contracts,
+            ),
+            static_data_bindings=static_data_bindings,
+            static_word_call_seed_authorities=(
+                static_word_call_seed_authorities
+            ),
+        ),
+    )
+    if writable_references:
+        plan = consume_relocated_writable_static_pointer_slot_authorities(
+            plan, writable_references
+        ).plan
+    return plan
+
+
 def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
+    from spaghetti_extractor.relational.lean.internal_direct_call_register_summary import (
+        InternalDirectCallRegisterSummaryLeanBindings,
+        LeanFiniteOriginTailTarget,
+        internal_direct_call_register_summary_module_dag,
+    )
+    from spaghetti_extractor.relational.lean.internal_direct_call_summary_proposal import (
+        FiniteOriginCallAuthorityBinding,
+        FiniteOriginTailAuthorityBinding,
+        construct_internal_direct_call_summary_proposals,
+    )
+
     original = Path(args.original)
     state_machine = Path(args.state_machine)
     machine_import_report = Path(args.machine_import_report)
@@ -2017,16 +2173,58 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
     base_plan, base_payload = _checked_mixed_original_base_plan(
         args.base_plan, state_machine
     )
-    baseline_plan, consumed_plan, writable_references = (
-        _mixed_original_plan_layers(args)
+    proposal_ir_path = Path(args.proposal_ir)
+    proposal_ir = load_direct_call_proposal_ir(
+        proposal_ir_path,
+        expected_input_paths={
+            "base_plan": base_plan,
+            "load_image_contract": Path(args.load_image_contract),
+            "machine_import_report": machine_import_report,
+            "original_pe": original,
+            "reference_contract": Path(args.reference_contract),
+            "state_machine": state_machine,
+            "writable_slot_authority_report": (
+                writable_slot_authority_report
+            ),
+        },
     )
-    if base_payload != consumed_plan.to_json():
-        raise ValueError(
-            "direct-call proposal consumed plan no longer matches its base plan"
+    prior_authority_report_value = getattr(
+        args, "prior_direct_call_authority_report", None
+    )
+    prior_contracts: tuple[
+        OriginalRegisterControlCallContractProposal, ...
+    ] = ()
+    prior_authority_report: Path | None = None
+    if prior_authority_report_value is not None:
+        prior_authority_report = Path(prior_authority_report_value)
+        prior_contracts = load_checked_direct_call_summary_contract_proposals(
+            prior_authority_report,
+            original_sha256=sha256_file(original),
+            state_machine_sha256=sha256_file(state_machine),
         )
-    target_rvas = {
-        region.target_id: region.rva for region in consumed_plan.regions
-    }
+    writable_references = (
+        load_relocated_writable_static_pointer_slot_authorities(
+            writable_slot_authority_report,
+            original_sha256=sha256_file(original),
+            state_machine_sha256=sha256_file(state_machine),
+            machine_import_report_sha256=sha256_file(
+                machine_import_report
+            ),
+            mixed_original_plan_sha256_expected=(
+                proposal_ir.authority_base_plan_sha256
+            ),
+        )
+    )
+    consumed_plan = None
+    if prior_contracts:
+        consumed_plan = _mixed_original_plan_for_direct_contracts(
+            args,
+            prior_contracts,
+            writable_references,
+        )
+    target_rvas = proposal_ir.target_rvas
+    target_ids_by_rva = proposal_ir.target_ids_by_rva
+    direct_call_sites_by_rva = proposal_ir.direct_call_sites_by_rva
     finite_origin_tail_authorities: list[
         FiniteOriginTailAuthorityBinding
     ] = []
@@ -2083,6 +2281,10 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
                     indirect_exit_authority_term=(
                         f"{reference.decomposed_adapter_namespace}."
                         "consumedIndirectExitCertificate"
+                    ),
+                    indirect_exit_certificate_exact_term=(
+                        f"{reference.decomposed_adapter_namespace}."
+                        "consumedIndirectExitCertificateExact"
                     ),
                 )
             )
@@ -2178,22 +2380,130 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
         state_machine_sha256=str(base_payload["state_machine_sha256"]),
         machine_import_report_sha256=sha256_file(machine_import_report),
     )
+    runtime_value_carry_hints_value = getattr(
+        args, "runtime_value_carry_hints", None
+    )
+    runtime_value_carry_hints: Path | None = None
+    if runtime_value_carry_hints_value is not None:
+        runtime_value_carry_hints = Path(runtime_value_carry_hints_value)
+        hints_payload = json.loads(
+            runtime_value_carry_hints.read_text(encoding="utf-8")
+        )
+        if not isinstance(hints_payload, Mapping):
+            raise ValueError("runtime value-carry hints are not an object")
+        requests = (
+            augment_direct_call_summary_requests_from_runtime_value_carry_hints(
+                requests,
+                hints_payload,
+                proposal_ir,
+                original_sha256=sha256_file(original),
+            )
+        )
+    prebound_requests = {
+        request.callsite_rva
+        for request in requests.finite_origin_entry_requests
+    }.intersection(
+        proposal_ir.prebound_finite_origin_call_instruction_rvas
+    )
+    if consumed_plan is None and prebound_requests:
+        _, consumed_plan, fallback_references = _mixed_original_plan_layers(
+            args
+        )
+        if fallback_references != writable_references:
+            raise ValueError(
+                "direct-call proposal IR and fallback writable authorities differ"
+            )
+        if base_payload != consumed_plan.to_json():
+            raise ValueError(
+                "direct-call proposal fallback plan no longer matches its "
+                "cached base plan"
+            )
+    if consumed_plan is not None:
+        actual_regions = {
+            region.target_id: region.rva for region in consumed_plan.regions
+        }
+        if actual_regions != target_rvas:
+            raise ValueError(
+                "authority-sensitive plan changed the canonical region map"
+            )
+    out = Path(args.out)
+    stage_a = out / "StageA"
+    stage_a.mkdir(parents=True, exist_ok=True)
+    recovered_entry_authorities = (
+        ()
+        if consumed_plan is None
+        else write_register_finite_origin_call_entry_authorities(
+            out,
+            consumed_plan,
+            instruction_rvas=(
+                request.callsite_rva
+                for request in requests.finite_origin_entry_requests
+            ),
+        )
+    )
+    existing_finite_sites = {
+        (authority.source_rva, authority.instruction_rva)
+        for authority in finite_origin_call_authorities
+    }
+    for authority in recovered_entry_authorities:
+        key = (authority.source_rva, authority.instruction_rva)
+        if key in existing_finite_sites:
+            continue
+        target_rvas_for_authority = tuple(
+            target_rvas[target_id] for target_id in authority.target_ids
+        )
+        finite_origin_call_authorities.append(
+            FiniteOriginCallAuthorityBinding(
+                source_rva=authority.source_rva,
+                instruction_rva=authority.instruction_rva,
+                continuation_rva=authority.continuation_rva,
+                continuation_target_id=authority.continuation_target_id,
+                internal_targets=tuple(
+                    LeanFiniteOriginTailTarget(
+                        target_id=target_id,
+                        region_id=target_rva,
+                    )
+                    for target_id, target_rva in zip(
+                        authority.target_ids,
+                        target_rvas_for_authority,
+                        strict=True,
+                    )
+                ),
+                internal_target_rvas=target_rvas_for_authority,
+                authority_module=authority.module,
+                indirect_exit_authority_term=(
+                    authority.indirect_exit_authority_term
+                ),
+                indirect_exit_certificate_exact_term=(
+                    authority.indirect_exit_certificate_exact_term
+                ),
+            )
+        )
+        existing_finite_sites.add(key)
     proposal_plan = None
-    if requests.requests:
+    if requests.requests or requests.finite_origin_entry_requests:
         proposal_plan = construct_internal_direct_call_summary_proposals(
             original,
             state_machine,
             machine_import_report,
             requests.requests,
+            finite_origin_entry_requests=(
+                requests.finite_origin_entry_requests
+            ),
             finite_origin_call_authorities=finite_origin_call_authorities,
             finite_origin_tail_authorities=finite_origin_tail_authorities,
         )
-    out = Path(args.out)
-    stage_a = out / "StageA"
-    stage_a.mkdir(parents=True, exist_ok=True)
     module_rows: list[dict[str, Any]] = []
-    module_resources: dict[str, dict[str, Any]] = {}
-    summary_node_module_count = 0
+    contract_ids: dict[int, int] = {}
+    module_resources: dict[str, dict[str, Any]] = {
+        authority.module.removeprefix("StageA."): {
+            "resource_class": "medium",
+            "estimated_memory_mb": 6144,
+        }
+        for authority in recovered_entry_authorities
+    }
+    summary_node_modules: set[str] = set()
+    summary_artifact_modules: set[str] = set()
     if proposal_plan is not None:
         support_module = (
             "GeneratedRelationalInternalDirectCallSummarySupport"
@@ -2249,13 +2559,24 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
             ),
         )
         node_sources: dict[str, str] = {}
-        for index, proposal in enumerate(proposal_plan.proposals):
-            module = f"GeneratedRelationalInternalDirectCallSummaryProposal{index:04d}"
+        node_resources: dict[str, dict[str, Any]] = {}
+        for proposal in proposal_plan.proposals:
+            module = (
+                "GeneratedRelationalInternalDirectCallSummaryProposal"
+                f"{proposal.request.callsite_rva:08x}"
+            )
             namespace = f"StageA.Generated.{module}"
             dag = internal_direct_call_register_summary_module_dag(
                 proposal.tree,
                 checker_bindings,
                 root_namespace=namespace,
+            )
+            summary_node_modules.update(
+                node_module.module for node_module in dag.node_modules
+            )
+            summary_artifact_modules.update(
+                artifact_module.module
+                for artifact_module in dag.artifact_modules
             )
             destination = stage_a / f"{module}.lean"
             destination.write_text(dag.root_source, encoding="utf-8")
@@ -2263,7 +2584,7 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
                 "resource_class": "medium",
                 "estimated_memory_mb": 4096,
             }
-            for node_module in dag.node_modules:
+            for node_module in dag.all_modules:
                 prior = node_sources.get(node_module.module)
                 if prior is not None and prior != node_module.source:
                     raise ValueError(
@@ -2271,13 +2592,154 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
                         "incompatible generated sources"
                     )
                 node_sources[node_module.module] = node_module.source
+                resource = {
+                    "resource_class": node_module.resource_class,
+                    "estimated_memory_mb": node_module.estimated_memory_mb,
+                }
+                prior_resource = node_resources.get(node_module.module)
+                if (
+                    prior_resource is not None
+                    and prior_resource != resource
+                ):
+                    raise ValueError(
+                        "one direct-call summary node module names "
+                        "incompatible resource estimates"
+                    )
+                node_resources[node_module.module] = resource
+            callee_rva = proposal.tree.certificate.callee_entry.original.start
+            callee_target_id = target_ids_by_rva.get(callee_rva)
+            entry_authority = proposal.entry_authority
+            if entry_authority is None:
+                site = direct_call_sites_by_rva.get(
+                    proposal.request.callsite_rva
+                )
+                if site is None or callee_target_id is None:
+                    raise ValueError(
+                        "direct-call proposal has no canonical source, "
+                        "continuation, or callee target"
+                    )
+                source_rva = site.source_rva
+                source_target_id = site.source_target_id
+                continuation_rva = site.continuation_rva
+                continuation_target_id = site.continuation_target_id
+                edge_index = site.edge_index
+                entry_kind = "direct"
+                entry_authority_module = None
+                entry_authority_term = None
+                entry_authority_certificate_exact_term = None
+            else:
+                if (
+                    callee_target_id is None
+                    or len(entry_authority.internal_targets) != 1
+                    or entry_authority.internal_targets[0].target_id
+                        != callee_target_id
+                ):
+                    raise ValueError(
+                        "finite-origin entry proposal has no unique canonical "
+                        "callee target"
+                    )
+                source_rva = entry_authority.source_rva
+                source_target_id_value = target_ids_by_rva.get(source_rva)
+                if source_target_id_value is None:
+                    raise ValueError(
+                        "finite-origin entry source has no canonical target"
+                    )
+                source_target_id = source_target_id_value
+                continuation_rva = entry_authority.continuation_rva
+                continuation_target_id = (
+                    entry_authority.continuation_target_id
+                )
+                edge_index = proposal_ir.call_return_edge_index(
+                    source_target_id, continuation_target_id
+                )
+                entry_kind = "finite_origin_call"
+                entry_authority_module = (
+                    entry_authority.authority_module
+                )
+                entry_authority_term = (
+                    entry_authority.indirect_exit_authority_term
+                )
+                entry_authority_certificate_exact_term = (
+                    entry_authority.indirect_exit_certificate_exact_term
+                )
+            contract_id = _direct_call_contract_id(
+                proposal.request.callsite_rva
+            )
+            prior_callsite = contract_ids.get(contract_id)
+            if (
+                prior_callsite is not None
+                and prior_callsite != proposal.request.callsite_rva
+            ):
+                raise ValueError(
+                    "direct-call contract ID collision between callsites "
+                    f"0x{prior_callsite:x} and "
+                    f"0x{proposal.request.callsite_rva:x}"
+                )
+            contract_ids[contract_id] = proposal.request.callsite_rva
             module_rows.append({
                 "callsite_rva": proposal.request.callsite_rva,
-                "contract_id": 0x80000000 + index,
+                "callee_rva": callee_rva,
+                "callee_target_id": callee_target_id,
+                "continuation_rva": continuation_rva,
+                "continuation_target_id": continuation_target_id,
+                "contract_id": contract_id,
+                "edge_index": edge_index,
+                "entry_kind": entry_kind,
+                "entry_authority_module": entry_authority_module,
+                "entry_authority_term": entry_authority_term,
+                "entry_authority_certificate_exact_term": (
+                    entry_authority_certificate_exact_term
+                ),
+                "identity_registers": [
+                    register
+                    for register in proposal.tree.certificate.requested_registers
+                    if register != "esp"
+                    and register not in {
+                        witness.register
+                        for witness in proposal.tree.certificate.stack_witnesses
+                    }
+                ],
+                "caller_frame_word_offsets": list(
+                    proposal.request.caller_frame_word_offsets
+                ),
+                "stack_witnesses": [
+                    {
+                        "checked": (
+                            f"{namespace}."
+                            "generatedInternalDirectCallRegisterSummary"
+                            f"StackWitness{witness_index:04d}Checked"
+                        ),
+                        "member": (
+                            f"{namespace}."
+                            "generatedInternalDirectCallRegisterSummary"
+                            f"StackWitness{witness_index:04d}Member"
+                        ),
+                        "operational_path_supported": True,
+                        "register": witness.register,
+                        "term": (
+                            f"{namespace}."
+                            "generatedInternalDirectCallRegisterSummary"
+                            f"StackWitness{witness_index:04d}"
+                        ),
+                    }
+                    for witness_index, witness in enumerate(
+                        proposal.tree.certificate.stack_witnesses
+                    )
+                ],
                 "module": f"StageA.{module}",
                 "namespace": namespace,
+                "source_rva": source_rva,
+                "source_target_id": source_target_id,
                 "summary_tree": (
                     f"{namespace}.generatedInternalDirectCallRegisterSummary"
+                ),
+                "summary_checked": (
+                    f"{namespace}."
+                    "generatedInternalDirectCallRegisterSummaryChecked"
+                ),
+                "summary_certificate_exact": (
+                    f"{namespace}."
+                    "generatedInternalDirectCallRegisterSummaryCertificateExact"
                 ),
             })
         for module, source in sorted(node_sources.items()):
@@ -2286,10 +2748,7 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
                 source,
                 encoding="utf-8",
             )
-            module_resources[relative] = (
-                _internal_direct_call_summary_module_resource(source)
-            )
-        summary_node_module_count = len(node_sources)
+            module_resources[relative] = node_resources[module]
     write_json(out / "module-resources.json", module_resources)
     payload = {
         "format": "stage-a-mixed-original-direct-call-proposals-v1",
@@ -2304,6 +2763,16 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
                 writable_slot_authority_report
             ),
             "base_plan_sha256": sha256_file(base_plan),
+            "prior_direct_call_authority_report_sha256": (
+                None
+                if prior_authority_report is None
+                else sha256_file(prior_authority_report)
+            ),
+            "runtime_value_carry_hints_sha256": (
+                None
+                if runtime_value_carry_hints is None
+                else sha256_file(runtime_value_carry_hints)
+            ),
         },
         "authority": {
             "proposal_only": True,
@@ -2315,6 +2784,14 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
         "proposal_modules": module_rows,
     }
     write_json(out / "internal-direct-call-summary-proposals.json", payload)
+    write_json(
+        out / "stack-dynamic-control-input.json",
+        proposal_ir.stack_dynamic_control.to_json(),
+    )
+    write_json(
+        out / "original-cutpoint-graph-ir.json",
+        proposal_ir.original_cutpoint_graph.to_json(),
+    )
     _manifest(
         out,
         "mixed-original-direct-call-proposals",
@@ -2329,12 +2806,27 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
                 writable_slot_authority_report
             ),
             "base_plan": base_plan,
+            "proposal_ir": proposal_ir_path,
+            **(
+                {}
+                if runtime_value_carry_hints is None
+                else {
+                    "runtime_value_carry_hints": runtime_value_carry_hints
+                }
+            ),
         },
         status="proposal-source-ready",
         proof_authority=False,
+        public_outputs={
+            "stack_dynamic_control_input": "stack-dynamic-control-input.json",
+            "original_cutpoint_graph_ir": "original-cutpoint-graph-ir.json",
+        },
         modules=[row["module"].removeprefix("StageA.") for row in module_rows],
         counts={
             "requests": len(requests.requests),
+            "finite_origin_entry_requests": len(
+                requests.finite_origin_entry_requests
+            ),
             "complete_proposals": (
                 0 if proposal_plan is None else len(proposal_plan.proposals)
             ),
@@ -2342,210 +2834,91 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
                 0 if proposal_plan is None else len(proposal_plan.blockers)
             ),
             "request_frontiers": len(requests.frontiers),
-            "cacheable_summary_nodes": summary_node_module_count,
+            "cacheable_summary_nodes": len(summary_node_modules),
+            "cacheable_summary_artifacts": (
+                len(summary_node_modules) + len(summary_artifact_modules)
+            ),
+            "structural_family_artifacts": len(summary_artifact_modules),
+            "recovered_finite_origin_entry_authorities": len(
+                recovered_entry_authorities
+            ),
         },
     )
-
-
-def _load_semantic_authority_bindings(path_value: str | None) -> dict[int, Mapping[str, Any]]:
-    if path_value is None:
-        return {}
-    path = Path(path_value)
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, Mapping) or payload.get("format") != (
-        "stage-a-mixed-original-direct-call-semantic-inputs-v1"
-    ):
-        raise ValueError("direct-call semantic input has the wrong format")
-    rows = payload.get("bindings")
-    if not isinstance(rows, list):
-        raise ValueError("direct-call semantic input bindings must be a list")
-    result: dict[int, Mapping[str, Any]] = {}
-    for index, row in enumerate(rows):
-        if not isinstance(row, Mapping) or not isinstance(row.get("callsite_rva"), int):
-            raise ValueError(f"direct-call semantic binding {index} is malformed")
-        callsite = int(row["callsite_rva"])
-        if callsite in result:
-            raise ValueError("direct-call semantic input has duplicate callsites")
-        result[callsite] = row
-    return result
 
 
 def _mixed_original_direct_call_semantics(args: argparse.Namespace) -> None:
-    proposal_path = Path(args.proposal_report)
-    proposal_payload = json.loads(proposal_path.read_text(encoding="utf-8"))
-    if not isinstance(proposal_payload, Mapping) or proposal_payload.get("format") != (
-        "stage-a-mixed-original-direct-call-proposals-v1"
-    ):
-        raise ValueError("direct-call proposal report has the wrong format")
-    inputs = proposal_payload.get("inputs")
-    if not isinstance(inputs, Mapping):
-        raise ValueError("direct-call proposal report lacks hash-bound inputs")
-    original = Path(args.original)
-    state_machine = Path(args.state_machine)
-    if inputs.get("original_sha256") != sha256_file(original):
-        raise ValueError("direct-call proposal original PE hash changed")
-    if inputs.get("state_machine_sha256") != sha256_file(state_machine):
-        raise ValueError("direct-call proposal state-machine hash changed")
-    semantic_bindings = _load_semantic_authority_bindings(args.semantic_input)
-    module_rows = proposal_payload.get("proposal_modules")
-    request_plan = proposal_payload.get("request_plan")
-    chains = request_plan.get("chains") if isinstance(request_plan, Mapping) else None
-    if not isinstance(module_rows, list) or not isinstance(chains, list):
-        raise ValueError("direct-call proposal report lacks module or chain rows")
-    sites: dict[int, Mapping[str, Any]] = {}
-    registers_by_callsite: dict[int, set[str]] = {}
-    for chain in chains:
-        if not isinstance(chain, Mapping):
-            continue
-        register = chain.get("register")
-        calls = chain.get("required_internal_calls")
-        if not isinstance(register, str) or not isinstance(calls, list):
-            continue
-        for site in calls:
-            if not isinstance(site, Mapping) or not isinstance(site.get("callsite_rva"), int):
-                continue
-            callsite = int(site["callsite_rva"])
-            prior = sites.get(callsite)
-            if prior is not None and prior != site:
-                raise ValueError("direct-call proposal has ambiguous callsite metadata")
-            sites[callsite] = site
-            registers_by_callsite.setdefault(callsite, set()).add(register)
-    modules_by_callsite = {
-        int(row["callsite_rva"]): row
-        for row in module_rows
-        if isinstance(row, Mapping) and isinstance(row.get("callsite_rva"), int)
-    }
-    out = Path(args.out)
-    stage_a = out / "StageA"
-    stage_a.mkdir(parents=True, exist_ok=True)
-    contracts: list[dict[str, Any]] = []
-    generated_modules: list[str] = []
-    missing_fields = [
-        "IntegratedSummaryPremises.callEntry",
-        "IntegratedSummaryPremises.graphComplete",
-        "IntegratedSummaryPremises.registerGrounded",
-        "IntegratedSummaryPremises.loops",
-        "IntegratedSummaryPremises.loopsComplete",
-        "IntegratedSummaryPremises.invariant",
-        "CallEntryRegistersPreserved",
-    ]
-    for index, callsite in enumerate(sorted(sites)):
-        site = sites[callsite]
-        registers = tuple(
-            register for register in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp")
-            if register in registers_by_callsite.get(callsite, set())
-        )
-        proposal_module = modules_by_callsite.get(callsite)
-        contract_id_value = (
-            proposal_module.get("contract_id")
-            if isinstance(proposal_module, Mapping)
-            else None
-        )
-        if (
-            not isinstance(contract_id_value, int)
-            or isinstance(contract_id_value, bool)
-            or not 0 <= contract_id_value < 2**32
-        ):
-            contract_id_value = 0x80000000 + index
-        contract_id = contract_id_value
-        row: dict[str, Any] = {
-            "contract_id": contract_id,
-            "source_target_id": site.get("source_target_id"),
-            "continuation_target_id": site.get("continuation_target_id"),
-            "edge_index": site.get("edge_index"),
-            "source_rva": site.get("source_rva"),
-            "callsite_rva": callsite,
-            "continuation_rva": site.get("continuation_rva"),
-            "preserved_registers": list(registers),
-            "authorizing_lean_term": None,
-            "remaining_semantic_premises": list(missing_fields),
-        }
-        semantic = semantic_bindings.get(callsite)
-        if semantic is not None and proposal_module is not None:
-            term = semantic.get("authority_term")
-            if not isinstance(term, Mapping):
-                raise ValueError("semantic binding lacks authority_term")
-            external = QualifiedLeanSymbol(
-                module=str(term.get("module", "")),
-                namespace=str(term.get("namespace", "")),
-                symbol=str(term.get("symbol", "")),
-            )
-            external.validate("semantic authority term")
-            module = (
-                "GeneratedRelationalInternalDirectCallMixedOriginalIntegration"
-                f"{index:04d}"
-            )
-            namespace = f"StageA.Generated.{module}"
-            source = direct_call_mixed_original_integration_source(
-                DirectCallMixedOriginalAuthorityBinding(
-                    context=(
-                        "StageA.GeneratedRelational.InterpreterMixedOriginalBase."
-                        "generatedOriginalCarrierContext"
-                    ),
-                    authority_term=external.qualified,
-                    source_target_id=int(site["source_target_id"]),
-                    continuation_target_id=int(site["continuation_target_id"]),
-                    edge_index=int(site["edge_index"]),
-                    contract_id=contract_id,
-                    source_rva=int(site["source_rva"]),
-                    callsite_rva=callsite,
-                    continuation_rva=int(site["continuation_rva"]),
-                    registers=registers,
-                    imports=(
-                        f"StageA.{INTERPRETER_MIXED_ORIGINAL_BASE_MODULE}",
-                        str(proposal_module["module"]),
-                        external.module,
-                    ),
-                    namespace=namespace,
-                )
-            )
-            (stage_a / f"{module}.lean").write_text(source, encoding="utf-8")
-            generated_modules.append(module)
-            row["authorizing_lean_term"] = {
-                "module": f"StageA.{module}",
-                "namespace": namespace,
-                "symbol": "generatedCheckedDirectCallRegisterControlContract",
-            }
-            row["remaining_semantic_premises"] = []
-        contracts.append(row)
-    authority_payload = {
-        "format": "stage-a-mixed-original-direct-call-authority-bindings-v1",
-        "inputs": {
-            "original_sha256": sha256_file(original),
-            "state_machine_sha256": sha256_file(state_machine),
-            "proposal_report_sha256": sha256_file(proposal_path),
-        },
-        "contracts": contracts,
-        "report_authority": False,
-        "authority_source": "named Lean terms only",
-    }
-    write_json(out / "direct-call-authority-bindings.json", authority_payload)
-    _manifest(
-        out,
-        "mixed-original-direct-call-semantics",
-        {
-            "original_pe": original,
-            "state_machine": state_machine,
-            "proposal_report": proposal_path,
-        },
-        status=(
-            "semantic-terms-ready"
-            if contracts and all(not row["remaining_semantic_premises"] for row in contracts)
-            else "semantic-premises-pending"
-        ),
-        proof_authority=False,
-        integration_format=INTERNAL_DIRECT_CALL_MIXED_ORIGINAL_INTEGRATION_FORMAT,
-        modules=generated_modules,
-        counts={
-            "proposals": len(contracts),
-            "authorized_terms": sum(
-                row["authorizing_lean_term"] is not None for row in contracts
-            ),
-            "remaining_semantic_frontiers": sum(
-                bool(row["remaining_semantic_premises"]) for row in contracts
-            ),
-        },
+    from spaghetti_extractor.relational.lean.internal_direct_call_semantics_bundle import (
+        write_mixed_original_direct_call_semantics,
     )
+
+    write_mixed_original_direct_call_semantics(
+        original=Path(args.original),
+        state_machine=Path(args.state_machine),
+        proposal_report=Path(args.proposal_report),
+        semantic_input=(
+            None
+            if args.semantic_input is None
+            else Path(args.semantic_input)
+        ),
+        out=Path(args.out),
+    )
+
+
+def _checked_stack_dynamic_authority_report(
+    path: Path,
+    *,
+    original_sha256: str,
+    state_machine_sha256: str,
+) -> Mapping[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError("stack/dynamic authority report is not an object")
+    inputs = payload.get("inputs")
+    role = payload.get("artifact_role")
+    counts = payload.get("counts")
+    sites = payload.get("sites")
+    if (
+        payload.get("format")
+        != "stage-a-original-stack-dynamic-control-closure-v1"
+        or payload.get("status") != "incomplete"
+        or not isinstance(inputs, Mapping)
+        or inputs.get("original_pe_sha256") != original_sha256
+        or inputs.get("state_machine_sha256") != state_machine_sha256
+        or not isinstance(role, Mapping)
+        or role.get("acceptance_authority") is not False
+        or role.get("report_status_closes_obligations") is not False
+        or role.get("runtime_premises_embedded") is not False
+        or role.get("static_authority_generated") is not True
+        or not isinstance(counts, Mapping)
+        or not isinstance(sites, list)
+        or counts.get("sites") != len(sites)
+        or counts.get("static_authorities") != len(sites)
+        or counts.get("runtime_premises_required") != len(sites)
+        or not sites
+    ):
+        raise ValueError("stack/dynamic authority report is malformed")
+    exact_sites: set[tuple[int, int]] = set()
+    for index, site in enumerate(sites):
+        if (
+            not isinstance(site, Mapping)
+            or site.get("static_authority") != "lean_checked"
+            or site.get("premise_status") != "required"
+            or not isinstance(site.get("stable_id"), str)
+            or not isinstance(site.get("source_rva"), int)
+            or not isinstance(site.get("instruction_rva"), int)
+            or not isinstance(site.get("source_target_id"), int)
+            or not isinstance(site.get("premise_type"), str)
+        ):
+            raise ValueError(
+                f"stack/dynamic authority site {index} is malformed"
+            )
+        key = (site["source_rva"], site["instruction_rva"])
+        if key in exact_sites:
+            raise ValueError(
+                "stack/dynamic authority report contains a duplicate exact site"
+            )
+        exact_sites.add(key)
+    return payload
 
 
 def _mixed_original_final(args: argparse.Namespace) -> None:
@@ -2559,6 +2932,13 @@ def _mixed_original_final(args: argparse.Namespace) -> None:
         original_sha256=sha256_file(original),
         state_machine_sha256=sha256_file(state_machine),
     )
+    stack_dynamic_report_path = Path(args.stack_dynamic_authority_report)
+    stack_dynamic_report = _checked_stack_dynamic_authority_report(
+        stack_dynamic_report_path,
+        original_sha256=sha256_file(original),
+        state_machine_sha256=sha256_file(state_machine),
+    )
+    stack_dynamic_sites = stack_dynamic_report["sites"]
     plan = _mixed_original_plan_with_contracts(args, direct_contracts)
     if (
         base_payload.get("entry_rva") != plan.spec.entry_rva
@@ -2586,6 +2966,7 @@ def _mixed_original_final(args: argparse.Namespace) -> None:
                 args.writable_slot_authority_report
             ),
             "direct_call_authority_report": Path(args.direct_call_authority_report),
+            "stack_dynamic_authority_report": stack_dynamic_report_path,
             "base_plan": base_plan,
         },
         status="source-ready" if plan.complete else "incomplete",
@@ -2599,8 +2980,22 @@ def _mixed_original_final(args: argparse.Namespace) -> None:
             "addresses": len(plan.regions) + len(plan.recovered_aliases),
             "reachable_targets": len(plan.reachable_target_ids),
             "authorized_direct_call_contracts": len(direct_contracts),
+            "checked_stack_dynamic_static_authorities": len(
+                stack_dynamic_sites
+            ),
+            "stack_dynamic_runtime_premises": len(stack_dynamic_sites),
             "blockers": len(plan.blockers),
         },
+        stack_dynamic_runtime_frontiers=[
+            {
+                "stable_id": site["stable_id"],
+                "source_rva": site["source_rva"],
+                "instruction_rva": site["instruction_rva"],
+                "source_target_id": site["source_target_id"],
+                "premise_type": site["premise_type"],
+            }
+            for site in stack_dynamic_sites
+        ],
         remaining_frontiers=[blocker.to_json() for blocker in plan.blockers],
     )
 
@@ -3589,6 +3984,118 @@ def _mixed_candidate_authority(args: argparse.Namespace) -> None:
     )
 
 
+_DIRECT_CALL_NODE_FAMILY = re.compile(
+    r"^GeneratedRelationalInternalDirectCallSummaryNode([0-9a-f]{64}).*$"
+)
+_DIRECT_CALL_BUILD_PACK_MAX_MODULES = 4
+_DIRECT_CALL_BUILD_PACK_SPLIT_THRESHOLD = 8
+
+
+def _direct_call_family_levels(
+    family_id: str,
+    modules: list[str],
+    imports: Mapping[str, set[str]],
+) -> dict[str, int]:
+    members = set(modules)
+    levels: dict[str, int] = {}
+    active: set[str] = set()
+
+    def visit(module: str) -> int:
+        if module in levels:
+            return levels[module]
+        if module in active:
+            raise ValueError(
+                f"Lean build pack direct-call-{family_id} contains an "
+                f"import cycle at {module}"
+            )
+        active.add(module)
+        level = 1 + max(
+            (visit(dependency) for dependency in imports[module] & members),
+            default=-1,
+        )
+        active.remove(module)
+        levels[module] = level
+        return level
+
+    for module in sorted(modules):
+        visit(module)
+    return levels
+
+
+def _proof_build_pack_ids(
+    modules: list[str],
+    imports: Mapping[str, set[str]],
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    direct_call_families: dict[str, list[str]] = {}
+    for module in modules:
+        if (family := _DIRECT_CALL_NODE_FAMILY.match(module)) is not None:
+            direct_call_families.setdefault(family.group(1), []).append(module)
+            continue
+        result[module] = module
+    for family_id, family_modules in sorted(direct_call_families.items()):
+        base_pack_id = f"direct-call-{family_id}"
+        if len(family_modules) <= _DIRECT_CALL_BUILD_PACK_SPLIT_THRESHOLD:
+            for module in family_modules:
+                result[module] = base_pack_id
+            continue
+        levels = _direct_call_family_levels(
+            family_id,
+            family_modules,
+            imports,
+        )
+        modules_by_level: dict[int, list[str]] = {}
+        for module, level in levels.items():
+            modules_by_level.setdefault(level, []).append(module)
+        for level, level_modules in sorted(modules_by_level.items()):
+            for offset in range(
+                0,
+                len(level_modules),
+                _DIRECT_CALL_BUILD_PACK_MAX_MODULES,
+            ):
+                pack_id = (
+                    f"{base_pack_id}-layer-{level:02d}-part-"
+                    f"{offset // _DIRECT_CALL_BUILD_PACK_MAX_MODULES:04d}"
+                )
+                for module in sorted(level_modules)[
+                    offset:offset + _DIRECT_CALL_BUILD_PACK_MAX_MODULES
+                ]:
+                    result[module] = pack_id
+    return result
+
+
+def _topological_build_pack(
+    pack_id: str,
+    modules: list[str],
+    imports: Mapping[str, set[str]],
+) -> list[str]:
+    """Order one stable pack so its internal imports compile first."""
+
+    members = set(modules)
+    ordered: list[str] = []
+    complete: set[str] = set()
+    active: set[str] = set()
+
+    def visit(module: str) -> None:
+        if module in complete:
+            return
+        if module in active:
+            raise ValueError(
+                f"Lean build pack {pack_id} contains an import cycle at "
+                f"{module}"
+            )
+        active.add(module)
+        for dependency in sorted(imports[module] & members):
+            visit(dependency)
+        active.remove(module)
+        complete.add(module)
+        ordered.append(module)
+
+    for module in sorted(modules):
+        visit(module)
+    return ordered
+
+
 def _aggregate(args: argparse.Namespace) -> None:
     out = Path(args.out)
     stage_a = out / "StageA"
@@ -3635,6 +4142,35 @@ def _aggregate(args: argparse.Namespace) -> None:
     missing_targets = sorted(targets - module_set)
     if missing_targets:
         raise ValueError(f"generated proof targets are absent: {missing_targets}")
+    if args.target_closure_only:
+        if not targets:
+            raise ValueError(
+                "target-closure-only aggregation requires at least one target"
+            )
+        closure: set[str] = set()
+        pending = list(targets)
+        while pending:
+            module = pending.pop()
+            if module in closure:
+                continue
+            closure.add(module)
+            source = stage_a / f"{module}.lean"
+            imports = re.findall(
+                r"^import StageA\.([A-Za-z0-9_]+)$",
+                source.read_text(encoding="utf-8"),
+                re.MULTILINE,
+            )
+            missing_imports = sorted(set(imports) - module_set)
+            if missing_imports:
+                raise ValueError(
+                    f"generated proof target closure for {module} has "
+                    f"missing imports {missing_imports}"
+                )
+            pending.extend(imports)
+        for module in module_set - closure:
+            (stage_a / f"{module}.lean").unlink()
+        modules = sorted(closure)
+        module_set = closure
     resources = {
         module: declared_resources.get(module, (
             {"resource_class": "medium", "estimated_memory_mb": 4096}
@@ -3665,9 +4201,65 @@ def _aggregate(args: argparse.Namespace) -> None:
         ))
         for module in modules
     }
+    module_imports = {
+        module: set(re.findall(
+            r"^import StageA\.([A-Za-z0-9_]+)$",
+            (stage_a / f"{module}.lean").read_text(encoding="utf-8"),
+            re.MULTILINE,
+        ))
+        for module in modules
+    }
+    module_build_packs = _proof_build_pack_ids(modules, module_imports)
+    build_packs: dict[str, list[str]] = {}
+    for module, pack_id in module_build_packs.items():
+        build_packs.setdefault(pack_id, []).append(module)
+    build_packs = {
+        pack_id: _topological_build_pack(
+            pack_id, pack_modules, module_imports
+        )
+        for pack_id, pack_modules in build_packs.items()
+    }
+    # Source identity must have the same granularity as compilation identity.
+    # Coarser hash buckets make an unrelated source edit change a build pack's
+    # input store path and recursively invalidate its graph descendants.
+    source_packs = {
+        pack_id: sorted(pack_modules)
+        for pack_id, pack_modules in build_packs.items()
+    }
+    module_source_packs = dict(module_build_packs)
+    source_pack_root = out / "source-packs"
+    for pack_id, pack_modules in source_packs.items():
+        pack = source_pack_root / pack_id
+        pack.mkdir(parents=True, exist_ok=True)
+        for module in pack_modules:
+            shutil.copyfile(
+                stage_a / f"{module}.lean",
+                pack / f"{module}.lean",
+            )
     write_json(out / "standalone-modules.json", modules)
     write_json(out / "proof-targets.json", sorted(targets))
     write_json(out / "module-resources.json", resources)
+    source_pack_manifest = {
+        "format": "stage-a-lean-source-packs-v1",
+        "modules": module_source_packs,
+        "packs": {
+            pack_id: sorted(pack_modules)
+            for pack_id, pack_modules in sorted(source_packs.items())
+        },
+    }
+    build_pack_manifest = {
+        "format": "stage-a-lean-build-packs-v1",
+        "modules": module_build_packs,
+        "packs": {
+            pack_id: pack_modules
+            for pack_id, pack_modules in sorted(build_packs.items())
+        },
+    }
+    write_json(out / "module-source-packs.json", source_pack_manifest)
+    write_json(out / "module-build-packs.json", build_pack_manifest)
+    write_json(stage_a / "module-source-packs.json", source_pack_manifest)
+    write_json(stage_a / "module-build-packs.json", build_pack_manifest)
+    (stage_a / "source-packs").symlink_to("../source-packs", target_is_directory=True)
     _manifest(
         out,
         "proof-source-aggregate",
@@ -3675,7 +4267,17 @@ def _aggregate(args: argparse.Namespace) -> None:
         status="source-ready",
         modules=modules,
         targets=sorted(targets),
-        counts={"modules": len(modules), "targets": len(targets)},
+        target_closure_only=args.target_closure_only,
+        public_outputs={
+            "module_build_packs": "module-build-packs.json",
+            "module_source_packs": "module-source-packs.json",
+        },
+        counts={
+            "build_packs": len(build_packs),
+            "modules": len(modules),
+            "source_packs": len(source_packs),
+            "targets": len(targets),
+        },
     )
 
 
@@ -4315,6 +4917,9 @@ def _parser() -> argparse.ArgumentParser:
             )
         if name == "mixed-original-final":
             command.add_argument("--direct-call-authority-report", required=True)
+            command.add_argument(
+                "--stack-dynamic-authority-report", required=True
+            )
         if name in {
             "mixed-original-direct-call-proposals",
             "mixed-original-final",
@@ -4327,6 +4932,11 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument(
                 "--register-indirect-authority-report", required=True
             )
+            command.add_argument("--proposal-ir", required=True)
+            command.add_argument(
+                "--prior-direct-call-authority-report"
+            )
+            command.add_argument("--runtime-value-carry-hints")
         command.set_defaults(run=runner)
 
     command = sub.add_parser("mixed-original-direct-call-semantics")
@@ -4462,11 +5072,11 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("--candidate", required=True)
     command.add_argument("--step-operation-plan", required=True)
     command.add_argument("--run-operation-plan", required=True)
-    command.add_argument("--step-epilogue-rva", type=int, required=True)
-    command.add_argument("--step-return-rva", type=int, required=True)
+    command.add_argument("--step-epilogue-rva", type=int)
+    command.add_argument("--step-return-rva", type=int)
     command.add_argument("--step-epilogue-fuel", type=int, required=True)
-    command.add_argument("--run-epilogue-rva", type=int, required=True)
-    command.add_argument("--run-return-rva", type=int, required=True)
+    command.add_argument("--run-epilogue-rva", type=int)
+    command.add_argument("--run-return-rva", type=int)
     command.add_argument("--run-epilogue-fuel", type=int, required=True)
     command.add_argument("--out", required=True)
     command.set_defaults(run=_kernel_cdecl_epilogue)
@@ -4520,6 +5130,7 @@ def _parser() -> argparse.ArgumentParser:
     command = sub.add_parser("aggregate")
     command.add_argument("--source", action="append", required=True)
     command.add_argument("--target", action="append", default=[])
+    command.add_argument("--target-closure-only", action="store_true")
     command.add_argument("--out", required=True)
     command.set_defaults(run=_aggregate)
 

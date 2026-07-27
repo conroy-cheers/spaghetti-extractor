@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from ..relational.build import stage_a_build_relational
 from ..relational.interfaces import stage_a_interface_manifest
-from ..relational.pipeline import stage_a_prepare_relational
+from ..relational.nix_pipeline import stage_a_prepare_relational_nix
 from ..relational.pipeline import stage_a_preflight_relational
 from ..relational.schema import (
     RELATIONAL_ACCEPTANCE_THEOREMS,
@@ -139,7 +139,7 @@ def run_roundtrip_corpus(
     case_ids: tuple[str, ...] | list[str] = (),
     stop_after_static_preflight: bool = False,
     genericity_baseline: Path | None = None,
-    _prepare: PrepareFunction = stage_a_prepare_relational,
+    _prepare: PrepareFunction = stage_a_prepare_relational_nix,
     _build: BuildFunction = stage_a_build_relational,
     _preflight: PreflightFunction = stage_a_preflight_relational,
     _discover: DiscoveryFunction = execute_case_discovery,
@@ -534,11 +534,16 @@ def _run_case(
     else:
         if prepared.exists():
             shutil.rmtree(prepared)
-        prepare_result = prepare(
+        prepare(
             original=proof_inputs.original,
             candidate=proof_inputs.candidate,
             relation_contract=proof_inputs.relation_contract,
             out=prepared,
+            flake=flake,
+            builders_file=builders_file,
+        )
+        prepare_result = json.loads(
+            prepared_manifest.read_text(encoding="utf-8")
         )
         write_json(
             prepared / "roundtrip-input-binding.json",
@@ -589,7 +594,6 @@ def _run_case(
         build_result = build(
             prepared=prepared,
             out=proof_out,
-            executor="nix",
             flake=flake,
             builders_file=builders_file,
         )

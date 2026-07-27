@@ -99,6 +99,32 @@ class LeanExactRegionPair:
         )
 
 
+@dataclass(frozen=True)
+class LeanCallerFrameWord:
+    original_offset: int
+    candidate_offset: int
+
+    def lean(self, context: str = "caller frame word") -> str:
+        original = _nat(
+            self.original_offset,
+            f"{context}.original_offset",
+            u32=True,
+        )
+        candidate = _nat(
+            self.candidate_offset,
+            f"{context}.candidate_offset",
+            u32=True,
+        )
+        if original > 65532 or candidate > 65532:
+            raise InternalDirectCallRegisterSummaryGenerationError(
+                f"{context} exceeds the checked frame-word offset bound"
+            )
+        return (
+            "{ originalOffset := "
+            f"{original}, candidateOffset := {candidate} }}"
+        )
+
+
 EdgeKind = Literal[
     "direct",
     "direct_tail",
@@ -629,6 +655,38 @@ class LeanStackEntryOffsetWitness:
 
 
 @dataclass(frozen=True)
+class LeanGraphClosureNodeWitness:
+    forward_rank: int
+    forward_parent_region_index: int | None
+    forward_parent_edge_index: int | None
+    reverse_rank: int
+    reverse_next_region_index: int | None
+    reverse_next_edge_index: int | None
+
+    @staticmethod
+    def _option_nat(value: int | None, context: str) -> str:
+        if value is None:
+            return "none"
+        return f"(some {_nat(value, context)})"
+
+    def lean(self, context: str = "graph closure node witness") -> str:
+        return " ".join((
+            "{ forwardRank := "
+            f"{_nat(self.forward_rank, f'{context}.forward_rank')},",
+            "forwardParentRegionIndex := "
+            f"{self._option_nat(self.forward_parent_region_index, f'{context}.forward_parent_region_index')},",
+            "forwardParentEdgeIndex := "
+            f"{self._option_nat(self.forward_parent_edge_index, f'{context}.forward_parent_edge_index')},",
+            "reverseRank := "
+            f"{_nat(self.reverse_rank, f'{context}.reverse_rank')},",
+            "reverseNextRegionIndex := "
+            f"{self._option_nat(self.reverse_next_region_index, f'{context}.reverse_next_region_index')},",
+            "reverseNextEdgeIndex := "
+            f"{self._option_nat(self.reverse_next_edge_index, f'{context}.reverse_next_edge_index')} }}",
+        ))
+
+
+@dataclass(frozen=True)
 class LeanInternalDirectCallRegisterCertificate:
     summary_id: int
     dependency_depth: int
@@ -640,6 +698,7 @@ class LeanInternalDirectCallRegisterCertificate:
     edges: tuple[LeanCalleeEdge, ...]
     returns: tuple[LeanReturnInventoryEntry, ...]
     requested_registers: tuple[str, ...]
+    caller_frame_words: tuple[LeanCallerFrameWord, ...] = ()
     entry_kind: Literal["direct", "finite_origin_call"] = "direct"
     entry_dependency_id: int | None = None
     entry_target_id: int | None = None
@@ -665,11 +724,140 @@ class LeanInternalDirectCallRegisterCertificate:
     stack_entry_offsets: tuple[LeanStackEntryOffsetWitness, ...] = ()
     dynamic_stack_entry_region_ids: tuple[int, ...] = ()
 
-    def lean(self, context: str = "certificate") -> str:
-        regions = _lean_list([
-            region.lean(f"{context}.callee_regions[{index}]")
-            for index, region in enumerate(self.callee_regions)
-        ])
+    def graph_closure_witness(
+        self,
+        context: str = "certificate",
+    ) -> tuple[LeanGraphClosureNodeWitness, ...]:
+        if not self.callee_regions:
+            raise InternalDirectCallRegisterSummaryGenerationError(
+                f"{context}.callee_regions must not be empty"
+            )
+
+        region_index_by_id: dict[int, int] = {}
+        for index, region in enumerate(self.callee_regions):
+            prior = region_index_by_id.setdefault(region.region_id, index)
+            if prior != index:
+                raise InternalDirectCallRegisterSummaryGenerationError(
+                    f"{context}.callee_regions contains duplicate region ID "
+                    f"{region.region_id}"
+                )
+
+        entry_index = region_index_by_id.get(self.callee_entry.region_id)
+
+        outgoing: list[list[tuple[int, int]]] = [
+            [] for _ in self.callee_regions
+        ]
+        incoming: list[list[tuple[int, int]]] = [
+            [] for _ in self.callee_regions
+        ]
+        for edge_index, edge in enumerate(self.edges):
+            source_index = region_index_by_id.get(edge.source_region_id)
+            target_index = region_index_by_id.get(edge.target_region_id)
+            if source_index is None or target_index is None:
+                # Preserve the malformed edge in the serialized certificate.
+                # graphShapeChecked will reject it in Lean; it cannot
+                # contribute to the proposed spanning witness.
+                continue
+            outgoing[source_index].append((target_index, edge_index))
+            incoming[target_index].append((source_index, edge_index))
+
+        forward_rank: list[int | None] = [None] * len(self.callee_regions)
+        forward_parent_region: list[int | None] = [
+            None
+        ] * len(self.callee_regions)
+        forward_parent_edge: list[int | None] = [
+            None
+        ] * len(self.callee_regions)
+        forward_queue: list[int] = []
+        if entry_index is not None:
+            forward_rank[entry_index] = 0
+            forward_queue.append(entry_index)
+        for source_index in forward_queue:
+            source_rank = forward_rank[source_index]
+            assert source_rank is not None
+            for target_index, edge_index in outgoing[source_index]:
+                if forward_rank[target_index] is not None:
+                    continue
+                forward_rank[target_index] = source_rank + 1
+                forward_parent_region[target_index] = source_index
+                forward_parent_edge[target_index] = edge_index
+                forward_queue.append(target_index)
+
+        completion_ids = {
+            entry.return_region_id for entry in self.returns
+        }
+        completion_ids.update(
+            dependency.source_region_id
+            for dependency in self.machine_import_terminal_dependencies
+        )
+        completion_indices = [
+            region_index_by_id[region_id]
+            for region_id in sorted(completion_ids)
+            if region_id in region_index_by_id
+        ]
+
+        reverse_rank: list[int | None] = [None] * len(self.callee_regions)
+        reverse_next_region: list[int | None] = [
+            None
+        ] * len(self.callee_regions)
+        reverse_next_edge: list[int | None] = [
+            None
+        ] * len(self.callee_regions)
+        reverse_queue: list[int] = []
+        for completion_index in completion_indices:
+            if reverse_rank[completion_index] is None:
+                reverse_rank[completion_index] = 0
+                reverse_queue.append(completion_index)
+        for target_index in reverse_queue:
+            target_rank = reverse_rank[target_index]
+            assert target_rank is not None
+            for source_index, edge_index in incoming[target_index]:
+                if reverse_rank[source_index] is not None:
+                    continue
+                reverse_rank[source_index] = target_rank + 1
+                reverse_next_region[source_index] = target_index
+                reverse_next_edge[source_index] = edge_index
+                reverse_queue.append(source_index)
+
+        witnesses: list[LeanGraphClosureNodeWitness] = []
+        for index in range(len(self.callee_regions)):
+            node_forward_rank = forward_rank[index]
+            node_reverse_rank = reverse_rank[index]
+            witnesses.append(LeanGraphClosureNodeWitness(
+                # Unwitnessed nodes deliberately serialize as rank-zero roots
+                # without a parent/successor.  The Lean checker rejects those
+                # unless they are the actual entry/completion.
+                forward_rank=(
+                    node_forward_rank
+                    if node_forward_rank is not None
+                    else 0
+                ),
+                forward_parent_region_index=forward_parent_region[index],
+                forward_parent_edge_index=forward_parent_edge[index],
+                reverse_rank=(
+                    node_reverse_rank
+                    if node_reverse_rank is not None
+                    else 0
+                ),
+                reverse_next_region_index=reverse_next_region[index],
+                reverse_next_edge_index=reverse_next_edge[index],
+            ))
+        return tuple(witnesses)
+
+    def lean(
+        self,
+        context: str = "certificate",
+        *,
+        callee_regions_term: str | None = None,
+    ) -> str:
+        regions = (
+            callee_regions_term
+            if callee_regions_term is not None
+            else _lean_list([
+                region.lean(f"{context}.callee_regions[{index}]")
+                for index, region in enumerate(self.callee_regions)
+            ])
+        )
         edges = _lean_list([
             edge.lean(f"{context}.edges[{index}]")
             for index, edge in enumerate(self.edges)
@@ -681,6 +869,10 @@ class LeanInternalDirectCallRegisterCertificate:
         registers = _lean_list([
             f".{_register(register, f'{context}.requested_registers[{index}]')}"
             for index, register in enumerate(self.requested_registers)
+        ])
+        caller_frame_words = _lean_list([
+            word.lean(f"{context}.caller_frame_words[{index}]")
+            for index, word in enumerate(self.caller_frame_words)
         ])
         nested = _lean_list([
             dependency.lean(f"{context}.nested_dependencies[{index}]")
@@ -747,6 +939,12 @@ class LeanInternalDirectCallRegisterCertificate:
                 self.dynamic_stack_entry_region_ids
             )
         ])
+        graph_closure_witness = _lean_list([
+            witness.lean(f"{context}.graph_closure_witness[{index}]")
+            for index, witness in enumerate(
+                self.graph_closure_witness(context)
+            )
+        ])
         if self.entry_kind == "direct":
             if (
                 self.entry_dependency_id is not None
@@ -786,6 +984,7 @@ class LeanInternalDirectCallRegisterCertificate:
             f"edges := {edges},",
             f"returns := {returns},",
             f"requestedRegisters := {registers},",
+            f"callerFrameWords := {caller_frame_words},",
             f"entryKind := {entry_kind},",
             "originalFrameBytes := "
             f"{_nat(self.original_frame_bytes, f'{context}.original_frame_bytes', u32=True)},",
@@ -801,7 +1000,9 @@ class LeanInternalDirectCallRegisterCertificate:
             f"stackFrameAnchors := {stack_anchors},",
             f"stackWitnesses := {stack},",
             f"stackEntryOffsets := {stack_offsets},",
-            f"dynamicStackEntryRegionIds := {dynamic_stack_ids} }}",
+            f"dynamicStackEntryRegionIds := {dynamic_stack_ids},",
+            "graphClosureWitness := "
+            f"{{ nodes := {graph_closure_witness} }} }}",
         ))
 
 
@@ -911,6 +1112,8 @@ def _register_preservation_declarations(
     certificate_name: str,
     certificate: LeanInternalDirectCallRegisterCertificate,
     bindings: "InternalDirectCallRegisterSummaryLeanBindings",
+    *,
+    prechecked_registers: frozenset[str] = frozenset(),
 ) -> tuple[str, ...]:
     declarations: list[str] = []
     stack_witness_by_register = {
@@ -918,6 +1121,8 @@ def _register_preservation_declarations(
         for index, witness in enumerate(certificate.stack_witnesses)
     }
     for register in certificate.requested_registers:
+        if register in prechecked_registers:
+            continue
         checked_name = (
             f"{certificate_name}Register{register.upper()}PreservedChecked"
         )
@@ -1132,6 +1337,8 @@ class InternalDirectCallRegisterSummaryLeanModule:
     module: str
     namespace: str
     source: str
+    resource_class: str = "light"
+    estimated_memory_mb: int = 768
 
 
 @dataclass(frozen=True)
@@ -1139,6 +1346,13 @@ class InternalDirectCallRegisterSummaryLeanModuleDag:
     root_source: str
     root_node_module: str
     node_modules: tuple[InternalDirectCallRegisterSummaryLeanModule, ...]
+    artifact_modules: tuple[InternalDirectCallRegisterSummaryLeanModule, ...] = ()
+
+    @property
+    def all_modules(
+        self,
+    ) -> tuple[InternalDirectCallRegisterSummaryLeanModule, ...]:
+        return (*self.artifact_modules, *self.node_modules)
 
 
 def _dag_node_module_name(
@@ -1165,6 +1379,20 @@ def _dag_node_namespace(module: str) -> str:
     return f"StageA.Generated.{module.removeprefix('StageA.')}"
 
 
+def _dag_node_artifact_module_name(module: str, artifact: str) -> str:
+    return f"{module}{artifact}"
+
+
+def _control_inventory_resource(region_count: int) -> tuple[str, int]:
+    """Classify PE-bound inventory checks by their full certificate context."""
+
+    if region_count >= 256:
+        return ("high-memory", 24576)
+    if region_count >= 96:
+        return ("large-memory", 16384)
+    return ("medium", 4096)
+
+
 def internal_direct_call_register_summary_module_dag(
     summary: LeanInternalDirectCallRegisterSummaryTree,
     bindings: InternalDirectCallRegisterSummaryLeanBindings,
@@ -1173,6 +1401,7 @@ def internal_direct_call_register_summary_module_dag(
 ) -> InternalDirectCallRegisterSummaryLeanModuleDag:
     """Emit one independently checkable Lean module per unique summary node."""
 
+    control_pack_size = 32
     bindings.checked()
     _qualified(root_namespace, "root_namespace")
     shared_nodes, root_digest = _shared_summary_nodes(summary)
@@ -1181,16 +1410,175 @@ def internal_direct_call_register_summary_module_dag(
         for node in shared_nodes
     }
     generated_modules: list[InternalDirectCallRegisterSummaryLeanModule] = []
+    generated_artifact_modules: list[
+        InternalDirectCallRegisterSummaryLeanModule
+    ] = []
     for node in shared_nodes:
         module = modules_by_digest[node.digest]
         namespace = _dag_node_namespace(module)
+        data_module = _dag_node_artifact_module_name(module, "Data")
+        preservation_module = _dag_node_artifact_module_name(
+            module, "Preservation"
+        )
+        family_modules = {
+            "shape": _dag_node_artifact_module_name(
+                module, "StructureShape"
+            ),
+            "decode": _dag_node_artifact_module_name(
+                module, "StructureDecode"
+            ),
+            "control": _dag_node_artifact_module_name(
+                module, "StructureControl"
+            ),
+            "dependencies": _dag_node_artifact_module_name(
+                module, "StructureDependencies"
+            ),
+            "stack": _dag_node_artifact_module_name(
+                module, "StructureStack"
+            ),
+        }
+        region_count = len(node.tree.certificate.callee_regions)
+        edge_count = len(node.tree.certificate.edges)
+        dependency_count = sum((
+            len(node.tree.certificate.nested_dependencies),
+            len(node.tree.certificate.machine_import_dependencies),
+            len(node.tree.certificate.machine_import_tail_dependencies),
+            len(node.tree.certificate.machine_import_terminal_dependencies),
+            len(node.tree.certificate.finite_indirect_dependencies),
+            len(node.tree.certificate.finite_origin_call_dependencies),
+            len(node.tree.certificate.finite_origin_tail_dependencies),
+        ))
+        split_control = region_count >= 32 or edge_count >= 64
+        control_inventory_resource = _control_inventory_resource(region_count)
+        region_parts = tuple(
+            node.tree.certificate.callee_regions[start:start + control_pack_size]
+            for start in range(0, region_count, control_pack_size)
+        ) if split_control else ()
+        region_part_names = tuple(
+            f"generatedSummaryRegionPart{index:04d}"
+            for index in range(len(region_parts))
+        )
+        graph_index_parts = tuple(
+            tuple(range(start, min(start + control_pack_size, region_count)))
+            for start in range(0, region_count, control_pack_size)
+        ) if split_control else ()
+        graph_index_part_names = tuple(
+            f"generatedSummaryGraphClosureIndexPart{index:04d}"
+            for index in range(len(graph_index_parts))
+        )
+        region_part_declarations = "\n\n".join(
+            f"def {part_name} : List ExactRegionPair :=\n"
+            f"  {_lean_list([
+                region.lean(
+                    'generatedSummaryCertificate.callee_regions'
+                    f'[{part_index * control_pack_size + region_index}]'
+                )
+                for region_index, region in enumerate(part)
+            ])}"
+            for part_index, (part_name, part) in enumerate(
+                zip(region_part_names, region_parts, strict=True)
+            )
+        )
+        if region_part_declarations:
+            region_part_declarations += "\n\n"
+        graph_index_part_declarations = "\n\n".join(
+            f"def {part_name} : List Nat :=\n"
+            f"  {_lean_list([str(index) for index in part])}"
+            for part_name, part in zip(
+                graph_index_part_names, graph_index_parts, strict=True
+            )
+        )
+        if graph_index_part_declarations:
+            graph_index_part_declarations += "\n\n"
+        region_parts_declaration = ""
+        graph_index_parts_declaration = ""
+        certificate_source = node.certificate_source
+        if split_control:
+            region_parts_declaration = (
+                "def generatedSummaryRegionParts : "
+                "List (List ExactRegionPair) :=\n"
+                f"  {_lean_list(list(region_part_names))}\n\n"
+            )
+            graph_index_parts_declaration = (
+                "def generatedSummaryGraphClosureIndexParts : "
+                "List (List Nat) :=\n"
+                f"  {_lean_list(list(graph_index_part_names))}\n\n"
+            )
+            certificate_source = node.tree.certificate.lean(
+                callee_regions_term="generatedSummaryRegionParts.flatten",
+            )
         child_modules = tuple(
             modules_by_digest[digest] for digest in node.child_digests
+        )
+        child_data_modules = tuple(
+            _dag_node_artifact_module_name(child_module, "Data")
+            for child_module in child_modules
         )
         child_namespaces = tuple(
             _dag_node_namespace(module_name) for module_name in child_modules
         )
-        imports = "\n".join(
+        child_tree_terms = tuple(
+            f"{child_namespace}.generatedSummaryNode"
+            for child_namespace in child_namespaces
+        )
+        child_certificate_terms = tuple(
+            f"{child_namespace}.generatedSummaryCertificate"
+            for child_namespace in child_namespaces
+        )
+        split_children = len(child_modules) >= control_pack_size
+        child_tree_parts = tuple(
+            child_tree_terms[start:start + control_pack_size]
+            for start in range(
+                0, len(child_tree_terms), control_pack_size
+            )
+        ) if split_children else ()
+        child_certificate_parts = tuple(
+            child_certificate_terms[start:start + control_pack_size]
+            for start in range(
+                0, len(child_certificate_terms), control_pack_size
+            )
+        ) if split_children else ()
+        child_tree_part_names = tuple(
+            f"generatedSummaryChildrenPart{index:04d}"
+            for index in range(len(child_tree_parts))
+        )
+        child_certificate_part_names = tuple(
+            f"generatedSummaryChildCertificatesPart{index:04d}"
+            for index in range(len(child_certificate_parts))
+        )
+        child_part_declarations = ""
+        child_parts_declaration = ""
+        if split_children:
+            child_part_declarations = "\n\n".join(
+                (
+                    f"def {tree_part_name} : List SummaryTree :=\n"
+                    f"  {_lean_list(list(tree_part))}\n\n"
+                    f"def {certificate_part_name} : List Certificate :=\n"
+                    f"  {_lean_list(list(certificate_part))}"
+                )
+                for (
+                    tree_part_name,
+                    certificate_part_name,
+                    tree_part,
+                    certificate_part,
+                ) in zip(
+                    child_tree_part_names,
+                    child_certificate_part_names,
+                    child_tree_parts,
+                    child_certificate_parts,
+                    strict=True,
+                )
+            )
+            child_part_declarations += "\n\n"
+            child_parts_declaration = (
+                "def generatedSummaryChildrenParts : "
+                "List (List SummaryTree) :=\n"
+                f"  {_lean_list(list(child_tree_part_names))}\n\n"
+                "def generatedSummaryChildCertificateParts : "
+                "List (List Certificate) :=\n"
+                f"  {_lean_list(list(child_certificate_part_names))}\n\n"
+            )
+        data_imports = "\n".join(
             f"import {module_name}"
             for module_name in dict.fromkeys((
                 "StageA.RelationalInternalDirectCallRegisterSummary",
@@ -1201,17 +1589,19 @@ def internal_direct_call_register_summary_module_dag(
                         node.tree.certificate.finite_origin_tail_dependencies
                     )
                 ),
-                *child_modules,
+                *child_data_modules,
             ))
         )
-        children = _lean_list([
-            f"{child_namespace}.generatedSummaryNode"
-            for child_namespace in child_namespaces
-        ])
-        child_certificates = _lean_list([
-            f"{child_namespace}.generatedSummaryCertificate"
-            for child_namespace in child_namespaces
-        ])
+        children = (
+            "generatedSummaryChildrenParts.flatten"
+            if split_children
+            else _lean_list(list(child_tree_terms))
+        )
+        child_certificates = (
+            "generatedSummaryChildCertificateParts.flatten"
+            if split_children
+            else _lean_list(list(child_certificate_terms))
+        )
         child_checks = ", ".join(
             f"{child_namespace}.generatedSummaryNodeChecked"
             for child_namespace in dict.fromkeys(child_namespaces)
@@ -1237,6 +1627,12 @@ def internal_direct_call_register_summary_module_dag(
                 "generatedSummaryCertificate",
                 node.tree.certificate,
                 bindings,
+                prechecked_registers=(
+                    frozenset(("esp",))
+                    if split_control and
+                    "esp" in node.tree.certificate.requested_registers
+                    else frozenset()
+                ),
             )
         )
         if register_preservation:
@@ -1258,7 +1654,7 @@ def internal_direct_call_register_summary_module_dag(
             )
         )
         preservation_declarations = f"\n\n{preservation_declarations}"
-        source = f"""{imports}
+        data_source = f"""{data_imports}
 
 namespace {namespace}
 
@@ -1268,8 +1664,8 @@ open StageA.Relational.InternalDirectCallRegisterSummary
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 
-def generatedSummaryCertificate : Certificate :=
-  {node.certificate_source}
+{region_part_declarations}{region_parts_declaration}{graph_index_part_declarations}{graph_index_parts_declaration}{child_part_declarations}{child_parts_declaration}def generatedSummaryCertificate : Certificate :=
+  {certificate_source}
 
 def generatedSummaryChildCertificates : List Certificate :=
   {child_certificates}
@@ -1290,41 +1686,368 @@ theorem generatedSummaryNodeDepth :
       generatedSummaryCertificate.dependencyDepth := by
   rw [generatedSummaryNodeCertificate]
 
-theorem generatedSummaryCertificateCompactStructureChecked :
-    generatedSummaryCertificate.structureCheckedWithChildCertificates
-      {bindings.original_pe} {bindings.candidate_pe}
-      {bindings.original_imports} {bindings.candidate_imports}
-      generatedSummaryChildCertificates = true := by
+end {namespace}
+"""
+        data_source_bytes = len(data_source.encode("utf-8"))
+        if data_source_bytes >= 90 * 1024:
+            data_resource = ("medium", 4096)
+        elif data_source_bytes >= 22 * 1024:
+            data_resource = ("medium", 2048)
+        else:
+            data_resource = ("light", 768)
+        generated_artifact_modules.append(
+            InternalDirectCallRegisterSummaryLeanModule(
+                module=data_module,
+                namespace=namespace,
+                source=data_source,
+                resource_class=data_resource[0],
+                estimated_memory_mb=data_resource[1],
+            )
+        )
+
+        family_specs = (
+            (
+                "shape",
+                "generatedSummaryCertificateStructureShapeChecked",
+                "generatedSummaryCertificate.structureShapeChecked",
+                max(region_count, edge_count),
+            ),
+            (
+                "decode",
+                "generatedSummaryCertificateStructureDecodeChecked",
+                "generatedSummaryCertificate.structureDecodeChecked\n"
+                f"      {bindings.original_pe} {bindings.candidate_pe}\n"
+                f"      {bindings.original_imports} "
+                f"{bindings.candidate_imports}",
+                region_count,
+            ),
+            (
+                "control",
+                "generatedSummaryCertificateStructureControlChecked",
+                "generatedSummaryCertificate.structureControlChecked\n"
+                f"      {bindings.original_pe} {bindings.candidate_pe}\n"
+                f"      {bindings.original_imports} "
+                f"{bindings.candidate_imports}",
+                edge_count,
+            ),
+            (
+                "dependencies",
+                "generatedSummaryCertificateStructureDependenciesChecked",
+                "generatedSummaryCertificate.structureDependenciesChecked\n"
+                f"      {bindings.original_pe} {bindings.candidate_pe}\n"
+                f"      {bindings.original_imports} "
+                f"{bindings.candidate_imports}\n"
+                "      generatedSummaryChildCertificates",
+                dependency_count,
+            ),
+            (
+                "stack",
+                "generatedSummaryCertificateStructureStackChecked",
+                "generatedSummaryCertificate.structureStackChecked\n"
+                f"      {bindings.original_pe} {bindings.candidate_pe}\n"
+                f"      {bindings.original_imports} "
+                f"{bindings.candidate_imports}",
+                region_count,
+            ),
+        )
+        if split_control:
+            family_specs = tuple(
+                spec for spec in family_specs if spec[0] != "control"
+            )
+
+            graph_closed_module = _dag_node_artifact_module_name(
+                module, "StructureGraphClosed"
+            )
+            graph_closed_theorem = (
+                "generatedSummaryCertificateGraphClosedChecked"
+            )
+            graph_pack_modules: list[str] = []
+            graph_pack_theorems: list[str] = []
+            for part_index, part_name in enumerate(
+                graph_index_part_names
+            ):
+                graph_pack_module = _dag_node_artifact_module_name(
+                    module,
+                    f"StructureGraphClosurePack{part_index:04d}",
+                )
+                graph_pack_theorem = (
+                    "generatedSummaryGraphClosurePart"
+                    f"{part_index:04d}Checked"
+                )
+                graph_pack_source = f"""import {data_module}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+theorem {graph_pack_theorem} :
+    generatedSummaryCertificate.graphClosureWitness.partChecked
+      generatedSummaryCertificate {part_name} = true := by
   decide
 
+#print axioms {graph_pack_theorem}
+
+end {namespace}
+"""
+                generated_artifact_modules.append(
+                    InternalDirectCallRegisterSummaryLeanModule(
+                        module=graph_pack_module,
+                        namespace=namespace,
+                        source=graph_pack_source,
+                        resource_class="medium",
+                        estimated_memory_mb=2048,
+                    )
+                )
+                graph_pack_modules.append(graph_pack_module)
+                graph_pack_theorems.append(graph_pack_theorem)
+
+            graph_closed_imports = "\n".join(
+                f"import {module_name}"
+                for module_name in (
+                    data_module,
+                    *graph_pack_modules,
+                )
+            )
+            graph_pack_simp = ", ".join(graph_pack_theorems)
+            graph_closed_source = f"""{graph_closed_imports}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+theorem generatedSummaryGraphClosureWitnessLengthBound :
+    generatedSummaryCertificate.graphClosureWitness.nodes.length =
+      generatedSummaryCertificate.calleeRegions.length := by
+  decide
+
+theorem generatedSummaryGraphShapeChecked :
+    generatedSummaryCertificate.graphShapeChecked = true := by
+  decide
+
+theorem generatedSummaryGraphClosureIndexPartsBound :
+    generatedSummaryGraphClosureIndexParts.flatten =
+      List.range generatedSummaryCertificate.calleeRegions.length := by
+  decide
+
+theorem generatedSummaryGraphClosurePartsChecked :
+    generatedSummaryGraphClosureIndexParts.all (fun part =>
+      generatedSummaryCertificate.graphClosureWitness.partChecked
+        generatedSummaryCertificate part) = true := by
+  simp [generatedSummaryGraphClosureIndexParts, {graph_pack_simp}]
+
+theorem {graph_closed_theorem} :
+    generatedSummaryCertificate.graphClosed = true := by
+  unfold Certificate.graphClosed
+  exact GraphClosureWitness.checked_of_parts
+    generatedSummaryCertificate.graphClosureWitness
+    generatedSummaryCertificate generatedSummaryGraphClosureIndexParts
+    generatedSummaryGraphClosureWitnessLengthBound
+    generatedSummaryGraphShapeChecked
+    generatedSummaryGraphClosureIndexPartsBound
+    generatedSummaryGraphClosurePartsChecked
+
+#print axioms {graph_closed_theorem}
+
+end {namespace}
+"""
+            generated_artifact_modules.append(
+                InternalDirectCallRegisterSummaryLeanModule(
+                    module=graph_closed_module,
+                    namespace=namespace,
+                    source=graph_closed_source,
+                    resource_class="medium",
+                    estimated_memory_mb=4096,
+                )
+            )
+
+            control_pack_modules: list[str] = [graph_closed_module]
+            original_pack_theorems: list[str] = []
+            candidate_pack_theorems: list[str] = []
+            for part_index, part_name in enumerate(region_part_names):
+                pack_specs = (
+                    (
+                        "Original",
+                        "generatedSummaryOriginalInventoryPart"
+                        f"{part_index:04d}Checked",
+                        "generatedSummaryCertificate.inventoryRegionsChecked\n"
+                        f"      {bindings.original_pe} "
+                        f"{bindings.original_imports} false\n"
+                        f"      {part_name}",
+                        original_pack_theorems,
+                    ),
+                    (
+                        "Candidate",
+                        "generatedSummaryCandidateInventoryPart"
+                        f"{part_index:04d}Checked",
+                        "generatedSummaryCertificate.inventoryRegionsChecked\n"
+                        f"      {bindings.candidate_pe} "
+                        f"{bindings.candidate_imports} true\n"
+                        f"      {part_name}",
+                        candidate_pack_theorems,
+                    ),
+                )
+                for pack_kind, theorem_name, goal, theorem_names in pack_specs:
+                    pack_resource = (
+                        control_inventory_resource
+                        if pack_kind in ("Original", "Candidate")
+                        else ("medium", 4096)
+                    )
+                    pack_module = _dag_node_artifact_module_name(
+                        module,
+                        f"StructureControl{pack_kind}Pack{part_index:04d}",
+                    )
+                    pack_source = f"""import {data_module}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+theorem {theorem_name} :
+    {goal} = true := by
+  decide
+
+#print axioms {theorem_name}
+
+end {namespace}
+"""
+                    generated_artifact_modules.append(
+                        InternalDirectCallRegisterSummaryLeanModule(
+                            module=pack_module,
+                            namespace=namespace,
+                            source=pack_source,
+                            resource_class=pack_resource[0],
+                            estimated_memory_mb=pack_resource[1],
+                        )
+                    )
+                    control_pack_modules.append(pack_module)
+                    theorem_names.append(theorem_name)
+
+            control_imports = "\n".join(
+                f"import {module_name}"
+                for module_name in (data_module, *control_pack_modules)
+            )
+            original_pack_simp = ", ".join(original_pack_theorems)
+            candidate_pack_simp = ", ".join(candidate_pack_theorems)
+            control_source = f"""{control_imports}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+theorem generatedSummaryRegionPartsBound :
+    generatedSummaryRegionParts.flatten =
+      generatedSummaryCertificate.calleeRegions := by
+  rfl
+
+theorem generatedSummaryOriginalInventoryPartsChecked :
+    generatedSummaryRegionParts.all (fun part =>
+      generatedSummaryCertificate.inventoryRegionsChecked
+        {bindings.original_pe} {bindings.original_imports} false part) =
+          true := by
+  simp [generatedSummaryRegionParts, {original_pack_simp}]
+
+theorem generatedSummaryCandidateInventoryPartsChecked :
+    generatedSummaryRegionParts.all (fun part =>
+      generatedSummaryCertificate.inventoryRegionsChecked
+        {bindings.candidate_pe} {bindings.candidate_imports} true part) =
+          true := by
+  simp [generatedSummaryRegionParts, {candidate_pack_simp}]
+
+theorem generatedSummaryCertificateStructureControlChecked :
+    generatedSummaryCertificate.structureControlChecked
+      {bindings.original_pe} {bindings.candidate_pe}
+      {bindings.original_imports} {bindings.candidate_imports} = true := by
+  exact Certificate.structureControlChecked_of_closed_graph_and_region_parts
+    generatedSummaryCertificate
+    {bindings.original_pe} {bindings.candidate_pe}
+    {bindings.original_imports} {bindings.candidate_imports}
+    generatedSummaryRegionParts generatedSummaryRegionPartsBound
+    {graph_closed_theorem}
+    generatedSummaryOriginalInventoryPartsChecked
+    generatedSummaryCandidateInventoryPartsChecked
+
+#print axioms generatedSummaryCertificateStructureControlChecked
+
+end {namespace}
+"""
+            generated_artifact_modules.append(
+                InternalDirectCallRegisterSummaryLeanModule(
+                    module=family_modules["control"],
+                    namespace=namespace,
+                    source=control_source,
+                    resource_class="light",
+                    estimated_memory_mb=768,
+                )
+            )
+
+        for family, theorem_name, goal, complexity in family_specs:
+            family_source = f"""import {data_module}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+theorem {theorem_name} :
+    {goal} = true := by
+  decide
+
+#print axioms {theorem_name}
+
+end {namespace}
+"""
+            if family in {"shape", "control"} and complexity >= 256:
+                family_resource = ("high-memory", 76800)
+            elif complexity >= 256:
+                family_resource = ("large-memory", 24576)
+            elif complexity >= 64:
+                family_resource = ("large-memory", 12288)
+            elif complexity >= 16:
+                family_resource = ("medium", 4096)
+            else:
+                family_resource = ("light", 768)
+            generated_artifact_modules.append(
+                InternalDirectCallRegisterSummaryLeanModule(
+                    module=family_modules[family],
+                    namespace=namespace,
+                    source=family_source,
+                    resource_class=family_resource[0],
+                    estimated_memory_mb=family_resource[1],
+                )
+            )
+
+        child_aggregate_module: str | None = None
+        child_depth_proof = (
+            "simp [generatedSummaryChildren"
+            f"{child_depth_simp}]\n  decide"
+            if child_depth_checks
+            else "simp [generatedSummaryChildren]"
+        )
+        child_theorem_source = f"""
 theorem generatedSummaryChildrenCertificates :
     generatedSummaryChildren.map SummaryTree.certificate =
       generatedSummaryChildCertificates := by
   simp [generatedSummaryChildren, generatedSummaryChildCertificates{
       child_certificate_simp}]
-
-theorem generatedSummaryCertificateStructureChecked :
-    generatedSummaryCertificate.structureChecked
-      {bindings.original_pe} {bindings.candidate_pe}
-      {bindings.original_imports} {bindings.candidate_imports}
-      generatedSummaryChildren = true := by
-  unfold Certificate.structureChecked
-  rw [generatedSummaryChildrenCertificates]
-  exact generatedSummaryCertificateCompactStructureChecked
-{stack_witness_declarations}
-{register_preservation}
-{preservation_declarations}
-
-theorem generatedSummaryCertificateChecked :
-    generatedSummaryCertificate.checked
-      {bindings.original_pe} {bindings.candidate_pe}
-      {bindings.original_imports} {bindings.candidate_imports}
-      generatedSummaryChildren = true := by
-  exact Certificate.checked_of_structure_and_preservation
-    generatedSummaryCertificate {bindings.original_pe} {bindings.candidate_pe}
-    {bindings.original_imports} {bindings.candidate_imports}
-    generatedSummaryChildren generatedSummaryCertificateStructureChecked
-    generatedSummaryCertificatePreservationChecked
 
 theorem generatedSummaryChildrenChecked :
     generatedSummaryChildren.all (fun child => child.checked
@@ -1336,8 +2059,702 @@ theorem generatedSummaryChildrenShallower :
     generatedSummaryChildren.all (fun child =>
       child.certificate.dependencyDepth <
         generatedSummaryCertificate.dependencyDepth) = true := by
-  {"simp [generatedSummaryChildren" + child_depth_simp + "]\n  decide"
-    if child_depth_checks else "simp [generatedSummaryChildren]"}
+  {child_depth_proof}
+"""
+        if split_children:
+            child_pack_modules: list[str] = []
+            child_certificate_part_theorems: list[str] = []
+            child_checked_part_theorems: list[str] = []
+            child_depth_part_theorems: list[str] = []
+            for part_index, (
+                tree_part_name,
+                certificate_part_name,
+                part_namespaces,
+            ) in enumerate(zip(
+                child_tree_part_names,
+                child_certificate_part_names,
+                (
+                    child_namespaces[
+                        start:start + control_pack_size
+                    ]
+                    for start in range(
+                        0, len(child_namespaces), control_pack_size
+                    )
+                ),
+                strict=True,
+            )):
+                child_pack_module = _dag_node_artifact_module_name(
+                    module, f"ChildrenPack{part_index:04d}"
+                )
+                certificates_theorem = (
+                    "generatedSummaryChildrenPart"
+                    f"{part_index:04d}Certificates"
+                )
+                checked_theorem = (
+                    "generatedSummaryChildrenPart"
+                    f"{part_index:04d}Checked"
+                )
+                depth_theorem = (
+                    "generatedSummaryChildrenPart"
+                    f"{part_index:04d}Shallower"
+                )
+                part_certificate_simp = ", ".join(
+                    f"{child_namespace}.generatedSummaryNodeCertificate"
+                    for child_namespace in dict.fromkeys(part_namespaces)
+                )
+                part_child_simp = ", ".join(
+                    f"{child_namespace}.generatedSummaryNodeChecked"
+                    for child_namespace in dict.fromkeys(part_namespaces)
+                )
+                part_depth_simp = ", ".join(
+                    f"{child_namespace}.generatedSummaryNodeDepth"
+                    for child_namespace in dict.fromkeys(part_namespaces)
+                )
+                part_child_modules = child_modules[
+                    part_index * control_pack_size:
+                    (part_index + 1) * control_pack_size
+                ]
+                child_pack_imports = "\n".join(
+                    f"import {module_name}"
+                    for module_name in dict.fromkeys((
+                        data_module,
+                        *part_child_modules,
+                    ))
+                )
+                child_pack_source = f"""{child_pack_imports}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+theorem {certificates_theorem} :
+    {tree_part_name}.map SummaryTree.certificate =
+      {certificate_part_name} := by
+  simp [{tree_part_name}, {certificate_part_name},
+    {part_certificate_simp}]
+
+theorem {checked_theorem} :
+    {tree_part_name}.all (fun child => child.checked
+      {bindings.original_pe} {bindings.candidate_pe}
+      {bindings.original_imports} {bindings.candidate_imports}) = true := by
+  simp [{tree_part_name}, {part_child_simp}]
+
+theorem {depth_theorem} :
+    {tree_part_name}.all (fun child =>
+      child.certificate.dependencyDepth <
+        generatedSummaryCertificate.dependencyDepth) = true := by
+  simp [{tree_part_name}, {part_depth_simp}]
+  decide
+
+#print axioms {checked_theorem}
+
+end {namespace}
+"""
+                generated_artifact_modules.append(
+                    InternalDirectCallRegisterSummaryLeanModule(
+                        module=child_pack_module,
+                        namespace=namespace,
+                        source=child_pack_source,
+                        resource_class="medium",
+                        estimated_memory_mb=4096,
+                    )
+                )
+                child_pack_modules.append(child_pack_module)
+                child_certificate_part_theorems.append(
+                    certificates_theorem
+                )
+                child_checked_part_theorems.append(checked_theorem)
+                child_depth_part_theorems.append(depth_theorem)
+
+            child_aggregate_module = _dag_node_artifact_module_name(
+                module, "ChildrenChecked"
+            )
+            child_aggregate_imports = "\n".join(
+                f"import {module_name}"
+                for module_name in (
+                    data_module,
+                    *child_pack_modules,
+                )
+            )
+            child_certificate_pack_simp = ", ".join(
+                child_certificate_part_theorems
+            )
+            child_checked_pack_simp = ", ".join(
+                child_checked_part_theorems
+            )
+            child_depth_pack_simp = ", ".join(
+                child_depth_part_theorems
+            )
+            child_aggregate_source = f"""{child_aggregate_imports}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+theorem generatedSummaryChildrenCertificates :
+    generatedSummaryChildren.map SummaryTree.certificate =
+      generatedSummaryChildCertificates := by
+  simp [generatedSummaryChildren, generatedSummaryChildCertificates,
+    generatedSummaryChildrenParts,
+    generatedSummaryChildCertificateParts,
+    {child_certificate_pack_simp}]
+
+theorem generatedSummaryChildrenPartsChecked :
+    generatedSummaryChildrenParts.all (fun part =>
+      part.all (fun child => child.checked
+        {bindings.original_pe} {bindings.candidate_pe}
+        {bindings.original_imports} {bindings.candidate_imports})) = true := by
+  simp [generatedSummaryChildrenParts, {child_checked_pack_simp}]
+
+theorem generatedSummaryChildrenChecked :
+    generatedSummaryChildren.all (fun child => child.checked
+      {bindings.original_pe} {bindings.candidate_pe}
+      {bindings.original_imports} {bindings.candidate_imports}) = true := by
+  unfold generatedSummaryChildren
+  exact listAll_flatten_of_parts generatedSummaryChildrenParts
+    (fun child => child.checked
+      {bindings.original_pe} {bindings.candidate_pe}
+      {bindings.original_imports} {bindings.candidate_imports})
+    generatedSummaryChildrenPartsChecked
+
+theorem generatedSummaryChildrenPartsShallower :
+    generatedSummaryChildrenParts.all (fun part =>
+      part.all (fun child =>
+        child.certificate.dependencyDepth <
+          generatedSummaryCertificate.dependencyDepth)) = true := by
+  simp [generatedSummaryChildrenParts, {child_depth_pack_simp}]
+
+theorem generatedSummaryChildrenShallower :
+    generatedSummaryChildren.all (fun child =>
+      child.certificate.dependencyDepth <
+        generatedSummaryCertificate.dependencyDepth) = true := by
+  unfold generatedSummaryChildren
+  exact listAll_flatten_of_parts generatedSummaryChildrenParts
+    (fun child =>
+      child.certificate.dependencyDepth <
+        generatedSummaryCertificate.dependencyDepth)
+    generatedSummaryChildrenPartsShallower
+
+#print axioms generatedSummaryChildrenChecked
+
+end {namespace}
+"""
+            generated_artifact_modules.append(
+                InternalDirectCallRegisterSummaryLeanModule(
+                    module=child_aggregate_module,
+                    namespace=namespace,
+                    source=child_aggregate_source,
+                    resource_class="light",
+                    estimated_memory_mb=768,
+                )
+            )
+            child_theorem_source = ""
+
+        preservation_witness_modules: list[str] = []
+        if split_control and node.tree.certificate.stack_witnesses:
+            stack_witness_declarations = ""
+            for witness_index, witness in enumerate(
+                node.tree.certificate.stack_witnesses
+            ):
+                witness_name = (
+                    "generatedSummaryCertificateStackWitness"
+                    f"{witness_index:04d}"
+                )
+                witness_base_module = _dag_node_artifact_module_name(
+                    module,
+                    f"PreservationWitness{witness_index:04d}Base",
+                )
+                witness_base_source = f"""import {data_module}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+def {witness_name} : StackSaveRestoreWitness :=
+  {witness.lean(
+      'generatedSummaryCertificate.stack_witnesses'
+      f'[{witness_index}]'
+  )}
+
+theorem {witness_name}Member :
+    {witness_name} ∈ generatedSummaryCertificate.stackWitnesses := by
+  decide
+
+theorem {witness_name}NonRegionalChecked :
+    {witness_name}.nonRegionalChecked generatedSummaryCertificate
+      {bindings.original_pe} {bindings.candidate_pe}
+      {bindings.original_imports} {bindings.candidate_imports} = true := by
+  decide
+
+#print axioms {witness_name}NonRegionalChecked
+
+end {namespace}
+"""
+                generated_artifact_modules.append(
+                    InternalDirectCallRegisterSummaryLeanModule(
+                        module=witness_base_module,
+                        namespace=namespace,
+                        source=witness_base_source,
+                        resource_class="large-memory",
+                        estimated_memory_mb=12288,
+                    )
+                )
+
+                witness_pack_modules: list[str] = []
+                original_part_theorems: list[str] = []
+                candidate_part_theorems: list[str] = []
+                for part_index, part_name in enumerate(region_part_names):
+                    witness_pack_module = _dag_node_artifact_module_name(
+                        module,
+                        "PreservationWitness"
+                        f"{witness_index:04d}Pack{part_index:04d}",
+                    )
+                    original_theorem = (
+                        f"{witness_name}OriginalPart{part_index:04d}Checked"
+                    )
+                    candidate_theorem = (
+                        f"{witness_name}CandidatePart{part_index:04d}Checked"
+                    )
+                    witness_pack_source = f"""import {witness_base_module}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+theorem {original_theorem} :
+    stackWitnessRegionPartSideChecked generatedSummaryCertificate false
+      {bindings.original_pe} {bindings.original_imports}
+      {witness_name} {part_name} = true := by
+  decide
+
+theorem {candidate_theorem} :
+    stackWitnessRegionPartSideChecked generatedSummaryCertificate true
+      {bindings.candidate_pe} {bindings.candidate_imports}
+      {witness_name} {part_name} = true := by
+  decide
+
+#print axioms {candidate_theorem}
+
+end {namespace}
+"""
+                    generated_artifact_modules.append(
+                        InternalDirectCallRegisterSummaryLeanModule(
+                            module=witness_pack_module,
+                            namespace=namespace,
+                            source=witness_pack_source,
+                            resource_class="large-memory",
+                            estimated_memory_mb=8192,
+                        )
+                    )
+                    witness_pack_modules.append(witness_pack_module)
+                    original_part_theorems.append(original_theorem)
+                    candidate_part_theorems.append(candidate_theorem)
+
+                witness_checked_module = _dag_node_artifact_module_name(
+                    module,
+                    f"PreservationWitness{witness_index:04d}Checked",
+                )
+                witness_checked_imports = "\n".join(
+                    f"import {module_name}"
+                    for module_name in (
+                        witness_base_module,
+                        *witness_pack_modules,
+                    )
+                )
+                original_part_simp = ", ".join(original_part_theorems)
+                candidate_part_simp = ", ".join(candidate_part_theorems)
+                witness_checked_source = f"""{witness_checked_imports}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+theorem {witness_name}OriginalPartsChecked :
+    generatedSummaryRegionParts.all (fun part =>
+      stackWitnessRegionPartSideChecked generatedSummaryCertificate false
+        {bindings.original_pe} {bindings.original_imports}
+        {witness_name} part) = true := by
+  simp [generatedSummaryRegionParts, {original_part_simp}]
+
+theorem {witness_name}CandidatePartsChecked :
+    generatedSummaryRegionParts.all (fun part =>
+      stackWitnessRegionPartSideChecked generatedSummaryCertificate true
+        {bindings.candidate_pe} {bindings.candidate_imports}
+        {witness_name} part) = true := by
+  simp [generatedSummaryRegionParts, {candidate_part_simp}]
+
+theorem {witness_name}OriginalRegionsChecked :
+    stackWitnessRegionsSideChecked generatedSummaryCertificate false
+      {bindings.original_pe} {bindings.original_imports}
+      {witness_name} = true := by
+  exact stackWitnessRegionsSideChecked_of_parts
+    generatedSummaryCertificate false
+    {bindings.original_pe} {bindings.original_imports}
+    {witness_name} generatedSummaryRegionParts (by rfl)
+    {witness_name}OriginalPartsChecked
+
+theorem {witness_name}CandidateRegionsChecked :
+    stackWitnessRegionsSideChecked generatedSummaryCertificate true
+      {bindings.candidate_pe} {bindings.candidate_imports}
+      {witness_name} = true := by
+  exact stackWitnessRegionsSideChecked_of_parts
+    generatedSummaryCertificate true
+    {bindings.candidate_pe} {bindings.candidate_imports}
+    {witness_name} generatedSummaryRegionParts (by rfl)
+    {witness_name}CandidatePartsChecked
+
+theorem {witness_name}Checked :
+    {witness_name}.checked generatedSummaryCertificate
+      {bindings.original_pe} {bindings.candidate_pe}
+      {bindings.original_imports} {bindings.candidate_imports} = true := by
+  exact StackSaveRestoreWitness.checked_of_region_parts
+    {witness_name} generatedSummaryCertificate
+    {bindings.original_pe} {bindings.candidate_pe}
+    {bindings.original_imports} {bindings.candidate_imports}
+    {witness_name}NonRegionalChecked
+    {witness_name}OriginalRegionsChecked
+    {witness_name}CandidateRegionsChecked
+
+#print axioms {witness_name}Checked
+
+end {namespace}
+"""
+                generated_artifact_modules.append(
+                    InternalDirectCallRegisterSummaryLeanModule(
+                        module=witness_checked_module,
+                        namespace=namespace,
+                        source=witness_checked_source,
+                        resource_class="light",
+                        estimated_memory_mb=768,
+                    )
+                )
+                preservation_witness_modules.append(witness_checked_module)
+
+        preservation_stack_pointer_module: str | None = None
+        if (
+            split_control
+            and "esp" in node.tree.certificate.requested_registers
+        ):
+            stack_pointer_base_module = _dag_node_artifact_module_name(
+                module, "PreservationStackPointerBase"
+            )
+            stack_pointer_base_source = f"""import {data_module}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+theorem generatedSummaryStackPointerOriginalInventoryChecked :
+    generatedSummaryCertificate.stackPointerInventorySideChecked false =
+      true := by
+  decide
+
+theorem generatedSummaryStackPointerCandidateInventoryChecked :
+    generatedSummaryCertificate.stackPointerInventorySideChecked true =
+      true := by
+  decide
+
+#print axioms generatedSummaryStackPointerCandidateInventoryChecked
+
+end {namespace}
+"""
+            generated_artifact_modules.append(
+                InternalDirectCallRegisterSummaryLeanModule(
+                    module=stack_pointer_base_module,
+                    namespace=namespace,
+                    source=stack_pointer_base_source,
+                    resource_class="medium",
+                    estimated_memory_mb=4096,
+                )
+            )
+
+            stack_pointer_pack_modules: list[str] = []
+            stack_pointer_original_parts: list[str] = []
+            stack_pointer_candidate_parts: list[str] = []
+            for part_index, part_name in enumerate(region_part_names):
+                stack_pointer_pack_module = _dag_node_artifact_module_name(
+                    module,
+                    f"PreservationStackPointerPack{part_index:04d}",
+                )
+                original_theorem = (
+                    "generatedSummaryStackPointerOriginalPart"
+                    f"{part_index:04d}Checked"
+                )
+                candidate_theorem = (
+                    "generatedSummaryStackPointerCandidatePart"
+                    f"{part_index:04d}Checked"
+                )
+                stack_pointer_pack_source = f"""import {stack_pointer_base_module}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+theorem {original_theorem} :
+    generatedSummaryCertificate.stackPointerRegionPartSideChecked
+      {bindings.original_pe} {bindings.original_imports} false
+      {part_name} = true := by
+  decide
+
+theorem {candidate_theorem} :
+    generatedSummaryCertificate.stackPointerRegionPartSideChecked
+      {bindings.candidate_pe} {bindings.candidate_imports} true
+      {part_name} = true := by
+  decide
+
+#print axioms {candidate_theorem}
+
+end {namespace}
+"""
+                generated_artifact_modules.append(
+                    InternalDirectCallRegisterSummaryLeanModule(
+                        module=stack_pointer_pack_module,
+                        namespace=namespace,
+                        source=stack_pointer_pack_source,
+                        resource_class="large-memory",
+                        estimated_memory_mb=8192,
+                    )
+                )
+                stack_pointer_pack_modules.append(stack_pointer_pack_module)
+                stack_pointer_original_parts.append(original_theorem)
+                stack_pointer_candidate_parts.append(candidate_theorem)
+
+            preservation_stack_pointer_module = (
+                _dag_node_artifact_module_name(
+                    module, "PreservationStackPointerChecked"
+                )
+            )
+            stack_pointer_checked_imports = "\n".join(
+                f"import {module_name}"
+                for module_name in (
+                    stack_pointer_base_module,
+                    *stack_pointer_pack_modules,
+                )
+            )
+            stack_pointer_original_simp = ", ".join(
+                stack_pointer_original_parts
+            )
+            stack_pointer_candidate_simp = ", ".join(
+                stack_pointer_candidate_parts
+            )
+            stack_pointer_checked_source = f"""{stack_pointer_checked_imports}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+theorem generatedSummaryStackPointerOriginalPartsChecked :
+    generatedSummaryRegionParts.all (fun part =>
+      generatedSummaryCertificate.stackPointerRegionPartSideChecked
+        {bindings.original_pe} {bindings.original_imports} false part) =
+      true := by
+  simp [generatedSummaryRegionParts, {stack_pointer_original_simp}]
+
+theorem generatedSummaryStackPointerCandidatePartsChecked :
+    generatedSummaryRegionParts.all (fun part =>
+      generatedSummaryCertificate.stackPointerRegionPartSideChecked
+        {bindings.candidate_pe} {bindings.candidate_imports} true part) =
+      true := by
+  simp [generatedSummaryRegionParts, {stack_pointer_candidate_simp}]
+
+theorem generatedSummaryStackPointerOriginalRegionsChecked :
+    generatedSummaryCertificate.stackPointerRegionsSideChecked
+      {bindings.original_pe} {bindings.original_imports} false = true := by
+  exact Certificate.stackPointerRegionsSideChecked_of_parts
+    generatedSummaryCertificate
+    {bindings.original_pe} {bindings.original_imports} false
+    generatedSummaryRegionParts (by rfl)
+    generatedSummaryStackPointerOriginalPartsChecked
+
+theorem generatedSummaryStackPointerCandidateRegionsChecked :
+    generatedSummaryCertificate.stackPointerRegionsSideChecked
+      {bindings.candidate_pe} {bindings.candidate_imports} true = true := by
+  exact Certificate.stackPointerRegionsSideChecked_of_parts
+    generatedSummaryCertificate
+    {bindings.candidate_pe} {bindings.candidate_imports} true
+    generatedSummaryRegionParts (by rfl)
+    generatedSummaryStackPointerCandidatePartsChecked
+
+theorem generatedSummaryCertificateStackPointerPreservedChecked :
+    generatedSummaryCertificate.stackPointerPreservedChecked
+      {bindings.original_pe} {bindings.candidate_pe}
+      {bindings.original_imports} {bindings.candidate_imports} = true := by
+  exact Certificate.stackPointerPreservedChecked_of_region_parts
+    generatedSummaryCertificate
+    {bindings.original_pe} {bindings.candidate_pe}
+    {bindings.original_imports} {bindings.candidate_imports}
+    generatedSummaryStackPointerOriginalInventoryChecked
+    generatedSummaryStackPointerCandidateInventoryChecked
+    generatedSummaryStackPointerOriginalRegionsChecked
+    generatedSummaryStackPointerCandidateRegionsChecked
+
+theorem generatedSummaryCertificateRegisterESPPreservedChecked :
+    generatedSummaryCertificate.registerPreservedChecked
+      {bindings.original_pe} {bindings.candidate_pe}
+      {bindings.original_imports} {bindings.candidate_imports}
+      .esp = true := by
+  simpa [Certificate.registerPreservedChecked] using
+    generatedSummaryCertificateStackPointerPreservedChecked
+
+#print axioms generatedSummaryCertificateRegisterESPPreservedChecked
+
+end {namespace}
+"""
+            generated_artifact_modules.append(
+                InternalDirectCallRegisterSummaryLeanModule(
+                    module=preservation_stack_pointer_module,
+                    namespace=namespace,
+                    source=stack_pointer_checked_source,
+                    resource_class="light",
+                    estimated_memory_mb=768,
+                )
+            )
+
+        preservation_imports = "\n".join(
+            f"import {module_name}"
+            for module_name in (
+                data_module,
+                *preservation_witness_modules,
+                *(
+                    (preservation_stack_pointer_module,)
+                    if preservation_stack_pointer_module is not None
+                    else ()
+                ),
+            )
+        )
+        preservation_source = f"""{preservation_imports}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+{stack_witness_declarations}
+{register_preservation}
+{preservation_declarations}
+
+#print axioms generatedSummaryCertificatePreservationChecked
+
+end {namespace}
+"""
+        preservation_complexity = max(
+            region_count,
+            sum(
+                len(witness.protected_write_region_ids)
+                for witness in node.tree.certificate.stack_witnesses
+            ),
+        )
+        if preservation_complexity >= 128:
+            preservation_resource = ("high-memory", 32768)
+        elif preservation_complexity >= 32:
+            preservation_resource = ("large-memory", 12288)
+        else:
+            preservation_resource = ("medium", 4096)
+        generated_artifact_modules.append(
+            InternalDirectCallRegisterSummaryLeanModule(
+                module=preservation_module,
+                namespace=namespace,
+                source=preservation_source,
+                resource_class=preservation_resource[0],
+                estimated_memory_mb=preservation_resource[1],
+            )
+        )
+
+        final_imports = "\n".join(
+            f"import {module_name}"
+            for module_name in (
+                data_module,
+                *family_modules.values(),
+                preservation_module,
+                *(
+                    tuple(dict.fromkeys(child_modules))
+                    if not split_children else ()
+                ),
+                *((child_aggregate_module,)
+                  if child_aggregate_module is not None else ()),
+            )
+        )
+
+        source = f"""{final_imports}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+theorem generatedSummaryCertificateCompactStructureChecked :
+    generatedSummaryCertificate.structureCheckedWithChildCertificates
+      {bindings.original_pe} {bindings.candidate_pe}
+      {bindings.original_imports} {bindings.candidate_imports}
+      generatedSummaryChildCertificates = true := by
+  exact Certificate.structureCheckedWithChildCertificates_of_families
+    generatedSummaryCertificate
+    {bindings.original_pe} {bindings.candidate_pe}
+    {bindings.original_imports} {bindings.candidate_imports}
+    generatedSummaryChildCertificates
+    generatedSummaryCertificateStructureShapeChecked
+    generatedSummaryCertificateStructureDecodeChecked
+    generatedSummaryCertificateStructureControlChecked
+    generatedSummaryCertificateStructureDependenciesChecked
+    generatedSummaryCertificateStructureStackChecked
+
+{child_theorem_source}
+theorem generatedSummaryCertificateStructureChecked :
+    generatedSummaryCertificate.structureChecked
+      {bindings.original_pe} {bindings.candidate_pe}
+      {bindings.original_imports} {bindings.candidate_imports}
+      generatedSummaryChildren = true := by
+  unfold Certificate.structureChecked
+  rw [generatedSummaryChildrenCertificates]
+  exact generatedSummaryCertificateCompactStructureChecked
+
+theorem generatedSummaryCertificateChecked :
+    generatedSummaryCertificate.checked
+      {bindings.original_pe} {bindings.candidate_pe}
+      {bindings.original_imports} {bindings.candidate_imports}
+      generatedSummaryChildren = true := by
+  exact Certificate.checked_of_structure_and_preservation
+    generatedSummaryCertificate {bindings.original_pe} {bindings.candidate_pe}
+    {bindings.original_imports} {bindings.candidate_imports}
+    generatedSummaryChildren generatedSummaryCertificateStructureChecked
+    generatedSummaryCertificatePreservationChecked
 
 theorem generatedSummaryNodeChecked :
     generatedSummaryNode.checked
@@ -1360,6 +2777,12 @@ end {namespace}
                 module=module,
                 namespace=namespace,
                 source=source,
+                resource_class=(
+                    "medium" if len(child_modules) >= 4 else "light"
+                ),
+                estimated_memory_mb=(
+                    4096 if len(child_modules) >= 4 else 768
+                ),
             )
         )
 
@@ -1399,6 +2822,9 @@ end {namespace}
         f"import {module_name}"
         for module_name in dict.fromkeys((
             root_module,
+            *((
+                "StageA.RelationalInternalDirectCallAuthorityBinding",
+            ) if finite_origin_calls else ()),
             *(dependency.authority_module for dependency in finite_origin_calls),
             *(dependency.authority_module for dependency in finite_origin_tails),
         ))
@@ -1433,22 +2859,80 @@ end {namespace}
         owner_namespace = _dag_node_namespace(
             modules_by_digest[owner.digest]
         )
+        dependency_name = (
+            "generatedFiniteOriginCallDependency"
+            f"{index:04d}"
+        )
+        authority_name = (
+            "generatedFiniteOriginCallAuthority"
+            f"{index:04d}"
+        )
+        component_prefix = (
+            "generatedFiniteOriginCallAuthorityComponent"
+            f"{index:04d}"
+        )
         finite_origin_call_sources.append(
-            "def generatedFiniteOriginCallAuthority"
-            f"{index:04d} :=\n"
+            f"def {dependency_name} : FiniteOriginCallDependency :=\n"
+            f"  {dependency.lean()}\n\n"
+            f"def {authority_name} :=\n"
             f"  {dependency.indirect_exit_authority_term}\n\n"
+            f"theorem {component_prefix}Dependencies :\n"
+            f"    {owner_namespace}.generatedSummaryCertificate."
+            "finiteOriginCallDependencies.filter\n"
+            f"      (fun candidate => candidate.id == "
+            f"{dependency.dependency_id}) = [{dependency_name}] := by\n"
+            "  decide\n\n"
+            f"theorem {component_prefix}Shape :\n"
+            f"    {dependency_name}.authorityShapeChecked "
+            f"{authority_name}.certificate = true := by\n"
+            "  decide\n\n"
+            f"theorem {component_prefix}Targets :\n"
+            f"    {dependency_name}.authorityTargetCertificatesCheckedFor\n"
+            f"      {authority_name}\n"
+            f"      ({owner_namespace}.generatedSummaryChildren.map "
+            "SummaryTree.certificate) = true := by\n"
+            f"  rw [{owner_namespace}.generatedSummaryChildrenCertificates]\n"
+            "  set_option maxRecDepth 100000 in\n"
+            "  decide\n\n"
+            f"theorem {component_prefix}OriginalSide :\n"
+            f"    {dependency_name}.authoritySideChecked "
+            f"{authority_name}.certificate\n"
+            f"      {bindings.original_pe} {bindings.original_imports} false\n"
+            f"      {owner_namespace}.generatedSummaryCertificate."
+            "calleeRegions = true := by\n"
+            "  set_option maxRecDepth 100000 in\n"
+            "  decide\n\n"
+            f"theorem {component_prefix}CandidateSide :\n"
+            f"    {dependency_name}.authoritySideChecked "
+            f"{authority_name}.certificate\n"
+            f"      {bindings.candidate_pe} {bindings.candidate_imports} true\n"
+            f"      {owner_namespace}.generatedSummaryCertificate."
+            "calleeRegions = true := by\n"
+            "  set_option maxRecDepth 100000 in\n"
+            "  decide\n\n"
             "theorem generatedFiniteOriginCallAuthorityBound"
             f"{index:04d} :\n"
             f"    {owner_namespace}.generatedSummaryCertificate."
             "finiteOriginCallAuthorityBound\n"
             f"      {owner_namespace}.generatedSummaryChildren\n"
             f"      {dependency.dependency_id}\n"
-            "      generatedFiniteOriginCallAuthority"
-            f"{index:04d}\n"
+            f"      {authority_name}\n"
             f"      {bindings.original_pe} {bindings.candidate_pe}\n"
             f"      {bindings.original_imports} "
             f"{bindings.candidate_imports} = true := by\n"
-            "  decide\n\n"
+            "  exact Certificate.finiteOriginCallAuthorityBound_of_components\n"
+            f"    {owner_namespace}.generatedSummaryCertificate\n"
+            f"    {owner_namespace}.generatedSummaryChildren\n"
+            f"    {dependency.dependency_id} {authority_name}\n"
+            f"    {bindings.original_pe} {bindings.candidate_pe}\n"
+            f"    {bindings.original_imports} {bindings.candidate_imports}\n"
+            f"    {dependency_name}\n"
+            f"    {component_prefix}Dependencies\n"
+            "    (by rfl) (by rfl) (by rfl) (by rfl)\n"
+            f"    {component_prefix}Shape\n"
+            f"    {component_prefix}Targets\n"
+            f"    {component_prefix}OriginalSide\n"
+            f"    {component_prefix}CandidateSide\n\n"
             "#print axioms generatedFiniteOriginCallAuthority"
             f"{index:04d}\n"
             "#print axioms generatedFiniteOriginCallAuthorityBound"
@@ -1460,6 +2944,38 @@ end {namespace}
     ))
     if authority_sources:
         authority_sources = f"\n\n{authority_sources}\n"
+    root_stack_witness_sources: list[str] = []
+    for index, _witness in enumerate(summary.certificate.stack_witnesses):
+        alias = (
+            "generatedInternalDirectCallRegisterSummaryStackWitness"
+            f"{index:04d}"
+        )
+        source = (
+            f"{root_node_namespace}.generatedSummaryCertificateStackWitness"
+            f"{index:04d}"
+        )
+        root_stack_witness_sources.append(
+            f"def {alias} : StackSaveRestoreWitness :=\n"
+            f"  {source}\n\n"
+            f"theorem {alias}Member :\n"
+            f"    {alias} ∈ generatedInternalDirectCallRegisterSummary."
+            "certificate.stackWitnesses := by\n"
+            "  rw [generatedInternalDirectCallRegisterSummary,\n"
+            f"    {root_node_namespace}.generatedSummaryNodeCertificate]\n"
+            f"  exact {source}Member\n\n"
+            f"theorem {alias}Checked :\n"
+            f"    {alias}.checked\n"
+            "      generatedInternalDirectCallRegisterSummary.certificate\n"
+            f"      {bindings.original_pe} {bindings.candidate_pe}\n"
+            f"      {bindings.original_imports} {bindings.candidate_imports} = "
+            "true := by\n"
+            "  rw [generatedInternalDirectCallRegisterSummary,\n"
+            f"    {root_node_namespace}.generatedSummaryNodeCertificate]\n"
+            f"  exact {source}Checked"
+        )
+    root_stack_witness_source = "\n\n".join(root_stack_witness_sources)
+    if root_stack_witness_source:
+        root_stack_witness_source = f"\n\n{root_stack_witness_source}\n"
     root_source = f"""{root_imports}
 
 namespace {root_namespace}
@@ -1470,12 +2986,19 @@ open StageA.Relational.InternalDirectCallRegisterSummary
 def generatedInternalDirectCallRegisterSummary : SummaryTree :=
   {root_node_namespace}.generatedSummaryNode
 
+theorem generatedInternalDirectCallRegisterSummaryCertificateExact :
+    generatedInternalDirectCallRegisterSummary.certificate =
+      {root_node_namespace}.generatedSummaryCertificate := by
+  simpa [generatedInternalDirectCallRegisterSummary] using
+    {root_node_namespace}.generatedSummaryNodeCertificate
+
 theorem generatedInternalDirectCallRegisterSummaryChecked :
     generatedInternalDirectCallRegisterSummary.checked
       {bindings.original_pe} {bindings.candidate_pe}
       {bindings.original_imports} {bindings.candidate_imports} = true := by
   simpa [generatedInternalDirectCallRegisterSummary] using
     {root_node_namespace}.generatedSummaryNodeChecked
+{root_stack_witness_source}
 
 def generatedInternalDirectCallRegisterSummarySemanticIntegrationRequirements :
     SemanticIntegrationRequirements :=
@@ -1510,6 +3033,7 @@ end {root_namespace}
         root_source=root_source,
         root_node_module=root_module,
         node_modules=tuple(generated_modules),
+        artifact_modules=tuple(generated_artifact_modules),
     )
 
 
@@ -1561,6 +3085,11 @@ def internal_direct_call_register_summary_source(
         dependency.checked(f"finite_origin_call_dependencies[{index}]")
     imports = [
         "import StageA.RelationalInternalDirectCallRegisterSummary",
+        *(
+            ["import StageA.RelationalInternalDirectCallAuthorityBinding"]
+            if finite_origin_calls
+            else []
+        ),
         *[
             f"import {module_name}"
             for module_name in dict.fromkeys((
@@ -1599,27 +3128,77 @@ def internal_direct_call_register_summary_source(
         )
         for index, dependency in enumerate(finite_origin_tails)
     )
-    finite_origin_call_authorities = "\n\n".join(
-        (
-            "def generatedFiniteOriginCallAuthority"
-            f"{index:04d} :=\n"
+    def finite_origin_call_authority_source(
+        index: int,
+        dependency: LeanFiniteOriginCallDependency,
+    ) -> str:
+        owner = finite_origin_call_owners[dependency.dependency_id]
+        certificate = _summary_certificate_name(owner.digest)
+        children = _summary_children_name(owner.digest)
+        dependency_name = f"generatedFiniteOriginCallDependency{index:04d}"
+        authority_name = f"generatedFiniteOriginCallAuthority{index:04d}"
+        component_prefix = (
+            f"generatedFiniteOriginCallAuthorityComponent{index:04d}"
+        )
+        return (
+            f"def {dependency_name} : FiniteOriginCallDependency :=\n"
+            f"  {dependency.lean()}\n\n"
+            f"def {authority_name} :=\n"
             f"  {dependency.indirect_exit_authority_term}\n\n"
+            f"theorem {component_prefix}Dependencies :\n"
+            f"    {certificate}.finiteOriginCallDependencies.filter\n"
+            f"      (fun candidate => candidate.id == "
+            f"{dependency.dependency_id}) = [{dependency_name}] := by\n"
+            "  decide\n\n"
+            f"theorem {component_prefix}Shape :\n"
+            f"    {dependency_name}.authorityShapeChecked "
+            f"{authority_name}.certificate = true := by\n"
+            "  decide\n\n"
+            f"theorem {component_prefix}Targets :\n"
+            f"    {dependency_name}.authorityTargetCertificatesCheckedFor\n"
+            f"      {authority_name}\n"
+            f"      ({children}.map SummaryTree.certificate) = true := by\n"
+            "  set_option maxRecDepth 100000 in\n"
+            "  decide\n\n"
+            f"theorem {component_prefix}OriginalSide :\n"
+            f"    {dependency_name}.authoritySideChecked "
+            f"{authority_name}.certificate\n"
+            f"      {bindings.original_pe} {bindings.original_imports} false\n"
+            f"      {certificate}.calleeRegions = true := by\n"
+            "  set_option maxRecDepth 100000 in\n"
+            "  decide\n\n"
+            f"theorem {component_prefix}CandidateSide :\n"
+            f"    {dependency_name}.authoritySideChecked "
+            f"{authority_name}.certificate\n"
+            f"      {bindings.candidate_pe} {bindings.candidate_imports} true\n"
+            f"      {certificate}.calleeRegions = true := by\n"
+            "  set_option maxRecDepth 100000 in\n"
+            "  decide\n\n"
             "theorem generatedFiniteOriginCallAuthorityBound"
             f"{index:04d} :\n"
-            f"    {_summary_certificate_name(finite_origin_call_owners[dependency.dependency_id].digest)}."
-            "finiteOriginCallAuthorityBound\n"
-            f"      {_summary_children_name(finite_origin_call_owners[dependency.dependency_id].digest)}\n"
-            f"      {dependency.dependency_id}\n"
-            "      generatedFiniteOriginCallAuthority"
-            f"{index:04d}\n"
+            f"    {certificate}.finiteOriginCallAuthorityBound\n"
+            f"      {children}\n"
+            f"      {dependency.dependency_id} {authority_name}\n"
             f"      {bindings.original_pe} {bindings.candidate_pe}\n"
-            f"      {bindings.original_imports} {bindings.candidate_imports} = true := by\n"
-            "  decide\n\n"
-            "#print axioms generatedFiniteOriginCallAuthority"
-            f"{index:04d}\n"
+            f"      {bindings.original_imports} "
+            f"{bindings.candidate_imports} = true := by\n"
+            "  exact Certificate.finiteOriginCallAuthorityBound_of_components\n"
+            f"    {certificate} {children}\n"
+            f"    {dependency.dependency_id} {authority_name}\n"
+            f"    {bindings.original_pe} {bindings.candidate_pe}\n"
+            f"    {bindings.original_imports} {bindings.candidate_imports}\n"
+            f"    {dependency_name} {component_prefix}Dependencies\n"
+            "    (by rfl) (by rfl) (by rfl) (by rfl)\n"
+            f"    {component_prefix}Shape {component_prefix}Targets\n"
+            f"    {component_prefix}OriginalSide "
+            f"{component_prefix}CandidateSide\n\n"
+            f"#print axioms {authority_name}\n"
             "#print axioms generatedFiniteOriginCallAuthorityBound"
             f"{index:04d}"
         )
+
+    finite_origin_call_authorities = "\n\n".join(
+        finite_origin_call_authority_source(index, dependency)
         for index, dependency in enumerate(finite_origin_calls)
     )
     return f"""{chr(10).join(imports)}

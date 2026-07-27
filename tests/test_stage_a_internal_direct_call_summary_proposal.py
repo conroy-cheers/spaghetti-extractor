@@ -410,6 +410,9 @@ end StageA.Generated.ProposalFixture
                 indirect_exit_authority_term=(
                     "StageA.Generated.FiniteOriginAuthority.checkedExit"
                 ),
+                indirect_exit_certificate_exact_term=(
+                    "StageA.Generated.FiniteOriginAuthority.checkedExitExact"
+                ),
             )
 
             plan = construct_internal_direct_call_summary_proposals(
@@ -436,6 +439,146 @@ end StageA.Generated.ProposalFixture
             self.assertEqual(child.entry_target_id, 77)
             self.assertEqual(child.callee_entry.region_id, TEXT_RVA + 0x20)
             self.assertIn(".finiteOriginCall", tree.lean())
+            proposal_source = plan.source(
+                0,
+                InternalDirectCallSummarySourceBindings(
+                    checker=InternalDirectCallRegisterSummaryLeanBindings(
+                        original_pe="StageA.Generated.ProposalFixture.pe",
+                        candidate_pe="StageA.Generated.ProposalFixture.pe",
+                        original_imports=(
+                            "StageA.Generated.ProposalFixture.imports"
+                        ),
+                        candidate_imports=(
+                            "StageA.Generated.ProposalFixture.imports"
+                        ),
+                    )
+                ),
+            )
+            self.assertIn(
+                "generatedFiniteOriginCallAuthorityBound0000",
+                proposal_source,
+            )
+            self.assertIn(
+                "generatedFiniteOriginCallAuthorityComponent0000Dependencies",
+                proposal_source,
+            )
+            self.assertIn(
+                "generatedFiniteOriginCallAuthorityComponent0000Targets",
+                proposal_source,
+            )
+            self.assertIn(
+                "Certificate.finiteOriginCallAuthorityBound_of_components",
+                proposal_source,
+            )
+            self.assertNotIn(
+                "generatedFiniteOriginCallAuthority0000\n"
+                "      StageA.Generated.ProposalFixture.pe "
+                "StageA.Generated.ProposalFixture.pe\n"
+                "      StageA.Generated.ProposalFixture.imports "
+                "StageA.Generated.ProposalFixture.imports = true := by\n"
+                "  set_option maxRecDepth 100000 in\n"
+                "  decide",
+                proposal_source,
+            )
+
+    def test_constructs_root_finite_origin_indirect_call_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            code = bytearray(b"\x90" * 0x11)
+            code[0:2] = b"\xFF\xD0"
+            code[2:3] = b"\xC3"
+            code[0x10:0x11] = b"\xC3"
+            rows = [
+                _row(
+                    TEXT_RVA,
+                    bytes(code[0:2]),
+                    outcome={
+                        "kind": "indirect_call",
+                        "target": {"op": "reg", "name": "eax"},
+                        "return_rva": TEXT_RVA + 2,
+                    },
+                ),
+                _row(TEXT_RVA + 2, bytes(code[2:3]), function="caller"),
+                _row(
+                    TEXT_RVA + 0x10,
+                    bytes(code[0x10:0x11]),
+                    function="target",
+                ),
+            ]
+            pe, state, report = _write_artifacts(root, bytes(code), rows)
+            authority = FiniteOriginCallAuthorityBinding(
+                source_rva=TEXT_RVA,
+                instruction_rva=TEXT_RVA,
+                continuation_rva=TEXT_RVA + 2,
+                continuation_target_id=91,
+                internal_targets=(
+                    LeanFiniteOriginTailTarget(77, TEXT_RVA + 0x10),
+                ),
+                internal_target_rvas=(TEXT_RVA + 0x10,),
+                authority_module="StageA.Generated.FiniteOriginAuthority",
+                indirect_exit_authority_term=(
+                    "StageA.Generated.FiniteOriginAuthority.checkedExit"
+                ),
+                indirect_exit_certificate_exact_term=(
+                    "StageA.Generated.FiniteOriginAuthority.checkedExitExact"
+                ),
+            )
+
+            plan = construct_internal_direct_call_summary_proposals(
+                pe,
+                state,
+                report,
+                (),
+                finite_origin_entry_requests=(
+                    DirectCallSummaryRequest(TEXT_RVA, ("ebx",)),
+                ),
+                finite_origin_call_authorities=(authority,),
+            )
+
+        self.assertEqual(plan.blockers, ())
+        self.assertEqual(len(plan.proposals), 1)
+        proposal = plan.proposals[0]
+        self.assertEqual(proposal.entry_authority, authority)
+        self.assertEqual(proposal.tree.certificate.entry_kind, "finite_origin_call")
+        self.assertEqual(
+            proposal.tree.certificate.entry_dependency_id,
+            TEXT_RVA,
+        )
+        self.assertEqual(proposal.tree.certificate.entry_target_id, 77)
+        self.assertEqual(
+            proposal.tree.certificate.callee_entry.region_id,
+            TEXT_RVA + 0x10,
+        )
+        self.assertEqual(
+            proposal.to_json()["entry_authority"]["internal_target_ids"],
+            [77],
+        )
+
+    def test_finite_origin_call_authority_rejects_duplicate_target_ids(self) -> None:
+        authority = FiniteOriginCallAuthorityBinding(
+            source_rva=TEXT_RVA,
+            instruction_rva=TEXT_RVA,
+            continuation_rva=TEXT_RVA + 2,
+            continuation_target_id=91,
+            internal_targets=(
+                LeanFiniteOriginTailTarget(77, TEXT_RVA + 0x10),
+                LeanFiniteOriginTailTarget(77, TEXT_RVA + 0x20),
+            ),
+            internal_target_rvas=(TEXT_RVA + 0x10, TEXT_RVA + 0x20),
+            authority_module="StageA.Generated.FiniteOriginAuthority",
+            indirect_exit_authority_term=(
+                "StageA.Generated.FiniteOriginAuthority.checkedExit"
+            ),
+            indirect_exit_certificate_exact_term=(
+                "StageA.Generated.FiniteOriginAuthority.checkedExitExact"
+            ),
+        )
+
+        with self.assertRaisesRegex(
+            InternalDirectCallSummaryProposalError,
+            "duplicate target IDs",
+        ):
+            authority.checked()
 
     def test_later_local_spill_does_not_replace_entry_register_save(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1185,6 +1328,43 @@ end StageA.Generated.ProposalFixture
                 f"protectedWriteRegionIds := [{TEXT_RVA + 0x13}]",
                 plan.proposals[0].tree.lean(),
             )
+
+    def test_frame_only_request_accounts_for_architectural_call_push(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            pe, state, report = _push_pop_fixture(Path(temporary))
+
+            plan = construct_internal_direct_call_summary_proposals(
+                pe,
+                state,
+                report,
+                [
+                    DirectCallSummaryRequest(
+                        TEXT_RVA,
+                        (),
+                        caller_rva=TEXT_RVA,
+                        caller_frame_word_offsets=(32,),
+                    )
+                ],
+            )
+
+        self.assertEqual(plan.blockers, ())
+        self.assertEqual(len(plan.proposals), 1)
+        certificate = plan.proposals[0].tree.certificate
+        # ESP is always included as the architectural call/return frame
+        # register even when the external request names only caller memory.
+        self.assertEqual(certificate.requested_registers, ("esp",))
+        self.assertEqual(
+            tuple(
+                (word.original_offset, word.candidate_offset)
+                for word in certificate.caller_frame_words
+            ),
+            ((36, 36),),
+        )
+        self.assertIn(
+            "callerFrameWords := "
+            "[{ originalOffset := 36, candidateOffset := 36 }]",
+            plan.proposals[0].tree.lean(),
+        )
 
     def test_discovery_and_writer_are_stable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

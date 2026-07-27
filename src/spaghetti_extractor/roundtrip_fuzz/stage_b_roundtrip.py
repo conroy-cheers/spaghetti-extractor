@@ -458,14 +458,16 @@ def make_relational_v3_stage_a_proof_callback(
         consumed.append(relation_contract)
         prepared = request.out_dir / "prepared"
         built = request.out_dir / "built"
-        from ..relational.pipeline import stage_a_prepare_relational
+        from ..relational.nix_pipeline import stage_a_prepare_relational_nix
 
         try:
-            stage_a_prepare_relational(
+            stage_a_prepare_relational_nix(
                 original=original_pe,
                 candidate=request.candidate_pe,
                 relation_contract=relation_contract,
                 out=prepared,
+                flake=flake_path,
+                builders_file=builders_path,
             )
         except (OSError, StageAInputError, ValueError) as exc:
             handoff = _proof_handoff_for_exception(
@@ -540,7 +542,6 @@ def make_relational_v3_stage_a_proof_callback(
             stage_a_build_relational(
                 prepared=prepared,
                 out=built,
-                executor="nix",
                 flake=flake_path,
                 builders_file=builders_path,
             )

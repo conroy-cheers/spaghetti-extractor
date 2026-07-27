@@ -400,7 +400,7 @@ end StageA.GeneratedRelationalCounterexample
                 "  (import evaluator (common // { precompiledKernel = mismatchKernel; }))",
                 "  (import evaluator (common // {",
                 "    precompiledKernel = exactKernel;",
-                "    targetNode = \"counterexample\";",
+                "    targetNodes = [ \"counterexample\" ];",
                 "    targetBundle = true;",
                 "  }))",
                 "]",

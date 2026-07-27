@@ -63,6 +63,22 @@ def _direct_witness():
     )
 
 
+def _stable_edge_id_witness():
+    return build_register_control_provenance_witness(
+        region_count=2,
+        register_pairs=(EAX,),
+        entry_region_indices=(0,),
+        transfers=(
+            RegisterControlRegionTransfer(
+                0, producers=(_code_atom(0, EAX, 11),)
+            ),
+            RegisterControlRegionTransfer(1, preserve_unmentioned=True),
+        ),
+        edges=(RegisterControlEdge(0, 1, edge_id=0xF00DBAAD),),
+        uses=(RegisterControlUse(1, EAX, "indirect_control"),),
+    )
+
+
 def _import_preservation_witness():
     identity = ("KERNEL32.dll", "symbol", "GetLastError")
     return build_register_control_provenance_witness(
@@ -150,6 +166,7 @@ class StageARegisterControlProvenanceLeanTests(unittest.TestCase):
     def test_direct_import_preservation_and_loop_scc_compile(self):
         for label, witness in (
             ("direct", _direct_witness()),
+            ("stable-edge-id", _stable_edge_id_witness()),
             ("import-preserved", _import_preservation_witness()),
             ("loop-scc", _loop_witness()),
         ):

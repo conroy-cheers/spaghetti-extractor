@@ -16,10 +16,22 @@ from .isa_conformance_lean import (
     run_lean_isa_conformance,
     run_lean_isa_conformance_with_forms,
 )
+from .isa_conformance_nix import stage_a_check_isa_conformance_nix
 from .isa_conformance_unicorn import run_unicorn_corpus
 from .isa_conformance_bochs import run_bochs_corpus
 from .isa_conformance_80386 import import_singlestep_80386_json
 from .relational.mapping import stage_a_generate_map
+from .relational.contract import stage_a_generate_relation_contract
+from .relational.build import (
+    stage_a_build_relational,
+    stage_a_build_relational_from_nix,
+)
+from .relational.nix_pipeline import (
+    stage_a_prepare_relational_nix,
+    stage_a_prove_relational_nix,
+)
+from .relational.api import stage_a_check_relational_proof
+from .relational.cache_qualification import diff_semantic_invalidation
 from .relational.interfaces import stage_a_export_interface_manifest
 from .roundtrip_fuzz.phase0 import generate_phase0_corpus
 from .roundtrip_fuzz.image_contract import load_stage_a_load_image_contract
@@ -53,16 +65,6 @@ from .stage_b_contract import (
 )
 from .stage_binary import StageAInputError
 from .util import sha256_file, write_json
-from .stage_a_relational import (
-    stage_a_analyze_relational,
-    stage_a_build_relational,
-    stage_a_build_relational_from_nix,
-    stage_a_check_relational_proof,
-    stage_a_generate_relational,
-    stage_a_generate_relation_contract,
-    stage_a_prepare_relational,
-    stage_a_prove_relational,
-)
 from .stage_b import (
     stage_b_diff_delta,
     stage_b_explain_delta,
@@ -122,6 +124,26 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
             _print_json(result)
         return _exit_status(result)
     return 0
+
+
+def _add_nix_build_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--flake", type=Path)
+    parser.add_argument(
+        "--builders-file",
+        type=Path,
+        help=(
+            "Nix machines file; when supplied, derivation builds are remote-only "
+            "(--max-jobs 0)"
+        ),
+    )
+    parser.add_argument(
+        "--builder-trusted-public-keys-file",
+        type=Path,
+        help=(
+            "newline-delimited Nix public keys used to authenticate outputs "
+            "returned by remote builders"
+        ),
+    )
 
 
 def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
@@ -296,7 +318,23 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         type=Path,
         help="write Lean-owned semantic form identities; valid only for --backend=lean",
     )
+    _add_nix_build_arguments(isa_conformance)
     isa_conformance.set_defaults(func=_cmd_stage_a_check_isa_conformance)
+
+    isa_conformance_worker = subcommands.add_parser(
+        "stage-a-check-isa-conformance-worker",
+        help=argparse.SUPPRESS,
+    )
+    isa_conformance_worker.add_argument("--corpus", type=Path, required=True)
+    isa_conformance_worker.add_argument(
+        "--backend", choices=("lean", "unicorn", "bochs"), required=True
+    )
+    isa_conformance_worker.add_argument("--bochs-runner", type=Path)
+    isa_conformance_worker.add_argument("--out", type=Path, required=True)
+    isa_conformance_worker.add_argument("--forms-out", type=Path)
+    isa_conformance_worker.set_defaults(
+        func=_cmd_stage_a_check_isa_conformance_worker
+    )
 
     isa_requirements = subcommands.add_parser(
         "stage-a-inventory-isa-requirements",
@@ -366,6 +404,7 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     prove.add_argument("--original", type=Path, required=True)
     prove.add_argument("--candidate", type=Path, required=True)
     prove.add_argument("--relation-contract", type=Path, required=True)
+    _add_nix_build_arguments(prove)
     prove.add_argument("--out", type=Path, required=True)
     prove.set_defaults(func=_cmd_stage_a_prove)
 
@@ -376,47 +415,9 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     prepare_relational.add_argument("--original", type=Path, required=True)
     prepare_relational.add_argument("--candidate", type=Path, required=True)
     prepare_relational.add_argument("--relation-contract", type=Path, required=True)
+    _add_nix_build_arguments(prepare_relational)
     prepare_relational.add_argument("--out", type=Path, required=True)
-    prepare_relational.set_defaults(
-        func=lambda args: stage_a_prepare_relational(
-            original=args.original,
-            candidate=args.candidate,
-            relation_contract=args.relation_contract,
-            out=args.out,
-        )
-    )
-
-    analyze_relational = subcommands.add_parser(
-        "stage-a-analyze-relational",
-        help="emit deterministic relational analysis without Lean proof sources",
-    )
-    analyze_relational.add_argument("--original", type=Path, required=True)
-    analyze_relational.add_argument("--candidate", type=Path, required=True)
-    analyze_relational.add_argument(
-        "--relation-contract", type=Path, required=True
-    )
-    analyze_relational.add_argument("--out", type=Path, required=True)
-    analyze_relational.set_defaults(
-        func=lambda args: stage_a_analyze_relational(
-            original=args.original,
-            candidate=args.candidate,
-            relation_contract=args.relation_contract,
-            out=args.out,
-        )
-    )
-
-    generate_relational = subcommands.add_parser(
-        "stage-a-generate-relational",
-        help="generate a deterministic Lean graph from analyzed relational IR",
-    )
-    generate_relational.add_argument("--analysis", type=Path, required=True)
-    generate_relational.add_argument("--out", type=Path, required=True)
-    generate_relational.set_defaults(
-        func=lambda args: stage_a_generate_relational(
-            analysis=args.analysis,
-            out=args.out,
-        )
-    )
+    prepare_relational.set_defaults(func=_cmd_stage_a_prepare_relational)
 
     build_relational = subcommands.add_parser(
         "stage-a-build-relational",
@@ -437,23 +438,13 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         default=Path("."),
         help="prepared-proof directory below --prepared-nix-ref output",
     )
-    build_relational.add_argument("--executor", choices=["nix"], default="nix")
-    build_relational.add_argument("--flake", type=Path)
     build_relational.add_argument(
-        "--builders-file", type=Path,
-        help=(
-            "Nix machines file; when supplied, derivation builds are remote-only "
-            "(--max-jobs 0)"
-        ),
+        "--executor",
+        choices=("nix",),
+        default="nix",
+        help="deprecated compatibility option; Nix is the only executor",
     )
-    build_relational.add_argument(
-        "--builder-trusted-public-keys-file",
-        type=Path,
-        help=(
-            "newline-delimited Nix public keys used to authenticate outputs "
-            "returned by remote builders"
-        ),
-    )
+    _add_nix_build_arguments(build_relational)
     build_relational.add_argument(
         "--target-node",
         action="append",
@@ -465,9 +456,25 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     build_relational.add_argument("--out", type=Path, required=True)
     build_relational.set_defaults(func=_cmd_stage_a_build_relational)
 
+    diff_semantic_cache = subcommands.add_parser(
+        "stage-a-diff-semantic-cache",
+        help=(
+            "verify that a prepared Lean graph mutation invalidates exactly "
+            "its semantic dependency descendants"
+        ),
+    )
+    diff_semantic_cache.add_argument(
+        "--before-graph", type=Path, required=True
+    )
+    diff_semantic_cache.add_argument(
+        "--after-graph", type=Path, required=True
+    )
+    diff_semantic_cache.add_argument("--out", type=Path, required=True)
+    diff_semantic_cache.set_defaults(func=_cmd_stage_a_diff_semantic_cache)
+
     check_proof = subcommands.add_parser(
         "stage-a-check-proof",
-        help="independently replay the v3 whole-program acceptance theorem",
+        help="audit a Nix-built v3 whole-program proof report",
     )
     check_proof.add_argument("--report", type=Path, required=True)
     check_proof.add_argument("--original", type=Path)
@@ -924,10 +931,29 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
 
 
 def _cmd_stage_a_prove(args: Any) -> dict[str, Any]:
-    return stage_a_prove_relational(
+    return stage_a_prove_relational_nix(
         original=args.original,
         candidate=args.candidate,
         relation_contract=args.relation_contract,
+        flake=args.flake,
+        builders_file=args.builders_file,
+        builder_trusted_public_keys_file=(
+            args.builder_trusted_public_keys_file
+        ),
+        out=args.out,
+    )
+
+
+def _cmd_stage_a_prepare_relational(args: Any) -> dict[str, Any]:
+    return stage_a_prepare_relational_nix(
+        original=args.original,
+        candidate=args.candidate,
+        relation_contract=args.relation_contract,
+        flake=args.flake,
+        builders_file=args.builders_file,
+        builder_trusted_public_keys_file=(
+            args.builder_trusted_public_keys_file
+        ),
         out=args.out,
     )
 
@@ -1041,7 +1067,6 @@ def _cmd_stage_a_fuzz_reduce(args: Any) -> dict[str, Any]:
 
 def _cmd_stage_a_build_relational(args: Any) -> dict[str, Any]:
     common = {
-        "executor": args.executor,
         "flake": args.flake,
         "builders_file": args.builders_file,
         "builder_trusted_public_keys_file": (
@@ -1063,7 +1088,32 @@ def _cmd_stage_a_build_relational(args: Any) -> dict[str, Any]:
     return stage_a_build_relational(prepared=args.prepared, **common)
 
 
+def _cmd_stage_a_diff_semantic_cache(args: Any) -> dict[str, Any]:
+    before = json.loads(args.before_graph.read_text(encoding="utf-8"))
+    after = json.loads(args.after_graph.read_text(encoding="utf-8"))
+    report = diff_semantic_invalidation(before, after).payload()
+    write_json(args.out, report)
+    return report
+
+
 def _cmd_stage_a_check_isa_conformance(args: Any) -> dict[str, Any]:
+    return stage_a_check_isa_conformance_nix(
+        corpus=args.corpus,
+        backend=args.backend,
+        bochs_runner=args.bochs_runner,
+        out=args.out,
+        forms_out=args.forms_out,
+        flake=args.flake,
+        builders_file=args.builders_file,
+        builder_trusted_public_keys_file=(
+            args.builder_trusted_public_keys_file
+        ),
+    )
+
+
+def _cmd_stage_a_check_isa_conformance_worker(
+    args: Any,
+) -> dict[str, Any]:
     payload = json.loads(args.corpus.read_text(encoding="utf-8"))
     corpus = parse_isa_conformance_corpus(payload)
     if args.backend == "lean":
@@ -1181,8 +1231,21 @@ def _cmd_stage_a_check_proof(args: Any) -> dict[str, Any]:
         raise StageAInputError(
             "stage-a-check-proof accepts only relational v3 reports"
         )
-    if args.original is not None or args.candidate is not None:
-        raise StageAInputError("relational v3 replay uses the binaries embedded in the report")
+    if verdict.get("format") != "stage-a-relational-nix-build-v1":
+        raise StageAInputError(
+            "stage-a-check-proof accepts only Nix-built relational reports"
+        )
+    for supplied, side in (
+        (args.original, "original"),
+        (args.candidate, "candidate"),
+    ):
+        if supplied is None:
+            continue
+        expected = verdict.get(side, {}).get("sha256")
+        if expected is None or sha256_file(supplied) != expected:
+            raise StageAInputError(
+                f"supplied {side} binary does not match the Nix proof report"
+            )
     return stage_a_check_relational_proof(report=args.report, out=args.out)
 
 
@@ -1648,6 +1711,7 @@ def _exit_status(result: dict[str, Any]) -> int:
         "recovered",
         "reduced",
         "ready",
+        "satisfied",
     }:
         return 0
     if verdict == "pass":

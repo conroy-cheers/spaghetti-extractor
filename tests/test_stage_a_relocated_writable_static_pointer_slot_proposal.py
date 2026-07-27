@@ -387,6 +387,11 @@ class StageARelocatedWritableStaticPointerSlotProposalTests(unittest.TestCase):
         self.assertEqual(len(adapters), 1)
         self.assertIn(references[0].term.qualified, adapter_source)
         self.assertIn("consumedBindingValidChecked", adapter_source)
+        self.assertIn("consumedIndirectExitCertificateExact", adapter_source)
+        self.assertEqual(
+            adapters[0].indirect_exit_certificate_exact_term,
+            f"{adapters[0].namespace}.consumedIndirectExitCertificateExact",
+        )
 
     def test_register_mediated_call_uses_the_same_slot_authority(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -491,6 +496,7 @@ class StageARelocatedWritableStaticPointerSlotProposalTests(unittest.TestCase):
             self.assertIn("CheckedFiniteJumpAuthority", source)
             self.assertIn("CallableIndirectRuntimeResolution.of_staticWordOrigin", source)
             self.assertIn("consumedCallableIndirectExitCertificate.generic", source)
+            self.assertIn("consumedIndirectExitCertificateExact", source)
 
             payload = json.loads(report.read_text(encoding="utf-8"))
             payload["sites"][0]["write_origin_evidence"][0][

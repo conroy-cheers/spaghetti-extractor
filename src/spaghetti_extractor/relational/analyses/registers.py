@@ -323,6 +323,7 @@ class RegisterControlEdge:
     target_region_index: int
     kind: RegisterControlEdgeKind = "direct"
     machine_contract_id: int | None = None
+    edge_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -466,16 +467,29 @@ def build_register_control_provenance_witness(
     ]
     successors: list[set[int]] = [set() for _ in range(region_count)]
     normalized_edges: list[RegisterControlEdge] = []
-    for edge_index, edge in enumerate(edges):
+    edge_ids: list[int] = []
+    seen_edge_ids: set[int] = set()
+    for edge_position, edge in enumerate(edges):
         source = checked_region(edge.source_region_index, "edge source")
         target = checked_region(edge.target_region_index, "edge target")
         if edge.kind not in {"direct", "call_return"}:
             raise ValueError("unsupported register-control edge kind")
         if edge.kind == "direct" and edge.machine_contract_id is not None:
             raise ValueError("direct register-control edge cannot name a call contract")
-        incoming[target].append((edge_index, edge))
+        edge_id = edge_position if edge.edge_id is None else edge.edge_id
+        if (
+            not isinstance(edge_id, int)
+            or isinstance(edge_id, bool)
+            or edge_id < 0
+        ):
+            raise ValueError("register-control edge id must be non-negative")
+        if edge_id in seen_edge_ids:
+            raise ValueError("duplicate register-control edge id")
+        seen_edge_ids.add(edge_id)
+        incoming[target].append((edge_position, edge))
         successors[source].add(target)
         normalized_edges.append(edge)
+        edge_ids.append(edge_id)
 
     unknown = _RegisterControlValue(
         blockers=(REGISTER_CONTROL_UNKNOWN_OR_CLOBBERED,),
@@ -664,7 +678,7 @@ def build_register_control_provenance_witness(
                 direction="output",
                 pair=blocked.output,
             )
-    for edge_index, edge in enumerate(normalized_edges):
+    for edge_position, edge in enumerate(normalized_edges):
         if edge.kind == "call_return" and (
             edge.machine_contract_id not in contracts_by_id
         ):
@@ -672,7 +686,7 @@ def build_register_control_provenance_witness(
                 REGISTER_CONTROL_UNKNOWN_CALL,
                 region_index=edge.target_region_index,
                 direction="edge",
-                edge_index=edge_index,
+                edge_index=edge_ids[edge_position],
             )
     if not fixed_point.converged:
         add_blocker(
@@ -738,10 +752,14 @@ def build_register_control_provenance_witness(
     )
     scc_rows = []
     for component_id, members in enumerate(partition.components):
-        local_edges = [
-            index for index, edge in enumerate(normalized_edges)
+        local_edge_positions = [
+            position
+            for position, edge in enumerate(normalized_edges)
             if edge.source_region_index in members
             and edge.target_region_index in members
+        ]
+        local_edges = [
+            edge_ids[position] for position in local_edge_positions
         ]
         local_payload = {
             "component_id": component_id,
@@ -758,7 +776,7 @@ def build_register_control_provenance_witness(
                 or any(
                     normalized_edges[index].source_region_index
                     == normalized_edges[index].target_region_index
-                    for index in local_edges
+                    for index in local_edge_positions
                 )
             ),
             "input_states": [
@@ -871,7 +889,7 @@ def build_register_control_provenance_witness(
         ],
         "edges": [
             {
-                "edge_index": edge_index,
+                "edge_index": edge_ids[edge_position],
                 "source_region_index": edge.source_region_index,
                 "target_region_index": edge.target_region_index,
                 "kind": edge.kind,
@@ -882,7 +900,7 @@ def build_register_control_provenance_witness(
                     else "missing"
                 ),
             }
-            for edge_index, edge in enumerate(normalized_edges)
+            for edge_position, edge in enumerate(normalized_edges)
         ],
         "regions": [
             {

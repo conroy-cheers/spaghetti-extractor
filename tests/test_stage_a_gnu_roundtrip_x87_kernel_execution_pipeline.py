@@ -168,7 +168,7 @@ def test_nix_lane_exposes_granular_remote_x87_execution_graph() -> None:
         'targetNodes = [ "GeneratedRelationalInterpreterKernelX87Execution" ];'
         in lane
     )
-    assert "contentAddressed = false;" in lane
+    assert "contentAddressed = true;" in lane
     assert (
         "stage-a-gnu-hello-roundtrip-x87-kernel-execution-source" in flake
     )

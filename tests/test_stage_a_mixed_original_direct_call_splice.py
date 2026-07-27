@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import capstone
@@ -18,18 +19,23 @@ from spaghetti_extractor.relational.lean.interpreter_mixed_original import (
     INTERPRETER_MIXED_DIRECT_CALL_AUTHORITY_FORMAT,
     InterpreterMixedOriginalGenerationError,
     InterpreterMixedOriginalSpec,
+    MixedOriginalDirectCallSummaryRequestPlan,
     OriginalIATImport,
     OriginalImportIdentity,
     OriginalModuleBindings,
     OriginalPERecoveryInput,
     OriginalRegisterControlCallContractProposal,
     QualifiedLeanSymbol,
+    augment_direct_call_summary_requests_from_runtime_value_carry_hints,
     derive_direct_call_summary_requests_from_register_authority,
     derive_mixed_original_direct_call_summary_requests,
     load_checked_direct_call_summary_contract_proposals,
     plan_interpreter_mixed_original,
     write_relational_interpreter_mixed_original_base,
     write_relational_interpreter_mixed_original_final,
+)
+from spaghetti_extractor.relational.direct_call_proposal_ir import (
+    DirectCallSummaryRequest,
 )
 IMAGE_BASE = 0x400000
 IAT_RVA = 0x2040
@@ -228,6 +234,8 @@ def _authority_report(
             "continuation_rva": CONTINUATION_RVA,
             "contract_id": 17,
             "preserved_registers": ["ebx"],
+            "callee_preserved_registers": ["ebx"],
+            "target_carried_registers": [],
             "source_rva": ENTRY_RVA,
         }],
         "format": INTERPRETER_MIXED_DIRECT_CALL_AUTHORITY_FORMAT,
@@ -240,6 +248,106 @@ def _authority_report(
 
 
 class StageAMixedOriginalDirectCallSpliceTests(unittest.TestCase):
+    def test_runtime_value_carry_hints_merge_frame_words_and_keep_indirect_frontier(
+        self,
+    ) -> None:
+        original_sha256 = "1" * 64
+        plan = MixedOriginalDirectCallSummaryRequestPlan(
+            state_machine_sha256="2" * 64,
+            requests=(
+                DirectCallSummaryRequest(
+                    callsite_rva=0x105A,
+                    caller_rva=0x1040,
+                    registers=("ebx",),
+                ),
+            ),
+            chains=(),
+            frontiers=(),
+        )
+        proposal_ir = SimpleNamespace(
+            target_ids_by_rva={
+                0x1030: 0,
+                0x1040: 1,
+                0x1060: 2,
+                0x1070: 3,
+            },
+            direct_call_sites=(
+                SimpleNamespace(
+                    callsite_rva=0x105A,
+                    source_rva=0x1040,
+                    source_target_id=1,
+                    continuation_rva=0x1060,
+                    continuation_target_id=2,
+                    edge_index=7,
+                ),
+            ),
+            stack_dynamic_control=SimpleNamespace(
+                indirect_sites=(
+                    SimpleNamespace(
+                        source_rva=0x1030,
+                        instruction_rva=0x1038,
+                        is_call=True,
+                        continuation_rva=0x1040,
+                    ),
+                ),
+            ),
+        )
+        location = {
+            "kind": "frame_word",
+            "register": "esp",
+            "offset": 32,
+        }
+        hints = {
+            "format": "stage-a-stack-dynamic-closure-hints-v2",
+            "original_sha256": original_sha256,
+            "runtime_value_carry_routes": [{
+                "stable_id": "fixture.callback",
+                "facts": [
+                    {"target_rva": rva, "location": location}
+                    for rva in (0x1030, 0x1040, 0x1060)
+                ],
+                "transfers": [
+                    {
+                        "kind": "call_frame_word_preserve",
+                        "source_rva": 0x1030,
+                        "target_rva": 0x1040,
+                    },
+                    {
+                        "kind": "call_frame_word_preserve",
+                        "source_rva": 0x1040,
+                        "target_rva": 0x1060,
+                    },
+                ],
+            }],
+        }
+
+        augmented = (
+            augment_direct_call_summary_requests_from_runtime_value_carry_hints(
+                plan,
+                hints,
+                proposal_ir,
+                original_sha256=original_sha256,
+            )
+        )
+
+        self.assertEqual(len(augmented.requests), 1)
+        self.assertEqual(augmented.requests[0].registers, ("ebx",))
+        self.assertEqual(
+            augmented.requests[0].caller_frame_word_offsets,
+            (32,),
+        )
+        self.assertEqual(len(augmented.chains), 1)
+        self.assertEqual(
+            augmented.chains[0]["caller_frame_word_offset"],
+            32,
+        )
+        self.assertEqual(len(augmented.frontiers), 1)
+        self.assertEqual(
+            augmented.frontiers[0]["reason_code"],
+            "caller_frame_word_requires_finite_origin_entry_authority",
+        )
+        self.assertEqual(augmented.frontiers[0]["instruction_rva"], 0x1038)
+
     def test_exact_register_authority_inventory_drives_deduplicated_requests(
         self,
     ) -> None:
@@ -270,6 +378,15 @@ class StageAMixedOriginalDirectCallSpliceTests(unittest.TestCase):
             "source_rva": 0x1015,
             "callee_target_id": 12,
         }
+        finite_origin_call = {
+            "kind": "target_call",
+            "instruction_rva": 0x1008,
+            "source_rva": 0x1000,
+            "source_target_id": 4,
+            "continuation_rva": 0x100A,
+            "continuation_target_id": 5,
+            "callee_target_id": None,
+        }
         authority_report = {
             "format": "stage-a-register-indirect-control-authorities-v1",
             "inputs": {
@@ -283,7 +400,11 @@ class StageAMixedOriginalDirectCallSpliceTests(unittest.TestCase):
                     "source_rva": 0x1030,
                     "instruction_rva": 0x1034,
                     "target_register": "ebx",
-                    "carries": [repeated_call, import_thunk_call],
+                    "carries": [
+                        finite_origin_call,
+                        repeated_call,
+                        import_thunk_call,
+                    ],
                 },
                 {
                     "site_id": 1,
@@ -307,6 +428,22 @@ class StageAMixedOriginalDirectCallSpliceTests(unittest.TestCase):
         self.assertEqual(requests.requests[0].callsite_rva, 0x1010)
         self.assertEqual(requests.requests[0].caller_rva, 0x1000)
         self.assertEqual(requests.requests[0].registers, ("ebx",))
+        self.assertEqual(len(requests.finite_origin_entry_requests), 1)
+        self.assertEqual(
+            requests.finite_origin_entry_requests[0].callsite_rva,
+            0x1008,
+        )
+        self.assertEqual(
+            requests.chains[0]["required_finite_origin_calls"],
+            [{
+                "callsite_rva": 0x1008,
+                "caller_rva": 0x1000,
+                "callee_target_id": None,
+                "source_target_id": 4,
+                "continuation_rva": 0x100A,
+                "continuation_target_id": 5,
+            }],
+        )
         self.assertEqual(
             requests.chains[0]["machine_import_carries"],
             [{
@@ -418,8 +555,13 @@ class StageAMixedOriginalDirectCallSpliceTests(unittest.TestCase):
                 path for path in final_paths
                 if path.name == "GeneratedRelationalInterpreterMixedOriginal.lean"
             ).read_text(encoding="utf-8")
-            self.assertIn("GeneratedFixtureDirectCallAuthority", facade)
-            self.assertIn("checkedContract", facade)
+            generated_final = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in final_paths
+                if path.suffix == ".lean"
+            )
+            self.assertIn("GeneratedFixtureDirectCallAuthority", generated_final)
+            self.assertIn("checkedContract", generated_final)
             self.assertIn("ExactOriginalDecodedReachability", facade)
 
     def test_authority_report_hash_mutation_fails_closed(self) -> None:
@@ -435,6 +577,141 @@ class StageAMixedOriginalDirectCallSpliceTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 InterpreterMixedOriginalGenerationError,
                 "state_machine_sha256 does not match",
+            ):
+                load_checked_direct_call_summary_contract_proposals(
+                    report,
+                    original_sha256=hashlib.sha256(pe.read_bytes()).hexdigest(),
+                    state_machine_sha256=hashlib.sha256(state.read_bytes()).hexdigest(),
+                )
+
+    def test_caller_frame_authority_is_not_loaded_as_register_control(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pe, state, _machine_report, _spec = _fixture(root)
+            report = root / "direct-call-authority.json"
+            _authority_report(report, pe, state, include_term=True)
+            payload = json.loads(report.read_text(encoding="utf-8"))
+            contract = payload["contracts"][0]
+            contract["origin"] = (
+                "checked_direct_call_caller_frame_word_summary"
+            )
+            contract["preserved_registers"] = []
+            contract["preserved_caller_frame_word_offsets"] = [32]
+            contract["caller_frame_word_authorizing_lean_term"] = (
+                contract["authorizing_lean_term"]
+            )
+            report.write_text(json.dumps(payload), encoding="utf-8")
+
+            self.assertEqual(
+                load_checked_direct_call_summary_contract_proposals(
+                    report,
+                    original_sha256=hashlib.sha256(
+                        pe.read_bytes()
+                    ).hexdigest(),
+                    state_machine_sha256=hashlib.sha256(
+                        state.read_bytes()
+                    ).hexdigest(),
+                ),
+                (),
+            )
+
+            del contract["caller_frame_word_authorizing_lean_term"]
+            report.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(
+                InterpreterMixedOriginalGenerationError,
+                "no exact caller-frame authority term",
+            ):
+                load_checked_direct_call_summary_contract_proposals(
+                    report,
+                    original_sha256=hashlib.sha256(
+                        pe.read_bytes()
+                    ).hexdigest(),
+                    state_machine_sha256=hashlib.sha256(
+                        state.read_bytes()
+                    ).hexdigest(),
+                )
+
+    def test_finite_origin_caller_frame_authority_uses_dedicated_term(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pe, state, _machine_report, _spec = _fixture(root)
+            report = root / "direct-call-authority.json"
+            _authority_report(report, pe, state, include_term=True)
+            payload = json.loads(report.read_text(encoding="utf-8"))
+            contract = payload["contracts"][0]
+            contract["origin"] = (
+                "checked_finite_origin_call_caller_frame_word_summary"
+            )
+            contract["preserved_registers"] = []
+            contract["finite_target_ids"] = [3]
+            contract["preserved_caller_frame_word_offsets"] = [32]
+            contract["caller_frame_word_authorizing_lean_term"] = (
+                contract["authorizing_lean_term"]
+            )
+            report.write_text(json.dumps(payload), encoding="utf-8")
+
+            self.assertEqual(
+                load_checked_direct_call_summary_contract_proposals(
+                    report,
+                    original_sha256=hashlib.sha256(
+                        pe.read_bytes()
+                    ).hexdigest(),
+                    state_machine_sha256=hashlib.sha256(
+                        state.read_bytes()
+                    ).hexdigest(),
+                ),
+                (),
+            )
+
+            contract["caller_frame_word_authorizing_lean_term"] = {
+                "module": "StageA.Other",
+                "namespace": "StageA.Other",
+                "symbol": "wrong",
+            }
+            report.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(
+                InterpreterMixedOriginalGenerationError,
+                "no exact caller-frame authority term",
+            ):
+                load_checked_direct_call_summary_contract_proposals(
+                    report,
+                    original_sha256=hashlib.sha256(
+                        pe.read_bytes()
+                    ).hexdigest(),
+                    state_machine_sha256=hashlib.sha256(
+                        state.read_bytes()
+                    ).hexdigest(),
+                )
+
+    def test_finite_authority_requires_its_checked_target_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pe, state, _machine_report, _spec = _fixture(root)
+            report = root / "direct-call-authority.json"
+            _authority_report(report, pe, state, include_term=True)
+            payload = json.loads(report.read_text(encoding="utf-8"))
+            payload["contracts"][0]["origin"] = (
+                "checked_finite_origin_call_summary"
+            )
+            payload["contracts"][0]["finite_target_ids"] = [3]
+            payload["contracts"][0]["target_carried_registers"] = ["ebx"]
+            report.write_text(json.dumps(payload), encoding="utf-8")
+            contracts = load_checked_direct_call_summary_contract_proposals(
+                report,
+                original_sha256=hashlib.sha256(pe.read_bytes()).hexdigest(),
+                state_machine_sha256=hashlib.sha256(state.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(contracts[0].finite_target_ids, (3,))
+
+            del payload["contracts"][0]["finite_target_ids"]
+            report.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(
+                InterpreterMixedOriginalGenerationError,
+                "requires exactly one checked target",
             ):
                 load_checked_direct_call_summary_contract_proposals(
                     report,

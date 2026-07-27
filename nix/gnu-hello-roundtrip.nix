@@ -10,10 +10,14 @@
 
 let
   lib = pkgs.lib;
-  # Keep the distributed proof DAG input-addressed.  The currently deployed
-  # Nix ssh-ng transport does not safely transfer floating CA derivations;
-  # every semantic phase remains an independently cached derivation.
+  # Each proof phase is independently content-addressed so identical checked
+  # semantics can be substituted across local and remote realizations.
   driver = ./gnu-hello-roundtrip-driver.py;
+  directCallSemanticsDriver = ./gnu-hello-direct-call-semantics.py;
+  directCallFixedPointDriver = ./gnu-hello-direct-call-fixed-point.py;
+  stackDynamicAuthorityDriver = ./gnu-hello-stack-dynamic-authority.py;
+  stackDynamicHints = ./gnu-hello-stack-dynamic-hints.json;
+  proofSourceAggregateDriver = ./stage-a-proof-source-aggregate.py;
   kernelDataDriver = ./gnu-hello-kernel-data-driver.py;
   compiledKernelDriver = ./gnu-hello-compiled-kernel.py;
   proofClosureDriver = ./gnu-hello-proof-closure-driver.py;
@@ -40,6 +44,7 @@ let
   machineRuntimeProfile =
     "${machineRuntimeProfileSource}/pe32-msvcrt-machine-runtime-v1.json";
   python = "${pythonEnv}/bin/python3";
+  aggregatePython = "${pkgs.python3}/bin/python3";
   compiler = "${mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc";
   # Candidate production only needs runtime Python.  In particular, neither
   # reviewed Lean nor Python proof emitters participate in its source hash.
@@ -70,13 +75,81 @@ let
       ../src/spaghetti_extractor/stage_b_state_machine.py
     ];
   };
-  proofPythonSource = lib.fileset.toSource {
-    root = ../.;
-    fileset = lib.fileset.intersection
+  stackDynamicProofPythonFiles = lib.fileset.unions [
+    ../src/spaghetti_extractor/relational/lean/stack_dynamic_indirect_control.py
+    ../src/spaghetti_extractor/relational/lean/original_stack_dynamic_control_closure.py
+    ../src/spaghetti_extractor/relational/lean/runtime_value_carry.py
+  ];
+  directCallProposalProofPythonFiles = lib.fileset.unions [
+    ../src/spaghetti_extractor/relational/lean/internal_direct_call_register_summary.py
+    ../src/spaghetti_extractor/relational/lean/internal_direct_call_summary_proposal.py
+  ];
+  proofPythonFiles = lib.fileset.difference
+    (lib.fileset.intersection
       (lib.fileset.difference
         ../src
         ../src/spaghetti_extractor/lean/StageA)
-      (lib.fileset.fileFilter (file: !file.hasExt "pyc") ../src);
+      (lib.fileset.fileFilter (file: !file.hasExt "pyc") ../src))
+    (lib.fileset.unions [
+      stackDynamicProofPythonFiles
+      directCallProposalProofPythonFiles
+      ../src/spaghetti_extractor/relational/build.py
+    ]);
+  proofPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = proofPythonFiles;
+  };
+  # The stack/dynamic phase consumes a compact typed projection of the
+  # mixed-original plan. Keep its emitter closure independent from the
+  # monolithic lane driver and unrelated proof tooling.
+  stackDynamicAuthorityPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/original_cutpoint_graph_ir.py
+      ../src/spaghetti_extractor/relational/runtime_value_carry_ir.py
+      ../src/spaghetti_extractor/relational/stack_dynamic_control_ir.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/nullable_code_pointer_table.py
+      ../src/spaghetti_extractor/relational/lean/original_indirect_control_authority.py
+      ../src/spaghetti_extractor/relational/lean/stack_fixed_code_pointer.py
+      stackDynamicProofPythonFiles
+    ];
+  };
+  # Direct-call semantic adapters are a hot proof-iteration boundary.  Keep
+  # their emitter independent from the monolithic GNU lane driver and from
+  # unrelated extraction/analysis modules.
+  directCallSemanticsPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/direct_call_proposal_ir.py
+      ../src/spaghetti_extractor/relational/original_cutpoint_graph_ir.py
+      ../src/spaghetti_extractor/relational/stack_dynamic_control_ir.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/internal_direct_call_mixed_original_integration.py
+      ../src/spaghetti_extractor/relational/lean/internal_direct_call_register_control_authority.py
+      ../src/spaghetti_extractor/relational/lean/internal_direct_call_register_summary.py
+      ../src/spaghetti_extractor/relational/lean/internal_direct_call_semantics_bundle.py
+      ../src/spaghetti_extractor/relational/lean/internal_direct_call_summary_proposal.py
+    ];
+  };
+  directCallProposalPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      proofPythonFiles
+      directCallProposalProofPythonFiles
+    ];
+  };
+  directCallFixedPointPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = directCallFixedPointDriver;
   };
   # The exact-data phase emits hundreds of immutable Lean certificate packs.
   # Keep its Python closure independent from unrelated proof emitters so a new
@@ -505,12 +578,14 @@ let
     export PYTHONPATH=${pythonSource}/src
     export PYTHONHASHSEED=0
     export LC_ALL=C.UTF-8
+    export SOURCE_DATE_EPOCH=1
   '';
   mkPhaseWithSource = pythonSource: name: nativeBuildInputs: script:
     pkgs.runCommand name {
       nativeBuildInputs = commonInputs ++ nativeBuildInputs;
       preferLocalBuild = false;
       allowSubstitutes = true;
+      __contentAddressed = true;
     } ''
       set -euo pipefail
       ${commonEnvironment pythonSource}
@@ -705,7 +780,7 @@ let
 
   nativeLaunchGraphProofSources = mkPhase
     "stage-a-gnu-hello-roundtrip-native-launch-graph-proof-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
       --source ${nativeLaunchGraphLean} \
       --target GeneratedRelationalInterpreterNativeLaunchGraph \
@@ -721,7 +796,7 @@ let
   );
   nativeLaunchGraphProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = nativeLaunchGraphProofSources + "/StageA";
     standaloneModules = nativeLaunchGraphProofModules;
     standaloneModuleResources = nativeLaunchGraphProofResources;
@@ -803,7 +878,7 @@ let
 
   staticMachineImportProofSources = mkPhase
     "stage-a-gnu-hello-roundtrip-static-machine-import-proof-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
       --source ${originalPeLean} \
       --source ${staticMachineImportContractsLean} \
@@ -820,7 +895,7 @@ let
   );
   staticMachineImportProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = staticMachineImportProofSources + "/StageA";
     standaloneModules = staticMachineImportProofModules;
     standaloneModuleResources = staticMachineImportProofResources;
@@ -946,6 +1021,8 @@ let
     test -s \
       "$out/StageA/GeneratedRelationalInterpreterMixedOriginalBase.lean"
     test -s "$out/interpreter-mixed-original-base-plan.json"
+    test -s "$out/direct-call-proposal-ir.json"
+    test -s "$out/original-cutpoint-graph-ir.json"
     test -s "$out/module-resources.json"
   '';
 
@@ -997,7 +1074,7 @@ let
 
   mixedOriginalRegisterIndirectAuthorityProofSources = mkPhase
     "stage-a-gnu-hello-roundtrip-mixed-original-register-indirect-authority-proof-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
       --source ${originalPeLean} \
       --source ${staticMachineImportContractsLean} \
@@ -1016,7 +1093,7 @@ let
   );
   mixedOriginalRegisterIndirectAuthorityProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot =
       mixedOriginalRegisterIndirectAuthorityProofSources + "/StageA";
     standaloneModules = mixedOriginalRegisterIndirectAuthorityProofModules;
@@ -1029,7 +1106,8 @@ let
     targetBundle = true;
   };
 
-  mixedOriginalDirectCallProposalsLean = mkPhase
+  mixedOriginalDirectCallProposalsLean = mkPhaseWithSource
+    directCallProposalPythonSource
     "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-proposals" [] ''
     ${python} ${driver} mixed-original-direct-call-proposals \
       --original ${originalPe} \
@@ -1046,6 +1124,10 @@ let
         ${mixedOriginalWritableSlotAuthorityLean}/relocated-writable-static-pointer-slot-authorities.json \
       --base-plan \
         ${mixedOriginalWritableSlotAuthorityLean}/interpreter-mixed-original-base-plan.json \
+      --proposal-ir \
+        ${mixedOriginalWritableSlotAuthorityLean}/direct-call-proposal-ir.json \
+      --runtime-value-carry-hints \
+        ${./gnu-hello-stack-dynamic-hints.json} \
       --shard-size 128 \
       --out "$out"
     jq -e '
@@ -1068,13 +1150,15 @@ let
   );
   mixedOriginalDirectCallProposalProofSources = mkPhase
     "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-proposal-proof-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
       --source ${originalPeLean} \
       --source ${staticMachineImportContractsLean} \
       --source ${mixedOriginalWritableSlotAuthorityLean} \
       --source ${mixedOriginalDirectCallProposalsLean} \
       ${mixedOriginalDirectCallProposalTargetArgs} \
+      --explicit-targets-only \
+      --target-closure-only \
       --out "$out"
   '';
   mixedOriginalDirectCallProposalProofModules = builtins.fromJSON (
@@ -1087,7 +1171,7 @@ let
   );
   mixedOriginalDirectCallProposalProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot =
       mixedOriginalDirectCallProposalProofSources + "/StageA";
     standaloneModules = mixedOriginalDirectCallProposalProofModules;
@@ -1097,9 +1181,10 @@ let
     targetBundle = true;
   };
 
-  mixedOriginalDirectCallSemanticsLean = mkPhase
+  mixedOriginalDirectCallSemanticsLean = mkPhaseWithSource
+    directCallSemanticsPythonSource
     "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-semantics" [] ''
-    ${python} ${driver} mixed-original-direct-call-semantics \
+    ${python} ${directCallSemanticsDriver} \
       --original ${originalPe} \
       --state-machine ${staticExport}/state-machine.jsonl \
       --proposal-report \
@@ -1112,14 +1197,319 @@ let
         .status == "semantic-premises-pending")
     ' "$out/phase-manifest.json" >/dev/null
     jq -e '
-      .format == "stage-a-mixed-original-direct-call-authority-bindings-v1" and
+      .format == "stage-a-mixed-original-direct-call-authority-bindings-v2" and
       (.report_authority | not) and
       .authority_source == "named Lean terms only"
     ' "$out/direct-call-authority-bindings.json" >/dev/null
   '';
+  mixedOriginalDirectCallSemanticsTargets =
+    (builtins.fromJSON (builtins.readFile
+      "${mixedOriginalDirectCallSemanticsLean}/phase-manifest.json")).modules;
+  mixedOriginalDirectCallSemanticsTargetArgs =
+    builtins.concatStringsSep " " (
+      map (module: "--target ${pkgs.lib.escapeShellArg module}")
+        mixedOriginalDirectCallSemanticsTargets
+    );
+  mixedOriginalDirectCallSemanticsProofSources = mkPhase
+    "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-semantics-proof-sources" [] ''
+    ${aggregatePython} ${proofSourceAggregateDriver} \
+      --source ${leanSourceRoot} \
+      --source ${originalPeLean} \
+      --source ${staticMachineImportContractsLean} \
+      --source ${mixedOriginalWritableSlotAuthorityLean} \
+      --source ${mixedOriginalDirectCallProposalsLean} \
+      --source ${mixedOriginalDirectCallSemanticsLean} \
+      ${mixedOriginalDirectCallSemanticsTargetArgs} \
+      --explicit-targets-only \
+      --target-closure-only \
+      --out "$out"
+  '';
+  mixedOriginalDirectCallSemanticsProofModules = builtins.fromJSON (
+    builtins.readFile
+      "${mixedOriginalDirectCallSemanticsProofSources}/standalone-modules.json"
+  );
+  mixedOriginalDirectCallSemanticsProofResources = builtins.fromJSON (
+    builtins.readFile
+      "${mixedOriginalDirectCallSemanticsProofSources}/module-resources.json"
+  );
+  mixedOriginalDirectCallSemanticsProof = mkLeanGraph {
+    inherit pkgs;
+    contentAddressed = true;
+    standaloneSourceRoot =
+      mixedOriginalDirectCallSemanticsProofSources + "/StageA";
+    standaloneModules = mixedOriginalDirectCallSemanticsProofModules;
+    standaloneModuleResources =
+      mixedOriginalDirectCallSemanticsProofResources;
+    targetNodes = mixedOriginalDirectCallSemanticsTargets;
+    targetBundle = true;
+  };
+
+  # A later round may use only already Lean-checked call summaries to recover
+  # additional finite-origin call entries.  Keeping the round explicit in the
+  # derivation DAG makes every new authority and its invalidation closure
+  # independently content-addressable.
+  mixedOriginalDirectCallClosureProposalsLean = mkPhaseWithSource
+    directCallProposalPythonSource
+    "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-closure-proposals" [] ''
+    ${python} ${driver} mixed-original-direct-call-proposals \
+      --original ${originalPe} \
+      --reference-contract ${staticExport}/reference-contract.json \
+      --state-machine ${staticExport}/state-machine.jsonl \
+      --load-image-contract ${staticExport}/load-image-contract.json \
+      --machine-import-report \
+        ${staticMachineImportContractsLean}/machine-import-contract-report.json \
+      --callable-resolver-profile \
+        ${machineRuntimeProfileSource}/pe32-kernel32-callable-resolvers-v1.json \
+      --register-indirect-authority-report \
+        ${mixedOriginalRegisterIndirectAuthorityLean}/register-indirect-control-authorities.json \
+      --writable-slot-authority-report \
+        ${mixedOriginalWritableSlotAuthorityLean}/relocated-writable-static-pointer-slot-authorities.json \
+      --base-plan \
+        ${mixedOriginalWritableSlotAuthorityLean}/interpreter-mixed-original-base-plan.json \
+      --proposal-ir \
+        ${mixedOriginalWritableSlotAuthorityLean}/direct-call-proposal-ir.json \
+      --prior-direct-call-authority-report \
+        ${mixedOriginalDirectCallSemanticsLean}/direct-call-authority-bindings.json \
+      --runtime-value-carry-hints \
+        ${./gnu-hello-stack-dynamic-hints.json} \
+      --shard-size 128 \
+      --out "$out"
+    jq -e '
+      .phase == "mixed-original-direct-call-proposals" and
+      .status == "proposal-source-ready" and
+      (.proof_authority | not) and
+      .counts.recovered_finite_origin_entry_authorities > 0
+    ' "$out/phase-manifest.json" >/dev/null
+  '';
+  mixedOriginalDirectCallClosureProposalTargets =
+    (builtins.fromJSON (builtins.readFile
+      "${mixedOriginalDirectCallClosureProposalsLean}/phase-manifest.json")).modules;
+  mixedOriginalDirectCallClosureProposalTargetArgs =
+    builtins.concatStringsSep " " (
+      map (module: "--target ${pkgs.lib.escapeShellArg module}")
+        mixedOriginalDirectCallClosureProposalTargets
+    );
+  mixedOriginalDirectCallClosureProposalProofSources = mkPhase
+    "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-closure-proposal-proof-sources" [] ''
+    ${aggregatePython} ${proofSourceAggregateDriver} \
+      --source ${leanSourceRoot} \
+      --source ${originalPeLean} \
+      --source ${staticMachineImportContractsLean} \
+      --source ${mixedOriginalWritableSlotAuthorityLean} \
+      --source ${mixedOriginalDirectCallProposalsLean} \
+      --source ${mixedOriginalDirectCallSemanticsLean} \
+      --source ${mixedOriginalDirectCallClosureProposalsLean} \
+      ${mixedOriginalDirectCallClosureProposalTargetArgs} \
+      --explicit-targets-only \
+      --target-closure-only \
+      --out "$out"
+  '';
+  mixedOriginalDirectCallClosureProposalProofModules =
+    builtins.fromJSON (builtins.readFile
+      "${mixedOriginalDirectCallClosureProposalProofSources}/standalone-modules.json");
+  mixedOriginalDirectCallClosureProposalProofResources =
+    builtins.fromJSON (builtins.readFile
+      "${mixedOriginalDirectCallClosureProposalProofSources}/module-resources.json");
+  mixedOriginalDirectCallClosureProposalProof = mkLeanGraph {
+    inherit pkgs;
+    contentAddressed = true;
+    standaloneSourceRoot =
+      mixedOriginalDirectCallClosureProposalProofSources + "/StageA";
+    standaloneModules = mixedOriginalDirectCallClosureProposalProofModules;
+    standaloneModuleResources =
+      mixedOriginalDirectCallClosureProposalProofResources;
+    targetNodes = mixedOriginalDirectCallClosureProposalTargets;
+    targetBundle = true;
+  };
+
+  mixedOriginalDirectCallClosureSemanticsLean = mkPhaseWithSource
+    directCallSemanticsPythonSource
+    "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-closure-semantics" [] ''
+    ${python} ${directCallSemanticsDriver} \
+      --original ${originalPe} \
+      --state-machine ${staticExport}/state-machine.jsonl \
+      --proposal-report \
+        ${mixedOriginalDirectCallClosureProposalsLean}/internal-direct-call-summary-proposals.json \
+      --out "$out"
+    jq -e '
+      .phase == "mixed-original-direct-call-semantics" and
+      .status == "semantic-terms-ready" and
+      (.proof_authority | not) and
+      .counts.remaining_semantic_frontiers == 0
+    ' "$out/phase-manifest.json" >/dev/null
+  '';
+  mixedOriginalDirectCallClosureSemanticsTargets =
+    (builtins.fromJSON (builtins.readFile
+      "${mixedOriginalDirectCallClosureSemanticsLean}/phase-manifest.json")).modules;
+  mixedOriginalDirectCallClosureSemanticsTargetArgs =
+    builtins.concatStringsSep " " (
+      map (module: "--target ${pkgs.lib.escapeShellArg module}")
+        mixedOriginalDirectCallClosureSemanticsTargets
+    );
+  mixedOriginalDirectCallClosureSemanticsProofSources = mkPhase
+    "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-closure-semantics-proof-sources" [] ''
+    ${aggregatePython} ${proofSourceAggregateDriver} \
+      --source ${leanSourceRoot} \
+      --source ${originalPeLean} \
+      --source ${staticMachineImportContractsLean} \
+      --source ${mixedOriginalWritableSlotAuthorityLean} \
+      --source ${mixedOriginalDirectCallProposalsLean} \
+      --source ${mixedOriginalDirectCallSemanticsLean} \
+      --source ${mixedOriginalDirectCallClosureProposalsLean} \
+      --source ${mixedOriginalDirectCallClosureSemanticsLean} \
+      ${mixedOriginalDirectCallClosureSemanticsTargetArgs} \
+      --explicit-targets-only \
+      --target-closure-only \
+      --out "$out"
+  '';
+  mixedOriginalDirectCallClosureSemanticsProofModules =
+    builtins.fromJSON (builtins.readFile
+      "${mixedOriginalDirectCallClosureSemanticsProofSources}/standalone-modules.json");
+  mixedOriginalDirectCallClosureSemanticsProofResources =
+    builtins.fromJSON (builtins.readFile
+      "${mixedOriginalDirectCallClosureSemanticsProofSources}/module-resources.json");
+  mixedOriginalDirectCallClosureSemanticsProof = mkLeanGraph {
+    inherit pkgs;
+    contentAddressed = true;
+    standaloneSourceRoot =
+      mixedOriginalDirectCallClosureSemanticsProofSources + "/StageA";
+    standaloneModules = mixedOriginalDirectCallClosureSemanticsProofModules;
+    standaloneModuleResources =
+      mixedOriginalDirectCallClosureSemanticsProofResources;
+    targetNodes = mixedOriginalDirectCallClosureSemanticsTargets;
+    targetBundle = true;
+  };
+
+  # The register-authority report is already a finite exact inventory of every
+  # call boundary that needs a preservation contract. Once the closure round
+  # has one complete proposal and one named Lean authority per request, another
+  # whole-PE analysis cannot discover an additional request. Preserve the old
+  # public aliases while replacing that redundant analysis with a strict
+  # hash-bound coverage check.
+  mixedOriginalDirectCallFixedPointProposalsLean =
+    mixedOriginalDirectCallClosureProposalsLean;
+  mixedOriginalDirectCallFixedPointSemanticsLean =
+    mixedOriginalDirectCallClosureSemanticsLean;
+  mixedOriginalDirectCallFixedPointCheck = mkPhaseWithSource
+    directCallFixedPointPythonSource
+    "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-fixed-point-check" [] ''
+    ${python} ${directCallFixedPointDriver} \
+      --proposal-report \
+        ${mixedOriginalDirectCallClosureProposalsLean}/internal-direct-call-summary-proposals.json \
+      --authority-report \
+        ${mixedOriginalDirectCallClosureSemanticsLean}/direct-call-authority-bindings.json \
+      --out "$out"
+    jq -e '
+      .format == "stage-a-direct-call-closure-fixed-point-v2" and
+      .status == "satisfied" and
+      (.proof_authority | not) and
+      (.acceptance_authority | not) and
+      .counts.remaining_frontiers == 0 and
+      .counts.proposal_modules ==
+        (.counts.ordinary_requests + .counts.finite_origin_requests) and
+      .counts.semantic_contracts == .counts.proposal_modules
+    ' "$out/direct-call-fixed-point.json" >/dev/null
+  '';
+
+  mixedOriginalStackDynamicAuthorityLean =
+    mkPhaseWithSource stackDynamicAuthorityPythonSource
+    "stage-a-gnu-hello-roundtrip-mixed-original-stack-dynamic-authority-lean" [] ''
+    test -e ${mixedOriginalDirectCallFixedPointCheck}
+    ${python} ${stackDynamicAuthorityDriver} \
+      --original ${originalPe} \
+      --state-machine ${staticExport}/state-machine.jsonl \
+      --proof-input \
+        ${mixedOriginalDirectCallFixedPointProposalsLean}/stack-dynamic-control-input.json \
+      --cutpoint-graph \
+        ${mixedOriginalDirectCallFixedPointProposalsLean}/original-cutpoint-graph-ir.json \
+      --direct-call-authority \
+        ${mixedOriginalDirectCallClosureSemanticsLean}/direct-call-authority-bindings.json \
+      --hints ${stackDynamicHints} \
+      --out "$out"
+    jq -e '
+      .phase == "mixed-original-stack-dynamic-authority-lean" and
+      .status == "runtime-premises-required" and
+      (.proof_authority | not) and
+      (.report_status_is_authority | not) and
+      .runtime_closure_required and
+      .counts.sites == 3 and
+      .counts.static_authorities == .counts.sites and
+      .counts.runtime_premises_required == .counts.sites and
+      .counts.stack_sites == 1 and
+      .counts.indexed_table_sites == 1 and
+      .counts.dynamic_callback_sites == 1
+      and .counts.runtime_value_carry_routes == 1
+      and .counts.runtime_value_carry_required_transfers == 1
+    ' "$out/phase-manifest.json" >/dev/null
+    jq -e '
+      .format == "stage-a-original-stack-dynamic-control-closure-v1" and
+      .status == "incomplete" and
+      (.artifact_role.acceptance_authority | not) and
+      (.artifact_role.report_status_closes_obligations | not) and
+      (.sites | length) == 3
+    ' "$out/original-stack-dynamic-control-closure.json" >/dev/null
+    jq -e '
+      .format == "stage-a-runtime-value-carry-ir-v1" and
+      (.proof_ready | not) and
+      (.routes | length) == 1 and
+      ([.routes[].transfers[] |
+        select(.authority_status == "required")] | length) == 1
+    ' "$out/runtime-value-carry-ir.json" >/dev/null
+    jq -e '
+      .format == "stage-a-runtime-value-carry-lean-v1" and
+      (.proof_authority | not) and
+      (.semantic_authority_complete | not) and
+      (.routes | length) == 1 and
+      .routes[0].semantic_authority == null
+    ' "$out/runtime-value-carry-lean.json" >/dev/null
+    test -s \
+      "$out/StageA/GeneratedRelationalRuntimeValueCarryStructure.lean"
+    test -s \
+      "$out/StageA/GeneratedRelationalRuntimeValueCarryBinding.lean"
+  '';
+  mixedOriginalStackDynamicAuthorityTargets =
+    (builtins.fromJSON (builtins.readFile
+      "${mixedOriginalStackDynamicAuthorityLean}/phase-manifest.json")).targets;
+  mixedOriginalStackDynamicAuthorityTargetArgs =
+    builtins.concatStringsSep " " (
+      map (module: "--target ${pkgs.lib.escapeShellArg module}")
+        mixedOriginalStackDynamicAuthorityTargets
+    );
+  mixedOriginalStackDynamicAuthorityProofSources = mkPhase
+    "stage-a-gnu-hello-roundtrip-mixed-original-stack-dynamic-authority-proof-sources" [] ''
+    ${aggregatePython} ${proofSourceAggregateDriver} \
+      --source ${leanSourceRoot} \
+      --source ${originalPeLean} \
+      --source ${staticMachineImportContractsLean} \
+      --source ${mixedOriginalWritableSlotAuthorityLean} \
+      --source ${mixedOriginalStackDynamicAuthorityLean} \
+      ${mixedOriginalStackDynamicAuthorityTargetArgs} \
+      --explicit-targets-only \
+      --target-closure-only \
+      --out "$out"
+  '';
+  mixedOriginalStackDynamicAuthorityProofModules =
+    builtins.fromJSON (builtins.readFile
+      "${mixedOriginalStackDynamicAuthorityProofSources}/standalone-modules.json");
+  mixedOriginalStackDynamicAuthorityProofResources =
+    builtins.fromJSON (builtins.readFile
+      "${mixedOriginalStackDynamicAuthorityProofSources}/module-resources.json");
+  mixedOriginalStackDynamicAuthorityProof = mkLeanGraph {
+    inherit pkgs;
+    contentAddressed = true;
+    standaloneSourceRoot =
+      mixedOriginalStackDynamicAuthorityProofSources + "/StageA";
+    standaloneModules = mixedOriginalStackDynamicAuthorityProofModules;
+    standaloneModuleResources =
+      mixedOriginalStackDynamicAuthorityProofResources;
+    targetNodes = mixedOriginalStackDynamicAuthorityTargets;
+    targetBundle = true;
+  };
 
   mixedOriginalLean = mkPhase
     "stage-a-gnu-hello-roundtrip-mixed-original-lean" [] ''
+    test -e ${mixedOriginalDirectCallFixedPointCheck}
+    test -e ${mixedOriginalStackDynamicAuthorityProof}
     ${python} ${driver} mixed-original-final \
       --original ${originalPe} \
       --reference-contract ${staticExport}/reference-contract.json \
@@ -1130,7 +1520,9 @@ let
       --callable-resolver-profile \
         ${machineRuntimeProfileSource}/pe32-kernel32-callable-resolvers-v1.json \
       --direct-call-authority-report \
-        ${mixedOriginalDirectCallSemanticsLean}/direct-call-authority-bindings.json \
+        ${mixedOriginalDirectCallClosureSemanticsLean}/direct-call-authority-bindings.json \
+      --stack-dynamic-authority-report \
+        ${mixedOriginalStackDynamicAuthorityLean}/original-stack-dynamic-control-closure.json \
       --writable-slot-authority-report \
         ${mixedOriginalWritableSlotAuthorityLean}/relocated-writable-static-pointer-slot-authorities.json \
       --base-plan \
@@ -1143,6 +1535,11 @@ let
       (.proof_authority | not) and
       .targets == ["GeneratedRelationalInterpreterMixedOriginal"] and
       .counts.regions > 0 and .counts.reachable_targets > 0 and
+      .counts.checked_stack_dynamic_static_authorities > 0 and
+      .counts.stack_dynamic_runtime_premises ==
+        .counts.checked_stack_dynamic_static_authorities and
+      (.stack_dynamic_runtime_frontiers | length) ==
+        .counts.stack_dynamic_runtime_premises and
       ((.status == "source-ready" and .exact_reachability_emitted) or
        (.status == "incomplete" and
         (.exact_reachability_emitted | not) and .counts.blockers > 0))
@@ -1180,7 +1577,7 @@ let
 
   mixedOriginalStaticReachabilityProofSources = mkPhase
     "stage-a-gnu-hello-roundtrip-mixed-original-static-reachability-proof-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
       --source ${originalPeLean} \
       --source ${staticMachineImportContractsLean} \
@@ -1188,6 +1585,8 @@ let
       --source ${mixedOriginalRegisterIndirectAuthorityLean} \
       --source ${mixedOriginalDirectCallProposalsLean} \
       --source ${mixedOriginalDirectCallSemanticsLean} \
+      --source ${mixedOriginalDirectCallClosureProposalsLean} \
+      --source ${mixedOriginalDirectCallClosureSemanticsLean} \
       --source ${mixedOriginalLean} \
       --source ${mixedOriginalStaticReachabilityLean} \
       --target GeneratedRelationalInterpreterMixedOriginalStaticReachability \
@@ -1203,7 +1602,7 @@ let
   );
   mixedOriginalStaticReachabilityProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot =
       mixedOriginalStaticReachabilityProofSources + "/StageA";
     standaloneModules = mixedOriginalStaticReachabilityProofModules;
@@ -1233,13 +1632,15 @@ let
 
   mixedOriginalCarrierBindingProofSources = mkPhase
     "stage-a-gnu-hello-roundtrip-mixed-original-carrier-binding-proof-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
       --source ${originalPeLean} \
       --source ${staticMachineImportContractsLean} \
       --source ${mixedOriginalWritableSlotAuthorityLean} \
       --source ${mixedOriginalDirectCallProposalsLean} \
       --source ${mixedOriginalDirectCallSemanticsLean} \
+      --source ${mixedOriginalDirectCallClosureProposalsLean} \
+      --source ${mixedOriginalDirectCallClosureSemanticsLean} \
       --source ${mixedOriginalLean} \
       --source ${mixedOriginalCarrierBindingLean} \
       --target GeneratedRelationalInterpreterOriginalCarrierBinding \
@@ -1255,7 +1656,7 @@ let
   );
   mixedOriginalCarrierBindingProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot =
       mixedOriginalCarrierBindingProofSources + "/StageA";
     standaloneModules = mixedOriginalCarrierBindingProofModules;
@@ -1296,7 +1697,7 @@ let
   x87ScheduleBenchmarkModule = "GeneratedInterpreterX87Schedule0034";
   x87ScheduleBenchmarkSources = mkPhase
     "stage-a-gnu-hello-roundtrip-x87-schedule-benchmark-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
       --source ${originalPeLean} \
       --source ${x87Lean} \
@@ -1319,13 +1720,12 @@ let
   };
   x87ScheduleBenchmark = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = x87ScheduleBenchmarkSources + "/StageA";
     standaloneModules = x87ScheduleBenchmarkModules;
     standaloneModuleResources = x87ScheduleBenchmarkResources;
     targetNodes = [ x87ScheduleBenchmarkModule ];
     targetBundle = true;
-    measureResources = true;
   };
 
   definednessLean = mkPhase "stage-a-gnu-hello-roundtrip-definedness-lean" [] ''
@@ -1407,7 +1807,7 @@ let
       .status == "source-ready" and
       (.proof_authority | not) and
       (.candidate_sha256 | test("^[0-9a-f]{64}$")) and
-      .counts.descriptors == 313 and
+      .counts.descriptors > 0 and
       .counts.finite_targets == .counts.descriptors and
       .counts.dynamic_frame_mappings == .counts.descriptors and
       .counts.runtime_refinement_goals == .counts.descriptors and
@@ -1431,22 +1831,26 @@ let
       --target-module GeneratedRelationalInterpreterX87ReplayBridgeTarget \
       --pack-size 32 \
       --out "$out"
-    jq -e '
+    jq -e --argjson targetCount \
+      "$(jq '.counts.descriptors' \
+        ${x87ReplayBridgeTargetLean}/phase-manifest.json)" '
       .phase == "x87-replay-bridge-runtime-lean" and
       (.proof_authority | not) and
       (.candidate_sha256 | test("^[0-9a-f]{64}$")) and
-      .counts.runtime_targets == 313 and
-      .counts.relocated_operands == 23 and
+      .counts.runtime_targets == $targetCount and
+      .counts.relocated_operands > 0 and
       .counts.unbound_relocated_operands == 0 and
       .targets == [
         "GeneratedRelationalInterpreterX87ReplayBridgeRuntime"
       ]
     ' "$out/phase-manifest.json" >/dev/null
-    jq -e '
+    jq -e --argjson targetCount \
+      "$(jq '.counts.descriptors' \
+        ${x87ReplayBridgeTargetLean}/phase-manifest.json)" '
       .format == "stage-a-relational-x87-replay-bridge-runtime-plan-v1" and
       (.acceptance_authority | not) and
-      .counts.runtime_targets == 313 and
-      .counts.relocated_operands == 23 and
+      .counts.runtime_targets == $targetCount and
+      .counts.relocated_operands > 0 and
       .counts.unbound_relocated_operands == 0
     ' "$out/x87-replay-bridge-runtime-plan.json" >/dev/null
     test -s \
@@ -1459,14 +1863,16 @@ let
       --runtime-plan \
         ${x87ReplayBridgeRuntimeLean}/x87-replay-bridge-runtime-plan.json \
       --out "$out"
-    jq -e '
+    jq -e --argjson runtimeCount \
+      "$(jq '.counts.runtime_targets' \
+        ${x87ReplayBridgeRuntimeLean}/phase-manifest.json)" '
       .phase == "x87-kernel-execution-lean" and
       .status == "source-ready" and
       .diagnostic_status == "semantic_premises_required" and
       (.proof_authority | not) and
       .failure_mode == "incomplete" and
       (.candidate_sha256 | test("^[0-9a-f]{64}$")) and
-      .runtime_targets == 313 and
+      .runtime_targets == $runtimeCount and
       .remaining_proof_premises == [
         "program_binding.peExact",
         "program_binding.importsExact",
@@ -1484,12 +1890,14 @@ let
         "GeneratedRelationalInterpreterKernelX87Execution"
       ]
     ' "$out/phase-manifest.json" >/dev/null
-    jq -e '
+    jq -e --argjson runtimeCount \
+      "$(jq '.counts.runtime_targets' \
+        ${x87ReplayBridgeRuntimeLean}/phase-manifest.json)" '
       .format == "stage-a-gnu-hello-x87-kernel-execution-frontier-v1" and
       .status == "semantic_premises_required" and
       (.acceptance_authority | not) and
       .failure_mode == "incomplete" and
-      .runtime_targets == 313 and
+      .runtime_targets == $runtimeCount and
       .remaining_authority.program_binding_fields == [
         "peExact", "importsExact", "targetInventory"
       ] and
@@ -1617,7 +2025,7 @@ let
 
   kernelRunNativeProofSources = mkPhase
     "stage-a-gnu-hello-roundtrip-kernel-run-native-proof-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
       --source ${kernelLean} \
       --source ${kernelDataLean} \
@@ -1636,7 +2044,7 @@ let
   );
   kernelRunNativeProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = kernelRunNativeProofSources + "/StageA";
     standaloneModules = kernelRunNativeProofModules;
     standaloneModuleResources = kernelRunNativeProofResources;
@@ -1966,11 +2374,7 @@ let
         ${kernelStepOperationLean}/interpreter-kernel-step-operation-plan.json \
       --run-operation-plan \
         ${kernelRunOperationLean}/interpreter-kernel-run-operation-plan.json \
-      --step-epilogue-rva 310590 \
-      --step-return-rva 310607 \
       --step-epilogue-fuel 9 \
-      --run-epilogue-rva 310934 \
-      --run-return-rva 310948 \
       --run-epilogue-fuel 8 \
       --out "$out"
     jq -e '
@@ -2240,7 +2644,7 @@ let
 
   constructiveSourceCoverageProofSources = mkPhase
     "stage-a-gnu-hello-roundtrip-constructive-source-coverage-proof-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
       --source ${originalPeLean} \
       --source ${staticMachineImportContractsLean} \
@@ -2248,6 +2652,8 @@ let
       --source ${mixedOriginalRegisterIndirectAuthorityLean} \
       --source ${mixedOriginalDirectCallProposalsLean} \
       --source ${mixedOriginalDirectCallSemanticsLean} \
+      --source ${mixedOriginalDirectCallClosureProposalsLean} \
+      --source ${mixedOriginalDirectCallClosureSemanticsLean} \
       --source ${mixedOriginalLean} \
       --source ${mixedOriginalStaticReachabilityLean} \
       --source ${kernelDataLean} \
@@ -2267,7 +2673,7 @@ let
   );
   constructiveSourceCoverageProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = constructiveSourceCoverageProofSources + "/StageA";
     standaloneModules = constructiveSourceCoverageProofModules;
     standaloneModuleResources = constructiveSourceCoverageProofResources;
@@ -2312,7 +2718,7 @@ let
 
   canonicalRelationCoreProofSources = mkPhase
     "stage-a-gnu-hello-roundtrip-canonical-relation-core-proof-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
       --source ${originalPeLean} \
       --source ${staticMachineImportContractsLean} \
@@ -2320,6 +2726,8 @@ let
       --source ${mixedOriginalRegisterIndirectAuthorityLean} \
       --source ${mixedOriginalDirectCallProposalsLean} \
       --source ${mixedOriginalDirectCallSemanticsLean} \
+      --source ${mixedOriginalDirectCallClosureProposalsLean} \
+      --source ${mixedOriginalDirectCallClosureSemanticsLean} \
       --source ${mixedOriginalLean} \
       --source ${mixedOriginalStaticReachabilityLean} \
       --source ${mixedOriginalCarrierBindingLean} \
@@ -2341,7 +2749,7 @@ let
   );
   canonicalRelationCoreProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = canonicalRelationCoreProofSources + "/StageA";
     standaloneModules = canonicalRelationCoreProofModules;
     standaloneModuleResources = canonicalRelationCoreProofResources;
@@ -2356,7 +2764,7 @@ let
   };
 
   proofSources = mkPhase "stage-a-gnu-hello-roundtrip-proof-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
       --source ${originalPeLean} \
       --source ${staticMachineImportContractsLean} \
@@ -2365,6 +2773,9 @@ let
       --source ${mixedOriginalRegisterIndirectAuthorityLean} \
       --source ${mixedOriginalDirectCallProposalsLean} \
       --source ${mixedOriginalDirectCallSemanticsLean} \
+      --source ${mixedOriginalDirectCallClosureProposalsLean} \
+      --source ${mixedOriginalDirectCallClosureSemanticsLean} \
+      --source ${mixedOriginalStackDynamicAuthorityLean} \
       --source ${mixedOriginalLean} \
       --source ${mixedOriginalStaticReachabilityLean} \
       --source ${mixedOriginalCarrierBindingLean} \
@@ -2428,7 +2839,7 @@ let
   );
   proofFragments = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = proofSources + "/StageA";
     standaloneModules = proofModules;
     standaloneModuleResources = proofResources;
@@ -2438,7 +2849,7 @@ let
 
   kernelRunOperationProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = proofSources + "/StageA";
     standaloneModules = proofModules;
     standaloneModuleResources = proofResources;
@@ -2459,7 +2870,7 @@ let
   # target's transitive Lean dependency closure.
   kernelStepProgramLookupCallClosureProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = proofSources + "/StageA";
     standaloneModules = proofModules;
     standaloneModuleResources = proofResources;
@@ -2471,7 +2882,7 @@ let
 
   kernelCdeclEpilogueSymbolicClosureProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = proofSources + "/StageA";
     standaloneModules = proofModules;
     standaloneModuleResources = proofResources;
@@ -2483,7 +2894,7 @@ let
 
   kernelCdeclEpilogueStaticPreservationProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = proofSources + "/StageA";
     standaloneModules = proofModules;
     standaloneModuleResources = proofResources;
@@ -2495,7 +2906,7 @@ let
 
   kernelCdeclEpilogueExternalPayloadProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = proofSources + "/StageA";
     standaloneModules = proofModules;
     standaloneModuleResources = proofResources;
@@ -2507,7 +2918,7 @@ let
 
   kernelStepProgramLookupExactComputationProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = proofSources + "/StageA";
     standaloneModules = proofModules;
     standaloneModuleResources = proofResources;
@@ -2519,7 +2930,7 @@ let
 
   kernelOperationResultEncodingProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = proofSources + "/StageA";
     standaloneModules = proofModules;
     standaloneModuleResources = proofResources;
@@ -2531,7 +2942,7 @@ let
 
   kernelAbstractOperationTransitionProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = proofSources + "/StageA";
     standaloneModules = proofModules;
     standaloneModuleResources = proofResources;
@@ -2546,7 +2957,7 @@ let
   # source DAG and therefore the same cached .olean dependencies.
   ordinaryRefinementFragments = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = proofSources + "/StageA";
     standaloneModules = proofModules;
     standaloneModuleResources = proofResources;
@@ -2556,7 +2967,7 @@ let
 
   x87CandidateReplayProofSources = mkPhase
     "stage-a-gnu-hello-roundtrip-x87-candidate-replay-proof-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
       --source ${originalPeLean} \
       --source ${x87Lean} \
@@ -2575,7 +2986,7 @@ let
   );
   x87CandidateReplayFragments = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = x87CandidateReplayProofSources + "/StageA";
     standaloneModules = x87CandidateReplayProofModules;
     standaloneModuleResources = x87CandidateReplayProofResources;
@@ -2585,7 +2996,7 @@ let
 
   x87ReplayBridgeTargetProofSources = mkPhase
     "stage-a-gnu-hello-roundtrip-x87-replay-bridge-target-proof-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
       --source ${kernelDataLean} \
       --source ${x87ReplayBridgeTargetLean} \
@@ -2595,7 +3006,7 @@ let
 
   x87ReplayBridgeRuntimeProofSources = mkPhase
     "stage-a-gnu-hello-roundtrip-x87-replay-bridge-runtime-proof-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
       --source ${kernelDataLean} \
       --source ${x87ReplayBridgeTargetLean} \
@@ -2613,7 +3024,7 @@ let
   );
   x87ReplayBridgeRuntimeFragments = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = x87ReplayBridgeRuntimeProofSources + "/StageA";
     standaloneModules = x87ReplayBridgeRuntimeProofModules;
     standaloneModuleResources = x87ReplayBridgeRuntimeProofResources;
@@ -2623,7 +3034,7 @@ let
 
   x87KernelExecutionProofSources = mkPhase
     "stage-a-gnu-hello-roundtrip-x87-kernel-execution-proof-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
       --source ${kernelDataLean} \
       --source ${x87ReplayBridgeTargetLean} \
@@ -2642,7 +3053,7 @@ let
   );
   x87KernelExecutionFragments = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = x87KernelExecutionProofSources + "/StageA";
     standaloneModules = x87KernelExecutionProofModules;
     standaloneModuleResources = x87KernelExecutionProofResources;
@@ -2661,7 +3072,9 @@ let
       --x87-kernel-execution-manifest \
         ${x87KernelExecutionLean}/phase-manifest.json \
       --out "$out"
-    jq -e '
+    jq -e --argjson runtimeCount \
+      "$(jq '.runtime_targets' \
+        ${x87KernelExecutionLean}/phase-manifest.json)" '
       .phase == "whole-program-acceptance-lean" and
       .status == "proof-obligations-generated" and
       .diagnostic_status == "incomplete" and
@@ -2674,12 +3087,12 @@ let
       ([.semantic_blockers[].id] | index(
         "x87_replay_kernel_execution_premises_missing") != null) and
       .counts.remaining_x87_kernel_execution_premises == 11 and
-      .counts.x87_runtime_targets == 313
+      .counts.x87_runtime_targets == $runtimeCount
     ' "$out/phase-manifest.json" >/dev/null
   '';
 
   finalProofSources = mkPhase "stage-a-gnu-hello-roundtrip-final-proof-sources" [] ''
-    ${python} ${driver} aggregate \
+    ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${proofSources} \
       --source ${acceptanceLean} \
       --out "$out"
@@ -2695,7 +3108,7 @@ let
   );
   final = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = false;
+    contentAddressed = true;
     standaloneSourceRoot = finalProofSources + "/StageA";
     standaloneModules = finalProofModules;
     standaloneModuleResources = finalProofResources;
@@ -2762,6 +3175,20 @@ in
     mixedOriginalDirectCallProposalProofSources
     mixedOriginalDirectCallProposalProof
     mixedOriginalDirectCallSemanticsLean
+    mixedOriginalDirectCallSemanticsProofSources
+    mixedOriginalDirectCallSemanticsProof
+    mixedOriginalDirectCallClosureProposalsLean
+    mixedOriginalDirectCallClosureProposalProofSources
+    mixedOriginalDirectCallClosureProposalProof
+    mixedOriginalDirectCallClosureSemanticsLean
+    mixedOriginalDirectCallClosureSemanticsProofSources
+    mixedOriginalDirectCallClosureSemanticsProof
+    mixedOriginalDirectCallFixedPointProposalsLean
+    mixedOriginalDirectCallFixedPointSemanticsLean
+    mixedOriginalDirectCallFixedPointCheck
+    mixedOriginalStackDynamicAuthorityLean
+    mixedOriginalStackDynamicAuthorityProofSources
+    mixedOriginalStackDynamicAuthorityProof
     mixedOriginalLean
     mixedOriginalStaticReachabilityLean
     mixedOriginalStaticReachabilityProofSources

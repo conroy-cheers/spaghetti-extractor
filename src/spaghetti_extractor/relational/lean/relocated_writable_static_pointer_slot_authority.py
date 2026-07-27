@@ -239,6 +239,7 @@ class DecomposedAuthorityAdapter:
     namespace: str
     valid_term: str
     indirect_exit_term: str
+    indirect_exit_certificate_exact_term: str
     callable_route_authority_term: str | None
     path: Path
 
@@ -249,10 +250,25 @@ def load_relocated_writable_static_pointer_slot_authorities(
     original_sha256: str,
     state_machine_sha256: str,
     machine_import_report_sha256: str,
-    mixed_original_plan: InterpreterMixedOriginalPlan,
+    mixed_original_plan: InterpreterMixedOriginalPlan | None = None,
+    mixed_original_plan_sha256_expected: str | None = None,
 ) -> tuple[AuthorityReference, ...]:
     """Load named authority references after checking all exact inputs."""
 
+    if (mixed_original_plan is None) == (
+        mixed_original_plan_sha256_expected is None
+    ):
+        raise RelocatedWritableStaticPointerSlotAuthorityError(
+            "exactly one mixed-original plan or canonical plan digest is required"
+        )
+    expected_plan_sha256 = (
+        mixed_original_plan_sha256(mixed_original_plan)
+        if mixed_original_plan is not None
+        else _digest(
+            mixed_original_plan_sha256_expected,
+            "mixed_original_plan_sha256_expected",
+        )
+    )
     expected = {
         "original_sha256": _digest(original_sha256, "original_sha256"),
         "state_machine_sha256": _digest(
@@ -261,9 +277,7 @@ def load_relocated_writable_static_pointer_slot_authorities(
         "machine_import_report_sha256": _digest(
             machine_import_report_sha256, "machine_import_report_sha256"
         ),
-        "mixed_original_plan_sha256": mixed_original_plan_sha256(
-            mixed_original_plan
-        ),
+        "mixed_original_plan_sha256": expected_plan_sha256,
     }
     path = Path(report)
     try:
@@ -491,6 +505,9 @@ def write_decomposed_writable_static_pointer_slot_adapters(
         path = stage_a / f"{module_name}.lean"
         valid_term = f"{namespace}.consumedBindingValidChecked"
         indirect_exit_term = f"{namespace}.consumedIndirectExitCertificate"
+        indirect_exit_certificate_exact_term = (
+            f"{namespace}.consumedIndirectExitCertificateExact"
+        )
         callable_route_authority_term: str | None = None
         if reference.value_relation == "finite_origins":
             valid_term = f"{namespace}.consumedFiniteAuthorityChecked"
@@ -598,6 +615,10 @@ def consumedIndirectExitCertificate :
       {carrier} {region}.inputInvariant {local_original} {local_candidate} :=
   consumedCallableIndirectExitCertificate.generic
 
+theorem consumedIndirectExitCertificateExact :
+    consumedIndirectExitCertificate.certificate =
+      consumedRoute.indirectCertificate := rfl
+
 {register_tail_authorities}
 
 #print axioms consumedFiniteAuthorityChecked
@@ -605,6 +626,7 @@ def consumedIndirectExitCertificate :
 #print axioms consumedOutcomeChecked
 #print axioms consumedCallableIndirectExitRouteAuthority
 #print axioms consumedIndirectExitCertificate
+#print axioms consumedIndirectExitCertificateExact
 
 end {namespace}
 """,
@@ -614,10 +636,12 @@ end {namespace}
             authority_type = "CheckedAuthority"
             binding_type = "OriginalStaticWordSlotBinding"
             adapter = "checkedStaticWordSlotIndirectCertificate"
+            raw_adapter = "staticWordSlotIndirectCertificate"
         elif reference.key.transfer_kind == "jump":
             authority_type = "CheckedJumpAuthority"
             binding_type = "OriginalStaticWordJumpSlotBinding"
             adapter = "checkedStaticWordSlotJumpIndirectCertificate"
+            raw_adapter = "staticWordSlotJumpIndirectCertificate"
         else:
             raise AssertionError("validated transfer kind disappeared")
         if reference.value_relation != "finite_origins":
@@ -661,8 +685,14 @@ def consumedIndirectExitCertificate :
       {carrier} {region}.inputInvariant {local_original} {local_candidate}
       {local_claim} {local_checked} (by decide +kernel)
 
+theorem consumedIndirectExitCertificateExact :
+    consumedIndirectExitCertificate.certificate =
+      StageA.Relational.IndirectExitAdapters.{raw_adapter}
+        {local_claim} := rfl
+
 #print axioms consumedBindingValidChecked
 #print axioms consumedIndirectExitCertificate
+#print axioms consumedIndirectExitCertificateExact
 
 end {namespace}
 """,
@@ -675,6 +705,9 @@ end {namespace}
                 namespace=namespace,
                 valid_term=valid_term,
                 indirect_exit_term=indirect_exit_term,
+                indirect_exit_certificate_exact_term=(
+                    indirect_exit_certificate_exact_term
+                ),
                 callable_route_authority_term=callable_route_authority_term,
                 path=path,
             )

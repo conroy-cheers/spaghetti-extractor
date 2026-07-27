@@ -1085,10 +1085,9 @@ def produce_checked_violation(
     checked = stage_a_build_relational(
         prepared=counterexample_prepared,
         out=out / "nix-node",
-        executor="nix",
         flake=flake,
         builders_file=builders_file,
-        target_node="relationalcounterexample",
+        target_nodes=["relationalcounterexample"],
     )
     combined = _focused_node_lean_output(out / "nix-node", checked)
     observed_axioms: set[str] = set()

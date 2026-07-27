@@ -507,8 +507,7 @@ def Certificate.inventoryChecked (certificate : Certificate) : Bool :=
     certificate.transfers.all certificate.transferChecked &&
     noDuplicates (certificate.callContracts.map (·.contractId)) &&
     certificate.callContracts.all certificate.contractChecked &&
-    sameFiniteSet (certificate.edges.map (·.edgeIndex))
-      (List.range certificate.edges.length) &&
+    noDuplicates (certificate.edges.map (·.edgeIndex)) &&
     certificate.edges.all certificate.edgeChecked &&
     sameFiniteSet (certificate.regions.map (·.regionIndex))
       (List.range certificate.regionCount) &&

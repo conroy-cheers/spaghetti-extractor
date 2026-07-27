@@ -1810,7 +1810,8 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 node for node in graph["nodes"]
                 if node["modules"] == ["RelationalLaunchRealizabilityCertificate"]
             )
-            self.assertEqual(launch_node["resource_class"], "light")
+            self.assertEqual(launch_node["resource_class"], "high-memory")
+            self.assertGreaterEqual(launch_node["estimated_memory_mb"], 10240)
             launch_leaf_nodes = [
                 node for node in graph["nodes"]
                 if len(node["modules"]) == 1
@@ -6721,7 +6722,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 stage_a_build_relational(
                     prepared=prepared,
                     out=root / "missing-node",
-                    target_node="does-not-exist",
+                    target_nodes=["does-not-exist"],
                 )
             existing_node = graph["nodes"][0]["id"]
             with self.assertRaisesRegex(StageAInputError, "contains duplicates"):
@@ -7276,14 +7277,28 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 prepared=prepared,
                 out=root / "report",
                 flake=Path(__file__).parents[1],
+                builders_file=(
+                    Path(builders)
+                    if (
+                        builders := os.environ.get(
+                            "SPAGHETTI_EXTRACTOR_STAGE_A_TEST_BUILDERS"
+                        )
+                    )
+                    else None
+                ),
             )
 
-            self.assertEqual(result["status"], "incomplete", result)
+            self.assertEqual(result["status"], "pass", result)
             self.assertTrue(result["checks"]["lean_trust_zero"])
             self.assertEqual(result["lean_audit"]["unexpected_axioms"], [])
             self.assertGreater(result["provenance"]["node_derivations"], 1)
             self.assertEqual(result["provenance"]["nix_paths"], 1)
-            self.assertGreater(result["provenance"]["dependency_pack_bytes"], 0)
+            self.assertEqual(result["provenance"]["dependency_archive_bytes"], 0)
+            self.assertEqual(
+                result["provenance"]["materialized_dependency_oleans"],
+                0,
+            )
+            self.assertGreater(result["provenance"]["dependency_references"], 1)
             provenance = json.loads(
                 (root / "report" / "nix-provenance.json").read_text(encoding="utf-8")
             )
@@ -7293,10 +7308,42 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 provenance["nodes"][0]["outputs"][0]["olean_sha256"],
                 r"^[0-9a-f]{64}$",
             )
+            self.assertRegex(
+                provenance["nodes"][0]["semantic_id"],
+                r"^[0-9a-f]{64}$",
+            )
             self.assertEqual(
-                provenance["dependency_pack"]["node_count"],
+                provenance["dependency_view"]["node_count"],
                 result["provenance"]["node_derivations"] - 1,
             )
+            source_reference = json.loads(
+                (root / "report" / "lean-source-reference.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertFalse(source_reference["materialized"])
+            self.assertEqual(
+                source_reference["module_count"],
+                result["counts"]["logical_modules"],
+            )
+            semantic_reference = json.loads(
+                (
+                    root / "report" / "semantic-graph-reference.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                semantic_reference["format"],
+                "stage-a-lean-semantic-graph-reference-v1",
+            )
+            self.assertRegex(
+                semantic_reference["root_semantic_id"],
+                r"^[0-9a-f]{64}$",
+            )
+            self.assertEqual(
+                provenance["semantic_graph_reference"],
+                semantic_reference,
+            )
+            self.assertFalse((root / "report" / "lean").exists())
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for process cancellation")
     def test_relational_lean_process_is_terminated_on_cancellation(self):

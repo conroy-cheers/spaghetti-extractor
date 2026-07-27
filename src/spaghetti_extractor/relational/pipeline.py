@@ -187,7 +187,6 @@ from .contract import (
 
 
 from .verdict import (
-    _certificate_hashes_match,
     _write_incomplete,
     _write_relational_verdict,
 )
@@ -236,12 +235,7 @@ from .lean.analysis_source import (
     _copy_relational_kernel_sources,
 )
 from .pair_normalization import load_pair_normalization
-from .proposal_artifact import (
-    RELATIONAL_PROPOSAL_MANIFEST,
-    copy_relational_proposal,
-    validate_relational_proposal,
-    write_relational_proposal_manifest,
-)
+from .proposal_artifact import write_relational_proposal_manifest
 from .report_schema import RELATIONAL_PREPARED_REPORT_FILES
 from .runtime_frame_artifact import (
     RUNTIME_FRAME_AFFINE_VIABILITY_FILE,
@@ -249,10 +243,7 @@ from .runtime_frame_artifact import (
     validate_runtime_frame_affine_viability_payload,
 )
 from .register_dataflow_artifact import register_transfer_table_payload
-from .register_dataflow_seed import (
-    parse_register_dataflow_problem_seed,
-    register_dataflow_problem_seed_payload,
-)
+from .register_dataflow_seed import register_dataflow_problem_seed_payload
 from .register_transfer_ir import register_transfer_programs_payload
 from .side_extraction import load_side_extraction, load_side_isa
 from .schema import (
@@ -1688,197 +1679,6 @@ def stage_a_discover_relational_proposals(
     )
 
 
-def _legacy_stage_a_assemble_relational_analysis(
-    *,
-    proposal: Path,
-    register_dataflow_aggregate: Path,
-    out: Path,
-    original_isa: Path | None = None,
-    candidate_isa: Path | None = None,
-) -> dict[str, Any]:
-    proposal = Path(proposal)
-    out = Path(out)
-    source_manifest = validate_relational_proposal(proposal)
-    copy_relational_proposal(proposal, out)
-    copied_manifest = validate_relational_proposal(out)
-    if copied_manifest != source_manifest:
-        raise StageAInputError("copied relational proposal closure changed")
-    (out / RELATIONAL_PROPOSAL_MANIFEST).unlink()
-
-    original_artifact = out / "artifacts" / "original.pe"
-    candidate_artifact = out / "artifacts" / "candidate.pe"
-    original_bin = _parse_stage_a_pe(original_artifact)
-    candidate_bin = _parse_stage_a_pe(candidate_artifact)
-    if original_bin.sha256 != source_manifest.original_sha256:
-        raise StageAInputError("proposal original PE identity changed")
-    if candidate_bin.sha256 != source_manifest.candidate_sha256:
-        raise StageAInputError("proposal candidate PE identity changed")
-
-    normalized = _load_contract(out / "relation-contract.json")
-    behaviors = parse_decoded_behaviors(
-        _read_json(out / "relational-decoded-behaviors.json"),
-        expected_original_sha256=original_bin.sha256,
-        expected_candidate_sha256=candidate_bin.sha256,
-        expected_relation_contract_sha256=sha256_file(
-            out / "relation-contract.json"
-        ),
-        expected_region_count=len(normalized.get("regions", [])),
-    )
-    seed = parse_register_dataflow_problem_seed(
-        _read_json(out / "relational-register-dataflow-problem-seed.json"),
-        expected_original_sha256=original_bin.sha256,
-        expected_candidate_sha256=candidate_bin.sha256,
-        expected_contract_sha256=_canonical_json_sha256(normalized),
-        expected_behaviors_sha256=_canonical_json_sha256(behaviors),
-    )
-    aggregate = _read_json(Path(register_dataflow_aggregate))
-    proposal_register_relations = _read_json(
-        out / "relational-register-relations.json"
-    )
-    recomputed_contract, register_relations = _synthesize_register_relations(
-        normalized,
-        behaviors,
-        original_image_base=original_bin.image_base,
-        candidate_image_base=candidate_bin.image_base,
-        indirect_call_candidates=seed["indirect_call_candidates"],
-        import_call_candidates=seed["import_call_candidates"],
-        callsite_summary_predecessors=seed["callsite_summary_predecessors"],
-        original_bin=original_bin,
-        candidate_bin=candidate_bin,
-        _dataflow_aggregate=aggregate,
-    )
-    recomputed_contract, register_relations = _lower_stack_register_relations(
-        recomputed_contract, register_relations
-    )
-    register_relations = _attach_stack_register_output_claims(
-        recomputed_contract, behaviors, register_relations
-    )
-    register_relations = _attach_static_word_register_output_claims(
-        recomputed_contract, behaviors, register_relations
-    )
-    for field in (
-        "fixed_code_pointer_call_fixed_point",
-        "callsite_register_relation_fixed_point",
-    ):
-        if field in proposal_register_relations:
-            register_relations[field] = json.loads(json.dumps(
-                proposal_register_relations[field]
-            ))
-    if recomputed_contract != normalized:
-        raise StageAInputError(
-            "aggregate register replay changed the proposal relation contract"
-        )
-    if register_relations != proposal_register_relations:
-        raise StageAInputError(
-            "aggregate register replay differs from proposal discovery"
-        )
-    write_json(out / "relational-register-relations.json", register_relations)
-    runtime_frame_affine = _read_json(
-        out / RUNTIME_FRAME_AFFINE_VIABILITY_FILE
-    )
-    validate_runtime_frame_affine_viability_payload(
-        runtime_frame_affine,
-        original_sha256=original_bin.sha256,
-        candidate_sha256=candidate_bin.sha256,
-        relation_contract_sha256=sha256_file(out / "relation-contract.json"),
-        decoded_behaviors_sha256=sha256_file(
-            out / "relational-decoded-behaviors.json"
-        ),
-        register_relations_sha256=sha256_file(
-            out / "relational-register-relations.json"
-        ),
-        behaviors=behaviors,
-        register_relations=register_relations,
-    )
-
-    import_seed_artifact = _read_json(
-        out / "relational-import-register-seeds.json"
-    )
-    import_register_seeds = import_seed_artifact.get("candidates")
-    if not isinstance(import_register_seeds, list):
-        raise StageAInputError("proposal import register seeds are malformed")
-    import_register_analysis = _read_json(
-        out / "relational-import-register-invariants.json"
-    )
-    indirect_targets = _read_json(out / "relational-indirect-call-targets.json")
-    table_call_proposals = indirect_targets.get("table_call_proposals")
-    dynamic_call_candidates = indirect_targets.get("dynamic_range_candidates")
-    indirect_call_candidates = indirect_targets.get("candidates")
-    fixed_register_candidates = indirect_targets.get("fixed_register_candidates")
-    if not all(isinstance(value, list) for value in (
-        table_call_proposals,
-        dynamic_call_candidates,
-        indirect_call_candidates,
-        fixed_register_candidates,
-    )):
-        raise StageAInputError("proposal indirect-call inventory is malformed")
-    combined_indirect_call_candidates = [
-        *indirect_call_candidates,
-        *fixed_register_candidates,
-    ]
-    machine_call_analysis = _read_json(
-        out / "relational-machine-import-calls.json"
-    )
-    stack_window_analysis = _read_json(out / "relational-stack-windows.json")
-    proof_ir = _read_json(out / "relational-proof-ir.json")
-    RelationalProofIR.parse(proof_ir)
-    from .composition_products import _produce_composition_outputs
-
-    assembled = _produce_composition_outputs(
-        out=out,
-        original_bin=original_bin,
-        candidate_bin=candidate_bin,
-        original_artifact=original_artifact,
-        candidate_artifact=candidate_artifact,
-        normalized=normalized,
-        behaviors=behaviors,
-        extraction={"source": "manifest_bound_relational_proposal_closure"},
-        proof_ir=proof_ir,
-        register_relations=register_relations,
-        stack_window_analysis=stack_window_analysis,
-        machine_call_analysis=machine_call_analysis,
-        import_register_seeds=import_register_seeds,
-        import_register_analysis=import_register_analysis,
-        table_call_proposals=table_call_proposals,
-        dynamic_call_candidates=dynamic_call_candidates,
-        combined_indirect_call_candidates=combined_indirect_call_candidates,
-        original_isa=original_isa,
-        candidate_isa=candidate_isa,
-    )
-    if not assembled["product_graph"]:
-        raise StageAInputError("relational proposal assembly produced no graph")
-    affine_budgets = runtime_frame_affine.get("budgets")
-    if not isinstance(affine_budgets, Mapping):
-        raise StageAInputError("runtime frame affine budgets are malformed")
-    runtime_frame_affine = runtime_frame_affine_viability_payload(
-        original_sha256=original_bin.sha256,
-        candidate_sha256=candidate_bin.sha256,
-        relation_contract_sha256=sha256_file(out / "relation-contract.json"),
-        decoded_behaviors_sha256=sha256_file(
-            out / "relational-decoded-behaviors.json"
-        ),
-        register_relations_sha256=sha256_file(
-            out / "relational-register-relations.json"
-        ),
-        behaviors=behaviors,
-        register_relations=register_relations,
-        product_graph=assembled["product_graph"],
-        max_shapes=int(affine_budgets.get("max_shapes", 0)),
-        max_families=int(affine_budgets.get("max_families", 0)),
-    )
-    write_json(
-        out / RUNTIME_FRAME_AFFINE_VIABILITY_FILE,
-        runtime_frame_affine,
-    )
-    manifest = write_relational_analysis_manifest(
-        out,
-        original_sha256=original_bin.sha256,
-        candidate_sha256=candidate_bin.sha256,
-    )
-    validate_relational_analysis(out)
-    return manifest
-
-
 def stage_a_generate_relational(
     *, analysis: Path, out: Path
 ) -> dict[str, Any]:
@@ -2008,158 +1808,23 @@ def stage_a_generate_relational(
     validate_relational_analysis(out)
     return prepared
 
-def stage_a_check_relational_proof(*, report: Path, out: Path | None = None) -> dict[str, Any]:
-    from .build import (
-        _check_nix_relational_report,
-        _validate_relational_module_graph,
-    )
-    from .executor import _run_lean_relational
-
+def stage_a_check_relational_proof(
+    *, report: Path, out: Path | None = None
+) -> dict[str, Any]:
     report = Path(report)
     verdict = _read_json(report / "verdict.json")
-    if verdict.get("format") == "stage-a-relational-nix-build-v1":
-        return _check_nix_relational_report(report=report, verdict=verdict, out=out)
-    contract = _read_json(report / "relation-contract.json")
-    proof_ir = _read_json(report / "relational-proof-ir.json")
-    RelationalProofIR.parse(proof_ir)
-    index = _read_json(report / "certificates" / "index.json")
-    acceptance = _read_json(report / "whole-program-acceptance.json")
-    WholeProgramAcceptanceIR.parse(acceptance)
-    try:
-        expected_theorem = selected_relational_acceptance_theorem(acceptance)
-    except SchemaError:
-        expected_theorem = None
-    try:
-        module_graph = _validate_relational_module_graph(report)
-    except StageAInputError:
-        module_graph = None
-    checks = {
-        "report_pass": verdict.get("verdict") == "pass",
-        "profile_matches": verdict.get("profile") == STAGE_A_RELATIONAL_PROFILE_ID,
-        "claim_scope_acceptance_eligible": (
-            verdict.get("claim_scope", {}).get("acceptance_eligible") is True
-            and verdict.get("claim_scope", {}).get(
-                "whole_program_observational_equivalence"
-            ) is True
-        ),
-        "acceptance_ready": (
-            acceptance.get("status") == "ready"
-            and expected_theorem in RELATIONAL_ACCEPTANCE_THEOREMS
-        ),
-        "reported_final_theorem_matches": (
-            verdict.get("proof", {}).get("theorem")
-            == expected_theorem
-        ),
-        "module_graph_hash_matches": (
-            (report / "module-graph.json").is_file()
-            and sha256_file(report / "module-graph.json")
-                == verdict.get("module_graph_sha256")
-        ),
-        "module_graph_valid": module_graph is not None,
-        "module_graph_selects_final_theorem": (
-            module_graph is not None
-            and module_graph.get("root_module") == "RelationalAcceptance"
-            and module_graph.get("expected_final_theorem")
-                == expected_theorem
-        ),
-        "proof_ir_satisfied": proof_ir.get("status") == "satisfied",
-        "no_incomplete_assumptions": verdict.get("counts", {}).get("incomplete_assumptions") == 0,
-        "contract_families_closed": all(
-            family.get("status") in {"satisfied", "not_applicable"}
-            for family in proof_ir.get("families", [])
-        ),
-        "proof_ir_hash_matches": sha256_file(report / "relational-proof-ir.json") == verdict.get("proof_ir_sha256"),
-        "interface_manifest_hash_matches": (
-            (report / "stage-a-interface-manifest.json").is_file()
-            and sha256_file(report / "stage-a-interface-manifest.json")
-                == verdict.get("interface_manifest_sha256")
-        ),
-        "contract_hash_matches": sha256_file(report / "relation-contract.json") == verdict.get("relation_contract_sha256"),
-        "product_graph_hash_matches": (
-            (report / "relational-product-graph.json").is_file()
-            and sha256_file(report / "relational-product-graph.json")
-                == verdict.get("product_graph_sha256")
-        ),
-        "isa_requirements_hash_matches": (
-            (report / "isa-requirements.json").is_file()
-            and sha256_file(report / "isa-requirements.json")
-                == verdict.get("isa_requirements_sha256")
-        ),
-        "acceptance_hash_matches": (
-            (report / "whole-program-acceptance.json").is_file()
-            and sha256_file(report / "whole-program-acceptance.json")
-                == verdict.get("whole_program_acceptance_sha256")
-        ),
-        "composition_progress_hash_matches": (
-            (report / "composition-progress.json").is_file()
-            and sha256_file(report / "composition-progress.json")
-                == verdict.get("composition_progress_sha256")
-        ),
-        "original_matches": sha256_file(report / "artifacts" / "original.pe") == proof_ir.get("original", {}).get("sha256"),
-        "candidate_matches": sha256_file(report / "artifacts" / "candidate.pe") == proof_ir.get("candidate", {}).get("sha256"),
-        "certificate_index_complete": index.get("status") == "satisfied",
-        "certificate_hashes_match": _certificate_hashes_match(report, index),
-        "trusted_base_hash_matches": sha256_file(report / "trusted-base.json") == verdict.get("trusted_base_sha256"),
-    }
-    replay = {"status": "skipped_preflight", "stdout": "", "stderr": "", "returncode": None}
-    if all(checks.values()):
-        original_bin = _parse_stage_a_pe(report / "artifacts" / "original.pe")
-        candidate_bin = _parse_stage_a_pe(report / "artifacts" / "candidate.pe")
-        with tempfile.TemporaryDirectory(prefix="stage-a-relational-check-") as temporary:
-            replay_root = Path(temporary)
-            lean_dir = replay_root / "lean"
-            (lean_dir / "StageA").mkdir(parents=True)
-            (replay_root / "artifacts").mkdir()
-            for module in RELATIONAL_KERNEL_MODULES:
-                shutil.copyfile(
-                    report / "lean" / "StageA" / f"{module}.lean",
-                    lean_dir / "StageA" / f"{module}.lean",
-                )
-            shutil.copyfile(report / "artifacts" / "original.pe", replay_root / "artifacts" / "original.pe")
-            shutil.copyfile(report / "artifacts" / "candidate.pe", replay_root / "artifacts" / "candidate.pe")
-            behaviors, behavior_check = _extract_relational_behaviors(
-                lean_dir,
-                original_bin,
-                candidate_bin,
-                (report / "artifacts" / "original.pe").read_bytes(),
-                (report / "artifacts" / "candidate.pe").read_bytes(),
-                contract,
-                use_cache=False,
-            )
-        checks["behaviors_redecoded"] = behaviors is not None and behavior_check.get("status") == "checked"
-        canonical_root = _LEAN_SOURCE_ROOT
-        checks["kernel_matches"] = all(
-            sha256_file(canonical_root / f"{module}.lean") == sha256_file(
-                report / "lean" / "StageA" / f"{module}.lean"
-            )
-            for module in RELATIONAL_KERNEL_MODULES
+    report_format = verdict.get("format")
+    if report_format != "stage-a-relational-nix-build-v1":
+        raise StageAInputError(
+            "stage_a_check_relational_proof accepts only "
+            "stage-a-relational-nix-build-v1 reports; "
+            f"got {report_format!r}"
         )
-        if all(checks.values()):
-            replay = _run_lean_relational(
-                report / "lean", bundle="RelationalAcceptance"
-            )
-            if replay.get("status") == "checked":
-                replay["theorem"] = expected_theorem
-    checks["lean_lrat_replay_checked"] = (
-        replay.get("status") == "checked"
-        and expected_theorem is not None
-        and replay.get("theorem") == expected_theorem
-    )
-    status = "pass" if all(checks.values()) else "incomplete"
-    result = {
-        "format": "stage-a-relational-proof-check-v1",
-        "status": status,
-        "profile": STAGE_A_RELATIONAL_PROFILE_ID,
-        "claim_scope": {
-            "kind": "whole_program_observational_equivalence",
-            "whole_program_observational_equivalence": status == "pass",
-        },
-        "checks": checks,
-        "lean_check": replay,
-    }
-    if out is not None:
-        write_json(Path(out), result)
-    return result
+
+    from .build import _check_nix_relational_report
+
+    return _check_nix_relational_report(report=report, verdict=verdict, out=out)
+
 
 def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[str, Any]:
     from .executor import (

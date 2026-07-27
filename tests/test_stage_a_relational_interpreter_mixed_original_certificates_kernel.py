@@ -91,6 +91,11 @@ class StageARelationalInterpreterMixedOriginalCertificateKernelTests(
                 stage_a,
                 "RelationalInterpreterMixedOriginalReachabilityCertificates",
             )
+            _copy_module_closure(
+                source_root,
+                stage_a,
+                "RelationalInterpreterOriginalCarrierBinding",
+            )
             (stage_a / "GeneratedTinyOriginalPE.lean").write_text(
                 original_module,
                 encoding="utf-8",

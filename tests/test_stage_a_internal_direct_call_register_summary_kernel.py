@@ -19,6 +19,8 @@ from spaghetti_extractor.relational.lean.internal_direct_call_register_summary i
     LeanMachineImportDependency,
     LeanReturnInventoryEntry,
     LeanSpan,
+    LeanStackEntryOffsetWitness,
+    LeanStackSaveRestoreWitness,
     internal_direct_call_register_summary_module_dag,
     internal_direct_call_register_summary_source,
 )
@@ -128,6 +130,62 @@ def _region(region_id: int, start: int, size: int) -> LeanExactRegionPair:
     return LeanExactRegionPair(region_id, span, span)
 
 
+def _split_control_summary() -> tuple[
+    LeanInternalDirectCallRegisterSummaryTree,
+    list[int],
+]:
+    region_count = 65
+    call = _region(0, 0, 5)
+    continuation = _region(1, 5, 1)
+    bytes_ = [
+        0xE8, 0x05, 0x00, 0x00, 0x00,
+        0xC3,
+        0x90, 0x90, 0x90, 0x90,
+    ]
+    callee_regions = [_region(100, 10, 6)]
+    edges = [LeanCalleeEdge(100, 101, "direct")]
+    bytes_.extend((0x56, 0xE9, 0x00, 0x00, 0x00, 0x00))
+    for index in range(1, region_count - 1):
+        start = 16 + (index - 1) * 5
+        region_id = 100 + index
+        callee_regions.append(_region(region_id, start, 5))
+        edges.append(LeanCalleeEdge(region_id, region_id + 1, "direct"))
+        bytes_.extend((0xE9, 0x00, 0x00, 0x00, 0x00))
+    returned = _region(
+        100 + region_count - 1,
+        16 + (region_count - 2) * 5,
+        2,
+    )
+    callee_regions.append(returned)
+    bytes_.extend((0x5E, 0xC3))
+    certificate = LeanInternalDirectCallRegisterCertificate(
+        summary_id=6,
+        dependency_depth=0,
+        caller=call,
+        callsite=call,
+        callee_entry=callee_regions[0],
+        continuation=continuation,
+        callee_regions=tuple(callee_regions),
+        edges=tuple(edges),
+        returns=(LeanReturnInventoryEntry(returned.region_id, 1),),
+        requested_registers=("esi", "esp"),
+        original_frame_bytes=4,
+        candidate_frame_bytes=4,
+        stack_witnesses=(
+            LeanStackSaveRestoreWitness(
+                "esi",
+                callee_regions[0].region_id,
+                (returned.region_id,),
+                4,
+                4,
+                4,
+                4,
+            ),
+        ),
+    )
+    return LeanInternalDirectCallRegisterSummaryTree(certificate), bytes_
+
+
 def _ungrounded_summary() -> LeanInternalDirectCallRegisterSummaryTree:
     call = _region(0, 0, 5)
     outer_continuation = _region(1, 5, 1)
@@ -196,6 +254,39 @@ def _finite_indirect_summary() -> LeanInternalDirectCallRegisterSummaryTree:
         finite_indirect_dependencies=(dependency,),
     )
     return LeanInternalDirectCallRegisterSummaryTree(certificate)
+
+
+def _state_only_x87_summary() -> LeanInternalDirectCallRegisterSummaryTree:
+    call = _region(0, 0, 5)
+    continuation = _region(1, 5, 1)
+    wait = _region(10, 10, 1)
+    returned = _region(11, 11, 1)
+    certificate = LeanInternalDirectCallRegisterCertificate(
+        summary_id=7,
+        dependency_depth=0,
+        caller=call,
+        callsite=call,
+        callee_entry=wait,
+        continuation=continuation,
+        callee_regions=(wait, returned),
+        edges=(LeanCalleeEdge(10, 11, "direct"),),
+        returns=(LeanReturnInventoryEntry(11, 1),),
+        requested_registers=("ebx", "esp"),
+        stack_entry_offsets=(
+            LeanStackEntryOffsetWitness(10, 0, 0),
+            LeanStackEntryOffsetWitness(11, 0, 0),
+        ),
+    )
+    return LeanInternalDirectCallRegisterSummaryTree(certificate)
+
+
+_STATE_ONLY_X87_BYTES = [
+    0xE8, 0x05, 0x00, 0x00, 0x00,
+    0xC3,
+    0x90, 0x90, 0x90, 0x90,
+    0x9B,
+    0xC3,
+]
 
 
 _UNGROUNDED_IMPORTS = """def fakeImport : PEImport := {
@@ -358,6 +449,149 @@ end StageA.Generated.InternalDirectCallRegisterSummarySemanticExamples
 """
 
 
+_FINITE_ORIGIN_ENTRY_MAPPING_EXAMPLES = """
+import StageA.RelationalInternalDirectCallRegisterSummary
+
+namespace StageA.Generated.FiniteOriginEntryMappingExamples
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallRegisterSummary
+
+def pe : PE32 := {
+  bytes := .empty
+  peOffset := 0
+  entrypointRva := 0
+  imageBase := 0x400000
+  sectionAlignment := 1
+  fileAlignment := 1
+  sizeOfImage := 0x3000
+  sizeOfHeaders := 0
+  importDirectoryRva := 0
+  importDirectorySize := 0
+  tlsDirectoryRva := 0
+  tlsDirectorySize := 0
+  relocationDirectoryRva := 0
+  relocationDirectorySize := 0
+  sections := []
+}
+
+def targets : List CodeTargetPair := [
+  { id := 0, regionIndex := 700, originalRva := 0x1000,
+    candidateRva := 0x1000 },
+  { id := 1, regionIndex := 701, originalRva := 0x1010,
+    candidateRva := 0x1010 },
+  { id := 2, regionIndex := 702, originalRva := 0x2000,
+    candidateRva := 0x2000 }
+]
+
+def codeMap : StaticCodeMap := {
+  entries := .leaf targets
+  originalAddresses := .leaf [
+    { targetId := 0, kind := .canonical },
+    { targetId := 1, kind := .canonical },
+    { targetId := 2, kind := .canonical }
+  ]
+  candidateAddresses := .leaf [
+    { targetId := 0, kind := .canonical },
+    { targetId := 1, kind := .canonical },
+    { targetId := 2, kind := .canonical }
+  ]
+}
+
+def contextWith (mapping : StaticCodeMap) : StaticProofContext := {
+  originalPe := pe
+  candidatePe := pe
+  originalImportCertificate := { descriptors := [] }
+  candidateImportCertificate := { descriptors := [] }
+  originalRelocations := []
+  candidateRelocations := []
+  codeMap := mapping
+  dataMap := { entries := #[], originalOrder := [], candidateOrder := [] }
+  roots := []
+  observations := {}
+}
+
+def context : StaticProofContext := contextWith codeMap
+
+def region (id start size : Nat) : ExactRegionPair := {
+  id
+  original := { start, size }
+  candidate := { start, size }
+}
+
+def certificate : Certificate := {
+  summaryId := 41
+  caller := region 0x1000 0x1000 5
+  callsite := region 0x1000 0x1000 5
+  calleeEntry := region 0x2000 0x2000 2
+  continuation := region 0x1010 0x1010 1
+  calleeRegions := [region 0x2000 0x2000 2]
+  edges := []
+  returns := []
+  requestedRegisters := []
+  entryKind := .finiteOriginCall 17 2
+}
+
+def authority : ValueProvenance.IndirectExitCertificate := {
+  finiteAlternativeBudget := 1
+  target := {
+    original := .constant 0x402000
+    candidate := .constant 0x402000
+    source := .exactExpression
+    origin := { alternatives := [.staticCodeTarget 2 0] }
+  }
+  destinations := [.internalCode 2]
+  transfer := .call 1
+}
+
+def report : FiniteOriginCallEntryCheckReport :=
+  certificate.finiteOriginCallEntryCheckReport
+    (context := context) 0 2 1 authority pe pe [] []
+
+example : report.sourceMapped = true := by decide
+example : report.continuationMapped = true := by decide
+example : report.calleeMapped = true := by decide
+
+-- Target IDs index the canonical code map. Local region IDs and regionIndex
+-- values are deliberately different domains and must not affect this lookup.
+example : certificate.callsite.id = 0x1000 := by decide
+example : (codeMap.get? 0).map (fun target => target.regionIndex) = some 700 := by
+  decide
+
+def missingTargetReport : FiniteOriginCallEntryCheckReport :=
+  certificate.finiteOriginCallEntryCheckReport
+    (context := context) 3 2 1 authority pe pe [] []
+
+example : missingTargetReport.sourceMapped = false := by decide
+
+def wrongRvaTargets : List CodeTargetPair := [
+  { id := 0, regionIndex := 700, originalRva := 0x1001,
+    candidateRva := 0x1000 },
+  { id := 1, regionIndex := 701, originalRva := 0x1010,
+    candidateRva := 0x1010 },
+  { id := 2, regionIndex := 702, originalRva := 0x2000,
+    candidateRva := 0x2000 }
+]
+
+def wrongRvaCodeMap : StaticCodeMap := {
+  codeMap with
+  entries := .leaf wrongRvaTargets
+}
+
+def wrongRvaReport : FiniteOriginCallEntryCheckReport :=
+  certificate.finiteOriginCallEntryCheckReport
+    (context := contextWith wrongRvaCodeMap) 0 2 1 authority pe pe [] []
+
+example : wrongRvaReport.sourceMapped = false := by decide
+
+#print axioms report
+#print axioms missingTargetReport
+#print axioms wrongRvaReport
+
+end StageA.Generated.FiniteOriginEntryMappingExamples
+"""
+
+
 @unittest.skipUnless(shutil.which("lean"), "Lean is required for kernel checks")
 class StageAInternalDirectCallRegisterSummaryKernelTests(unittest.TestCase):
     source_root = (
@@ -444,7 +678,7 @@ class StageAInternalDirectCallRegisterSummaryKernelTests(unittest.TestCase):
                 bindings,
                 root_namespace="StageA.Generated.ModuleDagRoot",
             )
-            for module in dag.node_modules:
+            for module in dag.all_modules:
                 relative = module.module.removeprefix("StageA.")
                 (stage_a / f"{relative}.lean").write_text(
                     module.source,
@@ -470,6 +704,23 @@ class StageAInternalDirectCallRegisterSummaryKernelTests(unittest.TestCase):
             bundle = "InternalDirectCallRegisterSummarySemanticExamples"
             (stage_a / f"{bundle}.lean").write_text(
                 _SEMANTIC_EXAMPLES,
+                encoding="utf-8",
+            )
+            return _run_lean_relational(root, bundle=bundle)
+
+    def _compile_finite_origin_entry_mapping_examples(self) -> dict:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stage_a = root / "StageA"
+            stage_a.mkdir()
+            _copy_module_closure(
+                self.source_root,
+                stage_a,
+                "RelationalInternalDirectCallRegisterSummary",
+            )
+            bundle = "FiniteOriginEntryMappingExamples"
+            (stage_a / f"{bundle}.lean").write_text(
+                _FINITE_ORIGIN_ENTRY_MAPPING_EXAMPLES,
                 encoding="utf-8",
             )
             return _run_lean_relational(root, bundle=bundle)
@@ -500,14 +751,34 @@ class StageAInternalDirectCallRegisterSummaryKernelTests(unittest.TestCase):
         self.assertIn("standaloneAcceptanceAuthority := false", source)
         self.assertIn("staticMachineImportProfilesValid", source)
         self.assertIn("regionBehaviorWithImports", source)
+        self.assertIn("import StageA.RelationalX87StateOnlyDecode", source)
+        self.assertNotIn("import StageA.RelationalX87Decode", source)
+
+        x87_profile = (
+            self.source_root / "RelationalX87StateOnlyDecode.lean"
+        ).read_text(encoding="utf-8")
+        self.assertIn("import StageA.Formal", x87_profile)
+        self.assertNotIn("import StageA.RelationalX87Decode", x87_profile)
+        self.assertNotIn("import StageA.RelationalX87", x87_profile)
 
     def test_cacheable_module_dag_compiles(self) -> None:
         result = self._compile_module_dag(nested_summary(), _NESTED_BYTES)
         self._assert_checked(result, expect_axioms=True)
 
+    def test_split_control_module_dag_compiles(self) -> None:
+        summary, bytes_ = _split_control_summary()
+        result = self._compile_module_dag(summary, bytes_)
+        self._assert_checked(result, expect_axioms=True)
+
     def test_semantic_block_and_path_lemmas_are_kernel_checked(self) -> None:
         result = self._compile_semantic_examples()
         self._assert_checked(result, expect_axioms=True)
+
+    def test_finite_origin_entry_uses_canonical_target_ids_and_exact_rvas(
+        self,
+    ) -> None:
+        result = self._compile_finite_origin_entry_mapping_examples()
+        self._assert_checked(result, expect_axioms=False)
 
     def test_nested_direct_call_inventory_derives_structural_evidence(self) -> None:
         result = self._compile(nested_summary(), _NESTED_BYTES)
@@ -520,6 +791,18 @@ class StageAInternalDirectCallRegisterSummaryKernelTests(unittest.TestCase):
     def test_finite_indirect_table_and_edges_derive_structural_evidence(self) -> None:
         result = self._compile(_finite_indirect_summary(), _FINITE_INDIRECT_BYTES)
         self._assert_checked(result, expect_axioms=True)
+
+    def test_state_only_x87_region_derives_structural_evidence(self) -> None:
+        result = self._compile(_state_only_x87_summary(), _STATE_ONLY_X87_BYTES)
+        self._assert_checked(result, expect_axioms=True)
+
+    def test_truncated_x87_region_is_kernel_checked_rejection(self) -> None:
+        mutated = list(_STATE_ONLY_X87_BYTES)
+        mutated[10] = 0xD9
+        result = self._compile(
+            _state_only_x87_summary(), mutated, expectation="rejected"
+        )
+        self._assert_checked(result, expect_axioms=False)
 
     def test_finite_indirect_table_mutation_is_kernel_checked_rejection(self) -> None:
         mutated = list(_FINITE_INDIRECT_BYTES)

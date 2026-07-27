@@ -168,7 +168,7 @@ class StageAOriginalStackDynamicControlClosureTests(unittest.TestCase):
             [site["premise_type"] for site in report["sites"]],
             [
                 "CompleteStackCarryPremise",
-                "CompleteIndexedTablePredecessorPremise",
+                "CompleteEmptyIndexedSourcePredecessorPremise",
                 "CompleteDynamicSourceUninhabitedPremise",
             ],
         )
@@ -194,11 +194,15 @@ class StageAOriginalStackDynamicControlClosureTests(unittest.TestCase):
             "instructionBytes := [255, 208]",
             "transfer := .call 2761",
             "CompleteStackCarryPremise",
-            "CompleteIndexedTablePredecessorPremise",
+            "CompleteEmptyIndexedSourcePredecessorPremise",
             "CompleteDynamicSourceUninhabitedPremise",
+            "CheckedEmptyIndexedSourceAuthority",
+            "emptyIndexedSourceClosure_of_complete",
             "decide +kernel",
         ):
             self.assertIn(expected, source)
+        self.assertNotIn("generatedOriginalStackDynamicClosure1TableBytes", source)
+        self.assertNotIn("IndexedImmutableTableClaim", source)
         for marker in ("sorry", "axiom", "unsafe", "native_decide"):
             self.assertIsNone(re.search(rf"\b{marker}\b", source), marker)
 

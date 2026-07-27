@@ -311,6 +311,37 @@ class ContractToolTests(unittest.TestCase):
                 "incomplete",
             )
 
+    def test_reference_contract_tree_uses_ca_stable_relative_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            export = root / "export"
+            export.mkdir()
+            original = self._write_pe(export / "original.exe", b"\xc3")
+            mapping = export / "mapping.json"
+            mapping.write_text("{}", encoding="utf-8")
+            contract_path = export / "reference-contract.json"
+
+            contract = stage_a_export_reference_contract(
+                original=original,
+                mapping=mapping,
+                out=contract_path,
+                sidecar_dir=export,
+                unit_contract_dir=export,
+            )
+
+            self.assertEqual(contract["inputs"]["original"]["path"], "original.exe")
+            self.assertEqual(contract["inputs"]["mapping"]["path"], "mapping.json")
+            for path in export.iterdir():
+                if path.suffix in {".json", ".jsonl"}:
+                    self.assertNotIn(str(export), path.read_text(encoding="utf-8"))
+            coverage = json.loads(
+                (export / "coverage_gaps.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                coverage["reference_contract"]["path"],
+                "reference-contract.json",
+            )
+
     def test_semantic_transfer_models_register_bit_test(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

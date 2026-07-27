@@ -21,13 +21,17 @@ from spaghetti_extractor.relational.lean.interpreter_mixed_original import (
     OriginalMachineImportBoundarySiteProposal,
     OriginalModuleBindings,
     OriginalPERecoveryInput,
+    OriginalRegisterControlCallContractProposal,
     OriginalRegisterCodePointerBinding,
     OriginalRegisterImportBinding,
+    OriginalRegisterStaticWordSeedAuthority,
+    OriginalStaticWordSlotBinding,
     QualifiedLeanSymbol,
     _lean_index_ref_tree,
     load_original_iat_import_proposals,
     load_original_pe_recovery_input,
     plan_interpreter_mixed_original,
+    write_register_finite_origin_call_entry_authorities,
     write_relational_interpreter_mixed_original,
 )
 from spaghetti_extractor.relational.lean.interpreter_mixed_terminal import (
@@ -436,6 +440,220 @@ def _register_code_pointer_rows(*, ambiguous: bool = False) -> list[dict[str, ob
             ]
         )
     return rows
+
+
+def _pe32_register_code_pointer_across_call_image() -> bytes:
+    image = bytearray(_pe32_register_code_pointer_image())
+    call_displacement = 0x1040 - 0x1015
+    jump_displacement = 0x1020 - 0x101A
+    image[0x210:0x215] = (
+        b"\xe8" + call_displacement.to_bytes(4, "little", signed=True)
+    )
+    image[0x215:0x21A] = (
+        b"\xe9" + jump_displacement.to_bytes(4, "little", signed=True)
+    )
+    image[0x240] = 0xC3
+    return bytes(image)
+
+
+def _register_code_pointer_across_call_rows() -> list[dict[str, object]]:
+    target = {"op": "reg", "name": "ebx", "width": 32}
+    seed = {
+        **_record(
+            0x1000,
+            {"kind": "jump", "target_rva": 0x1010},
+            edges=[0x1010],
+            instructions=[
+                {"rva": 0x1000, "size": 5, "mnemonic": "mov"},
+                {"rva": 0x1005, "size": 5, "mnemonic": "jmp"},
+            ],
+        ),
+        "original": {"rva_start": 0x1000, "rva_end": 0x100A, "size": 10},
+    }
+    call = {
+        **_record(
+            0x1010,
+            {"kind": "fallthrough", "target_rva": 0x1015},
+            edges=[0x1015, 0x1040],
+            ordered=[{
+                "kind": "internal_call",
+                "instruction_rva": 0x1010,
+                "return_rva": 0x1015,
+                "target_rva": 0x1040,
+            }],
+            instructions=[{"rva": 0x1010, "size": 5, "mnemonic": "call"}],
+        ),
+        "original": {"rva_start": 0x1010, "rva_end": 0x1015, "size": 5},
+    }
+    continuation = {
+        **_record(
+            0x1015,
+            {"kind": "jump", "target_rva": 0x1020},
+            edges=[0x1020],
+            instructions=[{"rva": 0x1015, "size": 5, "mnemonic": "jmp"}],
+        ),
+        "original": {"rva_start": 0x1015, "rva_end": 0x101A, "size": 5},
+    }
+    indirect = {
+        **_record(
+            0x1020,
+            {"kind": "fallthrough", "target_rva": 0x1022},
+            edges=[0x1022],
+            ordered=[{
+                "kind": "indirect_call",
+                "instruction_rva": 0x1020,
+                "return_rva": 0x1022,
+                "target": target,
+            }],
+            instructions=[{"rva": 0x1020, "size": 2, "mnemonic": "call"}],
+        ),
+        "original": {"rva_start": 0x1020, "rva_end": 0x1022, "size": 2},
+    }
+    return [
+        seed,
+        call,
+        continuation,
+        indirect,
+        _record(0x1022, {"kind": "return"}),
+        _record(0x1030, {"kind": "return"}),
+        _record(0x1040, {"kind": "return"}),
+    ]
+
+
+def _pe32_register_code_pointer_seed_then_call_image() -> bytes:
+    image = bytearray(_pe32_register_code_pointer_image())
+    image_base = 0x400000
+    call_displacement = 0x1050 - 0x100A
+    jump_displacement = 0x1020 - 0x100F
+    image[0x200:0x20A] = (
+        b"\xbb"
+        + (image_base + 0x1030).to_bytes(4, "little")
+        + b"\xe8"
+        + call_displacement.to_bytes(4, "little", signed=True)
+    )
+    image[0x20A:0x20F] = (
+        b"\xe9" + jump_displacement.to_bytes(4, "little", signed=True)
+    )
+    image[0x250] = 0xC3
+    return bytes(image)
+
+
+def _register_code_pointer_seed_then_call_rows() -> list[dict[str, object]]:
+    target = {"op": "reg", "name": "ebx", "width": 32}
+    return [
+        {
+            **_record(
+                0x1000,
+                {"kind": "fallthrough", "target_rva": 0x100A},
+                edges=[0x100A, 0x1050],
+                ordered=[{
+                    "kind": "internal_call",
+                    "instruction_rva": 0x1005,
+                    "return_rva": 0x100A,
+                    "target_rva": 0x1050,
+                }],
+                instructions=[
+                    {"rva": 0x1000, "size": 5, "mnemonic": "mov"},
+                    {"rva": 0x1005, "size": 5, "mnemonic": "call"},
+                ],
+            ),
+            "original": {"rva_start": 0x1000, "rva_end": 0x100A, "size": 10},
+        },
+        {
+            **_record(
+                0x100A,
+                {"kind": "jump", "target_rva": 0x1020},
+                edges=[0x1020],
+                instructions=[{"rva": 0x100A, "size": 5, "mnemonic": "jmp"}],
+            ),
+            "original": {"rva_start": 0x100A, "rva_end": 0x100F, "size": 5},
+        },
+        {
+            **_record(
+                0x1020,
+                {"kind": "fallthrough", "target_rva": 0x1022},
+                edges=[0x1022],
+                ordered=[{
+                    "kind": "indirect_call",
+                    "instruction_rva": 0x1020,
+                    "return_rva": 0x1022,
+                    "target": target,
+                }],
+                instructions=[{"rva": 0x1020, "size": 2, "mnemonic": "call"}],
+            ),
+            "original": {"rva_start": 0x1020, "rva_end": 0x1022, "size": 2},
+        },
+        _record(0x1022, {"kind": "return"}),
+        _record(0x1030, {"kind": "return"}),
+        _record(0x1050, {"kind": "return"}),
+    ]
+
+
+def _pe32_register_writable_slot_seed_then_call_image() -> bytes:
+    image = bytearray(_pe32_static_indirect_image())
+    image_base = 0x400000
+    slot_va = image_base + 0x2008
+    jump_displacement = 0x1020 - 0x100D
+    image[0x200:0x208] = (
+        b"\x8b\x1d" + slot_va.to_bytes(4, "little") + b"\xff\xd3"
+    )
+    image[0x208:0x20D] = (
+        b"\xe9" + jump_displacement.to_bytes(4, "little", signed=True)
+    )
+    image[0x220:0x223] = b"\xff\xd3\xc3"
+    struct.pack_into("<I", image, 0x178 + 40 + 36, 0xC0000040)
+    struct.pack_into("<H", image, 0x608, 0x3002)
+    return bytes(image)
+
+
+def _register_writable_slot_seed_then_call_rows() -> list[dict[str, object]]:
+    target = {"op": "reg", "name": "ebx", "width": 32}
+    return [
+        {
+            **_record(
+                0x1000,
+                {"kind": "fallthrough", "target_rva": 0x1008},
+                edges=[0x1008],
+                ordered=[{
+                    "kind": "indirect_call",
+                    "instruction_rva": 0x1006,
+                    "return_rva": 0x1008,
+                    "target": target,
+                }],
+                instructions=[
+                    {"rva": 0x1000, "size": 6, "mnemonic": "mov"},
+                    {"rva": 0x1006, "size": 2, "mnemonic": "call"},
+                ],
+            ),
+            "original": {"rva_start": 0x1000, "rva_end": 0x1008, "size": 8},
+        },
+        {
+            **_record(
+                0x1008,
+                {"kind": "jump", "target_rva": 0x1020},
+                edges=[0x1020],
+                instructions=[{"rva": 0x1008, "size": 5, "mnemonic": "jmp"}],
+            ),
+            "original": {"rva_start": 0x1008, "rva_end": 0x100D, "size": 5},
+        },
+        {
+            **_record(
+                0x1020,
+                {"kind": "fallthrough", "target_rva": 0x1022},
+                edges=[0x1022],
+                ordered=[{
+                    "kind": "indirect_call",
+                    "instruction_rva": 0x1020,
+                    "return_rva": 0x1022,
+                    "target": target,
+                }],
+                instructions=[{"rva": 0x1020, "size": 2, "mnemonic": "call"}],
+            ),
+            "original": {"rva_start": 0x1020, "rva_end": 0x1022, "size": 2},
+        },
+        _record(0x1022, {"kind": "return"}),
+        _record(0x1040, {"kind": "return"}),
+    ]
 
 
 def _pe32_register_import_image() -> bytes:
@@ -974,6 +1192,342 @@ class StageARelationalInterpreterMixedOriginalTests(unittest.TestCase):
         self.assertIn("FixedCodePointerRegisterIndirectCallClaim", bundle)
         self.assertIn("outcome.registerRelationDirectTargets.contains", bundle)
         self.assertNotIn("native_decide", bundle)
+
+    def test_register_code_pointer_crosses_only_an_exact_checked_call(self) -> None:
+        image = _pe32_register_code_pointer_across_call_image()
+        authority = QualifiedLeanSymbol(
+            module="StageA.GeneratedTinyDirectCallAuthority",
+            namespace="StageA.GeneratedRelational.TinyDirectCallAuthority",
+            symbol="checkedContract",
+        )
+        contract = OriginalRegisterControlCallContractProposal(
+            contract_id=17,
+            source_rva=0x1010,
+            instruction_rva=0x1010,
+            continuation_rva=0x1015,
+            preserved_registers=("ebx",),
+            origin="checked_direct_call_summary",
+            authorizing_lean_term=authority,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pe = root / "original.exe"
+            pe.write_bytes(image)
+            state_machine = root / "state-machine.jsonl"
+            _write_jsonl(state_machine, _register_code_pointer_across_call_rows())
+            recovery = OriginalPERecoveryInput(
+                pe, hashlib.sha256(image).hexdigest()
+            )
+            uncontracted = plan_interpreter_mixed_original(
+                state_machine,
+                _spec(recovery_pe=recovery),
+            )
+            plan = plan_interpreter_mixed_original(
+                state_machine,
+                _spec(
+                    recovery_pe=recovery,
+                    register_control_call_contracts=(contract,),
+                ),
+            )
+            finite_contract = dataclasses.replace(
+                contract,
+                origin="checked_finite_origin_call_summary",
+                finite_target_ids=(6,),
+                preserved_registers=(),
+                callee_preserved_registers=("ebx",),
+                target_carried_registers=("ebx",),
+            )
+            finite_plan = plan_interpreter_mixed_original(
+                state_machine,
+                _spec(
+                    recovery_pe=recovery,
+                    register_control_call_contracts=(finite_contract,),
+                ),
+            )
+            written = write_relational_interpreter_mixed_original(
+                root / "out", plan
+            )
+            bundle = next(
+                path.read_text(encoding="utf-8")
+                for path in written
+                if path.name == "GeneratedRelationalInterpreterMixedOriginal.lean"
+            )
+            finite_written = write_relational_interpreter_mixed_original(
+                root / "finite-out", finite_plan
+            )
+            finite_bundle = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in finite_written
+                if path.suffix == ".lean"
+            )
+            mutations = (
+                dataclasses.replace(contract, source_rva=0x1000),
+                dataclasses.replace(contract, instruction_rva=0x1011),
+                dataclasses.replace(contract, continuation_rva=0x1020),
+                dataclasses.replace(contract, preserved_registers=()),
+            )
+            rejected_plans = [
+                plan_interpreter_mixed_original(
+                    state_machine,
+                    _spec(
+                        recovery_pe=recovery,
+                        register_control_call_contracts=(mutated,),
+                    ),
+                )
+                for mutated in mutations
+            ]
+
+        self.assertFalse(uncontracted.complete)
+        self.assertIn(
+            "register provenance crosses an uncontracted call boundary",
+            "\n".join(blocker.detail for blocker in uncontracted.blockers),
+        )
+        self.assertTrue(plan.complete, plan.blockers)
+        self.assertTrue(finite_plan.complete, finite_plan.blockers)
+        binding = plan.regions[3].indirect_sites[0].static_binding
+        self.assertIsInstance(binding, OriginalRegisterCodePointerBinding)
+        self.assertEqual(
+            [
+                (
+                    edge.source_target_id,
+                    edge.target_target_id,
+                    edge.kind,
+                    edge.contract_id,
+                )
+                for edge in binding.edges
+            ],
+            [
+                (0, 1, "direct", None),
+                (1, 2, "call_return", 17),
+                (2, 3, "direct", None),
+            ],
+        )
+        self.assertIn(
+            "StageA.GeneratedRelational.TinyDirectCallAuthority.checkedContract",
+            bundle,
+        )
+        self.assertIn("DirectCallAuthorityMatches", bundle)
+        self.assertIn(
+            "((generatedOriginalCarrierRegionIndex.get?\n"
+            "          1).get\n"
+            "          (by decide +kernel)).inputInvariant",
+            bundle,
+        )
+        self.assertNotIn("(by decide +kernel) |>.inputInvariant", bundle)
+        self.assertIn(
+            "CheckedFiniteOriginCallRegisterControlContract",
+            finite_bundle,
+        )
+        self.assertIn(".entry.calleeTargetId = 6", finite_bundle)
+
+        for rejected in rejected_plans:
+            self.assertFalse(rejected.complete)
+            self.assertIn(
+                "register provenance crosses an uncontracted call boundary",
+                "\n".join(blocker.detail for blocker in rejected.blockers),
+            )
+
+    def test_register_seed_before_call_uses_the_exact_checked_contract(self) -> None:
+        image = _pe32_register_code_pointer_seed_then_call_image()
+        authority = QualifiedLeanSymbol(
+            module="StageA.GeneratedTinyDirectCallAuthority",
+            namespace="StageA.GeneratedRelational.TinyDirectCallAuthority",
+            symbol="checkedContract",
+        )
+        contract = OriginalRegisterControlCallContractProposal(
+            contract_id=23,
+            source_rva=0x1000,
+            instruction_rva=0x1005,
+            continuation_rva=0x100A,
+            preserved_registers=("ebx",),
+            origin="checked_direct_call_summary",
+            authorizing_lean_term=authority,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pe = root / "original.exe"
+            pe.write_bytes(image)
+            state_machine = root / "state-machine.jsonl"
+            _write_jsonl(
+                state_machine,
+                _register_code_pointer_seed_then_call_rows(),
+            )
+            recovery = OriginalPERecoveryInput(
+                pe, hashlib.sha256(image).hexdigest()
+            )
+            uncontracted = plan_interpreter_mixed_original(
+                state_machine,
+                _spec(recovery_pe=recovery),
+            )
+            plan = plan_interpreter_mixed_original(
+                state_machine,
+                _spec(
+                    recovery_pe=recovery,
+                    register_control_call_contracts=(contract,),
+                ),
+            )
+            rejected = plan_interpreter_mixed_original(
+                state_machine,
+                _spec(
+                    recovery_pe=recovery,
+                    register_control_call_contracts=(
+                        dataclasses.replace(contract, preserved_registers=()),
+                    ),
+                ),
+            )
+
+        self.assertFalse(uncontracted.complete)
+        self.assertIn(
+            "an uncontracted call occurs after the last register seed",
+            "\n".join(blocker.detail for blocker in uncontracted.blockers),
+        )
+        self.assertTrue(plan.complete, plan.blockers)
+        binding = plan.regions[2].indirect_sites[0].static_binding
+        self.assertIsInstance(binding, OriginalRegisterCodePointerBinding)
+        self.assertEqual(binding.seed_target_ids, (0,))
+        self.assertEqual(binding.preserve_target_ids, (1,))
+        self.assertEqual(
+            [
+                (
+                    edge.source_target_id,
+                    edge.target_target_id,
+                    edge.kind,
+                    edge.contract_id,
+                )
+                for edge in binding.edges
+            ],
+            [
+                (0, 1, "call_return", 23),
+                (1, 2, "direct", None),
+            ],
+        )
+        self.assertFalse(rejected.complete)
+        self.assertIn(
+            "an uncontracted call occurs after the last register seed",
+            "\n".join(blocker.detail for blocker in rejected.blockers),
+        )
+
+    def test_checked_static_word_seed_survives_a_finite_origin_call(self) -> None:
+        image = _pe32_register_writable_slot_seed_then_call_image()
+        authority = QualifiedLeanSymbol(
+            module="StageA.GeneratedFiniteOriginCallAuthority",
+            namespace="StageA.GeneratedRelational.FiniteOriginCallAuthority",
+            symbol="checkedContract",
+        )
+        contract = OriginalRegisterControlCallContractProposal(
+            contract_id=29,
+            source_rva=0x1000,
+            instruction_rva=0x1006,
+            continuation_rva=0x1008,
+            preserved_registers=(),
+            origin="checked_finite_origin_call_summary",
+            authorizing_lean_term=authority,
+            finite_target_ids=(4,),
+            callee_preserved_registers=("ebx",),
+            target_carried_registers=("ebx",),
+        )
+        slot = OriginalStaticWordSlotBinding(
+            slot_id=0x2008,
+            slot_rva=0x2008,
+            slot_va=0x402008,
+            slot_bytes=(0x40, 0x10, 0x40, 0x00),
+            target_id=4,
+            target_rva=0x1040,
+            target_va=0x401040,
+            continuation_target_id=1,
+            assembled_read=False,
+            writes=(),
+            address_separations=(),
+        )
+        seed = OriginalRegisterStaticWordSeedAuthority(
+            source_rva=0x1000,
+            instruction_rva=0x1006,
+            binding=slot,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pe = root / "original.exe"
+            pe.write_bytes(image)
+            state_machine = root / "state-machine.jsonl"
+            _write_jsonl(
+                state_machine,
+                _register_writable_slot_seed_then_call_rows(),
+            )
+            recovery = OriginalPERecoveryInput(
+                pe, hashlib.sha256(image).hexdigest()
+            )
+            plan = plan_interpreter_mixed_original(
+                state_machine,
+                dataclasses.replace(
+                    _spec(recovery_pe=recovery),
+                    register_control_call_contracts=(contract,),
+                    static_word_call_seed_authorities=(seed,),
+                ),
+            )
+            without_seed = plan_interpreter_mixed_original(
+                state_machine,
+                _spec(
+                    recovery_pe=recovery,
+                    register_control_call_contracts=(contract,),
+                ),
+            )
+            entry_authorities = (
+                write_register_finite_origin_call_entry_authorities(
+                    root / "entry-authority",
+                    plan,
+                    instruction_rvas=(0x1020,),
+                )
+            )
+            entry_source = (
+                root
+                / "entry-authority"
+                / "StageA"
+                / entry_authorities[0].module.removeprefix("StageA.")
+            ).with_suffix(".lean").read_text(encoding="utf-8")
+
+        binding = plan.regions[2].indirect_sites[0].static_binding
+        self.assertIsInstance(binding, OriginalRegisterCodePointerBinding)
+        self.assertEqual(binding.target_id, 4)
+        self.assertEqual(binding.seed_relocation_rvas, ())
+        self.assertEqual(
+            tuple(item.target_id for item in binding.static_word_seed_bindings),
+            (0,),
+        )
+        self.assertEqual(
+            [
+                (
+                    edge.source_target_id,
+                    edge.target_target_id,
+                    edge.kind,
+                    edge.contract_id,
+                )
+                for edge in binding.edges
+            ],
+            [
+                (0, 1, "call_return", 29),
+                (1, 2, "direct", None),
+            ],
+        )
+        self.assertIsNone(
+            without_seed.regions[2].indirect_sites[0].static_binding
+        )
+        self.assertEqual(len(entry_authorities), 1)
+        self.assertEqual(entry_authorities[0].instruction_rva, 0x1020)
+        self.assertEqual(entry_authorities[0].target_ids, (4,))
+        self.assertIn(
+            "generatedOriginalStaticIndirect0IndirectExitCertificate",
+            entry_source,
+        )
+        self.assertIn("generatedIndirectExitCertificateExact", entry_source)
+        self.assertEqual(
+            entry_authorities[0].indirect_exit_certificate_exact_term,
+            f"{entry_authorities[0].namespace}."
+            "generatedIndirectExitCertificateExact",
+        )
+        self.assertIn(
+            "StageA.GeneratedFiniteOriginCallAuthority",
+            entry_source,
+        )
 
     def test_register_import_provenance_uses_exact_iat_and_direct_edges(self) -> None:
         image = _pe32_register_import_image()

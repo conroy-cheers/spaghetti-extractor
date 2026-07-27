@@ -10,6 +10,7 @@ from .binary_inventory import stage_a_inventory_binary
 from .side_extraction import (
     stage_a_extract_side,
     stage_a_extract_side_isa,
+    stage_a_merge_side_extraction_requests,
     stage_a_merge_side_extractions,
     stage_a_project_inventory_extraction_request,
     stage_a_project_missing_side_extraction_request,
@@ -23,7 +24,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     inventory = commands.add_parser("inventory-binary")
     inventory.add_argument("--binary", type=Path, required=True)
-    inventory.add_argument("--linker-map", type=Path, required=True)
+    inventory.add_argument("--linker-map", type=Path)
     inventory.add_argument(
         "--side", choices=("original", "candidate"), required=True
     )
@@ -49,6 +50,18 @@ def _build_parser() -> argparse.ArgumentParser:
         handler=lambda args: stage_a_project_inventory_extraction_request(
             inventory=args.inventory,
             scope=args.scope,
+            out=args.out,
+        )
+    )
+
+    merge_requests = commands.add_parser("merge-side-extraction-requests")
+    merge_requests.add_argument(
+        "--input", type=Path, action="append", required=True
+    )
+    merge_requests.add_argument("--out", type=Path, required=True)
+    merge_requests.set_defaults(
+        handler=lambda args: stage_a_merge_side_extraction_requests(
+            inputs=args.input,
             out=args.out,
         )
     )

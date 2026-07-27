@@ -533,7 +533,14 @@ def _write_sharded_relational_proof(
         | {
             index
             for index, behavior in enumerate(behaviors)
-            if "X87Expr.imageLoad" in str(behavior[side])
+            if any(
+                marker in str(behavior[side])
+                for marker in (
+                    "X87Expr.imageLoad",
+                    "X87Expr.load",
+                    "X87Expr.store",
+                )
+            )
         }
         for side in ("original", "candidate")
     }

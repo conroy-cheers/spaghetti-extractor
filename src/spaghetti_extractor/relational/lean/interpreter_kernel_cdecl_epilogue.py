@@ -19,6 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+import capstone
+import pefile
+
 from ...errors import StageAInputError
 from ...util import sha256_file, write_json
 from .interpreter_kernel_run_operation import (
@@ -279,16 +282,126 @@ def _operation(
     )
 
 
+def _operation_range(
+    payload: Mapping[str, Any], *, expected_operation: str
+) -> tuple[int, int]:
+    static = _object(
+        payload.get("checked_static_authority"),
+        f"{expected_operation} static authority",
+    )
+    return (
+        _nat(static.get("entry_rva"), f"{expected_operation} entry RVA"),
+        _nat(static.get("end_rva"), f"{expected_operation} end RVA"),
+    )
+
+
+def _discover_terminal_epilogue(
+    candidate_path: Path,
+    payload: Mapping[str, Any],
+    *,
+    expected_operation: str,
+    fuel: int,
+) -> tuple[int, int]:
+    entry, end = _operation_range(
+        payload, expected_operation=expected_operation
+    )
+    if entry >= end:
+        raise RelationalInterpreterKernelCDeclEpilogueGenerationError(
+            f"{expected_operation} function range is empty"
+        )
+    try:
+        pe = pefile.PE(str(candidate_path), fast_load=False)
+    except pefile.PEFormatError as exc:
+        raise RelationalInterpreterKernelCDeclEpilogueGenerationError(
+            f"{expected_operation} candidate is not PE32: {exc}"
+        ) from exc
+    try:
+        if (
+            int(pe.FILE_HEADER.Machine) != 0x14C
+            or int(pe.OPTIONAL_HEADER.Magic) != 0x10B
+        ):
+            raise RelationalInterpreterKernelCDeclEpilogueGenerationError(
+                f"{expected_operation} candidate is not x86 PE32"
+            )
+        matching_sections = [
+            section
+            for section in pe.sections
+            if int(section.VirtualAddress) <= entry
+            and end
+            <= int(section.VirtualAddress)
+            + max(int(section.Misc_VirtualSize), int(section.SizeOfRawData))
+            and int(section.Characteristics) & 0x20000000
+        ]
+        if len(matching_sections) != 1:
+            raise RelationalInterpreterKernelCDeclEpilogueGenerationError(
+                f"{expected_operation} function is not in one executable section"
+            )
+        encoded = bytes(pe.get_data(entry, end - entry))
+    finally:
+        pe.close()
+    if len(encoded) != end - entry:
+        raise RelationalInterpreterKernelCDeclEpilogueGenerationError(
+            f"{expected_operation} function bytes are truncated"
+        )
+    decoder = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    instructions = list(decoder.disasm(encoded, entry))
+    cursor = entry
+    for instruction in instructions:
+        if instruction.address != cursor or instruction.size <= 0:
+            raise RelationalInterpreterKernelCDeclEpilogueGenerationError(
+                f"{expected_operation} function decode is not contiguous"
+            )
+        cursor += instruction.size
+    if cursor != end or len(instructions) < fuel:
+        raise RelationalInterpreterKernelCDeclEpilogueGenerationError(
+            f"{expected_operation} function does not contain a complete "
+            "terminal epilogue"
+        )
+    terminal = instructions[-1]
+    if terminal.mnemonic != "ret" or terminal.op_str:
+        raise RelationalInterpreterKernelCDeclEpilogueGenerationError(
+            f"{expected_operation} function does not end in a plain cdecl return"
+        )
+    return int(instructions[-fuel].address), int(terminal.address)
+
+
+def _resolve_epilogue_cutpoints(
+    candidate_path: Path,
+    payload: Mapping[str, Any],
+    *,
+    expected_operation: str,
+    epilogue_rva: int | None,
+    return_rva: int | None,
+    fuel: int,
+) -> tuple[int, int]:
+    if (epilogue_rva is None) != (return_rva is None):
+        raise RelationalInterpreterKernelCDeclEpilogueGenerationError(
+            f"{expected_operation} epilogue and return RVAs must be supplied "
+            "together"
+        )
+    if epilogue_rva is not None and return_rva is not None:
+        return (
+            _nat(epilogue_rva, f"{expected_operation} epilogue RVA"),
+            _nat(return_rva, f"{expected_operation} return RVA"),
+        )
+    return _discover_terminal_epilogue(
+        candidate_path,
+        payload,
+        expected_operation=expected_operation,
+        fuel=fuel,
+    )
+
+
 def build_relational_interpreter_kernel_cdecl_epilogue_plan(
     *,
     candidate_pe: Path | str,
     step_operation_plan: Path | str,
     run_operation_plan: Path | str,
-    step_epilogue_rva: int,
-    step_return_rva: int,
+    step_epilogue_rva: int | None = None,
+    step_return_rva: int | None = None,
     step_epilogue_fuel: int,
-    run_epilogue_rva: int,
-    run_return_rva: int,
+    run_epilogue_rva: int | None = None,
+    run_return_rva: int | None = None,
     run_epilogue_fuel: int = 8,
 ) -> InterpreterKernelCDeclEpiloguePlan:
     candidate_path = Path(candidate_pe)
@@ -302,15 +415,35 @@ def build_relational_interpreter_kernel_cdecl_epilogue_plan(
     candidate_size = candidate_path.stat().st_size
     step_payload = _load(step_path, "interpreterStep operation plan")
     run_payload = _load(run_path, "runFunction operation plan")
+    step_fuel = _positive(
+        step_epilogue_fuel, "interpreterStep epilogue fuel"
+    )
+    run_fuel = _positive(run_epilogue_fuel, "runFunction epilogue fuel")
+    step_epilogue, step_return = _resolve_epilogue_cutpoints(
+        candidate_path,
+        step_payload,
+        expected_operation="interpreterStep",
+        epilogue_rva=step_epilogue_rva,
+        return_rva=step_return_rva,
+        fuel=step_fuel,
+    )
+    run_epilogue, run_return = _resolve_epilogue_cutpoints(
+        candidate_path,
+        run_payload,
+        expected_operation="runFunction",
+        epilogue_rva=run_epilogue_rva,
+        return_rva=run_return_rva,
+        fuel=run_fuel,
+    )
     step = _operation(
         step_payload,
         expected_format=INTERPRETER_KERNEL_STEP_OPERATION_FORMAT,
         expected_operation="interpreterStep",
         expected_premises=INTERPRETER_KERNEL_STEP_OPERATION_REMAINING_PREMISES,
         expected_theorem=INTERPRETER_KERNEL_STEP_OPERATION_THEOREM,
-        epilogue_rva=_nat(step_epilogue_rva, "interpreterStep epilogue RVA"),
-        return_rva=_nat(step_return_rva, "interpreterStep return RVA"),
-        fuel=_positive(step_epilogue_fuel, "interpreterStep epilogue fuel"),
+        epilogue_rva=step_epilogue,
+        return_rva=step_return,
+        fuel=step_fuel,
     )
     run = _operation(
         run_payload,
@@ -318,9 +451,9 @@ def build_relational_interpreter_kernel_cdecl_epilogue_plan(
         expected_operation="runFunction",
         expected_premises=INTERPRETER_KERNEL_RUN_OPERATION_REMAINING_PREMISES,
         expected_theorem=INTERPRETER_KERNEL_RUN_OPERATION_THEOREM,
-        epilogue_rva=_nat(run_epilogue_rva, "runFunction epilogue RVA"),
-        return_rva=_nat(run_return_rva, "runFunction return RVA"),
-        fuel=_positive(run_epilogue_fuel, "runFunction epilogue fuel"),
+        epilogue_rva=run_epilogue,
+        return_rva=run_return,
+        fuel=run_fuel,
     )
     for operation_name, payload in (
         ("interpreterStep", step_payload),

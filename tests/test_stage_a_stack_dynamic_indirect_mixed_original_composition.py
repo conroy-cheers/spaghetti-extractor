@@ -87,18 +87,15 @@ theorem finiteStackCompositionRetainsRuntimeEvidence
 theorem emptyIndexedIntervalRequiresUnreachable
     {context : OriginalDecodedStaticContext}
     {reachabilityTargetIds : List Nat} {contract : MixedRelationContract}
-    (authority : CheckedIndexedTableAuthority context)
+    (authority : CheckedEmptyIndexedSourceAuthority context)
     (invariant : MixedExecutionInvariant reachabilityTargetIds contract)
-    (loop : LoopFacts)
-    (loopExact : authority.static.claim.table.loop = .exact loop)
-    (empty : loop.lowerInclusive = loop.upperExclusive)
-    (complete : CompleteIndexedTablePredecessorPremise authority
+    (complete : CompleteEmptyIndexedSourcePredecessorPremise authority
       (ActualMixedOriginalStackDynamicSource invariant
-        authority.static.claim.site.sourceTargetId)) :
+        authority.site.sourceTargetId)) :
     ActualMixedOriginalStackDynamicSourceUninhabited invariant
-      authority.static.claim.site.sourceTargetId :=
+      authority.site.sourceTargetId :=
   (IndexedTableMixedOriginalComposition.emptyInterval
-    loop loopExact empty complete).sourceUninhabited
+    complete).sourceUninhabited
 
 theorem finiteDynamicCompositionRetainsWorldEvidence
     {context : OriginalDecodedStaticContext}
@@ -177,11 +174,22 @@ class StageAStackDynamicIndirectMixedOriginalCompositionTests(
         for required in (
             "ActualMixedOriginalStackDynamicSource",
             "CompleteStackCarryPremise",
-            "CompleteIndexedTablePredecessorPremise",
+            "CompleteEmptyIndexedSourcePredecessorPremise",
             "CompleteDynamicCallbackPremise",
             "CompleteDynamicSourceUninhabitedPremise",
             "StackRelocatedCodePointerRuntime",
             "DynamicCallbackControlRuntime",
+            "OriginalSourceFactExecutionInvariant",
+            "OriginalSourceFactMixedExecutionInvariant",
+            "OriginalSourceFactProjection",
+            "OriginalSourceFactMixedProjection",
+            "originalSourceFact_of_originalProjection",
+            "originalSourceFact_of_mixedProjection",
+            "originalSourceFact_of_originalInvariant",
+            "originalSourceFact_of_mixedInvariant",
+            "completeStackCarryPremise_of_originalInvariant",
+            "completeEmptyIndexedSourcePremise_of_originalInvariant",
+            "completeDynamicCallbackPremise_of_originalInvariant",
             "sourceUninhabited",
         ):
             self.assertIn(required, layer)
@@ -214,8 +222,9 @@ class StageAStackDynamicIndirectMixedOriginalCompositionTests(
         self.assertEqual(result["status"], "checked", result)
         output = result["stdout"] + result["stderr"]
         self.assertNotIn("sorryAx", output)
+        self.assertIn("emptyIndexedIntervalRequiresUnreachable", output)
         reports = _AXIOMS.findall(output)
-        self.assertGreaterEqual(len(reports), 11, output)
+        self.assertGreaterEqual(len(reports), 7, output)
         for report in reports:
             used = {item.strip() for item in report.split(",") if item.strip()}
             self.assertLessEqual(used, _APPROVED_AXIOMS, report)

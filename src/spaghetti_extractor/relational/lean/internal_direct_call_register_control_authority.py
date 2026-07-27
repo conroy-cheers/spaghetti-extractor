@@ -292,6 +292,47 @@ class DirectCallCrossing:
 
 
 @dataclass(frozen=True)
+class DirectCallCallerFrameWordCrossing:
+    callsite_rva: int
+    source_rva: int
+    continuation_rva: int
+    callee_rva: int
+    source_target_id: int
+    continuation_target_id: int
+    callee_target_id: int
+    edge_index: int
+    caller_frame_word_offsets: tuple[int, ...]
+
+    def checked(self) -> "DirectCallCallerFrameWordCrossing":
+        for field, value in (
+            ("callsite_rva", self.callsite_rva),
+            ("source_rva", self.source_rva),
+            ("continuation_rva", self.continuation_rva),
+            ("callee_rva", self.callee_rva),
+            ("source_target_id", self.source_target_id),
+            ("continuation_target_id", self.continuation_target_id),
+            ("callee_target_id", self.callee_target_id),
+            ("edge_index", self.edge_index),
+        ):
+            _u32(value, f"frame-word crossing.{field}")
+        if (
+            not self.caller_frame_word_offsets
+            or len(set(self.caller_frame_word_offsets))
+            != len(self.caller_frame_word_offsets)
+        ):
+            raise DirectCallRegisterControlAuthorityError(
+                "frame-word crossing offsets must be nonempty and unique"
+            )
+        for index, offset in enumerate(self.caller_frame_word_offsets):
+            _u32(offset, f"frame-word crossing.offsets[{index}]")
+            if offset > 65528:
+                raise DirectCallRegisterControlAuthorityError(
+                    "frame-word crossing offset exceeds the checked bound"
+                )
+        return self
+
+
+@dataclass(frozen=True)
 class RegisterControlAuthorityBlocker:
     category: str
     location_rva: int
@@ -409,22 +450,501 @@ class DirectCallRegisterControlAuthorityPlan:
 class DirectCallRegisterControlLeanBindings:
     context: str
     source_invariant: str
-    semantic_provenance: str
-    semantic_provenance_module: str
+    summary_tree: str
+    summary_checked: str
+    summary_tree_module: str
     context_module: str
     namespace: str
+    summary_certificate_exact: str | None = None
+    stack_witness: str | None = None
+    stack_witness_member: str | None = None
+    stack_witness_checked: str | None = None
 
     def checked(self) -> "DirectCallRegisterControlLeanBindings":
         _qualified(self.context, "bindings.context")
         _qualified(self.source_invariant, "bindings.source_invariant")
-        _qualified(self.semantic_provenance, "bindings.semantic_provenance")
+        _qualified(self.summary_tree, "bindings.summary_tree")
+        _qualified(self.summary_checked, "bindings.summary_checked")
+        if self.summary_certificate_exact is not None:
+            _qualified(
+                self.summary_certificate_exact,
+                "bindings.summary_certificate_exact",
+            )
         _module(
-            self.semantic_provenance_module,
-            "bindings.semantic_provenance_module",
+            self.summary_tree_module,
+            "bindings.summary_tree_module",
         )
         _module(self.context_module, "bindings.context_module")
         _module(self.namespace, "bindings.namespace")
+        stack_bindings = (
+            self.stack_witness,
+            self.stack_witness_member,
+            self.stack_witness_checked,
+        )
+        if any(value is not None for value in stack_bindings):
+            if not all(value is not None for value in stack_bindings):
+                raise DirectCallRegisterControlAuthorityError(
+                    "stack witness term, membership theorem, and checked theorem "
+                    "must be supplied together"
+                )
+            _qualified(self.stack_witness or "", "bindings.stack_witness")
+            _qualified(
+                self.stack_witness_member or "",
+                "bindings.stack_witness_member",
+            )
+            _qualified(
+                self.stack_witness_checked or "",
+                "bindings.stack_witness_checked",
+            )
         return self
+
+
+@dataclass(frozen=True)
+class DirectCallCallerFrameWordLeanBindings:
+    context: str
+    summary_tree: str
+    summary_checked: str
+    summary_certificate_exact: str
+    summary_tree_module: str
+    context_module: str
+    namespace: str
+
+    def checked(self) -> "DirectCallCallerFrameWordLeanBindings":
+        _qualified(self.context, "bindings.context")
+        _qualified(self.summary_tree, "bindings.summary_tree")
+        _qualified(self.summary_checked, "bindings.summary_checked")
+        _qualified(
+            self.summary_certificate_exact,
+            "bindings.summary_certificate_exact",
+        )
+        _module(self.summary_tree_module, "bindings.summary_tree_module")
+        _module(self.context_module, "bindings.context_module")
+        _module(self.namespace, "bindings.namespace")
+        return self
+
+
+@dataclass(frozen=True)
+class FiniteOriginCallEntryLeanBindings:
+    """Lean names needed to check one finite-origin call entry."""
+
+    context: str
+    summary_tree: str
+    summary_checked: str
+    summary_certificate_exact: str
+    summary_tree_module: str
+    context_module: str
+    authority_term: str
+    authority_certificate_exact_term: str
+    authority_module: str
+    namespace: str
+
+    def checked(self) -> "FiniteOriginCallEntryLeanBindings":
+        for field_name in (
+            "context",
+            "summary_tree",
+            "summary_checked",
+            "summary_certificate_exact",
+            "authority_term",
+            "authority_certificate_exact_term",
+        ):
+            _qualified(getattr(self, field_name), f"bindings.{field_name}")
+        for field_name in (
+            "summary_tree_module",
+            "context_module",
+            "authority_module",
+            "namespace",
+        ):
+            _module(getattr(self, field_name), f"bindings.{field_name}")
+        return self
+
+
+@dataclass(frozen=True)
+class FiniteOriginCallRegisterControlLeanBindings:
+    """Lean names needed to consume one checked finite-origin call entry."""
+
+    summary_certificate_exact: str
+    entry_module: str
+    entry_namespace: str
+    namespace: str
+    stack_witness: str | None = None
+    stack_witness_member: str | None = None
+    stack_witness_checked: str | None = None
+
+    def checked(self) -> "FiniteOriginCallRegisterControlLeanBindings":
+        _qualified(
+            self.summary_certificate_exact,
+            "bindings.summary_certificate_exact",
+        )
+        for field_name in ("entry_module", "entry_namespace", "namespace"):
+            _module(getattr(self, field_name), f"bindings.{field_name}")
+        stack_bindings = (
+            self.stack_witness,
+            self.stack_witness_member,
+            self.stack_witness_checked,
+        )
+        if any(value is not None for value in stack_bindings):
+            if not all(value is not None for value in stack_bindings):
+                raise DirectCallRegisterControlAuthorityError(
+                    "stack witness term, membership theorem, and checked theorem "
+                    "must be supplied together"
+                )
+            for field_name, value in (
+                ("stack_witness", self.stack_witness),
+                ("stack_witness_member", self.stack_witness_member),
+                ("stack_witness_checked", self.stack_witness_checked),
+            ):
+                _qualified(value or "", f"bindings.{field_name}")
+        return self
+
+
+@dataclass(frozen=True)
+class FiniteOriginCallCallerFrameWordLeanBindings:
+    """Lean names needed for caller-frame preservation at a finite-origin call."""
+
+    summary_certificate_exact: str
+    entry_module: str
+    entry_namespace: str
+    namespace: str
+
+    def checked(self) -> "FiniteOriginCallCallerFrameWordLeanBindings":
+        _qualified(
+            self.summary_certificate_exact,
+            "bindings.summary_certificate_exact",
+        )
+        for field_name in ("entry_module", "entry_namespace", "namespace"):
+            _module(getattr(self, field_name), f"bindings.{field_name}")
+        return self
+
+
+def finite_origin_call_entry_authority_source(
+    crossing: DirectCallCrossing | DirectCallCallerFrameWordCrossing,
+    *,
+    bindings: FiniteOriginCallEntryLeanBindings,
+) -> str:
+    """Emit the one expensive exact call-entry check as a cached leaf."""
+
+    bindings = bindings.checked()
+    register_evidence = ""
+    register_audits = ""
+    if isinstance(crossing, DirectCallCrossing):
+        register = _register(crossing.register, "crossing.register")
+        register_evidence = f"""
+theorem generatedIdentityChecked :
+    generatedSummaryTree.certificate.identityRegisterChecked
+      generatedContext.originalPe generatedContext.candidatePe
+      generatedContext.originalImports generatedContext.candidateImports
+      .{register} = true := by
+  unfold generatedSummaryTree
+  rw [{bindings.summary_certificate_exact}]
+  decide +kernel
+
+theorem generatedRequestedBySummary :
+    .{register} ∈
+      generatedSummaryTree.certificate.requestedRegisters := by
+  unfold generatedSummaryTree
+  rw [{bindings.summary_certificate_exact}]
+  decide +kernel
+"""
+        register_audits = """
+#print axioms generatedIdentityChecked
+#print axioms generatedRequestedBySummary"""
+    source = f"""import StageA.RelationalInternalDirectCallMixedOriginalIntegration
+import {bindings.context_module}
+import {bindings.summary_tree_module}
+import {bindings.authority_module}
+
+namespace {bindings.namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallComposition
+open StageA.Relational.InternalDirectCallMixedOriginalIntegration
+open StageA.Relational.RegisterControlProvenance
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+def generatedContext : StaticProofContext :=
+  {bindings.context}
+
+def generatedSummaryTree : SummaryTree :=
+  {bindings.summary_tree}
+
+theorem generatedSummaryTreeChecked :
+    generatedSummaryTree.checked generatedContext.originalPe
+      generatedContext.candidatePe generatedContext.originalImports
+      generatedContext.candidateImports = true := by
+  simpa [generatedSummaryTree, generatedContext] using
+    {bindings.summary_checked}
+
+{register_evidence}
+
+def generatedIndirectExitAuthority :=
+  {bindings.authority_term}
+
+def generatedEntryCheckReport :
+    StageA.Relational.InternalDirectCallRegisterSummary.FiniteOriginCallEntryCheckReport :=
+  generatedSummaryTree.certificate.finiteOriginCallEntryCheckReport
+    (context := generatedContext)
+    {crossing.source_target_id} {crossing.callee_target_id}
+    {crossing.continuation_target_id}
+    ({bindings.authority_term}).certificate
+    generatedContext.originalPe generatedContext.candidatePe
+    generatedContext.originalImports generatedContext.candidateImports
+
+theorem generatedEntryKindChecked :
+    generatedEntryCheckReport.entryKind = true := by
+  unfold generatedEntryCheckReport generatedSummaryTree
+  rw [{bindings.summary_certificate_exact},
+    {bindings.authority_certificate_exact_term}]
+  decide +kernel
+
+theorem generatedEntryTargetChecked :
+    generatedEntryCheckReport.target = true := by
+  unfold generatedEntryCheckReport generatedSummaryTree
+  rw [{bindings.summary_certificate_exact},
+    {bindings.authority_certificate_exact_term}]
+  decide +kernel
+
+theorem generatedEntryContextChecked :
+    generatedEntryCheckReport.context = true := by
+  unfold generatedEntryCheckReport generatedSummaryTree
+  rw [{bindings.summary_certificate_exact},
+    {bindings.authority_certificate_exact_term}]
+  decide +kernel
+
+theorem generatedEntrySourceMapped :
+    generatedEntryCheckReport.sourceMapped = true := by
+  unfold generatedEntryCheckReport generatedSummaryTree
+  rw [{bindings.summary_certificate_exact},
+    {bindings.authority_certificate_exact_term}]
+  decide +kernel
+
+theorem generatedEntryContinuationMapped :
+    generatedEntryCheckReport.continuationMapped = true := by
+  unfold generatedEntryCheckReport generatedSummaryTree
+  rw [{bindings.summary_certificate_exact},
+    {bindings.authority_certificate_exact_term}]
+  decide +kernel
+
+theorem generatedEntryCalleeMapped :
+    generatedEntryCheckReport.calleeMapped = true := by
+  unfold generatedEntryCheckReport generatedSummaryTree
+  rw [{bindings.summary_certificate_exact},
+    {bindings.authority_certificate_exact_term}]
+  decide +kernel
+
+theorem generatedEntryAuthorityShapeChecked :
+    generatedEntryCheckReport.authorityShape = true := by
+  unfold generatedEntryCheckReport generatedSummaryTree
+  rw [{bindings.summary_certificate_exact},
+    {bindings.authority_certificate_exact_term}]
+  decide +kernel
+
+theorem generatedEntryOriginalSideChecked :
+    generatedEntryCheckReport.originalSide = true := by
+  unfold generatedEntryCheckReport generatedSummaryTree
+  rw [{bindings.summary_certificate_exact},
+    {bindings.authority_certificate_exact_term}]
+  decide +kernel
+
+theorem generatedEntryCandidateSideChecked :
+    generatedEntryCheckReport.candidateSide = true := by
+  unfold generatedEntryCheckReport generatedSummaryTree
+  rw [{bindings.summary_certificate_exact},
+    {bindings.authority_certificate_exact_term}]
+  decide +kernel
+
+theorem generatedEntryCheckReportChecked :
+    generatedEntryCheckReport.checked = true := by
+  simp only [
+    StageA.Relational.InternalDirectCallRegisterSummary.FiniteOriginCallEntryCheckReport.checked,
+    generatedEntryKindChecked, generatedEntryTargetChecked,
+    generatedEntryContextChecked, generatedEntrySourceMapped,
+    generatedEntryContinuationMapped, generatedEntryCalleeMapped,
+    generatedEntryAuthorityShapeChecked, generatedEntryOriginalSideChecked,
+    generatedEntryCandidateSideChecked, Bool.and_self]
+
+theorem generatedEntryAuthorityChecked :
+    generatedSummaryTree.certificate.finiteOriginCallEntryAuthorityChecked
+      {crossing.source_target_id} {crossing.callee_target_id}
+      {crossing.continuation_target_id} generatedIndirectExitAuthority
+      generatedContext.originalPe generatedContext.candidatePe
+      generatedContext.originalImports generatedContext.candidateImports =
+        true := by
+  simpa [generatedEntryCheckReport,
+    StageA.Relational.InternalDirectCallRegisterSummary.Certificate.finiteOriginCallEntryAuthorityChecked,
+    StageA.Relational.InternalDirectCallRegisterSummary.Certificate.finiteOriginCallEntryCertificateChecked] using
+    generatedEntryCheckReportChecked
+
+def generatedFiniteOriginCallEntryAuthority :
+    CheckedFiniteOriginCallEntryAuthority generatedContext :=
+  checkedFiniteOriginCallEntryAuthority_of_checked generatedContext
+    generatedSummaryTree generatedIndirectExitAuthority
+    {crossing.source_target_id} {crossing.callee_target_id}
+    {crossing.continuation_target_id} generatedSummaryTreeChecked
+    generatedEntryAuthorityChecked
+
+theorem generatedEntryMetadataChecked :
+    generatedSummaryTree.certificate.callsite.original.start =
+        {crossing.source_rva} /\\
+      generatedSummaryTree.certificate.callsite.original.start +
+          generatedSummaryTree.certificate.callsite.original.size =
+        {crossing.continuation_rva} /\\
+      generatedSummaryTree.certificate.calleeEntry.original.start =
+        {crossing.callee_rva} /\\
+      generatedSummaryTree.certificate.continuation.original.start =
+        {crossing.continuation_rva} /\\
+      generatedFiniteOriginCallEntryAuthority.sourceTargetId =
+        {crossing.source_target_id} /\\
+      generatedFiniteOriginCallEntryAuthority.calleeTargetId =
+        {crossing.callee_target_id} /\\
+      generatedFiniteOriginCallEntryAuthority.continuationTargetId =
+        {crossing.continuation_target_id} /\\
+      generatedSummaryTree.certificate.graphClosed = true /\\
+      generatedSummaryTree.certificate.returns.isEmpty = false := by
+  unfold generatedSummaryTree generatedFiniteOriginCallEntryAuthority
+  rw [{bindings.summary_certificate_exact}]
+  decide +kernel
+
+#print axioms generatedEntryCheckReportChecked
+#print axioms generatedEntryAuthorityChecked
+#print axioms generatedFiniteOriginCallEntryAuthority
+#print axioms generatedEntryMetadataChecked
+{register_audits}
+
+end {bindings.namespace}
+"""
+    for forbidden in ("sorry", "native_decide", "axiom ", "unsafe "):
+        if forbidden in source:
+            raise DirectCallRegisterControlAuthorityError(
+                f"generated source unexpectedly contains {forbidden.strip()}"
+            )
+    return source
+
+
+def _returning_register_certificate_source(
+    register: str,
+    *,
+    summary_certificate_exact: str | None,
+    prechecked_namespace: str | None,
+    stack_witness: str | None,
+    stack_witness_member: str | None,
+    stack_witness_checked: str | None,
+) -> str:
+    if prechecked_namespace is not None:
+        _module(prechecked_namespace, "prechecked_namespace")
+    certificate_rewrite = (
+        ""
+        if summary_certificate_exact is None
+        else (
+            "  unfold generatedSummaryTree"
+            + (
+                ""
+                if prechecked_namespace is None
+                else f" {prechecked_namespace}.generatedSummaryTree"
+            )
+            + "\n"
+            f"  rw [{summary_certificate_exact}]\n"
+        )
+    )
+    if stack_witness is None:
+        if prechecked_namespace is None:
+            identity_proof = f"""by
+{certificate_rewrite}\
+  decide +kernel"""
+            requested_proof = f"""by
+{certificate_rewrite}\
+  decide +kernel"""
+        else:
+            identity_proof = f"""by
+  simpa [generatedSummaryTree, generatedContext] using
+    {prechecked_namespace}.generatedIdentityChecked"""
+            requested_proof = f"""by
+  simpa [generatedSummaryTree] using
+    {prechecked_namespace}.generatedRequestedBySummary"""
+        return f"""theorem generatedIdentityChecked :
+    generatedSummaryTree.certificate.identityRegisterChecked
+      generatedContext.originalPe generatedContext.candidatePe
+      generatedContext.originalImports generatedContext.candidateImports
+      .{register} = true := {identity_proof}
+
+theorem generatedRequestedBySummary :
+    .{register} ∈ generatedSummaryTree.certificate.requestedRegisters :=
+  {requested_proof}
+
+def generatedReturningRegisterCertificate :
+    CheckedReturningRegisterCertificate generatedContext generatedSummaryTree :=
+  checkedReturningRegisterCertificate_of_identity generatedContext
+    generatedSummaryTree generatedRequestedRegisters
+    generatedSummaryTreeChecked (by decide) (by decide)
+    (by
+      intro selected member
+      have selectedExact : selected = .{register} := by
+        simpa [generatedRequestedRegisters] using member
+      subst selected
+      exact generatedRequestedBySummary)
+    (by
+      intro selected member
+      have selectedExact : selected = .{register} := by
+        simpa [generatedRequestedRegisters] using member
+      subst selected
+      exact generatedIdentityChecked)"""
+    if prechecked_namespace is None:
+        stack_entry_proof = f"""by
+{certificate_rewrite}\
+  decide +kernel"""
+        requested_proof = f"""by
+{certificate_rewrite}\
+  decide +kernel"""
+    else:
+        stack_entry_proof = f"""by
+{certificate_rewrite}\
+  decide +kernel"""
+        requested_proof = f"""by
+  simpa [generatedSummaryTree] using
+    {prechecked_namespace}.generatedRequestedBySummary"""
+    return f"""def generatedStackWitness :
+    InternalDirectCallRegisterSummary.StackSaveRestoreWitness :=
+  {stack_witness}
+
+theorem generatedStackWitnessMember :
+    generatedStackWitness ∈
+      generatedSummaryTree.certificate.stackWitnesses := by
+  simpa [generatedStackWitness, generatedSummaryTree] using
+    {stack_witness_member}
+
+theorem generatedStackWitnessChecked :
+    generatedStackWitness.checked generatedSummaryTree.certificate
+      generatedContext.originalPe generatedContext.candidatePe
+      generatedContext.originalImports generatedContext.candidateImports =
+        true := by
+  simpa [generatedStackWitness, generatedSummaryTree, generatedContext] using
+    {stack_witness_checked}
+
+theorem generatedStackWitnessRegister :
+    generatedStackWitness.register = .{register} := by
+  decide +kernel
+
+theorem generatedStackWitnessSingleFrame :
+    generatedStackWitness.additionalFrames = [] := by
+  decide +kernel
+
+theorem generatedStackWitnessEntry :
+    generatedSummaryTree.certificate.calleeEntry.id =
+      generatedStackWitness.saveRegionId := {stack_entry_proof}
+
+theorem generatedRequestedBySummary :
+    .{register} ∈ generatedSummaryTree.certificate.requestedRegisters :=
+  {requested_proof}
+
+def generatedReturningRegisterCertificate :
+    CheckedReturningRegisterCertificate generatedContext generatedSummaryTree :=
+  checkedReturningRegisterCertificate_of_rootStackWitness generatedContext
+    generatedSummaryTree .{register} generatedStackWitness
+    generatedSummaryTreeChecked generatedStackWitnessMember
+    generatedStackWitnessRegister generatedStackWitnessSingleFrame
+    generatedStackWitnessEntry (by decide) generatedRequestedBySummary
+    generatedStackWitnessChecked"""
 
 
 def direct_call_register_control_authority_source(
@@ -439,9 +959,25 @@ def direct_call_register_control_authority_source(
     contract_id = _u32(contract_id, "contract_id")
     register = _register(crossing.register, "crossing.register")
     pair = f"registerControlPair .{register}"
+    preservation_evidence = _returning_register_certificate_source(
+        register,
+        summary_certificate_exact=bindings.summary_certificate_exact,
+        prechecked_namespace=None,
+        stack_witness=bindings.stack_witness,
+        stack_witness_member=bindings.stack_witness_member,
+        stack_witness_checked=bindings.stack_witness_checked,
+    )
+    authority_certificate_rewrite = (
+        ""
+        if bindings.summary_certificate_exact is None
+        else (
+            "  unfold generatedSummaryTree\n"
+            f"  rw [{bindings.summary_certificate_exact}]\n"
+        )
+    )
     source = f"""import StageA.RelationalInternalDirectCallMixedOriginalIntegration
 import {bindings.context_module}
-import {bindings.semantic_provenance_module}
+import {bindings.summary_tree_module}
 
 namespace {bindings.namespace}
 
@@ -450,12 +986,20 @@ open StageA.Relational.InternalDirectCallComposition
 open StageA.Relational.InternalDirectCallMixedOriginalIntegration
 open StageA.Relational.RegisterControlProvenance
 
+set_option maxRecDepth 1000000
+
 def generatedContext : StaticProofContext :=
   {bindings.context}
 
-def generatedSemanticProvenance :
-    CheckedDirectCallSummaryProvenance generatedContext :=
-  {bindings.semantic_provenance}
+def generatedSummaryTree : SummaryTree :=
+  {bindings.summary_tree}
+
+theorem generatedSummaryTreeChecked :
+    generatedSummaryTree.checked generatedContext.originalPe
+      generatedContext.candidatePe generatedContext.originalImports
+      generatedContext.candidateImports = true := by
+  simpa [generatedSummaryTree, generatedContext] using
+    {bindings.summary_checked}
 
 def generatedRegisterControlEdge : RegionEdge := {{
   edgeIndex := {crossing.edge_index}
@@ -476,118 +1020,623 @@ def generatedRequestedRegisters : List Reg := [.{register}]
 def generatedSourceInvariant : StateInvariant :=
   {bindings.source_invariant} {crossing.source_target_id}
 
-theorem evalBehaviorPreservesIdentityRegister
-    (candidate : Bool) (targets : List CodeTargetPair)
-    (state : MachineState) (behavior : SymbolicBehavior)
-    (result : RelationalBehavior) (register : Reg)
-    (identity : behavior.registers.get register = .inputReg register)
-    (evaluated : evalBehavior candidate targets state behavior = some result) :
-    (result.nextMachineState state).registers.get register =
-      state.registers.get register := by
-  cases normalizedEquation :
-      normalizeSymbolicBehavior candidate targets behavior with
-  | none => simp [evalBehavior, normalizedEquation] at evaluated
-  | some normalized =>
-    have fields := normalizeSymbolicBehavior_fields candidate targets behavior
-      normalized normalizedEquation
-    simp [evalBehavior, normalizedEquation] at evaluated
-    subst result
-    simp [NormalizedSymbolicBehavior.eval, fields.1, identity,
-      RelationalBehavior.nextMachineState, Expr.eval]
-
-theorem generatedCallEntryRegistersPreserved :
-    CallEntryRegistersPreserved generatedSemanticProvenance
-      generatedRequestedRegisters := by
-  intro register member world sourceOriginal sourceCandidate entryOriginal
-    entryCandidate frame execution
-  have requested : register = .{register} := by
-    simpa [generatedRequestedRegisters] using member
-  subst register
-  have originalIdentity :
-      execution.originalBehavior.registers.get .{register} = .inputReg .{register} := by
-    have decoded := execution.originalDecoded
-    have exact :
-        (regionBehaviorWithMachineCallContracts generatedContext.originalPe
-          generatedContext.originalImports generatedContext.machineImportCallContracts
-          generatedSemanticProvenance.tree.certificate.callsite.original).map
-            (fun behavior => behavior.registers.get .{register}) =
-          some (.inputReg .{register}) := by
-      decide +kernel
-    rw [decoded] at exact
-    exact Option.some.inj exact
-  have candidateIdentity :
-      execution.candidateBehavior.registers.get .{register} = .inputReg .{register} := by
-    have decoded := execution.candidateDecoded
-    have exact :
-        (regionBehaviorWithMachineCallContracts generatedContext.candidatePe
-          generatedContext.candidateImports generatedContext.machineImportCallContracts
-          generatedSemanticProvenance.tree.certificate.callsite.candidate).map
-            (fun behavior => behavior.registers.get .{register}) =
-          some (.inputReg .{register}) := by
-      decide +kernel
-    rw [decoded] at exact
-    exact Option.some.inj exact
-  constructor
-  · rw [execution.originalEntry]
-    exact evalBehaviorPreservesIdentityRegister false
-      generatedContext.codeMap.entries.toList sourceOriginal
-      execution.originalBehavior execution.originalResult .{register}
-      originalIdentity execution.originalEvaluated
-  · rw [execution.candidateEntry]
-    exact evalBehaviorPreservesIdentityRegister true
-      generatedContext.codeMap.entries.toList sourceCandidate
-      execution.candidateBehavior execution.candidateResult .{register}
-      candidateIdentity execution.candidateEvaluated
+{preservation_evidence}
 
 def generatedCheckedDirectCallRegisterControlContract :
     CheckedDirectCallRegisterControlContract generatedContext := {{
-  provenance := generatedSemanticProvenance
+  tree := generatedSummaryTree
+  returning := generatedReturningRegisterCertificate
   edge := generatedRegisterControlEdge
   contract := generatedRegisterControlCallContract
   requestedRegisters := generatedRequestedRegisters
   sourceInvariant := generatedSourceInvariant
-  sourceInvariantExact := by decide +kernel
+  sourceTargetId := {crossing.source_target_id}
+  continuationTargetId := {crossing.continuation_target_id}
+  edgeKind := rfl
+  edgeSource := by decide +kernel
+  edgeTarget := by decide +kernel
+  sourceMapped := by decide +kernel
+  continuationMapped := by decide +kernel
+  edgeContract := rfl
+  noImportResults := rfl
+  preservedRegistersExact := rfl
+  requestedRegistersExact := rfl
+}}
+
+theorem generatedAuthorityMatchesExactPERequest :
+    generatedSummaryTree.checked generatedContext.originalPe
+        generatedContext.candidatePe generatedContext.originalImports
+        generatedContext.candidateImports = true /\\
+      generatedSummaryTree.certificate.callsite.original.start =
+        {crossing.source_rva} /\\
+      generatedSummaryTree.certificate.callsite.original.start +
+          generatedSummaryTree.certificate.callsite.original.size =
+        {crossing.continuation_rva} /\\
+      generatedSummaryTree.certificate.calleeEntry.original.start =
+        {crossing.callee_rva} /\\
+      generatedSummaryTree.certificate.continuation.original.start =
+        {crossing.continuation_rva} /\\
+      generatedCheckedDirectCallRegisterControlContract.sourceTargetId =
+        {crossing.source_target_id} /\\
+      generatedCheckedDirectCallRegisterControlContract.continuationTargetId =
+        {crossing.continuation_target_id} /\\
+      generatedCheckedDirectCallRegisterControlContract.sourceInvariant =
+        {bindings.source_invariant} {crossing.source_target_id} /\\
+      generatedSummaryTree.certificate.graphClosed = true /\\
+      generatedSummaryTree.certificate.returns.isEmpty = false := by
+  refine And.intro generatedSummaryTreeChecked ?_
+{authority_certificate_rewrite}\
+  decide +kernel
+
+#print axioms generatedReturningRegisterCertificate
+#print axioms generatedCheckedDirectCallRegisterControlContract
+#print axioms generatedAuthorityMatchesExactPERequest
+
+end {bindings.namespace}
+"""
+    for forbidden in ("sorry", "native_decide", "axiom ", "unsafe "):
+        if forbidden in source:
+            raise DirectCallRegisterControlAuthorityError(
+                f"generated source unexpectedly contains {forbidden.strip()}"
+            )
+    return source
+
+
+def direct_call_caller_frame_word_authority_source(
+    crossing: DirectCallCallerFrameWordCrossing,
+    *,
+    bindings: DirectCallCallerFrameWordLeanBindings,
+) -> str:
+    """Emit one finite-return caller-frame preservation authority."""
+
+    crossing = crossing.checked()
+    bindings = bindings.checked()
+    source_words = ", ".join(
+        "{ originalOffset := "
+        f"{offset}, candidateOffset := {offset} }}"
+        for offset in crossing.caller_frame_word_offsets
+    )
+    entry_words = ", ".join(
+        "{ originalOffset := "
+        f"{offset + 4}, candidateOffset := {offset + 4} }}"
+        for offset in crossing.caller_frame_word_offsets
+    )
+    entry_claims = ", ".join(
+        "(CallerFrameWordEntryClaim.derive? "
+        "{ originalOffset := "
+        f"{offset}, candidateOffset := {offset} }} "
+        "{ originalOffset := "
+        f"{offset + 4}, candidateOffset := {offset + 4} }} "
+        "generatedOriginalCallEntryBehavior generatedCandidateCallEntryBehavior)"
+        for offset in crossing.caller_frame_word_offsets
+    )
+    source = f"""import StageA.RelationalInternalDirectCallMixedOriginalIntegration
+import {bindings.context_module}
+import {bindings.summary_tree_module}
+
+namespace {bindings.namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallComposition
+open StageA.Relational.InternalDirectCallMixedOriginalIntegration
+open StageA.Relational.RegisterControlProvenance
+
+set_option maxRecDepth 1000000
+
+def generatedContext : StaticProofContext :=
+  {bindings.context}
+
+def generatedSummaryTree : SummaryTree :=
+  {bindings.summary_tree}
+
+theorem generatedSummaryTreeChecked :
+    generatedSummaryTree.checked generatedContext.originalPe
+      generatedContext.candidatePe generatedContext.originalImports
+      generatedContext.candidateImports = true := by
+  simpa [generatedSummaryTree, generatedContext] using
+    {bindings.summary_checked}
+
+def generatedFallbackCallEntryBehavior : NormalizedSymbolicBehavior := {{
+  registers := initialSymbolic.registers
+  x87 := initialSymbolicX87
+  writes := []
+  flags := none
+  outcome := .jump 0
+}}
+
+def generatedCallEntryBehaviors :
+    NormalizedSymbolicBehavior × NormalizedSymbolicBehavior :=
+  (directCallNormalizedBehaviors? generatedContext generatedSummaryTree).getD
+    (generatedFallbackCallEntryBehavior, generatedFallbackCallEntryBehavior)
+
+def generatedOriginalCallEntryBehavior : NormalizedSymbolicBehavior :=
+  generatedCallEntryBehaviors.1
+
+def generatedCandidateCallEntryBehavior : NormalizedSymbolicBehavior :=
+  generatedCallEntryBehaviors.2
+
+theorem generatedCallEntryBehaviorsExact :
+    directCallNormalizedBehaviors? generatedContext generatedSummaryTree =
+      some (generatedOriginalCallEntryBehavior,
+        generatedCandidateCallEntryBehavior) := by
+  decide +kernel
+
+def generatedRequestedCallerFrameWords : List ReturnSlotExactWordPair :=
+  [{source_words}]
+
+def generatedCallerFrameWords : List ReturnSlotExactWordPair := [{entry_words}]
+
+def generatedCallerFrameWordEntryClaims : List CallerFrameWordEntryClaim :=
+  ([{entry_claims}] : List (Option CallerFrameWordEntryClaim)).filterMap id
+
+theorem generatedCallerFrameWordsUnique :
+    generatedCallerFrameWords.Nodup := by
+  decide +kernel
+
+theorem generatedCallerFrameWordsRequested :
+    forall word, word ∈ generatedCallerFrameWords ->
+      word ∈ generatedSummaryTree.certificate.callerFrameWords := by
+  unfold generatedCallerFrameWords generatedSummaryTree
+  rw [{bindings.summary_certificate_exact}]
+  decide +kernel
+
+theorem generatedCallerFrameWordEntryClaimsChecked :
+    generatedCallerFrameWordEntryClaims.all (fun claim =>
+      claim.checked generatedOriginalCallEntryBehavior
+        generatedCandidateCallEntryBehavior) = true := by
+  decide +kernel
+
+theorem generatedRequestedCallerFrameWordsExact :
+    generatedRequestedCallerFrameWords =
+      generatedCallerFrameWordEntryClaims.map (·.source) := by
+  decide +kernel
+
+theorem generatedEntryCallerFrameWordsExact :
+    generatedCallerFrameWords =
+      generatedCallerFrameWordEntryClaims.map (·.entry) := by
+  decide +kernel
+
+theorem generatedCallerFrameWordEntryOffsetsRestore :
+    forall claim, claim ∈ generatedCallerFrameWordEntryClaims ->
+      BitVec.ofNat 32 claim.entry.originalOffset =
+          BitVec.ofNat 32 4 + BitVec.ofNat 32 claim.source.originalOffset /\\
+        BitVec.ofNat 32 claim.entry.candidateOffset =
+          BitVec.ofNat 32 4 + BitVec.ofNat 32 claim.source.candidateOffset := by
+  decide +kernel
+
+def generatedReturningCallerFrameWordCertificate :
+    CheckedReturningCallerFrameWordCertificate generatedContext
+      generatedSummaryTree :=
+  checkedReturningCallerFrameWordCertificate generatedContext
+    generatedSummaryTree generatedCallerFrameWords
+    generatedSummaryTreeChecked generatedCallerFrameWordsUnique
+    generatedCallerFrameWordsRequested
+
+theorem generatedStackEntryOffset :
+    exists witness,
+      findStackEntryOffset?
+          generatedSummaryTree.certificate.stackEntryOffsets
+          generatedSummaryTree.certificate.calleeEntry.id = some witness /\\
+        witness.originalOffset = 0 /\\
+        witness.candidateOffset = 0 := by
+  unfold generatedSummaryTree
+  rw [{bindings.summary_certificate_exact}]
+  decide +kernel
+
+def generatedReturningStackPointerCertificate :
+    CheckedReturningStackPointerCertificate generatedContext
+      generatedSummaryTree :=
+  checkedReturningStackPointerCertificate generatedContext generatedSummaryTree
+    generatedSummaryTreeChecked generatedStackEntryOffset
+
+def generatedFrameWordControlEdge : RegionEdge := {{
+  edgeIndex := {crossing.edge_index}
+  sourceRegion := {crossing.source_target_id}
+  targetRegion := {crossing.continuation_target_id}
+  kind := .callReturn
+  machineContractId := none
+}}
+
+def generatedCheckedDirectCallCallerFrameWordControlContract :
+    CheckedDirectCallCallerFrameWordControlContract generatedContext := {{
+  tree := generatedSummaryTree
+  returning := generatedReturningCallerFrameWordCertificate
+  returningStackPointer := generatedReturningStackPointerCertificate
+  edge := generatedFrameWordControlEdge
+  originalBehavior := generatedOriginalCallEntryBehavior
+  candidateBehavior := generatedCandidateCallEntryBehavior
+  behaviorsExact := generatedCallEntryBehaviorsExact
+  entryClaims := generatedCallerFrameWordEntryClaims
+  entryClaimsChecked := generatedCallerFrameWordEntryClaimsChecked
+  requestedWords := generatedRequestedCallerFrameWords
+  sourceTargetId := {crossing.source_target_id}
+  continuationTargetId := {crossing.continuation_target_id}
+  edgeKind := rfl
+  edgeSource := by decide +kernel
+  edgeTarget := by decide +kernel
+  sourceMapped := by decide +kernel
+  continuationMapped := by decide +kernel
+  requestedWordsExact := generatedRequestedCallerFrameWordsExact
+  entryWordsExact := generatedEntryCallerFrameWordsExact
+  entryOffsetsRestore := generatedCallerFrameWordEntryOffsetsRestore
+}}
+
+theorem generatedFrameWordAuthorityMatchesExactPERequest :
+    generatedSummaryTree.checked generatedContext.originalPe
+        generatedContext.candidatePe generatedContext.originalImports
+        generatedContext.candidateImports = true /\\
+      generatedSummaryTree.certificate.callsite.original.start =
+        {crossing.source_rva} /\\
+      generatedSummaryTree.certificate.callsite.original.start +
+          generatedSummaryTree.certificate.callsite.original.size =
+        {crossing.continuation_rva} /\\
+      generatedSummaryTree.certificate.calleeEntry.original.start =
+        {crossing.callee_rva} /\\
+      generatedSummaryTree.certificate.continuation.original.start =
+        {crossing.continuation_rva} /\\
+      generatedCheckedDirectCallCallerFrameWordControlContract.sourceTargetId =
+        {crossing.source_target_id} /\\
+      generatedCheckedDirectCallCallerFrameWordControlContract.continuationTargetId =
+        {crossing.continuation_target_id} /\\
+      generatedCheckedDirectCallCallerFrameWordControlContract.requestedWords =
+        generatedRequestedCallerFrameWords /\\
+      generatedSummaryTree.certificate.graphClosed = true /\\
+      generatedSummaryTree.certificate.returns.isEmpty = false := by
+  refine And.intro generatedSummaryTreeChecked ?_
+  unfold generatedSummaryTree
+  rw [{bindings.summary_certificate_exact}]
+  decide +kernel
+
+#print axioms generatedReturningCallerFrameWordCertificate
+#print axioms generatedReturningStackPointerCertificate
+#print axioms generatedCheckedDirectCallCallerFrameWordControlContract
+#print axioms generatedFrameWordAuthorityMatchesExactPERequest
+
+end {bindings.namespace}
+"""
+    for forbidden in ("sorry", "native_decide", "axiom ", "unsafe "):
+        if forbidden in source:
+            raise DirectCallRegisterControlAuthorityError(
+                f"generated source unexpectedly contains {forbidden.strip()}"
+            )
+    return source
+
+
+def finite_origin_call_register_control_authority_source(
+    crossing: DirectCallCrossing,
+    *,
+    contract_id: int,
+    bindings: FiniteOriginCallRegisterControlLeanBindings,
+) -> str:
+    """Emit a singleton finite-origin call authority checked against exact PE data."""
+
+    bindings = bindings.checked()
+    contract_id = _u32(contract_id, "contract_id")
+    register = _register(crossing.register, "crossing.register")
+    pair = f"registerControlPair .{register}"
+    preservation_evidence = _returning_register_certificate_source(
+        register,
+        summary_certificate_exact=bindings.summary_certificate_exact,
+        prechecked_namespace=bindings.entry_namespace,
+        stack_witness=bindings.stack_witness,
+        stack_witness_member=bindings.stack_witness_member,
+        stack_witness_checked=bindings.stack_witness_checked,
+    )
+    source = f"""import StageA.RelationalInternalDirectCallMixedOriginalIntegration
+import {bindings.entry_module}
+
+namespace {bindings.namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallComposition
+open StageA.Relational.InternalDirectCallMixedOriginalIntegration
+open StageA.Relational.RegisterControlProvenance
+
+set_option maxRecDepth 1000000
+
+def generatedContext : StaticProofContext :=
+  {bindings.entry_namespace}.generatedContext
+
+def generatedSummaryTree : SummaryTree :=
+  {bindings.entry_namespace}.generatedSummaryTree
+
+theorem generatedSummaryTreeChecked :
+    generatedSummaryTree.checked generatedContext.originalPe
+      generatedContext.candidatePe generatedContext.originalImports
+      generatedContext.candidateImports = true := by
+  simpa [generatedSummaryTree, generatedContext] using
+    {bindings.entry_namespace}.generatedSummaryTreeChecked
+
+theorem generatedEntryAuthorityChecked :
+    {bindings.entry_namespace}.generatedEntryCheckReport.checked = true :=
+  {bindings.entry_namespace}.generatedEntryCheckReportChecked
+
+def generatedFiniteOriginCallEntryAuthority :
+    CheckedFiniteOriginCallEntryAuthority generatedContext :=
+  {bindings.entry_namespace}.generatedFiniteOriginCallEntryAuthority
+
+def generatedRegisterControlEdge : RegionEdge := {{
+  edgeIndex := {crossing.edge_index}
+  sourceRegion := {crossing.source_target_id}
+  targetRegion := {crossing.continuation_target_id}
+  kind := .callReturn
+  machineContractId := some {contract_id}
+}}
+
+def generatedRegisterControlCallContract : CallContract := {{
+  contractId := {contract_id}
+  preservedRegisters := [{pair}]
+  importResults := []
+}}
+
+def generatedRequestedRegisters : List Reg := [.{register}]
+
+{preservation_evidence}
+
+def generatedCheckedFiniteOriginCallRegisterControlContract :
+    CheckedFiniteOriginCallRegisterControlContract generatedContext := {{
+  entry := generatedFiniteOriginCallEntryAuthority
+  returning := generatedReturningRegisterCertificate
+  edge := generatedRegisterControlEdge
+  contract := generatedRegisterControlCallContract
+  requestedRegisters := generatedRequestedRegisters
+  sourceInvariant := generatedFiniteOriginCallEntryAuthority.sourceInvariant
+  sourceInvariantExact := rfl
   edgeKind := rfl
   edgeSource := by decide +kernel
   edgeTarget := by decide +kernel
   edgeContract := rfl
   noImportResults := rfl
   preservedRegistersExact := rfl
-  requestedRegistersUnique := by decide
-  requestedRegistersExcludeStackPointer := by decide
-  requestedBySummary := by decide +kernel
-  callEntryPreserved := generatedCallEntryRegistersPreserved
+  requestedRegistersExact := rfl
+  targetRegister := .{register}
+  targetRegisterRequested := by decide +kernel
+  targetRegisterOutputChecked := by decide +kernel
 }}
 
 theorem generatedAuthorityMatchesExactPERequest :
-    generatedSemanticProvenance.tree.checked generatedContext.originalPe
+    generatedSummaryTree.checked generatedContext.originalPe
         generatedContext.candidatePe generatedContext.originalImports
-        generatedContext.candidateImports = true /\
-      generatedSemanticProvenance.tree.certificate.callsite.original.start =
-        {crossing.source_rva} /\
-      generatedSemanticProvenance.tree.certificate.callsite.original.start +
-          generatedSemanticProvenance.tree.certificate.callsite.original.size =
-        {crossing.continuation_rva} /\
-      generatedSemanticProvenance.tree.certificate.calleeEntry.original.start =
-        {crossing.callee_rva} /\
-      generatedSemanticProvenance.tree.certificate.continuation.original.start =
-        {crossing.continuation_rva} /\
-      generatedSemanticProvenance.premises.callEntry.sourceTargetId =
-        {crossing.source_target_id} /\
-      generatedSemanticProvenance.premises.callEntry.calleeTargetId =
-        {crossing.callee_target_id} /\
-      generatedSemanticProvenance.premises.callEntry.continuationTargetId =
-        {crossing.continuation_target_id} /\
-      generatedCheckedDirectCallRegisterControlContract.sourceInvariant =
-        {bindings.source_invariant} {crossing.source_target_id} /\
-      generatedSemanticProvenance.tree.certificate.graphClosed = true /\
-      generatedSemanticProvenance.tree.certificate.returns.isEmpty = false := by
-  refine And.intro generatedSemanticProvenance.premises.structuralChecked ?_
+        generatedContext.candidateImports = true /\\
+      generatedSummaryTree.certificate.callsite.original.start =
+        {crossing.source_rva} /\\
+      generatedSummaryTree.certificate.callsite.original.start +
+          generatedSummaryTree.certificate.callsite.original.size =
+        {crossing.continuation_rva} /\\
+      generatedSummaryTree.certificate.calleeEntry.original.start =
+        {crossing.callee_rva} /\\
+      generatedSummaryTree.certificate.continuation.original.start =
+        {crossing.continuation_rva} /\\
+      generatedFiniteOriginCallEntryAuthority.sourceTargetId =
+        {crossing.source_target_id} /\\
+      generatedFiniteOriginCallEntryAuthority.calleeTargetId =
+        {crossing.callee_target_id} /\\
+      generatedFiniteOriginCallEntryAuthority.continuationTargetId =
+        {crossing.continuation_target_id} /\\
+      generatedSummaryTree.certificate.graphClosed = true /\\
+      generatedSummaryTree.certificate.returns.isEmpty = false := by
+  refine And.intro generatedSummaryTreeChecked ?_
+  simpa [generatedSummaryTree, generatedFiniteOriginCallEntryAuthority] using
+    {bindings.entry_namespace}.generatedEntryMetadataChecked
+
+#print axioms generatedEntryAuthorityChecked
+#print axioms generatedReturningRegisterCertificate
+#print axioms generatedCheckedFiniteOriginCallRegisterControlContract
+#print axioms generatedAuthorityMatchesExactPERequest
+
+end {bindings.namespace}
+"""
+    for forbidden in ("sorry", "native_decide", "axiom ", "unsafe "):
+        if forbidden in source:
+            raise DirectCallRegisterControlAuthorityError(
+                f"generated source unexpectedly contains {forbidden.strip()}"
+            )
+    return source
+
+
+def finite_origin_call_caller_frame_word_authority_source(
+    crossing: DirectCallCallerFrameWordCrossing,
+    *,
+    bindings: FiniteOriginCallCallerFrameWordLeanBindings,
+) -> str:
+    """Emit caller-frame preservation backed by a checked indirect entry."""
+
+    crossing = crossing.checked()
+    bindings = bindings.checked()
+    source_words = ", ".join(
+        "{ originalOffset := "
+        f"{offset}, candidateOffset := {offset} }}"
+        for offset in crossing.caller_frame_word_offsets
+    )
+    entry_words = ", ".join(
+        "{ originalOffset := "
+        f"{offset + 4}, candidateOffset := {offset + 4} }}"
+        for offset in crossing.caller_frame_word_offsets
+    )
+    entry_claims = ", ".join(
+        "(CallerFrameWordEntryClaim.derive? "
+        "{ originalOffset := "
+        f"{offset}, candidateOffset := {offset} }} "
+        "{ originalOffset := "
+        f"{offset + 4}, candidateOffset := {offset + 4} }} "
+        "generatedFiniteOriginCallEntryAuthority.originalBehavior "
+        "generatedFiniteOriginCallEntryAuthority.candidateBehavior)"
+        for offset in crossing.caller_frame_word_offsets
+    )
+    source = f"""import StageA.RelationalInternalDirectCallMixedOriginalIntegration
+import {bindings.entry_module}
+
+namespace {bindings.namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InternalDirectCallComposition
+open StageA.Relational.InternalDirectCallMixedOriginalIntegration
+open StageA.Relational.RegisterControlProvenance
+
+set_option maxRecDepth 1000000
+
+def generatedContext : StaticProofContext :=
+  {bindings.entry_namespace}.generatedContext
+
+def generatedSummaryTree : SummaryTree :=
+  {bindings.entry_namespace}.generatedSummaryTree
+
+theorem generatedSummaryTreeChecked :
+    generatedSummaryTree.checked generatedContext.originalPe
+      generatedContext.candidatePe generatedContext.originalImports
+      generatedContext.candidateImports = true := by
+  simpa [generatedSummaryTree, generatedContext] using
+    {bindings.entry_namespace}.generatedSummaryTreeChecked
+
+theorem generatedEntryAuthorityChecked :
+    {bindings.entry_namespace}.generatedEntryCheckReport.checked = true :=
+  {bindings.entry_namespace}.generatedEntryCheckReportChecked
+
+def generatedFiniteOriginCallEntryAuthority :
+    CheckedFiniteOriginCallEntryAuthority generatedContext :=
+  {bindings.entry_namespace}.generatedFiniteOriginCallEntryAuthority
+
+def generatedRequestedCallerFrameWords : List ReturnSlotExactWordPair :=
+  [{source_words}]
+
+def generatedCallerFrameWords : List ReturnSlotExactWordPair := [{entry_words}]
+
+def generatedCallerFrameWordEntryClaims : List CallerFrameWordEntryClaim :=
+  ([{entry_claims}] : List (Option CallerFrameWordEntryClaim)).filterMap id
+
+theorem generatedCallerFrameWordsUnique :
+    generatedCallerFrameWords.Nodup := by
   decide +kernel
 
-#print axioms generatedCallEntryRegistersPreserved
-#print axioms generatedCheckedDirectCallRegisterControlContract
-#print axioms generatedAuthorityMatchesExactPERequest
+theorem generatedCallerFrameWordsRequested :
+    forall word, word ∈ generatedCallerFrameWords ->
+      word ∈ generatedSummaryTree.certificate.callerFrameWords := by
+  unfold generatedCallerFrameWords generatedSummaryTree
+  rw [{bindings.summary_certificate_exact}]
+  decide +kernel
+
+theorem generatedCallerFrameWordEntryClaimsChecked :
+    generatedCallerFrameWordEntryClaims.all (fun claim =>
+      claim.checked generatedFiniteOriginCallEntryAuthority.originalBehavior
+        generatedFiniteOriginCallEntryAuthority.candidateBehavior) = true := by
+  decide +kernel
+
+theorem generatedRequestedCallerFrameWordsExact :
+    generatedRequestedCallerFrameWords =
+      generatedCallerFrameWordEntryClaims.map (·.source) := by
+  decide +kernel
+
+theorem generatedEntryCallerFrameWordsExact :
+    generatedCallerFrameWords =
+      generatedCallerFrameWordEntryClaims.map (·.entry) := by
+  decide +kernel
+
+theorem generatedCallerFrameWordEntryOffsetsRestore :
+    forall claim, claim ∈ generatedCallerFrameWordEntryClaims ->
+      BitVec.ofNat 32 claim.entry.originalOffset =
+          BitVec.ofNat 32 4 + BitVec.ofNat 32 claim.source.originalOffset /\\
+        BitVec.ofNat 32 claim.entry.candidateOffset =
+          BitVec.ofNat 32 4 + BitVec.ofNat 32 claim.source.candidateOffset := by
+  decide +kernel
+
+def generatedReturningCallerFrameWordCertificate :
+    CheckedReturningCallerFrameWordCertificate generatedContext
+      generatedSummaryTree :=
+  checkedReturningCallerFrameWordCertificate generatedContext
+    generatedSummaryTree generatedCallerFrameWords
+    generatedSummaryTreeChecked generatedCallerFrameWordsUnique
+    generatedCallerFrameWordsRequested
+
+theorem generatedStackEntryOffset :
+    exists witness,
+      findStackEntryOffset?
+          generatedSummaryTree.certificate.stackEntryOffsets
+          generatedSummaryTree.certificate.calleeEntry.id = some witness /\\
+        witness.originalOffset = 0 /\\
+        witness.candidateOffset = 0 := by
+  unfold generatedSummaryTree
+  rw [{bindings.summary_certificate_exact}]
+  decide +kernel
+
+def generatedReturningStackPointerCertificate :
+    CheckedReturningStackPointerCertificate generatedContext
+      generatedSummaryTree :=
+  checkedReturningStackPointerCertificate generatedContext generatedSummaryTree
+    generatedSummaryTreeChecked generatedStackEntryOffset
+
+def generatedFrameWordControlEdge : RegionEdge := {{
+  edgeIndex := {crossing.edge_index}
+  sourceRegion := {crossing.source_target_id}
+  targetRegion := {crossing.continuation_target_id}
+  kind := .callReturn
+  machineContractId := none
+}}
+
+def generatedCheckedFiniteOriginCallCallerFrameWordControlContract :
+    CheckedFiniteOriginCallCallerFrameWordControlContract generatedContext := {{
+  entry := generatedFiniteOriginCallEntryAuthority
+  returning := generatedReturningCallerFrameWordCertificate
+  returningStackPointer := generatedReturningStackPointerCertificate
+  edge := generatedFrameWordControlEdge
+  entryClaims := generatedCallerFrameWordEntryClaims
+  entryClaimsChecked := generatedCallerFrameWordEntryClaimsChecked
+  requestedWords := generatedRequestedCallerFrameWords
+  edgeKind := rfl
+  edgeSource := by decide +kernel
+  edgeTarget := by decide +kernel
+  requestedWordsExact := generatedRequestedCallerFrameWordsExact
+  entryWordsExact := generatedEntryCallerFrameWordsExact
+  entryOffsetsRestore := generatedCallerFrameWordEntryOffsetsRestore
+}}
+
+theorem generatedFrameWordAuthorityMatchesExactPERequest :
+    generatedSummaryTree.checked generatedContext.originalPe
+        generatedContext.candidatePe generatedContext.originalImports
+        generatedContext.candidateImports = true /\
+      generatedSummaryTree.certificate.callsite.original.start =
+        {crossing.source_rva} /\
+      generatedSummaryTree.certificate.callsite.original.start +
+          generatedSummaryTree.certificate.callsite.original.size =
+        {crossing.continuation_rva} /\
+      generatedSummaryTree.certificate.calleeEntry.original.start =
+        {crossing.callee_rva} /\
+      generatedSummaryTree.certificate.continuation.original.start =
+        {crossing.continuation_rva} /\
+      generatedFiniteOriginCallEntryAuthority.sourceTargetId =
+        {crossing.source_target_id} /\
+      generatedFiniteOriginCallEntryAuthority.calleeTargetId =
+        {crossing.callee_target_id} /\
+      generatedFiniteOriginCallEntryAuthority.continuationTargetId =
+        {crossing.continuation_target_id} /\
+      generatedCheckedFiniteOriginCallCallerFrameWordControlContract.requestedWords =
+        generatedCallerFrameWords /\
+      generatedSummaryTree.certificate.graphClosed = true /\
+      generatedSummaryTree.certificate.returns.isEmpty = false := by
+  refine And.intro generatedSummaryTreeChecked ?_
+  rcases {bindings.entry_namespace}.generatedEntryMetadataChecked with
+    ⟨callsite, callsiteEnd, callee, continuation, sourceTarget,
+      calleeTarget, continuationTarget, graphClosed, returns⟩
+  exact ⟨
+    by simpa [generatedSummaryTree] using callsite,
+    by simpa [generatedSummaryTree] using callsiteEnd,
+    by simpa [generatedSummaryTree] using callee,
+    by simpa [generatedSummaryTree] using continuation,
+    by
+      simpa [generatedFiniteOriginCallEntryAuthority] using sourceTarget,
+    by
+      simpa [generatedFiniteOriginCallEntryAuthority] using calleeTarget,
+    by
+      simpa [generatedFiniteOriginCallEntryAuthority] using continuationTarget,
+    rfl,
+    by simpa [generatedSummaryTree] using graphClosed,
+    by simpa [generatedSummaryTree] using returns
+  ⟩
+
+#print axioms generatedEntryAuthorityChecked
+#print axioms generatedReturningCallerFrameWordCertificate
+#print axioms generatedReturningStackPointerCertificate
+#print axioms generatedCheckedFiniteOriginCallCallerFrameWordControlContract
+#print axioms generatedFrameWordAuthorityMatchesExactPERequest
 
 end {bindings.namespace}
 """
@@ -1324,8 +2373,9 @@ def plan_direct_call_register_control_authorities(
             bindings=DirectCallRegisterControlLeanBindings(
                 context=lean_context,
                 source_invariant=lean_source_invariant,
-                semantic_provenance=binding.term,
-                semantic_provenance_module=binding.module,
+                summary_tree=f"{binding.term}.tree",
+                summary_checked=f"{binding.term}.premises.structuralChecked",
+                summary_tree_module=binding.module,
                 context_module=lean_context_module,
                 namespace=namespace,
             ),
@@ -1403,11 +2453,15 @@ __all__ = [
     "DirectCallRegisterControlAuthorityPlan",
     "DirectCallRegisterControlLeanBindings",
     "DirectCallSemanticProvenanceBinding",
+    "FiniteOriginCallCallerFrameWordLeanBindings",
+    "FiniteOriginCallRegisterControlLeanBindings",
     "RegisterControlAuthorityBlocker",
     "RegisterControlAuthorityModule",
     "RegisterControlAuthoritySite",
     "RegisterControlFrontierRequest",
     "direct_call_register_control_authority_source",
+    "finite_origin_call_caller_frame_word_authority_source",
+    "finite_origin_call_register_control_authority_source",
     "plan_direct_call_register_control_authorities",
     "write_direct_call_register_control_authority_bundle",
 ]

@@ -12,18 +12,13 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Literal, Mapping, Protocol, Sequence
 
 import capstone
 import pefile
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
 from ...errors import StageAInputError
-from .interpreter_mixed_original import (
-    InterpreterMixedOriginalPlan,
-    OriginalIndirectSite,
-    OriginalRegion,
-)
 from .original_indirect_control_authority import (
     OriginalIndirectControlAuthorityBinding,
     OriginalIndirectControlSiteSpec,
@@ -51,6 +46,26 @@ _IMAGE_SCN_MEM_WRITE = 0x80000000
 
 class StackDynamicIndirectControlError(StageAInputError):
     """The exact frontier input is malformed or cannot be classified."""
+
+
+class _RegionInput(Protocol):
+    target_id: int
+    rva: int
+
+
+class _IndirectSiteInput(Protocol):
+    source_rva: int
+    instruction_rva: int
+    category: str
+    is_call: bool
+    continuation_rva: int | None
+    target_expression: Mapping[str, Any] | None
+
+
+class _AnalysisInput(Protocol):
+    state_machine_sha256: str
+    regions: Sequence[_RegionInput]
+    indirect_sites: Sequence[_IndirectSiteInput]
 
 
 @dataclass(frozen=True)
@@ -189,7 +204,7 @@ class _StateRow:
 def analyze_stack_dynamic_indirect_controls(
     original_pe: Path | str,
     state_machine: Path | str,
-    plan: InterpreterMixedOriginalPlan,
+    plan: _AnalysisInput,
     *,
     remaining_source_rvas: Sequence[int] | None = None,
 ) -> StackDynamicIndirectControlPlan:
@@ -213,13 +228,20 @@ def analyze_stack_dynamic_indirect_controls(
         )
 
     if remaining_source_rvas is None:
-        remaining = {
-            blocker.rva
-            for blocker in plan.blockers
-            if blocker.reason_code == "unresolved_indirect_control"
-            and "stack_or_dynamic_pointer" in blocker.detail
-            and blocker.rva is not None
-        }
+        cached_remaining = getattr(plan, "remaining_source_rvas", None)
+        if cached_remaining is not None:
+            remaining = {
+                _u32(value, "cached remaining source RVA")
+                for value in cached_remaining
+            }
+        else:
+            remaining = {
+                blocker.rva
+                for blocker in plan.blockers
+                if blocker.reason_code == "unresolved_indirect_control"
+                and "stack_or_dynamic_pointer" in blocker.detail
+                and blocker.rva is not None
+            }
     else:
         remaining = {_u32(value, "remaining source RVA") for value in remaining_source_rvas}
 
@@ -318,62 +340,40 @@ def {name}Evidence :
 
 #print axioms {name}Checked""")
         if finding.indexed_empty_table is not None:
-            table_name = f"generatedStackDynamicTable{index}"
-            table = finding.indexed_empty_table.certificate(
-                definition_name=table_name,
-                pe_bytes=plan.original_pe_bytes,
-                source_target_id=finding.source_target_id,
-                instruction_rva=finding.instruction_rva,
+            table = finding.indexed_empty_table
+            base_address = finding.target.base_address
+            if base_address is None:
+                raise AssertionError("indexed target lost its base address")
+            authority_name = (
+                f"generatedStackDynamicEmptyIndexedAuthority{index}"
             )
-            claim_name = f"generatedStackDynamicIndexedClaim{index}"
-            definitions.append(table.lean())
-            definitions.append(f"""def {claim_name} : IndexedImmutableTableClaim := {{
+            checks.append(f"""def {authority_name} :
+    CheckedEmptyIndexedSourceAuthority {binding.context_name} := {{
+  decodedAuthority := {binding.authority_name}
   site := {name}
-  table := {table_name}
-  indexRegister := .{finding.indexed_empty_table.index_register}
-  lowerInclusive := {finding.indexed_empty_table.lower_inclusive}
-}}""")
-            checks.append(f"""theorem {table_name}Checked :
-    {table_name}.checked = true := by
-  decide +kernel
+  siteChecked := {name}Checked
+  indexRegister := .{table.index_register}
+  baseAddress := {base_address}
+  targetShape := by simp [{name}]
+  lowerInclusive := {table.lower_inclusive}
+  upperExclusive := {table.lower_inclusive}
+  emptyInterval := rfl
+}}
 
-theorem {claim_name}Checked :
-    {claim_name}.checked {binding.context_name} = true := by
-  decide +kernel
+theorem {authority_name}NoRuntimeIndex :
+    ∀ state, ¬ {authority_name}.RuntimeIndexBound state :=
+  {authority_name}.noRuntimeIndex
 
-theorem {claim_name}NoRuntimeIndex :
-    ∀ state, ¬ {claim_name}.RuntimeIndexBound state := by
-  apply {claim_name}.noRuntimeIndex_of_emptyInterval
-    {{
-      lowerInclusive := {finding.indexed_empty_table.lower_inclusive}
-      upperExclusive := {finding.indexed_empty_table.lower_inclusive}
-      step := 1
-      addressBaseRva := {finding.indexed_empty_table.range_rva}
-      addressScale := {finding.indexed_empty_table.address_scale}
-      alignment := 4
-    }}
-  · rfl
-  · rfl
+theorem {authority_name}SourceUnreachable
+    (reachable : ActualSourceReachability)
+    (bound : {authority_name}.ReachabilityBound reachable) :
+    SourceUninhabited reachable := by
+  rintro ⟨world, state, reached⟩
+  exact {authority_name}NoRuntimeIndex state (bound world state reached)
 
-theorem {claim_name}SourceUnreachable
-    (actualReachable : MachineState → Prop)
-    (bound : {claim_name}.ReachabilityBound actualReachable) :
-    ¬ ∃ state, actualReachable state := by
-  exact {claim_name}.sourceUnreachable_of_emptyInterval actualReachable
-    {{
-      lowerInclusive := {finding.indexed_empty_table.lower_inclusive}
-      upperExclusive := {finding.indexed_empty_table.lower_inclusive}
-      step := 1
-      addressBaseRva := {finding.indexed_empty_table.range_rva}
-      addressScale := {finding.indexed_empty_table.address_scale}
-      alignment := 4
-    }} rfl rfl bound
-
-#print axioms {table_name}Checked
-#print axioms {claim_name}Checked
-#print axioms {claim_name}NoRuntimeIndex
-#print axioms {claim_name}SourceUnreachable""")
-    return f"""import StageA.RelationalStackDynamicIndirectControl
+#print axioms {authority_name}NoRuntimeIndex
+#print axioms {authority_name}SourceUnreachable""")
+    return f"""import StageA.RelationalOriginalStackDynamicControlClosure
 import {binding.dependency_module}
 
 namespace {binding.namespace}
@@ -381,6 +381,7 @@ namespace {binding.namespace}
 open StageA.Formal StageA.Relational
 open StageA.Relational.OriginalIndirectControlAuthority
 open StageA.Relational.StackDynamicIndirectControl
+open StageA.Relational.OriginalStackDynamicControlClosure
 
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -413,7 +414,7 @@ def write_stack_dynamic_indirect_control(
 
 
 def _classify_site(
-    pe: pefile.PE, site: OriginalIndirectSite
+    pe: pefile.PE, site: _IndirectSiteInput
 ) -> tuple[
     Literal["stack_slot", "indexed_immutable_table", "dynamic_range_field"],
     OriginalTargetExpressionSpec,
@@ -604,7 +605,7 @@ def _stack_adjustment(value: int) -> LeanStackAdjustment:
 
 
 def _checked_indirect_instruction(
-    pe: pefile.PE, row: _StateRow, site: OriginalIndirectSite
+    pe: pefile.PE, row: _StateRow, site: _IndirectSiteInput
 ) -> bytes:
     source = next(
         (item for item in row.instructions if item.get("rva") == site.instruction_rva),

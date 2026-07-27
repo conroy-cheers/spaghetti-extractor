@@ -90,6 +90,8 @@ from spaghetti_extractor.stage_a_relational import (
     stage_a_build_relational,
     stage_a_check_relational_proof,
     stage_a_generate_relation_contract,
+)
+from spaghetti_extractor.relational.pipeline import (
     stage_a_prepare_relational,
     stage_a_prove_relational,
 )

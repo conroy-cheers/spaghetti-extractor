@@ -1,0 +1,143 @@
+{
+  "dynamic_hints": [
+    {
+      "allowed_target_rvas": [],
+      "mode": "source_uninhabited",
+      "stable_id": "stack-dynamic-11c19b6c127dedbf5fd7"
+    }
+  ],
+  "format": "stage-a-stack-dynamic-closure-hints-v2",
+  "original_sha256": "71b228f2babc9d3b4095ecf355db676c8ed8b45a7c8a7d350f47e962b4bf554c",
+  "stack_hints": [
+    {
+      "seed_slot_rva": 131280,
+      "seed_target_rva": 82848,
+      "stable_id": "stack-dynamic-ad0bad06992a9b2c16c0"
+    }
+  ],
+  "runtime_value_carry_routes": [
+    {
+      "facts": [
+        {
+          "location": {
+            "kind": "register",
+            "offset": 0,
+            "register": "ebx"
+          },
+          "target_rva": 8158
+        },
+        {
+          "location": {
+            "kind": "register",
+            "offset": 0,
+            "register": "ebx"
+          },
+          "target_rva": 8193
+        },
+        {
+          "location": {
+            "kind": "register",
+            "offset": 0,
+            "register": "ebx"
+          },
+          "target_rva": 8216
+        },
+        {
+          "location": {
+            "kind": "frame_word",
+            "offset": 32,
+            "register": "esp"
+          },
+          "target_rva": 8224
+        },
+        {
+          "location": {
+            "kind": "frame_word",
+            "offset": 32,
+            "register": "esp"
+          },
+          "target_rva": 8238
+        },
+        {
+          "location": {
+            "kind": "frame_word",
+            "offset": 32,
+            "register": "esp"
+          },
+          "target_rva": 8243
+        },
+        {
+          "location": {
+            "kind": "frame_word",
+            "offset": 32,
+            "register": "esp"
+          },
+          "target_rva": 8256
+        },
+        {
+          "location": {
+            "kind": "frame_word",
+            "offset": 32,
+            "register": "esp"
+          },
+          "target_rva": 8287
+        }
+      ],
+      "origin_target_rva": 82848,
+      "stable_id": "gnu.original.callback-stack-slot",
+      "target_source_rva": 8243,
+      "transfers": [
+        {
+          "kind": "finite_origin_call_result",
+          "source_rva": 8150,
+          "target_rva": 8158
+        },
+        {
+          "kind": "direct_call_register_preserve",
+          "source_rva": 8158,
+          "target_rva": 8193
+        },
+        {
+          "kind": "decoded_preserve",
+          "source_rva": 8193,
+          "target_rva": 8216
+        },
+        {
+          "kind": "decoded_register_to_frame",
+          "source_rva": 8216,
+          "target_rva": 8238
+        },
+        {
+          "kind": "decoded_preserve",
+          "source_rva": 8224,
+          "target_rva": 8238
+        },
+        {
+          "kind": "decoded_preserve",
+          "source_rva": 8238,
+          "target_rva": 8224
+        },
+        {
+          "kind": "decoded_preserve",
+          "source_rva": 8238,
+          "target_rva": 8243
+        },
+        {
+          "kind": "call_frame_word_preserve",
+          "source_rva": 8243,
+          "target_rva": 8256
+        },
+        {
+          "kind": "call_frame_word_preserve",
+          "source_rva": 8256,
+          "target_rva": 8287
+        },
+        {
+          "kind": "decoded_preserve",
+          "source_rva": 8287,
+          "target_rva": 8224
+        }
+      ]
+    }
+  ]
+}

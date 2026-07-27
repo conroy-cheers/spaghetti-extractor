@@ -271,7 +271,7 @@ def plan_original_stack_dynamic_control_closure(
                 )
             sites.append(OriginalStackDynamicAuthoritySite(
                 finding=finding,
-                premise_type="CompleteIndexedTablePredecessorPremise",
+                premise_type="CompleteEmptyIndexedSourcePredecessorPremise",
                 closure_mode="empty_indexed_source",
                 allowed_target_ids=(),
             ))
@@ -340,24 +340,7 @@ def original_stack_dynamic_control_closure_source(
             transfer="call",
             continuation_target_id=finding.continuation_target_id,
         )
-        site_source = site_spec.lean()
-        if finding.target.kind == "stack_read":
-            adjustment = finding.target.adjustment
-            if adjustment is None:
-                raise OriginalStackDynamicControlClosureError(
-                    f"stack site {finding.stable_id} has no adjustment"
-                )
-            unparenthesized = f"target := {finding.target.lean()}"
-            parenthesized = (
-                f"target := .stackRead .{finding.target.register} "
-                f"({adjustment.lean()})"
-            )
-            if unparenthesized not in site_source:
-                raise AssertionError("stack target serialization changed")
-            site_source = site_source.replace(
-                unparenthesized, parenthesized, 1
-            )
-        definitions.append(site_source)
+        definitions.append(site_spec.lean())
         checks.append(f"""theorem {site_name}Checked :
     {site_name}.checked {binding.context_name} = true := by
   decide +kernel
@@ -431,61 +414,32 @@ theorem {prefix}Closed (reachable : ActualSourceReachability)
             table = finding.indexed_empty_table
             if table is None:
                 raise AssertionError("indexed authority lost its table")
-            table_name = f"{prefix}Table"
-            claim_name = f"{prefix}IndexedClaim"
-            static_name = f"{prefix}IndexedStatic"
-            authority_name = f"{prefix}IndexedAuthority"
-            definitions.append(table.certificate(
-                definition_name=table_name,
-                pe_bytes=plan.original_pe_bytes,
-                source_target_id=finding.source_target_id,
-                instruction_rva=finding.instruction_rva,
-            ).lean())
-            definitions.append(f"""def {claim_name} : IndexedImmutableTableClaim := {{
+            base_address = finding.target.base_address
+            if base_address is None:
+                raise AssertionError("indexed authority lost its base address")
+            authority_name = f"{prefix}EmptyIndexedAuthority"
+            checks.append(f"""def {authority_name} :
+    CheckedEmptyIndexedSourceAuthority {binding.context_name} := {{
+  decodedAuthority := {binding.authority_name}
   site := {site_name}
-  table := {table_name}
+  siteChecked := {site_name}Checked
   indexRegister := .{table.index_register}
+  baseAddress := {base_address}
+  targetShape := by simp [{site_name}]
   lowerInclusive := {table.lower_inclusive}
-}}""")
-            checks.append(f"""theorem {table_name}Checked :
-    {table_name}.checked = true := by
-  decide +kernel
-
-theorem {claim_name}Checked :
-    {claim_name}.checked {binding.context_name} = true := by
-  decide +kernel
-
-def {static_name} : CheckedIndexedImmutableTableClaim
-    {binding.context_name} := {{
-  authority := {binding.authority_name}
-  claim := {claim_name}
-  checked := {claim_name}Checked
+  upperExclusive := {table.lower_inclusive}
+  emptyInterval := rfl
 }}
 
-def {authority_name} : CheckedIndexedTableAuthority
-    {binding.context_name} := {{ static := {static_name} }}
-
 def {prefix}RuntimePremise (reachable : ActualSourceReachability) : Prop :=
-  CompleteIndexedTablePredecessorPremise {authority_name} reachable
+  CompleteEmptyIndexedSourcePredecessorPremise {authority_name} reachable
 
 theorem {prefix}Closed (reachable : ActualSourceReachability)
     (complete : {prefix}RuntimePremise reachable) :
     OriginalIndirectControlClosure {binding.context_name} {site_name} reachable := by
-  apply indexedTableClosure_of_empty_checked_interval {authority_name} reachable
-    {{
-      lowerInclusive := {table.lower_inclusive}
-      upperExclusive := {table.lower_inclusive}
-      step := 1
-      addressBaseRva := {table.range_rva}
-      addressScale := {table.address_scale}
-      alignment := 4
-    }}
-  · rfl
-  · rfl
-  · exact complete
+  exact emptyIndexedSourceClosure_of_complete {authority_name} reachable
+    complete
 
-#print axioms {table_name}Checked
-#print axioms {claim_name}Checked
 #print axioms {prefix}Closed""")
         elif authority_site.closure_mode == "finite_dynamic_targets":
             hint = authority_site.dynamic_hint

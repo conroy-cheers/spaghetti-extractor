@@ -120,7 +120,7 @@ def _lean_counterexample_source(
         if state is None:
             return (
                 f"{{ registers := {registers(side)}, "
-                "memory := fun _ => BitVec.ofNat 8 0 }}"
+                "memory := fun _ => BitVec.ofNat 8 0 }"
             )
         memory_bytes: dict[int, int] = {}
         for word in state.get("memory_words", []):

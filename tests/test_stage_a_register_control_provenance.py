@@ -126,6 +126,49 @@ class StageARegisterControlProvenanceTests(unittest.TestCase):
         self.assertRegex(loop_scc["evidence_sha256"], r"^[0-9a-f]{64}$")
         self.assertTrue(payload["fixed_point"]["converged"])
 
+    def test_explicit_edge_ids_are_opaque_stable_identifiers(self) -> None:
+        witness = build_register_control_provenance_witness(
+            region_count=2,
+            register_pairs=(EAX,),
+            entry_region_indices=(0,),
+            transfers=(
+                RegisterControlRegionTransfer(
+                    0,
+                    producers=(_code_atom(region=0, register=EAX, target=4),),
+                ),
+                RegisterControlRegionTransfer(1, preserve_unmentioned=True),
+            ),
+            edges=(RegisterControlEdge(0, 1, edge_id=0xF00DBAAD),),
+            uses=(RegisterControlUse(1, EAX),),
+        )
+
+        payload = witness.to_payload()
+        self.assertEqual(payload["edges"][0]["edge_index"], 0xF00DBAAD)
+        component = next(
+            item for item in payload["sccs"] if item["region_indices"] == [0]
+        )
+        self.assertEqual(component["edge_indices"], [])
+
+    def test_duplicate_explicit_edge_ids_fail_closed(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, "duplicate register-control edge id"
+        ):
+            build_register_control_provenance_witness(
+                region_count=3,
+                register_pairs=(EAX,),
+                entry_region_indices=(0,),
+                transfers=tuple(
+                    RegisterControlRegionTransfer(
+                        index, preserve_unmentioned=True
+                    )
+                    for index in range(3)
+                ),
+                edges=(
+                    RegisterControlEdge(0, 1, edge_id=7),
+                    RegisterControlEdge(1, 2, edge_id=7),
+                ),
+            )
+
     def test_unknown_call_fails_closed(self) -> None:
         witness = build_register_control_provenance_witness(
             region_count=2,

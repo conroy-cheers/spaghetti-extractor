@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import platform
 import re
 import shutil
@@ -396,9 +397,17 @@ def stage_a_export_reference_contract(
             mapping=mapping,
             validation_report=validation_report,
             layout_contract=layout_contract,
+            contract_dir=out.parent,
         ),
-        "original": _binary_reference_layout(original_bin),
-        "candidate": _binary_reference_layout(candidate_bin) if candidate_bin is not None else None,
+        "original": _binary_reference_layout(
+            original_bin,
+            relative_to=out.parent,
+        ),
+        "candidate": (
+            _binary_reference_layout(candidate_bin, relative_to=out.parent)
+            if candidate_bin is not None
+            else None
+        ),
         "constraints": constraints,
         "families": _reference_contract_families(constraints),
         "coverage": {
@@ -427,7 +436,7 @@ def stage_a_export_reference_contract(
         original_bin,
         map_contract["mappings"],
         contract,
-        _reference_sidecar_contract_ref(out),
+        _reference_sidecar_contract_ref(out, relative_to=unit_contract_dir),
     )
     _write_reference_contract_sidecars(
         contract,
@@ -924,8 +933,16 @@ def _binary_layout(binary: StageABinary) -> dict[str, Any]:
         ],
     }
 
-def _binary_reference_layout(binary: StageABinary) -> dict[str, Any]:
+def _binary_reference_layout(
+    binary: StageABinary,
+    *,
+    relative_to: Path | None = None,
+) -> dict[str, Any]:
     layout = _binary_layout(binary)
+    layout["path"] = _reference_artifact_display_path(
+        binary.path,
+        relative_to=relative_to,
+    )
     layout["relocations"] = _binary_relocation_summary(binary)
     layout["executable_sections"] = [
         {
@@ -973,23 +990,54 @@ def _reference_contract_inputs(
     mapping: Path | None,
     validation_report: Path | None,
     layout_contract: Path | None,
+    contract_dir: Path,
 ) -> dict[str, Any]:
     return {
-        "original": _reference_input_artifact(original),
-        "candidate": _reference_input_artifact(candidate) if candidate is not None else None,
-        "mapping": _reference_input_artifact(mapping) if mapping is not None else None,
-        "validation_report": _reference_validation_report_artifact(validation_report) if validation_report is not None else None,
-        "layout_contract": _reference_input_artifact(layout_contract) if layout_contract is not None else None,
+        "original": _reference_input_artifact(original, relative_to=contract_dir),
+        "candidate": (
+            _reference_input_artifact(candidate, relative_to=contract_dir)
+            if candidate is not None
+            else None
+        ),
+        "mapping": (
+            _reference_input_artifact(mapping, relative_to=contract_dir)
+            if mapping is not None
+            else None
+        ),
+        "validation_report": (
+            _reference_validation_report_artifact(
+                validation_report,
+                relative_to=contract_dir,
+            )
+            if validation_report is not None
+            else None
+        ),
+        "layout_contract": (
+            _reference_input_artifact(
+                layout_contract,
+                relative_to=contract_dir,
+            )
+            if layout_contract is not None
+            else None
+        ),
     }
 
-def _reference_input_artifact(path: Path) -> dict[str, Any]:
+def _reference_input_artifact(
+    path: Path,
+    *,
+    relative_to: Path | None = None,
+) -> dict[str, Any]:
     return {
-        "path": str(path),
+        "path": _reference_artifact_display_path(path, relative_to=relative_to),
         "sha256": sha256_file(path) if path.is_file() else None,
         "exists": path.exists(),
     }
 
-def _reference_validation_report_artifact(path: Path) -> dict[str, Any]:
+def _reference_validation_report_artifact(
+    path: Path,
+    *,
+    relative_to: Path | None = None,
+) -> dict[str, Any]:
     if path.is_dir():
         files = {}
         for name in (
@@ -1004,9 +1052,34 @@ def _reference_validation_report_artifact(path: Path) -> dict[str, Any]:
         ):
             item = path / name
             if item.is_file():
-                files[name] = _reference_input_artifact(item)
-        return {"path": str(path), "exists": True, "files": files}
-    return _reference_input_artifact(path)
+                files[name] = _reference_input_artifact(
+                    item,
+                    relative_to=relative_to,
+                )
+        return {
+            "path": _reference_artifact_display_path(
+                path,
+                relative_to=relative_to,
+            ),
+            "exists": True,
+            "files": files,
+        }
+    return _reference_input_artifact(path, relative_to=relative_to)
+
+
+def _reference_artifact_display_path(
+    path: Path,
+    *,
+    relative_to: Path | None,
+) -> str:
+    path = Path(path)
+    if relative_to is None:
+        return str(path)
+    resolved_path = path.resolve()
+    resolved_base = Path(relative_to).resolve()
+    if resolved_path == resolved_base or resolved_path.is_relative_to(resolved_base):
+        return os.path.relpath(resolved_path, resolved_base)
+    return str(path)
 
 _REFERENCE_CONTRACT_FAMILY_KEYS = (
     ("binary_faithfulness", "pe_sections_imports_relocations_image_base"),
@@ -1051,16 +1124,47 @@ def _write_reference_contract_sidecars(
     unit_contract_dir: Path,
     semantic_payload: dict[str, Any] | None = None,
 ) -> None:
-    contract_ref = _reference_sidecar_contract_ref(contract_path)
-    write_json(sidecar_dir / "coverage_gaps.json", _reference_coverage_gaps_sidecar(contract, contract_ref))
-    write_json(sidecar_dir / "obligation_index.json", _reference_obligation_index_sidecar(contract, contract_ref))
-    write_json(sidecar_dir / "contract_summary.json", _reference_contract_summary_sidecar(contract, contract_ref))
-    write_json(sidecar_dir / "abi_callsites.json", _reference_abi_callsites_sidecar(contract, contract_ref))
-    _write_reference_unit_contract_sidecars(contract, contract_ref, unit_contract_dir, semantic_payload=semantic_payload)
+    sidecar_contract_ref = _reference_sidecar_contract_ref(
+        contract_path,
+        relative_to=sidecar_dir,
+    )
+    unit_contract_ref = _reference_sidecar_contract_ref(
+        contract_path,
+        relative_to=unit_contract_dir,
+    )
+    write_json(
+        sidecar_dir / "coverage_gaps.json",
+        _reference_coverage_gaps_sidecar(contract, sidecar_contract_ref),
+    )
+    write_json(
+        sidecar_dir / "obligation_index.json",
+        _reference_obligation_index_sidecar(contract, sidecar_contract_ref),
+    )
+    write_json(
+        sidecar_dir / "contract_summary.json",
+        _reference_contract_summary_sidecar(contract, sidecar_contract_ref),
+    )
+    write_json(
+        sidecar_dir / "abi_callsites.json",
+        _reference_abi_callsites_sidecar(contract, sidecar_contract_ref),
+    )
+    _write_reference_unit_contract_sidecars(
+        contract,
+        unit_contract_ref,
+        unit_contract_dir,
+        semantic_payload=semantic_payload,
+    )
 
-def _reference_sidecar_contract_ref(contract_path: Path) -> dict[str, Any]:
+def _reference_sidecar_contract_ref(
+    contract_path: Path,
+    *,
+    relative_to: Path | None = None,
+) -> dict[str, Any]:
     return {
-        "path": str(contract_path),
+        "path": _reference_artifact_display_path(
+            contract_path,
+            relative_to=relative_to,
+        ),
         "sha256": sha256_file(contract_path) if contract_path.is_file() else None,
         "format": "stage-a-reference-contract-v1",
     }
@@ -4138,7 +4242,7 @@ def _stage_a_smoke_contract_issues(contract: Any, contract_path: Path) -> list[d
                     details={"family": family.get("family"), "status": status},
                 )
             )
-    issues.extend(_stage_a_smoke_artifact_issues(contract))
+    issues.extend(_stage_a_smoke_artifact_issues(contract, contract_path))
     issues.extend(_stage_a_smoke_sidecar_issues(contract, contract_path))
     for marker in _unchecked_marker_paths(contract):
         issues.append(
@@ -4151,30 +4255,58 @@ def _stage_a_smoke_contract_issues(contract: Any, contract_path: Path) -> list[d
         )
     return issues
 
-def _stage_a_smoke_artifact_issues(contract: dict[str, Any]) -> list[dict[str, Any]]:
+def _stage_a_smoke_artifact_issues(
+    contract: dict[str, Any],
+    contract_path: Path,
+) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     inputs = contract.get("inputs") if isinstance(contract.get("inputs"), dict) else {}
     for name in ("original", "candidate", "mapping", "layout_contract"):
         artifact = inputs.get(name)
         if not isinstance(artifact, dict) or artifact.get("path") in {None, ""}:
             continue
-        issues.extend(_stage_a_smoke_artifact_hash_issues(name, artifact))
+        issues.extend(
+            _stage_a_smoke_artifact_hash_issues(
+                name,
+                artifact,
+                relative_to=contract_path.parent,
+            )
+        )
     validation_report = inputs.get("validation_report")
     if isinstance(validation_report, dict):
         files = validation_report.get("files")
         if isinstance(files, dict):
             for name, artifact in files.items():
                 if isinstance(artifact, dict):
-                    issues.extend(_stage_a_smoke_artifact_hash_issues(f"validation_report:{name}", artifact))
+                    issues.extend(
+                        _stage_a_smoke_artifact_hash_issues(
+                            f"validation_report:{name}",
+                            artifact,
+                            relative_to=contract_path.parent,
+                        )
+                    )
         else:
-            issues.extend(_stage_a_smoke_artifact_hash_issues("validation_report", validation_report))
+            issues.extend(
+                _stage_a_smoke_artifact_hash_issues(
+                    "validation_report",
+                    validation_report,
+                    relative_to=contract_path.parent,
+                )
+            )
     return issues
 
-def _stage_a_smoke_artifact_hash_issues(name: str, artifact: dict[str, Any]) -> list[dict[str, Any]]:
+def _stage_a_smoke_artifact_hash_issues(
+    name: str,
+    artifact: dict[str, Any],
+    *,
+    relative_to: Path,
+) -> list[dict[str, Any]]:
     path_text = artifact.get("path")
     if not isinstance(path_text, str) or not path_text:
         return []
     path = Path(path_text)
+    if not path.is_absolute():
+        path = relative_to / path
     if not path.exists():
         return [
             _incomplete_record(

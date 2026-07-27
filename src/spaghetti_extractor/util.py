@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,17 @@ from typing import Any, Iterable
 
 
 def utc_now() -> str:
+    source_date_epoch = os.environ.get("SOURCE_DATE_EPOCH")
+    if source_date_epoch is not None:
+        try:
+            timestamp = int(source_date_epoch, 10)
+        except ValueError as error:
+            raise ValueError(
+                "SOURCE_DATE_EPOCH must be an integer Unix timestamp"
+            ) from error
+        if timestamp < 0:
+            raise ValueError("SOURCE_DATE_EPOCH must be non-negative")
+        return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 

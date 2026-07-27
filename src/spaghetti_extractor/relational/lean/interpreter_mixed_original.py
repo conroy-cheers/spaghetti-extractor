@@ -37,7 +37,10 @@ from ..analyses.registers import (
 )
 from ..contract import _raw_base_relocations
 from .interpreter_mixed_terminal import InterpreterMixedTerminalProposal
-from .internal_direct_call_summary_proposal import DirectCallSummaryRequest
+from ..direct_call_proposal_ir import (
+    DirectCallProposalIR,
+    DirectCallSummaryRequest,
+)
 
 
 INTERPRETER_MIXED_ORIGINAL_MODULE = "GeneratedRelationalInterpreterMixedOriginal"
@@ -52,12 +55,58 @@ INTERPRETER_MIXED_REGISTER_CONTROL_LEAN_ADAPTER_FORMAT = (
     "stage-a-mixed-original-register-control-lean-adapter-v1"
 )
 INTERPRETER_MIXED_DIRECT_CALL_AUTHORITY_FORMAT = (
-    "stage-a-mixed-original-direct-call-authority-bindings-v1"
+    "stage-a-mixed-original-direct-call-authority-bindings-v2"
 )
 
 _REGISTER_CONTROL_REGISTERS = (
     "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp",
 )
+_REGISTER_CONTROL_EDGE_ID_FORMAT = (
+    "mixed-original-register-control-topology-edge-v1"
+)
+
+
+def _stable_register_control_edge_ids(
+    edges: Sequence[tuple[int, int, str, int | None]],
+) -> dict[tuple[int, int, str, int | None], int]:
+    """Assign fail-closed IDs that do not depend on graph-list position."""
+
+    identities: dict[int, tuple[int, int, str]] = {}
+    annotations: dict[
+        tuple[int, int, str], tuple[int, int, str, int | None]
+    ] = {}
+    result: dict[tuple[int, int, str, int | None], int] = {}
+    for edge in edges:
+        source, target, kind, contract_id = edge
+        identity = (source, target, kind)
+        previous_annotation = annotations.get(identity)
+        if previous_annotation is not None and previous_annotation != edge:
+            raise InterpreterMixedOriginalGenerationError(
+                "one register-control edge has ambiguous contract annotations"
+            )
+        annotations[identity] = edge
+        encoded = json.dumps(
+            [
+                _REGISTER_CONTROL_EDGE_ID_FORMAT,
+                source,
+                target,
+                kind,
+            ],
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("ascii")
+        edge_id = int.from_bytes(
+            hashlib.sha256(encoded).digest()[:4],
+            "big",
+        )
+        previous = identities.get(edge_id)
+        if previous is not None and previous != identity:
+            raise InterpreterMixedOriginalGenerationError(
+                "stable register-control edge ID collision"
+            )
+        identities[edge_id] = identity
+        result[edge] = edge_id
+    return result
 _REGISTER_ALIASES = {
     "al": "eax", "ah": "eax", "ax": "eax", "eax": "eax",
     "bl": "ebx", "bh": "ebx", "bx": "ebx", "ebx": "ebx",
@@ -227,6 +276,9 @@ class InterpreterMixedOriginalSpec:
     register_control_call_contracts: tuple[
         OriginalRegisterControlCallContractProposal, ...
     ] = ()
+    static_word_call_seed_authorities: tuple[
+        OriginalRegisterStaticWordSeedAuthority, ...
+    ] = ()
     static_data_bindings: tuple[OriginalStaticDataBinding, ...] = ()
 
     def validate(self) -> None:
@@ -325,6 +377,19 @@ class InterpreterMixedOriginalSpec:
                 )
             contract_ids.add(proposal.contract_id)
             contract_sites.add(site)
+        static_word_seed_sites: set[tuple[int, int]] = set()
+        for index, authority in enumerate(
+            self.static_word_call_seed_authorities
+        ):
+            authority.validate(
+                f"static_word_call_seed_authorities[{index}]"
+            )
+            site = (authority.source_rva, authority.instruction_rva)
+            if site in static_word_seed_sites:
+                raise InterpreterMixedOriginalGenerationError(
+                    "static-word call seed authorities must have unique sites"
+                )
+            static_word_seed_sites.add(site)
         static_data_ranges: list[tuple[int, int]] = []
         for index, binding in enumerate(self.static_data_bindings):
             binding.validate(f"static_data_bindings[{index}]")
@@ -384,6 +449,9 @@ class OriginalRegisterControlCallContractProposal:
     argument_words: int | None = None
     origin: str = "machine_import_boundary"
     authorizing_lean_term: QualifiedLeanSymbol | None = None
+    finite_target_ids: tuple[int, ...] = ()
+    callee_preserved_registers: tuple[str, ...] = ()
+    target_carried_registers: tuple[str, ...] = ()
 
     @property
     def machine_authority_id(self) -> int | None:
@@ -404,6 +472,7 @@ class OriginalRegisterControlCallContractProposal:
             "machine_import_boundary",
             "propagated_machine_import",
             "checked_direct_call_summary",
+            "checked_finite_origin_call_summary",
         }:
             raise InterpreterMixedOriginalGenerationError(
                 f"{context}.origin is not a checked contract class"
@@ -424,6 +493,29 @@ class OriginalRegisterControlCallContractProposal:
             raise InterpreterMixedOriginalGenerationError(
                 f"{context}.preserved_registers contains an unsupported register"
             )
+        callee_preserved = tuple(
+            _canonical_register(register)
+            for register in self.callee_preserved_registers
+        )
+        target_carried = tuple(
+            _canonical_register(register)
+            for register in self.target_carried_registers
+        )
+        for field_name, registers in (
+            ("callee_preserved_registers", callee_preserved),
+            ("target_carried_registers", target_carried),
+        ):
+            if len(set(registers)) != len(registers):
+                raise InterpreterMixedOriginalGenerationError(
+                    f"{context}.{field_name} contains duplicates"
+                )
+            if any(
+                register not in _REGISTER_CONTROL_REGISTERS
+                for register in registers
+            ):
+                raise InterpreterMixedOriginalGenerationError(
+                    f"{context}.{field_name} contains an unsupported register"
+                )
         if self.return_register is not None:
             returned = _canonical_register(self.return_register)
             if returned not in _REGISTER_CONTROL_REGISTERS:
@@ -479,6 +571,34 @@ class OriginalRegisterControlCallContractProposal:
         else:
             self.authorizing_lean_term.validate(
                 f"{context}.authorizing_lean_term"
+            )
+        for index, target_id in enumerate(self.finite_target_ids):
+            _u32(target_id, f"{context}.finite_target_ids[{index}]")
+        if len(set(self.finite_target_ids)) != len(self.finite_target_ids):
+            raise InterpreterMixedOriginalGenerationError(
+                f"{context}.finite_target_ids contains duplicates"
+            )
+        if self.origin == "checked_finite_origin_call_summary":
+            if len(self.finite_target_ids) != 1:
+                raise InterpreterMixedOriginalGenerationError(
+                    f"{context} finite-origin call requires exactly one checked "
+                    "target in the current profile"
+                )
+            if not target_carried:
+                raise InterpreterMixedOriginalGenerationError(
+                    f"{context} finite-origin call carries no checked target register"
+                )
+            if not set(target_carried).issubset(callee_preserved):
+                raise InterpreterMixedOriginalGenerationError(
+                    f"{context} finite-origin target registers are not callee-preserved"
+                )
+        elif self.finite_target_ids:
+            raise InterpreterMixedOriginalGenerationError(
+                f"{context} non-finite call contract carries finite target IDs"
+            )
+        elif target_carried:
+            raise InterpreterMixedOriginalGenerationError(
+                f"{context} non-finite call contract carries target registers"
             )
 
 
@@ -725,6 +845,31 @@ class OriginalRegisterProvenanceEdge:
 
 
 @dataclass(frozen=True)
+class OriginalRegisterStaticWordSeedAuthority:
+    """Checked writable-slot source for one register-indirect call entry."""
+
+    source_rva: int
+    instruction_rva: int
+    binding: OriginalStaticWordSlotBinding
+
+    def validate(self, context: str) -> None:
+        _u32(self.source_rva, f"{context}.source_rva")
+        _u32(self.instruction_rva, f"{context}.instruction_rva")
+        if self.binding.target_id < 0:
+            raise InterpreterMixedOriginalGenerationError(
+                f"{context}.binding has an invalid target ID"
+            )
+
+
+@dataclass(frozen=True)
+class OriginalRegisterStaticWordSeedBinding:
+    """One source-region output justified by a checked static-word slot."""
+
+    target_id: int
+    slot: OriginalStaticWordSlotBinding
+
+
+@dataclass(frozen=True)
 class OriginalRegisterCodePointerBinding:
     """A singleton internal code pointer carried through one register."""
 
@@ -737,10 +882,28 @@ class OriginalRegisterCodePointerBinding:
     preserve_target_ids: tuple[int, ...]
     edges: tuple[OriginalRegisterProvenanceEdge, ...]
     seed_relocation_rvas: tuple[int, ...]
+    static_word_seed_bindings: tuple[
+        OriginalRegisterStaticWordSeedBinding, ...
+    ] = ()
 
     @property
     def target_ids(self) -> tuple[int, ...]:
         return (self.target_id,)
+
+
+@dataclass(frozen=True)
+class OriginalRegisterFiniteOriginCallEntryAuthority:
+    """One generated finite-origin call entry certificate."""
+
+    source_rva: int
+    instruction_rva: int
+    continuation_rva: int
+    continuation_target_id: int
+    target_ids: tuple[int, ...]
+    module: str
+    namespace: str
+    indirect_exit_authority_term: str
+    indirect_exit_certificate_exact_term: str
 
 
 @dataclass(frozen=True)
@@ -1077,6 +1240,7 @@ class MixedOriginalDirectCallSummaryRequestPlan:
     requests: tuple[DirectCallSummaryRequest, ...]
     chains: tuple[Mapping[str, Any], ...]
     frontiers: tuple[Mapping[str, Any], ...]
+    finite_origin_entry_requests: tuple[DirectCallSummaryRequest, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -1090,19 +1254,259 @@ class MixedOriginalDirectCallSummaryRequestPlan:
             "requests": [
                 {
                     "callsite_rva": request.callsite_rva,
+                    "caller_frame_word_offsets": list(
+                        request.caller_frame_word_offsets
+                    ),
                     "caller_rva": request.caller_rva,
                     "registers": list(request.registers),
                 }
                 for request in self.requests
             ],
+            "finite_origin_entry_requests": [
+                {
+                    "callsite_rva": request.callsite_rva,
+                    "caller_frame_word_offsets": list(
+                        request.caller_frame_word_offsets
+                    ),
+                    "caller_rva": request.caller_rva,
+                    "registers": list(request.registers),
+                }
+                for request in self.finite_origin_entry_requests
+            ],
             "chains": [json.loads(json.dumps(row)) for row in self.chains],
             "frontiers": [json.loads(json.dumps(row)) for row in self.frontiers],
             "counts": {
                 "requests": len(self.requests),
+                "finite_origin_entry_requests": len(
+                    self.finite_origin_entry_requests
+                ),
                 "chains": len(self.chains),
                 "frontiers": len(self.frontiers),
             },
         }
+
+
+def augment_direct_call_summary_requests_from_runtime_value_carry_hints(
+    plan: MixedOriginalDirectCallSummaryRequestPlan,
+    hints: Mapping[str, Any],
+    proposal_ir: DirectCallProposalIR,
+    *,
+    original_sha256: str,
+) -> MixedOriginalDirectCallSummaryRequestPlan:
+    """Add caller-frame preservation requests from an untrusted route hint.
+
+    The exact proposal IR supplies all cutpoint and call metadata.  A hint can
+    select a route and frame offset, but it cannot invent a callsite, edge, or
+    continuation.  Indirect calls remain explicit frontiers until a checked
+    finite-origin entry authority is available.
+    """
+
+    if hints.get("format") != "stage-a-stack-dynamic-closure-hints-v2":
+        raise InterpreterMixedOriginalGenerationError(
+            "runtime value-carry hints have the wrong format"
+        )
+    if hints.get("original_sha256") != original_sha256:
+        raise InterpreterMixedOriginalGenerationError(
+            "runtime value-carry hints do not match the original PE"
+        )
+    route_rows = hints.get("runtime_value_carry_routes")
+    if not isinstance(route_rows, list):
+        raise InterpreterMixedOriginalGenerationError(
+            "runtime value-carry hints have no route inventory"
+        )
+
+    requests_by_site = {
+        (request.callsite_rva, request.caller_rva): request
+        for request in plan.requests
+    }
+    if len(requests_by_site) != len(plan.requests):
+        raise InterpreterMixedOriginalGenerationError(
+            "direct-call request plan contains duplicate callsites"
+        )
+    chains = list(plan.chains)
+    frontiers = list(plan.frontiers)
+    target_ids_by_rva = proposal_ir.target_ids_by_rva
+
+    for route_index, route_item in enumerate(route_rows):
+        if not isinstance(route_item, Mapping):
+            raise InterpreterMixedOriginalGenerationError(
+                f"runtime value-carry route {route_index} is malformed"
+            )
+        stable_id = route_item.get("stable_id")
+        fact_rows = route_item.get("facts")
+        transfer_rows = route_item.get("transfers")
+        if (
+            not isinstance(stable_id, str)
+            or not stable_id
+            or not isinstance(fact_rows, list)
+            or not isinstance(transfer_rows, list)
+        ):
+            raise InterpreterMixedOriginalGenerationError(
+                f"runtime value-carry route {route_index} has invalid metadata"
+            )
+        facts: dict[int, tuple[str, str, int]] = {}
+        for fact_index, fact_item in enumerate(fact_rows):
+            if not isinstance(fact_item, Mapping):
+                raise InterpreterMixedOriginalGenerationError(
+                    f"runtime value-carry route {route_index} fact "
+                    f"{fact_index} is malformed"
+                )
+            target_rva = _u32(
+                fact_item.get("target_rva"),
+                f"runtime value-carry route {route_index} fact "
+                f"{fact_index} target RVA",
+            )
+            location = fact_item.get("location")
+            if not isinstance(location, Mapping):
+                raise InterpreterMixedOriginalGenerationError(
+                    f"runtime value-carry route {route_index} fact "
+                    f"{fact_index} has no location"
+                )
+            kind = location.get("kind")
+            register = location.get("register")
+            offset = location.get("offset")
+            if (
+                kind not in {"register", "frame_word"}
+                or register not in {
+                    "eax", "ebx", "ecx", "edx",
+                    "esi", "edi", "ebp", "esp",
+                }
+                or isinstance(offset, bool)
+                or not isinstance(offset, int)
+                or not 0 <= offset <= 65528
+                or target_rva not in target_ids_by_rva
+                or target_rva in facts
+            ):
+                raise InterpreterMixedOriginalGenerationError(
+                    f"runtime value-carry route {route_index} fact "
+                    f"{fact_index} has an invalid or duplicate location"
+                )
+            facts[target_rva] = (str(kind), str(register), offset)
+
+        for transfer_index, transfer_item in enumerate(transfer_rows):
+            if (
+                not isinstance(transfer_item, Mapping)
+                or transfer_item.get("kind") != "call_frame_word_preserve"
+            ):
+                continue
+            source_rva = _u32(
+                transfer_item.get("source_rva"),
+                f"runtime value-carry route {route_index} transfer "
+                f"{transfer_index} source RVA",
+            )
+            target_rva = _u32(
+                transfer_item.get("target_rva"),
+                f"runtime value-carry route {route_index} transfer "
+                f"{transfer_index} target RVA",
+            )
+            source_location = facts.get(source_rva)
+            target_location = facts.get(target_rva)
+            if (
+                source_location is None
+                or source_location != target_location
+                or source_location[0] != "frame_word"
+                or source_location[1] != "esp"
+            ):
+                raise InterpreterMixedOriginalGenerationError(
+                    f"runtime value-carry route {route_index} transfer "
+                    f"{transfer_index} does not preserve one ESP frame word"
+                )
+            offset = source_location[2]
+            direct_sites = [
+                site
+                for site in proposal_ir.direct_call_sites
+                if site.source_rva == source_rva
+                and site.continuation_rva == target_rva
+            ]
+            if len(direct_sites) == 1:
+                site = direct_sites[0]
+                key = (site.callsite_rva, site.source_rva)
+                prior = requests_by_site.get(key)
+                registers = () if prior is None else prior.registers
+                offsets = set(
+                    () if prior is None else prior.caller_frame_word_offsets
+                )
+                offsets.add(offset)
+                requests_by_site[key] = DirectCallSummaryRequest(
+                    callsite_rva=site.callsite_rva,
+                    caller_rva=site.source_rva,
+                    registers=registers,
+                    caller_frame_word_offsets=tuple(sorted(offsets)),
+                ).checked()
+                chains.append({
+                    "source": "runtime_value_carry_hint",
+                    "stable_id": stable_id,
+                    "use_source_rva": target_rva,
+                    "use_instruction_rva": target_rva,
+                    "register": "esp",
+                    "caller_frame_word_offset": offset,
+                    "required_internal_calls": [{
+                        "callsite_rva": site.callsite_rva,
+                        "caller_rva": site.source_rva,
+                        "source_rva": site.source_rva,
+                        "source_target_id": site.source_target_id,
+                        "continuation_rva": site.continuation_rva,
+                        "continuation_target_id": (
+                            site.continuation_target_id
+                        ),
+                        "edge_index": site.edge_index,
+                    }],
+                    "required_finite_origin_calls": [],
+                    "machine_import_carries": [],
+                })
+                continue
+
+            indirect_sites = [
+                site
+                for site in proposal_ir.stack_dynamic_control.indirect_sites
+                if site.is_call
+                and site.source_rva == source_rva
+                and site.continuation_rva == target_rva
+            ]
+            if len(direct_sites) > 1 or len(indirect_sites) > 1:
+                raise InterpreterMixedOriginalGenerationError(
+                    f"runtime value-carry route {route_index} transfer "
+                    f"{transfer_index} has ambiguous call metadata"
+                )
+            frontiers.append({
+                "reason_code": (
+                    "caller_frame_word_requires_finite_origin_entry_authority"
+                    if indirect_sites
+                    else "caller_frame_word_callsite_not_found"
+                ),
+                "detail": (
+                    "the exact call is indirect and needs a checked finite "
+                    "target authority"
+                    if indirect_sites
+                    else "the exact cutpoint graph has no matching call edge"
+                ),
+                "stable_id": stable_id,
+                "source_rva": source_rva,
+                "target_rva": target_rva,
+                "instruction_rva": (
+                    indirect_sites[0].instruction_rva
+                    if indirect_sites
+                    else None
+                ),
+                "caller_frame_word_offset": offset,
+            })
+
+    requests = tuple(sorted(
+        requests_by_site.values(),
+        key=lambda request: (
+            request.callsite_rva,
+            -1 if request.caller_rva is None else request.caller_rva,
+            request.registers,
+            request.caller_frame_word_offsets,
+        ),
+    ))
+    return MixedOriginalDirectCallSummaryRequestPlan(
+        state_machine_sha256=plan.state_machine_sha256,
+        requests=requests,
+        chains=tuple(chains),
+        frontiers=tuple(frontiers),
+        finite_origin_entry_requests=plan.finite_origin_entry_requests,
+    )
 
 
 def load_original_iat_import_proposals(
@@ -1407,17 +1811,89 @@ def load_checked_direct_call_summary_contract_proposals(
         if not isinstance(term, Mapping):
             # Missing semantic premises are diagnostics, never contracts.
             continue
-        registers = value.get("preserved_registers")
-        if not isinstance(registers, list) or not all(
-            isinstance(register, str) for register in registers
-        ):
-            raise InterpreterMixedOriginalGenerationError(
-                f"direct-call authority contract {index} has invalid registers"
+        origin = value.get("origin", "checked_direct_call_summary")
+        if origin in {
+            "checked_direct_call_caller_frame_word_summary",
+            "checked_finite_origin_call_caller_frame_word_summary",
+        }:
+            dedicated_term = value.get(
+                "caller_frame_word_authorizing_lean_term"
             )
+            offsets = value.get("preserved_caller_frame_word_offsets")
+            if dedicated_term != term:
+                raise InterpreterMixedOriginalGenerationError(
+                    f"direct-call authority contract {index} has no exact "
+                    "caller-frame authority term"
+                )
+            if (
+                not isinstance(offsets, list)
+                or not offsets
+                or len(set(offsets)) != len(offsets)
+            ):
+                raise InterpreterMixedOriginalGenerationError(
+                    f"direct-call authority contract {index} has an invalid "
+                    "caller-frame word inventory"
+                )
+            for offset_index, offset in enumerate(offsets):
+                observed = _u32(
+                    offset,
+                    "contracts"
+                    f"[{index}].preserved_caller_frame_word_offsets"
+                    f"[{offset_index}]",
+                )
+                if observed > 65528:
+                    raise InterpreterMixedOriginalGenerationError(
+                        f"direct-call authority contract {index} has an "
+                        "out-of-range caller-frame word"
+                    )
+            QualifiedLeanSymbol(
+                module=str(term.get("module", "")),
+                namespace=str(term.get("namespace", "")),
+                symbol=str(term.get("symbol", "")),
+            ).validate(
+                f"contracts[{index}].caller_frame_word_authorizing_lean_term"
+            )
+            # Caller-frame preservation is consumed by runtime value-carry
+            # closure, not by register-control propagation.
+            continue
+        register_fields: dict[str, tuple[str, ...]] = {}
+        for field_name in (
+            "preserved_registers",
+            "callee_preserved_registers",
+            "target_carried_registers",
+        ):
+            field_value = value.get(field_name)
+            if not isinstance(field_value, list) or not all(
+                isinstance(register, str) for register in field_value
+            ):
+                raise InterpreterMixedOriginalGenerationError(
+                    f"direct-call authority contract {index} has invalid "
+                    f"{field_name}"
+                )
+            register_fields[field_name] = tuple(field_value)
         symbol = QualifiedLeanSymbol(
             module=str(term.get("module", "")),
             namespace=str(term.get("namespace", "")),
             symbol=str(term.get("symbol", "")),
+        )
+        if origin not in {
+            "checked_direct_call_summary",
+            "checked_finite_origin_call_summary",
+        }:
+            raise InterpreterMixedOriginalGenerationError(
+                f"direct-call authority contract {index} has invalid origin"
+            )
+        finite_target_values = value.get("finite_target_ids", [])
+        if not isinstance(finite_target_values, list):
+            raise InterpreterMixedOriginalGenerationError(
+                f"direct-call authority contract {index} has invalid finite targets"
+            )
+        finite_target_ids = tuple(
+            _u32(
+                target_id,
+                f"contracts[{index}].finite_target_ids[{target_index}]",
+            )
+            for target_index, target_id in enumerate(finite_target_values)
         )
         proposal = OriginalRegisterControlCallContractProposal(
             contract_id=_u32(
@@ -1433,9 +1909,16 @@ def load_checked_direct_call_summary_contract_proposals(
                 value.get("continuation_rva"),
                 f"contracts[{index}].continuation_rva",
             ),
-            preserved_registers=tuple(registers),
-            origin="checked_direct_call_summary",
+            preserved_registers=register_fields["preserved_registers"],
+            origin=str(origin),
             authorizing_lean_term=symbol,
+            finite_target_ids=finite_target_ids,
+            callee_preserved_registers=(
+                register_fields["callee_preserved_registers"]
+            ),
+            target_carried_registers=(
+                register_fields["target_carried_registers"]
+            ),
         )
         proposal.validate(f"contracts[{index}]")
         proposals.append(proposal)
@@ -1579,6 +2062,14 @@ def _plan_interpreter_mixed_original_once(
                     predecessors_by_target_id.setdefault(successor_id, []).append(
                         predecessor
                     )
+        call_contracts_by_edge = _register_control_call_contracts_by_edge(
+            spec.register_control_call_contracts,
+            resolved_id_by_rva,
+        )
+        static_word_call_seeds_by_site = {
+            (authority.source_rva, authority.instruction_rva): authority
+            for authority in spec.static_word_call_seed_authorities
+        }
         for item in parsed:
             recovered_sites: list[OriginalIndirectSite] = []
             for site in item["indirect_sites"]:
@@ -1590,6 +2081,8 @@ def _plan_interpreter_mixed_original_once(
                     relocation_counts,
                     predecessors_by_target_id,
                     iat_by_va,
+                    call_contracts_by_edge,
+                    static_word_call_seeds_by_site,
                 )
                 if binding is not None:
                     recovered_sites.append(
@@ -2155,6 +2648,161 @@ def write_relational_interpreter_mixed_original_final(
     return tuple(written)
 
 
+def write_register_finite_origin_call_entry_authorities(
+    out: Path | str,
+    plan: InterpreterMixedOriginalPlan,
+    *,
+    instruction_rvas: Iterable[int],
+) -> tuple[OriginalRegisterFiniteOriginCallEntryAuthority, ...]:
+    """Emit cacheable call-entry certificates unlocked by prior call proofs."""
+
+    requested = tuple(sorted(set(instruction_rvas)))
+    if any(
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 <= value < 2**32
+        for value in requested
+    ):
+        raise InterpreterMixedOriginalGenerationError(
+            "finite-origin entry instruction RVAs must be 32-bit integers"
+        )
+    sites_by_instruction: dict[int, OriginalIndirectSite] = {}
+    ambiguous: set[int] = set()
+    for region in plan.regions:
+        for site in region.indirect_sites:
+            if site.instruction_rva not in requested:
+                continue
+            prior = sites_by_instruction.get(site.instruction_rva)
+            if prior is not None and prior != site:
+                ambiguous.add(site.instruction_rva)
+                sites_by_instruction.pop(site.instruction_rva, None)
+            elif site.instruction_rva not in ambiguous:
+                sites_by_instruction[site.instruction_rva] = site
+    if ambiguous:
+        raise InterpreterMixedOriginalGenerationError(
+            "finite-origin call entry RVAs are ambiguous: "
+            + ", ".join(f"0x{value:x}" for value in sorted(ambiguous))
+        )
+
+    root = Path(out)
+    stage_a = root / "StageA"
+    stage_a.mkdir(parents=True, exist_ok=True)
+    base_namespace = (
+        "StageA.GeneratedRelational.InterpreterMixedOriginalBase"
+    )
+    results: list[OriginalRegisterFiniteOriginCallEntryAuthority] = []
+    for instruction_rva in requested:
+        site = sites_by_instruction.get(instruction_rva)
+        if (
+            site is None
+            or not site.is_call
+            or site.continuation_rva is None
+            or not isinstance(
+                site.static_binding, OriginalRegisterCodePointerBinding
+            )
+            or site.static_binding.continuation_target_id is None
+        ):
+            continue
+        binding = site.static_binding
+        source_target_id = _id_for_rva(plan, site.source_rva)
+        module_name = (
+            "GeneratedRelationalRegisterFiniteOriginCallEntry"
+            f"{source_target_id:08d}"
+        )
+        module = f"StageA.{module_name}"
+        namespace = (
+            "StageA.Generated.RegisterFiniteOriginCallEntry"
+            f"{source_target_id:08d}"
+        )
+        referenced_contract_ids = {
+            edge.contract_id
+            for edge in binding.edges
+            if edge.kind == "call_return" and edge.contract_id is not None
+        }
+        imported_modules = [
+            "StageA.RelationalInterpreterMixedOriginal",
+            "StageA.RelationalIndirectExitAdapters",
+            f"StageA.{INTERPRETER_MIXED_ORIGINAL_BASE_MODULE}ContextData",
+            *[
+                proposal.authorizing_lean_term.module
+                for proposal in plan.spec.register_control_call_contracts
+                if proposal.contract_id in referenced_contract_ids
+                and proposal.authorizing_lean_term is not None
+            ],
+        ]
+        imports = "\n".join(
+            f"import {dependency}"
+            for dependency in dict.fromkeys(imported_modules)
+        )
+        source_region = _lean_carrier_region(
+            plan, plan.regions[source_target_id]
+        )
+        certificate_source = _lean_static_indirect_check(plan, 0, site)
+        source = f"""{imports}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InterpreterMixedContext
+open StageA.Relational.InterpreterMixedOriginal
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+def generatedOriginalStaticContext : OriginalDecodedStaticContext :=
+  {base_namespace}.generatedOriginalStaticContext
+
+def generatedOriginalCarrierContext : StaticProofContext :=
+  {base_namespace}.generatedOriginalCarrierContext
+
+def generatedOriginalCarrierRegionIndex : FiniteIndex RegionRelation :=
+  {base_namespace}.generatedOriginalCarrierRegionIndex
+
+def generatedOriginalStaticIndirectRegion{source_target_id} : RegionRelation :=
+  {source_region}
+
+{certificate_source}
+
+def generatedIndirectExitCertificate :
+    StageA.Relational.ValueProvenance.CheckedIndirectExitCertificate
+      generatedOriginalCarrierContext
+      generatedOriginalStaticIndirectRegion{source_target_id}.inputInvariant
+      generatedOriginalStaticIndirect0OriginalNormalized
+      generatedOriginalStaticIndirect0CandidateNormalized :=
+  generatedOriginalStaticIndirect0IndirectExitCertificate
+    (by
+      simpa [generatedOriginalCarrierContext] using
+        {base_namespace}.generatedOriginalCarrierContextStructurallyValid)
+
+theorem generatedIndirectExitCertificateExact :
+    generatedIndirectExitCertificate.certificate =
+      StageA.Relational.IndirectExitAdapters.fixedRegisterIndirectCertificate
+        generatedOriginalStaticIndirect0Claim := rfl
+
+end {namespace}
+"""
+        path = stage_a / f"{module_name}.lean"
+        path.write_text(source, encoding="utf-8")
+        results.append(
+            OriginalRegisterFiniteOriginCallEntryAuthority(
+                source_rva=site.source_rva,
+                instruction_rva=site.instruction_rva,
+                continuation_rva=site.continuation_rva,
+                continuation_target_id=binding.continuation_target_id,
+                target_ids=(binding.target_id,),
+                module=module,
+                namespace=namespace,
+                indirect_exit_authority_term=(
+                    f"{namespace}.generatedIndirectExitCertificate"
+                ),
+                indirect_exit_certificate_exact_term=(
+                    f"{namespace}.generatedIndirectExitCertificateExact"
+                ),
+            )
+        )
+    return tuple(results)
+
+
 def _machine_import_boundary_site_targets(
     plan: InterpreterMixedOriginalPlan,
 ) -> tuple[tuple[OriginalMachineImportBoundarySiteProposal, int, int], ...]:
@@ -2219,13 +2867,7 @@ def _lean_machine_import_boundary_projection(
             _machine_import_boundary_site_targets(plan)
         )
     )
-    return f"""def generatedOriginalCarrierInvariantAt
-    (targetId : Nat) : StateInvariant :=
-  match generatedOriginalCarrierRegionIndex.get? targetId with
-  | some region => region.inputInvariant
-  | none => {{ registerRelations := [] }}
-
-def generatedOriginalMachineImportBoundarySiteBindings :
+    return f"""def generatedOriginalMachineImportBoundarySiteBindings :
     List {namespace}.StaticMachineImportBoundarySiteBinding :=
   [{site_bindings}]
 
@@ -2650,6 +3292,12 @@ theorem generatedOriginalCarrierRegionIndexSizesSound :
 def generatedOriginalCarrierRegions : List RegionRelation :=
   generatedOriginalCarrierRegionIndex.toList
 
+def generatedOriginalCarrierInvariantAt
+    (targetId : Nat) : StateInvariant :=
+  match generatedOriginalCarrierRegionIndex.get? targetId with
+  | some region => region.inputInvariant
+  | none => {{ registerRelations := [] }}
+
 {boundary_projection}
 
 {terminal_successor_projection}
@@ -3057,6 +3705,12 @@ theorem generatedOriginalCarrierRegionIndexSizesSound :
 
 def generatedOriginalCarrierRegions : List RegionRelation :=
   generatedOriginalCarrierRegionIndex.toList
+
+def generatedOriginalCarrierInvariantAt
+    (targetId : Nat) : StateInvariant :=
+  match generatedOriginalCarrierRegionIndex.get? targetId with
+  | some region => region.inputInvariant
+  | none => {{ registerRelations := [] }}
 
 {boundary_projection}
 
@@ -3573,6 +4227,12 @@ def _recover_static_indirect_binding(
     relocation_counts: Mapping[int, int],
     predecessors_by_target_id: Mapping[int, Sequence[dict[str, Any]]],
     iat_by_va: Mapping[int, OriginalIATImport],
+    call_contracts_by_edge: Mapping[
+        tuple[int, int], OriginalRegisterControlCallContractProposal
+    ],
+    static_word_call_seeds_by_site: Mapping[
+        tuple[int, int], OriginalRegisterStaticWordSeedAuthority
+    ],
 ) -> tuple[OriginalStaticIndirectBinding | None, str]:
     if site.iat_import is not None:
         return None, ""
@@ -3651,6 +4311,8 @@ def _recover_static_indirect_binding(
             relocation_counts,
             predecessors_by_target_id,
             iat_by_va,
+            call_contracts_by_edge,
+            static_word_call_seeds_by_site,
         )
     reasons = {
         "stack_or_dynamic_pointer": (
@@ -3700,6 +4362,9 @@ class _RegisterProvenanceTrace:
     preserve_target_ids: tuple[int, ...] = ()
     edges: tuple[OriginalRegisterProvenanceEdge, ...] = ()
     seed_relocation_rvas: tuple[int, ...] = ()
+    static_word_seed_bindings: tuple[
+        OriginalRegisterStaticWordSeedBinding, ...
+    ] = ()
 
     @property
     def key(self) -> tuple[object, ...]:
@@ -3716,6 +4381,12 @@ def _recover_register_provenance_binding(
     relocation_counts: Mapping[int, int],
     predecessors_by_target_id: Mapping[int, Sequence[dict[str, Any]]],
     iat_by_va: Mapping[int, OriginalIATImport],
+    call_contracts_by_edge: Mapping[
+        tuple[int, int], OriginalRegisterControlCallContractProposal
+    ],
+    static_word_call_seeds_by_site: Mapping[
+        tuple[int, int], OriginalRegisterStaticWordSeedAuthority
+    ],
 ) -> tuple[OriginalStaticIndirectBinding | None, str]:
     target = site.target_expression
     if not isinstance(target, Mapping) or target.get("op") != "reg":
@@ -3757,6 +4428,8 @@ def _recover_register_provenance_binding(
             relocation_counts,
             predecessors_by_target_id,
             iat_by_va,
+            call_contracts_by_edge,
+            static_word_call_seeds_by_site,
             memo,
             frozenset(),
         )
@@ -3765,12 +4438,18 @@ def _recover_register_provenance_binding(
                 f"predecessor 0x{predecessor_rva:x} does not establish {register}: "
                 f"{failure}"
             )
+        edge_contract = call_contracts_by_edge.get(
+            (predecessor_target_id, source_target_id)
+        )
         traces.append(
             replace(
                 trace,
                 edges=_sorted_provenance_edges(
                     (*trace.edges, OriginalRegisterProvenanceEdge(
-                        predecessor_target_id, source_target_id
+                        predecessor_target_id,
+                        source_target_id,
+                        "call_return" if edge_contract is not None else "direct",
+                        None if edge_contract is None else edge_contract.contract_id,
                     ))
                 ),
             )
@@ -3810,6 +4489,16 @@ def _recover_register_provenance_binding(
                 seed_bindings=seed_bindings,
                 preserve_target_ids=merged.preserve_target_ids,
                 edges=merged.edges,
+                call_contract_ids=tuple(
+                    dict.fromkeys(
+                        edge.contract_id
+                        for edge in merged.edges
+                        if (
+                            edge.kind == "call_return"
+                            and edge.contract_id is not None
+                        )
+                    )
+                ),
             ),
             "",
         )
@@ -3831,6 +4520,7 @@ def _recover_register_provenance_binding(
             preserve_target_ids=merged.preserve_target_ids,
             edges=merged.edges,
             seed_relocation_rvas=merged.seed_relocation_rvas,
+            static_word_seed_bindings=merged.static_word_seed_bindings,
         ),
         "",
     )
@@ -3845,6 +4535,12 @@ def _resolve_register_output_provenance(
     relocation_counts: Mapping[int, int],
     predecessors_by_target_id: Mapping[int, Sequence[dict[str, Any]]],
     iat_by_va: Mapping[int, OriginalIATImport],
+    call_contracts_by_edge: Mapping[
+        tuple[int, int], OriginalRegisterControlCallContractProposal
+    ],
+    static_word_call_seeds_by_site: Mapping[
+        tuple[int, int], OriginalRegisterStaticWordSeedAuthority
+    ],
     memo: dict[int, tuple[_RegisterProvenanceTrace | None, str]],
     active: frozenset[int],
 ) -> tuple[_RegisterProvenanceTrace | None, str]:
@@ -3866,29 +4562,87 @@ def _resolve_register_output_provenance(
     ]
     if writes:
         seed_index = writes[-1]
-        if any(_is_call_instruction(item) for item in instructions[seed_index + 1 :]):
-            result = (
-                None,
-                "an uncontracted call occurs after the last register seed",
+        suffix = instructions[seed_index + 1 :]
+        suffix_calls = [
+            instruction for instruction in suffix
+            if _is_call_instruction(instruction)
+        ]
+        call_contract: OriginalRegisterControlCallContractProposal | None = None
+        if suffix_calls:
+            call_contract, _continuation_target_id = (
+                _exact_preserving_call_contract(
+                    binary=binary,
+                    source_target_id=target_id,
+                    register=register,
+                    row=row,
+                    instructions=suffix,
+                    parsed=parsed,
+                    contracts_by_edge=call_contracts_by_edge,
+                )
             )
+            if call_contract is None:
+                result = (
+                    None,
+                    "an uncontracted call occurs after the last register seed",
+                )
+                memo[target_id] = result
+                return result
+        trace, seed_failure = _classify_register_seed(
+            binary,
+            target_id,
+            register,
+            instructions[seed_index],
+            resolved_id_by_rva,
+            parsed,
+            relocation_counts,
+            iat_by_va,
+        )
+        if trace is None and call_contract is not None:
+            trace, seed_failure = _finite_origin_call_output_trace(
+                binary=binary,
+                source_target_id=target_id,
+                register=register,
+                call_instruction=suffix_calls[0],
+                contract=call_contract,
+                static_word_call_seeds_by_site=static_word_call_seeds_by_site,
+                resolved_id_by_rva=resolved_id_by_rva,
+                parsed=parsed,
+            )
+        if trace is not None and call_contract is not None:
+            if (
+                call_contract.finite_target_ids
+                and trace.target_id not in call_contract.finite_target_ids
+            ):
+                result = (
+                    None,
+                    "checked finite-origin call target differs from the exact "
+                    "register seed",
+                )
+            else:
+                result = (trace, "")
         else:
-            trace, seed_failure = _classify_register_seed(
-                binary,
-                target_id,
-                register,
-                instructions[seed_index],
-                resolved_id_by_rva,
-                parsed,
-                relocation_counts,
-                iat_by_va,
-            )
             result = (trace, seed_failure)
         memo[target_id] = result
         return result
+    call_contract: OriginalRegisterControlCallContractProposal | None = None
+    call_target_id: int | None = None
     if any(_is_call_instruction(item) for item in instructions):
-        result = (None, "register provenance crosses an uncontracted call boundary")
-        memo[target_id] = result
-        return result
+        call_contract, call_target_id = _exact_preserving_call_contract(
+            binary=binary,
+            source_target_id=target_id,
+            register=register,
+            row=row,
+            instructions=instructions,
+            parsed=parsed,
+            contracts_by_edge=call_contracts_by_edge,
+        )
+        if call_contract is None or call_target_id is None:
+            result = (
+                None,
+                "register provenance crosses an uncontracted call boundary",
+            )
+            memo[target_id] = result
+            return result
 
     predecessor_ids = tuple(
         dict.fromkeys(
@@ -3913,6 +4667,8 @@ def _resolve_register_output_provenance(
             relocation_counts,
             predecessors_by_target_id,
             iat_by_va,
+            call_contracts_by_edge,
+            static_word_call_seeds_by_site,
             memo,
             next_active,
         )
@@ -3924,22 +4680,194 @@ def _resolve_register_output_provenance(
             )
             memo[target_id] = result
             return result
-        traces.append(
-            replace(
-                trace,
-                preserve_target_ids=tuple(
-                    sorted((*trace.preserve_target_ids, target_id))
-                ),
-                edges=_sorted_provenance_edges(
-                    (*trace.edges, OriginalRegisterProvenanceEdge(
-                        predecessor_id, target_id
-                    ))
-                ),
-            )
+        edge_contract = call_contracts_by_edge.get(
+            (predecessor_id, target_id)
         )
+        edge = OriginalRegisterProvenanceEdge(
+            predecessor_id,
+            target_id,
+            "call_return" if edge_contract is not None else "direct",
+            None if edge_contract is None else edge_contract.contract_id,
+        )
+        traces.append(replace(
+            trace,
+            preserve_target_ids=tuple(sorted((
+                *trace.preserve_target_ids,
+                target_id,
+            ))),
+            edges=_sorted_provenance_edges((*trace.edges, edge)),
+        ))
     result = _merge_register_provenance_traces(traces)
+    if result[0] is not None and call_contract is not None:
+        result = (
+            replace(
+                result[0],
+                preserve_target_ids=tuple(sorted((
+                    *result[0].preserve_target_ids,
+                    target_id,
+                ))),
+            ),
+            result[1],
+        )
     memo[target_id] = result
     return result
+
+
+def _register_control_call_contracts_by_edge(
+    contracts: Sequence[OriginalRegisterControlCallContractProposal],
+    resolved_id_by_rva: Mapping[int, int],
+) -> dict[tuple[int, int], OriginalRegisterControlCallContractProposal]:
+    by_edge: dict[
+        tuple[int, int], OriginalRegisterControlCallContractProposal
+    ] = {}
+    for contract in contracts:
+        source_target_id = resolved_id_by_rva.get(contract.source_rva)
+        continuation_target_id = resolved_id_by_rva.get(contract.continuation_rva)
+        if source_target_id is None or continuation_target_id is None:
+            continue
+        edge = (source_target_id, continuation_target_id)
+        if edge in by_edge:
+            raise InterpreterMixedOriginalGenerationError(
+                "register-control call contracts ambiguously authorize one "
+                "source/continuation edge"
+            )
+        by_edge[edge] = contract
+    return by_edge
+
+
+def _exact_preserving_call_contract(
+    *,
+    binary: StageABinary,
+    source_target_id: int,
+    register: str,
+    row: Mapping[str, Any],
+    instructions: Sequence[Any],
+    parsed: Sequence[Mapping[str, Any]],
+    contracts_by_edge: Mapping[
+        tuple[int, int], OriginalRegisterControlCallContractProposal
+    ],
+) -> tuple[OriginalRegisterControlCallContractProposal | None, int | None]:
+    calls = [instruction for instruction in instructions if _is_call_instruction(instruction)]
+    if len(calls) != 1:
+        return None, None
+    call = calls[0]
+    instruction_rva = call.address - binary.image_base
+    event = _matching_call_event(row, instruction_rva)
+    if event is None:
+        return None, None
+    continuation_rva = event.get("return_rva")
+    if not isinstance(continuation_rva, int) or isinstance(continuation_rva, bool):
+        return None, None
+    matches = [
+        (target_target_id, contract)
+        for (edge_source_id, target_target_id), contract
+        in contracts_by_edge.items()
+        if edge_source_id == source_target_id
+        and contract.source_rva == row["rva"]
+        and contract.instruction_rva == instruction_rva
+        and contract.continuation_rva == continuation_rva
+        and target_target_id < len(parsed)
+        and parsed[target_target_id]["rva"] == continuation_rva
+        and (
+            _canonical_register(register)
+            in {
+                _canonical_register(item)
+                for item in contract.preserved_registers
+            }
+            or (
+                contract.origin == "checked_finite_origin_call_summary"
+                and _canonical_register(register)
+                in {
+                    _canonical_register(item)
+                    for item in contract.target_carried_registers
+                }
+            )
+        )
+    ]
+    if len(matches) != 1:
+        return None, None
+    target_target_id, contract = matches[0]
+    return contract, target_target_id
+
+
+def _finite_origin_call_output_trace(
+    *,
+    binary: StageABinary,
+    source_target_id: int,
+    register: str,
+    call_instruction: Any,
+    contract: OriginalRegisterControlCallContractProposal,
+    static_word_call_seeds_by_site: Mapping[
+        tuple[int, int], OriginalRegisterStaticWordSeedAuthority
+    ],
+    resolved_id_by_rva: Mapping[int, int],
+    parsed: Sequence[Mapping[str, Any]],
+) -> tuple[_RegisterProvenanceTrace | None, str]:
+    if (
+        contract.origin != "checked_finite_origin_call_summary"
+        or len(contract.finite_target_ids) != 1
+        or _canonical_register(register)
+        not in {
+            _canonical_register(item)
+            for item in contract.target_carried_registers
+        }
+    ):
+        return None, "last register write is not a supported exact seed"
+    if len(call_instruction.operands) != 1:
+        return None, "finite-origin call has no exact register target"
+    operand = call_instruction.operands[0]
+    if (
+        operand.type != X86_OP_REG
+        or call_instruction.reg_name(operand.reg) != register
+    ):
+        return None, "finite-origin call does not consume the seeded register"
+    target_id = contract.finite_target_ids[0]
+    if target_id >= len(parsed):
+        return None, "finite-origin call target is not an indexed code target"
+    target_rva = parsed[target_id].get("rva")
+    if (
+        not isinstance(target_rva, int)
+        or isinstance(target_rva, bool)
+        or target_rva < 0
+        or target_rva >= 2**32
+    ):
+        return None, "finite-origin call target has an invalid indexed RVA"
+    resolved = _resolve_exact_code_va(
+        binary,
+        binary.image_base + target_rva,
+        resolved_id_by_rva,
+        parsed,
+    )
+    if resolved != (target_id, target_rva):
+        return None, "finite-origin call target is not uniquely executable"
+    seed_authority = static_word_call_seeds_by_site.get(
+        (contract.source_rva, contract.instruction_rva)
+    )
+    if seed_authority is None:
+        return None, "finite-origin call lacks a checked static-word seed"
+    if (
+        seed_authority.binding.target_id != target_id
+        or seed_authority.binding.continuation_target_id
+            != resolved_id_by_rva.get(contract.continuation_rva)
+    ):
+        return None, "finite-origin call static-word seed targets do not match"
+    return (
+        _RegisterProvenanceTrace(
+            kind="fixed_code_pointer",
+            register=register,
+            target_id=target_id,
+            target_rva=target_rva,
+            target_va=binary.image_base + target_rva,
+            seed_target_ids=(source_target_id,),
+            static_word_seed_bindings=(
+                OriginalRegisterStaticWordSeedBinding(
+                    source_target_id,
+                    seed_authority.binding,
+                ),
+            ),
+        ),
+        "",
+    )
 
 
 def _build_mixed_original_register_control_provenance(
@@ -4016,9 +4944,12 @@ def _build_mixed_original_register_control_provenance(
                 )
 
     exact_edges = sorted(set(exact_edges))
+    exact_edge_ids = _stable_register_control_edge_ids(exact_edges)
     exact_edge_indices = {
-        (source, target, kind): index
-        for index, (source, target, kind, _contract_id) in enumerate(exact_edges)
+        (source, target, kind): exact_edge_ids[
+            (source, target, kind, contract_id)
+        ]
+        for source, target, kind, contract_id in exact_edges
     }
     internal_direct_call_sites = [
         {
@@ -4098,7 +5029,11 @@ def _build_mixed_original_register_control_provenance(
     }
     edges = tuple(
         RegisterControlEdge(
-            local_by_global[source], local_by_global[target], kind, contract_id
+            local_by_global[source],
+            local_by_global[target],
+            kind,
+            contract_id,
+            exact_edge_ids[(source, target, kind, contract_id)],
         )
         for source, target, kind, contract_id in exact_edges
         if source in local_by_global and target in local_by_global
@@ -4209,9 +5144,11 @@ def _build_mixed_original_register_control_provenance(
                     "kind": kind,
                     "machine_contract_id": contract_id,
                 }
-                for edge_index, (source, target, kind, contract_id)
-                in enumerate(exact_edges)
+                for source, target, kind, contract_id in exact_edges
                 if source in local_by_global and target in local_by_global
+                for edge_index in [
+                    exact_edge_ids[(source, target, kind, contract_id)]
+                ]
             ],
         },
         "internal_direct_call_sites": sorted(
@@ -4238,6 +5175,12 @@ def _build_mixed_original_register_control_provenance(
                     else _import_identity_json(item.import_identity)
                 ),
                 "preserved_registers": list(item.preserved_registers),
+                "callee_preserved_registers": list(
+                    item.callee_preserved_registers
+                ),
+                "target_carried_registers": list(
+                    item.target_carried_registers
+                ),
                 "return_register": item.return_register,
                 "arity_kind": item.arity_kind,
                 "argument_words": item.argument_words,
@@ -4246,6 +5189,7 @@ def _build_mixed_original_register_control_provenance(
                     if item.authorizing_lean_term is None
                     else item.authorizing_lean_term.qualified
                 ),
+                "finite_target_ids": list(item.finite_target_ids),
             }
             for item in sorted(
                 call_contract_proposals, key=lambda proposal: proposal.contract_id
@@ -4294,7 +5238,10 @@ def interpreter_mixed_original_register_control_lean_adapter(
     authorizing_terms = sorted({
         item.authorizing_lean_term.qualified
         for item in plan.spec.register_control_call_contracts
-        if item.origin == "checked_direct_call_summary"
+        if item.origin in {
+            "checked_direct_call_summary",
+            "checked_finite_origin_call_summary",
+        }
         and item.authorizing_lean_term is not None
     })
     body: dict[str, Any] = {
@@ -4650,6 +5597,7 @@ def derive_direct_call_summary_requests_from_register_authority(
         )
 
     requests_by_site: dict[tuple[int, int], set[str]] = {}
+    finite_requests_by_site: dict[tuple[int, int], set[str]] = {}
     chains: list[Mapping[str, Any]] = []
     for site_index, site in enumerate(site_rows):
         if not isinstance(site, Mapping):
@@ -4675,6 +5623,7 @@ def derive_direct_call_summary_requests_from_register_authority(
             )
 
         requested_calls: list[Mapping[str, Any]] = []
+        finite_origin_calls: list[Mapping[str, Any]] = []
         covered_imports: list[Mapping[str, Any]] = []
         for carry_index, carry in enumerate(carry_rows):
             if not isinstance(carry, Mapping):
@@ -4683,7 +5632,7 @@ def derive_direct_call_summary_requests_from_register_authority(
                     "is malformed"
                 )
             kind = carry.get("kind")
-            if kind != "internal_call":
+            if kind not in {"internal_call", "target_call"}:
                 continue
             callsite_rva = _u32(
                 carry.get("instruction_rva"),
@@ -4711,14 +5660,24 @@ def derive_direct_call_summary_requests_from_register_authority(
                     }),
                 })
                 continue
-            requests_by_site.setdefault((callsite_rva, caller_rva), set()).add(
-                str(register)
-            )
-            requested_calls.append({
+            requested = {
                 "callsite_rva": callsite_rva,
                 "caller_rva": caller_rva,
                 "callee_target_id": carry.get("callee_target_id"),
-            })
+                "source_target_id": carry.get("source_target_id"),
+                "continuation_rva": carry.get("continuation_rva"),
+                "continuation_target_id": carry.get("continuation_target_id"),
+            }
+            if kind == "target_call":
+                finite_requests_by_site.setdefault(
+                    (callsite_rva, caller_rva), set()
+                ).add(str(register))
+                finite_origin_calls.append(requested)
+            else:
+                requests_by_site.setdefault(
+                    (callsite_rva, caller_rva), set()
+                ).add(str(register))
+                requested_calls.append(requested)
 
         chains.append({
             "source": "checked_register_indirect_authority_carry_inventory",
@@ -4727,6 +5686,7 @@ def derive_direct_call_summary_requests_from_register_authority(
             "use_instruction_rva": use_instruction_rva,
             "register": register,
             "required_internal_calls": requested_calls,
+            "required_finite_origin_calls": finite_origin_calls,
             "machine_import_carries": covered_imports,
         })
 
@@ -4741,11 +5701,25 @@ def derive_direct_call_summary_requests_from_register_authority(
         ).checked()
         for (callsite_rva, caller_rva), registers in sorted(requests_by_site.items())
     )
+    finite_origin_entry_requests = tuple(
+        DirectCallSummaryRequest(
+            callsite_rva=callsite_rva,
+            caller_rva=caller_rva,
+            registers=tuple(
+                register for register in _REGISTER_CONTROL_REGISTERS
+                if register in registers
+            ),
+        ).checked()
+        for (callsite_rva, caller_rva), registers in sorted(
+            finite_requests_by_site.items()
+        )
+    )
     return MixedOriginalDirectCallSummaryRequestPlan(
         state_machine_sha256=state_machine_sha256,
         requests=requests,
         chains=tuple(chains),
         frontiers=(),
+        finite_origin_entry_requests=finite_origin_entry_requests,
     )
 
 
@@ -5566,6 +6540,16 @@ def _merge_register_provenance_traces(
         alternatives = ", ".join(sorted(repr(key) for key in keys))
         return None, f"ambiguous finite register provenance alternatives: {alternatives}"
     first = traces[0]
+    static_word_seeds: dict[int, OriginalRegisterStaticWordSeedBinding] = {}
+    for trace in traces:
+        for seed in trace.static_word_seed_bindings:
+            existing = static_word_seeds.get(seed.target_id)
+            if existing is not None and existing != seed:
+                return None, (
+                    "register provenance has conflicting static-word seed "
+                    f"authorities for target {seed.target_id}"
+                )
+            static_word_seeds[seed.target_id] = seed
     return (
         replace(
             first,
@@ -5583,6 +6567,10 @@ def _merge_register_provenance_traces(
                     {item for trace in traces for item in trace.seed_relocation_rvas}
                 )
             ),
+            static_word_seed_bindings=tuple(
+                static_word_seeds[target_id]
+                for target_id in sorted(static_word_seeds)
+            ),
         ),
         "",
     )
@@ -5591,11 +6579,19 @@ def _merge_register_provenance_traces(
 def _sorted_provenance_edges(
     edges: Sequence[OriginalRegisterProvenanceEdge],
 ) -> tuple[OriginalRegisterProvenanceEdge, ...]:
+    by_endpoints: dict[
+        tuple[int, int], OriginalRegisterProvenanceEdge
+    ] = {}
+    for edge in edges:
+        endpoints = (edge.source_target_id, edge.target_target_id)
+        existing = by_endpoints.get(endpoints)
+        if existing is not None and existing != edge:
+            raise InterpreterMixedOriginalGenerationError(
+                "register provenance has conflicting authorities for one edge"
+            )
+        by_endpoints[endpoints] = edge
     return tuple(
-        OriginalRegisterProvenanceEdge(source, target)
-        for source, target in sorted(
-            {(edge.source_target_id, edge.target_target_id) for edge in edges}
-        )
+        by_endpoints[endpoints] for endpoints in sorted(by_endpoints)
     )
 
 
@@ -7861,10 +8857,63 @@ def _lean_register_code_provenance_check(
         f"relation := .fixedCodePointer {binding.target_id} }}"
     )
     checks: list[str] = [definitions]
+    static_seeds = {
+        seed.target_id: seed.slot
+        for seed in binding.static_word_seed_bindings
+    }
+    if len(static_seeds) != len(binding.static_word_seed_bindings):
+        raise InterpreterMixedOriginalGenerationError(
+            "register provenance has duplicate static-word seed regions"
+        )
+    immutable_seed_ids = tuple(
+        target_id
+        for target_id in binding.seed_target_ids
+        if target_id not in static_seeds
+    )
+    if len(immutable_seed_ids) != len(binding.seed_relocation_rvas):
+        raise InterpreterMixedOriginalGenerationError(
+            "register provenance immutable seeds do not match relocations"
+        )
+    relocation_by_target_id = dict(
+        zip(immutable_seed_ids, binding.seed_relocation_rvas, strict=True)
+    )
     for seed_index, target_id in enumerate(binding.seed_target_ids):
         local = f"{prefix}Seed{seed_index}"
         region = f"{prefix}Provenance{target_id}Region"
-        relocation_rva = binding.seed_relocation_rvas[seed_index]
+        static_slot = static_seeds.get(target_id)
+        if static_slot is not None:
+            if static_slot.target_id != binding.target_id:
+                raise InterpreterMixedOriginalGenerationError(
+                    "register static-word seed has a different code target"
+                )
+            writes = ", ".join(
+                _lean_register_offset_write(write)
+                for write in static_slot.writes
+            )
+            checks.append(
+                f"""def {local}Claim : InvariantWP.StaticWordSlotRegisterOutputClaim := {{
+  output := {relation}
+  slot := {_lean_static_word_slot(static_slot)}
+  originalAddress := {static_slot.slot_va}
+  candidateAddress := {static_slot.slot_va}
+  originalAssembledRead := {str(static_slot.assembled_read).lower()}
+  candidateAssembledRead := {str(static_slot.assembled_read).lower()}
+  originalWrites := [{writes}]
+  candidateWrites := [{writes}]
+}}
+
+theorem {local}InventoryChecked :
+    {region}.outputRelations.contains {relation} = true := by
+  decide +kernel
+
+theorem {local}Checked :
+    {local}Claim.checked generatedOriginalCarrierContext
+      {region}.inputInvariant {normalized[target_id]}
+      {normalized[target_id]} = true := by
+  decide +kernel"""
+            )
+            continue
+        relocation_rva = relocation_by_target_id[target_id]
         checks.append(
             f"""def {local}Claim : InvariantWP.FixedImmutableExprRegisterOutputClaim := {{
   output := {relation}
@@ -7902,7 +8951,12 @@ theorem {local}Checked :
         )
     checks.extend(
         _lean_register_provenance_edge_checks(
-            plan, prefix, binding.register, binding.edges, normalized
+            plan,
+            prefix,
+            binding.register,
+            binding.edges,
+            normalized,
+            register_relation=f".fixedCodePointer {binding.target_id}",
         )
     )
     checks.append(
@@ -7947,6 +9001,7 @@ def _lean_register_provenance_edge_checks(
     normalized: Mapping[int, str],
     *,
     imported: OriginalImportIdentity | None = None,
+    register_relation: str | None = None,
 ) -> list[str]:
     checks: list[str] = []
     for edge_index, edge in enumerate(edges):
@@ -7974,7 +9029,7 @@ def _lean_register_provenance_edge_checks(
         if contract.origin in {
             "machine_import_boundary", "propagated_machine_import"
         }:
-            if imported is None or contract.import_identity is None:
+            if contract.import_identity is None:
                 raise InterpreterMixedOriginalGenerationError(
                     f"call-return edge {edge_index} lacks import identity"
                 )
@@ -7984,17 +9039,8 @@ def _lean_register_provenance_edge_checks(
                     f"call-return edge {edge_index} lacks machine authority"
                 )
             local = f"{prefix}Edge{edge_index}MachineImportAuthority"
-            carried_imported_term = f"{local}CarriedImported"
             called_imported_term = f"{local}CalledImported"
-            relation = (
-                f"{{ original := .{register}, candidate := .{register}, "
-                f"imported := {carried_imported_term} }}"
-            )
-            checks.append(direct_check + f"""
-
-def {carried_imported_term} : ExternalTarget :=
-  {_lean_external_target(imported)}
-
+            contract_check = f"""
 def {called_imported_term} : ExternalTarget :=
   {_lean_external_target(contract.import_identity)}
 
@@ -8011,7 +9057,16 @@ theorem {local}ContractMatches :
     {local}Contract.imported = {called_imported_term} /\\
       {local}Contract.preservedRegisters.contains .{register} = true /\\
       {local}Contract.disposition = .returns := by
-  decide +kernel
+  decide +kernel"""
+            if imported is not None:
+                carried_imported_term = f"{local}CarriedImported"
+                relation = (
+                    f"{{ original := .{register}, candidate := .{register}, "
+                    f"imported := {carried_imported_term} }}"
+                )
+                claim = f"""
+def {carried_imported_term} : ExternalTarget :=
+  {_lean_external_target(imported)}
 
 def {local}Claim : ExternalImportRegisterPreservationClaim := {{
   source := {relation}
@@ -8020,35 +9075,80 @@ def {local}Claim : ExternalImportRegisterPreservationClaim := {{
 
 theorem {local}Checked :
     {local}Claim.checked {local}Contract = true := by
-  decide +kernel
+  decide +kernel"""
+            else:
+                if register_relation is None:
+                    raise InterpreterMixedOriginalGenerationError(
+                        f"call-return edge {edge_index} lacks its carried "
+                        "register relation"
+                    )
+                relation = (
+                    f"{{ original := .{register}, candidate := .{register}, "
+                    f"relation := {register_relation} }}"
+                )
+                claim = f"""
+def {local}Claim : ExternalRegisterRelationPreservationClaim := {{
+  source := {relation}
+  target := {relation}
+}}
 
-#print axioms {local}Checked""")
+theorem {local}Checked :
+    {local}Claim.checked generatedOriginalCarrierContext {local}Contract =
+      true := by
+  decide +kernel"""
+            checks.append(
+                direct_check
+                + contract_check
+                + claim
+                + f"\n\n#print axioms {local}Checked"
+            )
             continue
         authority = contract.authorizing_lean_term
         if authority is None:
             raise InterpreterMixedOriginalGenerationError(
                 f"call-return edge {edge_index} lacks semantic Lean authority"
             )
-        local = f"{prefix}Edge{edge_index}DirectCallAuthority"
+        finite_origin = (
+            contract.origin == "checked_finite_origin_call_summary"
+        )
+        local = (
+            f"{prefix}Edge{edge_index}"
+            + (
+                "FiniteOriginCallAuthority"
+                if finite_origin
+                else "DirectCallAuthority"
+            )
+        )
+        authority_type = (
+            "CheckedFiniteOriginCallRegisterControlContract"
+            if finite_origin
+            else "CheckedDirectCallRegisterControlContract"
+        )
+        finite_target_check = (
+            f"\n      {local}.entry.calleeTargetId = "
+            f"{contract.finite_target_ids[0]} /\\"
+            if finite_origin
+            else ""
+        )
         checks.append(direct_check + f"""
 
 def {local} :
-    StageA.Relational.InternalDirectCallMixedOriginalIntegration.CheckedDirectCallRegisterControlContract
+    StageA.Relational.InternalDirectCallMixedOriginalIntegration.{authority_type}
       generatedOriginalCarrierContext :=
   {authority.qualified}
 
 theorem {local}Matches :
-    {local}.edge.sourceRegion = {edge.source_target_id} /\
-      {local}.edge.targetRegion = {edge.target_target_id} /\
+    {local}.edge.sourceRegion = {edge.source_target_id} /\\
+      {local}.edge.targetRegion = {edge.target_target_id} /\\
       {local}.edge.kind =
-        StageA.Relational.RegisterControlProvenance.EdgeKind.callReturn /\
-      {local}.edge.machineContractId = some {contract.contract_id} /\
-      {local}.contract.contractId = {contract.contract_id} /\
-      .{register} ∈ {local}.requestedRegisters /\
+        StageA.Relational.RegisterControlProvenance.EdgeKind.callReturn /\\
+      {local}.edge.machineContractId = some {contract.contract_id} /\\
+      {local}.contract.contractId = {contract.contract_id} /\\
+      .{register} ∈ {local}.requestedRegisters /\\{finite_target_check}
       {local}.sourceInvariant =
-        (generatedOriginalCarrierRegionIndex.get?
+        ((generatedOriginalCarrierRegionIndex.get?
           {edge.source_target_id}).get
-          (by decide +kernel) |>.inputInvariant := by
+          (by decide +kernel)).inputInvariant := by
   decide +kernel
 
 #print axioms {local}""")
@@ -8576,6 +9676,15 @@ def _static_indirect_binding_json(site: OriginalIndirectSite) -> dict[str, Any]:
                 "seed_target_ids": list(binding.seed_target_ids),
                 "preserve_target_ids": list(binding.preserve_target_ids),
                 "seed_relocation_rvas": list(binding.seed_relocation_rvas),
+                "static_word_seed_bindings": [
+                    {
+                        "target_id": seed.target_id,
+                        "slot_rva": seed.slot.slot_rva,
+                        "slot_va": seed.slot.slot_va,
+                        "assembled_read": seed.slot.assembled_read,
+                    }
+                    for seed in binding.static_word_seed_bindings
+                ],
                 "edges": [
                     {
                         "source_target_id": edge.source_target_id,
@@ -8728,6 +9837,9 @@ __all__ = [
     "OriginalStateIndependentFalseEdgeCut",
     "OriginalRegisterCodePointerBinding",
     "OriginalRegisterControlCallContractProposal",
+    "OriginalRegisterFiniteOriginCallEntryAuthority",
+    "OriginalRegisterStaticWordSeedAuthority",
+    "OriginalRegisterStaticWordSeedBinding",
     "OriginalRegisterImportBinding",
     "OriginalRegisterProvenanceEdge",
     "OriginalModuleBindings",
@@ -8735,6 +9847,7 @@ __all__ = [
     "OriginalRecoveredAlias",
     "OriginalRegion",
     "QualifiedLeanSymbol",
+    "augment_direct_call_summary_requests_from_runtime_value_carry_hints",
     "derive_direct_call_summary_requests_from_register_authority",
     "derive_mixed_original_direct_call_summary_requests",
     "load_checked_direct_call_summary_contract_proposals",
@@ -8746,4 +9859,5 @@ __all__ = [
     "write_relational_interpreter_mixed_original",
     "write_relational_interpreter_mixed_original_base",
     "write_relational_interpreter_mixed_original_final",
+    "write_register_finite_origin_call_entry_authorities",
 ]

@@ -44,6 +44,70 @@ structure PairedCalleeCursor where
   candidate : MachineState
   world : RelationalWorld
 
+/-- Concrete ghost state for the common single-frame save/call/restore
+protocol.  Before the save region executes, the selected register still equals
+its value at callee entry.  Afterwards, each side's exact entry value is held
+in its own entry-relative stack word.  The two concrete words need not be
+equal; this is therefore suitable for relocated pointers as well as scalars. -/
+def RootStackSaveRestoreInvariant
+    (entry : PairedCalleeCursor) (witness : StackSaveRestoreWitness)
+    (cursor : PairedCalleeCursor) : Prop :=
+  (cursor.regionId = witness.saveRegionId /\
+      cursor.original.registers.get witness.register =
+        entry.original.registers.get witness.register /\
+      cursor.candidate.registers.get witness.register =
+        entry.candidate.registers.get witness.register) \/
+    (Memory.read32 cursor.original.memory
+          (entry.original.registers.esp -
+            BitVec.ofNat 32 witness.originalSaveOffset) =
+        entry.original.registers.get witness.register /\
+      Memory.read32 cursor.candidate.memory
+          (entry.candidate.registers.esp -
+            BitVec.ofNat 32 witness.candidateSaveOffset) =
+        entry.candidate.registers.get witness.register)
+
+/-- A caller-owned scalar word is named relative to the callee-entry ESP.
+The invariant is same-side preservation, so it applies equally to relocated
+pointers and unrelated concrete stack addresses. -/
+def RootCallerFrameWordInvariant
+    (entry : PairedCalleeCursor) (word : ReturnSlotExactWordPair)
+    (cursor : PairedCalleeCursor) : Prop :=
+  Memory.read32 cursor.original.memory
+      (entry.original.registers.esp +
+        BitVec.ofNat 32 word.originalOffset) =
+      Memory.read32 entry.original.memory
+        (entry.original.registers.esp +
+          BitVec.ofNat 32 word.originalOffset) /\
+    Memory.read32 cursor.candidate.memory
+      (entry.candidate.registers.esp +
+        BitVec.ofNat 32 word.candidateOffset) =
+      Memory.read32 entry.candidate.memory
+        (entry.candidate.registers.esp +
+          BitVec.ofNat 32 word.candidateOffset)
+
+def CallerFrameWordsPreserved
+    (certificate : SummaryCertificate)
+    (entry before after : PairedCalleeCursor) : Prop :=
+  forall word, word ∈ certificate.callerFrameWords ->
+    RootCallerFrameWordInvariant entry word before ->
+      RootCallerFrameWordInvariant entry word after
+
+/-- The concrete ESP at a callee cutpoint is tied to the summary's checked
+entry-relative offset for that exact region. Negative offsets are represented
+modulo 2^32, matching the machine word semantics. -/
+def RootStackPointerInvariant
+    (certificate : SummaryCertificate)
+    (entry cursor : PairedCalleeCursor) : Prop :=
+  exists witness,
+    findStackEntryOffset? certificate.stackEntryOffsets cursor.regionId =
+        some witness /\
+      cursor.original.registers.esp =
+        entry.original.registers.esp +
+          BitVec.ofNat 32 witness.originalOffset /\
+      cursor.candidate.registers.esp =
+        entry.candidate.registers.esp +
+          BitVec.ofNat 32 witness.candidateOffset
+
 def requestedReturnRegistersHold (certificate : SummaryCertificate)
     (entryOriginal entryCandidate exitOriginal exitCandidate : MachineState) : Prop :=
   forall register, register ∈ certificate.requestedRegisters ->
@@ -235,6 +299,18 @@ structure ExactInternalSegmentStep (context : StaticProofContext)
   targetId : after.regionId = edge.targetRegionId
   originalAfter : after.original = originalResult.nextMachineState before.original
   candidateAfter : after.candidate = candidateResult.nextMachineState before.candidate
+  rootStackSaveRestorePreserved : forall entry witness,
+    witness ∈ certificate.stackWitnesses ->
+      witness.additionalFrames = [] ->
+      witness.checked certificate context.originalPe context.candidatePe
+        context.originalImports context.candidateImports = true ->
+      RootStackSaveRestoreInvariant entry witness before ->
+      RootStackSaveRestoreInvariant entry witness after
+  rootCallerFrameWordsPreserved : forall entry,
+    CallerFrameWordsPreserved certificate entry before after
+  rootStackPointerPreserved : forall entry,
+    RootStackPointerInvariant certificate entry before ->
+      RootStackPointerInvariant certificate entry after
 
 theorem ExactInternalSegmentStep.targetRelated
     {context : StaticProofContext} {certificate : SummaryCertificate}
@@ -253,6 +329,73 @@ theorem ExactInternalSegmentStep.targetRelated
   rw [step.authority.segmentExit] at related
   simpa [step.sameWorld, step.originalAfter, step.candidateAfter] using related
 
+/-- Normalization performed by `evalBehavior` preserves an exact identity
+register expression.  Keeping this theorem in the stable composition kernel
+avoids regenerating the same symbolic-evaluation proof for every direct-call
+site. -/
+theorem evalBehavior_identity_register
+    (candidate : Bool) (targets : List CodeTargetPair)
+    (state : MachineState) (behavior : SymbolicBehavior)
+    (result : RelationalBehavior) (register : Reg)
+    (identity : behavior.registers.get register = .inputReg register)
+    (evaluated : evalBehavior candidate targets state behavior = some result) :
+    (result.nextMachineState state).registers.get register =
+      state.registers.get register := by
+  cases normalizedEquation :
+      normalizeSymbolicBehavior candidate targets behavior with
+  | none => simp [evalBehavior, normalizedEquation] at evaluated
+  | some normalized =>
+    have fields := normalizeSymbolicBehavior_fields candidate targets behavior
+      normalized normalizedEquation
+    simp [evalBehavior, normalizedEquation] at evaluated
+    subst result
+    simp [NormalizedSymbolicBehavior.eval, fields.1, identity,
+      RelationalBehavior.nextMachineState, Expr.eval]
+
+/-- An ordinary exact segment preserves an identity-checked register on both
+sides.  The proof connects the aggregate summary checker to the exact region
+selected by the segment authority and then to the concrete evaluated result. -/
+theorem ExactInternalSegmentStep.identityRegisterPreserved
+    {context : StaticProofContext} {tree : SummaryTree}
+    {before after : PairedCalleeCursor}
+    (step : ExactInternalSegmentStep context tree.certificate before after)
+    (register : Reg)
+    (checked : tree.certificate.identityRegisterChecked context.originalPe
+      context.candidatePe context.originalImports context.candidateImports
+      register = true) :
+    before.original.registers.get register =
+        after.original.registers.get register /\
+      before.candidate.registers.get register =
+        after.candidate.registers.get register := by
+  have sourceMember : step.authority.sourceRegion ∈
+      tree.certificate.calleeRegions := by
+    have found := step.authority.sourceRegionFound
+    unfold findRegion? at found
+    exact List.mem_of_find?_eq_some found
+  have sideChecks :=
+    tree.certificate.identityRegisterChecked_region context.originalPe
+      context.candidatePe context.originalImports context.candidateImports
+      register step.authority.sourceRegion checked sourceMember
+  have originalIdentity :=
+    summaryRegionIdentitySideChecked_machine_expression context.originalPe
+      context.originalImports context.machineImportCallContracts false
+      step.authority.sourceRegion register step.authority.originalBehavior
+      sideChecks.1 step.authority.originalDecoded
+  have candidateIdentity :=
+    summaryRegionIdentitySideChecked_machine_expression context.candidatePe
+      context.candidateImports context.machineImportCallContracts true
+      step.authority.sourceRegion register step.authority.candidateBehavior
+      sideChecks.2 step.authority.candidateDecoded
+  constructor
+  · rw [step.originalAfter]
+    exact (evalBehavior_identity_register false step.localCodeTargets
+      before.original step.authority.originalBehavior step.originalResult
+      register originalIdentity step.originalEvaluated).symm
+  · rw [step.candidateAfter]
+    exact (evalBehavior_identity_register true step.localCodeTargets
+      before.candidate step.authority.candidateBehavior step.candidateResult
+      register candidateIdentity step.candidateEvaluated).symm
+
 /-- A nested transition consumes the child's semantic contract and binds it to
 the exact dependency row. -/
 structure ExactNestedSummaryStep (context : StaticProofContext)
@@ -268,6 +411,9 @@ structure ExactNestedSummaryStep (context : StaticProofContext)
   childId : childTree.summaryId = dependency.summaryId
   childStructuralChecked : childTree.checked context.originalPe context.candidatePe
     context.originalImports context.candidateImports = true
+  requestedRegisters : forall register,
+    register ∈ parentTree.certificate.requestedRegisters ->
+      register ∈ childTree.certificate.requestedRegisters
   child : DirectCallSemanticContract context childTree
   frame : RelationalRuntimeCallFrame
   invoked : child.invocation before.original before.candidate after.original
@@ -275,6 +421,81 @@ structure ExactNestedSummaryStep (context : StaticProofContext)
   sameWorld : after.world = before.world
   sourceId : before.regionId = edge.sourceRegionId
   targetId : after.regionId = edge.targetRegionId
+  rootStackSaveRestorePreserved : forall entry witness,
+    witness ∈ parentTree.certificate.stackWitnesses ->
+      witness.additionalFrames = [] ->
+      witness.checked parentTree.certificate context.originalPe context.candidatePe
+        context.originalImports context.candidateImports = true ->
+      RootStackSaveRestoreInvariant entry witness before ->
+      RootStackSaveRestoreInvariant entry witness after
+  rootCallerFrameWordsPreserved : forall entry,
+    CallerFrameWordsPreserved parentTree.certificate entry before after
+  rootStackPointerPreserved : forall entry,
+    RootStackPointerInvariant parentTree.certificate entry before ->
+      RootStackPointerInvariant parentTree.certificate entry after
+
+/-- A returning indirect call whose target expression has a checked finite
+origin.  The value-provenance certificate selects an exact mapped destination;
+the corresponding child summary supplies the same call/return contract used by
+ordinary nested calls. -/
+structure ExactFiniteOriginCallStep (context : StaticProofContext)
+    (parentTree childTree : SummaryTree)
+    (before after : PairedCalleeCursor) where
+  edge : SummaryEdge
+  edgeMember : edge ∈ parentTree.certificate.edges
+  dependency : FiniteOriginCallDependency
+  dependencyMember :
+    dependency ∈ parentTree.certificate.finiteOriginCallDependencies
+  target : FiniteOriginCallTarget
+  targetMember : target ∈ dependency.internalTargets
+  childMember : childTree ∈ parentTree.children
+  edgeKind : edge.kind = .finiteOriginCall dependency.id
+  edgeSource : edge.sourceRegionId = dependency.sourceRegionId
+  edgeTarget : edge.targetRegionId = dependency.continuationRegionId
+  childId : childTree.summaryId = target.summaryId
+  childEntry :
+    childTree.certificate.entryKind =
+      .finiteOriginCall dependency.id target.targetId
+  sourceInvariant : StateInvariant
+  originalBehavior : NormalizedSymbolicBehavior
+  candidateBehavior : NormalizedSymbolicBehavior
+  authority : ValueProvenance.CheckedIndirectExitCertificate context
+    sourceInvariant originalBehavior candidateBehavior
+  authorityBound :
+    parentTree.certificate.finiteOriginCallAuthorityBound parentTree.children
+      dependency.id authority context.originalPe context.candidatePe
+      context.originalImports context.candidateImports = true
+  sourceRelated :
+    StateRel context before.world sourceInvariant before.original before.candidate
+  selectedTarget :
+    (ValueProvenance.IndirectDestination.internalCode target.targetId).Matches
+      context before.world
+      (authority.certificate.target.original.eval before.original)
+      (authority.certificate.target.candidate.eval before.candidate)
+  childStructuralChecked : childTree.checked context.originalPe context.candidatePe
+    context.originalImports context.candidateImports = true
+  requestedRegisters : forall register,
+    register ∈ parentTree.certificate.requestedRegisters ->
+      register ∈ childTree.certificate.requestedRegisters
+  child : DirectCallSemanticContract context childTree
+  frame : RelationalRuntimeCallFrame
+  invoked : child.invocation before.original before.candidate after.original
+    after.candidate before.world frame
+  sameWorld : after.world = before.world
+  sourceId : before.regionId = edge.sourceRegionId
+  targetId : after.regionId = edge.targetRegionId
+  rootStackSaveRestorePreserved : forall entry witness,
+    witness ∈ parentTree.certificate.stackWitnesses ->
+      witness.additionalFrames = [] ->
+      witness.checked parentTree.certificate context.originalPe context.candidatePe
+        context.originalImports context.candidateImports = true ->
+      RootStackSaveRestoreInvariant entry witness before ->
+      RootStackSaveRestoreInvariant entry witness after
+  rootCallerFrameWordsPreserved : forall entry,
+    CallerFrameWordsPreserved parentTree.certificate entry before after
+  rootStackPointerPreserved : forall entry,
+    RootStackPointerInvariant parentTree.certificate entry before ->
+      RootStackPointerInvariant parentTree.certificate entry after
 
 /-- Static grounding for one machine-import edge.  Source and continuation
 regions, canonical code-map entries, exact spans, the submitted dependency, and
@@ -331,6 +552,18 @@ structure ExactMachineImportStep (context : StaticProofContext)
   framePreserved : callFrameHolds context frame before -> callFrameHolds context frame after
   sourceId : before.regionId = edge.sourceRegionId
   targetId : after.regionId = edge.targetRegionId
+  rootStackSaveRestorePreserved : forall entry witness,
+    witness ∈ tree.certificate.stackWitnesses ->
+      witness.additionalFrames = [] ->
+      witness.checked tree.certificate context.originalPe context.candidatePe
+        context.originalImports context.candidateImports = true ->
+      RootStackSaveRestoreInvariant entry witness before ->
+      RootStackSaveRestoreInvariant entry witness after
+  rootCallerFrameWordsPreserved : forall entry,
+    CallerFrameWordsPreserved tree.certificate entry before after
+  rootStackPointerPreserved : forall entry,
+    RootStackPointerInvariant tree.certificate entry before ->
+      RootStackPointerInvariant tree.certificate entry after
 
 inductive AdmittedCalleeStep (context : StaticProofContext) (tree : SummaryTree) :
     PairedCalleeCursor -> PairedCalleeCursor -> Prop where
@@ -338,6 +571,9 @@ inductive AdmittedCalleeStep (context : StaticProofContext) (tree : SummaryTree)
       tree.certificate before after) : AdmittedCalleeStep context tree before after
   | nested {before after childTree} (step : ExactNestedSummaryStep context tree childTree
       before after) : AdmittedCalleeStep context tree before after
+  | finiteOriginCall {before after childTree}
+      (step : ExactFiniteOriginCallStep context tree childTree before after) :
+      AdmittedCalleeStep context tree before after
   | machineImport {before after} (step : ExactMachineImportStep context tree before after) :
       AdmittedCalleeStep context tree before after
 
@@ -348,8 +584,54 @@ inductive AdmittedCalleeStepUsesEdge {context : StaticProofContext} {tree : Summ
       AdmittedCalleeStepUsesEdge (.internal actual) actual.edge
   | nested (actual : ExactNestedSummaryStep context tree childTree before after) :
       AdmittedCalleeStepUsesEdge (.nested actual) actual.edge
+  | finiteOriginCall
+      (actual : ExactFiniteOriginCallStep context tree childTree before after) :
+      AdmittedCalleeStepUsesEdge (.finiteOriginCall actual) actual.edge
   | machineImport (actual : ExactMachineImportStep context tree before after) :
       AdmittedCalleeStepUsesEdge (.machineImport actual) actual.edge
+
+/-- Every admitted step preserves a non-stack register whose exact summary
+uses the identity checker.  Nested calls consume the child's semantic
+contract, while machine imports consume their machine-level preservation
+theorem; neither boundary is treated as an unchecked transfer rule. -/
+theorem AdmittedCalleeStep.identityRegisterPreserved
+    {context : StaticProofContext} {tree : SummaryTree}
+    {before after : PairedCalleeCursor}
+    (step : AdmittedCalleeStep context tree before after)
+    (register : Reg) (registerNotEsp : register ≠ .esp)
+    (requested : register ∈ tree.certificate.requestedRegisters)
+    (checked : tree.certificate.identityRegisterChecked context.originalPe
+      context.candidatePe context.originalImports context.candidateImports
+      register = true) :
+    before.original.registers.get register =
+        after.original.registers.get register /\
+      before.candidate.registers.get register =
+        after.candidate.registers.get register := by
+  cases step with
+  | internal actual =>
+      exact actual.identityRegisterPreserved register checked
+  | nested actual =>
+      have childRequested := actual.requestedRegisters register requested
+      have preserved := actual.child.preserves before.original before.candidate
+        after.original after.candidate before.world actual.frame actual.invoked
+        register childRequested
+      have registerNotEspBool : (register == .esp) = false :=
+        beq_eq_false_iff_ne.mpr registerNotEsp
+      simp only [requestedCallReturnRegistersHold, registerNotEspBool,
+        if_false] at preserved
+      exact ⟨preserved.1.symm, preserved.2.symm⟩
+  | finiteOriginCall actual =>
+      have childRequested := actual.requestedRegisters register requested
+      have preserved := actual.child.preserves before.original before.candidate
+        after.original after.candidate before.world actual.frame actual.invoked
+        register childRequested
+      have registerNotEspBool : (register == .esp) = false :=
+        beq_eq_false_iff_ne.mpr registerNotEsp
+      simp only [requestedCallReturnRegistersHold, registerNotEspBool,
+        if_false] at preserved
+      exact ⟨preserved.1.symm, preserved.2.symm⟩
+  | machineImport actual =>
+      exact actual.requestedPreserved register requested
 
 inductive FiniteCalleePath (context : StaticProofContext) (tree : SummaryTree)
     (entry : PairedCalleeCursor) : PairedCalleeCursor -> Prop where
@@ -357,6 +639,130 @@ inductive FiniteCalleePath (context : StaticProofContext) (tree : SummaryTree)
   | step {before after} : FiniteCalleePath context tree entry before ->
       AdmittedCalleeStep context tree before after ->
       FiniteCalleePath context tree entry after
+
+theorem AdmittedCalleeStep.rootStackSaveRestorePreserved
+    {context : StaticProofContext} {tree : SummaryTree}
+    {before after : PairedCalleeCursor}
+    (step : AdmittedCalleeStep context tree before after)
+    (entry : PairedCalleeCursor) (witness : StackSaveRestoreWitness)
+    (member : witness ∈ tree.certificate.stackWitnesses)
+    (singleFrame : witness.additionalFrames = [])
+    (checked : witness.checked tree.certificate context.originalPe
+      context.candidatePe context.originalImports context.candidateImports = true)
+    (holds : RootStackSaveRestoreInvariant entry witness before) :
+    RootStackSaveRestoreInvariant entry witness after := by
+  cases step with
+  | internal actual =>
+      exact actual.rootStackSaveRestorePreserved entry witness member singleFrame
+        checked holds
+  | nested actual =>
+      exact actual.rootStackSaveRestorePreserved entry witness member singleFrame
+        checked holds
+  | finiteOriginCall actual =>
+      exact actual.rootStackSaveRestorePreserved entry witness member singleFrame
+        checked holds
+  | machineImport actual =>
+      exact actual.rootStackSaveRestorePreserved entry witness member singleFrame
+        checked holds
+
+theorem AdmittedCalleeStep.rootCallerFrameWordPreserved
+    {context : StaticProofContext} {tree : SummaryTree}
+    {before after : PairedCalleeCursor}
+    (step : AdmittedCalleeStep context tree before after)
+    (entry : PairedCalleeCursor) (word : ReturnSlotExactWordPair)
+    (member : word ∈ tree.certificate.callerFrameWords)
+    (holds : RootCallerFrameWordInvariant entry word before) :
+    RootCallerFrameWordInvariant entry word after := by
+  cases step with
+  | internal actual =>
+      exact actual.rootCallerFrameWordsPreserved entry word member holds
+  | nested actual =>
+      exact actual.rootCallerFrameWordsPreserved entry word member holds
+  | finiteOriginCall actual =>
+      exact actual.rootCallerFrameWordsPreserved entry word member holds
+  | machineImport actual =>
+      exact actual.rootCallerFrameWordsPreserved entry word member holds
+
+theorem AdmittedCalleeStep.rootStackPointerPreserved
+    {context : StaticProofContext} {tree : SummaryTree}
+    {before after : PairedCalleeCursor}
+    (step : AdmittedCalleeStep context tree before after)
+    (entry : PairedCalleeCursor)
+    (holds : RootStackPointerInvariant tree.certificate entry before) :
+    RootStackPointerInvariant tree.certificate entry after := by
+  cases step with
+  | internal actual =>
+      exact actual.rootStackPointerPreserved entry holds
+  | nested actual =>
+      exact actual.rootStackPointerPreserved entry holds
+  | finiteOriginCall actual =>
+      exact actual.rootStackPointerPreserved entry holds
+  | machineImport actual =>
+      exact actual.rootStackPointerPreserved entry holds
+
+theorem FiniteCalleePath.rootStackSaveRestorePreserved
+    {context : StaticProofContext} {tree : SummaryTree}
+    {entry cursor : PairedCalleeCursor}
+    (path : FiniteCalleePath context tree entry cursor)
+    (witness : StackSaveRestoreWitness)
+    (member : witness ∈ tree.certificate.stackWitnesses)
+    (entryRegion : entry.regionId = witness.saveRegionId)
+    (singleFrame : witness.additionalFrames = [])
+    (checked : witness.checked tree.certificate context.originalPe
+      context.candidatePe context.originalImports context.candidateImports = true) :
+    RootStackSaveRestoreInvariant entry witness cursor := by
+  have atEntry : RootStackSaveRestoreInvariant entry witness entry := by
+    exact Or.inl ⟨entryRegion, rfl, rfl⟩
+  induction path with
+  | entry => exact atEntry
+  | step prior transition induction =>
+      exact transition.rootStackSaveRestorePreserved entry witness member
+        singleFrame checked induction
+
+theorem FiniteCalleePath.rootCallerFrameWordPreserved
+    {context : StaticProofContext} {tree : SummaryTree}
+    {entry cursor : PairedCalleeCursor}
+    (path : FiniteCalleePath context tree entry cursor)
+    (word : ReturnSlotExactWordPair)
+    (member : word ∈ tree.certificate.callerFrameWords) :
+    RootCallerFrameWordInvariant entry word cursor := by
+  have atEntry : RootCallerFrameWordInvariant entry word entry := by
+    exact ⟨rfl, rfl⟩
+  induction path with
+  | entry => exact atEntry
+  | step prior transition induction =>
+      exact transition.rootCallerFrameWordPreserved entry word member induction
+
+theorem FiniteCalleePath.rootStackPointerPreserved
+    {context : StaticProofContext} {tree : SummaryTree}
+    {entry cursor : PairedCalleeCursor}
+    (path : FiniteCalleePath context tree entry cursor)
+    (entryHolds : RootStackPointerInvariant tree.certificate entry entry) :
+    RootStackPointerInvariant tree.certificate entry cursor := by
+  induction path with
+  | entry => exact entryHolds
+  | step prior transition induction =>
+      exact transition.rootStackPointerPreserved entry induction
+
+theorem FiniteCalleePath.identityRegisterPreserved
+    {context : StaticProofContext} {tree : SummaryTree}
+    {entry cursor : PairedCalleeCursor}
+    (path : FiniteCalleePath context tree entry cursor)
+    (register : Reg) (registerNotEsp : register ≠ .esp)
+    (requested : register ∈ tree.certificate.requestedRegisters)
+    (checked : tree.certificate.identityRegisterChecked context.originalPe
+      context.candidatePe context.originalImports context.candidateImports
+      register = true) :
+    entry.original.registers.get register =
+        cursor.original.registers.get register /\
+      entry.candidate.registers.get register =
+        cursor.candidate.registers.get register := by
+  induction path with
+  | entry => exact ⟨rfl, rfl⟩
+  | step prior transition induction =>
+      have edge := transition.identityRegisterPreserved register registerNotEsp
+        requested checked
+      exact ⟨induction.1.trans edge.1, induction.2.trans edge.2⟩
 
 theorem FiniteCalleePath.prepend
     {context : StaticProofContext} {tree : SummaryTree}
@@ -404,12 +810,302 @@ structure ExactReturningStep (context : StaticProofContext) (tree : SummaryTree)
   continuationInvariant : StateInvariant
   continuationRelated : StateRel context before.world continuationInvariant
     afterOriginal afterCandidate
+  rootStackSaveRestoreClosed : forall entry witness,
+    witness ∈ tree.certificate.stackWitnesses ->
+      witness.additionalFrames = [] ->
+      witness.checked tree.certificate context.originalPe context.candidatePe
+        context.originalImports context.candidateImports = true ->
+      RootStackSaveRestoreInvariant entry witness before ->
+      afterOriginal.registers.get witness.register =
+          entry.original.registers.get witness.register /\
+        afterCandidate.registers.get witness.register =
+          entry.candidate.registers.get witness.register
+  rootCallerFrameWordsClosed : forall entry word,
+    word ∈ tree.certificate.callerFrameWords ->
+      RootCallerFrameWordInvariant entry word before ->
+        Memory.read32 afterOriginal.memory
+            (entry.original.registers.esp +
+              BitVec.ofNat 32 word.originalOffset) =
+            Memory.read32 entry.original.memory
+              (entry.original.registers.esp +
+                BitVec.ofNat 32 word.originalOffset) /\
+          Memory.read32 afterCandidate.memory
+            (entry.candidate.registers.esp +
+              BitVec.ofNat 32 word.candidateOffset) =
+          Memory.read32 entry.candidate.memory
+            (entry.candidate.registers.esp +
+              BitVec.ofNat 32 word.candidateOffset)
+  rootStackPointerClosed : forall entry,
+    RootStackPointerInvariant tree.certificate entry before ->
+      afterOriginal.registers.esp =
+          entry.original.registers.esp + BitVec.ofNat 32 4 /\
+        afterCandidate.registers.esp =
+          entry.candidate.registers.esp + BitVec.ofNat 32 4
+
+theorem ExactReturningStep.identityRegisterPreserved
+    {context : StaticProofContext} {tree : SummaryTree}
+    {before : PairedCalleeCursor}
+    (step : ExactReturningStep context tree before)
+    (register : Reg)
+    (checked : tree.certificate.identityRegisterChecked context.originalPe
+      context.candidatePe context.originalImports context.candidateImports
+      register = true) :
+    before.original.registers.get register =
+        step.afterOriginal.registers.get register /\
+      before.candidate.registers.get register =
+        step.afterCandidate.registers.get register := by
+  have returnMember : step.returnRegion ∈ tree.certificate.calleeRegions := by
+    have found := step.returnRegionFound
+    unfold findRegion? at found
+    exact List.mem_of_find?_eq_some found
+  have sideChecks :=
+    tree.certificate.identityRegisterChecked_region context.originalPe
+      context.candidatePe context.originalImports context.candidateImports
+      register step.returnRegion checked returnMember
+  have originalIdentity :=
+    summaryRegionIdentitySideChecked_expression context.originalPe
+      context.originalImports false step.returnRegion register
+      step.originalBehavior sideChecks.1 step.originalDecoded
+  have candidateIdentity :=
+    summaryRegionIdentitySideChecked_expression context.candidatePe
+      context.candidateImports true step.returnRegion register
+      step.candidateBehavior sideChecks.2 step.candidateDecoded
+  constructor
+  · rw [step.originalAfter]
+    rw [applySymbolicBehavior_register, originalIdentity]
+    rfl
+  · rw [step.candidateAfter]
+    rw [applySymbolicBehavior_register, candidateIdentity]
+    rfl
 
 structure FiniteReturningExecution (context : StaticProofContext) (tree : SummaryTree)
     (entry : PairedCalleeCursor) where
   beforeReturn : PairedCalleeCursor
   path : FiniteCalleePath context tree entry beforeReturn
   returning : ExactReturningStep context tree beforeReturn
+
+/-- Conditional call-return preservation.  This theorem is deliberately about
+an actual finite returning execution; it makes no claim that every invocation
+terminates.  Whole-program progress and termination remain obligations of the
+product-graph composition layer. -/
+theorem FiniteReturningExecution.identityRegisterPreserved
+    {context : StaticProofContext} {tree : SummaryTree}
+    {entry : PairedCalleeCursor}
+    (execution : FiniteReturningExecution context tree entry)
+    (register : Reg) (registerNotEsp : register ≠ .esp)
+    (requested : register ∈ tree.certificate.requestedRegisters)
+    (checked : tree.certificate.identityRegisterChecked context.originalPe
+      context.candidatePe context.originalImports context.candidateImports
+      register = true) :
+    execution.returning.afterOriginal.registers.get register =
+        entry.original.registers.get register /\
+      execution.returning.afterCandidate.registers.get register =
+        entry.candidate.registers.get register := by
+  have path := execution.path.identityRegisterPreserved register registerNotEsp
+    requested checked
+  have returned := execution.returning.identityRegisterPreserved register checked
+  exact ⟨returned.1.symm.trans path.1.symm,
+    returned.2.symm.trans path.2.symm⟩
+
+theorem FiniteReturningExecution.rootStackRegisterPreserved
+    {context : StaticProofContext} {tree : SummaryTree}
+    {entry : PairedCalleeCursor}
+    (execution : FiniteReturningExecution context tree entry)
+    (witness : StackSaveRestoreWitness)
+    (member : witness ∈ tree.certificate.stackWitnesses)
+    (entryRegion : entry.regionId = witness.saveRegionId)
+    (singleFrame : witness.additionalFrames = [])
+    (checked : witness.checked tree.certificate context.originalPe
+      context.candidatePe context.originalImports context.candidateImports = true) :
+    execution.returning.afterOriginal.registers.get witness.register =
+        entry.original.registers.get witness.register /\
+      execution.returning.afterCandidate.registers.get witness.register =
+        entry.candidate.registers.get witness.register := by
+  have atReturn := execution.path.rootStackSaveRestorePreserved witness member
+    entryRegion singleFrame checked
+  exact execution.returning.rootStackSaveRestoreClosed entry witness member
+    singleFrame checked atReturn
+
+/-- Every requested caller-frame word survives a concrete admitted return.
+The theorem is conditional only on the exact finite execution object; total
+call progress remains the separate operational-completeness obligation. -/
+theorem FiniteReturningExecution.callerFrameWordPreserved
+    {context : StaticProofContext} {tree : SummaryTree}
+    {entry : PairedCalleeCursor}
+    (execution : FiniteReturningExecution context tree entry)
+    (word : ReturnSlotExactWordPair)
+    (member : word ∈ tree.certificate.callerFrameWords) :
+    Memory.read32 execution.returning.afterOriginal.memory
+          (entry.original.registers.esp +
+            BitVec.ofNat 32 word.originalOffset) =
+        Memory.read32 entry.original.memory
+          (entry.original.registers.esp +
+            BitVec.ofNat 32 word.originalOffset) /\
+      Memory.read32 execution.returning.afterCandidate.memory
+          (entry.candidate.registers.esp +
+            BitVec.ofNat 32 word.candidateOffset) =
+        Memory.read32 entry.candidate.memory
+          (entry.candidate.registers.esp +
+            BitVec.ofNat 32 word.candidateOffset) := by
+  have atReturn :=
+    execution.path.rootCallerFrameWordPreserved word member
+  exact execution.returning.rootCallerFrameWordsClosed entry word member atReturn
+
+/-- Exact stack restoration for a finite returning path, provided the checked
+entry-offset witness establishes the root ghost state. -/
+theorem FiniteReturningExecution.stackPointerRestored
+    {context : StaticProofContext} {tree : SummaryTree}
+    {entry : PairedCalleeCursor}
+    (execution : FiniteReturningExecution context tree entry)
+    (entryHolds : RootStackPointerInvariant tree.certificate entry entry) :
+    execution.returning.afterOriginal.registers.esp =
+        entry.original.registers.esp + BitVec.ofNat 32 4 /\
+      execution.returning.afterCandidate.registers.esp =
+        entry.candidate.registers.esp + BitVec.ofNat 32 4 := by
+  have atReturn := execution.path.rootStackPointerPreserved entryHolds
+  exact execution.returning.rootStackPointerClosed entry atReturn
+
+/-- Register-only authority for a call that has actually returned.  This is
+the appropriate contract for control-provenance propagation: it proves every
+named register for every exact finite returning execution, but it does not
+assert that all invocations terminate.  Total progress remains a separate
+whole-program graph obligation. -/
+structure CheckedReturningRegisterCertificate
+    (context : StaticProofContext) (tree : SummaryTree) where
+  structuralChecked : tree.checked context.originalPe context.candidatePe
+    context.originalImports context.candidateImports = true
+  registers : List Reg
+  registersUnique : registers.Nodup
+  registersExcludeStackPointer : .esp ∉ registers
+  requestedBySummary : forall register, register ∈ registers ->
+    register ∈ tree.certificate.requestedRegisters
+  preserves : forall entry : PairedCalleeCursor,
+    entry.regionId = tree.certificate.calleeEntry.id ->
+    forall execution : FiniteReturningExecution context tree entry,
+    forall register, register ∈ registers ->
+      execution.returning.afterOriginal.registers.get register =
+          entry.original.registers.get register /\
+        execution.returning.afterCandidate.registers.get register =
+          entry.candidate.registers.get register
+
+/-- Checked same-side preservation for caller-owned words above a callee's
+entry ESP.  Offsets and uniqueness are checked structurally in the summary;
+the semantic field ranges over every admitted finite returning execution. -/
+structure CheckedReturningCallerFrameWordCertificate
+    (context : StaticProofContext) (tree : SummaryTree) where
+  structuralChecked : tree.checked context.originalPe context.candidatePe
+    context.originalImports context.candidateImports = true
+  words : List ReturnSlotExactWordPair
+  wordsUnique : words.Nodup
+  requestedBySummary : forall word, word ∈ words ->
+    word ∈ tree.certificate.callerFrameWords
+  preserves : forall entry : PairedCalleeCursor,
+    entry.regionId = tree.certificate.calleeEntry.id ->
+    forall execution : FiniteReturningExecution context tree entry,
+    forall word, word ∈ words ->
+      Memory.read32 execution.returning.afterOriginal.memory
+            (entry.original.registers.esp +
+              BitVec.ofNat 32 word.originalOffset) =
+          Memory.read32 entry.original.memory
+            (entry.original.registers.esp +
+              BitVec.ofNat 32 word.originalOffset) /\
+        Memory.read32 execution.returning.afterCandidate.memory
+            (entry.candidate.registers.esp +
+              BitVec.ofNat 32 word.candidateOffset) =
+          Memory.read32 entry.candidate.memory
+            (entry.candidate.registers.esp +
+              BitVec.ofNat 32 word.candidateOffset)
+
+def checkedReturningCallerFrameWordCertificate
+    (context : StaticProofContext) (tree : SummaryTree)
+    (words : List ReturnSlotExactWordPair)
+    (structuralChecked : tree.checked context.originalPe context.candidatePe
+      context.originalImports context.candidateImports = true)
+    (wordsUnique : words.Nodup)
+    (requestedBySummary : forall word, word ∈ words ->
+      word ∈ tree.certificate.callerFrameWords) :
+    CheckedReturningCallerFrameWordCertificate context tree := {
+  structuralChecked
+  words
+  wordsUnique
+  requestedBySummary
+  preserves := by
+    intro entry _entryRegion execution word member
+    exact execution.callerFrameWordPreserved word
+      (requestedBySummary word member)
+}
+
+/-- Build the common identity-register certificate entirely from exact
+decoder checks.  Generated modules provide the compact per-register checker
+facts; the semantic path theorem is shared and compiled once. -/
+def checkedReturningRegisterCertificate_of_identity
+    (context : StaticProofContext) (tree : SummaryTree)
+    (registers : List Reg)
+    (structuralChecked : tree.checked context.originalPe context.candidatePe
+      context.originalImports context.candidateImports = true)
+    (registersUnique : registers.Nodup)
+    (registersExcludeStackPointer : .esp ∉ registers)
+    (requestedBySummary : forall register, register ∈ registers ->
+      register ∈ tree.certificate.requestedRegisters)
+    (identityChecked : forall register, register ∈ registers ->
+      tree.certificate.identityRegisterChecked context.originalPe
+        context.candidatePe context.originalImports context.candidateImports
+        register = true) :
+    CheckedReturningRegisterCertificate context tree := {
+  structuralChecked := structuralChecked
+  registers := registers
+  registersUnique := registersUnique
+  registersExcludeStackPointer := registersExcludeStackPointer
+  requestedBySummary := requestedBySummary
+  preserves := by
+    intro entry _entryRegion execution register member
+    exact execution.identityRegisterPreserved register
+      (fun equal => registersExcludeStackPointer (equal ▸ member))
+      (requestedBySummary register member) (identityChecked register member)
+}
+
+/-- Build register-only authority for one ordinary single-frame
+save/call/restore protocol.  The static witness selects exact save and restore
+instructions, while the strengthened finite-execution interface carries the
+entry-relative word through every actual internal, nested, and import step. -/
+def checkedReturningRegisterCertificate_of_rootStackWitness
+    (context : StaticProofContext) (tree : SummaryTree)
+    (register : Reg) (witness : StackSaveRestoreWitness)
+    (structuralChecked : tree.checked context.originalPe context.candidatePe
+      context.originalImports context.candidateImports = true)
+    (member : witness ∈ tree.certificate.stackWitnesses)
+    (witnessRegister : witness.register = register)
+    (singleFrame : witness.additionalFrames = [])
+    (entryIsSave : tree.certificate.calleeEntry.id = witness.saveRegionId)
+    (registerNotEsp : register ≠ .esp)
+    (requested :
+      register ∈ tree.certificate.requestedRegisters)
+    (checked : witness.checked tree.certificate context.originalPe
+      context.candidatePe context.originalImports context.candidateImports = true) :
+    CheckedReturningRegisterCertificate context tree := {
+  structuralChecked := structuralChecked
+  registers := [register]
+  registersUnique := by simp
+  registersExcludeStackPointer := by
+    simp only [List.mem_cons, List.not_mem_nil, or_false, not_false_eq_true]
+    intro equal
+    exact registerNotEsp equal.symm
+  requestedBySummary := by
+    intro selected selectedMember
+    have selectedExact : selected = register := by
+      simpa only [List.mem_cons, List.not_mem_nil, or_false] using selectedMember
+    simpa [selectedExact] using requested
+  preserves := by
+    intro entry entryRegion execution selected selectedMember
+    have selectedExact : selected = register := by
+      simpa only [List.mem_cons, List.not_mem_nil, or_false] using selectedMember
+    subst selected
+    have entryRegionExact : entry.regionId = witness.saveRegionId :=
+      entryRegion.trans entryIsSave
+    simpa only [witnessRegister] using
+      execution.rootStackRegisterPreserved witness member entryRegionExact
+        singleFrame checked
+}
 
 /-- The invariant is deliberately a proposition over concrete paired cursors.
 This is expressive enough for stack save/restore protocols: an implementation
@@ -465,6 +1161,52 @@ theorem finiteReturningExecution_preserves
   exact ⟨registers, frameValid, frameMemory,
     ⟨execution.returning.continuationInvariant,
       execution.returning.continuationRelated⟩⟩
+
+/-- Checked restoration of the architectural stack pointer at a returning
+callee boundary. This is semantic authority over every admitted finite
+execution, not the structural stack-offset checker by itself. -/
+structure CheckedReturningStackPointerCertificate
+    (context : StaticProofContext) (tree : SummaryTree) where
+  structuralChecked : tree.checked context.originalPe context.candidatePe
+    context.originalImports context.candidateImports = true
+  entryOffset : exists witness,
+    findStackEntryOffset? tree.certificate.stackEntryOffsets
+        tree.certificate.calleeEntry.id = some witness /\
+      witness.originalOffset = 0 /\
+      witness.candidateOffset = 0
+  restores : forall entry : PairedCalleeCursor,
+    entry.regionId = tree.certificate.calleeEntry.id ->
+    forall execution : FiniteReturningExecution context tree entry,
+      execution.returning.afterOriginal.registers.esp =
+          entry.original.registers.esp + BitVec.ofNat 32 4 /\
+        execution.returning.afterCandidate.registers.esp =
+          entry.candidate.registers.esp + BitVec.ofNat 32 4
+
+/-- Construct stack restoration from a checked root offset. Every transition
+and return in `FiniteReturningExecution` carries the semantic preservation
+proof; the offset inventory only establishes the root ghost state. -/
+def checkedReturningStackPointerCertificate
+    (context : StaticProofContext) (tree : SummaryTree)
+    (structuralChecked : tree.checked context.originalPe context.candidatePe
+      context.originalImports context.candidateImports = true)
+    (entryOffset : exists witness,
+      findStackEntryOffset? tree.certificate.stackEntryOffsets
+          tree.certificate.calleeEntry.id = some witness /\
+        witness.originalOffset = 0 /\
+        witness.candidateOffset = 0) :
+    CheckedReturningStackPointerCertificate context tree := {
+  structuralChecked
+  entryOffset
+  restores := by
+    intro entry entryRegion execution
+    rcases entryOffset with ⟨witness, found, originalZero, candidateZero⟩
+    apply execution.stackPointerRestored
+    refine ⟨witness, ?_, ?_, ?_⟩
+    · rw [entryRegion]
+      exact found
+    · simp [originalZero]
+    · simp [candidateZero]
+}
 
 def cyclicSummaryEdge (certificate : SummaryCertificate) (edge : SummaryEdge) : Bool :=
   reachesWithin certificate.edges certificate.calleeRegions.length
@@ -547,6 +1289,21 @@ inductive RequestedRegisterGrounding (context : StaticProofContext)
 /-- Exact entry binding.  The canonical direct-call segment establishes the
 callee relation, while `entered` checks the runtime return frame for every
 related concrete source state. -/
+def directCallNormalizedBehaviors?
+    (context : StaticProofContext) (tree : SummaryTree) :
+    Option (NormalizedSymbolicBehavior × NormalizedSymbolicBehavior) := do
+  let original ← regionBehaviorWithMachineCallContracts context.originalPe
+    context.originalImports context.machineImportCallContracts
+      tree.certificate.callsite.original
+  let candidate ← regionBehaviorWithMachineCallContracts context.candidatePe
+    context.candidateImports context.machineImportCallContracts
+      tree.certificate.callsite.candidate
+  let originalNormalized ← normalizeSymbolicBehavior false
+    context.codeMap.entries.toList original
+  let candidateNormalized ← normalizeSymbolicBehavior true
+    context.codeMap.entries.toList candidate
+  pure (originalNormalized, candidateNormalized)
+
 structure ExactDirectCallEntryBinding (context : StaticProofContext) (tree : SummaryTree) where
   sourceInvariant : StateInvariant
   entryInvariant : StateInvariant
@@ -554,6 +1311,10 @@ structure ExactDirectCallEntryBinding (context : StaticProofContext) (tree : Sum
   sourceTargetId : Nat
   calleeTargetId : Nat
   continuationTargetId : Nat
+  originalNormalized : NormalizedSymbolicBehavior
+  candidateNormalized : NormalizedSymbolicBehavior
+  normalizedExact : directCallNormalizedBehaviors? context tree =
+    some (originalNormalized, candidateNormalized)
   callPush : DirectCallPushClaim
   /-- Machine-level scalar inputs named relative to the architectural return
   slot.  Offset 4 is the first caller stack word after a plain IA-32 call. -/
@@ -770,6 +1531,13 @@ structure ActualDirectCallReturnExecution (context : StaticProofContext)
     source.original.execution = { next := originalEntry.execution, observation := none }
   candidateCallStep : candidateProgram.pe32TransitionSystem.step
     source.candidate.execution = { next := candidateEntry.execution, observation := none }
+  entryStates :
+    originalEntry.state =
+        ((binding.originalNormalized.eval source.original.state).nextMachineState
+          source.original.state) /\
+      candidateEntry.state =
+        ((binding.candidateNormalized.eval source.candidate.state).nextMachineState
+          source.candidate.state)
   originalEntryTarget : originalEntry.targetId = binding.calleeTargetId
   candidateEntryTarget : candidateEntry.targetId = binding.calleeTargetId
   originalExitTarget : originalExit.targetId = binding.continuationTargetId
@@ -935,6 +1703,13 @@ structure ExactOperationalDirectCallEntry
     source.original.execution = { next := originalEntry.execution, observation := none }
   candidateCallStep : candidateProgram.pe32TransitionSystem.step
     source.candidate.execution = { next := candidateEntry.execution, observation := none }
+  entryStates :
+    originalEntry.state =
+        ((binding.originalNormalized.eval source.original.state).nextMachineState
+          source.original.state) /\
+      candidateEntry.state =
+        ((binding.candidateNormalized.eval source.candidate.state).nextMachineState
+          source.candidate.state)
   originalEntryTarget : originalEntry.targetId = binding.calleeTargetId
   candidateEntryTarget : candidateEntry.targetId = binding.calleeTargetId
   originalEntryCalls : originalEntry.calls = binding.continuationTargetId :: source.original.calls
@@ -1349,6 +2124,7 @@ theorem OperationalCallReturnCompleteness.returnsFromEverySource
     candidateExit := result.candidateExit
     originalCallStep := entry.originalCallStep
     candidateCallStep := entry.candidateCallStep
+    entryStates := entry.entryStates
     originalEntryTarget := entry.originalEntryTarget
     candidateEntryTarget := entry.candidateEntryTarget
     originalExitTarget := result.originalExitTarget

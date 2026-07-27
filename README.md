@@ -46,7 +46,14 @@ memory ordering, unsupported expressions, and ambiguous dispatch RVAs.
 
 ## Commands
 
-Build the Python tools:
+Nix is the only supported build and proof execution boundary. Python commands
+coordinate Nix derivations or run inside phase-scoped derivations; direct
+host-side Lean compilation is test-only and cannot produce an accepted report.
+The public ISA conformance command follows the same rule for its Lean, Unicorn,
+and Bochs backends; `stage-a-check-isa-conformance-worker` is reserved for Nix
+derivations.
+
+Build the command suite:
 
 ```sh
 nix build .#spaghetti-extractor --no-link
@@ -110,10 +117,10 @@ The jq path is split into independently cacheable derivations:
 graph, `stage-a-jq-reference-contract` exports Stage B feedback from that graph,
 and `stage-a-jq-fixtures-check` performs the lightweight acceptance audit. A
 report or assertion change therefore does not repeat PE extraction or hidden
-Lean compilation. Preparation currently remains one coarse Nix derivation: its
-Lean extraction shards use 16 workers on one selected builder, but are not yet
-independent derivations schedulable across multiple hosts. The generated proof
-module graph is the finer-grained distributed build boundary.
+Lean compilation. The generic preparation path separates executable inventory,
+side extraction, ISA extraction, normalization, dataflow, memory products,
+composition, and source generation into explicit Nix dependencies. The
+generated proof module graph is the finer-grained distributed Lean boundary.
 
 Generate a relation contract with reusable machine-level external-call schemas:
 

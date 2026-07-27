@@ -148,6 +148,12 @@ end {namespace}
         exact = sources[
             "GeneratedRelationalInterpreterMixedOriginalBaseExactCertificate"
         ]
+        context = sources[
+            "GeneratedRelationalInterpreterMixedOriginalBaseContextData"
+        ]
+        carrier = sources[
+            "GeneratedRelationalInterpreterMixedOriginalBaseCarrierData"
+        ]
         aggregate = sources[
             "GeneratedRelationalInterpreterMixedOriginalBaseCertificateAggregate"
         ]
@@ -169,6 +175,15 @@ end {namespace}
         self.assertIn(".toBooleanCertificate", exact)
         self.assertIn("ExactOriginalDecodedProofAuthority", exact)
         self.assertIn(".toBooleanAuthority", exact)
+        self.assertIn("def generatedOriginalCarrierContext", context)
+        self.assertIn("def generatedOriginalCarrierInvariantAt", context)
+        self.assertNotIn(
+            "def generatedOriginalMachineImportBoundarySiteBindings", context
+        )
+        self.assertIn(
+            "import StageA.GeneratedRelationalInterpreterMixedOriginalBaseContextData",
+            carrier,
+        )
         self.assertIn("generatedOriginalEntriesIndexChecked", aggregate)
         self.assertIn("FiniteIndex.structurallyValid_branch", aggregate)
         self.assertGreaterEqual(len(check_shards), 2)

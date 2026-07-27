@@ -83,6 +83,60 @@ def stage_a_project_inventory_extraction_request(
     }
 
 
+def stage_a_merge_side_extraction_requests(
+    *,
+    inputs: list[Path],
+    out: Path,
+) -> dict[str, Any]:
+    if not inputs:
+        raise StageAInputError("side extraction request merge requires inputs")
+    requests = [
+        parse_request(read_json_object(Path(path))) for path in inputs
+    ]
+    side = requests[0].side
+    binary_sha256 = requests[0].binary_sha256
+    if any(
+        request.side != side or request.binary_sha256 != binary_sha256
+        for request in requests[1:]
+    ):
+        raise StageAInputError(
+            "side extraction request merge input identity mismatch"
+        )
+    spans = sorted({
+        (region.span.rva_start, region.span.size)
+        for request in requests
+        for region in request.regions
+    })
+    payload = parse_request({
+        "format": "stage-a-relational-side-extraction-request-v1",
+        "profile": STAGE_A_RELATIONAL_PROFILE_ID,
+        "model": STAGE_A_RELATIONAL_MODEL_ID,
+        "side": side,
+        "binary_sha256": binary_sha256,
+        "regions": [
+            {
+                "index": index,
+                "id": f"{side}-merged-request-{start:08x}-{size:08x}",
+                "numeric_id": index,
+                "span": {"rva_start": start, "size": size},
+            }
+            for index, (start, size) in enumerate(spans)
+        ],
+    }).to_payload()
+    write_json(Path(out), payload)
+    return {
+        "format": "stage-a-relational-side-extraction-request-result-v1",
+        "status": "generated",
+        "side": side,
+        "binary_sha256": binary_sha256,
+        "regions": len(spans),
+        "scope": "merged",
+        "inputs": [sha256_file(Path(path)) for path in inputs],
+        "out": str(out),
+        "sha256": sha256_file(Path(out)),
+    }
+
+
 def stage_a_project_missing_side_extraction_request(
     *,
     binary: Path,
@@ -350,6 +404,7 @@ __all__ = [
     "load_side_isa",
     "stage_a_extract_side",
     "stage_a_extract_side_isa",
+    "stage_a_merge_side_extraction_requests",
     "stage_a_merge_side_extractions",
     "stage_a_project_inventory_extraction_request",
     "stage_a_project_missing_side_extraction_request",

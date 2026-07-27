@@ -70,13 +70,10 @@ RELATIONAL_ANALYSIS_KERNEL_MODULES = (
     "RelationalX87Decode",
     "ISAQualification",
     "RelationalDecode",
-    "RelationalSemanticsChecker",
-    "RelationalCheckedArtifacts",
     "RelationalLoader",
     "RelationalFiniteIndex",
     "RelationalMachine",
     "Relational",
-    "RelationalEngine",
     "RelationalX87Machine",
     "RelationalPEExecution",
     "RelationalISAQualification",
@@ -470,6 +467,9 @@ class ModuleGraphNode:
     stable_key: str | None
     artifact_ids: tuple[str, ...]
     checker_version: str | None
+    semantic_id: str | None
+    dependency_semantic_ids: tuple[str, ...]
+    semantic_recipe_version: str | None
 
     @classmethod
     def parse(cls, payload: Mapping[str, Any]) -> "ModuleGraphNode":
@@ -502,6 +502,28 @@ class ModuleGraphNode:
         artifact_ids = tuple(artifact_ids_value)
         if len(artifact_ids) != len(set(artifact_ids)):
             raise SchemaError("module graph artifact_ids must be unique")
+        semantic_id = payload.get("semantic_id")
+        if semantic_id is not None and (
+            not isinstance(semantic_id, str) or len(semantic_id) != 64
+        ):
+            raise SchemaError("module graph semantic_id must be a SHA-256 digest")
+        dependency_semantic_ids = (
+            _string_tuple(payload, "dependency_semantic_ids")
+            if "dependency_semantic_ids" in payload
+            else ()
+        )
+        if any(len(identity) != 64 for identity in dependency_semantic_ids):
+            raise SchemaError(
+                "module graph dependency_semantic_ids must be SHA-256 digests"
+            )
+        semantic_recipe_version = payload.get("semantic_recipe_version")
+        if semantic_recipe_version is not None and (
+            not isinstance(semantic_recipe_version, str)
+            or not semantic_recipe_version
+        ):
+            raise SchemaError(
+                "module graph semantic_recipe_version must be a non-empty string"
+            )
         return cls(
             id=_required_string(payload, "id"),
             modules=_string_tuple(payload, "modules"),
@@ -513,6 +535,9 @@ class ModuleGraphNode:
             stable_key=stable_key,
             artifact_ids=artifact_ids,
             checker_version=checker_version,
+            semantic_id=semantic_id,
+            dependency_semantic_ids=dependency_semantic_ids,
+            semantic_recipe_version=semantic_recipe_version,
         )
 
 
@@ -545,11 +570,29 @@ class ModuleGraph:
             node.kind is None
             or node.stable_key is None
             or node.checker_version is None
+            or node.semantic_id is None
+            or node.semantic_recipe_version is None
             for node in nodes
         ):
             raise SchemaError(
                 "v2 Lean module graph nodes require typed artifact metadata"
             )
+        if format_id == LEAN_MODULE_GRAPH_V2_FORMAT:
+            by_id = {node.id: node for node in nodes}
+            for node in nodes:
+                try:
+                    expected_dependency_ids = tuple(
+                        by_id[dependency].semantic_id
+                        for dependency in node.dependencies
+                    )
+                except KeyError as exc:
+                    raise SchemaError(
+                        f"module graph node {node.id} names a missing dependency"
+                    ) from exc
+                if node.dependency_semantic_ids != expected_dependency_ids:
+                    raise SchemaError(
+                        f"module graph node {node.id} has stale semantic dependencies"
+                    )
         theorem = payload.get("expected_final_theorem")
         if theorem is not None and not isinstance(theorem, str):
             raise SchemaError("expected_final_theorem must be a string or null")

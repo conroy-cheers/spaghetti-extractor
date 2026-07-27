@@ -4,66 +4,239 @@
 , preparedManifest ? null
 , artifactManifest ? null
 , sourceRoot ? prepared
+, activeNodeIds ? []
+, prebuiltNodes ? {}
 , standaloneSourceRoot ? null
 , standaloneModules ? []
 , standaloneModuleResources ? {}
-, targetNode ? null
+, schedulingMode ? "dag"
+, precompiledKernel ? null
 , targetNodes ? []
 , targetBundle ? false
 , targetAxiomAudit ? null
 , graphSmoke ? false
-, contentAddressed ? false
-, measureResources ? false
+, contentAddressed ? true
 }:
 
+if schedulingMode == "closure" then
+  import ./stage-a-lean-compact.nix {
+    inherit
+      contentAddressed
+      graphFile
+      pkgs
+      precompiledKernel
+      prepared
+      preparedManifest
+      sourceRoot
+      targetBundle
+      targetNodes
+      ;
+  }
+else
 let
   lib = pkgs.lib;
   standalone = standaloneSourceRoot != null;
-  standaloneSource = module: standaloneSourceRoot + "/${module}.lean";
+  standaloneAggregateRoot =
+    if standalone then builtins.dirOf (toString standaloneSourceRoot) else null;
+  # Temporary compatibility for aggregate outputs with physical source packs.
+  standaloneNestedSourcePackManifestPath =
+    if standalone then standaloneSourceRoot + "/module-source-packs.json"
+    else null;
+  standaloneSourcePackManifestPath =
+    if standalone
+      && builtins.pathExists standaloneNestedSourcePackManifestPath
+    then standaloneNestedSourcePackManifestPath
+    else if standalone then
+      standaloneAggregateRoot + "/module-source-packs.json"
+    else null;
+  standaloneSourcePackRoot =
+    if standalone then builtins.dirOf (toString standaloneSourcePackManifestPath)
+    else null;
+  standaloneSourcePacksAvailable =
+    standalone
+    && builtins.pathExists standaloneSourcePackManifestPath;
+  standaloneSourcePackManifest =
+    if standaloneSourcePacksAvailable then
+      builtins.fromJSON (builtins.readFile standaloneSourcePackManifestPath)
+    else null;
+  standaloneModuleSourcePacks =
+    if standaloneSourcePacksAvailable then
+      standaloneSourcePackManifest.modules
+    else {};
+  standaloneSourcePackRoots =
+    if standaloneSourcePacksAvailable then
+      builtins.listToAttrs (map (packId: {
+        name = packId;
+        value = builtins.listToAttrs (map (module: {
+          name = module;
+          value = builtins.toFile
+            "stage-a-source-${module}.lean"
+            (builtins.unsafeDiscardStringContext (builtins.readFile
+              (standaloneSourcePackRoot
+                + "/source-packs/${packId}/${module}.lean")));
+        }) standaloneSourcePackManifest.packs.${packId});
+      }) (builtins.attrNames standaloneSourcePackManifest.packs))
+    else {};
+  standaloneMetadataSource = module:
+    standaloneSourceRoot + "/${module}.lean";
+  standaloneDirectSource = module:
+    builtins.toFile
+      "stage-a-source-${module}.lean"
+      (builtins.unsafeDiscardStringContext
+        (builtins.readFile (standaloneMetadataSource module)));
+  standaloneSource = module:
+    if standaloneSourcePacksAvailable then
+      standaloneSourcePackRoots.${standaloneModuleSourcePacks.${module}}.${module}
+    else standaloneDirectSource module;
+  standaloneNestedBuildPackManifestPath =
+    if standalone then standaloneSourceRoot + "/module-build-packs.json"
+    else null;
+  standaloneBuildPackManifestPath =
+    if standalone
+      && builtins.pathExists standaloneNestedBuildPackManifestPath
+    then standaloneNestedBuildPackManifestPath
+    else if standalone then
+      standaloneAggregateRoot + "/module-build-packs.json"
+    else null;
+  standaloneBuildPacksAvailable =
+    standalone
+    && builtins.pathExists standaloneBuildPackManifestPath;
+  standaloneBuildPackManifest =
+    if standaloneBuildPacksAvailable then
+      builtins.fromJSON (builtins.readFile standaloneBuildPackManifestPath)
+    else null;
+  standaloneModuleBuildPacks =
+    if standaloneBuildPacksAvailable then
+      standaloneBuildPackManifest.modules
+    else builtins.listToAttrs (map (module: {
+      name = module;
+      value = module;
+    }) standaloneModules);
+  standaloneBuildPacks =
+    if standaloneBuildPacksAvailable then
+      standaloneBuildPackManifest.packs
+    else builtins.listToAttrs (map (module: {
+      name = module;
+      value = [ module ];
+    }) standaloneModules);
   standaloneImports = module:
     lib.unique (lib.filter (dependency: dependency != null) (map
       (line:
         let matched = builtins.match
           "^import StageA\\.([A-Za-z0-9_]+)$" line;
         in if matched == null then null else builtins.head matched)
-      (lib.splitString "\n" (builtins.readFile (standaloneSource module)))));
+      (lib.splitString "\n"
+        (builtins.readFile (standaloneMetadataSource module)))));
   standaloneModuleSet = builtins.listToAttrs (map (module: {
     name = module;
     value = true;
   }) standaloneModules);
+  standaloneModuleMetadata = builtins.listToAttrs (map (module:
+    let
+      sourceSha256 =
+        builtins.hashFile "sha256" (standaloneMetadataSource module);
+    in {
+      name = module;
+      value = {
+        source = "${module}.lean";
+        source_sha256 = sourceSha256;
+        imports = standaloneImports module;
+      };
+    }
+  ) standaloneModules);
   standaloneImportsValid = builtins.all (module:
     builtins.all (dependency: builtins.hasAttr dependency standaloneModuleSet)
-      (standaloneImports module)
+      standaloneModuleMetadata.${module}.imports
   ) standaloneModules;
+  standaloneSourcePacksValid =
+    !standaloneSourcePacksAvailable || (
+      standaloneSourcePackManifest.format == "stage-a-lean-source-packs-v1"
+      && lib.sort builtins.lessThan
+        (builtins.attrNames standaloneSourcePackManifest.modules)
+        == lib.sort builtins.lessThan standaloneModules
+      && lib.sort builtins.lessThan
+        (lib.concatLists (builtins.attrValues standaloneSourcePackManifest.packs))
+        == lib.sort builtins.lessThan standaloneModules
+      && builtins.all (module:
+        let packId = standaloneSourcePackManifest.modules.${module};
+        in builtins.hasAttr packId standaloneSourcePackManifest.packs
+          && builtins.elem module standaloneSourcePackManifest.packs.${packId}
+      ) standaloneModules
+    );
+  standaloneBuildPacksValid =
+    !standaloneBuildPacksAvailable || (
+      standaloneBuildPackManifest.format == "stage-a-lean-build-packs-v1"
+      && lib.sort builtins.lessThan
+        (builtins.attrNames standaloneBuildPackManifest.modules)
+        == lib.sort builtins.lessThan standaloneModules
+      && lib.sort builtins.lessThan
+        (lib.concatLists (builtins.attrValues standaloneBuildPackManifest.packs))
+        == lib.sort builtins.lessThan standaloneModules
+      && builtins.all (module:
+        let packId = standaloneBuildPackManifest.modules.${module};
+        in builtins.hasAttr packId standaloneBuildPackManifest.packs
+          && builtins.elem module standaloneBuildPackManifest.packs.${packId}
+      ) standaloneModules
+      && builtins.all (packId:
+        let
+          packModules = standaloneBuildPackManifest.packs.${packId};
+          positions = builtins.listToAttrs (lib.imap0 (index: module: {
+            name = module;
+            value = index;
+          }) packModules);
+        in builtins.all (module:
+          builtins.all (dependency:
+            standaloneBuildPackManifest.modules.${dependency} != packId
+            || positions.${dependency} < positions.${module}
+          ) standaloneModuleMetadata.${module}.imports
+        ) packModules
+      ) (builtins.attrNames standaloneBuildPackManifest.packs)
+    );
   standaloneGraph = {
     format = "stage-a-lean-module-graph-v1";
     lean.trust = 0;
-    modules = builtins.listToAttrs (map (module:
-      let sourceSha256 = builtins.hashFile "sha256" (standaloneSource module);
-      in {
-        name = module;
-        value = {
-          source = "${module}.lean";
-          source_sha256 = sourceSha256;
-          imports = standaloneImports module;
-        };
-      }
-    ) standaloneModules);
-    nodes = map (module:
+    modules = standaloneModuleMetadata;
+    nodes = map (packId:
       let
-        sourceSha256 = builtins.hashFile "sha256" (standaloneSource module);
-        resources = standaloneModuleResources.${module} or {
-          resource_class = "light";
-          estimated_memory_mb = 512;
-        };
+        packModules = standaloneBuildPacks.${packId};
+        moduleResources = map (module:
+          standaloneModuleResources.${module} or {
+            resource_class = "light";
+            estimated_memory_mb = 512;
+          }
+        ) packModules;
+        resourceClasses = map (resource: resource.resource_class)
+          moduleResources;
+        resourceClass =
+          if builtins.elem "high-memory" resourceClasses then "high-memory"
+          else if builtins.elem "large-memory" resourceClasses then "large-memory"
+          else if builtins.elem "medium" resourceClasses then "medium"
+          else "light";
+        dependencyModules = lib.concatMap (module:
+          standaloneModuleMetadata.${module}.imports
+        ) packModules;
+        dependencies = lib.sort builtins.lessThan (lib.unique (map
+          (dependency: standaloneModuleBuildPacks.${dependency})
+          (lib.filter (dependency:
+            standaloneModuleBuildPacks.${dependency} != packId
+          ) dependencyModules)));
       in {
-        id = module;
-        modules = [ module ];
-        dependencies = lib.sort builtins.lessThan (standaloneImports module);
-        inherit (resources) resource_class estimated_memory_mb;
-        source_sha256 = builtins.hashString "sha256" sourceSha256;
+        id = packId;
+        modules = packModules;
+        inherit dependencies;
+        resource_class = resourceClass;
+        estimated_memory_mb = lib.foldl'
+          (maximum: resource:
+            if resource.estimated_memory_mb > maximum
+            then resource.estimated_memory_mb
+            else maximum)
+          0 moduleResources;
+        source_sha256 = builtins.hashString "sha256"
+          (lib.concatMapStringsSep ":"
+            (module: standaloneModuleMetadata.${module}.source_sha256)
+            packModules);
       }
-    ) standaloneModules;
+    ) (builtins.attrNames standaloneBuildPacks);
   };
   effectiveGraphFile =
     if graphFile != null then graphFile
@@ -85,11 +258,11 @@ let
     if graphV2 then builtins.fromJSON (builtins.readFile effectiveArtifactManifest)
     else null;
   moduleSources = lib.mapAttrs (module: metadata:
-    builtins.path {
-      path = (if standalone then standaloneSourceRoot else sourceRoot)
-        + "/${metadata.source}";
-      name = "stage-a-${module}.lean";
-    }
+    if standalone then standaloneSource module else
+      builtins.path {
+        path = sourceRoot + "/${metadata.source}";
+        name = "stage-a-${module}.lean";
+      }
   ) graph.modules;
 
   sourceChecks = node:
@@ -103,6 +276,15 @@ let
     value = node;
   }) graph.nodes);
   nodeIds = map (node: node.id) graph.nodes;
+  effectiveActiveNodeIds =
+    if activeNodeIds == [] then nodeIds else activeNodeIds;
+  activeNodeSet = builtins.listToAttrs (map (node: {
+    name = node;
+    value = true;
+  }) effectiveActiveNodeIds);
+  activeGraphNodes = builtins.filter
+    (node: builtins.hasAttr node.id activeNodeSet)
+    graph.nodes;
   assignedModules = lib.concatMap (node: node.modules) graph.nodes;
   moduleOwners = builtins.listToAttrs (lib.concatMap (node:
     map (module: {
@@ -111,7 +293,7 @@ let
     }) node.modules
   ) graph.nodes);
   graphNodeIdsUnique = builtins.length nodeIds
-    == builtins.length (lib.unique nodeIds);
+    == builtins.length (builtins.attrNames nodeById);
   graphModuleImportsValid = builtins.all (module:
     graph.modules.${module} ? imports
     && builtins.isList graph.modules.${module}.imports
@@ -120,7 +302,7 @@ let
   ) (builtins.attrNames graph.modules);
   graphModuleOwnershipValid =
     builtins.length assignedModules
-      == builtins.length (lib.unique assignedModules)
+      == builtins.length (builtins.attrNames moduleOwners)
     && lib.sort builtins.lessThan assignedModules
       == builtins.attrNames graph.modules;
   graphNodeDependenciesValid = graphModuleImportsValid
@@ -144,6 +326,50 @@ let
     && builtins.isInt node.estimated_memory_mb
     && node.estimated_memory_mb > 0
   ) graph.nodes;
+  graphNodeSemanticIdentitiesValid = standalone || builtins.all (node:
+    builtins.isString node.semantic_id
+    && builtins.stringLength node.semantic_id == 64
+    && builtins.isString node.semantic_recipe_version
+    && node.semantic_recipe_version == "stage-a-lean-semantic-recipe-v1"
+    && builtins.isList node.dependency_semantic_ids
+    && node.dependency_semantic_ids
+      == map (dependency: nodeById.${dependency}.semantic_id)
+        node.dependencies
+  ) graph.nodes;
+  prebuiltNodePaths = lib.mapAttrs (_: entry:
+    builtins.storePath entry.semantic_path
+  ) prebuiltNodes;
+  prebuiltNodesValid = builtins.all (nodeId:
+    let
+      entry = prebuiltNodes.${nodeId};
+      expected = nodeById.${nodeId};
+      semanticPath = prebuiltNodePaths.${nodeId};
+      interface = builtins.fromJSON
+        (builtins.readFile (semanticPath + "/interface.json"));
+    in builtins.hasAttr nodeId nodeById
+      && !builtins.hasAttr nodeId activeNodeSet
+      && builtins.isAttrs entry
+      && entry.node_id == nodeId
+      && entry.semantic_id == expected.semantic_id
+      && builtins.isString entry.semantic_path
+      && builtins.match "/nix/store/[a-z0-9]+-[^ ]+" entry.semantic_path != null
+      && interface.format == "stage-a-lean-semantic-interface-v1"
+      && interface.id == nodeId
+      && interface.modules == expected.modules
+      && interface.dependencies == expected.dependencies
+      && interface.source_sha256 == expected.source_sha256
+      && interface.semantic_id == expected.semantic_id
+      && interface.dependency_semantic_ids
+        == expected.dependency_semantic_ids
+      && interface.semantic_recipe_version
+        == expected.semantic_recipe_version
+  ) (builtins.attrNames prebuiltNodes);
+  activeDependenciesAvailable = builtins.all (node:
+    builtins.all (dependency:
+      builtins.hasAttr dependency activeNodeSet
+      || builtins.hasAttr dependency prebuiltNodes
+    ) node.dependencies
+  ) activeGraphNodes;
   checkedArtifactIds =
     if graphV2 then map (artifact: artifact.identity.artifact_id)
       checkedArtifactManifest.artifacts
@@ -175,78 +401,144 @@ let
   nodeDrvs = lib.fix (self:
     builtins.listToAttrs (map (node:
       let
-        dependencies = map (dependency: self.${dependency}) node.dependencies;
+        dependencies = map (dependency:
+          if builtins.hasAttr dependency prebuiltNodePaths
+          then prebuiltNodePaths.${dependency}
+          else self.${dependency}.out
+        ) node.dependencies;
         dependencyArgs = lib.escapeShellArgs (map toString dependencies);
-        metadata = builtins.toJSON ({
+        dependencySemanticIds = node.dependency_semantic_ids or (
+          map (dependency: nodeById.${dependency}.source_sha256)
+            node.dependencies
+        );
+        semanticRecipeVersion = node.semantic_recipe_version or
+          "stage-a-lean-standalone-recipe-v1";
+        semanticId = node.semantic_id or (builtins.hashString "sha256"
+          (builtins.toJSON {
+            format = "stage-a-lean-semantic-node-id-v1";
+            recipe_version = semanticRecipeVersion;
+            modules = node.modules;
+            source_sha256 = node.source_sha256;
+            dependencies = lib.imap0 (index: dependency: {
+              node = dependency;
+              semantic_id = builtins.elemAt dependencySemanticIds index;
+            }) node.dependencies;
+          }));
+        metadata = builtins.toJSON {
           format = "stage-a-lean-node-result-v1";
           id = node.id;
-          inherit (node) modules dependencies resource_class estimated_memory_mb source_sha256;
-        } // lib.optionalAttrs graphV2 {
-          inherit (node) kind stable_key artifact_ids checker_version;
-        });
+          inherit (node)
+            modules
+            dependencies
+            source_sha256;
+          semantic_id = semanticId;
+          dependency_semantic_ids = dependencySemanticIds;
+          semantic_recipe_version = semanticRecipeVersion;
+        };
       in {
         name = node.id;
         value = pkgs.runCommand
           (lib.strings.sanitizeDerivationName "stage-a-lean-${node.id}")
           ({
-            nativeBuildInputs = [ pkgs.lean4 pkgs.python3 pkgs.coreutils ]
-              ++ lib.optionals measureResources [ pkgs.time ];
+            outputs = [ "out" "audit" ];
+            nativeBuildInputs = [
+              pkgs.lean4
+              pkgs.python3
+              pkgs.coreutils
+              pkgs.time
+            ];
             preferLocalBuild = false;
             allowSubstitutes = true;
             requiredSystemFeatures =
               if node.resource_class == "high-memory" then [
                 "big-parallel"
-                # The builders file gives genuinely exceptional modules a
-                # dedicated one-slot lane.
                 "benchmark"
               ] else lib.optionals
                 (node.resource_class == "large-memory") [
                   "big-parallel"
-                  # Proof-heavy but bounded modules use a separate two-slot
-                  # lane instead of serializing behind exceptional modules.
                   "large-memory"
                 ];
           } // lib.optionalAttrs contentAddressed { __contentAddressed = true; })
           ''
-            mkdir -p "$out/StageA" "$out/logs" source/StageA deps/StageA
+            mkdir -p "$out/StageA" "$out/nix-support" \
+              "$audit/StageA" "$audit/logs" source/StageA compiled/StageA
             ulimit -s unlimited 2>/dev/null || true
             cat > source-hashes <<'HASHES'
             ${sourceChecks node}
             HASHES
             sha256sum --check --strict source-hashes
-            : > inherited-olean-index
-            : > inherited-node-result-index
-            link_dependency() {
-              dependency_file="$1"
-              destination="deps/StageA/$(basename "$dependency_file")"
-              if [ -e "$destination" ]; then
-                if [ "$(readlink -f "$destination")" != "$(readlink -f "$dependency_file")" ]; then
-                  echo "conflicting dependency module: $(basename "$dependency_file")" >&2
-                  exit 1
-                fi
-              else
-                ln -s "$dependency_file" "$destination"
-              fi
-            }
-            for dependency in ${dependencyArgs}; do
-              for dependency_file in "$dependency"/StageA/*; do
-                link_dependency "$dependency_file"
-                readlink -f "$dependency_file" >> inherited-olean-index
-              done
-              if [ -s "$dependency/inherited-olean-index" ]; then
-                while IFS= read -r dependency_file; do
-                  link_dependency "$dependency_file"
-                  printf '%s\n' "$dependency_file" >> inherited-olean-index
-                done < "$dependency/inherited-olean-index"
-              fi
-              readlink -f "$dependency/module-result.json" >> inherited-node-result-index
-              if [ -s "$dependency/inherited-node-result-index" ]; then
-                cat "$dependency/inherited-node-result-index" >> inherited-node-result-index
-              fi
-            done
-            sort -u inherited-olean-index > "$out/inherited-olean-index"
-            sort -u inherited-node-result-index > "$out/inherited-node-result-index"
-            export LEAN_PATH="$PWD/deps"
+            printf '%s\n' ${dependencyArgs} \
+              > "$out/nix-support/stage-a-direct-dependencies"
+            ${pkgs.python3}/bin/python3 - \
+              compiled/StageA ${dependencyArgs} <<'PY'
+            import hashlib
+            import json
+            import os
+            import pathlib
+            import sys
+
+            destination = pathlib.Path(sys.argv[1])
+            pending = [pathlib.Path(path) for path in sys.argv[2:]]
+            visited = set()
+            modules = {}
+            while pending:
+                dependency = pending.pop(0)
+                resolved = dependency.resolve()
+                key = str(resolved)
+                if key in visited:
+                    continue
+                visited.add(key)
+                stage_a = resolved / "StageA"
+                interface = resolved / "interface.json"
+                if not stage_a.is_dir() or not interface.is_file():
+                    raise SystemExit(
+                        f"malformed semantic Lean dependency {resolved}"
+                    )
+                payload = json.loads(interface.read_text(encoding="utf-8"))
+                if payload.get("format") != "stage-a-lean-semantic-interface-v1":
+                    raise SystemExit(
+                        f"invalid semantic Lean interface {interface}"
+                    )
+                for output in payload.get("outputs", []):
+                    module = output.get("module")
+                    expected_hash = output.get("olean_sha256")
+                    if not isinstance(module, str) or not isinstance(
+                        expected_hash, str
+                    ):
+                        raise SystemExit(
+                            f"invalid semantic Lean output in {interface}"
+                        )
+                    olean = stage_a / f"{module}.olean"
+                    if not olean.is_file():
+                        raise SystemExit(
+                            f"missing semantic Lean module {olean}"
+                        )
+                    actual_hash = hashlib.sha256(olean.read_bytes()).hexdigest()
+                    if actual_hash != expected_hash:
+                        raise SystemExit(
+                            f"semantic Lean module hash mismatch for {olean}"
+                        )
+                    prior = modules.get(module)
+                    if prior is not None and prior != olean.resolve():
+                        raise SystemExit(
+                            f"conflicting semantic Lean module {module}"
+                        )
+                    modules[module] = olean.resolve()
+                direct = (
+                    resolved
+                    / "nix-support"
+                    / "stage-a-direct-dependencies"
+                )
+                if direct.is_file():
+                    for line in direct.read_text(encoding="utf-8").splitlines():
+                        if line:
+                            pending.append(pathlib.Path(line))
+            for module, source in sorted(modules.items()):
+                target = destination / f"{module}.olean"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.symlink(source, target)
+            PY
+            export LEAN_PATH="$PWD/compiled"
             export LC_ALL=C
             ${lib.concatMapStringsSep "\n" (module:
               ''cp "${moduleSources.${module}}" "source/StageA/${module}.lean"''
@@ -259,53 +551,42 @@ let
                   "high-memory"
                 ] then "1" else "2";
               in ''
-                ${lib.optionalString measureResources ''
-                  ${pkgs.time}/bin/time -v \
-                    -o "$out/logs/${module}.resource" \
-                ''}lean -j ${leanJobs} --trust=0 \
+                ${pkgs.time}/bin/time -v \
+                  -o "$audit/logs/${module}.resource" \
+                  ${pkgs.lean4}/bin/lean -j ${leanJobs} --trust=0 \
                   -R source \
-                  -o "deps/StageA/${module}.olean" \
+                  -o "compiled/StageA/${module}.olean" \
                   "source/StageA/${module}.lean" \
-                  > >(tee "$out/logs/${module}.stdout") \
-                  2> >(tee "$out/logs/${module}.stderr" >&2)
+                  > >(tee "$audit/logs/${module}.stdout") \
+                  2> >(tee "$audit/logs/${module}.stderr" >&2)
               ''
             else ''
-              compile_jobs="$NIX_BUILD_CORES"
-              if [ "$compile_jobs" -eq 0 ]; then
-                compile_jobs="$(nproc)"
-              fi
-              ${lib.optionalString (builtins.elem node.resource_class [
-                "large-memory"
-                "high-memory"
-              ]) ''
-                # Nix already schedules several independent graph nodes per
-                # builder. Memory-heavy proof modules are kept sequential
-                # inside each derivation so the scheduler lane remains the only
-                # source of machine-level concurrency.
-                compile_jobs=1
-              ''}
-              printf '%s\n' ${lib.escapeShellArgs node.modules} | \
-                xargs -r -P "$compile_jobs" -n 1 bash -c '
-                  module="$1"
-                  ${lib.optionalString measureResources ''
-                    ${pkgs.time}/bin/time -v \
-                      -o "$out/logs/$module.resource" \
-                  ''}lean -j 1 --trust=0 \
+              # Stable build packs may contain internal imports in checked
+              # topological order. Compile sequentially so Nix's node-level
+              # scheduler remains the sole owner of memory concurrency.
+              for module in ${lib.escapeShellArgs node.modules}; do
+                  ${pkgs.time}/bin/time -v \
+                    -o "$audit/logs/$module.resource" \
+                    ${pkgs.lean4}/bin/lean -j 1 --trust=0 \
                     -R source \
-                    -o "deps/StageA/$module.olean" \
+                    -o "compiled/StageA/$module.olean" \
                     "source/StageA/$module.lean" \
-                    > >(tee "$out/logs/$module.stdout") \
-                    2> >(tee "$out/logs/$module.stderr" >&2)
-                ' _
+                    > >(tee "$audit/logs/$module.stdout") \
+                    2> >(tee "$audit/logs/$module.stderr" >&2)
+              done
             ''}
             ${lib.concatMapStringsSep "\n" (module: ''
-              cp "deps/StageA/${module}.olean" "$out/StageA/${module}.olean"
-              cp "source/StageA/${module}.lean" "$out/StageA/${module}.lean"
+              cp "compiled/StageA/${module}.olean" "$out/StageA/${module}.olean"
             '') node.modules}
-            cat > "$out/module-result.json" <<'JSON'
+            ${lib.concatMapStringsSep "\n" (module: ''
+              cp "source/StageA/${module}.lean" "$audit/StageA/${module}.lean"
+            '') node.modules}
+            cat > "$audit/module-result.json" <<'JSON'
             ${metadata}
             JSON
-            python3 - "$out/module-result.json" "$out/StageA" "$out/logs" <<'PY'
+            ${pkgs.python3}/bin/python3 - \
+              "$audit/module-result.json" "$out/interface.json" \
+              "$out/StageA" "$audit/logs" ${dependencyArgs} <<'PY'
             import hashlib
             import json
             import pathlib
@@ -313,13 +594,66 @@ let
             import sys
 
             result_path = pathlib.Path(sys.argv[1])
-            stage_a = pathlib.Path(sys.argv[2])
-            logs = pathlib.Path(sys.argv[3])
+            interface_path = pathlib.Path(sys.argv[2])
+            stage_a = pathlib.Path(sys.argv[3])
+            logs = pathlib.Path(sys.argv[4])
+            direct_dependencies = [
+                pathlib.Path(path) for path in sys.argv[5:]
+            ]
             payload = json.loads(result_path.read_text(encoding="utf-8"))
+            dependency_semantic_ids = [
+                json.loads(
+                    (dependency / "interface.json").read_text(encoding="utf-8")
+                ).get("semantic_id")
+                for dependency in direct_dependencies
+            ]
+            if (
+                payload["semantic_recipe_version"]
+                != "stage-a-lean-standalone-recipe-v1"
+            ):
+                if dependency_semantic_ids != payload[
+                    "dependency_semantic_ids"
+                ]:
+                    raise SystemExit(
+                        "semantic dependency identities do not match the graph"
+                    )
+                semantic_identity = hashlib.sha256(
+                    json.dumps(
+                        {
+                            "format": "stage-a-lean-semantic-node-id-v1",
+                            "recipe_version": payload[
+                                "semantic_recipe_version"
+                            ],
+                            "modules": payload["modules"],
+                            "source_sha256": payload["source_sha256"],
+                            "dependencies": [
+                                {
+                                    "node": dependency,
+                                    "semantic_id": semantic_id,
+                                }
+                                for dependency, semantic_id in zip(
+                                    payload["dependencies"],
+                                    dependency_semantic_ids,
+                                    strict=True,
+                                )
+                            ],
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ).encode("ascii")
+                ).hexdigest()
+                if semantic_identity != payload["semantic_id"]:
+                    raise SystemExit(
+                        "semantic node identity does not match checked inputs"
+                    )
             outputs = []
             for path in sorted(stage_a.glob("*.olean")):
                 module = path.stem
-                source = (stage_a / f"{module}.lean").read_text(encoding="utf-8")
+                source = (
+                    result_path.parent
+                    / "StageA"
+                    / f"{module}.lean"
+                ).read_text(encoding="utf-8")
                 stdout_path = logs / f"{module}.stdout"
                 stderr_path = logs / f"{module}.stderr"
                 resource_path = logs / f"{module}.resource"
@@ -398,74 +732,39 @@ let
                 json.dumps(payload, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
+            interface = {
+                "format": "stage-a-lean-semantic-interface-v1",
+                "id": payload["id"],
+                "modules": payload["modules"],
+                "dependencies": payload["dependencies"],
+                "source_sha256": payload["source_sha256"],
+                "semantic_id": payload["semantic_id"],
+                "dependency_semantic_ids": payload[
+                    "dependency_semantic_ids"
+                ],
+                "semantic_recipe_version": payload[
+                    "semantic_recipe_version"
+                ],
+                "outputs": [
+                    {
+                        "module": output["module"],
+                        "olean_bytes": output["olean_bytes"],
+                        "olean_sha256": output["olean_sha256"],
+                    }
+                    for output in outputs
+                ],
+            }
+            interface_path.write_text(
+                json.dumps(interface, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
             PY
           '';
       }
-    ) graph.nodes));
+    ) activeGraphNodes));
 
   rootNode = nodeById.${graph.final_node};
-  rootDependencyPaths = map (dependency: nodeDrvs.${dependency}) rootNode.dependencies;
-  rootDependencyArgs = lib.escapeShellArgs (map toString rootDependencyPaths);
-  rootMetadata = builtins.toJSON {
-    format = "stage-a-lean-node-result-v1";
-    inherit (rootNode) id modules dependencies resource_class estimated_memory_mb source_sha256;
-  };
-  rootDependencyPack = pkgs.runCommand "stage-a-relational-root-dependencies"
-    ({
-      nativeBuildInputs = [ pkgs.python3 pkgs.gnutar pkgs.zstd pkgs.coreutils ];
-      preferLocalBuild = false;
-      allowSubstitutes = true;
-    } // lib.optionalAttrs contentAddressed { __contentAddressed = true; })
-    ''
-      mkdir -p staging/StageA staging/node-results "$out"
-      : > olean-paths
-      : > node-result-paths
-      for dependency in ${rootDependencyArgs}; do
-        for dependency_file in "$dependency"/StageA/*.olean; do
-          readlink -f "$dependency_file" >> olean-paths
-        done
-        if [ -s "$dependency/inherited-olean-index" ]; then
-          cat "$dependency/inherited-olean-index" >> olean-paths
-        fi
-        readlink -f "$dependency/module-result.json" >> node-result-paths
-        if [ -s "$dependency/inherited-node-result-index" ]; then
-          cat "$dependency/inherited-node-result-index" >> node-result-paths
-        fi
-      done
-      while IFS= read -r dependency_file; do
-        destination="staging/StageA/$(basename "$dependency_file")"
-        if [ -e "$destination" ] && ! cmp -s "$destination" "$dependency_file"; then
-          echo "conflicting root dependency module: $(basename "$dependency_file")" >&2
-          exit 1
-        fi
-        cp -L "$dependency_file" "$destination"
-      done < <(sort -u olean-paths)
-      node_index=0
-      while IFS= read -r result_file; do
-        cp "$result_file" "staging/node-results/$node_index.json"
-        node_index=$((node_index + 1))
-      done < <(sort -u node-result-paths)
-      tar --sort=name --mtime=@1 --owner=0 --group=0 --numeric-owner \
-        --zstd -cf "$out/dependencies.tar.zst" -C staging StageA node-results
-      python3 - "$out/pack.json" "$out/dependencies.tar.zst" "$node_index" <<'PY'
-      import hashlib
-      import json
-      import pathlib
-      import sys
-
-      archive = pathlib.Path(sys.argv[2])
-      payload = {
-          "format": "stage-a-lean-root-dependency-pack-v1",
-          "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
-          "archive_bytes": archive.stat().st_size,
-          "node_count": int(sys.argv[3]),
-      }
-      pathlib.Path(sys.argv[1]).write_text(
-          json.dumps(payload, indent=2, sort_keys=True) + "\n",
-          encoding="utf-8",
-      )
-      PY
-    '';
+  rootSemantic = nodeDrvs.${graph.final_node}.out;
   supportedAuditTheorems = [
     "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
     "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
@@ -567,8 +866,13 @@ let
     end StageA.FinalTheoremAudit
   '';
   approvedAxioms = builtins.toJSON graph.approved_axioms;
-  selectedTargetNodes =
-    if targetNode != null then [ targetNode ] else targetNodes;
+  selectedTargetNodes = map (requested:
+    if builtins.hasAttr requested nodeById then requested
+    else if standalone
+      && builtins.hasAttr requested standaloneModuleBuildPacks
+      then standaloneModuleBuildPacks.${requested}
+    else requested
+  ) targetNodes;
   targetAxiomAuditValid = targetAxiomAudit == null || (
     builtins.isAttrs targetAxiomAudit
     && targetAxiomAudit ? module
@@ -607,7 +911,9 @@ let
         then ordinaryAcceptanceReady
         else linkedAcceptanceReady);
   selectedNodeResults = map (node:
-    let source = nodeDrvs.${node};
+    let
+      semantic = nodeDrvs.${node}.out;
+      audit = nodeDrvs.${node}.audit;
     in pkgs.runCommand
       (lib.strings.sanitizeDerivationName "stage-a-lean-${node}-detached")
       ({
@@ -617,14 +923,16 @@ let
       } // lib.optionalAttrs contentAddressed { __contentAddressed = true; })
       ''
         mkdir -p "$out/StageA" "$out/logs"
-        cp -L "${source}"/StageA/*.lean "$out/StageA/"
-        cp -L "${source}"/StageA/*.olean "$out/StageA/"
-        cp -L "${source}"/logs/* "$out/logs/"
-        cp "${source}/module-result.json" "$out/module-result.json"
+        ln -s "${semantic}" "$out/proof-node-root"
+        for source in "${semantic}"/StageA/*.olean "${audit}"/StageA/*.lean; do
+          ln -s "$source" "$out/StageA/$(basename "$source")"
+        done
+        for source in "${audit}"/logs/*; do
+          ln -s "$source" "$out/logs/$(basename "$source")"
+        done
+        cp "${audit}/module-result.json" "$out/module-result.json"
       ''
   ) selectedTargetNodes;
-  selectedTargetPaths = map (node: nodeDrvs.${node}) selectedTargetNodes;
-  selectedTargetArgs = lib.escapeShellArgs (map toString selectedTargetPaths);
   selectedTargetBundle = pkgs.runCommand "stage-a-lean-target-bundle"
     ({
       nativeBuildInputs = [ pkgs.lean4 pkgs.python3 pkgs.coreutils ];
@@ -632,31 +940,49 @@ let
       allowSubstitutes = true;
     } // lib.optionalAttrs contentAddressed { __contentAddressed = true; })
     ''
-      mkdir -p "$out/StageA" "$out/logs" "$out/node-results"
-      node_index=0
-      for source in ${selectedTargetArgs}; do
-        for source_file in "$source"/StageA/*.lean "$source"/StageA/*.olean; do
-          destination="$out/StageA/$(basename "$source_file")"
-          if [ -e "$destination" ] && ! cmp -s "$destination" "$source_file"; then
-            echo "conflicting target-bundle module: $(basename "$source_file")" >&2
-            exit 1
-          fi
-          cp -L "$source_file" "$destination"
-        done
-        for log_file in "$source"/logs/*; do
-          destination="$out/logs/$(basename "$log_file")"
-          if [ -e "$destination" ] && ! cmp -s "$destination" "$log_file"; then
-            echo "conflicting target-bundle log: $(basename "$log_file")" >&2
-            exit 1
-          fi
-          cp -L "$log_file" "$destination"
-        done
-        result_name="$(printf '%06d.json' "$node_index")"
-        cp "$source/module-result.json" "$out/node-results/$result_name"
-        node_index=$((node_index + 1))
-      done
-      lean_version="$(lean --version | head -n 1)"
-      python3 - "$out/node-results" "$out/bundle.json" "$lean_version" \
+      mkdir -p "$out/StageA" "$out/logs" "$out/node-results" \
+        "$out/proof-node-roots"
+      ${lib.concatMapStringsSep "\n" (entry:
+        let
+          node = entry.value;
+          index = entry.index;
+          semantic = nodeDrvs.${node}.out;
+          audit = nodeDrvs.${node}.audit;
+          resultName = toString index;
+        in ''
+          cp "${audit}/module-result.json" \
+            "$out/node-results/${resultName}.json"
+          ln -s "${semantic}" "$out/proof-node-roots/${resultName}"
+          for source in "${semantic}"/StageA/*.olean \
+              "${audit}"/StageA/*.lean; do
+            destination="$out/StageA/$(basename "$source")"
+            if [ -e "$destination" ] \
+                && [ "$(readlink -f "$destination")" \
+                  != "$(readlink -f "$source")" ]; then
+              echo "conflicting target-bundle module: $(basename "$source")" >&2
+              exit 1
+            fi
+            if [ ! -e "$destination" ]; then
+              ln -s "$source" "$destination"
+            fi
+          done
+          for source in "${audit}"/logs/*; do
+            destination="$out/logs/$(basename "$source")"
+            if [ -e "$destination" ] \
+                && [ "$(readlink -f "$destination")" \
+                  != "$(readlink -f "$source")" ]; then
+              echo "conflicting target-bundle log: $(basename "$source")" >&2
+              exit 1
+            fi
+            if [ ! -e "$destination" ]; then
+              ln -s "$source" "$destination"
+            fi
+          done
+        ''
+      ) (lib.imap0 (index: value: { inherit index value; }) selectedTargetNodes)}
+      lean_version="$(${pkgs.lean4}/bin/lean --version | head -n 1)"
+      ${pkgs.python3}/bin/python3 - \
+        "$out/node-results" "$out/bundle.json" "$lean_version" \
         ${lib.escapeShellArg targetAxiomAuditJson} "$out/axiom-audit.json" <<'PY'
       import json
       import pathlib
@@ -758,12 +1084,27 @@ assert graphModuleImportsValid;
 assert graphModuleOwnershipValid;
 assert graphNodeDependenciesValid;
 assert graphNodeResourcesValid;
+assert graphNodeSemanticIdentitiesValid;
+assert builtins.length effectiveActiveNodeIds
+  == builtins.length (lib.unique effectiveActiveNodeIds);
+assert builtins.all (node: builtins.hasAttr node nodeById)
+  effectiveActiveNodeIds;
+assert prebuiltNodesValid;
+assert activeDependenciesAvailable;
 assert graphCheckedArtifactManifestValid;
 assert graphNodeArtifactMetadataValid;
 assert !standalone || (standaloneModules != [] && standaloneImportsValid);
+assert standaloneSourcePacksValid;
+assert standaloneBuildPacksValid;
+assert !standalone || (
+  prepared == null
+  && graphFile == null
+  && preparedManifest == null
+  && artifactManifest == null
+);
 assert !standalone
   || builtins.length standaloneModules
-    == builtins.length (lib.unique standaloneModules);
+    == builtins.length (builtins.attrNames standaloneModuleSet);
 assert standalone || (effectiveGraphFile != null && sourceRoot != null);
 assert builtins.length selectedTargetNodes
   == builtins.length (lib.unique selectedTargetNodes);
@@ -771,108 +1112,136 @@ assert targetAxiomAuditValid;
 assert targetAxiomAudit == null || targetBundle;
 assert builtins.all (node: builtins.hasAttr node nodeDrvs) selectedTargetNodes;
 assert graphSmoke || selectedTargetNodes != [] || acceptanceReady;
+assert selectedTargetNodes != [] || effectivePreparedManifest != null;
 if graphSmoke then graphSmokeResult else if selectedTargetNodes != [] then
   if targetBundle then selectedTargetBundle else selectedNodeResults
 else
 pkgs.runCommand "stage-a-relational-proof-audit"
   ({
-    nativeBuildInputs = [ pkgs.lean4 pkgs.python3 pkgs.gnutar pkgs.zstd pkgs.coreutils ];
+    nativeBuildInputs = [ pkgs.lean4 pkgs.python3 pkgs.coreutils ];
     preferLocalBuild = false;
     allowSubstitutes = true;
   } // lib.optionalAttrs contentAddressed { __contentAddressed = true; })
   ''
-    mkdir -p "$out" "$out/logs" deps source/StageA
+    mkdir -p "$out/proof-node-roots" final-lean-path/StageA
     ulimit -s unlimited 2>/dev/null || true
-    tar --zstd -xf ${rootDependencyPack}/dependencies.tar.zst -C deps
-    export LEAN_PATH="$PWD/deps"
-    cat > root-source-hashes <<'HASHES'
-    ${sourceChecks rootNode}
-    HASHES
-    sha256sum --check --strict root-source-hashes
-    ${lib.concatMapStringsSep "\n" (module: ''
-      cp "${moduleSources.${module}}" "source/StageA/${module}.lean"
-      lean -j 2 --trust=0 \
-        -R source \
-        -o "deps/StageA/${module}.olean" \
-        "source/StageA/${module}.lean" \
-        > >(tee "$out/logs/${module}.stdout") \
-        2> >(tee "$out/logs/${module}.stderr" >&2)
-    '') rootNode.modules}
-    cat > deps/root-module-result.json <<'JSON'
-    ${rootMetadata}
-    JSON
-    python3 - deps/root-module-result.json deps/StageA "$out/logs" source/StageA ${lib.escapeShellArg (builtins.toJSON rootNode.modules)} <<'PY'
+    ${pkgs.python3}/bin/python3 - \
+      "${rootSemantic}" "$out/proof-node-roots" \
+      final-lean-path/StageA "$out/node-provenance.json" \
+      "$out/dependency-view.json" <<'PY'
     import hashlib
     import json
+    import os
     import pathlib
-    import re
     import sys
 
-    result_path = pathlib.Path(sys.argv[1])
-    stage_a = pathlib.Path(sys.argv[2])
-    logs = pathlib.Path(sys.argv[3])
-    sources = pathlib.Path(sys.argv[4])
-    modules = json.loads(sys.argv[5])
-    payload = json.loads(result_path.read_text(encoding="utf-8"))
-    outputs = []
-    for module in modules:
-        olean = stage_a / f"{module}.olean"
-        stdout_path = logs / f"{module}.stdout"
-        stderr_path = logs / f"{module}.stderr"
-        source = (sources / f"{module}.lean").read_text(encoding="utf-8")
-        combined = "\n".join((
-            stdout_path.read_text(encoding="utf-8"),
-            stderr_path.read_text(encoding="utf-8"),
-        ))
-        requested = re.findall(
-            r"(?m)^\s*#print\s+axioms\s+([A-Za-z0-9_'.]+)\s*$", source
+    root = pathlib.Path(sys.argv[1])
+    roots = pathlib.Path(sys.argv[2])
+    module_overlay = pathlib.Path(sys.argv[3])
+    provenance_path = pathlib.Path(sys.argv[4])
+    dependency_view_path = pathlib.Path(sys.argv[5])
+    pending = [root]
+    ordered = []
+    visited = set()
+    modules = {}
+    interfaces = []
+    while pending:
+        dependency = pending.pop(0).resolve()
+        key = str(dependency)
+        if key in visited:
+            continue
+        visited.add(key)
+        stage_a = dependency / "StageA"
+        interface_path = dependency / "interface.json"
+        if not stage_a.is_dir() or not interface_path.is_file():
+            raise SystemExit(
+                f"malformed semantic Lean dependency {dependency}"
+            )
+        interface = json.loads(interface_path.read_text(encoding="utf-8"))
+        if interface.get("format") != "stage-a-lean-semantic-interface-v1":
+            raise SystemExit(
+                f"unsupported semantic Lean interface {interface_path}"
+            )
+        declared_outputs = interface.get("outputs")
+        if not isinstance(declared_outputs, list):
+            raise SystemExit(
+                f"semantic Lean interface omits outputs: {interface_path}"
+            )
+        for output in declared_outputs:
+            module = output.get("module")
+            olean = stage_a / f"{module}.olean"
+            if (
+                not isinstance(module, str)
+                or not olean.is_file()
+                or output.get("olean_bytes") != olean.stat().st_size
+                or output.get("olean_sha256")
+                    != hashlib.sha256(olean.read_bytes()).hexdigest()
+            ):
+                raise SystemExit(
+                    f"semantic Lean interface output mismatch: {interface_path}"
+                )
+            prior = modules.get(module)
+            if prior is not None and prior != olean.resolve():
+                raise SystemExit(
+                    f"conflicting semantic Lean module StageA.{module}"
+                )
+            modules[module] = olean.resolve()
+        ordered.append(dependency)
+        interfaces.append(interface)
+        direct_path = (
+            dependency
+            / "nix-support"
+            / "stage-a-direct-dependencies"
         )
-        parsed = {}
-        for declaration, axioms in re.findall(
-            r"'([^']+)' depends on axioms:\s*\[(.*?)\]", combined, re.DOTALL
-        ):
-            parsed[declaration] = sorted({
-                item.strip()
-                for item in axioms.replace("\n", " ").split(",")
-                if item.strip()
-            })
-        for declaration in re.findall(
-            r"'([^']+)' does not depend on any axioms", combined
-        ):
-            parsed[declaration] = []
-        matched = {
-            request: next((
-                axioms for declaration, axioms in parsed.items()
-                if declaration == request or declaration.endswith(f".{request}")
-            ), None)
-            for request in requested
-        }
-        outputs.append({
-            "module": module,
-            "olean_sha256": hashlib.sha256(olean.read_bytes()).hexdigest(),
-            "olean_bytes": olean.stat().st_size,
-            "compile_stdout": f"logs/{module}.stdout",
-            "compile_stderr": f"logs/{module}.stderr",
-            "compile_stdout_sha256": hashlib.sha256(
-                stdout_path.read_bytes()
-            ).hexdigest(),
-            "compile_stderr_sha256": hashlib.sha256(
-                stderr_path.read_bytes()
-            ).hexdigest(),
-            "axiom_audit": {
-                "requested": requested,
-                "inventories": matched,
-                "complete": all(value is not None for value in matched.values()),
-            },
-        })
-    payload["outputs"] = outputs
-    result_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        direct_dependencies = (
+            direct_path.read_text(encoding="utf-8").splitlines()
+            if direct_path.is_file()
+            else []
+        )
+        if len(direct_dependencies) != len(set(direct_dependencies)):
+            raise SystemExit(
+                f"duplicate direct semantic dependencies: {dependency}"
+            )
+        pending.extend(
+            pathlib.Path(path)
+            for path in direct_dependencies
+            if path
+        )
+
+    for module, source in sorted(modules.items()):
+        target = module_overlay / f"{module}.olean"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(source, target)
+    for index, dependency in enumerate(ordered):
+        os.symlink(dependency, roots / f"{index:06d}")
+    node_ids = [interface.get("id") for interface in interfaces]
+    if (
+        any(not isinstance(node_id, str) or not node_id for node_id in node_ids)
+        or len(node_ids) != len(set(node_ids))
+    ):
+        raise SystemExit("semantic Lean closure has invalid node identities")
+    provenance_path.write_text(
+        json.dumps({
+            "format": "stage-a-lean-node-provenance-v1",
+            "nodes": interfaces,
+        }, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    dependency_view_path.write_text(
+        json.dumps({
+            "format": "stage-a-lean-root-dependency-view-v2",
+            "archive_bytes": 0,
+            "materialized_oleans": 0,
+            "node_count": len(interfaces) - 1,
+            "reference_count": len(interfaces),
+            "root_node": interfaces[0]["id"],
+        }, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     PY
+    export LEAN_PATH="$PWD/final-lean-path"
     cp ${auditSource} StageARelationalAudit.lean
-    lean -j 2 --trust=0 \
+    ${pkgs.lean4}/bin/lean -j 2 --trust=0 \
       -o "$out/StageARelationalAudit.olean" \
       StageARelationalAudit.lean \
       > >(tee "$out/lean.stdout") \
@@ -881,7 +1250,8 @@ pkgs.runCommand "stage-a-relational-proof-audit"
     EXPECTED_THEOREM=${lib.escapeShellArg selectedAuditTheorem} \
     CANONICAL_PROPOSITION_PROFILE=${lib.escapeShellArg canonicalAuditProfile} \
     APPROVED_AXIOMS=${lib.escapeShellArg approvedAxioms} \
-      python3 - "$out/lean.stdout" "$out/audit.json" <<'PY'
+      ${pkgs.python3}/bin/python3 - \
+        "$out/lean.stdout" "$out/audit.json" <<'PY'
     import json
     import os
     import pathlib
@@ -925,27 +1295,6 @@ pkgs.runCommand "stage-a-relational-proof-audit"
         raise SystemExit("final theorem depends on unapproved axioms")
     PY
 
-    cp deps/root-module-result.json deps/node-results/root.json
-    python3 - deps/node-results "$out/node-provenance.json" <<'PY'
-    import json
-    import pathlib
-    import sys
-
-    source = pathlib.Path(sys.argv[1])
-    nodes = [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in sorted(source.glob("*.json"))
-    ]
-    payload = {
-        "format": "stage-a-lean-node-provenance-v1",
-        "nodes": nodes,
-    }
-    pathlib.Path(sys.argv[2]).write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    PY
-    cp ${rootDependencyPack}/pack.json "$out/dependency-pack.json"
     cp "${effectiveGraphFile}" "$out/module-graph.json"
     cp "${effectivePreparedManifest}" "$out/prepared-proof.json"
     ${lib.optionalString graphV2 ''

@@ -40,19 +40,27 @@ spaghetti-extractor stage-a-generate-relation-contract \
   --out relation-contract.json
 ```
 
-Prove and independently replay it:
+Build and independently audit its Nix proof report:
 
 ```sh
 spaghetti-extractor stage-a-prove \
   --original original.exe \
   --candidate candidate.exe \
   --relation-contract relation-contract.json \
+  --builders-file nix/stage-a-builders \
   --out report/
 
 spaghetti-extractor stage-a-check-proof --report report/
 ```
 
 The authoritative commands are `stage-a-prove` and `stage-a-check-proof`.
+Both consume Nix artifacts; the latter performs a data and trust audit and
+never recompiles Lean on the host.
+
+`stage-a-check-isa-conformance` is also a content-addressed Nix coordinator.
+Its direct executor is exposed only as the derivation-worker command
+`stage-a-check-isa-conformance-worker`; conformance evidence remains veto-only
+and cannot authorize acceptance.
 
 For large proofs, separate deterministic extraction from Lean compilation:
 
@@ -61,11 +69,11 @@ spaghetti-extractor stage-a-prepare-relational \
   --original original.exe \
   --candidate candidate.exe \
   --relation-contract relation-contract.json \
+  --builders-file nix/stage-a-builders \
   --out prepared-proof/
 
 spaghetti-extractor stage-a-build-relational \
   --prepared prepared-proof/ \
-  --executor nix \
   --builders-file nix/stage-a-builders \
   --out report/
 ```
@@ -77,13 +85,13 @@ same command as a two-phase coordinator:
 spaghetti-extractor stage-a-build-relational \
   --prepared-nix-ref .#stage-a-gnu-hello-preflight \
   --prepared-subpath report/relational-v3 \
-  --executor nix \
   --builders-file nix/stage-a-builders \
   --target-node relationallaunchrealizabilitycertificate \
   --out build/stage-a-gnu-hello-launch-proof
 ```
 
-The coordinator first realizes the named preparation target and then evaluates
+`--executor nix` remains accepted as a deprecated compatibility no-op; no other
+executor exists. The coordinator first realizes the named preparation target and then evaluates
 the generated Lean DAG from its concrete store path. This is an explicit Nix
 evaluation boundary, not a local compilation fallback: extraction, analysis,
 Lean modules, dependency closures, and OLean outputs remain cached Nix
@@ -91,6 +99,13 @@ derivations and remote builders remain authoritative. A single pure flake
 evaluation cannot read a floating CA output through IFD because evaluation sees
 an unresolved output placeholder. `prepared-nix-realization.json` records the
 flake reference, concrete output and prepared paths, builder policy, and timing.
+
+The same restriction applies inside the generated register-dataflow graph.
+Pack files and the shared transfer context are projected through small
+content-addressed derivations before worker nodes consume them. Pure evaluation
+therefore never applies `builtins.path` to an unresolved CA output placeholder,
+while unchanged pack contents retain stable store identities and stop
+downstream rebuilding through CA early cutoff.
 
 The GNU hello shortcut is:
 
@@ -116,69 +131,80 @@ nodes become separate derivations using the Lean version pinned by
 `flake.lock`. Builder selection is external: normal Nix configuration is used
 unless `--builders-file` supplies a machines file. Supplying that option also
 sets `--max-jobs 0` and `--cores 2`, so every derivation, including dependency
-packing and the final audit, is remote-only. A single-module derivation uses one
+realization and the final audit, is remote-only. A single-module derivation uses one
 `lean -j 2` process. A pack of independent generated modules uses its two
-allocated cores for two concurrent `lean -j 1` processes; the graph generator
-checks that packed modules have no internal import edges. This prevents a
-16-module pack from serializing otherwise independent elaboration without
-oversubscribing the host. Nix expression evaluation, scheduling, and store
-transfer remain local. The evaluator does not name or special-case any host or
-target binary.
+allocated cores for sequential `lean -j 1` processes; the Nix node scheduler
+owns inter-pack concurrency and memory accounting. Nix expression evaluation,
+scheduling, and store transfer remain local. The evaluator does not name or
+special-case any host or target binary.
 
 The checked-in `nix/stage-a-builders` inventory caps each 32-thread, 96 GiB
-builder at ten derivations. High-memory packs may run two approximately 4 GiB
-Lean processes, so this leaves memory headroom while still allowing about
-twenty concurrent elaborators per host. Host inventories with different memory
-profiles should adjust their machines-file job count rather than weakening the
-per-node resource classification.
+builder at 10 derivations. Nix system features select eligible builders; they
+are not weighted memory quotas. The global cap therefore remains the OOM
+safety boundary for mixed proof workloads, including measured nodes that peak
+near 8 GiB. Host inventories with different memory profiles should adjust
+their machines-file job count rather than weakening per-node classification.
 
-The ordinary relational Lean graph is input-addressed and requires only the
-`big-parallel` system feature. The checked-in inventory deliberately does not
-advertise `ca-derivations`: listing a feature in a machines file does not enable
-it in the remote daemon, and a false declaration causes the build to be
-scheduled remotely only to fail during derivation instantiation. Use an
-absolute machines-file reference when invoking Nix directly:
+The relational Lean graph uses content-addressed derivations by default. The
+local coordinator, `acacia`, and `banksia` must all use the Nix 2.35
+build-trace protocol; the executor checks this before evaluation. The checked-in
+builder inventory uses daemon-resolvable FQDNs, the dedicated builder identity,
+and 10 two-core jobs on each 32-thread, roughly 96 GiB host. Direct store probes
+force `IdentitiesOnly` and persistent SSH control sockets.
+
+Development shells can retain an older profile `nix` after the system daemon
+has been upgraded. The proof executor prefers
+`/run/current-system/sw/bin/nix` and verifies both client and daemon versions;
+manual CA commands must do the same or explicitly set
+`SPAGHETTI_EXTRACTOR_NIX`. A Nix 2.34 client cannot resolve the 2.35
+build-trace identity even when the daemon already has the matching CA content.
 
 ```sh
-nix build .#stage-a-roundtrip-lean-remote-smoke --no-link \
-  --max-jobs 0 \
-  --builders "@$(realpath nix/stage-a-builders)" \
-  --option builders-use-substitutes true
+spaghetti-extractor stage-a-build-relational \
+  --prepared prepared-proof \
+  --builders-file nix/stage-a-builders \
+  --flake . \
+  --out proof-report
 ```
-
-The `stage-a-gnu-hello-proof` app selects the same input-addressed mode before
-it invokes the dynamic graph coordinator. Content-addressed experiments use a
-separate builder inventory and are not a prerequisite for round-trip proofs.
 
 The final derivation imports the generated bundle and runs Lean with
 `--trust=0`, which type-checks imported modules rather than trusting remote
 `.olean` files. It also rejects final-theorem dependencies outside the approved
-axiom set. Non-root node outputs are merged by a remote-eligible derivation into
-a deterministic zstd dependency pack before the root bundle and audit run.
-This avoids transferring thousands of individual files to the final builder
-and prevents the audit result from retaining the complete intermediate store
-closure.
+axiom set. Each proof node's semantic output contains only its own `.olean`
+files, a checked interface, and direct semantic dependency references. Sources,
+logs, axiom inventories, and resource records live in the audit output. During
+a build, the node follows direct interfaces to construct an ephemeral
+`LEAN_PATH`; it never copies a transitive `.olean` tree.
 
-The repository builders file currently allows ten derivations on each of two
-32-thread, roughly 96 GiB hosts, for at most twenty ordinary Lean elaborators
-per host. A live jq graph build under an earlier 16-job profile showed no local
-Lean processes and concurrent compilation on both hosts; it reached 16
-`.lean-wrapped` processes on each builder. Static-code-map leaves used about
-1.2-4.5 GiB RSS, and the busier host retained about 46 GiB available memory.
-The original and candidate proof-base modules used about 5.3-5.7 GiB RSS in
-that run, while graph width made only one such module ready per host. The
-current ten-job profile leaves additional memory headroom for graphs exposing
-several high-memory nodes concurrently. The
-first dependency waves may contain only the original proof, candidate proof,
-and global mapping context; low process counts there reflect graph width, not
-unused scheduler slots. Nodes now declare only their direct graph parents and
-inherit deduplicated indexes of transitive `.olean` and node-result paths.
-Previously every node listed its full transitive closure as direct Nix inputs;
-late jq nodes spent minutes issuing serial remote store-validity queries for
-hundreds of already-cached paths before Lean could start. The indexed form
-preserves the complete dependency and provenance inventory while making remote
-setup scale with direct fan-in. Ordinary bounded graph shards used roughly
-3-4.4 GiB RSS each.
+The final audit performs the same checked traversal and constructs an ephemeral
+module overlay. Its result contains a compact `dependency-view.json` with store
+references, not a zstd archive or materialized closure. Focused builds are thin
+reference views over the same semantic outputs, so focused and full requests
+share one cache identity.
+
+Every node records a semantic ID derived from its module inventory, source
+digest, canonical recipe version, and direct dependency semantic IDs.
+Diagnostic artifact IDs and formatting are excluded. Stable hash buckets keep
+unrelated definition, proof, and static-usage packs fixed when a module is
+inserted. `stage-a-diff-semantic-cache` compares two prepared graphs and fails
+when observed invalidation differs from the reverse dependency closure.
+
+The executor also persists an untrusted Nix evaluation manifest keyed by the
+exact module graph, prepared and artifact manifests, evaluator, pinned
+`flake.lock`, platform, CA mode, and requested target set. A warm request builds
+the recorded `.drv^out` installables directly, avoiding repeated evaluation of
+large dynamic graphs. Node source and semantic provenance is checked after
+realization, and a missing or stale derivation triggers a full reevaluation.
+
+Exact-graph caching is complemented by a per-semantic-node boundary index.
+After a changed prepared graph is validated, Python computes the requested
+semantic closure and supplies only unchanged direct parents as prebuilt
+boundaries. Nix checks each boundary's node ID, source digest, semantic ID,
+dependency semantic IDs, and interface version before constructing derivations
+for the remaining nodes. Build-time dependency assembly verifies every
+referenced `.olean` hash, and the final audit traverses the same semantic
+closure. Cached boundaries therefore reduce evaluation work without becoming
+proof authorities.
 
 Lean nodes raise the inherited 8 MiB soft native-stack limit to the hosts'
 existing unlimited hard limit. Stack pages remain demand-allocated; this avoids
@@ -236,16 +262,16 @@ Lean processes. On the jq graph, the packed static-usage certificate took
 203.44 seconds cold and 1.62 seconds warm, while the complete assembled closure
 took 25.21 seconds after its dependencies were cached. The first complete graph
 after this refactor finished in 428.33 seconds; a fully warm rebuild, including
-the trust-zero audit and provenance collection, took 6.60 seconds. The final
-dependency pack contains 2,137 node outputs and is 1.45 GB, so compact
-reflective certificates remain important for reducing release-build transfer
-and storage costs.
+the trust-zero audit and provenance collection, took 6.60 seconds under the
+former archive design. The current final audit materializes zero dependency
+`.olean` files and creates no dependency archive.
 
-`nix-provenance.json` records every node's source identity and the SHA-256 and
-size of every `.olean`, dependency-pack metadata, the evaluator and lock
-hashes, and Nix path metadata for the zero-reference final audit output. A
-cached node is reused only when its generated source, dependencies, pinned
-toolchain, and evaluator are unchanged.
+`nix-provenance.json` records every node's source and semantic identity, the
+SHA-256 and size of every `.olean`, the dependency view, evaluator and lock
+hashes, and Nix path metadata. `semantic-graph-reference.json` binds the final
+node, root semantic ID, recipe versions, and semantic projection. Resource
+measurement is part of the one canonical recipe, so profiling cannot create a
+second proof cache.
 
 The build command still fails closed on the proof inventory. A checked Lean
 bundle does not produce `pass` while CFG invariants, memory relations, or any
@@ -385,8 +411,10 @@ parameters, and future heap updates share one proof interface.
 ## Evidence And Replay
 
 The report contains the bundled PEs, normalized contract, relational proof IR,
-trusted-base declaration, diagnostics, LRAT or normalization evidence, copied
-Lean semantics, generated bundle, `semantic-gaps.json`, and verdict. A fast
+trusted-base declaration, diagnostics, LRAT or normalization evidence, a
+hash-bound Lean source reference, semantic graph reference,
+`semantic-gaps.json`, and verdict. Generated Lean sources remain in the
+prepared proof or its Nix output rather than being copied into every report. A fast
 Capstone preflight reports unsupported instruction forms and malformed
 cutpoints before generating a large Lean bundle; it can only block a proof and
 is never proof authority. `stage-a-check-proof` verifies
@@ -982,15 +1010,18 @@ report/
   relational-register-relations.json
   relational-invariants.json
   lean-audit.json
-  dependency-pack.json
+  dependency-view.json
+  lean-source-reference.json
+  semantic-graph-reference.json
   nix-provenance.json
   lean.stdout
   lean.stderr
 ```
 
 `module-graph.json` is v2 when checked region artifacts are present. It records
-typed node kinds, stable keys, artifact IDs, checker version, and resource
-class. Ordinary non-x87 region semantics are replayed once in stable
+typed node kinds, stable keys, artifact IDs, checker version, semantic IDs,
+direct dependency semantic IDs, and resource class. Ordinary non-x87 region
+semantics are replayed once in stable
 hash-bucketed `SemanticPack` modules over local bytes. Separate `DecodeChunk`
 modules bind those checked summaries to exact PE spans. Generated-source
 validation rejects semantic packs that import a monolithic PE or definitions
@@ -1018,14 +1049,13 @@ reports 9.48 seconds with `nix_work_reused = true`. Import plus relocation
 attestation checks remain a 140.3-second cold release-gate branch, rather than
 hot-loop dependencies.
 
-Floating content-addressed outputs are optional. The executor fail-fast checks
+Content-addressed outputs are the default. The executor fail-fast checks
 the Nix build-trace protocol generation of the coordinating daemon and every
 CA-capable remote builder. In particular, Nix 2.34 and 2.35 cannot be mixed for
 this graph because 2.35 replaced realisation identities with build-trace-v3
-identities. Input-addressed remote execution remains the default and exercises
-the same Lean proofs. Fine-grained register-dataflow packs likewise use an
-explicit `contentAddressed` parameter and default to input-addressed outputs;
-they no longer bypass this deployment constraint.
+identities. The current deployment runs Nix 2.35 throughout. Setting
+`SPAGHETTI_EXTRACTOR_STAGE_A_NIX_CONTENT_ADDRESSED=false` is an explicit
+compatibility fallback, not the qualified production path.
 
 The current jq graph provides a larger validation point for the artifact split:
 8 image chunks, 128 semantic packs, 128 exact bindings, 8,794 checked semantic

@@ -64,6 +64,18 @@ theorem nestedStepConsumesChildSemanticContract
       after.original after.candidate :=
   step.child.preserves _ _ _ _ _ _ step.invoked
 
+theorem finiteOriginCallConsumesProvenanceAndChildContract
+    {context : StaticProofContext} {parent child : SummaryTree}
+    {before after : PairedCalleeCursor}
+    (step : ExactFiniteOriginCallStep context parent child before after) :
+    requestedCallReturnRegistersHold child.certificate before.original before.candidate
+      after.original after.candidate /\
+      (StageA.Relational.ValueProvenance.IndirectDestination.internalCode
+        step.target.targetId).Matches context before.world
+        (step.authority.certificate.target.original.eval before.original)
+        (step.authority.certificate.target.candidate.eval before.candidate) :=
+  ⟨step.child.preserves _ _ _ _ _ _ step.invoked, step.selectedTarget⟩
+
 theorem importStepUsesGroundedMachineResult
     {context : StaticProofContext} {tree : SummaryTree}
     {before after : PairedCalleeCursor}
@@ -141,6 +153,21 @@ theorem everyFiniteReturningPathCloses
     (execution : FiniteReturningExecution context tree entry) :
     ReturningExecutionResult context tree entry execution :=
   finiteReturningExecution_preserves invariant execution
+
+theorem identityCheckedFiniteReturnPreservesWithoutTotalTermination
+    {context : StaticProofContext} {tree : SummaryTree}
+    {entry : PairedCalleeCursor}
+    (execution : FiniteReturningExecution context tree entry)
+    (register : StageA.Formal.Reg) (registerNotEsp : register ≠ .esp)
+    (requested : register ∈ tree.certificate.requestedRegisters)
+    (checked : tree.certificate.identityRegisterChecked context.originalPe
+      context.candidatePe context.originalImports context.candidateImports
+      register = true) :
+    execution.returning.afterOriginal.registers.get register =
+        entry.original.registers.get register /\
+      execution.returning.afterCandidate.registers.get register =
+        entry.candidate.registers.get register :=
+  execution.identityRegisterPreserved register registerNotEsp requested checked
 
 theorem incompleteLoopCannotAuthorize
     {context : StaticProofContext} {tree : SummaryTree} (reason : String) :
@@ -270,6 +297,7 @@ theorem faultCannotSatisfyCallReturn
 #print axioms omittedReturnCannotHideBehindSummary
 #print axioms mutationFrameOrImportRejectionBlocksIntegration
 #print axioms everyFiniteReturningPathCloses
+#print axioms identityCheckedFiniteReturnPreservesWithoutTotalTermination
 #print axioms incompleteLoopCannotAuthorize
 #print axioms incompleteOperationalTerminationCannotAuthorize
 #print axioms checkedClassifierCoversEveryReachablePoint
@@ -485,6 +513,30 @@ def certificate : Certificate := {
     originalSaveOffset := 4
     candidateSaveOffset := 4
   }]
+  graphClosureWitness := {
+    nodes := [
+      {
+        forwardRank := 0
+        reverseRank := 2
+        reverseNextRegionIndex := some 1
+        reverseNextEdgeIndex := some 0
+      },
+      {
+        forwardRank := 1
+        forwardParentRegionIndex := some 0
+        forwardParentEdgeIndex := some 0
+        reverseRank := 1
+        reverseNextRegionIndex := some 2
+        reverseNextEdgeIndex := some 1
+      },
+      {
+        forwardRank := 2
+        forwardParentRegionIndex := some 1
+        forwardParentEdgeIndex := some 1
+        reverseRank := 0
+      }
+    ]
+  }
 }
 
 def tree : InternalDirectCallRegisterSummary.SummaryTree := .node certificate []
@@ -1103,6 +1155,98 @@ theorem mutatedDestinationDoesNotSatisfySlot :
 end StageA.InternalDirectCallArgumentStaticWriteFixture
 """
 
+_CALLER_FRAME_WORD_ENTRY_FIXTURE = r"""import StageA.RelationalInternalDirectCallComposition
+
+namespace StageA.InternalDirectCallCallerFrameWordEntryFixture
+
+open StageA.Formal
+open StageA.Relational
+open StageA.Relational.InternalDirectCallComposition
+
+def stackAfterCall : Expr :=
+  .sub (.inputReg .esp) (.constant 4)
+
+def disjointCallBehavior : NormalizedSymbolicBehavior := {
+  registers := { initialSymbolic.registers with esp := stackAfterCall }
+  x87 := initialSymbolicX87
+  writes := [
+    (.inputReg .esp, .constant 2),
+    (stackAfterCall, .constant 0x401000)
+  ]
+  flags := none
+  outcome := .call 1 2
+}
+
+def callerWord : ReturnSlotExactWordPair := {
+  originalOffset := 32
+  candidateOffset := 32
+}
+
+def calleeEntryWord : ReturnSlotExactWordPair := {
+  originalOffset := 36
+  candidateOffset := 36
+}
+
+def checkedClaim : CallerFrameWordEntryClaim := {
+  source := callerWord
+  entry := calleeEntryWord
+  originalStack := .subRight .input 4
+  candidateStack := .subRight .input 4
+  originalWrites := [.input, .subRight .input 4]
+  candidateWrites := [.input, .subRight .input 4]
+}
+
+theorem derivedClaimExact :
+    CallerFrameWordEntryClaim.derive? callerWord calleeEntryWord
+      disjointCallBehavior disjointCallBehavior = some checkedClaim := by
+  decide
+
+theorem claimChecks :
+    checkedClaim.checked disjointCallBehavior disjointCallBehavior = true := by
+  decide
+
+theorem callerWordReachesCalleeEntry
+    (originalState candidateState : MachineState) :
+    Memory.read32
+          ((disjointCallBehavior.eval originalState).nextMachineState
+            originalState).memory
+          (((disjointCallBehavior.eval originalState).nextMachineState
+              originalState).registers.esp + 36) =
+        Memory.read32 originalState.memory (originalState.registers.esp + 32) /\
+      Memory.read32
+          ((disjointCallBehavior.eval candidateState).nextMachineState
+            candidateState).memory
+          (((disjointCallBehavior.eval candidateState).nextMachineState
+              candidateState).registers.esp + 36) =
+        Memory.read32 candidateState.memory (candidateState.registers.esp + 32) :=
+  checkedClaim.memoryPreserved_of_checked disjointCallBehavior
+    disjointCallBehavior originalState candidateState claimChecks
+
+def overlappingBehavior : NormalizedSymbolicBehavior := {
+  disjointCallBehavior with
+  writes := [
+    ((Expr.inputReg .esp).offset 32, .constant 0),
+    (stackAfterCall, .constant 0x401000)
+  ]
+}
+
+def overlappingClaim : CallerFrameWordEntryClaim := {
+  checkedClaim with
+  originalWrites := [.addRight .input 32, .subRight .input 4]
+  candidateWrites := [.addRight .input 32, .subRight .input 4]
+}
+
+theorem overlappingWriteRejected :
+    overlappingClaim.checked overlappingBehavior overlappingBehavior = false := by
+  decide
+
+#print axioms callerWordReachesCalleeEntry
+#print axioms derivedClaimExact
+#print axioms overlappingWriteRejected
+
+end StageA.InternalDirectCallCallerFrameWordEntryFixture
+"""
+
 
 @unittest.skipUnless(shutil.which("lean"), "Lean is required for kernel checks")
 class StageAInternalDirectCallCompositionKernelTests(unittest.TestCase):
@@ -1162,6 +1306,8 @@ class StageAInternalDirectCallCompositionKernelTests(unittest.TestCase):
         self.assertIn("actualDirectCallReturn_preserves", source)
         self.assertIn("argumentWords", source)
         self.assertIn("actualDirectCallReturn_staticWordSlot", source)
+        self.assertIn("CallerFrameWordsPreserved", source)
+        self.assertIn("CheckedReturningCallerFrameWordCertificate", source)
 
     def test_semantic_direct_branch_nested_import_stack_and_loop_interfaces(self) -> None:
         result = self._compile_source(
@@ -1180,6 +1326,13 @@ class StageAInternalDirectCallCompositionKernelTests(unittest.TestCase):
         result = self._compile_source(
             "InternalDirectCallArgumentStaticWriteFixture",
             _ARGUMENT_STATIC_WRITE_FIXTURE,
+        )
+        self._assert_checked(result)
+
+    def test_caller_frame_word_enters_callee_and_overlap_fails_closed(self) -> None:
+        result = self._compile_source(
+            "InternalDirectCallCallerFrameWordEntryFixture",
+            _CALLER_FRAME_WORD_ENTRY_FIXTURE,
         )
         self._assert_checked(result)
 

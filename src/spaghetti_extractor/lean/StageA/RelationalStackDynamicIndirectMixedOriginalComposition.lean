@@ -1,4 +1,6 @@
 import StageA.RelationalInterpreterMixedWorldBridge
+import StageA.RelationalMixedExecutionInvariantExtension
+import StageA.RelationalOriginalExecutionInvariant
 import StageA.RelationalOriginalStackDynamicControlClosure
 
 namespace StageA.Relational.StackDynamicIndirectMixedOriginalComposition
@@ -6,8 +8,10 @@ namespace StageA.Relational.StackDynamicIndirectMixedOriginalComposition
 open StageA.Formal StageA.Relational
 open StageA.Relational.InterpreterMixedContext
 open StageA.Relational.InterpreterMixedWorldBridge
+open StageA.Relational.MixedExecutionInvariantExtension
 open StageA.Relational.NullableCodePointerTable
 open StageA.Relational.OriginalIndirectControlAuthority
+open StageA.Relational.OriginalExecutionInvariant
 open StageA.Relational.OriginalStackDynamicControlClosure
 open StageA.Relational.StackDynamicIndirectControl
 
@@ -58,6 +62,255 @@ theorem actualMixedOriginalStackDynamicSource_targetReachable
       (.callbackRunning sourceTargetId state calls eventIndex world callbacks)
       candidate related).1
 
+/-! ## Generic source facts and inductive preservation -/
+
+/-- A fact scoped to one original control source. It is vacuous at all other
+execution states, and covers both ordinary and callback-running frames. -/
+def OriginalSourceFactAt
+    (sourceTargetId : Nat)
+    (fact : RelationalWorld -> MachineState -> Prop) :
+    WorldExecution -> Prop
+  | .running targetId state _calls _eventIndex world =>
+      targetId = sourceTargetId -> fact world state
+  | .callbackRunning targetId state _calls _eventIndex world _callbacks =>
+      targetId = sourceTargetId -> fact world state
+  | _ => True
+
+/-- Original-only preservation of one source fact by the exact decoded
+transition system. The launch proof is supplied when this invariant is joined
+to whole-program composition. -/
+structure OriginalSourceFactExecutionInvariant
+    (program : DecodedWorldProgram)
+    (sourceTargetId : Nat)
+    (fact : RelationalWorld -> MachineState -> Prop) : Prop where
+  stepClosed : forall before,
+    OriginalSourceFactAt sourceTargetId fact before ->
+      OriginalSourceFactAt sourceTargetId fact
+        (program.pe32TransitionSystem.step before).next
+
+def OriginalSourceFactExecutionInvariant.toOriginalInvariant
+    (invariant : OriginalSourceFactExecutionInvariant program sourceTargetId
+      fact) :
+    OriginalWorldExecutionInvariant program where
+  holds := OriginalSourceFactAt sourceTargetId fact
+  stepClosed := invariant.stepClosed
+
+/-- Projection of one source fact from an arbitrary multi-cutpoint original
+invariant. This is the interface used by finite abstract-interpretation
+certificates whose predecessor facts jointly establish the source fact. -/
+structure OriginalSourceFactProjection
+    (invariant : OriginalWorldExecutionInvariant program)
+    (sourceTargetId : Nat)
+    (fact : RelationalWorld -> MachineState -> Prop) : Prop where
+  project : forall execution,
+    invariant.holds execution ->
+      OriginalSourceFactAt sourceTargetId fact execution
+
+def OriginalSourceFactExecutionInvariant.projection
+    (invariant : OriginalSourceFactExecutionInvariant program sourceTargetId
+      fact) :
+    OriginalSourceFactProjection invariant.toOriginalInvariant sourceTargetId
+      fact where
+  project _ holds := holds
+
+/-- Paired preservation of one source fact. This form is used when an internal
+or external call is required to establish the successor fact. -/
+structure OriginalSourceFactMixedExecutionInvariant
+    (original : DecodedWorldProgram)
+    (candidate :
+      StageA.Relational.InterpreterNativeWorld.ExactNativeWorldProgram)
+    (contract : MixedRelationContract)
+    (reachabilityTargetIds : List Nat)
+    (base : MixedExecutionInvariant reachabilityTargetIds contract)
+    (sourceTargetId : Nat)
+    (fact : RelationalWorld -> MachineState -> Prop) : Prop where
+  chunkClosed : forall originalBefore candidateBefore,
+    OriginalSourceFactAt sourceTargetId fact originalBefore ->
+      (chunk : MixedWorldComponentChunkRefinement original candidate contract
+        base originalBefore candidateBefore) ->
+      OriginalSourceFactAt sourceTargetId fact chunk.originalAfter
+
+def OriginalSourceFactMixedExecutionInvariant.toExtension
+    (invariant : OriginalSourceFactMixedExecutionInvariant original candidate
+      contract reachabilityTargetIds base sourceTargetId fact) :
+    MixedWorldExecutionInvariantExtension original candidate contract
+      reachabilityTargetIds base where
+  holds originalExecution _candidateExecution :=
+    OriginalSourceFactAt sourceTargetId fact originalExecution
+  chunkClosed := invariant.chunkClosed
+
+/-- Projection of one source fact from an arbitrary paired multi-cutpoint
+invariant extension. -/
+structure OriginalSourceFactMixedProjection
+    (extension : MixedWorldExecutionInvariantExtension original candidate
+      contract reachabilityTargetIds base)
+    (sourceTargetId : Nat)
+    (fact : RelationalWorld -> MachineState -> Prop) : Prop where
+  project : forall originalExecution candidateExecution,
+    extension.holds originalExecution candidateExecution ->
+      OriginalSourceFactAt sourceTargetId fact originalExecution
+
+def OriginalSourceFactMixedExecutionInvariant.projection
+    (invariant : OriginalSourceFactMixedExecutionInvariant original candidate
+      contract reachabilityTargetIds base sourceTargetId fact) :
+    OriginalSourceFactMixedProjection invariant.toExtension sourceTargetId fact
+    where
+  project _ _ holds := holds
+
+/-- Recover one source fact projected from an arbitrary original invariant. -/
+theorem originalSourceFact_of_originalProjection
+    {program : DecodedWorldProgram}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {mixed : MixedExecutionInvariant reachabilityTargetIds contract}
+    {originalInvariant : OriginalWorldExecutionInvariant program}
+    {sourceTargetId : Nat}
+    {fact : RelationalWorld -> MachineState -> Prop}
+    (projection :
+      OriginalSourceFactProjection originalInvariant sourceTargetId fact)
+    {world : RelationalWorld} {state : MachineState}
+    (reached : ActualMixedOriginalStackDynamicSource
+      (strengthenMixedExecutionInvariant mixed originalInvariant)
+      sourceTargetId world state) :
+    fact world state := by
+  rcases reached with
+    ⟨calls, eventIndex, candidateExecution, related⟩ |
+    ⟨calls, eventIndex, callbacks, candidateExecution, related⟩
+  · exact projection.project _ related.2 rfl
+  · exact projection.project _ related.2 rfl
+
+/-- Recover one source fact projected from an arbitrary paired invariant. -/
+theorem originalSourceFact_of_mixedProjection
+    {original : DecodedWorldProgram}
+    {candidate :
+      StageA.Relational.InterpreterNativeWorld.ExactNativeWorldProgram}
+    {contract : MixedRelationContract}
+    {reachabilityTargetIds : List Nat}
+    {base : MixedExecutionInvariant reachabilityTargetIds contract}
+    {extension : MixedWorldExecutionInvariantExtension original candidate
+      contract reachabilityTargetIds base}
+    {sourceTargetId : Nat}
+    {fact : RelationalWorld -> MachineState -> Prop}
+    (projection :
+      OriginalSourceFactMixedProjection extension sourceTargetId fact)
+    {world : RelationalWorld} {state : MachineState}
+    (reached : ActualMixedOriginalStackDynamicSource extension.strengthen
+      sourceTargetId world state) :
+    fact world state := by
+  rcases reached with
+    ⟨calls, eventIndex, candidateExecution, related⟩ |
+    ⟨calls, eventIndex, callbacks, candidateExecution, related⟩
+  · exact projection.project _ _ related.2 rfl
+  · exact projection.project _ _ related.2 rfl
+
+/-- Recover a source fact from an original-only invariant strengthened into the
+actual mixed composition invariant. -/
+theorem originalSourceFact_of_originalInvariant
+    {program : DecodedWorldProgram}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {mixed : MixedExecutionInvariant reachabilityTargetIds contract}
+    {sourceTargetId : Nat}
+    {fact : RelationalWorld -> MachineState -> Prop}
+    (executionInvariant :
+      OriginalSourceFactExecutionInvariant program sourceTargetId fact)
+    {world : RelationalWorld} {state : MachineState}
+    (reached : ActualMixedOriginalStackDynamicSource
+      (strengthenMixedExecutionInvariant mixed
+        executionInvariant.toOriginalInvariant)
+      sourceTargetId world state) :
+    fact world state :=
+  originalSourceFact_of_originalProjection executionInvariant.projection reached
+
+/-- Recover a source fact from a paired chunk invariant strengthened into the
+actual mixed composition invariant. -/
+theorem originalSourceFact_of_mixedInvariant
+    {original : DecodedWorldProgram}
+    {candidate :
+      StageA.Relational.InterpreterNativeWorld.ExactNativeWorldProgram}
+    {contract : MixedRelationContract}
+    {reachabilityTargetIds : List Nat}
+    {base : MixedExecutionInvariant reachabilityTargetIds contract}
+    {sourceTargetId : Nat}
+    {fact : RelationalWorld -> MachineState -> Prop}
+    (executionInvariant :
+      OriginalSourceFactMixedExecutionInvariant original candidate contract
+        reachabilityTargetIds base sourceTargetId fact)
+    {world : RelationalWorld} {state : MachineState}
+    (reached : ActualMixedOriginalStackDynamicSource
+      executionInvariant.toExtension.strengthen sourceTargetId world state) :
+    fact world state :=
+  originalSourceFact_of_mixedProjection executionInvariant.projection reached
+
+theorem actualMixedOriginalStackDynamicSourceUninhabited_of_originalProjection
+    {program : DecodedWorldProgram}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {mixed : MixedExecutionInvariant reachabilityTargetIds contract}
+    {originalInvariant : OriginalWorldExecutionInvariant program}
+    {sourceTargetId : Nat}
+    (projection :
+      OriginalSourceFactProjection originalInvariant sourceTargetId
+        (fun _world _state => False)) :
+    ActualMixedOriginalStackDynamicSourceUninhabited
+      (strengthenMixedExecutionInvariant mixed originalInvariant)
+      sourceTargetId := by
+  rintro ⟨world, state, reached⟩
+  exact originalSourceFact_of_originalProjection projection reached
+
+theorem actualMixedOriginalStackDynamicSourceUninhabited_of_mixedProjection
+    {original : DecodedWorldProgram}
+    {candidate :
+      StageA.Relational.InterpreterNativeWorld.ExactNativeWorldProgram}
+    {contract : MixedRelationContract}
+    {reachabilityTargetIds : List Nat}
+    {base : MixedExecutionInvariant reachabilityTargetIds contract}
+    {extension : MixedWorldExecutionInvariantExtension original candidate
+      contract reachabilityTargetIds base}
+    {sourceTargetId : Nat}
+    (projection :
+      OriginalSourceFactMixedProjection extension sourceTargetId
+        (fun _world _state => False)) :
+    ActualMixedOriginalStackDynamicSourceUninhabited extension.strengthen
+      sourceTargetId := by
+  rintro ⟨world, state, reached⟩
+  exact originalSourceFact_of_mixedProjection projection reached
+
+/-- A false source fact is a checked proof that the source is absent from every
+state admitted by the strengthened invariant. -/
+theorem actualMixedOriginalStackDynamicSourceUninhabited_of_originalInvariant
+    {program : DecodedWorldProgram}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {mixed : MixedExecutionInvariant reachabilityTargetIds contract}
+    {sourceTargetId : Nat}
+    (executionInvariant :
+      OriginalSourceFactExecutionInvariant program sourceTargetId
+        (fun _world _state => False)) :
+    ActualMixedOriginalStackDynamicSourceUninhabited
+      (strengthenMixedExecutionInvariant mixed
+        executionInvariant.toOriginalInvariant)
+      sourceTargetId :=
+  actualMixedOriginalStackDynamicSourceUninhabited_of_originalProjection
+    executionInvariant.projection
+
+theorem actualMixedOriginalStackDynamicSourceUninhabited_of_mixedInvariant
+    {original : DecodedWorldProgram}
+    {candidate :
+      StageA.Relational.InterpreterNativeWorld.ExactNativeWorldProgram}
+    {contract : MixedRelationContract}
+    {reachabilityTargetIds : List Nat}
+    {base : MixedExecutionInvariant reachabilityTargetIds contract}
+    {sourceTargetId : Nat}
+    (executionInvariant :
+      OriginalSourceFactMixedExecutionInvariant original candidate contract
+        reachabilityTargetIds base sourceTargetId
+        (fun _world _state => False)) :
+    ActualMixedOriginalStackDynamicSourceUninhabited
+      executionInvariant.toExtension.strengthen sourceTargetId :=
+  actualMixedOriginalStackDynamicSourceUninhabited_of_mixedProjection
+    executionInvariant.projection
+
 /-! ## Stack-carried fixed code pointers -/
 
 /-- A closed stack target retains the exact stack allocation, slot bounds,
@@ -72,6 +325,90 @@ structure MixedOriginalStackCarryTarget
     OriginalResolvedCodeTarget context authority.static.claim.site state
   targetIdExact :
     resolved.targetId = authority.static.claim.seed.targetId
+
+noncomputable def completeStackCarryPremise_of_originalProjection
+    {program : DecodedWorldProgram}
+    {authority : CheckedStackCarryAuthority context}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {mixed : MixedExecutionInvariant reachabilityTargetIds contract}
+    {originalInvariant : OriginalWorldExecutionInvariant program}
+    (projection :
+      OriginalSourceFactProjection originalInvariant
+        authority.static.claim.site.sourceTargetId
+        (fun world state =>
+          Nonempty (StackRelocatedCodePointerRuntime context
+            authority.static.claim world state))) :
+    CompleteStackCarryPremise context authority
+      (ActualMixedOriginalStackDynamicSource
+        (strengthenMixedExecutionInvariant mixed originalInvariant)
+        authority.static.claim.site.sourceTargetId) where
+  everyReachableCarriesSeed _world _state reached :=
+    Classical.choice
+      (originalSourceFact_of_originalProjection projection reached)
+
+noncomputable def completeStackCarryPremise_of_mixedProjection
+    {original : DecodedWorldProgram}
+    {candidate :
+      StageA.Relational.InterpreterNativeWorld.ExactNativeWorldProgram}
+    {authority : CheckedStackCarryAuthority context}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {base : MixedExecutionInvariant reachabilityTargetIds contract}
+    {extension : MixedWorldExecutionInvariantExtension original candidate
+      contract reachabilityTargetIds base}
+    (projection :
+      OriginalSourceFactMixedProjection extension
+        authority.static.claim.site.sourceTargetId
+        (fun world state =>
+          Nonempty (StackRelocatedCodePointerRuntime context
+            authority.static.claim world state))) :
+    CompleteStackCarryPremise context authority
+      (ActualMixedOriginalStackDynamicSource extension.strengthen
+        authority.static.claim.site.sourceTargetId) where
+  everyReachableCarriesSeed _world _state reached :=
+    Classical.choice
+      (originalSourceFact_of_mixedProjection projection reached)
+
+noncomputable def completeStackCarryPremise_of_originalInvariant
+    {program : DecodedWorldProgram}
+    {authority : CheckedStackCarryAuthority context}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {mixed : MixedExecutionInvariant reachabilityTargetIds contract}
+    (executionInvariant :
+      OriginalSourceFactExecutionInvariant program
+        authority.static.claim.site.sourceTargetId
+        (fun world state =>
+          Nonempty (StackRelocatedCodePointerRuntime context
+            authority.static.claim world state))) :
+    CompleteStackCarryPremise context authority
+      (ActualMixedOriginalStackDynamicSource
+        (strengthenMixedExecutionInvariant mixed
+          executionInvariant.toOriginalInvariant)
+        authority.static.claim.site.sourceTargetId) :=
+  completeStackCarryPremise_of_originalProjection executionInvariant.projection
+
+noncomputable def completeStackCarryPremise_of_mixedInvariant
+    {original : DecodedWorldProgram}
+    {candidate :
+      StageA.Relational.InterpreterNativeWorld.ExactNativeWorldProgram}
+    {authority : CheckedStackCarryAuthority context}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {base : MixedExecutionInvariant reachabilityTargetIds contract}
+    (executionInvariant :
+      OriginalSourceFactMixedExecutionInvariant original candidate contract
+        reachabilityTargetIds base
+        authority.static.claim.site.sourceTargetId
+        (fun world state =>
+          Nonempty (StackRelocatedCodePointerRuntime context
+            authority.static.claim world state))) :
+    CompleteStackCarryPremise context authority
+      (ActualMixedOriginalStackDynamicSource
+        executionInvariant.toExtension.strengthen
+        authority.static.claim.site.sourceTargetId) :=
+  completeStackCarryPremise_of_mixedProjection executionInvariant.projection
 
 /-- A stack-carried source is composable only through a complete runtime carry
 premise over actual mixed states, or a proof that no such source state exists.
@@ -139,47 +476,116 @@ the exact checked loop interval is empty and every actual predecessor state
 satisfies its runtime index bound.  Populated or unknown table inventories
 cannot construct this certificate. -/
 inductive IndexedTableMixedOriginalComposition
-    (authority : CheckedIndexedTableAuthority context)
+    (authority : CheckedEmptyIndexedSourceAuthority context)
     (invariant : MixedExecutionInvariant reachabilityTargetIds contract) :
     Prop where
   | unreachable
       (sourceUninhabited :
         ActualMixedOriginalStackDynamicSourceUninhabited invariant
-          authority.static.claim.site.sourceTargetId)
+          authority.site.sourceTargetId)
   | emptyInterval
-      (loop : LoopFacts)
-      (loopExact : authority.static.claim.table.loop = .exact loop)
-      (empty : loop.lowerInclusive = loop.upperExclusive)
-      (complete : CompleteIndexedTablePredecessorPremise authority
+      (complete : CompleteEmptyIndexedSourcePredecessorPremise authority
         (ActualMixedOriginalStackDynamicSource invariant
-          authority.static.claim.site.sourceTargetId))
+          authority.site.sourceTargetId))
+
+theorem completeEmptyIndexedSourcePremise_of_originalProjection
+    {program : DecodedWorldProgram}
+    {authority : CheckedEmptyIndexedSourceAuthority context}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {mixed : MixedExecutionInvariant reachabilityTargetIds contract}
+    {originalInvariant : OriginalWorldExecutionInvariant program}
+    (projection :
+      OriginalSourceFactProjection originalInvariant authority.site.sourceTargetId
+        (fun _world state => authority.RuntimeIndexBound state)) :
+    CompleteEmptyIndexedSourcePredecessorPremise authority
+      (ActualMixedOriginalStackDynamicSource
+        (strengthenMixedExecutionInvariant mixed originalInvariant)
+        authority.site.sourceTargetId) where
+  everyReachableIndexBound _world _state reached :=
+    originalSourceFact_of_originalProjection projection reached
+
+theorem completeEmptyIndexedSourcePremise_of_mixedProjection
+    {original : DecodedWorldProgram}
+    {candidate :
+      StageA.Relational.InterpreterNativeWorld.ExactNativeWorldProgram}
+    {authority : CheckedEmptyIndexedSourceAuthority context}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {base : MixedExecutionInvariant reachabilityTargetIds contract}
+    {extension : MixedWorldExecutionInvariantExtension original candidate
+      contract reachabilityTargetIds base}
+    (projection :
+      OriginalSourceFactMixedProjection extension authority.site.sourceTargetId
+        (fun _world state => authority.RuntimeIndexBound state)) :
+    CompleteEmptyIndexedSourcePredecessorPremise authority
+      (ActualMixedOriginalStackDynamicSource extension.strengthen
+        authority.site.sourceTargetId) where
+  everyReachableIndexBound _world _state reached :=
+    originalSourceFact_of_mixedProjection projection reached
+
+theorem completeEmptyIndexedSourcePremise_of_originalInvariant
+    {program : DecodedWorldProgram}
+    {authority : CheckedEmptyIndexedSourceAuthority context}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {mixed : MixedExecutionInvariant reachabilityTargetIds contract}
+    (executionInvariant :
+      OriginalSourceFactExecutionInvariant program authority.site.sourceTargetId
+        (fun _world state => authority.RuntimeIndexBound state)) :
+    CompleteEmptyIndexedSourcePredecessorPremise authority
+      (ActualMixedOriginalStackDynamicSource
+        (strengthenMixedExecutionInvariant mixed
+          executionInvariant.toOriginalInvariant)
+        authority.site.sourceTargetId) :=
+  completeEmptyIndexedSourcePremise_of_originalProjection
+    executionInvariant.projection
+
+theorem completeEmptyIndexedSourcePremise_of_mixedInvariant
+    {original : DecodedWorldProgram}
+    {candidate :
+      StageA.Relational.InterpreterNativeWorld.ExactNativeWorldProgram}
+    {authority : CheckedEmptyIndexedSourceAuthority context}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {base : MixedExecutionInvariant reachabilityTargetIds contract}
+    (executionInvariant :
+      OriginalSourceFactMixedExecutionInvariant original candidate contract
+        reachabilityTargetIds base authority.site.sourceTargetId
+        (fun _world state => authority.RuntimeIndexBound state)) :
+    CompleteEmptyIndexedSourcePredecessorPremise authority
+      (ActualMixedOriginalStackDynamicSource
+        executionInvariant.toExtension.strengthen authority.site.sourceTargetId)
+    :=
+  completeEmptyIndexedSourcePremise_of_mixedProjection
+    executionInvariant.projection
 
 theorem IndexedTableMixedOriginalComposition.sourceUninhabited
     {context : OriginalDecodedStaticContext}
-    {authority : CheckedIndexedTableAuthority context}
+    {authority : CheckedEmptyIndexedSourceAuthority context}
     {reachabilityTargetIds : List Nat}
     {contract : MixedRelationContract}
     {invariant : MixedExecutionInvariant reachabilityTargetIds contract}
     (composition : IndexedTableMixedOriginalComposition authority invariant) :
     ActualMixedOriginalStackDynamicSourceUninhabited invariant
-      authority.static.claim.site.sourceTargetId := by
+      authority.site.sourceTargetId := by
   cases composition with
   | unreachable sourceUninhabited => exact sourceUninhabited
-  | emptyInterval loop loopExact empty complete =>
+  | emptyInterval complete =>
       rintro ⟨world, state, reached⟩
-      exact authority.static.claim.noRuntimeIndex_of_emptyInterval loop loopExact
-        empty state (complete.everyReachableIndexBound world state reached)
+      exact authority.noRuntimeIndex state
+        (complete.everyReachableIndexBound world state reached)
 
 theorem IndexedTableMixedOriginalComposition.originalClosure
     {context : OriginalDecodedStaticContext}
-    {authority : CheckedIndexedTableAuthority context}
+    {authority : CheckedEmptyIndexedSourceAuthority context}
     {reachabilityTargetIds : List Nat}
     {contract : MixedRelationContract}
     {invariant : MixedExecutionInvariant reachabilityTargetIds contract}
     (composition : IndexedTableMixedOriginalComposition authority invariant) :
-    OriginalIndirectControlClosure context authority.static.claim.site
+    OriginalIndirectControlClosure context authority.site
       (ActualMixedOriginalStackDynamicSource invariant
-        authority.static.claim.site.sourceTargetId) :=
+        authority.site.sourceTargetId) :=
   .unreachable composition.sourceUninhabited
 
 /-! ## Dynamic callback fields -/
@@ -204,6 +610,108 @@ structure MixedOriginalDynamicCallbackTarget
   targetIdExact : resolved.targetId = runtime.callback.targetId
   targetAllowed :
     resolved.targetId ∈ authority.static.claim.allowedTargetIds
+
+/-- The complete dynamic callback fact retained at one admitted source state. -/
+structure DynamicCallbackSourceFact
+    (context : OriginalDecodedStaticContext)
+    (authority : CheckedDynamicCallbackAuthority context)
+    (world : RelationalWorld) (state : MachineState) where
+  runtime :
+    DynamicCallbackControlRuntime context authority.static.claim world state
+  callbackAddressChecked :
+    dynamicCallbackAddressChecked context runtime.callback = true
+
+noncomputable def completeDynamicCallbackPremise_of_originalProjection
+    {program : DecodedWorldProgram}
+    {authority : CheckedDynamicCallbackAuthority context}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {mixed : MixedExecutionInvariant reachabilityTargetIds contract}
+    {originalInvariant : OriginalWorldExecutionInvariant program}
+    (projection :
+      OriginalSourceFactProjection originalInvariant
+        authority.static.claim.site.sourceTargetId
+        (fun world state =>
+          Nonempty (DynamicCallbackSourceFact context authority world state))) :
+    CompleteDynamicCallbackPremise context authority
+      (ActualMixedOriginalStackDynamicSource
+        (strengthenMixedExecutionInvariant mixed originalInvariant)
+        authority.static.claim.site.sourceTargetId) where
+  runtime world state reached :=
+    (Classical.choice
+      (originalSourceFact_of_originalProjection projection reached)).runtime
+  callbackAddressChecked world state reached := by
+    exact
+      (Classical.choice
+        (originalSourceFact_of_originalProjection projection reached)
+      ).callbackAddressChecked
+
+noncomputable def completeDynamicCallbackPremise_of_mixedProjection
+    {original : DecodedWorldProgram}
+    {candidate :
+      StageA.Relational.InterpreterNativeWorld.ExactNativeWorldProgram}
+    {authority : CheckedDynamicCallbackAuthority context}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {base : MixedExecutionInvariant reachabilityTargetIds contract}
+    {extension : MixedWorldExecutionInvariantExtension original candidate
+      contract reachabilityTargetIds base}
+    (projection :
+      OriginalSourceFactMixedProjection extension
+        authority.static.claim.site.sourceTargetId
+        (fun world state =>
+          Nonempty (DynamicCallbackSourceFact context authority world state))) :
+    CompleteDynamicCallbackPremise context authority
+      (ActualMixedOriginalStackDynamicSource extension.strengthen
+        authority.static.claim.site.sourceTargetId) where
+  runtime world state reached :=
+    (Classical.choice
+      (originalSourceFact_of_mixedProjection projection reached)).runtime
+  callbackAddressChecked world state reached := by
+    exact
+      (Classical.choice
+        (originalSourceFact_of_mixedProjection projection reached)
+      ).callbackAddressChecked
+
+noncomputable def completeDynamicCallbackPremise_of_originalInvariant
+    {program : DecodedWorldProgram}
+    {authority : CheckedDynamicCallbackAuthority context}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {mixed : MixedExecutionInvariant reachabilityTargetIds contract}
+    (executionInvariant :
+      OriginalSourceFactExecutionInvariant program
+        authority.static.claim.site.sourceTargetId
+        (fun world state =>
+          Nonempty (DynamicCallbackSourceFact context authority world state))) :
+    CompleteDynamicCallbackPremise context authority
+      (ActualMixedOriginalStackDynamicSource
+        (strengthenMixedExecutionInvariant mixed
+          executionInvariant.toOriginalInvariant)
+        authority.static.claim.site.sourceTargetId) :=
+  completeDynamicCallbackPremise_of_originalProjection
+    executionInvariant.projection
+
+noncomputable def completeDynamicCallbackPremise_of_mixedInvariant
+    {original : DecodedWorldProgram}
+    {candidate :
+      StageA.Relational.InterpreterNativeWorld.ExactNativeWorldProgram}
+    {authority : CheckedDynamicCallbackAuthority context}
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {base : MixedExecutionInvariant reachabilityTargetIds contract}
+    (executionInvariant :
+      OriginalSourceFactMixedExecutionInvariant original candidate contract
+        reachabilityTargetIds base
+        authority.static.claim.site.sourceTargetId
+        (fun world state =>
+          Nonempty (DynamicCallbackSourceFact context authority world state))) :
+    CompleteDynamicCallbackPremise context authority
+      (ActualMixedOriginalStackDynamicSource
+        executionInvariant.toExtension.strengthen
+        authority.static.claim.site.sourceTargetId) :=
+  completeDynamicCallbackPremise_of_mixedProjection
+    executionInvariant.projection
 
 /-- Dynamic callback composition rejects an empty target inventory even before
 the runtime premise is considered.  Unknown proposal inventories cannot become
@@ -326,6 +834,26 @@ theorem DynamicSourceMixedOriginalComposition.originalClosure
   dynamicSourceClosure_of_uninhabited checkedSite _ composition.complete
 
 #print axioms actualMixedOriginalStackDynamicSource_targetReachable
+#print axioms originalSourceFact_of_originalProjection
+#print axioms originalSourceFact_of_mixedProjection
+#print axioms originalSourceFact_of_originalInvariant
+#print axioms originalSourceFact_of_mixedInvariant
+#print axioms actualMixedOriginalStackDynamicSourceUninhabited_of_originalProjection
+#print axioms actualMixedOriginalStackDynamicSourceUninhabited_of_mixedProjection
+#print axioms actualMixedOriginalStackDynamicSourceUninhabited_of_originalInvariant
+#print axioms actualMixedOriginalStackDynamicSourceUninhabited_of_mixedInvariant
+#print axioms completeStackCarryPremise_of_originalProjection
+#print axioms completeStackCarryPremise_of_mixedProjection
+#print axioms completeStackCarryPremise_of_originalInvariant
+#print axioms completeStackCarryPremise_of_mixedInvariant
+#print axioms completeEmptyIndexedSourcePremise_of_originalProjection
+#print axioms completeEmptyIndexedSourcePremise_of_mixedProjection
+#print axioms completeEmptyIndexedSourcePremise_of_originalInvariant
+#print axioms completeEmptyIndexedSourcePremise_of_mixedInvariant
+#print axioms completeDynamicCallbackPremise_of_originalProjection
+#print axioms completeDynamicCallbackPremise_of_mixedProjection
+#print axioms completeDynamicCallbackPremise_of_originalInvariant
+#print axioms completeDynamicCallbackPremise_of_mixedInvariant
 #print axioms StackCarryMixedOriginalComposition.targetClosed
 #print axioms IndexedTableMixedOriginalComposition.sourceUninhabited
 #print axioms DynamicCallbackMixedOriginalComposition.targetClosed

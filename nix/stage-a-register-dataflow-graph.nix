@@ -7,21 +7,30 @@
 , packsRoot ? planned + "/packs"
 , transferContextFile ? planned + "/transfer-context.json"
 , fineGrained ? false
-, contentAddressed ? false
+, contentAddressed ? true
 }:
 
 let
   lib = pkgs.lib;
   manifest = builtins.fromJSON (builtins.readFile manifestFile);
-  transferContextInput = if manifest.transfer_context_sha256 != null then
-    builtins.path {
-      path = transferContextFile;
-      name = "stage-a-register-dataflow-transfer-context.json";
-    }
-  else null;
+  caAttrs = lib.optionalAttrs contentAddressed {
+    __contentAddressed = true;
+  };
+  transferContextInput =
+    if manifest.transfer_context_sha256 != null then
+      pkgs.runCommand "stage-a-register-dataflow-transfer-context"
+        ({
+          preferLocalBuild = true;
+          allowSubstitutes = true;
+        } // caAttrs)
+        ''
+          mkdir -p "$out"
+          cp ${transferContextFile} "$out/transfer-context.json"
+        ''
+    else null;
   fineTransferContextArg = lib.optionalString
     (manifest.transfer_context_sha256 != null)
-    "--transfer-context ${transferContextInput}";
+    "--transfer-context ${transferContextInput}/transfer-context.json";
   packRows = manifest.packs;
   packIds = map (pack: pack.id) packRows;
   packById = builtins.listToAttrs (map (pack: {
@@ -38,13 +47,23 @@ let
       builtins.all (predecessor: builtins.hasAttr predecessor packById)
         pack.predecessor_ids
     ) packRows;
+  # Project each IFD-generated pack through a cheap CA derivation. Nix 2.35
+  # cannot use builtins.path on an output placeholder in pure evaluation.
+  # The projection also gives unchanged pack content a stable identity when
+  # another pack changes in the parent plan.
   packInputs = builtins.listToAttrs (map (pack: {
     name = pack.id;
-    value = builtins.path {
-      path = packsRoot + "/${pack.id}.json";
-      name = lib.strings.sanitizeDerivationName
-        "stage-a-register-dataflow-${pack.id}.json";
-    };
+    value = pkgs.runCommand
+      (lib.strings.sanitizeDerivationName
+        "stage-a-register-dataflow-input-${pack.id}")
+      ({
+        preferLocalBuild = true;
+        allowSubstitutes = true;
+      } // caAttrs)
+      ''
+        mkdir -p "$out"
+        cp ${packsRoot}/${pack.id}.json "$out/pack.json"
+      '';
   }) packRows);
   nodeDrvs = lib.fix (self: builtins.listToAttrs (map (pack:
     let
@@ -64,9 +83,7 @@ let
           ];
           preferLocalBuild = false;
           allowSubstitutes = true;
-        } // lib.optionalAttrs contentAddressed {
-          __contentAddressed = true;
-        })
+        } // caAttrs)
         ''
           mkdir -p "$out" "$solution" "$audit"
           predecessor_args=()
@@ -74,7 +91,7 @@ let
             predecessor_args+=(--predecessor "$predecessor")
           done
           spaghetti-extractor-dataflow-worker \
-            --pack ${packInputs.${pack.id}} \
+            --pack ${packInputs.${pack.id}}/pack.json \
             ${fineTransferContextArg} \
             "''${predecessor_args[@]}" \
             --out "$solution/result.json" \
@@ -118,9 +135,7 @@ let
       nativeBuildInputs = [ dataflowAggregator pkgs.jq ];
       preferLocalBuild = true;
       allowSubstitutes = true;
-    } // lib.optionalAttrs contentAddressed {
-      __contentAddressed = true;
-    })
+    } // caAttrs)
     ''
       mkdir -p "$out" "$audit"
       result_args=()
@@ -152,11 +167,11 @@ let
       ln -s ${planned} "$audit/planned"
     '';
   coarseAggregate = pkgs.runCommand "stage-a-register-dataflow-aggregate"
-    {
+    ({
       nativeBuildInputs = [ dataflowAggregator dataflowWorker pkgs.jq ];
       preferLocalBuild = true;
       allowSubstitutes = true;
-    }
+    } // caAttrs)
     ''
       mkdir -p "$out"
       transfer_context_args=()

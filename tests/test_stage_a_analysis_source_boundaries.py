@@ -49,24 +49,6 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
             ),
         )
 
-    def test_analysis_cli_does_not_import_downstream_proof_phases(self):
-        self._assert_clean_import(
-            "spaghetti_extractor.relational.analysis_cli",
-            (
-                "spaghetti_extractor.relational.analysis",
-                "spaghetti_extractor.relational.analysis_artifact",
-                "spaghetti_extractor.relational.build",
-                "spaghetti_extractor.relational.executor",
-                "spaghetti_extractor.relational.pipeline",
-                "spaghetti_extractor.relational.proof_diagnostics",
-                "spaghetti_extractor.relational.lean.acceptance",
-                "spaghetti_extractor.relational.lean.composition",
-                "spaghetti_extractor.relational.lean.definitions",
-                "spaghetti_extractor.relational.lean.generation",
-                "spaghetti_extractor.relational.lean.segments",
-            ),
-        )
-
     def test_pair_normalization_cli_does_not_import_pair_analysis(self):
         self._assert_clean_import(
             "spaghetti_extractor.relational.pair_normalization_cli",
@@ -161,6 +143,7 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
             "RelationalDecode.lean",
             "RelationalISAQualification.lean",
             "RelationalLoader.lean",
+            "RelationalFiniteIndex.lean",
             "RelationalMachine.lean",
             "RelationalPEExecution.lean",
             "RelationalX87Machine.lean",

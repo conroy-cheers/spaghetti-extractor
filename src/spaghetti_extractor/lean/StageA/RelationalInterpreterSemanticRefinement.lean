@@ -37,20 +37,20 @@ that bit leaves the full EFLAGS word unchanged. -/
 theorem updateObservedFlag (word : Word) (index : Nat)
     (inRange : index < 32) :
     updateFlag word index (some (word.extractLsb' index 1 == 1#1)) = word := by
+  have maskEq : BitVec.ofNat 32 (2 ^ index) = BitVec.twoPow 32 index := by
+    apply BitVec.eq_of_toNat_eq
+    simp [BitVec.toNat_twoPow]
   apply BitVec.eq_of_getElem_eq
   intro query queryInRange
-  have maskEq :
-      (BitVec.ofNat 32 (2 ^ index))[query] = decide (query = index) := by
-    simp [BitVec.getElem_twoPow queryInRange, inRange]
-  by_cases observed : word.extractLsb' index 1 == 1#1
-  · have observedTrue : word.extractLsb' index 1 == 1#1 := observed
+  by_cases observed : (word.extractLsb' index 1 == 1#1) = true
+  ·
     unfold updateFlag
     rw [maskEq]
-    simp only [observedTrue, if_true, BitVec.getElem_or queryInRange]
+    simp only [observed, if_true, BitVec.getElem_or queryInRange]
     by_cases same : query = index
     · subst query
-      simp [BitVec.getElem_eq_extractLsb' word index inRange, observedTrue]
-    · simp [same]
+      simp [BitVec.getElem_eq_extractLsb' word index inRange, observed]
+    · simp [BitVec.getElem_twoPow queryInRange, same]
   · have observedFalse : (word.extractLsb' index 1 == 1#1) = false := by
       cases value : word.extractLsb' index 1 == 1#1 <;> simp_all
     unfold updateFlag

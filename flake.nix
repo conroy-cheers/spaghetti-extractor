@@ -14,6 +14,8 @@
     {
       lib = {
         mkStageALeanGraph = import ./nix/stage-a-lean-graph.nix;
+        mkStageARelationalAnalysisGraph =
+          import ./nix/stage-a-relational-analysis-graph.nix;
         mkStageARoundtripCorpus = import ./nix/stage-a-roundtrip-corpus.nix;
         mkStageARoundtripSmoke = import ./nix/stage-a-roundtrip-smoke.nix;
       };
@@ -45,6 +47,10 @@
               ./pyproject.toml
               ./src
               ./nix/stage-a-lean-graph.nix
+              ./nix/stage-a-lean-compact.nix
+              ./nix/stage-a-isa-conformance.nix
+              ./nix/stage-a-register-dataflow-graph.nix
+              ./nix/stage-a-relational-analysis-graph.nix
             ];
           };
           spaghetti-extractor-core = pkgs.python3Packages.buildPythonApplication {
@@ -226,7 +232,6 @@
             ./src/spaghetti_extractor/relational/analysis.py
             ./src/spaghetti_extractor/relational/analysis_artifact.py
             ./src/spaghetti_extractor/relational/analysis_reference.py
-            ./src/spaghetti_extractor/relational/analysis_cli.py
             ./src/spaghetti_extractor/relational/assembly.py
             ./src/spaghetti_extractor/relational/assembly_cli.py
             ./src/spaghetti_extractor/relational/artifacts.py
@@ -311,7 +316,6 @@
           ];
           spaghettiExtractorProposalPythonFiles = pkgs.lib.subtractLists [
             ./src/spaghetti_extractor/relational/analysis.py
-            ./src/spaghetti_extractor/relational/analysis_cli.py
             ./src/spaghetti_extractor/relational/analysis_reference.py
             ./src/spaghetti_extractor/relational/assembly.py
             ./src/spaghetti_extractor/relational/assembly_cli.py
@@ -1037,6 +1041,25 @@
               '';
             }).overrideAttrs
               { preferLocalBuild = true; };
+          stageARelationalAnalysisTools = {
+            side = spaghetti-extractor-side;
+            normalize = spaghetti-extractor-normalize;
+            regionFacts = spaghetti-extractor-region-facts;
+            proposal = spaghetti-extractor-proposal;
+            semanticProducts = spaghetti-extractor-semantic-products;
+            registerDataflowProblem =
+              spaghetti-extractor-register-dataflow-problem;
+            dataflowPlan = spaghetti-extractor-dataflow-plan;
+            dataflowWorker = spaghetti-extractor-dataflow-worker;
+            dataflowAggregate = spaghetti-extractor-dataflow-aggregate;
+            dataflowSummary = spaghetti-extractor-dataflow-summary;
+            dataflowCompare = spaghetti-extractor-dataflow-compare;
+            registerReplay = spaghetti-extractor-register-replay;
+            memoryProducts = spaghetti-extractor-memory-products;
+            compositionProducts = spaghetti-extractor-composition-products;
+            analysis = spaghetti-extractor-analysis;
+            preparation = spaghetti-extractor-preparation;
+          };
           stage-a-analysis-source-boundary-check =
             pkgs.runCommand "stage-a-analysis-source-boundary-check" { preferLocalBuild = true; }
               ''
@@ -1060,7 +1083,6 @@
                 test ! -e "$source/relational/composition_products.py"
                 test ! -e "$source/relational/composition_products_cli.py"
                 test ! -e "$source/relational/analysis.py"
-                test ! -e "$source/relational/analysis_cli.py"
                 test ! -e "$source/relational/pipeline.py"
                 test ! -e "$source/relational/analyses"
                 test ! -e "$source/relational/lean"
@@ -1078,7 +1100,6 @@
                 test -f "$proposal/relational/proposal_cli.py"
                 test -f "$proposal/relational/proposal_artifact.py"
                 test ! -e "$proposal/relational/analysis.py"
-                test ! -e "$proposal/relational/analysis_cli.py"
                 test ! -e "$proposal/relational/analysis_reference.py"
                 test ! -e "$proposal/relational/assembly.py"
                 test ! -e "$proposal/relational/register_dataflow_solution.py"
@@ -1177,7 +1198,6 @@
                 test -f "$side/relational/side_extraction.py"
                 test -f "$side/relational/binary_inventory.py"
                 test -f "$side/relational/side_cli.py"
-                test ! -e "$side/relational/analysis_cli.py"
                 test ! -e "$side/relational/analysis.py"
                 test ! -e "$side/relational/analysis_artifact.py"
                 test ! -e "$side/relational/pipeline.py"
@@ -1189,7 +1209,6 @@
                 test -f "$mapping/relational/mapping.py"
                 test -f "$mapping/relational/mapping_cli.py"
                 test ! -e "$mapping/relational/analysis.py"
-                test ! -e "$mapping/relational/analysis_cli.py"
                 test ! -e "$mapping/relational/extraction.py"
                 test ! -e "$mapping/relational/pipeline.py"
                 test ! -e "$mapping/relational/report_schema.py"
@@ -1199,7 +1218,6 @@
                 test -f "$normalization/relational/pair_normalization_artifact.py"
                 test ! -e "$normalization/relational/analysis.py"
                 test ! -e "$normalization/relational/analysis_artifact.py"
-                test ! -e "$normalization/relational/analysis_cli.py"
                 test ! -e "$normalization/relational/pipeline.py"
                 test ! -e "$normalization/relational/phases.py"
                 test ! -e "$normalization/relational/verdict.py"
@@ -1289,7 +1307,7 @@
                   shard_out="$out/${opcode}/shard-${toString shardIndex}-of-16"
                   mkdir -p "$shard_out"
                   export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-isa-kernel-cache}"
-                  spaghetti-extractor stage-a-check-isa-conformance \
+                  spaghetti-extractor stage-a-check-isa-conformance-worker \
                     --corpus ${imported}/corpus.json \
                     --backend bochs \
                     --bochs-runner ${bochs-conformance}/bin/spaghetti-bochs-conformance-runner \
@@ -1306,7 +1324,7 @@
                      and .proof_authority == false
                     and .closes_stage_a_proof == false' \
                     "$shard_out/check.stdout" > /dev/null
-                  spaghetti-extractor stage-a-check-isa-conformance \
+                  spaghetti-extractor stage-a-check-isa-conformance-worker \
                     --corpus ${imported}/corpus.json \
                     --backend unicorn \
                     --out "$shard_out/unicorn-report.json" \
@@ -1322,7 +1340,7 @@
                      and .proof_authority == false
                      and .closes_stage_a_proof == false' \
                     "$shard_out/unicorn-check.stdout" > /dev/null
-                  spaghetti-extractor stage-a-check-isa-conformance \
+                  spaghetti-extractor stage-a-check-isa-conformance-worker \
                     --corpus ${imported}/corpus.json \
                     --backend lean \
                     --out "$shard_out/lean-report.json" \
@@ -1643,58 +1661,63 @@
               runHook postInstall
             '';
           };
-          stage-a-fixtures-check =
-            pkgs.runCommand "stage-a-fixtures-check"
+          stage-a-fixtures-relation-contract =
+            pkgs.runCommand "stage-a-fixtures-relation-contract"
               {
-                nativeBuildInputs = [
-                  spaghetti-extractor
-                  pkgs.jq
-                  pkgs.lean4
-                ];
+                nativeBuildInputs = [ spaghetti-extractor-mapping ];
               }
               ''
                 fixture_dir="${stage-a-fixtures}/share/spaghetti-extractor/stage-a-fixtures/relational-v3"
-                work="$TMPDIR/stage-a-v3"
-                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$TMPDIR/stage-a-relational-cache"
-                mkdir -p "$work"
-                spaghetti-extractor stage-a-generate-relation-contract \
+                mkdir -p "$out"
+                spaghetti-extractor-mapping generate-relation-contract \
                   --original "$fixture_dir/stage-a-loop-original.exe" \
                   --candidate "$fixture_dir/stage-a-loop-candidate.exe" \
                   --mapping "$fixture_dir/block-map-loop.json" \
-                  --out "$work/relation-contract.json"
-                spaghetti-extractor stage-a-prove \
-                  --original "$fixture_dir/stage-a-loop-original.exe" \
-                  --candidate "$fixture_dir/stage-a-loop-candidate.exe" \
-                  --relation-contract "$work/relation-contract.json" \
-                  --out "$work/proof"
-                spaghetti-extractor stage-a-check-proof \
-                  --report "$work/proof" \
-                  --out "$work/proof-check.json"
-                jq -e '
-                  .format == "stage-a-relational-proof-check-v1" and
-                  .status == "pass" and
-                  .claim_scope.kind == "whole_program_observational_equivalence" and
-                  .claim_scope.whole_program_observational_equivalence == true and
-                  .lean_check.status == "checked" and
-                  .lean_check.theorem ==
-                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" and
-                  ([.checks[]] | all)
-                ' "$work/proof-check.json" >/dev/null
-                jq -e '
-                  .format == "stage-a-relational-verdict-v1" and
-                  .verdict == "pass" and
-                  .counts.failed == 0 and
-                  .counts.incomplete == 0 and
-                  .counts.incomplete_assumptions == 0
-                ' "$work/proof/verdict.json" >/dev/null
+                  --out "$out/relation-contract.json" \
+                  > "$out/generate-relation.stdout"
+              '';
+          stageAFixturesAnalysisGraph =
+            import ./nix/stage-a-relational-analysis-graph.nix {
+              inherit pkgs;
+              name = "stage-a-fixtures";
+              original.binary =
+                "${stage-a-fixtures}/share/spaghetti-extractor/stage-a-fixtures/relational-v3/stage-a-loop-original.exe";
+              candidate.binary =
+                "${stage-a-fixtures}/share/spaghetti-extractor/stage-a-fixtures/relational-v3/stage-a-loop-candidate.exe";
+              relationContract =
+                "${stage-a-fixtures-relation-contract}/relation-contract.json";
+              analysisKernelCache =
+                stage-a-relational-analysis-ifd-kernel-cache;
+              tools = stageARelationalAnalysisTools;
+              # A pure flake check must IFD-read this preparation to instantiate
+              # its generated Lean graph. Floating CA outputs use the public
+              # two-phase coordinator instead.
+              dataflowContentAddressed = false;
+            };
+          stage-a-fixtures-prepared-proof =
+            stageAFixturesAnalysisGraph.preparedProof;
+          stage-a-fixtures-proof-audit =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              contentAddressed = true;
+              prepared =
+                stage-a-fixtures-prepared-proof + "/report/relational-v3";
+            };
+          stage-a-fixtures-check =
+            pkgs.runCommand "stage-a-fixtures-check"
+              {
+                nativeBuildInputs = [ pkgs.jq ];
+              }
+              ''
+                prepared="${stage-a-fixtures-prepared-proof}/report/relational-v3"
                 jq -e '
                   .format == "stage-a-whole-program-acceptance-v1" and
                   .status == "ready" and
                   .theorem ==
-                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" and
+                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" and
                   .required_theorem ==
-                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
-                ' "$work/proof/whole-program-acceptance.json" >/dev/null
+                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
+                ' "$prepared/whole-program-acceptance.json" >/dev/null
                 jq -e '
                   .format == "stage-a-composition-progress-v1" and
                   .status == "ready_for_lean" and
@@ -1707,37 +1730,35 @@
                   .counts.unresolved_indirect_control_nodes == 0 and
                   .counts.unsupported_instructions == 0 and
                   .counts.acceptance_blockers == 0
-                ' "$work/proof/composition-progress.json" >/dev/null
+                ' "$prepared/composition-progress.json" >/dev/null
                 jq -e '
-                  .format == "stage-a-lean-module-graph-v1" and
+                  (
+                    .format == "stage-a-lean-module-graph-v1" or
+                    .format == "stage-a-lean-module-graph-v2"
+                  ) and
                   .expected_final_theorem ==
-                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" and
+                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" and
                   (.approved_axioms | sort) ==
                     (["propext", "Classical.choice", "Quot.sound"] | sort) and
                   .acceptance.status == "ready" and
                   .acceptance.theorem ==
-                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" and
+                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" and
                   .acceptance.blockers == []
-                ' "$work/proof/module-graph.json" >/dev/null
-                spaghetti-extractor stage-a-export-reference-contract \
-                  --original "$fixture_dir/stage-a-loop-original.exe" \
-                  --candidate "$fixture_dir/stage-a-loop-candidate.exe" \
-                  --mapping "$fixture_dir/block-map-loop.json" \
-                  --validation-report "$work/proof" \
-                  --layout-contract "$fixture_dir/layout-contract.json" \
-                  --sidecar-dir "$work/contract" \
-                  --unit-contract-dir "$work/contract" \
-                  --out "$work/contract/reference-contract.json"
+                ' "$prepared/module-graph.json" >/dev/null
                 jq -e '
-                  .constraints.validation_report_artifact_binding.status == "satisfied" and
-                  .constraints.proof_obligation_inventory.status == "satisfied"
-                ' "$work/contract/reference-contract.json" >/dev/null
-                spaghetti-extractor stage-a-smoke-contract \
-                  --reference-contract "$work/contract/reference-contract.json" \
-                  --out "$work/contract-smoke.json"
-                jq -e '.status == "pass"' "$work/contract-smoke.json" >/dev/null
+                  .format == "stage-a-relational-lean-audit-v1" and
+                  .status == "checked" and
+                  .lean_trust == 0 and
+                  .theorem ==
+                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" and
+                  .unexpected_axioms == []
+                ' "${stage-a-fixtures-proof-audit}/audit.json" >/dev/null
                 mkdir -p "$out"
-                cp -R "$work/." "$out/"
+                cp "$prepared/prepared-proof.json" \
+                  "$prepared/composition-progress.json" \
+                  "$prepared/whole-program-acceptance.json" \
+                  "${stage-a-fixtures-proof-audit}/audit.json" \
+                  "$out/"
               '';
           stage-a-fixtures-root = pkgs.writeShellApplication {
             name = "stage-a-fixtures-root";
@@ -1846,7 +1867,7 @@
               '';
           stage-a-exit-evidence-bundle = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
-            contentAddressed = false;
+            contentAddressed = true;
             prepared = stage-a-exit-prepared-proof + "/report/relational-v3";
             targetNodes = [ "relationalacceptance" ];
             targetBundle = true;
@@ -1987,7 +2008,7 @@
               '';
           stage-a-winapi-hello-proof-audit = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
-            contentAddressed = false;
+            contentAddressed = true;
             prepared = stage-a-winapi-hello-prepared-proof + "/report/relational-v3";
           };
           stage-a-winapi-hello-check =
@@ -2906,7 +2927,6 @@
             name = "stage-a-gnu-hello-proof";
             runtimeInputs = [
               spaghetti-extractor
-              pkgs.nix
             ];
             text = ''
               if [ "$#" -gt 1 ]; then
@@ -2914,7 +2934,7 @@
                 exit 2
               fi
               out="''${1:-$PWD/build/stage-a-gnu-hello-launch-proof}"
-              export SPAGHETTI_EXTRACTOR_STAGE_A_NIX_CONTENT_ADDRESSED=false
+              export SPAGHETTI_EXTRACTOR_STAGE_A_NIX_CONTENT_ADDRESSED=true
               exec spaghetti-extractor stage-a-build-relational \
                 --prepared-nix-ref "${self}#stage-a-gnu-hello-preflight" \
                 --prepared-subpath report/relational-v3 \
@@ -2989,60 +3009,57 @@
                   --out "$out/hello-relation-contract.json" \
                   > "$out/generate-relation.stdout"
               '';
+          stageAMinimalHelloAnalysisGraph =
+            import ./nix/stage-a-relational-analysis-graph.nix {
+              inherit pkgs;
+              name = "stage-a-minimal-hello";
+              original = {
+                binary =
+                  "${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment/hello-original.exe";
+                linkerMap =
+                  "${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment/hello-original.map";
+              };
+              candidate = {
+                binary =
+                  "${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment/hello-candidate.exe";
+                linkerMap =
+                  "${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment/hello-candidate.map";
+              };
+              relationContract =
+                "${stage-a-minimal-hello-relation-contract}/hello-relation-contract.json";
+              analysisKernelCache =
+                stage-a-relational-analysis-ifd-kernel-cache;
+              tools = stageARelationalAnalysisTools;
+              # Keep the static check graph evaluable in one pure flake
+              # evaluation. Dynamic production preparation remains CA-backed.
+              dataflowContentAddressed = false;
+            };
           stage-a-minimal-hello-prepared-proof =
-            pkgs.runCommand "stage-a-minimal-hello-prepared-proof"
-              {
-                nativeBuildInputs = [
-                  spaghetti-extractor-preparation
-                ];
-              }
-              ''
-                fixture_dir="${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment"
-                work="$TMPDIR/stage-a-minimal-hello"
-                mkdir -p "$work"
-                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-ifd-kernel-cache}"
-                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=16
-                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_LAUNCH_CHECK_CHUNK=1024
-                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_STATIC_CODE_MAP_NIX_PACK_MODULES=1
-                SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
-                  spaghetti-extractor-preparation prepare-relational \
-                    --original "$fixture_dir/hello-original.exe" \
-                    --candidate "$fixture_dir/hello-candidate.exe" \
-                    --relation-contract "${stage-a-minimal-hello-relation-contract}/hello-relation-contract.json" \
-                    --out "$work/relational-v3" \
-                    > "$work/relational-v3.stdout"
-                mkdir -p "$out/report"
-                cp "${stage-a-minimal-hello-static-map}/hello-block-map.json" \
-                  "${stage-a-minimal-hello-static-map}/hello-layout-contract.json" \
-                  "${stage-a-minimal-hello-relation-contract}/hello-relation-contract.json" \
-                  "$out/report/"
-                cp -R "$work/relational-v3" "$out/report/relational-v3"
-                cp "$work/relational-v3.stdout" "$out/report/"
-              '';
+            stageAMinimalHelloAnalysisGraph.preparedProof;
           stage-a-minimal-hello-proof-smoke = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
-            contentAddressed = false;
+            contentAddressed = true;
             prepared = stage-a-minimal-hello-prepared-proof + "/report/relational-v3";
             targetNodes = [ "relationalsegmentrefinementedge127" ];
             targetBundle = true;
           };
           stage-a-minimal-hello-launch-proof = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
-            contentAddressed = false;
+            contentAddressed = true;
             prepared = stage-a-minimal-hello-prepared-proof + "/report/relational-v3";
             targetNodes = [ "relationallaunchrealizabilitycertificate" ];
             targetBundle = true;
           };
           stage-a-minimal-hello-segment-proofs = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
-            contentAddressed = false;
+            contentAddressed = true;
             prepared = stage-a-minimal-hello-prepared-proof + "/report/relational-v3";
             targetNodes = [ "relationalsegmentrefinementcertificate" ];
             targetBundle = true;
           };
           stage-a-minimal-hello-evidence-bundle = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
-            contentAddressed = false;
+            contentAddressed = true;
             prepared = stage-a-minimal-hello-prepared-proof + "/report/relational-v3";
             targetNodes = [ "relationalbundle" ];
             targetBundle = true;
@@ -3366,12 +3383,23 @@
           };
           stage-a-relational-analysis-kernel-cache = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
-            contentAddressed = false;
+            contentAddressed = true;
             standaloneSourceRoot = relationalAnalysisLeanSource + "/src/spaghetti_extractor/lean/StageA";
             standaloneModules = relationalAnalysisKernelModules;
             targetNodes = relationalAnalysisKernelModules;
             targetBundle = true;
           };
+          stage-a-relational-analysis-ifd-kernel-cache =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              contentAddressed = false;
+              standaloneSourceRoot =
+                relationalAnalysisLeanSource
+                + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules = relationalAnalysisKernelModules;
+              targetNodes = relationalAnalysisKernelModules;
+              targetBundle = true;
+            };
           stage-a-relational-kernel-cache = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
             standaloneSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
@@ -3394,7 +3422,7 @@
           };
           stage-a-roundtrip-lean-graph-smoke = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
-            contentAddressed = false;
+            contentAddressed = true;
             standaloneSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
             standaloneModules = relationalKernelModules;
             standaloneModuleResources = relationalRoundtripKernelResources;
@@ -3403,7 +3431,7 @@
           };
           stage-a-roundtrip-lean-remote-smoke = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
-            contentAddressed = false;
+            contentAddressed = true;
             standaloneSourceRoot = ./nix/fixtures/stage-a-remote-lean-smoke;
             standaloneModules = [ "RemoteSmokeA" "RemoteSmokeB" ];
             targetNodes = [ "RemoteSmokeA" "RemoteSmokeB" ];
@@ -3417,7 +3445,7 @@
           mkStageARoundtripLeanTarget = targetNodes:
             import ./nix/stage-a-lean-graph.nix {
               inherit pkgs targetNodes;
-              contentAddressed = false;
+              contentAddressed = true;
               standaloneSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
               standaloneModules = relationalKernelModules;
               standaloneModuleResources = relationalRoundtripKernelResources;
@@ -3451,12 +3479,12 @@
             "RelationalLockstepEnvironment"
             "RelationalOpaqueLockstepEnvironment"
           ];
-          # Input-addressed by design: both configured builders can execute
-          # this graph today. Each Lean module remains its own derivation, so
-          # proof-only changes invalidate only the affected descendants.
+          # The stable kernel is shared as a CA derivation graph. Each Lean
+          # module remains its own derivation, so proof-only changes invalidate
+          # only the affected descendants.
           stage-a-roundtrip-lean-kernel-cache = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
-            contentAddressed = false;
+            contentAddressed = true;
             standaloneSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
             standaloneModules = relationalKernelModules;
             standaloneModuleResources = relationalRoundtripKernelResources;
@@ -3503,13 +3531,29 @@
             gnuHelloRoundtrip.mixedOriginalRegisterIndirectAuthorityProofSources;
           stage-a-gnu-hello-roundtrip-mixed-original-register-indirect-authority-proof =
             gnuHelloRoundtrip.mixedOriginalRegisterIndirectAuthorityProof;
+          stage-a-gnu-hello-roundtrip-mixed-original-stack-dynamic-authority-source =
+            gnuHelloRoundtrip.mixedOriginalStackDynamicAuthorityLean;
+          stage-a-gnu-hello-roundtrip-mixed-original-stack-dynamic-authority-proof-sources =
+            gnuHelloRoundtrip.mixedOriginalStackDynamicAuthorityProofSources;
+          stage-a-gnu-hello-roundtrip-mixed-original-stack-dynamic-authority-proof =
+            gnuHelloRoundtrip.mixedOriginalStackDynamicAuthorityProof;
           stage-a-gnu-hello-roundtrip-mixed-original-direct-call-proposals-source =
-            gnuHelloRoundtrip.mixedOriginalDirectCallProposalsLean;
+            gnuHelloRoundtrip.mixedOriginalDirectCallClosureProposalsLean;
           stage-a-gnu-hello-roundtrip-mixed-original-direct-call-proposal-proof-sources =
-            gnuHelloRoundtrip.mixedOriginalDirectCallProposalProofSources;
+            gnuHelloRoundtrip.mixedOriginalDirectCallClosureProposalProofSources;
           stage-a-gnu-hello-roundtrip-mixed-original-direct-call-proposal-proof =
-            gnuHelloRoundtrip.mixedOriginalDirectCallProposalProof;
+            gnuHelloRoundtrip.mixedOriginalDirectCallClosureProposalProof;
           stage-a-gnu-hello-roundtrip-mixed-original-direct-call-semantics-source =
+            gnuHelloRoundtrip.mixedOriginalDirectCallClosureSemanticsLean;
+          stage-a-gnu-hello-roundtrip-mixed-original-direct-call-semantics-proof-sources =
+            gnuHelloRoundtrip.mixedOriginalDirectCallClosureSemanticsProofSources;
+          stage-a-gnu-hello-roundtrip-mixed-original-direct-call-semantics-proof =
+            gnuHelloRoundtrip.mixedOriginalDirectCallClosureSemanticsProof;
+          stage-a-gnu-hello-roundtrip-mixed-original-direct-call-fixed-point-check =
+            gnuHelloRoundtrip.mixedOriginalDirectCallFixedPointCheck;
+          stage-a-gnu-hello-roundtrip-mixed-original-direct-call-round-1-proposals-source =
+            gnuHelloRoundtrip.mixedOriginalDirectCallProposalsLean;
+          stage-a-gnu-hello-roundtrip-mixed-original-direct-call-round-1-semantics-source =
             gnuHelloRoundtrip.mixedOriginalDirectCallSemanticsLean;
           stage-a-gnu-hello-roundtrip-mixed-original-carrier-binding-source =
             gnuHelloRoundtrip.mixedOriginalCarrierBindingLean;
@@ -4124,39 +4168,27 @@
             in
             assert builtins.length matches == 1;
             builtins.head matches;
-          mkRoundtripCasePreparation =
+          mkRoundtripCaseCheckedInputs =
             args:
             let
               original = roundtripCaseArtifact args "original_pe";
               candidate = roundtripCaseArtifact args "candidate_pe";
               relation = roundtripCaseArtifact args "relation_contract";
             in
-            pkgs.runCommand (pkgs.lib.strings.sanitizeDerivationName "${args.caseId}-roundtrip-preparation")
+            pkgs.runCommand (pkgs.lib.strings.sanitizeDerivationName "${args.caseId}-roundtrip-inputs")
               {
                 nativeBuildInputs = [
-                  spaghetti-extractor
                   pkgs.coreutils
                   pkgs.jq
-                  pkgs.lean4
                 ];
-                # This is the IFD manifest/source boundary. Its output path must
-                # be concrete while the generated Lean graph is evaluated;
-                # floating CA outputs remain unresolved placeholders there.
-                preferLocalBuild = false;
+                preferLocalBuild = true;
                 allowSubstitutes = true;
                 passthru = {
                   caseId = args.caseId;
-                  phase = "proof-preparation";
+                  phase = "checked-inputs";
                 };
               }
               ''
-                export HOME="$TMPDIR/home"
-                export XDG_CACHE_HOME="$TMPDIR/xdg-cache"
-                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$TMPDIR/relational-cache"
-                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-analysis-kernel-cache}"
-                mkdir -p "$HOME" "$XDG_CACHE_HOME" \
-                  "$SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE"
-                test -f ${pkgs.lib.escapeShellArg args.staticPreflight}
                 jq -e '
                   .format == "stage-a-relational-static-preflight-v1" and
                   .status == "ready" and
@@ -4175,13 +4207,47 @@
                   ${pkgs.lib.escapeShellArg "${args.caseRoot}/${relation.path}"} \
                   >> "$TMPDIR/input-hashes"
                 sha256sum --check --strict "$TMPDIR/input-hashes"
-                ${spaghetti-extractor}/bin/spaghetti-extractor \
-                  stage-a-prepare-relational \
-                  --original ${pkgs.lib.escapeShellArg "${args.caseRoot}/${original.path}"} \
-                  --candidate ${pkgs.lib.escapeShellArg "${args.caseRoot}/${candidate.path}"} \
-                  --relation-contract ${pkgs.lib.escapeShellArg "${args.caseRoot}/${relation.path}"} \
-                  --out "$TMPDIR/base-prepared" \
-                  > "$TMPDIR/preparation-command.json"
+                mkdir -p "$out"
+                cp ${pkgs.lib.escapeShellArg "${args.caseRoot}/${original.path}"} \
+                  "$out/original.pe"
+                cp ${pkgs.lib.escapeShellArg "${args.caseRoot}/${candidate.path}"} \
+                  "$out/candidate.pe"
+                cp ${pkgs.lib.escapeShellArg "${args.caseRoot}/${relation.path}"} \
+                  "$out/relation-contract.json"
+              '';
+          mkRoundtripCasePreparation =
+            args:
+            let
+              checkedInputs = mkRoundtripCaseCheckedInputs args;
+              analysisGraph = import ./nix/stage-a-relational-analysis-graph.nix {
+                inherit pkgs;
+                name = pkgs.lib.strings.sanitizeDerivationName
+                  "${args.caseId}-roundtrip";
+                original.binary = "${checkedInputs}/original.pe";
+                candidate.binary = "${checkedInputs}/candidate.pe";
+                relationContract = "${checkedInputs}/relation-contract.json";
+                analysisKernelCache =
+                  stage-a-relational-analysis-kernel-cache;
+                tools = stageARelationalAnalysisTools;
+              };
+              prepared =
+                "${analysisGraph.preparedProof}/report/relational-v3";
+            in
+            pkgs.runCommand (pkgs.lib.strings.sanitizeDerivationName "${args.caseId}-roundtrip-preparation")
+              {
+                nativeBuildInputs = [
+                  spaghetti-extractor
+                  pkgs.coreutils
+                  pkgs.jq
+                ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+                passthru = {
+                  caseId = args.caseId;
+                  phase = "proof-preparation";
+                };
+              }
+              ''
                 ${
                   if args.case.expectation.disposition == "violated" then
                     ''
@@ -4189,7 +4255,7 @@
                         stage-a-prepare-violation \
                         --case ${pkgs.lib.escapeShellArg args.caseManifest} \
                         --case-root ${pkgs.lib.escapeShellArg args.caseRoot} \
-                        --prepared "$TMPDIR/base-prepared" \
+                        --prepared ${pkgs.lib.escapeShellArg prepared} \
                         --out "$out" \
                         > "$TMPDIR/violation-preparation-command.json"
                       cp "$TMPDIR/violation-preparation-command.json" \
@@ -4197,12 +4263,14 @@
                     ''
                   else
                     ''
-                      cp -R "$TMPDIR/base-prepared" "$out"
+                      cp -R ${pkgs.lib.escapeShellArg prepared} "$out"
                     ''
                 }
-                cp "$TMPDIR/preparation-command.json" "$out/preparation-command.json"
                 jq -e '
                   .format == "stage-a-prepared-relational-v1" and
+                  .status == "prepared"
+                  or
+                  .format == "stage-a-prepared-relational-v2" and
                   .status == "prepared"
                 ' "$out/prepared-proof.json" >/dev/null
                 test -f "$out/module-graph.json"
@@ -4218,19 +4286,21 @@
                 if builtins.elem counterexampleNode nodeIds then counterexampleNode else fallbackNegativeNode;
             in
             if args.case.expectation.disposition == "pass" then
-              import ./nix/stage-a-lean-compact.nix {
+              import ./nix/stage-a-lean-graph.nix {
                 inherit pkgs;
+                schedulingMode = "closure";
                 prepared = args.preparation;
                 precompiledKernel = stage-a-relational-kernel-cache;
                 contentAddressed = args.contentAddressed;
               }
             else
               assert builtins.elem negativeNode nodeIds;
-              import ./nix/stage-a-lean-compact.nix {
+              import ./nix/stage-a-lean-graph.nix {
                 inherit pkgs;
+                schedulingMode = "closure";
                 prepared = args.preparation;
                 precompiledKernel = stage-a-relational-kernel-cache;
-                targetNode = negativeNode;
+                targetNodes = [ negativeNode ];
                 targetBundle = true;
                 contentAddressed = args.contentAddressed;
               };
@@ -4430,10 +4500,9 @@
               count,
               checkDeterminism ? true,
               expectedCounts ? null,
-              # The qualification must schedule on heterogeneous remote builders;
-              # the compact evaluator still supports CA derivations when all
-              # configured builders advertise that experimental feature.
-              contentAddressed ? false,
+              # Qualification cases schedule as independent CA derivations on
+              # the heterogeneous remote builder pool.
+              contentAddressed ? true,
             }:
             import ./nix/stage-a-roundtrip-corpus.nix {
               inherit pkgs name contentAddressed;
@@ -4505,7 +4574,7 @@
               violated = 12;
               incomplete = 0;
             };
-            contentAddressed = false;
+            contentAddressed = true;
           };
           stageARoundtripPromotedQualification = mkStageARoundtripQualification {
             name = "stage-a-roundtrip-promoted";
@@ -4515,7 +4584,7 @@
               violated = 25;
               incomplete = 0;
             };
-            contentAddressed = false;
+            contentAddressed = true;
           };
           stage-a-roundtrip-smoke-corpus = stageARoundtripSmokeQualification.corpus;
           stage-a-roundtrip-static-smoke = stageARoundtripSmokeQualification.smoke;
@@ -4579,6 +4648,7 @@
             spaghetti-extractor-memory-products
             spaghetti-extractor-normalize
             spaghetti-extractor-preparation
+            spaghetti-extractor-proposal
             spaghetti-extractor-register-dataflow-problem
             spaghetti-extractor-register-replay
             spaghetti-extractor-semantic-products
@@ -4685,6 +4755,7 @@
             stage-a-jq-fixtures-check
             stage-a-jq-fixtures-root
             stage-a-relational-analysis-kernel-cache
+            stage-a-relational-analysis-ifd-kernel-cache
             stage-a-relational-kernel-cache
             stage-a-roundtrip-lean-graph-smoke
             stage-a-roundtrip-lean-remote-smoke
@@ -4718,10 +4789,18 @@
             stage-a-gnu-hello-roundtrip-mixed-original-register-indirect-authority-source
             stage-a-gnu-hello-roundtrip-mixed-original-register-indirect-authority-proof-sources
             stage-a-gnu-hello-roundtrip-mixed-original-register-indirect-authority-proof
+            stage-a-gnu-hello-roundtrip-mixed-original-stack-dynamic-authority-source
+            stage-a-gnu-hello-roundtrip-mixed-original-stack-dynamic-authority-proof-sources
+            stage-a-gnu-hello-roundtrip-mixed-original-stack-dynamic-authority-proof
             stage-a-gnu-hello-roundtrip-mixed-original-direct-call-proposals-source
             stage-a-gnu-hello-roundtrip-mixed-original-direct-call-proposal-proof-sources
             stage-a-gnu-hello-roundtrip-mixed-original-direct-call-proposal-proof
             stage-a-gnu-hello-roundtrip-mixed-original-direct-call-semantics-source
+            stage-a-gnu-hello-roundtrip-mixed-original-direct-call-semantics-proof-sources
+            stage-a-gnu-hello-roundtrip-mixed-original-direct-call-semantics-proof
+            stage-a-gnu-hello-roundtrip-mixed-original-direct-call-fixed-point-check
+            stage-a-gnu-hello-roundtrip-mixed-original-direct-call-round-1-proposals-source
+            stage-a-gnu-hello-roundtrip-mixed-original-direct-call-round-1-semantics-source
             stage-a-gnu-hello-roundtrip-mixed-original-carrier-binding-source
             stage-a-gnu-hello-roundtrip-mixed-original-carrier-binding-proof-sources
             stage-a-gnu-hello-roundtrip-mixed-original-carrier-binding-proof
@@ -4990,7 +5069,6 @@
               pkgs.jq
               pkgs.lean4
               pkgs.lld
-              pkgs.nix
               pkgs.pkgsCross.mingw32.stdenv.cc
               pkgs.llvm
               pkgs.xed

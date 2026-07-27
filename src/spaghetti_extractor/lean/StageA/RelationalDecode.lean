@@ -525,6 +525,43 @@ def applyMachineImportCallContracts
       | _ => none
   | _ => some behavior
 
+/-- Machine-level import contracts refine call arguments and outcomes only.
+They never rewrite the symbolic register transformer.  Downstream semantic
+certificates use this theorem to share register facts checked against the
+plain exact decoder with regions decoded under the machine-call profile. -/
+theorem applyMachineImportCallContracts_registers
+    (contracts : List MachineImportCallContract)
+    (behavior transformed : SymbolicBehavior)
+    (applied : applyMachineImportCallContracts contracts behavior =
+      some transformed) :
+    transformed.registers = behavior.registers := by
+  unfold applyMachineImportCallContracts at applied
+  split at applied
+  · rename_i imported arguments continuation outcomeEquation
+    split at applied
+    · exact (congrArg (fun value : SymbolicBehavior => value.registers)
+        (Option.some.inj applied)).symm
+    · simpa using (congrArg
+        (fun value : SymbolicBehavior => value.registers)
+        (Option.some.inj applied)).symm
+    · simp at applied
+  · rename_i imported arguments outcomeEquation
+    split at applied
+    · exact (congrArg (fun value : SymbolicBehavior => value.registers)
+        (Option.some.inj applied)).symm
+    · rename_i contract contractsEquation
+      generalize argumentsEquation :
+        contract.thunkArguments? behavior = result at applied
+      cases result with
+      | none => simp at applied
+      | some refinedArguments =>
+          simpa using (congrArg
+            (fun value : SymbolicBehavior => value.registers)
+            (Option.some.inj applied)).symm
+    · simp at applied
+  · exact (congrArg (fun value : SymbolicBehavior => value.registers)
+      (Option.some.inj applied)).symm
+
 def regionAnalysisBehaviorWithMachineCallContracts
     (pe : PE32) (imports : List PEImport)
     (contracts : List MachineImportCallContract) (span : Span) : Option SymbolicBehavior := do

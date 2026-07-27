@@ -11,11 +11,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from ...errors import StageAInputError
-from .interpreter_mixed_original import OriginalImportIdentity
 from .stack_fixed_code_pointer import LeanStackAdjustment
+
+if TYPE_CHECKING:
+    from .interpreter_mixed_original import OriginalImportIdentity
+else:
+    OriginalImportIdentity = Any
 
 
 ORIGINAL_INDIRECT_CONTROL_AUTHORITY_FORMAT = (
@@ -121,7 +125,7 @@ class OriginalTargetExpressionSpec:
                 raise OriginalIndirectControlAuthorityGenerationError(
                     "stack target has extraneous address fields"
                 )
-            return f".stackRead .{register} {self.adjustment.lean()}"
+            return f".stackRead .{register} ({self.adjustment.lean()})"
         if self.kind == "dynamic_field":
             if self.offset is None:
                 raise OriginalIndirectControlAuthorityGenerationError(

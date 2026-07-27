@@ -379,12 +379,17 @@ from .relational.schema import (
     STAGE_A_RELATIONAL_PROFILE_ID,
     integer as _integer,
 )
-from .relational.pipeline import (
-    _run_sharded_relational,
-    stage_a_analyze_relational,
+from .relational.api import (
+    stage_a_build_relational,
     stage_a_check_relational_proof,
-    stage_a_generate_relational,
-    stage_a_preflight_relational,
     stage_a_prepare_relational,
     stage_a_prove_relational,
 )
+from .relational.pipeline import _run_sharded_relational
+
+__all__ = [
+    "stage_a_build_relational",
+    "stage_a_check_relational_proof",
+    "stage_a_prepare_relational",
+    "stage_a_prove_relational",
+]

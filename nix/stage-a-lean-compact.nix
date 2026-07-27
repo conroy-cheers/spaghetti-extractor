@@ -10,7 +10,6 @@
   preparedManifest ? null,
   sourceRoot ? prepared,
   precompiledKernel ? null,
-  targetNode ? null,
   targetNodes ? [ ],
   targetBundle ? false,
   contentAddressed ? true,
@@ -121,7 +120,7 @@ let
       node.dependencies == expected
     ) graph.nodes;
 
-  selectedTargetNodes = if targetNode != null then [ targetNode ] else targetNodes;
+  selectedTargetNodes = targetNodes;
   positiveMode = selectedTargetNodes == [ ];
   seedNodeIds = if positiveMode then [ graph.final_node ] else selectedTargetNodes;
   expandNodeClosure =

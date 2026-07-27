@@ -16,6 +16,7 @@ from test_stage_a_relational_interpreter_mixed_original import (
 )
 
 from spaghetti_extractor.relational.lean.interpreter_mixed_original import (
+    InterpreterMixedOriginalGenerationError,
     InterpreterMixedOriginalSpec,
     OriginalIATImport,
     OriginalImportIdentity,
@@ -29,6 +30,7 @@ from spaghetti_extractor.relational.lean.interpreter_mixed_original import (
     load_original_pe_recovery_input,
     load_original_register_control_call_contract_proposals,
     plan_interpreter_mixed_original,
+    _stable_register_control_edge_ids,
 )
 
 
@@ -197,6 +199,35 @@ def _machine_contract_symbol() -> QualifiedLeanSymbol:
 
 
 class StageAMixedOriginalRegisterControlProvenanceTests(unittest.TestCase):
+    def test_stable_edge_ids_ignore_unrelated_graph_insertions(self) -> None:
+        first = (3, 5, "direct", None)
+        later = (7, 11, "call_return", 19)
+        inserted = (4, 6, "direct", None)
+
+        baseline = _stable_register_control_edge_ids((first, later))
+        extended = _stable_register_control_edge_ids(
+            (first, inserted, later)
+        )
+
+        self.assertEqual(baseline[first], extended[first])
+        self.assertEqual(baseline[later], extended[later])
+        self.assertNotEqual(extended[first], extended[inserted])
+        self.assertNotEqual(extended[later], extended[inserted])
+
+    def test_stable_edge_id_ignores_contract_annotation_progress(self) -> None:
+        pending = (7, 11, "call_return", None)
+        checked = (7, 11, "call_return", 19)
+
+        self.assertEqual(
+            _stable_register_control_edge_ids((pending,))[pending],
+            _stable_register_control_edge_ids((checked,))[checked],
+        )
+        with self.assertRaisesRegex(
+            InterpreterMixedOriginalGenerationError,
+            "ambiguous contract annotations",
+        ):
+            _stable_register_control_edge_ids((pending, checked))
+
     def test_exact_loop_yields_scc_witness_without_closing_site(self) -> None:
         image = _loop_image()
         with tempfile.TemporaryDirectory() as temporary:

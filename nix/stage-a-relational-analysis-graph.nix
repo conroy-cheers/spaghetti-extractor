@@ -8,7 +8,7 @@
   tools,
   extraReportArtifacts ? [ ],
   dataflowFineGrained ? true,
-  dataflowContentAddressed ? false,
+  dataflowContentAddressed ? true,
   extractionJobs ? 8,
   extractionBatch ? 4,
   normalizationJobs ? 8,
@@ -118,7 +118,7 @@ let
       '';
 
   mkSideIsa =
-    label: inventory:
+    label: request:
     let
       fixture = side label;
     in
@@ -138,7 +138,7 @@ let
         mkdir -p "$out"
         spaghetti-extractor-side extract-side-isa \
           --binary "${fixture.binary}" \
-          --request "${inventory}/isa-request.json" \
+          --request "${request}" \
           --out "$out/isa.json" \
           > "$out/isa.stdout"
         jq -e '
@@ -146,6 +146,31 @@ let
           .side == "${label}" and
           (.regions | length) > 0
         ' "$out/isa.json" >/dev/null
+      '';
+
+  mkMergedIsaRequest =
+    label: inventory: supplement:
+    pkgs.runCommand "${name}-${label}-merged-isa-request"
+      {
+        nativeBuildInputs = [
+          tools.side
+          pkgs.jq
+        ];
+        preferLocalBuild = false;
+        allowSubstitutes = true;
+      }
+      ''
+        mkdir -p "$out"
+        spaghetti-extractor-side merge-side-extraction-requests \
+          --input "${inventory}/isa-request.json" \
+          --input "${supplement}/request.json" \
+          --out "$out/request.json" \
+          > "$out/request.stdout"
+        jq -e '
+          .format == "stage-a-relational-side-extraction-request-v1" and
+          .side == "${label}" and
+          (.regions | length) > 0
+        ' "$out/request.json" >/dev/null
       '';
 
   mkSupplementRequest =
@@ -247,11 +272,15 @@ rec {
 
   originalExtraction = mkSideExtraction "original" originalInventory;
   candidateExtraction = mkSideExtraction "candidate" candidateInventory;
-  originalIsa = mkSideIsa "original" originalInventory;
-  candidateIsa = mkSideIsa "candidate" candidateInventory;
 
   originalSupplementRequest = mkSupplementRequest "original" originalInventory;
   candidateSupplementRequest = mkSupplementRequest "candidate" candidateInventory;
+  originalIsaRequest =
+    mkMergedIsaRequest "original" originalInventory originalSupplementRequest;
+  candidateIsaRequest =
+    mkMergedIsaRequest "candidate" candidateInventory candidateSupplementRequest;
+  originalIsa = mkSideIsa "original" "${originalIsaRequest}/request.json";
+  candidateIsa = mkSideIsa "candidate" "${candidateIsaRequest}/request.json";
   originalSupplementExtraction = mkSupplementExtraction "original" originalSupplementRequest;
   candidateSupplementExtraction = mkSupplementExtraction "candidate" candidateSupplementRequest;
   originalMergedExtraction =
@@ -683,8 +712,13 @@ rec {
             (.blockers | length) > 0 and
             all(.blockers[]; (.code | type) == "string" and (.code | length) > 0)
           ) or (
-            .status == "pass" and
-            .theorem == "pe32ProgramsEquivalent" and
+            .status == "ready" and
+            (
+              .theorem ==
+                "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" or
+              .theorem ==
+                "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
+            ) and
             (.blockers | length) == 0
           )
         ' "$work/relational-v3/whole-program-acceptance.json" >/dev/null
@@ -696,8 +730,13 @@ rec {
               .expected_final_theorem == null and
               (.acceptance.blockers | length) > 0
             ) or (
-              .acceptance.status == "pass" and
-              .expected_final_theorem == "pe32ProgramsEquivalent" and
+              .acceptance.status == "ready" and
+              (
+                .expected_final_theorem ==
+                  "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" or
+                .expected_final_theorem ==
+                  "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
+              ) and
               (.acceptance.blockers | length) == 0
             )
           )

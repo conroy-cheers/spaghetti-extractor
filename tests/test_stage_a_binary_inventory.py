@@ -16,8 +16,11 @@ from spaghetti_extractor.relational.pair_normalization import (
 )
 from spaghetti_extractor.relational.schema import (
     RELATIONAL_ANALYSIS_KERNEL_MODULES,
+    STAGE_A_RELATIONAL_MODEL_ID,
+    STAGE_A_RELATIONAL_PROFILE_ID,
 )
 from spaghetti_extractor.relational.side_extraction import (
+    stage_a_merge_side_extraction_requests,
     stage_a_merge_side_extractions,
     stage_a_project_missing_side_extraction_request,
 )
@@ -32,7 +35,7 @@ from spaghetti_extractor.stage_binary import (
     _direct_cfg_edges,
     _parse_stage_a_pe,
 )
-from spaghetti_extractor.util import sha256_file, write_json
+from spaghetti_extractor.util import sha256_bytes, sha256_file, write_json
 
 
 class StageABinaryInventoryTests(StageARelationalTestBase):
@@ -202,6 +205,32 @@ class StageABinaryInventoryTests(StageARelationalTestBase):
             self.assertEqual(request.binary_sha256, sha256_file(binary))
             self.assertNotIn("candidate", json.dumps(request.to_payload()))
 
+    def test_tiny_pe_inventory_without_linker_map_is_static_and_exact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = self._write_pe(root / "hello.exe", b"\xeb\xfe")
+
+            payload = stage_a_inventory_binary(
+                binary=binary,
+                side="original",
+                out=root / "inventory.json",
+            )
+
+            self.assertEqual(payload["status"], "pass")
+            self.assertEqual(
+                payload["linker_map_sha256"], sha256_bytes(b"")
+            )
+            self.assertEqual(payload["counts"]["regions"], 1)
+            self.assertEqual(
+                payload["regions"][0]["span"],
+                {"rva_start": 0x1000, "size": 2},
+            )
+            self.assertEqual(
+                payload["regions"][0]["source"]["kind"],
+                "static_executable_section_block",
+            )
+            parse_binary_cutpoint_inventory(payload)
+
     def test_tampering_fails_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -354,6 +383,68 @@ class StageABinaryInventoryTests(StageARelationalTestBase):
             self.assertEqual(len(superset.regions), 3)
             with self.assertRaisesRegex(StageAInputError, "scope is invalid"):
                 side_extraction_request_from_inventory(payload, scope="pair")
+
+    def test_side_extraction_request_merge_is_deterministic_and_deduplicated(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            common = {
+                "format": "stage-a-relational-side-extraction-request-v1",
+                "profile": STAGE_A_RELATIONAL_PROFILE_ID,
+                "model": STAGE_A_RELATIONAL_MODEL_ID,
+                "side": "original",
+                "binary_sha256": "a" * 64,
+            }
+            first = root / "first.json"
+            second = root / "second.json"
+            write_json(first, {
+                **common,
+                "regions": [
+                    {
+                        "index": 0,
+                        "id": "first",
+                        "numeric_id": 0,
+                        "span": {"rva_start": 0x1000, "size": 4},
+                    },
+                ],
+            })
+            write_json(second, {
+                **common,
+                "regions": [
+                    {
+                        "index": 0,
+                        "id": "duplicate",
+                        "numeric_id": 0,
+                        "span": {"rva_start": 0x1000, "size": 4},
+                    },
+                    {
+                        "index": 1,
+                        "id": "supplement",
+                        "numeric_id": 1,
+                        "span": {"rva_start": 0x2000, "size": 8},
+                    },
+                ],
+            })
+
+            result = stage_a_merge_side_extraction_requests(
+                inputs=[second, first],
+                out=root / "merged.json",
+            )
+            merged = parse_request(
+                json.loads(
+                    (root / "merged.json").read_text(encoding="utf-8")
+                )
+            )
+
+            self.assertEqual(result["regions"], 2)
+            self.assertEqual(
+                [
+                    (region.span.rva_start, region.span.size)
+                    for region in merged.regions
+                ],
+                [(0x1000, 4), (0x2000, 8)],
+            )
 
     def test_unsupported_side_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

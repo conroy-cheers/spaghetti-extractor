@@ -154,15 +154,67 @@ structure CompleteIndexedTablePredecessorPremise
 theorem indexedTableClosure_of_empty_checked_interval
     (authority : CheckedIndexedTableAuthority context)
     (reachable : ActualSourceReachability)
-    (loop : LoopFacts)
-    (loopExact : authority.static.claim.table.loop = .exact loop)
-    (empty : loop.lowerInclusive = loop.upperExclusive)
+    (emptyChecked : authority.static.claim.emptyInterval = true)
     (complete : CompleteIndexedTablePredecessorPremise authority reachable) :
     OriginalIndirectControlClosure context authority.static.claim.site reachable := by
   apply OriginalIndirectControlClosure.unreachable
   rintro ⟨world, state, reached⟩
-  exact authority.static.claim.noRuntimeIndex_of_emptyInterval loop loopExact
-    empty state (complete.everyReachableIndexBound world state reached)
+  exact authority.static.claim.noRuntimeIndex_of_emptyChecked emptyChecked state
+    (complete.everyReachableIndexBound world state reached)
+
+/-- Compact authority for an indexed dispatch whose predecessor interval is
+empty. The exact decoded site remains PE-backed, while table contents are
+irrelevant because composition must prove that no state can reach the source. -/
+structure CheckedEmptyIndexedSourceAuthority
+    (context : OriginalDecodedStaticContext) where
+  decodedAuthority : ExactOriginalDecodedAuthority context
+  site : OriginalIndirectControlSite
+  siteChecked : site.checked context = true
+  indexRegister : Reg
+  baseAddress : Nat
+  targetShape : site.target = .indexedTable baseAddress indexRegister 4
+  lowerInclusive : Nat
+  upperExclusive : Nat
+  emptyInterval : lowerInclusive = upperExclusive
+
+def CheckedEmptyIndexedSourceAuthority.RuntimeIndexBound
+    (authority : CheckedEmptyIndexedSourceAuthority context)
+    (state : MachineState) : Prop :=
+  authority.lowerInclusive <=
+      (state.registers.get authority.indexRegister).toNat ∧
+    (state.registers.get authority.indexRegister).toNat <
+      authority.upperExclusive
+
+def CheckedEmptyIndexedSourceAuthority.ReachabilityBound
+    (authority : CheckedEmptyIndexedSourceAuthority context)
+    (reachable : ActualSourceReachability) : Prop :=
+  ∀ world state, reachable world state -> authority.RuntimeIndexBound state
+
+theorem CheckedEmptyIndexedSourceAuthority.noRuntimeIndex
+    (authority : CheckedEmptyIndexedSourceAuthority context) :
+    ∀ state, ¬ authority.RuntimeIndexBound state := by
+  intro state bound
+  rcases bound with ⟨lower, upper⟩
+  rw [authority.emptyInterval] at lower
+  omega
+
+/-- The product graph must derive this bound from every complete decoded
+predecessor. The empty interval is checked in the authority rather than
+inferred from a diagnostic table inventory. -/
+structure CompleteEmptyIndexedSourcePredecessorPremise
+    (authority : CheckedEmptyIndexedSourceAuthority context)
+    (reachable : ActualSourceReachability) : Prop where
+  everyReachableIndexBound : authority.ReachabilityBound reachable
+
+theorem emptyIndexedSourceClosure_of_complete
+    (authority : CheckedEmptyIndexedSourceAuthority context)
+    (reachable : ActualSourceReachability)
+    (complete : CompleteEmptyIndexedSourcePredecessorPremise authority reachable) :
+    OriginalIndirectControlClosure context authority.site reachable := by
+  apply OriginalIndirectControlClosure.unreachable
+  rintro ⟨world, state, reached⟩
+  exact authority.noRuntimeIndex state
+    (complete.everyReachableIndexBound world state reached)
 
 /-- Static authority for a dynamic callback-field source.  This checks the
 exact instruction and finite code inventory, but not allocation membership,

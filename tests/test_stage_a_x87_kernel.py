@@ -32,9 +32,14 @@ class StageAX87KernelTests(unittest.TestCase):
                 source_root / "RelationalX87Decode.lean",
                 stage_a / "RelationalX87Decode.lean",
             )
+            shutil.copyfile(
+                source_root / "RelationalX87StateOnlyDecode.lean",
+                stage_a / "RelationalX87StateOnlyDecode.lean",
+            )
             (stage_a / "X87KernelCheck.lean").write_text(
                 """
 import StageA.RelationalX87Decode
+import StageA.RelationalX87StateOnlyDecode
 
 namespace StageA.X87KernelCheck
 
@@ -142,6 +147,21 @@ example :
 example :
     (decodeCommandExact [0x9b]).map (fun decoded =>
       (decoded.command, decoded.waitMode)) = some (.wait, .waiting) := by decide
+example :
+    StageA.Relational.X87StateOnly.instructionChecked .x87Wait = true := by
+  decide
+example :
+    StageA.Relational.X87StateOnly.instructionChecked
+      (.x87CompareStack .ordered .status 1 false) = true := by
+  decide
+example :
+    StageA.Relational.X87StateOnly.instructionChecked
+      (.x87CompareStack .ordered .eflags 1 false) = false := by
+  decide
+example :
+    StageA.Relational.X87StateOnly.instructionChecked .x87StoreStatusAx =
+      false := by
+  decide
 
 end StageA.X87KernelCheck
 """,

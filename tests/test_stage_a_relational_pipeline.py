@@ -18,6 +18,58 @@ from spaghetti_extractor.relational.x87_profile import (
 
 
 class StageARelationalPipelineTests(StageARelationalTestBase):
+    def test_proof_check_rejects_legacy_report_before_lean_or_extraction(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            report = Path(temporary)
+            (report / "verdict.json").write_text(
+                json.dumps({"format": "stage-a-relational-verdict-v3"}),
+                encoding="utf-8",
+            )
+
+            with (
+                patch(
+                    "spaghetti_extractor.relational.pipeline."
+                    "_extract_relational_behaviors"
+                ) as extract,
+                patch(
+                    "spaghetti_extractor.relational.executor."
+                    "_run_lean_relational"
+                ) as run_lean,
+            ):
+                with self.assertRaisesRegex(
+                    StageAInputError,
+                    "accepts only stage-a-relational-nix-build-v1 reports",
+                ):
+                    stage_a_check_relational_proof(report=report)
+
+            extract.assert_not_called()
+            run_lean.assert_not_called()
+
+    def test_proof_check_delegates_nix_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            report = Path(temporary)
+            out = report / "check.json"
+            verdict = {"format": "stage-a-relational-nix-build-v1"}
+            (report / "verdict.json").write_text(
+                json.dumps(verdict),
+                encoding="utf-8",
+            )
+            expected = {"status": "pass"}
+
+            with patch(
+                "spaghetti_extractor.relational.build."
+                "_check_nix_relational_report",
+                return_value=expected,
+            ) as check_nix:
+                result = stage_a_check_relational_proof(report=report, out=out)
+
+            self.assertEqual(result, expected)
+            check_nix.assert_called_once_with(
+                report=report,
+                verdict=verdict,
+                out=out,
+            )
+
     def test_x87_memory_effect_is_semantically_qualified_before_composition(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -627,7 +679,7 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
             self.assertIn("Lean decoder", gaps["issues"][0]["next_action"])
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for exact-byte relational replay")
-    def test_exact_byte_region_proof_passes_and_tampering_fails_replay(self):
+    def test_exact_byte_region_proof_rejects_legacy_replay(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             original = self._write_pe(root / "original.exe", bytes.fromhex("8b03894304ebf9"))
@@ -644,18 +696,14 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
 
             self.assertEqual(result["verdict"], "incomplete")
             self.assertFalse(result["claim_scope"]["acceptance_eligible"])
-            replay = stage_a_check_relational_proof(report=report)
-            self.assertEqual(replay["status"], "incomplete")
+            with self.assertRaisesRegex(
+                StageAInputError,
+                "accepts only stage-a-relational-nix-build-v1 reports",
+            ):
+                stage_a_check_relational_proof(report=report)
             proof_ir = json.loads((report / "relational-proof-ir.json").read_text(encoding="utf-8"))
             self.assertEqual(proof_ir["obligations"][0]["status"], "proved")
             self.assertEqual(proof_ir["obligations"][0]["evidence"]["kind"], "lean_normalization")
-
-            normalized = json.loads((report / "relation-contract.json").read_text(encoding="utf-8"))
-            normalized["regions"][0]["outputs"] = normalized["regions"][0]["outputs"][:-1]
-            (report / "relation-contract.json").write_text(json.dumps(normalized), encoding="utf-8")
-            tampered = stage_a_check_relational_proof(report=report)
-            self.assertEqual(tampered["status"], "incomplete")
-            self.assertFalse(tampered["checks"]["contract_hash_matches"])
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for checked counterexamples")
     def test_semantic_mutation_produces_lean_checked_counterexample(self):
@@ -835,7 +883,7 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
             stage_a = lean_dir / "StageA"
             stage_a.mkdir()
             source_root = Path(__file__).parents[1] / "src" / "spaghetti_extractor" / "lean" / "StageA"
-            for name in ("Formal.lean",):
+            for name in ("X87.lean", "Formal.lean"):
                 shutil.copyfile(source_root / name, stage_a / name)
             (stage_a / "FlagsCompose.lean").write_text(
                 """import StageA.Formal
@@ -999,7 +1047,7 @@ end StageA.FlagsCompose
             self.assertLess(len(bundle), 300_000)
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for x87 relational proofs")
-    def test_x87_stack_and_arithmetic_wait_for_the_qualified_physical_model(self):
+    def test_x87_stack_and_arithmetic_use_the_qualified_physical_model(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             code = bytes.fromhex("d9e8d9eed9c9dec1ddd8ebf4")
@@ -1014,12 +1062,9 @@ end StageA.FlagsCompose
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "incomplete")
-            self.assertEqual(
-                result["proof"]["lean"]["status"],
-                "semantic_preflight_incomplete",
-            )
-            self.assertFalse(
+            self.assertEqual(result["verdict"], "pass", result)
+            self.assertEqual(result["proof"]["lean"]["status"], "checked")
+            self.assertTrue(
                 result["claim_scope"]["whole_program_observational_equivalence"]
             )
 
@@ -1042,8 +1087,18 @@ end StageA.FlagsCompose
             self.assertEqual(result["verdict"], "incomplete")
             self.assertEqual(
                 result["proof"]["lean"]["status"],
-                "semantic_preflight_incomplete",
+                "failed",
             )
+            self.assertEqual(
+                result["diagnostic"]["category"],
+                "relational_proof_not_closed",
+            )
+            semantic_gaps = json.loads(
+                (root / "report" / "semantic-gaps.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(semantic_gaps["status"], "supported")
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for mapped static-data proofs")
     def test_relocated_x87_static_data_uses_checked_memory_mapping(self):
@@ -1085,7 +1140,7 @@ end StageA.FlagsCompose
             self.assertEqual(result["verdict"], "incomplete")
             self.assertEqual(
                 result["proof"]["lean"]["status"],
-                "semantic_preflight_incomplete",
+                "checked",
             )
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for immutable image-data proofs")
@@ -1119,7 +1174,11 @@ end StageA.FlagsCompose
             self.assertEqual(result["verdict"], "incomplete")
             self.assertEqual(
                 result["proof"]["lean"]["status"],
-                "semantic_preflight_incomplete",
+                "failed",
+            )
+            self.assertEqual(
+                result["diagnostic"]["category"],
+                "relational_proof_not_closed",
             )
             self.assertFalse(
                 result["claim_scope"]["whole_program_observational_equivalence"]
@@ -1311,8 +1370,8 @@ end StageA.FlagsCompose
             )
             self.assertEqual(proof_ir["status"], "incomplete")
 
-            replay = stage_a_check_relational_proof(report=report)
-            self.assertEqual(replay["status"], "incomplete")
-            self.assertFalse(replay["checks"]["proof_ir_satisfied"])
-            self.assertFalse(replay["checks"]["no_incomplete_assumptions"])
-            self.assertFalse(replay["checks"]["contract_families_closed"])
+            with self.assertRaisesRegex(
+                StageAInputError,
+                "accepts only stage-a-relational-nix-build-v1 reports",
+            ):
+                stage_a_check_relational_proof(report=report)

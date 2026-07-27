@@ -111,6 +111,33 @@ def IndexedImmutableTableClaim.ReachabilityBound
     (actualReachable : MachineState → Prop) : Prop :=
   ∀ state, actualReachable state → claim.RuntimeIndexBound state
 
+/-- A compact checked fact for the empty-table case. It deliberately projects
+only the loop inventory instead of unfolding the PE-backed table checker. -/
+def IndexedImmutableTableClaim.emptyInterval
+    (claim : IndexedImmutableTableClaim) : Bool :=
+  match claim.table.loop with
+  | .exact loop => loop.lowerInclusive == loop.upperExclusive
+  | .unknown => false
+
+/-- The Boolean empty-interval witness is enough to refute every concrete
+runtime index bound. -/
+theorem IndexedImmutableTableClaim.noRuntimeIndex_of_emptyChecked
+    (claim : IndexedImmutableTableClaim)
+    (emptyChecked : claim.emptyInterval = true) :
+    ∀ state, ¬ claim.RuntimeIndexBound state := by
+  intro state bound
+  rcases bound with ⟨runtimeLoop, runtimeExact, lower, upper⟩
+  cases loopExact : claim.table.loop with
+  | unknown =>
+      simp [IndexedImmutableTableClaim.emptyInterval, loopExact] at emptyChecked
+  | exact loop =>
+      have empty : loop.lowerInclusive = loop.upperExclusive := by
+        simpa [IndexedImmutableTableClaim.emptyInterval, loopExact] using
+          emptyChecked
+      rw [loopExact] at runtimeExact
+      cases Knowledge.exact.inj runtimeExact
+      omega
+
 /-- An empty checked loop interval cannot reach its indexed call. This theorem
 does not prove the predecessor bound; it makes that remaining obligation
 precise and composable. -/

@@ -9,17 +9,26 @@ from pathlib import Path
 import pefile
 
 from spaghetti_extractor.relational.lean.internal_direct_call_register_control_authority import (
+    DirectCallCallerFrameWordCrossing,
+    DirectCallCallerFrameWordLeanBindings,
     DirectCallCrossing,
     DirectCallRegisterControlAuthorityError,
     DirectCallRegisterControlLeanBindings,
     DirectCallSemanticProvenanceBinding,
+    FiniteOriginCallCallerFrameWordLeanBindings,
+    FiniteOriginCallEntryLeanBindings,
+    FiniteOriginCallRegisterControlLeanBindings,
     RegisterControlFrontierRequest,
     _StateRow,
     _binding_matches_exact_crossing,
     _crossings_for_site,
     _load_state_rows,
     _stable_contract_id,
+    direct_call_caller_frame_word_authority_source,
     direct_call_register_control_authority_source,
+    finite_origin_call_caller_frame_word_authority_source,
+    finite_origin_call_entry_authority_source,
+    finite_origin_call_register_control_authority_source,
     plan_direct_call_register_control_authorities,
 )
 from tests.pe_fixtures import pe32_image
@@ -312,8 +321,14 @@ class StageAInternalDirectCallRegisterControlAuthorityTests(unittest.TestCase):
         bindings = DirectCallRegisterControlLeanBindings(
             context="StageA.Fixture.context",
             source_invariant="StageA.Fixture.sourceInvariant",
-            semantic_provenance="StageA.SemanticFixture.provenance",
-            semantic_provenance_module="StageA.SemanticFixture",
+            summary_tree="StageA.SemanticFixture.provenance.tree",
+            summary_checked=(
+                "StageA.SemanticFixture.provenance.premises.structuralChecked"
+            ),
+            summary_certificate_exact=(
+                "StageA.SemanticFixture.treeCertificateExact"
+            ),
+            summary_tree_module="StageA.SemanticFixture",
             context_module="StageA.Fixture",
             namespace="StageA.Generated.Call00001005EBX",
         )
@@ -333,7 +348,9 @@ class StageAInternalDirectCallRegisterControlAuthorityTests(unittest.TestCase):
             source,
         )
         self.assertIn("sourceInvariant := generatedSourceInvariant", source)
-        self.assertIn("premises.structuralChecked", source)
+        self.assertIn("generatedSummaryTreeChecked", source)
+        self.assertIn("generatedIdentityChecked", source)
+        self.assertIn("generatedRequestedBySummary", source)
         self.assertIn("certificate.graphClosed = true", source)
         self.assertIn("certificate.returns.isEmpty = false", source)
         self.assertNotIn("sorry", source)
@@ -342,6 +359,353 @@ class StageAInternalDirectCallRegisterControlAuthorityTests(unittest.TestCase):
             _stable_contract_id(crossing),
             _stable_contract_id(replace(crossing, register="esi")),
         )
+
+    def test_emits_checked_root_stack_witness_authority(self) -> None:
+        crossing = DirectCallCrossing(
+            "ebx", TEXT_RVA + 5, TEXT_RVA, TEXT_RVA + 10,
+            TEXT_RVA + 0x30, 0, 1, 2, 7,
+        )
+        bindings = DirectCallRegisterControlLeanBindings(
+            context="StageA.Fixture.context",
+            source_invariant="StageA.Fixture.sourceInvariant",
+            summary_tree="StageA.SemanticFixture.provenance.tree",
+            summary_checked=(
+                "StageA.SemanticFixture.provenance.premises.structuralChecked"
+            ),
+            summary_certificate_exact=(
+                "StageA.SemanticFixture.treeCertificateExact"
+            ),
+            summary_tree_module="StageA.SemanticFixture",
+            context_module="StageA.Fixture",
+            namespace="StageA.Generated.Call00001005EBX",
+            stack_witness="StageA.SemanticFixture.stackWitness",
+            stack_witness_member="StageA.SemanticFixture.stackWitnessMember",
+            stack_witness_checked="StageA.SemanticFixture.stackWitnessChecked",
+        )
+
+        source = direct_call_register_control_authority_source(
+            crossing, contract_id=_stable_contract_id(crossing), bindings=bindings
+        )
+
+        self.assertIn(
+            "InternalDirectCallRegisterSummary.StackSaveRestoreWitness",
+            source,
+        )
+        self.assertIn(
+            "checkedReturningRegisterCertificate_of_rootStackWitness",
+            source,
+        )
+        self.assertIn("generatedStackWitnessMember", source)
+        self.assertIn("generatedStackWitnessChecked", source)
+        self.assertNotIn("generatedIdentityChecked", source)
+
+    def test_emits_checked_caller_frame_word_authority(self) -> None:
+        crossing = DirectCallCallerFrameWordCrossing(
+            callsite_rva=TEXT_RVA + 5,
+            source_rva=TEXT_RVA,
+            continuation_rva=TEXT_RVA + 10,
+            callee_rva=TEXT_RVA + 0x30,
+            source_target_id=0,
+            continuation_target_id=1,
+            callee_target_id=2,
+            edge_index=7,
+            caller_frame_word_offsets=(32,),
+        )
+        bindings = DirectCallCallerFrameWordLeanBindings(
+            context="StageA.Fixture.context",
+            summary_tree="StageA.SemanticFixture.tree",
+            summary_checked="StageA.SemanticFixture.treeChecked",
+            summary_certificate_exact=(
+                "StageA.SemanticFixture.treeCertificateExact"
+            ),
+            summary_tree_module="StageA.SemanticFixture",
+            context_module="StageA.Fixture",
+            namespace="StageA.Generated.Call00001005FrameWords",
+        )
+
+        source = direct_call_caller_frame_word_authority_source(
+            crossing,
+            bindings=bindings,
+        )
+
+        self.assertIn(
+            "callerFrameWords :=",
+            source,
+        )
+        self.assertIn(
+            "{ originalOffset := 36, candidateOffset := 36 }",
+            source,
+        )
+        self.assertIn(
+            "{ originalOffset := 32, candidateOffset := 32 }",
+            source,
+        )
+        self.assertIn("directCallNormalizedBehaviors?", source)
+        self.assertIn("generatedCallEntryBehaviorsExact", source)
+        self.assertIn("CallerFrameWordEntryClaim.derive?", source)
+        self.assertIn(
+            "generatedCallerFrameWordEntryClaimsChecked",
+            source,
+        )
+        self.assertIn(
+            "def generatedReturningCallerFrameWordCertificate :",
+            source,
+        )
+        self.assertIn(
+            "generatedReturningStackPointerCertificate",
+            source,
+        )
+        self.assertIn(
+            "def generatedCheckedDirectCallCallerFrameWordControlContract :",
+            source,
+        )
+        self.assertIn(
+            "entryOffsetsRestore := "
+            "generatedCallerFrameWordEntryOffsetsRestore",
+            source,
+        )
+        self.assertIn(
+            "unfold generatedCallerFrameWords generatedSummaryTree",
+            source,
+        )
+        self.assertIn("decide +kernel", source)
+        self.assertNotIn(
+            "simpa only [List.mem_cons, List.not_mem_nil, or_false] using member",
+            source,
+        )
+        self.assertIn(
+            "#print axioms "
+            "generatedCheckedDirectCallCallerFrameWordControlContract",
+            source,
+        )
+        self.assertNotIn("sorry", source)
+
+    def test_emits_checked_finite_origin_caller_frame_authority(self) -> None:
+        crossing = DirectCallCallerFrameWordCrossing(
+            callsite_rva=TEXT_RVA + 5,
+            source_rva=TEXT_RVA,
+            continuation_rva=TEXT_RVA + 10,
+            callee_rva=TEXT_RVA + 0x30,
+            source_target_id=0,
+            continuation_target_id=1,
+            callee_target_id=2,
+            edge_index=7,
+            caller_frame_word_offsets=(32,),
+        )
+        entry_namespace = "StageA.Generated.FiniteCall00001005FrameEntry"
+        entry_source = finite_origin_call_entry_authority_source(
+            crossing,
+            bindings=FiniteOriginCallEntryLeanBindings(
+                context="StageA.Fixture.context",
+                summary_tree="StageA.SemanticFixture.tree",
+                summary_checked="StageA.SemanticFixture.treeChecked",
+                summary_certificate_exact=(
+                    "StageA.SemanticFixture.treeCertificateExact"
+                ),
+                summary_tree_module="StageA.SemanticFixture",
+                context_module="StageA.Fixture",
+                authority_term="StageA.IndirectFixture.authority",
+                authority_certificate_exact_term=(
+                    "StageA.IndirectFixture.authorityCertificateExact"
+                ),
+                authority_module="StageA.IndirectFixture",
+                namespace=entry_namespace,
+            ),
+        )
+        source = finite_origin_call_caller_frame_word_authority_source(
+            crossing,
+            bindings=FiniteOriginCallCallerFrameWordLeanBindings(
+                summary_certificate_exact=(
+                    "StageA.SemanticFixture.treeCertificateExact"
+                ),
+                entry_module=entry_namespace,
+                entry_namespace=entry_namespace,
+                namespace="StageA.Generated.FiniteCall00001005Frame",
+            ),
+        )
+
+        self.assertNotIn("generatedIdentityChecked", entry_source)
+        self.assertNotIn("generatedRequestedBySummary", entry_source)
+        self.assertIn(
+            "CheckedFiniteOriginCallCallerFrameWordControlContract",
+            source,
+        )
+        self.assertIn(
+            "generatedCheckedFiniteOriginCallCallerFrameWordControlContract",
+            source,
+        )
+        self.assertIn(
+            "{ originalOffset := 36, candidateOffset := 36 }",
+            source,
+        )
+        self.assertIn(
+            "{ originalOffset := 32, candidateOffset := 32 }",
+            source,
+        )
+        self.assertIn("CallerFrameWordEntryClaim.derive?", source)
+        self.assertIn(
+            "generatedCallerFrameWordEntryClaimsChecked",
+            source,
+        )
+        self.assertIn(
+            "generatedReturningStackPointerCertificate",
+            source,
+        )
+        self.assertIn(
+            "entryOffsetsRestore := "
+            "generatedCallerFrameWordEntryOffsetsRestore",
+            source,
+        )
+        self.assertIn(f"import {entry_namespace}", source)
+        self.assertIn(
+            f"rcases {entry_namespace}.generatedEntryMetadataChecked",
+            source,
+        )
+        self.assertNotIn("generatedIdentityChecked", source)
+        self.assertNotIn("sorry", source)
+
+    def test_emits_checked_finite_origin_call_authority(self) -> None:
+        crossing = DirectCallCrossing(
+            "ebx", TEXT_RVA + 5, TEXT_RVA, TEXT_RVA + 10,
+            TEXT_RVA + 0x30, 0, 1, 2, 7,
+        )
+        entry_bindings = FiniteOriginCallEntryLeanBindings(
+            context="StageA.Fixture.context",
+            summary_tree="StageA.SemanticFixture.tree",
+            summary_checked="StageA.SemanticFixture.treeChecked",
+            summary_certificate_exact=(
+                "StageA.SemanticFixture.treeCertificateExact"
+            ),
+            summary_tree_module="StageA.SemanticFixture",
+            context_module="StageA.Fixture",
+            authority_term="StageA.IndirectFixture.authority",
+            authority_certificate_exact_term=(
+                "StageA.IndirectFixture.authorityCertificateExact"
+            ),
+            authority_module="StageA.IndirectFixture",
+            namespace="StageA.Generated.FiniteCall00001005EBXEntry",
+        )
+        bindings = FiniteOriginCallRegisterControlLeanBindings(
+            summary_certificate_exact=(
+                "StageA.SemanticFixture.treeCertificateExact"
+            ),
+            entry_module="StageA.Generated.FiniteCall00001005EBXEntry",
+            entry_namespace="StageA.Generated.FiniteCall00001005EBXEntry",
+            namespace="StageA.Generated.FiniteCall00001005EBX",
+        )
+
+        entry_source = finite_origin_call_entry_authority_source(
+            crossing,
+            bindings=entry_bindings,
+        )
+        source = finite_origin_call_register_control_authority_source(
+            crossing, contract_id=_stable_contract_id(crossing), bindings=bindings
+        )
+
+        self.assertIn(
+            "finiteOriginCallEntryCheckReport\n"
+            "    (context := generatedContext)\n"
+            "    0 2\n"
+            "    1\n"
+            "    (StageA.IndirectFixture.authority).certificate",
+            entry_source,
+        )
+        self.assertIn(
+            "rw [StageA.SemanticFixture.treeCertificateExact,\n"
+            "    StageA.IndirectFixture.authorityCertificateExact]",
+            entry_source,
+        )
+        self.assertIn("set_option maxHeartbeats 0", entry_source)
+        for component in (
+            "generatedEntryKindChecked",
+            "generatedEntryTargetChecked",
+            "generatedEntryContextChecked",
+            "generatedEntrySourceMapped",
+            "generatedEntryContinuationMapped",
+            "generatedEntryCalleeMapped",
+            "generatedEntryAuthorityShapeChecked",
+            "generatedEntryOriginalSideChecked",
+            "generatedEntryCandidateSideChecked",
+            "generatedEntryCheckReportChecked",
+        ):
+            self.assertIn(component, entry_source)
+        self.assertIn(
+            "generatedEntryMetadataChecked :\n"
+            "    generatedSummaryTree.certificate.callsite.original.start =\n"
+            f"        {TEXT_RVA} /\\",
+            entry_source,
+        )
+        self.assertIn("generatedIdentityChecked", entry_source)
+        self.assertIn("generatedRequestedBySummary", entry_source)
+        self.assertIn(
+            "FiniteOriginCallEntryCheckReport.checked",
+            entry_source,
+        )
+        self.assertIn(
+            "def generatedFiniteOriginCallEntryAuthority :\n"
+            "    CheckedFiniteOriginCallEntryAuthority generatedContext",
+            source,
+        )
+        self.assertIn(
+            "def generatedCheckedFiniteOriginCallRegisterControlContract :\n"
+            "    CheckedFiniteOriginCallRegisterControlContract generatedContext",
+            source,
+        )
+        self.assertIn("generatedEntryAuthorityChecked", source)
+        self.assertIn("generatedReturningRegisterCertificate", source)
+        self.assertIn("targetRegister := .ebx", source)
+        self.assertIn("targetRegisterRequested := by decide +kernel", source)
+        self.assertIn("targetRegisterOutputChecked := by decide +kernel", source)
+        self.assertIn(
+            "StageA.Generated.FiniteCall00001005EBXEntry."
+            "generatedIdentityChecked",
+            source,
+        )
+        self.assertNotIn(
+            "rw [StageA.SemanticFixture.treeCertificateExact]",
+            source,
+        )
+        self.assertNotIn("sorry", source)
+
+    def test_finite_origin_call_binding_rejects_partial_stack_witness(self) -> None:
+        bindings = FiniteOriginCallRegisterControlLeanBindings(
+            summary_certificate_exact=(
+                "StageA.SemanticFixture.treeCertificateExact"
+            ),
+            entry_module="StageA.Generated.FiniteCall00001005EBXEntry",
+            entry_namespace="StageA.Generated.FiniteCall00001005EBXEntry",
+            namespace="StageA.Generated.FiniteCall00001005EBX",
+            stack_witness="StageA.SemanticFixture.stackWitness",
+        )
+
+        with self.assertRaisesRegex(
+            DirectCallRegisterControlAuthorityError,
+            "must be supplied together",
+        ):
+            bindings.checked()
+
+    def test_rejects_partial_stack_witness_binding(self) -> None:
+        bindings = DirectCallRegisterControlLeanBindings(
+            context="StageA.Fixture.context",
+            source_invariant="StageA.Fixture.sourceInvariant",
+            summary_tree="StageA.SemanticFixture.provenance.tree",
+            summary_checked=(
+                "StageA.SemanticFixture.provenance.premises.structuralChecked"
+            ),
+            summary_certificate_exact=(
+                "StageA.SemanticFixture.treeCertificateExact"
+            ),
+            summary_tree_module="StageA.SemanticFixture",
+            context_module="StageA.Fixture",
+            namespace="StageA.Generated.Call00001005EBX",
+            stack_witness="StageA.SemanticFixture.stackWitness",
+        )
+
+        with self.assertRaisesRegex(
+            DirectCallRegisterControlAuthorityError,
+            "must be supplied together",
+        ):
+            bindings.checked()
 
     @unittest.skipUnless(
         all(path.exists() for path in (GNU_ORIGINAL, GNU_STATE, GNU_MIXED, GNU_IMPORTS)),

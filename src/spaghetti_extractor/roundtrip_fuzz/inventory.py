@@ -54,7 +54,7 @@ def roundtrip_interface_inventory() -> dict[str, Any]:
             },
             {
                 "phase": "proof_preparation",
-                "python": "relational.pipeline.stage_a_prepare_relational",
+                "python": "relational.api.stage_a_prepare_relational",
                 "cli": "stage-a-prepare-relational",
                 "proof_authority": False,
             },
@@ -65,8 +65,8 @@ def roundtrip_interface_inventory() -> dict[str, Any]:
                 "proof_authority": True,
             },
             {
-                "phase": "independent_replay",
-                "python": "relational.pipeline.stage_a_check_relational_proof",
+                "phase": "nix_report_audit",
+                "python": "relational.api.stage_a_check_relational_proof",
                 "cli": "stage-a-check-proof",
                 "proof_authority": False,
             },

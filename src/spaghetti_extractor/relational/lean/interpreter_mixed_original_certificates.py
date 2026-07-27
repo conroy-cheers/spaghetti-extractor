@@ -56,6 +56,9 @@ class _RangeProof:
 
 _CERTIFICATE_MARKER = "\ndef generatedExactOriginalCodeMapCertificate :"
 _CARRIER_MARKER = "\ndef generatedOriginalStaticTargetIndex :"
+_CARRIER_BOUNDARY_MARKER = (
+    "\ndef generatedOriginalMachineImportBoundarySiteBindings :"
+)
 _STATIC_INDIRECT = re.compile(
     r"^def generatedOriginalStaticIndirect([0-9]+)Behavior",
     re.MULTILINE,
@@ -216,14 +219,38 @@ def decompose_interpreter_mixed_original_base(
         stage_a, certificate_module, certificate_source
     )
 
-    carrier_module = f"{INTERPRETER_MIXED_ORIGINAL_BASE_MODULE}CarrierData"
-    carrier_source = _owned_source(
+    carrier_boundary_count = source.count(_CARRIER_BOUNDARY_MARKER)
+    if carrier_boundary_count > 1:
+        raise InterpreterMixedOriginalCertificateDecompositionError(
+            "mixed-original carrier boundary declarations are ambiguous"
+        )
+    carrier_boundary_offset = (
+        source.index(_CARRIER_BOUNDARY_MARKER)
+        if carrier_boundary_count == 1
+        else static_offset
+    )
+    if not carrier_offset < carrier_boundary_offset <= static_offset:
+        raise InterpreterMixedOriginalCertificateDecompositionError(
+            "mixed-original carrier context declarations are out of phase order"
+        )
+    context_module = (
+        f"{INTERPRETER_MIXED_ORIGINAL_BASE_MODULE}ContextData"
+    )
+    context_source = _owned_source(
         imports=[
             certificate_module,
             "RelationalInterpreterOriginalCarrierBinding",
         ],
         namespace=namespace,
-        body=source[carrier_offset:static_offset].strip(),
+        body=source[carrier_offset:carrier_boundary_offset].strip(),
+    )
+    context_path = _write_module(stage_a, context_module, context_source)
+
+    carrier_module = f"{INTERPRETER_MIXED_ORIGINAL_BASE_MODULE}CarrierData"
+    carrier_source = _owned_source(
+        imports=[context_module],
+        namespace=namespace,
+        body=source[carrier_boundary_offset:static_offset].strip(),
     )
     carrier_path = _write_module(stage_a, carrier_module, carrier_source)
 
@@ -314,6 +341,7 @@ def decompose_interpreter_mixed_original_base(
         aggregate_module: _resource("light", 1024),
         scalar_module: _resource("high-memory", 8192),
         certificate_module: _resource("light", 1024),
+        context_module: _resource("high-memory", 8192),
         carrier_module: _resource("high-memory", 8192),
         launch_module: _resource("medium", 4096),
         reachability_data_module: _resource("light", 1024),
@@ -334,6 +362,7 @@ def decompose_interpreter_mixed_original_base(
         aggregate_path,
         scalar_path,
         certificate_path,
+        context_path,
         carrier_path,
         *static_paths,
         launch_path,

@@ -101,7 +101,7 @@ class StageAOriginalIndirectControlAuthorityTests(unittest.TestCase):
             self.assertIn(f"theorem {name}Checked", source)
             self.assertIn(f"def {name}Evidence", source)
         self.assertIn("instructionBytes := [255, 84, 36, 32]", source)
-        self.assertIn(".stackRead .esp .add 32", source)
+        self.assertIn(".stackRead .esp (.add 32)", source)
         self.assertIn(".dynamicField .ebx 4", source)
         self.assertIn(".indexedTable 4358380 .ebx 4", source)
         self.assertIn(

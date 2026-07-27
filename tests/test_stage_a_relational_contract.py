@@ -1603,10 +1603,11 @@ class StageARelationalContractTests(StageARelationalTestBase):
         remote_command = _relational_nix_build_command("proof-expression", builders_file)
         local_command = _relational_nix_build_command("proof-expression", None)
 
+        self.assertEqual(Path(remote_command[0]).name, "nix")
         self.assertEqual(
-            remote_command[:10],
+            remote_command[1:10],
             [
-                "nix", "build", "--max-jobs", "0", "--cores", "2", "--builders",
+                "build", "--max-jobs", "0", "--cores", "2", "--builders",
                 "@/tmp/stage-a-builders", "--no-link", "--json",
             ],
         )
@@ -1634,8 +1635,11 @@ class StageARelationalContractTests(StageARelationalTestBase):
         self.assertEqual(
             evaluator.count("ulimit -s unlimited 2>/dev/null || true"), 2
         )
-        self.assertIn("compile_jobs=1", evaluator)
-        self.assertNotIn("compile_jobs=2", evaluator)
+        self.assertIn(
+            "for module in ${lib.escapeShellArgs node.modules}; do",
+            evaluator,
+        )
+        self.assertNotIn("/bin/xargs", evaluator)
         self.assertNotIn("dependencyClosures", evaluator)
         self.assertIn("node.dependencies", evaluator)
         self.assertIn("inherited-olean-index", evaluator)

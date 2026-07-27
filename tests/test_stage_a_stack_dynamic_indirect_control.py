@@ -116,14 +116,27 @@ class StageAStackDynamicIndirectControlTests(unittest.TestCase):
     def test_source_rechecks_sites_and_empty_interval_in_lean(self) -> None:
         source = stack_dynamic_indirect_control_source(_plan(), _binding())
         self.assertIn("instructionBytes := [255, 84, 36, 32]", source)
-        self.assertIn(".stackRead .esp .add 32", source)
+        self.assertIn(".stackRead .esp (.add 32)", source)
         self.assertIn(".indexedTable 4358376 .ebx 4", source)
         self.assertIn(".dynamicField .ebx 4", source)
-        self.assertIn("generatedStackDynamicTable1Checked", source)
-        self.assertIn("generatedStackDynamicIndexedClaim1Checked", source)
-        self.assertIn("generatedStackDynamicIndexedClaim1NoRuntimeIndex", source)
-        self.assertIn("generatedStackDynamicIndexedClaim1SourceUnreachable", source)
-        self.assertIn("ReachabilityBound actualReachable", source)
+        self.assertIn(
+            "generatedStackDynamicEmptyIndexedAuthority1",
+            source,
+        )
+        self.assertIn("CheckedEmptyIndexedSourceAuthority", source)
+        self.assertIn("targetShape := by simp", source)
+        self.assertIn(
+            "generatedStackDynamicEmptyIndexedAuthority1NoRuntimeIndex",
+            source,
+        )
+        self.assertIn(
+            "generatedStackDynamicEmptyIndexedAuthority1SourceUnreachable",
+            source,
+        )
+        self.assertIn("ReachabilityBound reachable", source)
+        self.assertNotIn("generatedStackDynamicTable1Bytes", source)
+        self.assertNotIn("IndexedImmutableTableClaim", source)
+        self.assertLess(len(source), 20_000)
         self.assertIn("decide +kernel", source)
         for marker in ("sorry", "axiom", "unsafe", "native_decide"):
             self.assertIsNone(re.search(rf"\b{marker}\b", source), marker)
@@ -138,11 +151,24 @@ class StageAStackDynamicIndirectControlTests(unittest.TestCase):
             "valueExact : Memory.read32 state.memory",
             "RuntimeIndexBound",
             "ReachabilityBound",
+            "emptyInterval",
+            "noRuntimeIndex_of_emptyChecked",
             "noRuntimeIndex_of_emptyInterval",
             "sourceUnreachable_of_emptyInterval",
             "DynamicCallbackControlRuntime context claim world state",
         ):
             self.assertIn(required, source)
+        closure = (
+            Path(__file__).parents[1]
+            / "src/spaghetti_extractor/lean/StageA/"
+            "RelationalOriginalStackDynamicControlClosure.lean"
+        ).read_text(encoding="utf-8")
+        for required in (
+            "CheckedEmptyIndexedSourceAuthority",
+            "CompleteEmptyIndexedSourcePredecessorPremise",
+            "emptyIndexedSourceClosure_of_complete",
+        ):
+            self.assertIn(required, closure)
         for marker in ("sorry", "axiom", "unsafe", "native_decide"):
             self.assertIsNone(re.search(rf"\b{marker}\b", source), marker)
 

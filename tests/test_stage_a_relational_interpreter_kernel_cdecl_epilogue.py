@@ -28,6 +28,7 @@ from spaghetti_extractor.relational.lean.interpreter_kernel_step_operation impor
     INTERPRETER_KERNEL_STEP_OPERATION_THEOREM,
 )
 from spaghetti_extractor.util import sha256_file
+from tests.pe_fixtures import pe32_image
 
 
 class StageARelationalInterpreterKernelCDeclEpilogueTests(unittest.TestCase):
@@ -231,6 +232,75 @@ class StageARelationalInterpreterKernelCDeclEpilogueTests(unittest.TestCase):
                     RelationalInterpreterKernelCDeclEpilogueGenerationError
                 ):
                     self._build(**arguments)
+
+    def test_terminal_epilogues_are_discovered_from_exact_function_ranges(
+        self,
+    ) -> None:
+        step_code = b"\x90\x83\xc4\x04\x5d\x31\xc9\xc3"
+        run_code = b"\x83\xc4\x08\x5b\x5e\x5f\x5d\x31\xd2\x31\xc9\xc3"
+        self.candidate.write_bytes(pe32_image(step_code + run_code))
+        digest = sha256_file(self.candidate)
+        size = self.candidate.stat().st_size
+        step_entry = 0x1000
+        run_entry = step_entry + len(step_code)
+        self.step_payload["candidate"] = {"sha256": digest, "size": size}
+        self.step_payload["checked_static_authority"].update(
+            {"entry_rva": step_entry, "end_rva": run_entry}
+        )
+        self._write_step()
+        self.run_payload["candidate"] = {"sha256": digest, "size": size}
+        self.run_payload["inputs"]["step_operation_plan"] = {
+            "path": self.step.name,
+            "sha256": sha256_file(self.step),
+        }
+        self.run_payload["checked_static_authority"].update(
+            {
+                "entry_rva": run_entry,
+                "end_rva": run_entry + len(run_code),
+            }
+        )
+        self._write_run()
+
+        plan = build_relational_interpreter_kernel_cdecl_epilogue_plan(
+            candidate_pe=self.candidate,
+            step_operation_plan=self.step,
+            run_operation_plan=self.run_plan,
+            step_epilogue_fuel=4,
+            run_epilogue_fuel=8,
+        )
+
+        self.assertEqual(plan.step.epilogue_rva, step_entry + 1)
+        self.assertEqual(plan.step.return_rva, run_entry - 1)
+        self.assertEqual(plan.run.epilogue_rva, run_entry)
+        self.assertEqual(
+            plan.run.return_rva, run_entry + len(run_code) - 1
+        )
+
+    def test_automatic_cutpoint_discovery_fails_closed(self) -> None:
+        with self.assertRaisesRegex(
+            RelationalInterpreterKernelCDeclEpilogueGenerationError,
+            "supplied together",
+        ):
+            build_relational_interpreter_kernel_cdecl_epilogue_plan(
+                candidate_pe=self.candidate,
+                step_operation_plan=self.step,
+                run_operation_plan=self.run_plan,
+                step_epilogue_rva=0x1080,
+                step_epilogue_fuel=4,
+                run_epilogue_rva=0x2100,
+                run_return_rva=0x21F0,
+            )
+        with self.assertRaisesRegex(
+            RelationalInterpreterKernelCDeclEpilogueGenerationError,
+            "not PE32",
+        ):
+            build_relational_interpreter_kernel_cdecl_epilogue_plan(
+                candidate_pe=self.candidate,
+                step_operation_plan=self.step,
+                run_operation_plan=self.run_plan,
+                step_epilogue_fuel=4,
+                run_epilogue_fuel=8,
+            )
 
     def test_writer_is_reproducible_and_module_names_are_checked(self) -> None:
         out = self.root / "out"

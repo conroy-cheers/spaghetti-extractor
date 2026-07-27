@@ -211,7 +211,7 @@ def generatedCheckedDirectCallFiniteEvidence :
   {binding.evidence_term}
 
 def generatedCheckedDirectCallRegisterControlContract :
-    CheckedDirectCallRegisterControlContract generatedContext :=
+    CheckedCompleteDirectCallRegisterControlContract generatedContext :=
   generatedCheckedDirectCallFiniteEvidence.authority
 
 def generatedIntegratedSummaryPremises :=
@@ -357,9 +357,9 @@ theorem generatedAuthorityMatchesExactRequest :
         {binding.contract_id} /\
       generatedCheckedDirectCallRegisterControlContract.requestedRegisters =
         [{register_rows}] /\
-      generatedCheckedDirectCallRegisterControlContract.provenance.tree.certificate.callsite.original.start =
+      generatedCheckedDirectCallRegisterControlContract.tree.certificate.callsite.original.start =
         {binding.source_rva} /\
-      generatedCheckedDirectCallRegisterControlContract.provenance.tree.certificate.continuation.original.start =
+      generatedCheckedDirectCallRegisterControlContract.tree.certificate.continuation.original.start =
         {binding.continuation_rva} := by
   decide +kernel
 

@@ -1,6 +1,7 @@
 import StageA.RelationalStaticMachineImportContracts
 import StageA.RelationalCallableExternalIndirectExit
 import StageA.RelationalValueProvenance
+import StageA.RelationalX87StateOnlyDecode
 
 namespace StageA.Relational.InternalDirectCallRegisterSummary
 
@@ -46,6 +47,22 @@ def exactRegionPairDecodes (originalPe candidatePe : PE32)
   region.original.size > 0 && region.candidate.size > 0 &&
     (regionBehaviorWithImports originalPe originalImports region.original).isSome &&
     (regionBehaviorWithImports candidatePe candidateImports region.candidate).isSome
+
+/-- Exact x87 singleton accepted by the register-summary layer.  This is
+strictly narrower than general x87 execution: the decoded command has no
+machine-memory operand, GPR target, EFLAGS write, or implicit stack effect.
+Fault/success correspondence remains a semantic composition obligation. -/
+def stateOnlyX87RegionChecked (pe : PE32) (span : Span) : Bool :=
+  StageA.Relational.X87StateOnly.singletonCommandChecked pe span
+
+def exactSummaryRegionPairDecodes (originalPe candidatePe : PE32)
+    (originalImports candidateImports : List PEImport)
+    (region : ExactRegionPair) : Bool :=
+  exactRegionPairDecodes originalPe candidatePe originalImports candidateImports
+      region ||
+    (region.original.size > 0 && region.candidate.size > 0 &&
+      stateOnlyX87RegionChecked originalPe region.original &&
+      stateOnlyX87RegionChecked candidatePe region.candidate)
 
 inductive CalleeEdgeKind where
   | direct
@@ -233,6 +250,24 @@ structure StackEntryOffsetWitness where
   candidateOffset : Nat
 deriving Repr, DecidableEq
 
+/-- A compact spanning-tree certificate for one callee region.  Forward
+parents prove reachability from the entry; reverse successors prove that the
+region can reach a return or terminal import.  Strictly decreasing ranks make
+both chains well founded without asking the kernel to compute a transitive
+closure over the entire graph. -/
+structure GraphClosureNodeWitness where
+  forwardRank : Nat
+  forwardParentRegionIndex : Option Nat := none
+  forwardParentEdgeIndex : Option Nat := none
+  reverseRank : Nat
+  reverseNextRegionIndex : Option Nat := none
+  reverseNextEdgeIndex : Option Nat := none
+deriving Repr, DecidableEq
+
+structure GraphClosureWitness where
+  nodes : List GraphClosureNodeWitness := []
+deriving Repr, DecidableEq
+
 structure Certificate where
   summaryId : Nat
   dependencyDepth : Nat := 0
@@ -244,6 +279,10 @@ structure Certificate where
   edges : List CalleeEdge
   returns : List ReturnInventoryEntry
   requestedRegisters : List Reg
+  /-- Caller-owned scalar words, measured from ESP after the architectural
+  call push.  These offsets are structural requests only; semantic
+  composition must prove that every admitted transition preserves them. -/
+  callerFrameWords : List ReturnSlotExactWordPair := []
   entryKind : SummaryEntryKind := .direct
   originalFrameBytes : Nat := 0
   candidateFrameBytes : Nat := 0
@@ -258,14 +297,33 @@ structure Certificate where
   stackWitnesses : List StackSaveRestoreWitness := []
   stackEntryOffsets : List StackEntryOffsetWitness := []
   dynamicStackEntryRegionIds : List Nat := []
+  graphClosureWitness : GraphClosureWitness := {}
 deriving Repr, DecidableEq
 
 inductive SummaryTree where
   | node (certificate : Certificate) (nested : List SummaryTree)
 deriving Repr
 
+/-- Compose independently checked list shards without re-evaluating their
+elements in the aggregate module. -/
+theorem listAll_flatten_of_parts {α : Type}
+    (parts : List (List α)) (predicate : α -> Bool)
+    (partsChecked :
+      parts.all (fun part => part.all predicate) = true) :
+    parts.flatten.all predicate = true := by
+  apply List.all_eq_true.mpr
+  intro value valueMember
+  simp only [List.mem_flatten] at valueMember
+  rcases valueMember with ⟨part, partMember, valueMember⟩
+  have partChecked :=
+    List.all_eq_true.mp partsChecked part partMember
+  exact List.all_eq_true.mp partChecked value valueMember
+
 def SummaryTree.certificate : SummaryTree -> Certificate
   | .node certificate _ => certificate
+
+def SummaryTree.children : SummaryTree -> List SummaryTree
+  | .node _ nested => nested
 
 def SummaryTree.summaryId (tree : SummaryTree) : Nat :=
   tree.certificate.summaryId
@@ -445,16 +503,179 @@ def SummaryTree.finiteOriginCallAuthorityBound
     originalPe candidatePe originalImports candidateImports
     (tree.certificate.dependencyDepth + 1)
 
-def edgeIdsUnique (edges : List CalleeEdge) : Bool :=
+/-- Componentized evidence for binding a root finite-origin call summary to
+its exact indirect-exit authority.  Keeping the fields separate lets generated
+proof leaves report the precise violated premise and cache the two expensive
+semantic-side checks independently from the aggregate conjunction. -/
+structure FiniteOriginCallEntryCheckReport where
+  entryKind : Bool
+  target : Bool
+  context : Bool
+  sourceMapped : Bool
+  continuationMapped : Bool
+  calleeMapped : Bool
+  authorityShape : Bool
+  originalSide : Bool
+  candidateSide : Bool
+deriving Repr, DecidableEq
+
+def FiniteOriginCallEntryCheckReport.checked
+    (report : FiniteOriginCallEntryCheckReport) : Bool :=
+  report.entryKind &&
+    report.target &&
+    report.context &&
+    report.sourceMapped &&
+    report.continuationMapped &&
+    report.calleeMapped &&
+    report.authorityShape &&
+    report.originalSide &&
+    report.candidateSide
+
+def FiniteOriginCallEntryCheckReport.rejected :
+    FiniteOriginCallEntryCheckReport := {
+  entryKind := false
+  target := false
+  context := false
+  sourceMapped := false
+  continuationMapped := false
+  calleeMapped := false
+  authorityShape := false
+  originalSide := false
+  candidateSide := false
+}
+
+/-- Bind a root finite-origin call summary to the exact indirect-exit
+authority which selected its singleton internal destination.  Nested
+finite-origin calls are checked through `FiniteOriginCallDependency`; this
+report covers the analogous root where no parent summary exists. -/
+def Certificate.finiteOriginCallEntryCheckReport
+    (certificate : Certificate)
+    (sourceTargetId calleeTargetId continuationTargetId : Nat)
+    {context : StaticProofContext}
+    (authority : ValueProvenance.IndirectExitCertificate)
+    (originalPe candidatePe : PE32)
+    (originalImports candidateImports : List PEImport) :
+    FiniteOriginCallEntryCheckReport :=
+  match certificate.entryKind with
+  | .direct => .rejected
+  | .finiteOriginCall dependencyId targetId =>
+      let dependency : FiniteOriginCallDependency := {
+        id := dependencyId
+        sourceRegionId := certificate.callsite.id
+        continuationRegionId := certificate.continuation.id
+        continuationTargetId
+        internalTargets := [{
+          targetId
+          regionId := certificate.calleeEntry.id
+          summaryId := certificate.summaryId
+        }]
+      }
+      let sourceMapped :=
+        match context.codeMap.get? sourceTargetId with
+        | some target =>
+            target.id == sourceTargetId &&
+              target.originalRva == certificate.callsite.original.start &&
+              target.candidateRva == certificate.callsite.candidate.start
+        | none => false
+      let continuationMapped :=
+        match context.codeMap.get? continuationTargetId with
+        | some target =>
+            target.id == continuationTargetId &&
+              target.originalRva == certificate.continuation.original.start &&
+              target.candidateRva == certificate.continuation.candidate.start
+        | none => false
+      let calleeMapped :=
+        match context.codeMap.get? targetId with
+        | some target =>
+            target.id == targetId &&
+              target.originalRva == certificate.calleeEntry.original.start &&
+              target.candidateRva == certificate.calleeEntry.candidate.start
+        | none => false
+      {
+        entryKind := true
+        target := targetId == calleeTargetId
+        context :=
+          context.originalPe == originalPe &&
+            context.candidatePe == candidatePe &&
+            context.originalImports == originalImports &&
+            context.candidateImports == candidateImports
+        sourceMapped
+        continuationMapped
+        calleeMapped
+        authorityShape := dependency.authorityShapeChecked authority
+        originalSide := dependency.authoritySideChecked authority
+          originalPe originalImports false
+          [certificate.callsite, certificate.continuation]
+        candidateSide := dependency.authoritySideChecked authority
+          candidatePe candidateImports true
+          [certificate.callsite, certificate.continuation]
+      }
+
+def Certificate.finiteOriginCallEntryCertificateChecked
+    (certificate : Certificate)
+    (sourceTargetId calleeTargetId continuationTargetId : Nat)
+    {context : StaticProofContext}
+    (authority : ValueProvenance.IndirectExitCertificate)
+  (originalPe candidatePe : PE32)
+    (originalImports candidateImports : List PEImport) : Bool :=
+  (certificate.finiteOriginCallEntryCheckReport
+    (context := context)
+    sourceTargetId calleeTargetId continuationTargetId authority
+    originalPe candidatePe originalImports candidateImports).checked
+
+/-- Semantic authorities carry proof fields which should remain opaque once
+compiled.  Root-entry structural checking depends only on their compact
+certificate data, so downstream modules can rewrite that projection using an
+exported producer theorem without replaying the authority proof. -/
+def Certificate.finiteOriginCallEntryAuthorityChecked
+    (certificate : Certificate)
+    (sourceTargetId calleeTargetId continuationTargetId : Nat)
+    {context : StaticProofContext} {sourceInvariant : StateInvariant}
+    {originalBehavior candidateBehavior : NormalizedSymbolicBehavior}
+    (authority : ValueProvenance.CheckedIndirectExitCertificate context
+      sourceInvariant originalBehavior candidateBehavior)
+    (originalPe candidatePe : PE32)
+    (originalImports candidateImports : List PEImport) : Bool :=
+  certificate.finiteOriginCallEntryCertificateChecked (context := context)
+    sourceTargetId
+    calleeTargetId continuationTargetId authority.certificate
+    originalPe candidatePe originalImports candidateImports
+
+def edgeIdsUniqueSlow (edges : List CalleeEdge) : Bool :=
   edges.all fun edge =>
     (edges.filter fun other =>
       other.sourceRegionId == edge.sourceRegionId &&
         other.targetRegionId == edge.targetRegionId &&
         other.kind == edge.kind).length == 1
 
-def regionIdsUnique (regions : List ExactRegionPair) : Bool :=
+def edgeIdsGroupedUnique : List CalleeEdge -> Bool
+  | [] => true
+  | edge :: rest =>
+      (match rest with
+      | [] => true
+      | next :: _ => edge.sourceRegionId <= next.sourceRegionId) &&
+      ((rest.takeWhile fun other =>
+        other.sourceRegionId == edge.sourceRegionId).all fun other =>
+          !(other.targetRegionId == edge.targetRegionId &&
+            other.kind == edge.kind)) &&
+      edgeIdsGroupedUnique rest
+
+def edgeIdsUnique (edges : List CalleeEdge) : Bool :=
+  edgeIdsGroupedUnique edges || edgeIdsUniqueSlow edges
+
+def natListStrictlyIncreasing : List Nat -> Bool
+  | [] => true
+  | [_] => true
+  | first :: second :: rest =>
+      first < second && natListStrictlyIncreasing (second :: rest)
+
+def regionIdsUniqueSlow (regions : List ExactRegionPair) : Bool :=
   regions.all fun region =>
     (regions.filter fun other => other.id == region.id).length == 1
+
+def regionIdsUnique (regions : List ExactRegionPair) : Bool :=
+  natListStrictlyIncreasing (regions.map ExactRegionPair.id) ||
+    regionIdsUniqueSlow regions
 
 def returnIdsUnique (returns : List ReturnInventoryEntry) : Bool :=
   returns.all fun entry =>
@@ -532,11 +753,17 @@ def stackFrameAnchorIdsUnique
     (witnesses.filter fun other =>
       other.frameEntryRegionId == witness.frameEntryRegionId).length == 1
 
-def stackEntryOffsetIdsUnique
+def stackEntryOffsetIdsUniqueSlow
     (witnesses : List StackEntryOffsetWitness) : Bool :=
   witnesses.all fun witness =>
     (witnesses.filter fun other =>
       other.regionId == witness.regionId).length == 1
+
+def stackEntryOffsetIdsUnique
+    (witnesses : List StackEntryOffsetWitness) : Bool :=
+  natListStrictlyIncreasing
+      (witnesses.map StackEntryOffsetWitness.regionId) ||
+    stackEntryOffsetIdsUniqueSlow witnesses
 
 def ExactRegionPair.spanStartsAt (candidate : Bool) (region : ExactRegionPair)
     (rva : Nat) : Bool :=
@@ -961,13 +1188,62 @@ def regionControlChecked (pe : PE32) (imports : List PEImport) (candidate : Bool
             continuation edges
     | _ => false
 
-def Certificate.inventorySideChecked (certificate : Certificate)
-    (pe : PE32) (imports : List PEImport) (candidate : Bool) : Bool :=
-  certificate.calleeRegions.all fun region =>
+def stateOnlyX87RegionControlChecked (pe : PE32) (candidate : Bool)
+    (certificate : Certificate) (region : ExactRegionPair) : Bool :=
+  stateOnlyX87RegionChecked pe (region.span candidate) &&
+    (returnEntries certificate.returns region.id).isEmpty &&
+    directEdgeChecked candidate certificate.calleeRegions
+      (region.span candidate).stop (outgoingEdges certificate.edges region.id)
+
+def Certificate.inventoryRegionsChecked (certificate : Certificate)
+    (pe : PE32) (imports : List PEImport) (candidate : Bool)
+    (regions : List ExactRegionPair) : Bool :=
+  regions.all fun region =>
     match regionBehaviorWithImports pe imports (region.span candidate) with
     | some behavior =>
         regionControlChecked pe imports candidate certificate region behavior
-    | none => false
+    | none =>
+        stateOnlyX87RegionControlChecked pe candidate certificate region
+
+def Certificate.inventorySideChecked (certificate : Certificate)
+    (pe : PE32) (imports : List PEImport) (candidate : Bool) : Bool :=
+  certificate.inventoryRegionsChecked pe imports candidate
+    certificate.calleeRegions
+
+theorem Certificate.inventoryRegionsChecked_flatten
+    (certificate : Certificate)
+    (pe : PE32) (imports : List PEImport) (candidate : Bool)
+    (parts : List (List ExactRegionPair))
+    (partsChecked :
+      parts.all (fun part =>
+        certificate.inventoryRegionsChecked pe imports candidate part) =
+          true) :
+    certificate.inventoryRegionsChecked pe imports candidate parts.flatten =
+      true := by
+  unfold Certificate.inventoryRegionsChecked
+  apply List.all_eq_true.mpr
+  intro region regionMember
+  simp only [List.mem_flatten] at regionMember
+  rcases regionMember with ⟨part, partMember, regionMember⟩
+  have partChecked :=
+    List.all_eq_true.mp partsChecked part partMember
+  unfold Certificate.inventoryRegionsChecked at partChecked
+  exact List.all_eq_true.mp partChecked region regionMember
+
+theorem Certificate.inventorySideChecked_of_region_parts
+    (certificate : Certificate)
+    (pe : PE32) (imports : List PEImport) (candidate : Bool)
+    (parts : List (List ExactRegionPair))
+    (regionsBound : parts.flatten = certificate.calleeRegions)
+    (partsChecked :
+      parts.all (fun part =>
+        certificate.inventoryRegionsChecked pe imports candidate part) =
+          true) :
+    certificate.inventorySideChecked pe imports candidate = true := by
+  unfold Certificate.inventorySideChecked
+  rw [← regionsBound]
+  exact certificate.inventoryRegionsChecked_flatten pe imports candidate
+    parts partsChecked
 
 def edgeClosureStep (edges : List CalleeEdge) (visited : List Nat) : List Nat :=
   (visited ++ visited.flatMap fun source =>
@@ -980,23 +1256,161 @@ def edgeClosure (edges : List CalleeEdge) : Nat -> List Nat -> List Nat
 def reachesWithin (edges : List CalleeEdge) (regionCount source target : Nat) : Bool :=
   (edgeClosure edges regionCount [source]).contains target
 
-def Certificate.graphClosed (certificate : Certificate) : Bool :=
+def reverseEdgeClosureStep (edges : List CalleeEdge)
+    (visited : List Nat) : List Nat :=
+  (visited ++ visited.flatMap fun target =>
+    (edges.filter fun edge => edge.targetRegionId == target).map
+      (fun edge => edge.sourceRegionId)).eraseDups
+
+def reverseEdgeClosure (edges : List CalleeEdge) : Nat -> List Nat -> List Nat
+  | 0, visited => visited
+  | fuel + 1, visited =>
+      reverseEdgeClosure edges fuel (reverseEdgeClosureStep edges visited)
+
+def Certificate.graphShapeChecked (certificate : Certificate) : Bool :=
   let ids := certificate.calleeRegions.map (fun region => region.id)
-  let completionIds :=
-    certificate.returns.map (fun entry => entry.returnRegionId) ++
-      certificate.machineImportTerminalDependencies.map
-        (fun dependency => dependency.sourceRegionId)
   ids.contains certificate.calleeEntry.id &&
     certificate.calleeRegions.contains certificate.calleeEntry &&
     (certificate.edges.all fun edge =>
       ids.contains edge.sourceRegionId && ids.contains edge.targetRegionId) &&
     (certificate.returns.all fun entry =>
       ids.contains entry.returnRegionId &&
-        entry.continuationRegionId == certificate.continuation.id) &&
-    (ids.all fun id =>
-      reachesWithin certificate.edges ids.length certificate.calleeEntry.id id &&
-        (completionIds.any fun completionId =>
-          reachesWithin certificate.edges ids.length id completionId))
+        entry.continuationRegionId == certificate.continuation.id)
+
+def Certificate.completionRegionIds (certificate : Certificate) : List Nat :=
+  certificate.returns.map (fun entry => entry.returnRegionId) ++
+    certificate.machineImportTerminalDependencies.map
+      (fun dependency => dependency.sourceRegionId)
+
+def GraphClosureWitness.forwardNodeChecked
+    (witness : GraphClosureWitness) (certificate : Certificate)
+    (regionIndex : Nat) : Bool :=
+  match certificate.calleeRegions[regionIndex]?, witness.nodes[regionIndex]? with
+  | some region, some node =>
+      if region.id == certificate.calleeEntry.id then
+        node.forwardRank == 0 &&
+          node.forwardParentRegionIndex.isNone &&
+          node.forwardParentEdgeIndex.isNone
+      else
+        match node.forwardParentRegionIndex, node.forwardParentEdgeIndex with
+        | some parentIndex, some edgeIndex =>
+            match certificate.calleeRegions[parentIndex]?,
+                witness.nodes[parentIndex]?, certificate.edges[edgeIndex]? with
+            | some parent, some parentNode, some edge =>
+                decide (parentNode.forwardRank < node.forwardRank) &&
+                  edge.sourceRegionId == parent.id &&
+                  edge.targetRegionId == region.id
+            | _, _, _ => false
+        | _, _ => false
+  | _, _ => false
+
+def GraphClosureWitness.reverseNodeChecked
+    (witness : GraphClosureWitness) (certificate : Certificate)
+    (regionIndex : Nat) : Bool :=
+  match certificate.calleeRegions[regionIndex]?, witness.nodes[regionIndex]? with
+  | some region, some node =>
+      if certificate.completionRegionIds.contains region.id then
+        node.reverseRank == 0 &&
+          node.reverseNextRegionIndex.isNone &&
+          node.reverseNextEdgeIndex.isNone
+      else
+        match node.reverseNextRegionIndex, node.reverseNextEdgeIndex with
+        | some nextIndex, some edgeIndex =>
+            match certificate.calleeRegions[nextIndex]?,
+                witness.nodes[nextIndex]?, certificate.edges[edgeIndex]? with
+            | some next, some nextNode, some edge =>
+                decide (nextNode.reverseRank < node.reverseRank) &&
+                  edge.sourceRegionId == region.id &&
+                  edge.targetRegionId == next.id
+            | _, _, _ => false
+        | _, _ => false
+  | _, _ => false
+
+def GraphClosureWitness.nodeChecked
+    (witness : GraphClosureWitness) (certificate : Certificate)
+    (regionIndex : Nat) : Bool :=
+  witness.forwardNodeChecked certificate regionIndex &&
+    witness.reverseNodeChecked certificate regionIndex
+
+def GraphClosureWitness.partChecked
+    (witness : GraphClosureWitness) (certificate : Certificate)
+    (regionIndices : List Nat) : Bool :=
+  regionIndices.all (witness.nodeChecked certificate)
+
+def GraphClosureWitness.checked
+    (witness : GraphClosureWitness) (certificate : Certificate) : Bool :=
+  witness.nodes.length == certificate.calleeRegions.length &&
+    certificate.graphShapeChecked &&
+    witness.partChecked certificate
+      (List.range certificate.calleeRegions.length)
+
+theorem GraphClosureWitness.partChecked_flatten
+    (witness : GraphClosureWitness) (certificate : Certificate)
+    (parts : List (List Nat))
+    (partsChecked :
+      parts.all (fun part => witness.partChecked certificate part) = true) :
+    witness.partChecked certificate parts.flatten = true := by
+  unfold GraphClosureWitness.partChecked
+  apply List.all_eq_true.mpr
+  intro regionIndex regionMember
+  simp only [List.mem_flatten] at regionMember
+  rcases regionMember with ⟨part, partMember, regionMember⟩
+  have partChecked :=
+    List.all_eq_true.mp partsChecked part partMember
+  unfold GraphClosureWitness.partChecked at partChecked
+  exact List.all_eq_true.mp partChecked regionIndex regionMember
+
+theorem GraphClosureWitness.checked_of_parts
+    (witness : GraphClosureWitness) (certificate : Certificate)
+    (parts : List (List Nat))
+    (lengthBound :
+      witness.nodes.length = certificate.calleeRegions.length)
+    (shapeChecked : certificate.graphShapeChecked = true)
+    (partsBound :
+      parts.flatten = List.range certificate.calleeRegions.length)
+    (partsChecked :
+      parts.all (fun part => witness.partChecked certificate part) = true) :
+    witness.checked certificate = true := by
+  have flatChecked :=
+    witness.partChecked_flatten certificate parts partsChecked
+  have allChecked :
+      witness.partChecked certificate
+        (List.range certificate.calleeRegions.length) = true :=
+    partsBound ▸ flatChecked
+  have lengthChecked :
+      (witness.nodes.length == certificate.calleeRegions.length) = true :=
+    beq_iff_eq.mpr lengthBound
+  unfold GraphClosureWitness.checked
+  exact Bool.and_eq_true_iff.mpr ⟨
+    Bool.and_eq_true_iff.mpr ⟨lengthChecked, shapeChecked⟩,
+    allChecked⟩
+
+def Certificate.graphRegionIdsChecked (certificate : Certificate)
+    (allIds checkedIds : List Nat) : Bool :=
+  checkedIds.all fun id =>
+      reachesWithin certificate.edges allIds.length certificate.calleeEntry.id id &&
+        (certificate.completionRegionIds.any fun completionId =>
+          reachesWithin certificate.edges allIds.length id completionId)
+
+theorem Certificate.graphRegionIdsChecked_flatten
+    (certificate : Certificate) (allIds : List Nat)
+    (parts : List (List Nat))
+    (partsChecked :
+      parts.all (fun part =>
+        certificate.graphRegionIdsChecked allIds part) = true) :
+    certificate.graphRegionIdsChecked allIds parts.flatten = true := by
+  unfold Certificate.graphRegionIdsChecked
+  apply List.all_eq_true.mpr
+  intro regionId regionMember
+  simp only [List.mem_flatten] at regionMember
+  rcases regionMember with ⟨part, partMember, regionMember⟩
+  have partChecked :=
+    List.all_eq_true.mp partsChecked part partMember
+  unfold Certificate.graphRegionIdsChecked at partChecked
+  exact List.all_eq_true.mp partChecked regionId regionMember
+
+def Certificate.graphClosed (certificate : Certificate) : Bool :=
+  certificate.graphClosureWitness.checked certificate
 
 def resolvedReturningContract? (signatures : List StaticMachineImportSignature)
     (boundary : StaticMachineImportBoundary) : Option MachineImportCallContract := do
@@ -1519,7 +1933,7 @@ def StackFrameAnchorWitness.interiorSideChecked
       match regionBehaviorWithImports pe imports (region.span candidate) with
       | some behavior =>
           behavior.registers.get witness.register == .inputReg witness.register
-      | none => false
+      | none => stateOnlyX87RegionChecked pe (region.span candidate)
 
 def StackFrameAnchorWitness.checked
     (witness : StackFrameAnchorWitness) (certificate : Certificate)
@@ -1552,7 +1966,7 @@ def stackInteriorSideChecked (certificate : Certificate) (candidate : Bool)
       | some behavior =>
           (certificate.stackEntryOffsets.isEmpty == false ||
             behavior.registers.esp == inputEsp)
-      | none => false
+      | none => stateOnlyX87RegionChecked pe (region.span candidate)
 
 /-- Memory-writing instructions represented by a stopping outcome do not add
 an ordinary symbolic write.  Keep the protected-slot inventory aligned with
@@ -1582,10 +1996,69 @@ def protectedWriteRegionsSideChecked (certificate : Certificate)
         true
       else
         match regionBehaviorWithImports pe imports (region.span candidate) with
-        | none => false
+        | none =>
+            stateOnlyX87RegionChecked pe (region.span candidate) &&
+              !witness.protectedWriteRegionIds.contains region.id
         | some behavior =>
             behaviorHasInternalMemoryWrite behavior ==
               witness.protectedWriteRegionIds.contains region.id
+
+/-- Check the two region-wide stack-witness predicates from one exact
+symbolic behavior.  This avoids decoding and evaluating every region once for
+write classification and again for stack-interior preservation. -/
+def stackWitnessRegionSideChecked (certificate : Certificate)
+    (candidate : Bool) (pe : PE32) (imports : List PEImport)
+    (witness : StackSaveRestoreWitness) (region : ExactRegionPair) : Bool :=
+  let dependencySources := dependencySourceIds certificate
+  let saveIds := stackFrameSaveIds witness
+  let restoreIds := stackFrameRestoreIds witness
+  if saveIds.contains region.id ||
+      restoreIds.contains region.id ||
+      dependencySources.contains region.id then
+    true
+  else
+    match regionBehaviorWithImports pe imports (region.span candidate) with
+    | none =>
+        stateOnlyX87RegionChecked pe (region.span candidate) &&
+          !witness.protectedWriteRegionIds.contains region.id
+    | some behavior =>
+        (behaviorHasInternalMemoryWrite behavior ==
+          witness.protectedWriteRegionIds.contains region.id) &&
+        (certificate.stackEntryOffsets.isEmpty == false ||
+          behavior.registers.esp == inputEsp)
+
+def stackWitnessRegionPartSideChecked (certificate : Certificate)
+    (candidate : Bool) (pe : PE32) (imports : List PEImport)
+    (witness : StackSaveRestoreWitness)
+    (regions : List ExactRegionPair) : Bool :=
+  regions.all fun region =>
+    stackWitnessRegionSideChecked certificate candidate pe imports witness region
+
+def stackWitnessRegionsSideChecked (certificate : Certificate)
+    (candidate : Bool) (pe : PE32) (imports : List PEImport)
+    (witness : StackSaveRestoreWitness) : Bool :=
+  stackWitnessRegionPartSideChecked certificate candidate pe imports witness
+    certificate.calleeRegions
+
+theorem stackWitnessRegionsSideChecked_of_parts
+    (certificate : Certificate) (candidate : Bool)
+    (pe : PE32) (imports : List PEImport)
+    (witness : StackSaveRestoreWitness)
+    (parts : List (List ExactRegionPair))
+    (regionsBound : parts.flatten = certificate.calleeRegions)
+    (partsChecked :
+      parts.all (fun part =>
+        stackWitnessRegionPartSideChecked certificate candidate pe imports
+          witness part) = true) :
+    stackWitnessRegionsSideChecked certificate candidate pe imports witness =
+      true := by
+  unfold stackWitnessRegionsSideChecked stackWitnessRegionPartSideChecked
+  rw [← regionsBound]
+  exact listAll_flatten_of_parts parts
+    (fun region =>
+      stackWitnessRegionSideChecked certificate candidate pe imports witness
+        region)
+    partsChecked
 
 def machineDependencyHasProtectedEffect (candidate : Bool)
     (dependency : MachineImportDependency) : Bool :=
@@ -1716,17 +2189,14 @@ def StackSaveRestoreWitness.frameTopologyChecked
     (externalTails.all fun edge =>
       restoreIds.contains edge.sourceRegionId)
 
-def StackSaveRestoreWitness.checked (witness : StackSaveRestoreWitness)
+def StackSaveRestoreWitness.nonRegionalChecked
+    (witness : StackSaveRestoreWitness)
     (certificate : Certificate) (originalPe candidatePe : PE32)
     (originalImports candidateImports : List PEImport) : Bool :=
   witness.register != .esp && certificate.requestedRegisters.contains witness.register &&
     witness.frameTopologyChecked certificate &&
     decide witness.protectedWriteRegionIds.Nodup &&
     decide witness.protectedMachineImportDependencyIds.Nodup &&
-    protectedWriteRegionsSideChecked certificate false originalPe originalImports
-      witness &&
-    protectedWriteRegionsSideChecked certificate true candidatePe candidateImports
-      witness &&
     protectedMachineImportDependenciesSideChecked certificate false witness &&
     protectedMachineImportDependenciesSideChecked certificate true witness &&
     (witness.frames.all fun frame =>
@@ -1734,11 +2204,35 @@ def StackSaveRestoreWitness.checked (witness : StackSaveRestoreWitness)
         originalImports) &&
     (witness.frames.all fun frame =>
       frame.sideChecked witness.register certificate true candidatePe
-        candidateImports) &&
-    stackInteriorSideChecked certificate false originalPe originalImports
+        candidateImports)
+
+def StackSaveRestoreWitness.checked (witness : StackSaveRestoreWitness)
+    (certificate : Certificate) (originalPe candidatePe : PE32)
+    (originalImports candidateImports : List PEImport) : Bool :=
+  witness.nonRegionalChecked certificate originalPe candidatePe
+      originalImports candidateImports &&
+    stackWitnessRegionsSideChecked certificate false originalPe originalImports
       witness &&
-    stackInteriorSideChecked certificate true candidatePe candidateImports
+    stackWitnessRegionsSideChecked certificate true candidatePe candidateImports
       witness
+
+theorem StackSaveRestoreWitness.checked_of_region_parts
+    (witness : StackSaveRestoreWitness)
+    (certificate : Certificate) (originalPe candidatePe : PE32)
+    (originalImports candidateImports : List PEImport)
+    (nonRegional :
+      witness.nonRegionalChecked certificate originalPe candidatePe
+        originalImports candidateImports = true)
+    (originalRegions :
+      stackWitnessRegionsSideChecked certificate false originalPe
+        originalImports witness = true)
+    (candidateRegions :
+      stackWitnessRegionsSideChecked certificate true candidatePe
+        candidateImports witness = true) :
+    witness.checked certificate originalPe candidatePe
+      originalImports candidateImports = true := by
+  simp [StackSaveRestoreWitness.checked, nonRegional, originalRegions,
+    candidateRegions]
 
 def regionIdentitySideChecked (pe : PE32) (imports : List PEImport)
     (candidate : Bool) (region : ExactRegionPair) (register : Reg) : Bool :=
@@ -1746,12 +2240,20 @@ def regionIdentitySideChecked (pe : PE32) (imports : List PEImport)
   | some behavior => behavior.registers.get register == .inputReg register
   | none => false
 
+def summaryRegionIdentitySideChecked (pe : PE32) (imports : List PEImport)
+    (candidate : Bool) (region : ExactRegionPair) (register : Reg) : Bool :=
+  match regionBehaviorWithImports pe imports (region.span candidate) with
+  | some behavior => behavior.registers.get register == .inputReg register
+  | none => stateOnlyX87RegionChecked pe (region.span candidate)
+
 def Certificate.identityRegisterChecked (certificate : Certificate)
     (originalPe candidatePe : PE32)
     (originalImports candidateImports : List PEImport) (register : Reg) : Bool :=
   certificate.calleeRegions.all fun region =>
-    regionIdentitySideChecked originalPe originalImports false region register &&
-      regionIdentitySideChecked candidatePe candidateImports true region register
+    summaryRegionIdentitySideChecked originalPe originalImports false region
+        register &&
+      summaryRegionIdentitySideChecked candidatePe candidateImports true region
+        register
 
 def returnStackSideChecked (behavior : SymbolicBehavior) (frameBytes : Nat) : Bool :=
   behavior.registers.esp == stackAdd (frameBytes + 4) &&
@@ -1838,6 +2340,19 @@ def regionStackResultOffset? (certificate : Certificate) (candidate : Bool)
       | .dynamic => pure .dynamic
   | _, _ => none
 
+def summaryRegionStackResultOffset? (certificate : Certificate)
+    (pe : PE32) (imports : List PEImport) (candidate : Bool)
+    (region : ExactRegionPair) (source : StackEntryOffsetWitness) :
+    Option StackOffsetResult :=
+  match regionBehaviorWithImports pe imports (region.span candidate) with
+  | some behavior =>
+      regionStackResultOffset? certificate candidate region source behavior
+  | none =>
+      if stateOnlyX87RegionChecked pe (region.span candidate) then
+        some (.fixed (BitVec.ofNat 32 (source.offset candidate)))
+      else
+        none
+
 def FiniteOriginTailDependency.stackOffsetsChecked
     (dependency : FiniteOriginTailDependency) (certificate : Certificate)
     (candidate : Bool) (source : StackEntryOffsetWitness)
@@ -1858,83 +2373,109 @@ def FiniteOriginTailDependency.stackOffsetsChecked
             BitVec.ofNat 32 4
       internalChecked && externalChecked
 
-def Certificate.stackEntryOffsetsSideChecked (certificate : Certificate)
-    (pe : PE32) (imports : List PEImport) (candidate : Bool) : Bool :=
+def Certificate.stackEntryOffsetsAlignedSideChecked
+    (certificate : Certificate) (candidate : Bool) : Bool :=
+  certificate.stackEntryOffsets.length == certificate.calleeRegions.length &&
+    (certificate.stackEntryOffsets.zip certificate.calleeRegions).all
+      (fun entry =>
+        entry.1.regionId == entry.2.id &&
+          entry.1.offset candidate < 2 ^ 32)
+
+def Certificate.stackEntryOffsetsMembershipSideChecked
+    (certificate : Certificate) (candidate : Bool) : Bool :=
+  certificate.stackEntryOffsets.length == certificate.calleeRegions.length &&
+    (certificate.stackEntryOffsets.all fun witness =>
+      witness.offset candidate < 2 ^ 32 &&
+        (findRegion? certificate.calleeRegions witness.regionId).isSome)
+
+def Certificate.stackEntryOffsetsInventorySideChecked
+    (certificate : Certificate) (candidate : Bool) : Bool :=
   stackEntryOffsetIdsUnique certificate.stackEntryOffsets &&
     decide certificate.dynamicStackEntryRegionIds.Nodup &&
     (certificate.dynamicStackEntryRegionIds.all fun regionId =>
       regionId != certificate.calleeEntry.id &&
         (findRegion? certificate.calleeRegions regionId).isSome &&
         (findStackFrameAnchorForRegion? certificate regionId).isSome) &&
-    certificate.stackEntryOffsets.length == certificate.calleeRegions.length &&
-    (certificate.stackEntryOffsets.all fun witness =>
-      witness.offset candidate < 2 ^ 32 &&
-        (findRegion? certificate.calleeRegions witness.regionId).isSome) &&
+    (certificate.stackEntryOffsetsAlignedSideChecked candidate ||
+      certificate.stackEntryOffsetsMembershipSideChecked candidate) &&
     match findStackEntryOffset? certificate.stackEntryOffsets
         certificate.calleeEntry.id with
     | none => false
-    | some entry =>
-        entry.offset candidate == 0 &&
-          certificate.calleeRegions.all fun region =>
-            match findStackEntryOffset? certificate.stackEntryOffsets region.id,
-                regionBehaviorWithImports pe imports (region.span candidate) with
-            | some source, some behavior =>
-                match regionStackResultOffset? certificate candidate region source
-                    behavior with
-                | none => false
-                | some result =>
-                    match finiteOriginTailDependenciesAt
-                        certificate.finiteOriginTailDependencies region.id with
-                    | [dependency] =>
-                        dependency.stackOffsetsChecked certificate candidate source
-                          result
-                    | [] =>
-                        match result with
-                        | .fixed offset =>
-                            if (certificate.returns.map
-                                (fun returned =>
-                                  returned.returnRegionId)).contains region.id then
-                              offset == BitVec.ofNat 32 4
-                            else
-                              (outgoingEdges certificate.edges region.id).all fun edge =>
-                                match findStackEntryOffset?
-                                    certificate.stackEntryOffsets
-                                    edge.targetRegionId with
-                                | some target =>
-                                    !certificate.dynamicStackEntryRegionIds.contains
-                                        edge.targetRegionId &&
-                                      BitVec.ofNat 32 (target.offset candidate) ==
-                                        offset
-                                | none => false
-                        | .dynamic =>
-                            !(certificate.returns.map
-                                (fun returned =>
-                                  returned.returnRegionId)).contains region.id &&
-                              (outgoingEdges certificate.edges region.id).all
-                                (fun edge =>
-                                  certificate.dynamicStackEntryRegionIds.contains
-                                    edge.targetRegionId)
-                    | _ => false
-            | _, _ => false
+    | some entry => entry.offset candidate == 0
 
-def Certificate.stackPointerFrameSideChecked (certificate : Certificate)
+def Certificate.stackEntryOffsetRegionSideChecked
+    (certificate : Certificate) (pe : PE32) (imports : List PEImport)
+    (candidate : Bool) (region : ExactRegionPair) : Bool :=
+  match findStackEntryOffset? certificate.stackEntryOffsets region.id with
+  | some source =>
+      match summaryRegionStackResultOffset? certificate pe imports
+          candidate region source with
+      | none => false
+      | some result =>
+          match finiteOriginTailDependenciesAt
+              certificate.finiteOriginTailDependencies region.id with
+          | [dependency] =>
+              dependency.stackOffsetsChecked certificate candidate source result
+          | [] =>
+              match result with
+              | .fixed offset =>
+                  if (certificate.returns.map
+                      (fun returned =>
+                        returned.returnRegionId)).contains region.id then
+                    offset == BitVec.ofNat 32 4
+                  else
+                    (outgoingEdges certificate.edges region.id).all fun edge =>
+                      match findStackEntryOffset?
+                          certificate.stackEntryOffsets edge.targetRegionId with
+                      | some target =>
+                          !certificate.dynamicStackEntryRegionIds.contains
+                              edge.targetRegionId &&
+                            BitVec.ofNat 32 (target.offset candidate) == offset
+                      | none => false
+              | .dynamic =>
+                  !(certificate.returns.map
+                      (fun returned =>
+                        returned.returnRegionId)).contains region.id &&
+                    (outgoingEdges certificate.edges region.id).all
+                      (fun edge =>
+                        certificate.dynamicStackEntryRegionIds.contains
+                          edge.targetRegionId)
+          | _ => false
+  | none => false
+
+def Certificate.stackEntryOffsetsSideChecked (certificate : Certificate)
     (pe : PE32) (imports : List PEImport) (candidate : Bool) : Bool :=
+  certificate.stackEntryOffsetsInventorySideChecked candidate &&
+    certificate.calleeRegions.all fun region =>
+      certificate.stackEntryOffsetRegionSideChecked pe imports candidate region
+
+def Certificate.stackPointerFrameRegionSideChecked
+    (certificate : Certificate) (pe : PE32) (imports : List PEImport)
+    (candidate : Bool) (region : ExactRegionPair) : Bool :=
   let dependencySources := dependencySourceIds certificate
   let frameBytes :=
     if candidate then certificate.candidateFrameBytes
     else certificate.originalFrameBytes
+  if dependencySources.contains region.id then true else
+    match regionBehaviorWithImports pe imports (region.span candidate) with
+    | none =>
+        region.id != certificate.calleeEntry.id &&
+          !(certificate.returns.map
+            (fun entry => entry.returnRegionId)).contains region.id &&
+          stateOnlyX87RegionChecked pe (region.span candidate)
+    | some behavior =>
+        if region.id == certificate.calleeEntry.id then
+          behavior.registers.esp == stackSub frameBytes
+        else if (certificate.returns.map
+            (fun entry => entry.returnRegionId)).contains region.id then
+          returnStackSideChecked behavior frameBytes
+        else
+          behavior.registers.esp == inputEsp && behavior.writes.isEmpty
+
+def Certificate.stackPointerFrameSideChecked (certificate : Certificate)
+    (pe : PE32) (imports : List PEImport) (candidate : Bool) : Bool :=
   certificate.calleeRegions.all fun region =>
-    if dependencySources.contains region.id then true else
-      match regionBehaviorWithImports pe imports (region.span candidate) with
-      | none => false
-      | some behavior =>
-          if region.id == certificate.calleeEntry.id then
-            behavior.registers.esp == stackSub frameBytes
-          else if (certificate.returns.map
-              (fun entry => entry.returnRegionId)).contains region.id then
-            returnStackSideChecked behavior frameBytes
-          else
-            behavior.registers.esp == inputEsp && behavior.writes.isEmpty
+    certificate.stackPointerFrameRegionSideChecked pe imports candidate region
 
 def Certificate.frameShapeChecked (certificate : Certificate) : Bool :=
   certificate.originalFrameBytes < 2 ^ 32 &&
@@ -1942,15 +2483,73 @@ def Certificate.frameShapeChecked (certificate : Certificate) : Bool :=
     certificate.originalFrameBytes % 4 == 0 &&
     certificate.candidateFrameBytes % 4 == 0
 
+def Certificate.stackPointerInventorySideChecked
+    (certificate : Certificate) (candidate : Bool) : Bool :=
+  if certificate.stackEntryOffsets.isEmpty then true
+  else certificate.stackEntryOffsetsInventorySideChecked candidate
+
+def Certificate.stackPointerRegionSideChecked
+    (certificate : Certificate) (pe : PE32) (imports : List PEImport)
+    (candidate : Bool) (region : ExactRegionPair) : Bool :=
+  if certificate.stackEntryOffsets.isEmpty then
+    certificate.stackPointerFrameRegionSideChecked pe imports candidate region
+  else
+    certificate.stackEntryOffsetRegionSideChecked pe imports candidate region
+
+def Certificate.stackPointerRegionPartSideChecked
+    (certificate : Certificate) (pe : PE32) (imports : List PEImport)
+    (candidate : Bool) (regions : List ExactRegionPair) : Bool :=
+  regions.all fun region =>
+    certificate.stackPointerRegionSideChecked pe imports candidate region
+
+def Certificate.stackPointerRegionsSideChecked
+    (certificate : Certificate) (pe : PE32) (imports : List PEImport)
+    (candidate : Bool) : Bool :=
+  certificate.stackPointerRegionPartSideChecked pe imports candidate
+    certificate.calleeRegions
+
+theorem Certificate.stackPointerRegionsSideChecked_of_parts
+    (certificate : Certificate) (pe : PE32) (imports : List PEImport)
+    (candidate : Bool) (parts : List (List ExactRegionPair))
+    (regionsBound : parts.flatten = certificate.calleeRegions)
+    (partsChecked :
+      parts.all (fun part =>
+        certificate.stackPointerRegionPartSideChecked pe imports candidate
+          part) = true) :
+    certificate.stackPointerRegionsSideChecked pe imports candidate = true := by
+  unfold Certificate.stackPointerRegionsSideChecked
+    Certificate.stackPointerRegionPartSideChecked
+  rw [← regionsBound]
+  exact listAll_flatten_of_parts parts
+    (fun region =>
+      certificate.stackPointerRegionSideChecked pe imports candidate region)
+    partsChecked
+
 def Certificate.stackPointerPreservedChecked (certificate : Certificate)
     (originalPe candidatePe : PE32)
     (originalImports candidateImports : List PEImport) : Bool :=
-  if certificate.stackEntryOffsets.isEmpty then
-    certificate.stackPointerFrameSideChecked originalPe originalImports false &&
-      certificate.stackPointerFrameSideChecked candidatePe candidateImports true
-  else
-    certificate.stackEntryOffsetsSideChecked originalPe originalImports false &&
-      certificate.stackEntryOffsetsSideChecked candidatePe candidateImports true
+  certificate.stackPointerInventorySideChecked false &&
+    certificate.stackPointerInventorySideChecked true &&
+    certificate.stackPointerRegionsSideChecked originalPe originalImports false &&
+    certificate.stackPointerRegionsSideChecked candidatePe candidateImports true
+
+theorem Certificate.stackPointerPreservedChecked_of_region_parts
+    (certificate : Certificate) (originalPe candidatePe : PE32)
+    (originalImports candidateImports : List PEImport)
+    (originalInventory :
+      certificate.stackPointerInventorySideChecked false = true)
+    (candidateInventory :
+      certificate.stackPointerInventorySideChecked true = true)
+    (originalRegions :
+      certificate.stackPointerRegionsSideChecked originalPe originalImports
+        false = true)
+    (candidateRegions :
+      certificate.stackPointerRegionsSideChecked candidatePe candidateImports
+        true = true) :
+    certificate.stackPointerPreservedChecked originalPe candidatePe
+      originalImports candidateImports = true := by
+  simp [Certificate.stackPointerPreservedChecked, originalInventory,
+    candidateInventory, originalRegions, candidateRegions]
 
 def Certificate.registerPreservedChecked (certificate : Certificate)
     (originalPe candidatePe : PE32)
@@ -2020,13 +2619,12 @@ theorem Certificate.preservationChecked_of_registers
   unfold Certificate.preservationChecked
   exact List.all_eq_true.mpr registersChecked
 
-def Certificate.structureCheckedWithChildCertificates
-    (certificate : Certificate)
-    (originalPe candidatePe : PE32)
-    (originalImports candidateImports : List PEImport)
-    (nested : List Certificate) : Bool :=
+def Certificate.structureShapeChecked
+    (certificate : Certificate) : Bool :=
   certificate.requestedRegisters.isEmpty == false &&
     decide certificate.requestedRegisters.Nodup &&
+    decide certificate.callerFrameWords.Nodup &&
+    certificate.callerFrameWords.all ReturnSlotExactWordPair.checked &&
     regionIdsUnique certificate.calleeRegions &&
     edgeIdsUnique certificate.edges && returnIdsUnique certificate.returns &&
     nestedDependencyIdsUnique certificate.nestedDependencies &&
@@ -2043,15 +2641,60 @@ def Certificate.structureCheckedWithChildCertificates
     stackWitnessRegistersUnique certificate.stackWitnesses &&
     stackEntryOffsetIdsUnique certificate.stackEntryOffsets &&
     certificate.frameShapeChecked &&
-    certificate.returns.isEmpty == false &&
-    certificate.endpointsChecked originalPe candidatePe
+    certificate.returns.isEmpty == false
+
+def Certificate.structureDecodeChecked
+    (certificate : Certificate)
+    (originalPe candidatePe : PE32)
+    (originalImports candidateImports : List PEImport) : Bool :=
+  certificate.endpointsChecked originalPe candidatePe
       originalImports candidateImports &&
     (certificate.calleeRegions.all fun region =>
-      exactRegionPairDecodes originalPe candidatePe originalImports candidateImports region) &&
-    certificate.graphClosed &&
+      exactSummaryRegionPairDecodes originalPe candidatePe originalImports
+        candidateImports region)
+
+def Certificate.structureControlChecked
+    (certificate : Certificate)
+    (originalPe candidatePe : PE32)
+    (originalImports candidateImports : List PEImport) : Bool :=
+  certificate.graphClosed &&
     certificate.inventorySideChecked originalPe originalImports false &&
-    certificate.inventorySideChecked candidatePe candidateImports true &&
-    certificate.nestedDependencyCertificatesChecked originalPe candidatePe
+    certificate.inventorySideChecked candidatePe candidateImports true
+
+/-- Reconstruct control checking from a graph closure checked once and
+independently checked regional inventories. -/
+theorem Certificate.structureControlChecked_of_closed_graph_and_region_parts
+    (certificate : Certificate)
+    (originalPe candidatePe : PE32)
+    (originalImports candidateImports : List PEImport)
+    (parts : List (List ExactRegionPair))
+    (regionsBound : parts.flatten = certificate.calleeRegions)
+    (graphClosed : certificate.graphClosed = true)
+    (originalParts :
+      parts.all (fun part =>
+        certificate.inventoryRegionsChecked originalPe originalImports false
+          part) = true)
+    (candidateParts :
+      parts.all (fun part =>
+        certificate.inventoryRegionsChecked candidatePe candidateImports true
+          part) = true) :
+    certificate.structureControlChecked originalPe candidatePe
+      originalImports candidateImports = true := by
+  have originalInventory :=
+    certificate.inventorySideChecked_of_region_parts originalPe
+      originalImports false parts regionsBound originalParts
+  have candidateInventory :=
+    certificate.inventorySideChecked_of_region_parts candidatePe
+      candidateImports true parts regionsBound candidateParts
+  simp [Certificate.structureControlChecked, graphClosed, originalInventory,
+    candidateInventory]
+
+def Certificate.structureDependenciesChecked
+    (certificate : Certificate)
+    (originalPe candidatePe : PE32)
+    (originalImports candidateImports : List PEImport)
+    (nested : List Certificate) : Bool :=
+  certificate.nestedDependencyCertificatesChecked originalPe candidatePe
       originalImports candidateImports nested &&
     (certificate.machineImportDependencies.all fun dependency =>
       dependency.checked certificate originalPe candidatePe
@@ -2067,12 +2710,59 @@ def Certificate.structureCheckedWithChildCertificates
     (certificate.finiteOriginCallDependencies.all fun dependency =>
       dependency.checked certificate) &&
     (certificate.finiteOriginTailDependencies.all fun dependency =>
-      dependency.checked certificate) &&
-    (certificate.stackFrameAnchors.all fun witness =>
+      dependency.checked certificate)
+
+def Certificate.structureStackChecked
+    (certificate : Certificate)
+    (originalPe candidatePe : PE32)
+    (originalImports candidateImports : List PEImport) : Bool :=
+  (certificate.stackFrameAnchors.all fun witness =>
       witness.checked certificate originalPe candidatePe
         originalImports candidateImports) &&
     (certificate.calleeRegions.all fun region =>
       (stackFrameAnchorsForRegion certificate region.id).length <= 1)
+
+def Certificate.structureCheckedWithChildCertificates
+    (certificate : Certificate)
+    (originalPe candidatePe : PE32)
+    (originalImports candidateImports : List PEImport)
+    (nested : List Certificate) : Bool :=
+  certificate.structureShapeChecked &&
+    certificate.structureDecodeChecked originalPe candidatePe
+      originalImports candidateImports &&
+    certificate.structureControlChecked originalPe candidatePe
+      originalImports candidateImports &&
+    certificate.structureDependenciesChecked originalPe candidatePe
+      originalImports candidateImports nested &&
+    certificate.structureStackChecked originalPe candidatePe
+      originalImports candidateImports
+
+/-- Recombine separately compiled structural families.  Each premise is an
+exact Boolean checker over the submitted certificate; no generated status can
+substitute for one of these proofs. -/
+theorem Certificate.structureCheckedWithChildCertificates_of_families
+    (certificate : Certificate)
+    (originalPe candidatePe : PE32)
+    (originalImports candidateImports : List PEImport)
+    (nested : List Certificate)
+    (shape :
+      certificate.structureShapeChecked = true)
+    (decode :
+      certificate.structureDecodeChecked originalPe candidatePe
+        originalImports candidateImports = true)
+    (control :
+      certificate.structureControlChecked originalPe candidatePe
+        originalImports candidateImports = true)
+    (dependencies :
+      certificate.structureDependenciesChecked originalPe candidatePe
+        originalImports candidateImports nested = true)
+    (stack :
+      certificate.structureStackChecked originalPe candidatePe
+        originalImports candidateImports = true) :
+    certificate.structureCheckedWithChildCertificates originalPe candidatePe
+      originalImports candidateImports nested = true := by
+  simp [Certificate.structureCheckedWithChildCertificates, shape, decode,
+    control, dependencies, stack]
 
 def Certificate.structureChecked (certificate : Certificate)
     (originalPe candidatePe : PE32)
@@ -2388,6 +3078,19 @@ theorem stackSaveSideChecked_eval (behavior : SymbolicBehavior) (register : Reg)
       congrArg (fun expression => expression.eval state) stackPointer
   · simp [SymbolicBehavior.eval, StageA.Formal.applyWrites, writes, Expr.eval]
 
+/-- Select the exact symbolic identity expression established by the checker. -/
+theorem regionIdentitySideChecked_expression
+    (pe : PE32) (imports : List PEImport)
+    (candidate : Bool) (region : ExactRegionPair) (register : Reg)
+    (behavior : SymbolicBehavior)
+    (checked : regionIdentitySideChecked pe imports candidate region register = true)
+    (decoded : regionBehaviorWithImports pe imports (region.span candidate) =
+      some behavior) :
+    behavior.registers.get register = .inputReg register := by
+  unfold regionIdentitySideChecked at checked
+  rw [decoded] at checked
+  simpa only [beq_iff_eq] using checked
+
 /-- The identity checker has the expected concrete register consequence for
 the exact behavior returned by the decoder. -/
 theorem regionIdentitySideChecked_eval (pe : PE32) (imports : List PEImport)
@@ -2409,6 +3112,116 @@ theorem regionIdentitySideChecked_eval (pe : PE32) (imports : List PEImport)
       intro state
       rw [applySymbolicBehavior_register, checked]
       rfl
+
+/-- Reuse an identity fact checked against the exact decoder when a semantic
+segment was decoded with machine-level import contracts.  Those contracts may
+refine external arguments and outcomes, but `RelationalDecode` proves that
+they leave the symbolic register transformer unchanged. -/
+theorem regionIdentitySideChecked_machine_expression
+    (pe : PE32) (imports : List PEImport)
+    (contracts : List MachineImportCallContract)
+    (candidate : Bool) (region : ExactRegionPair) (register : Reg)
+    (behavior : SymbolicBehavior)
+    (checked : regionIdentitySideChecked pe imports candidate region register = true)
+    (decoded : regionBehaviorWithMachineCallContracts pe imports contracts
+      (region.span candidate) = some behavior) :
+    behavior.registers.get register = .inputReg register := by
+  unfold regionIdentitySideChecked at checked
+  generalize plainDecoded : regionBehaviorWithImports pe imports
+    (region.span candidate) = result at checked
+  cases result with
+  | none => simp at checked
+  | some plain =>
+      simp only [beq_iff_eq] at checked
+      unfold regionBehaviorWithMachineCallContracts at decoded
+      rw [plainDecoded] at decoded
+      have registers :=
+        applyMachineImportCallContracts_registers contracts plain behavior decoded
+      rw [registers]
+      exact checked
+
+theorem regionIdentitySideChecked_machine_eval
+    (pe : PE32) (imports : List PEImport)
+    (contracts : List MachineImportCallContract)
+    (candidate : Bool) (region : ExactRegionPair) (register : Reg)
+    (behavior : SymbolicBehavior)
+    (checked : regionIdentitySideChecked pe imports candidate region register = true)
+    (decoded : regionBehaviorWithMachineCallContracts pe imports contracts
+      (region.span candidate) = some behavior) :
+    forall state,
+      (applySymbolicBehavior behavior state).registers.get register =
+        state.registers.get register := by
+  have identity := regionIdentitySideChecked_machine_expression pe imports contracts
+    candidate region register behavior checked decoded
+  intro state
+  rw [applySymbolicBehavior_register, identity]
+  rfl
+
+/-- Select the ordinary symbolic identity expression from the broader summary
+checker.  A successful ordinary decoder witness rules out the physical
+x87-only branch by construction. -/
+theorem summaryRegionIdentitySideChecked_expression
+    (pe : PE32) (imports : List PEImport)
+    (candidate : Bool) (region : ExactRegionPair) (register : Reg)
+    (behavior : SymbolicBehavior)
+    (checked :
+      summaryRegionIdentitySideChecked pe imports candidate region register =
+        true)
+    (decoded : regionBehaviorWithImports pe imports (region.span candidate) =
+      some behavior) :
+    behavior.registers.get register = .inputReg register := by
+  unfold summaryRegionIdentitySideChecked at checked
+  rw [decoded] at checked
+  simpa only [beq_iff_eq] using checked
+
+/-- Machine-call normalization is reachable only from an ordinary symbolic
+decode, so an accepted physical x87-only summary region cannot enter this
+branch. -/
+theorem summaryRegionIdentitySideChecked_machine_expression
+    (pe : PE32) (imports : List PEImport)
+    (contracts : List MachineImportCallContract)
+    (candidate : Bool) (region : ExactRegionPair) (register : Reg)
+    (behavior : SymbolicBehavior)
+    (checked :
+      summaryRegionIdentitySideChecked pe imports candidate region register =
+        true)
+    (decoded : regionBehaviorWithMachineCallContracts pe imports contracts
+      (region.span candidate) = some behavior) :
+    behavior.registers.get register = .inputReg register := by
+  unfold summaryRegionIdentitySideChecked at checked
+  generalize plainDecoded : regionBehaviorWithImports pe imports
+    (region.span candidate) = result at checked
+  cases result with
+  | none =>
+      unfold regionBehaviorWithMachineCallContracts at decoded
+      rw [plainDecoded] at decoded
+      simp at decoded
+  | some plain =>
+      simp only [beq_iff_eq] at checked
+      unfold regionBehaviorWithMachineCallContracts at decoded
+      rw [plainDecoded] at decoded
+      have registers :=
+        applyMachineImportCallContracts_registers contracts plain behavior decoded
+      rw [registers]
+      exact checked
+
+/-- Select both exact side checks for one region from the aggregate identity
+certificate. -/
+theorem Certificate.identityRegisterChecked_region
+    (certificate : Certificate)
+    (originalPe candidatePe : PE32)
+    (originalImports candidateImports : List PEImport)
+    (register : Reg) (region : ExactRegionPair)
+    (checked : certificate.identityRegisterChecked originalPe candidatePe
+      originalImports candidateImports register = true)
+    (member : region ∈ certificate.calleeRegions) :
+    summaryRegionIdentitySideChecked originalPe originalImports false region
+        register = true /\
+      summaryRegionIdentitySideChecked candidatePe candidateImports true region
+        register = true := by
+  unfold Certificate.identityRegisterChecked at checked
+  have selected := List.all_eq_true.mp checked region member
+  simpa only [Bool.and_eq_true] using selected
 
 /-- The restore checker exposes the concrete load, stack adjustment, and return
 target of the decoded block.  Writes in the same region remain explicit

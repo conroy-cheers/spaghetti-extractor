@@ -362,6 +362,25 @@ theorem RegisterOffsetWitness.eval_expression (witness : RegisterOffsetWitness)
     simp_all [RegisterOffsetWitness.expression, RegisterOffsetWitness.offset, Expr.eval,
       BitVec.sub_eq_add_neg, BitVec.add_assoc, word_add_left_comm]
 
+def _root_.StageA.Formal.Expr.registerOffsetWitness?
+    (register : Reg) : Expr -> Option RegisterOffsetWitness
+  | .inputReg source =>
+      if source == register then some .input else none
+  | .add left (.constant value) => do
+      pure (.addRight (← left.registerOffsetWitness? register) value)
+  | .add (.constant value) right => do
+      pure (.addLeft value (← right.registerOffsetWitness? register))
+  | .sub left (.constant value) => do
+      pure (.subRight (← left.registerOffsetWitness? register) value)
+  | _ => none
+
+def registerOffsetWriteWitnesses?
+    (register : Reg) : List (Expr × Expr) -> Option (List RegisterOffsetWitness)
+  | [] => some []
+  | write :: writes => do
+      pure ((← write.1.registerOffsetWitness? register) ::
+        (← registerOffsetWriteWitnesses? register writes))
+
 structure ReturnSlotOffsetPair where
   originalRegister : Reg := .esp
   originalOffset : Word
@@ -1731,6 +1750,136 @@ theorem registerOffsetWitnessesAvoidWord_of_closed
             rw [← expression, witness.eval_expression] at overlap
             simpa only [BitVec.add_assoc] using overlap
           · exact ih writes tailClosed concreteWrite tailMember
+
+/-- A source-relative caller word and the corresponding callee-entry-relative
+word.  Explicit affine witnesses bind the output ESP and every write address to
+the normalized semantics; they are checked proof data rather than instruction
+pattern assumptions. -/
+structure CallerFrameWordEntryClaim where
+  source : ReturnSlotExactWordPair
+  entry : ReturnSlotExactWordPair
+  originalStack : RegisterOffsetWitness
+  candidateStack : RegisterOffsetWitness
+  originalWrites : List RegisterOffsetWitness
+  candidateWrites : List RegisterOffsetWitness
+deriving Repr, DecidableEq
+
+def CallerFrameWordEntryClaim.derive?
+    (source entry : ReturnSlotExactWordPair)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) :
+    Option CallerFrameWordEntryClaim := do
+  let originalStack ←
+    originalBehavior.registers.esp.registerOffsetWitness? .esp
+  let candidateStack ←
+    candidateBehavior.registers.esp.registerOffsetWitness? .esp
+  let originalWrites ←
+    registerOffsetWriteWitnesses? .esp originalBehavior.writes
+  let candidateWrites ←
+    registerOffsetWriteWitnesses? .esp candidateBehavior.writes
+  pure {
+    source
+    entry
+    originalStack
+    candidateStack
+    originalWrites
+    candidateWrites
+  }
+
+def CallerFrameWordEntryClaim.sideChecked
+    (claim : CallerFrameWordEntryClaim)
+    (behavior : NormalizedSymbolicBehavior)
+    (sourceOffset entryOffset : Nat)
+    (stack : RegisterOffsetWitness)
+    (writes : List RegisterOffsetWitness) : Bool :=
+  sourceOffset <= ReturnSlotExactWordPair.maxOffset &&
+    entryOffset <= ReturnSlotExactWordPair.maxOffset &&
+    stack.expression .esp == behavior.registers.esp &&
+    stack.offset + BitVec.ofNat 32 entryOffset ==
+      BitVec.ofNat 32 sourceOffset &&
+    registerOffsetWitnessesAvoidWord .esp
+      (BitVec.ofNat 32 sourceOffset) writes behavior.writes
+
+def CallerFrameWordEntryClaim.checked
+    (claim : CallerFrameWordEntryClaim)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Bool :=
+  claim.sideChecked originalBehavior claim.source.originalOffset
+      claim.entry.originalOffset claim.originalStack claim.originalWrites &&
+    claim.sideChecked candidateBehavior claim.source.candidateOffset
+      claim.entry.candidateOffset claim.candidateStack claim.candidateWrites
+
+theorem CallerFrameWordEntryClaim.sideMemoryPreserved_of_checked
+    (claim : CallerFrameWordEntryClaim)
+    (behavior : NormalizedSymbolicBehavior)
+    (sourceOffset entryOffset : Nat)
+    (stack : RegisterOffsetWitness)
+    (writes : List RegisterOffsetWitness)
+    (state : MachineState)
+    (checked : claim.sideChecked behavior sourceOffset entryOffset
+      stack writes = true) :
+    Memory.read32
+        ((behavior.eval state).nextMachineState state).memory
+        (((behavior.eval state).nextMachineState state).registers.esp +
+          BitVec.ofNat 32 entryOffset) =
+      Memory.read32 state.memory
+        (state.registers.esp + BitVec.ofNat 32 sourceOffset) := by
+  simp only [CallerFrameWordEntryClaim.sideChecked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  have stackExpression := checked.1.1.2
+  have stackOffset := checked.1.2
+  have writesChecked := checked.2
+  have stackExpressionGet :
+      stack.expression .esp = behavior.registers.get .esp := by
+    simpa using stackExpression
+  have addressExact :
+      ((behavior.eval state).nextMachineState state).registers.esp +
+          BitVec.ofNat 32 entryOffset =
+        state.registers.esp + BitVec.ofNat 32 sourceOffset := by
+    simp only [RelationalBehavior.nextMachineState,
+      NormalizedSymbolicBehavior.eval]
+    change (behavior.registers.get .esp).eval state +
+        BitVec.ofNat 32 entryOffset =
+      state.registers.get .esp + BitVec.ofNat 32 sourceOffset
+    rw [← stackExpressionGet, stack.eval_expression, BitVec.add_assoc,
+      stackOffset]
+  rw [addressExact]
+  simp only [RelationalBehavior.nextMachineState,
+    NormalizedSymbolicBehavior.eval]
+  exact Memory.read32_applyConcreteWrites_of_avoids _ _ _
+    (registerOffsetWitnessesAvoidWord_of_closed .esp
+      (BitVec.ofNat 32 sourceOffset) writes behavior.writes state
+      (registerOffsetWitnessesAvoidWordClosed_of_checked .esp
+        (BitVec.ofNat 32 sourceOffset) writes behavior.writes writesChecked))
+
+theorem CallerFrameWordEntryClaim.memoryPreserved_of_checked
+    (claim : CallerFrameWordEntryClaim)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (originalState candidateState : MachineState)
+    (checked : claim.checked originalBehavior candidateBehavior = true) :
+    Memory.read32
+          ((originalBehavior.eval originalState).nextMachineState
+            originalState).memory
+          (((originalBehavior.eval originalState).nextMachineState
+              originalState).registers.esp +
+            BitVec.ofNat 32 claim.entry.originalOffset) =
+        Memory.read32 originalState.memory
+          (originalState.registers.esp +
+            BitVec.ofNat 32 claim.source.originalOffset) /\
+      Memory.read32
+          ((candidateBehavior.eval candidateState).nextMachineState
+            candidateState).memory
+          (((candidateBehavior.eval candidateState).nextMachineState
+              candidateState).registers.esp +
+            BitVec.ofNat 32 claim.entry.candidateOffset) =
+        Memory.read32 candidateState.memory
+          (candidateState.registers.esp +
+            BitVec.ofNat 32 claim.source.candidateOffset) := by
+  simp only [CallerFrameWordEntryClaim.checked, Bool.and_eq_true] at checked
+  exact ⟨claim.sideMemoryPreserved_of_checked originalBehavior
+      claim.source.originalOffset claim.entry.originalOffset
+      claim.originalStack claim.originalWrites originalState checked.1,
+    claim.sideMemoryPreserved_of_checked candidateBehavior
+      claim.source.candidateOffset claim.entry.candidateOffset
+      claim.candidateStack claim.candidateWrites candidateState checked.2⟩
 
 def DirectCallPreparedExactWordSeedClaim.checked
     (claim : DirectCallPreparedWritesClaim)

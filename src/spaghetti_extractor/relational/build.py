@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlencode
 
 from ..stage_binary import StageABinary, StageAInputError
@@ -37,6 +37,7 @@ from .schema import (
     selected_relational_acceptance_theorem,
 )
 from .ir import CompositionProgressIR, RelationalProofIR, WholeProgramAcceptanceIR
+from .lean.compiler import _relational_cache_dir
 
 
 _LEAN_SOURCE_ROOT = Path(__file__).resolve().parent.parent / "lean" / "StageA"
@@ -46,11 +47,47 @@ _LEAN_IMPORT_PATTERN = re.compile(
 )
 _NIX_VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)(?:\.\d+)?")
 _NIX_BUILD_TRACE_V3_VERSION = (2, 35)
+_NIXOS_SYSTEM_NIX = Path("/run/current-system/sw/bin/nix")
+_LEAN_SEMANTIC_NODE_ID_FORMAT = "stage-a-lean-semantic-node-id-v1"
+_LEAN_SEMANTIC_RECIPE_VERSION = "stage-a-lean-semantic-recipe-v1"
+_NIX_EVALUATION_CACHE_FORMAT = "stage-a-nix-evaluation-cache-v1"
+_NIX_SEMANTIC_BOUNDARY_FORMAT = "stage-a-nix-semantic-boundary-v1"
+
+
+def _nix_executable() -> str:
+    """Select one Nix client for every proof-build subprocess.
+
+    Development shells may carry an older Nix than the active daemon. Prefer an
+    explicit override, then the active NixOS system client, and only then PATH.
+    This keeps content-addressed build-trace negotiation and realization on the
+    same client version.
+    """
+
+    override = os.environ.get("SPAGHETTI_EXTRACTOR_NIX")
+    if override:
+        resolved = (
+            override
+            if os.path.sep in override
+            else shutil.which(override)
+        )
+        if resolved is None or not os.path.isfile(resolved) or not os.access(
+            resolved, os.X_OK
+        ):
+            raise StageAInputError(
+                "SPAGHETTI_EXTRACTOR_NIX does not identify an executable Nix client"
+            )
+        return str(Path(resolved).resolve())
+    if _NIXOS_SYSTEM_NIX.is_file() and os.access(_NIXOS_SYSTEM_NIX, os.X_OK):
+        return str(_NIXOS_SYSTEM_NIX)
+    ambient = shutil.which("nix")
+    if ambient is None:
+        raise StageAInputError("cannot find an executable Nix client")
+    return ambient
 
 
 def _content_addressed_derivations_requested() -> bool:
     value = os.environ.get(
-        "SPAGHETTI_EXTRACTOR_STAGE_A_NIX_CONTENT_ADDRESSED", "false"
+        "SPAGHETTI_EXTRACTOR_STAGE_A_NIX_CONTENT_ADDRESSED", "true"
     ).lower()
     if value not in {"true", "false"}:
         raise StageAInputError(
@@ -60,15 +97,37 @@ def _content_addressed_derivations_requested() -> bool:
 
 
 def _nix_store_version(*, store: str | None = None) -> tuple[int, int, str]:
-    command = ["nix", "store", "info", "--json"]
+    command = [_nix_executable(), "store", "info", "--json"]
+    environment = None
     if store is not None:
         command.extend(["--store", store])
+        ssh_cache = Path(
+            os.environ.get(
+                "XDG_CACHE_HOME",
+                str(Path.home() / ".cache"),
+            )
+        ) / "spaghetti-extractor" / "ssh"
+        ssh_cache.mkdir(parents=True, exist_ok=True)
+        environment = os.environ.copy()
+        ssh_options = (
+            "-o IdentitiesOnly=yes "
+            "-o ControlMaster=auto "
+            f"-o ControlPath={ssh_cache}/%C "
+            "-o ControlPersist=4h"
+        )
+        existing_ssh_options = environment.get("NIX_SSHOPTS", "").strip()
+        environment["NIX_SSHOPTS"] = " ".join(
+            option
+            for option in (existing_ssh_options, ssh_options)
+            if option
+        )
     process = subprocess.run(
         command,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+        env=environment,
     )
     if process.returncode != 0:
         location = store or "the local Nix daemon"
@@ -87,6 +146,31 @@ def _nix_store_version(*, store: str | None = None) -> tuple[int, int, str]:
     if match is None:
         raise StageAInputError(f"unsupported Nix store version {version!r}")
     return int(match.group(1)), int(match.group(2)), version
+
+
+def _nix_client_version() -> tuple[int, int, str]:
+    process = subprocess.run(
+        [_nix_executable(), "--version"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if process.returncode != 0:
+        raise StageAInputError(
+            "cannot query the Nix client version:\n" + process.stderr[-4000:]
+        )
+    version_text = process.stdout.strip()
+    match = re.search(r"(\d+\.\d+(?:\.\d+)?)\s*$", version_text)
+    if match is None:
+        raise StageAInputError(
+            f"Nix returned malformed client-version metadata {version_text!r}"
+        )
+    version = match.group(1)
+    parsed = _NIX_VERSION_PATTERN.fullmatch(version)
+    if parsed is None:
+        raise StageAInputError(f"unsupported Nix client version {version!r}")
+    return int(parsed.group(1)), int(parsed.group(2)), version
 
 
 def _ca_builder_stores(builders_file: Path) -> list[str]:
@@ -114,7 +198,20 @@ def _ca_builder_stores(builders_file: Path) -> list[str]:
     return list(dict.fromkeys(stores))
 
 
-def _check_remote_ca_build_trace_compatibility(builders_file: Path) -> None:
+def _nix_builders_spec(builders_file: Path) -> str:
+    entries = [
+        line.strip()
+        for line in builders_file.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not entries:
+        raise StageAInputError(f"Nix builders file is empty: {builders_file}")
+    return "\n".join(entries)
+
+
+def _check_remote_ca_build_trace_compatibility(
+    builders_file: Path | None,
+) -> None:
     """Reject the incompatible Nix 2.35 build-trace protocol boundary.
 
     Nix 2.35 replaced realisations with build-trace-v3 identities. A pre-2.35
@@ -122,10 +219,23 @@ def _check_remote_ca_build_trace_compatibility(builders_file: Path) -> None:
     cannot register that output as the realization of its derivation.
     """
 
+    client_major, client_minor, client_version = _nix_client_version()
     local_major, local_minor, local_version = _nix_store_version()
+    client_v3 = (client_major, client_minor) >= _NIX_BUILD_TRACE_V3_VERSION
     local_v3 = (local_major, local_minor) >= _NIX_BUILD_TRACE_V3_VERSION
+    if client_v3 != local_v3:
+        raise StageAInputError(
+            "content-addressed proof builds cross the incompatible Nix 2.35 "
+            f"build-trace boundary: client uses Nix {client_version}; local "
+            f"daemon uses Nix {local_version}. Use a Nix client on the same "
+            "side of the 2.35 boundary as the daemon."
+        )
     incompatible: list[str] = []
-    for store in _ca_builder_stores(builders_file):
+    for store in (
+        _ca_builder_stores(builders_file)
+        if builders_file is not None
+        else []
+    ):
         remote_major, remote_minor, remote_version = _nix_store_version(store=store)
         remote_v3 = (remote_major, remote_minor) >= _NIX_BUILD_TRACE_V3_VERSION
         if local_v3 != remote_v3:
@@ -211,11 +321,22 @@ def _relational_nix_build_command(
     builders_file: Path | None,
     trusted_public_keys_file: Path | None = None,
 ) -> list[str]:
-    command = ["nix", "build"]
+    command = _relational_nix_build_prefix(
+        builders_file, trusted_public_keys_file
+    )
+    command.extend(["--impure", "--expr", expression])
+    return command
+
+
+def _relational_nix_build_prefix(
+    builders_file: Path | None,
+    trusted_public_keys_file: Path | None = None,
+) -> list[str]:
+    command = [_nix_executable(), "build"]
     if builders_file is not None:
         command.extend([
             "--max-jobs", "0", "--cores", "2",
-            "--builders", f"@{builders_file}",
+            "--builders", _nix_builders_spec(builders_file),
         ])
     command.extend(["--no-link", "--json"])
     _append_relational_remote_options(
@@ -223,8 +344,286 @@ def _relational_nix_build_command(
         builders_file=builders_file,
         trusted_public_keys_file=trusted_public_keys_file,
     )
-    command.extend(["--impure", "--expr", expression])
     return command
+
+
+def _relational_nix_installable_build_command(
+    installables: list[str],
+    builders_file: Path | None,
+    trusted_public_keys_file: Path | None = None,
+) -> list[str]:
+    command = _relational_nix_build_prefix(
+        builders_file, trusted_public_keys_file
+    )
+    command.extend(installables)
+    return command
+
+
+def _relational_nix_evaluation_cache_key(
+    *,
+    prepared: Path,
+    evaluator: Path,
+    flake_root: Path,
+    requested_target_nodes: list[str],
+) -> str:
+    inputs = {
+        "format": _NIX_EVALUATION_CACHE_FORMAT,
+        "module_graph_sha256": sha256_file(prepared / "module-graph.json"),
+        "prepared_manifest_sha256": (
+            None
+            if requested_target_nodes
+            else sha256_file(prepared / "prepared-proof.json")
+        ),
+        "artifact_manifest_sha256": (
+            sha256_file(prepared / "artifact-manifest.json")
+            if (prepared / "artifact-manifest.json").is_file()
+            else None
+        ),
+        "evaluator_sha256": sha256_file(evaluator),
+        "flake_lock_sha256": sha256_file(flake_root / "flake.lock"),
+        "target_nodes": requested_target_nodes,
+        "content_addressed": _content_addressed_derivations_requested(),
+        "system": {
+            "sysname": os.uname().sysname,
+            "machine": os.uname().machine,
+        },
+    }
+    return sha256_bytes(
+        json.dumps(inputs, separators=(",", ":"), sort_keys=True).encode("ascii")
+    )
+
+
+def _relational_nix_evaluation_cache_path(cache_key: str) -> Path | None:
+    cache_root = _relational_cache_dir()
+    if cache_root is None:
+        return None
+    return cache_root / "nix-evaluations-v1" / f"{cache_key}.json"
+
+
+def _cached_relational_nix_installables(
+    cache_path: Path | None,
+    *,
+    cache_key: str,
+) -> list[str] | None:
+    if cache_path is None or not cache_path.is_file():
+        return None
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("format") != _NIX_EVALUATION_CACHE_FORMAT
+        or payload.get("cache_key") != cache_key
+    ):
+        return None
+    installables = payload.get("installables")
+    if (
+        not isinstance(installables, list)
+        or not installables
+        or not all(
+            isinstance(installable, str)
+            and re.fullmatch(r"/nix/store/[a-z0-9]+-[^\s^]+\.drv\^out", installable)
+            and Path(installable.removesuffix("^out")).is_file()
+            for installable in installables
+        )
+    ):
+        return None
+    return installables
+
+
+def _publish_relational_nix_evaluation(
+    cache_path: Path | None,
+    *,
+    cache_key: str,
+    build_outputs: list[dict[str, Any]],
+) -> None:
+    if cache_path is None:
+        return
+    installables = [
+        f"{output['drvPath']}^out"
+        for output in build_outputs
+        if isinstance(output, dict)
+        and isinstance(output.get("drvPath"), str)
+        and output["drvPath"].endswith(".drv")
+    ]
+    if len(installables) != len(build_outputs) or not installables:
+        return
+    write_json(
+        cache_path,
+        {
+            "format": _NIX_EVALUATION_CACHE_FORMAT,
+            "cache_key": cache_key,
+            "installables": installables,
+        },
+    )
+
+
+def _relational_semantic_boundary_cache_path(
+    semantic_id: str,
+) -> Path | None:
+    cache_root = _relational_cache_dir()
+    if cache_root is None:
+        return None
+    return cache_root / "nix-semantic-boundaries-v1" / f"{semantic_id}.json"
+
+
+def _cached_relational_semantic_boundary(
+    node: Mapping[str, Any],
+) -> Path | None:
+    semantic_id = node.get("semantic_id")
+    if not isinstance(semantic_id, str):
+        return None
+    cache_path = _relational_semantic_boundary_cache_path(semantic_id)
+    if cache_path is None or not cache_path.is_file():
+        return None
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        semantic_path = Path(payload["semantic_path"])
+        interface = _read_json(semantic_path / "interface.json")
+    except (KeyError, OSError, TypeError, json.JSONDecodeError, StageAInputError):
+        return None
+    try:
+        resolved = semantic_path.resolve(strict=True)
+        resolved.relative_to("/nix/store")
+    except (OSError, ValueError):
+        return None
+    if (
+        payload.get("format") != _NIX_SEMANTIC_BOUNDARY_FORMAT
+        or payload.get("semantic_id") != semantic_id
+        or payload.get("node_id") != node.get("id")
+        or interface.get("format") != "stage-a-lean-semantic-interface-v1"
+        or interface.get("id") != node.get("id")
+        or interface.get("modules") != node.get("modules")
+        or interface.get("dependencies") != node.get("dependencies")
+        or interface.get("source_sha256") != node.get("source_sha256")
+        or interface.get("semantic_id") != semantic_id
+        or interface.get("dependency_semantic_ids")
+            != node.get("dependency_semantic_ids")
+        or interface.get("semantic_recipe_version")
+            != node.get("semantic_recipe_version")
+    ):
+        return None
+    outputs = interface.get("outputs")
+    if (
+        not isinstance(outputs, list)
+        or {output.get("module") for output in outputs if isinstance(output, dict)}
+            != set(node.get("modules", []))
+        or not all(
+            isinstance(output, dict)
+            and isinstance(output.get("olean_sha256"), str)
+            and (resolved / "StageA" / f"{output.get('module')}.olean").is_file()
+            for output in outputs
+        )
+    ):
+        return None
+    return resolved
+
+
+def _relational_incremental_evaluation(
+    graph: Mapping[str, Any],
+    requested_target_nodes: list[str],
+) -> tuple[list[str], dict[str, dict[str, str]]]:
+    roots = requested_target_nodes or [graph["final_node"]]
+    closure = _relational_node_closure(dict(graph), roots)
+    nodes = {
+        node["id"]: node
+        for node in graph["nodes"]
+        if node["id"] in closure
+    }
+    cached = {
+        node_id: semantic_path
+        for node_id, node in nodes.items()
+        if (semantic_path := _cached_relational_semantic_boundary(node)) is not None
+    }
+    active = set(nodes) - set(cached)
+    # The requested roots must be instantiated so the evaluator can produce
+    # their detached result or final audit output. Their semantic dependencies
+    # may still enter through cached boundaries.
+    active.update(roots)
+    boundary_ids = {
+        dependency
+        for node_id in active
+        for dependency in nodes[node_id]["dependencies"]
+        if dependency not in active
+    }
+    missing_boundaries = boundary_ids - set(cached)
+    if missing_boundaries:
+        raise StageAInputError(
+            "incremental Nix evaluation omitted uncached dependency nodes "
+            + repr(sorted(missing_boundaries))
+        )
+    boundaries = {
+        node_id: {
+            "node_id": node_id,
+            "semantic_id": nodes[node_id]["semantic_id"],
+            "semantic_path": str(cached[node_id]),
+        }
+        for node_id in sorted(boundary_ids)
+    }
+    return sorted(active), boundaries
+
+
+def _publish_relational_semantic_boundaries(
+    result_paths: list[Path],
+    graph: Mapping[str, Any],
+) -> int:
+    expected = {node["id"]: node for node in graph["nodes"]}
+    pending: list[Path] = []
+    for result_path in result_paths:
+        root = result_path / "proof-node-root"
+        if root.exists():
+            pending.append(root)
+        roots = result_path / "proof-node-roots"
+        if roots.is_dir():
+            pending.extend(sorted(roots.iterdir()))
+    visited: set[Path] = set()
+    published = 0
+    while pending:
+        semantic_path = pending.pop().resolve()
+        if semantic_path in visited:
+            continue
+        visited.add(semantic_path)
+        try:
+            semantic_path.relative_to("/nix/store")
+            interface = _read_json(semantic_path / "interface.json")
+        except (OSError, ValueError, StageAInputError):
+            continue
+        node_id = interface.get("id")
+        node = expected.get(node_id)
+        if (
+            node is not None
+            and interface.get("semantic_id") == node.get("semantic_id")
+            and interface.get("source_sha256") == node.get("source_sha256")
+            and interface.get("dependency_semantic_ids")
+                == node.get("dependency_semantic_ids")
+        ):
+            cache_path = _relational_semantic_boundary_cache_path(
+                node["semantic_id"]
+            )
+            if cache_path is not None:
+                write_json(
+                    cache_path,
+                    {
+                        "format": _NIX_SEMANTIC_BOUNDARY_FORMAT,
+                        "node_id": node_id,
+                        "semantic_id": node["semantic_id"],
+                        "semantic_path": str(semantic_path),
+                    },
+                )
+                published += 1
+        direct = (
+            semantic_path
+            / "nix-support"
+            / "stage-a-direct-dependencies"
+        )
+        if direct.is_file():
+            pending.extend(
+                Path(path)
+                for path in direct.read_text(encoding="utf-8").splitlines()
+                if path
+            )
+    return published
 
 
 def _relational_nix_work_reused(stderr: str, *, succeeded: bool) -> bool:
@@ -239,9 +638,6 @@ def _relational_nix_work_reused(stderr: str, *, succeeded: bool) -> bool:
         return False
     events = stderr.lower()
     realization_reported = any(marker in events for marker in (
-        "will be built",
-        "will be fetched",
-        "will be substituted",
         "building '",
         "building derivation",
     )) or re.search(r"copying (?:path|\d+ paths?)", events) is not None
@@ -253,17 +649,8 @@ def _relational_nix_realize_command(
     builders_file: Path | None,
     trusted_public_keys_file: Path | None = None,
 ) -> list[str]:
-    command = ["nix", "build"]
-    if builders_file is not None:
-        command.extend([
-            "--max-jobs", "0", "--cores", "2",
-            "--builders", f"@{builders_file}",
-        ])
-    command.extend(["--no-link", "--json"])
-    _append_relational_remote_options(
-        command,
-        builders_file=builders_file,
-        trusted_public_keys_file=trusted_public_keys_file,
+    command = _relational_nix_build_prefix(
+        builders_file, trusted_public_keys_file
     )
     command.append(flake_ref)
     return command
@@ -286,114 +673,14 @@ def _nix_single_output_path(stdout: str, *, operation: str) -> Path:
     return output_paths[0]
 
 
-def _cached_relational_build_result(
-    *,
-    prepared: Path,
-    out: Path,
-    graph: dict[str, Any],
-    evaluator: Path,
-    flake_root: Path,
-) -> dict[str, Any] | None:
-    """Return a hash-bound prior final proof without reevaluating its Nix DAG."""
-
-    required = (
-        "verdict.json",
-        "nix-provenance.json",
-        "lean-audit.json",
-        "relational-proof-ir.json",
-        "stage-a-interface-manifest.json",
-        "relation-contract.json",
-        "module-graph.json",
-        "trusted-base.json",
-    )
-    if not out.is_dir() or any(not (out / name).is_file() for name in required):
-        return None
-    try:
-        verdict = _read_json(out / "verdict.json")
-        provenance = _read_json(out / "nix-provenance.json")
-        audit = _read_json(out / "lean-audit.json")
-        proof_ir = _read_json(out / "relational-proof-ir.json")
-        RelationalProofIR.parse(proof_ir)
-        report_check = _check_nix_relational_report(
-            report=out, verdict=verdict, out=None
-        )
-    except (OSError, StageAInputError, SchemaError, ValueError):
-        return None
-
-    checks = verdict.get("checks")
-    approved_axioms = set(graph["approved_axioms"])
-    observed_axioms = audit.get("observed_axioms")
-    result_path_raw = provenance.get("result_path")
-    if not isinstance(result_path_raw, str):
-        return None
-    result_path = Path(result_path_raw)
-    try:
-        result_audit = _read_json(result_path / "audit.json")
-        result_nodes = _read_json(result_path / "node-provenance.json")
-    except (OSError, StageAInputError):
-        return None
-
-    artifact_original = prepared / graph["artifacts"]["original"]["path"]
-    artifact_candidate = prepared / graph["artifacts"]["candidate"]["path"]
-    valid = (
-        verdict.get("format") == "stage-a-relational-nix-build-v1"
-        and report_check.get("status") == "pass"
-        and verdict.get("status") == "pass"
-        and verdict.get("verdict") == "pass"
-        and verdict.get("expected_final_theorem")
-            == graph["expected_final_theorem"]
-        and verdict.get("acceptance") == graph["acceptance"]
-        and verdict.get("module_graph_sha256")
-            == sha256_file(prepared / "module-graph.json")
-        and verdict.get("interface_manifest_sha256")
-            == sha256_file(prepared / "stage-a-interface-manifest.json")
-        and verdict.get("relation_contract_sha256")
-            == sha256_file(prepared / "relation-contract.json")
-        and verdict.get("trusted_base_sha256")
-            == sha256_file(prepared / "trusted-base.json")
-        and verdict.get("original", {}).get("sha256")
-            == graph["artifacts"]["original"]["sha256"]
-        and verdict.get("candidate", {}).get("sha256")
-            == graph["artifacts"]["candidate"]["sha256"]
-        and artifact_original.is_file()
-        and artifact_candidate.is_file()
-        and sha256_file(artifact_original)
-            == graph["artifacts"]["original"]["sha256"]
-        and sha256_file(artifact_candidate)
-            == graph["artifacts"]["candidate"]["sha256"]
-        and isinstance(checks, dict)
-        and bool(checks)
-        and all(value is True for value in checks.values())
-        and proof_ir.get("status") == "satisfied"
-        and verdict.get("proof_ir_sha256")
-            == sha256_file(out / "relational-proof-ir.json")
-        and audit.get("status") == "checked"
-        and audit.get("lean_trust") == 0
-        and audit.get("theorem") == graph["expected_final_theorem"]
-        and isinstance(observed_axioms, list)
-        and set(observed_axioms).issubset(approved_axioms)
-        and result_audit == audit
-        and result_nodes.get("format") == "stage-a-lean-node-provenance-v1"
-        and result_nodes.get("nodes") == provenance.get("nodes")
-        and provenance.get("evaluator_sha256") == sha256_file(evaluator)
-        and provenance.get("flake_lock_sha256")
-            == sha256_file(flake_root / "flake.lock")
-        and result_path.is_dir()
-        and str(result_path).startswith("/nix/store/")
-    )
-    return verdict if valid else None
-
-
 def stage_a_build_relational_from_nix(
     *,
     prepared_nix_ref: str,
     prepared_subpath: Path,
     out: Path,
-    executor: str = "nix",
     flake: Path | None = None,
     builders_file: Path | None = None,
     builder_trusted_public_keys_file: Path | None = None,
-    target_node: str | None = None,
     target_nodes: list[str] | None = None,
 ) -> dict[str, Any]:
     """Realize a prepared proof first, then build its dynamic Lean graph.
@@ -404,8 +691,6 @@ def stage_a_build_relational_from_nix(
     concrete store path.
     """
 
-    if executor != "nix":
-        raise StageAInputError(f"unsupported relational proof executor {executor!r}")
     if not isinstance(prepared_nix_ref, str) or not prepared_nix_ref.strip():
         raise StageAInputError("prepared Nix reference must be a non-empty string")
     relative = Path(prepared_subpath)
@@ -472,11 +757,9 @@ def stage_a_build_relational_from_nix(
     result = stage_a_build_relational(
         prepared=prepared,
         out=out,
-        executor=executor,
         flake=flake_root,
         builders_file=builders_path,
         builder_trusted_public_keys_file=trusted_keys_path,
-        target_node=target_node,
         target_nodes=target_nodes,
     )
     realization = {
@@ -513,6 +796,48 @@ def _relational_node_closure(
     return closure
 
 
+def _lean_source_projection_sha256(graph: Mapping[str, Any]) -> str:
+    modules = graph.get("modules")
+    if not isinstance(modules, Mapping):
+        raise StageAInputError("Lean module graph omits source provenance")
+    return sha256_bytes(
+        json.dumps(
+            [
+                {
+                    "module": module,
+                    "source_sha256": metadata["source_sha256"],
+                }
+                for module, metadata in sorted(modules.items())
+            ],
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+    )
+
+
+def _lean_semantic_projection_sha256(
+    graph: Mapping[str, Any], node_ids: set[str] | None = None
+) -> str:
+    nodes = graph.get("nodes")
+    if not isinstance(nodes, list):
+        raise StageAInputError("Lean module graph omits semantic nodes")
+    projection = [
+        {
+            "id": node["id"],
+            "semantic_id": node["semantic_id"],
+        }
+        for node in nodes
+        if node_ids is None or node["id"] in node_ids
+    ]
+    return sha256_bytes(
+        json.dumps(
+            sorted(projection, key=lambda row: row["id"]),
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+    )
+
+
 def _numbered_relational_modules(
     modules: set[str] | dict[str, Any], prefix: str,
 ) -> list[str]:
@@ -528,14 +853,21 @@ def _numbered_relational_modules(
 
 
 def _relational_raw_build_nodes(reachable: set[str]) -> list[dict[str, Any]]:
-    pack_size = max(
-        1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_NIX_PACK_MODULES", "16"))
-    )
-    static_usage_pack_size = max(
+    stable_pack_buckets = max(
         1,
         int(
             os.environ.get(
-                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_STATIC_USAGE_NIX_PACK_MODULES", "4"
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_NIX_PACK_BUCKETS",
+                "32",
+            )
+        ),
+    )
+    static_usage_pack_buckets = max(
+        1,
+        int(
+            os.environ.get(
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_STATIC_USAGE_NIX_PACK_BUCKETS",
+                "64",
             )
         ),
     )
@@ -554,29 +886,108 @@ def _relational_raw_build_nodes(reachable: set[str]) -> list[dict[str, Any]]:
     )
     packed: set[str] = set()
     raw_nodes: list[dict[str, Any]] = []
-    for prefix, label, node_pack_size in (
-        ("RelationalDefinitionsShard", "definitions-pack", pack_size),
-        ("RelationalProofShard", "local-proof-pack", pack_size),
+    for prefix, label, bucket_count in (
+        (
+            "RelationalDefinitionsShard",
+            "definitions-pack",
+            stable_pack_buckets,
+        ),
+        ("RelationalProofShard", "local-proof-pack", stable_pack_buckets),
         (
             "RelationalProofStaticUsageLeaf",
             "static-usage-pack",
-            static_usage_pack_size,
-        ),
-        (
-            "RelationalStaticCodeMapChunk",
-            "static-code-map-pack",
-            static_code_map_pack_size,
+            static_usage_pack_buckets,
         ),
     ):
         modules = _numbered_relational_modules(reachable, prefix)
-        for pack_index, offset in enumerate(range(0, len(modules), node_pack_size)):
-            members = modules[offset : offset + node_pack_size]
+        buckets: dict[int, list[str]] = {}
+        for module in modules:
+            bucket = int.from_bytes(
+                bytes.fromhex(sha256_bytes(module.encode("ascii")))[:8],
+                "big",
+            ) % bucket_count
+            buckets.setdefault(bucket, []).append(module)
+        width = max(2, len(f"{bucket_count - 1:x}"))
+        for bucket, members in sorted(buckets.items()):
+            members.sort()
             packed.update(members)
-            raw_nodes.append({"id": f"{label}-{pack_index:03d}", "modules": members})
+            raw_nodes.append({
+                "id": f"{label}-{bucket:0{width}x}",
+                "modules": members,
+            })
+    static_code_map_modules = _numbered_relational_modules(
+        reachable, "RelationalStaticCodeMapChunk"
+    )
+    for pack_index, offset in enumerate(
+        range(0, len(static_code_map_modules), static_code_map_pack_size)
+    ):
+        members = static_code_map_modules[
+            offset : offset + static_code_map_pack_size
+        ]
+        packed.update(members)
+        raw_nodes.append({
+            "id": f"static-code-map-pack-{pack_index:03d}",
+            "modules": members,
+        })
     for module in sorted(reachable - packed):
         node_id = re.sub(r"[^a-z0-9]+", "-", module.lower()).strip("-")
         raw_nodes.append({"id": node_id, "modules": [module]})
     return raw_nodes
+
+
+def _attach_relational_semantic_identities(
+    nodes: list[dict[str, Any]],
+) -> None:
+    """Bind each build node to source and direct semantic dependencies only."""
+
+    by_id = {node["id"]: node for node in nodes}
+    identities: dict[str, str] = {}
+    visiting: set[str] = set()
+
+    def identify(node_id: str) -> str:
+        if node_id in identities:
+            return identities[node_id]
+        if node_id in visiting:
+            raise StageAInputError(
+                f"generated Lean build graph contains a cycle at {node_id}"
+            )
+        node = by_id.get(node_id)
+        if node is None:
+            raise StageAInputError(
+                f"generated Lean build graph names missing node {node_id}"
+            )
+        visiting.add(node_id)
+        dependencies = [
+            {
+                "node": dependency,
+                "semantic_id": identify(dependency),
+            }
+            for dependency in node["dependencies"]
+        ]
+        visiting.remove(node_id)
+        identity = sha256_bytes(
+            json.dumps(
+                {
+                    "format": _LEAN_SEMANTIC_NODE_ID_FORMAT,
+                    "recipe_version": _LEAN_SEMANTIC_RECIPE_VERSION,
+                    "modules": node["modules"],
+                    "source_sha256": node["source_sha256"],
+                    "dependencies": dependencies,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("ascii")
+        )
+        node["semantic_id"] = identity
+        node["dependency_semantic_ids"] = [
+            dependency["semantic_id"] for dependency in dependencies
+        ]
+        node["semantic_recipe_version"] = _LEAN_SEMANTIC_RECIPE_VERSION
+        identities[node_id] = identity
+        return identity
+
+    for node_id in sorted(by_id):
+        identify(node_id)
 
 
 def _relational_nix_expression(
@@ -585,40 +996,13 @@ def _relational_nix_expression(
     graph: dict[str, Any],
     evaluator: Path,
     flake_root: Path,
-    target_node: str | None,
     target_nodes: list[str],
-) -> tuple[str, dict[str, Any] | None]:
+    active_node_ids: list[str] | None = None,
+    prebuilt_nodes: Mapping[str, Mapping[str, str]] | None = None,
+) -> str:
     content_addressed = (
         "true" if _content_addressed_derivations_requested() else "false"
     )
-    measure_resources = os.environ.get(
-        "SPAGHETTI_EXTRACTOR_STAGE_A_NIX_MEASURE_RESOURCES", "false"
-    ).lower()
-    if measure_resources not in {"true", "false"}:
-        raise StageAInputError(
-            "SPAGHETTI_EXTRACTOR_STAGE_A_NIX_MEASURE_RESOURCES must be true or false"
-        )
-    requested_target_nodes = ([target_node] if target_node is not None else []) + list(
-        target_nodes
-    )
-    focused_input: dict[str, Any] | None = None
-    if requested_target_nodes:
-        closure = _relational_node_closure(graph, requested_target_nodes)
-        modules = sorted({
-            module
-            for node in graph["nodes"]
-            if node["id"] in closure
-            for module in node["modules"]
-        })
-        focused_input = {
-            "nodes": len(closure),
-            "modules": len(modules),
-            "source_bytes": sum(
-                (prepared / graph["modules"][module]["source"]).stat().st_size
-                for module in modules
-            ),
-        }
-
     locked_nixpkgs = _locked_flake_input(flake_root / "flake.lock", "nixpkgs")
     artifact_manifest_lines = (
         [
@@ -630,54 +1014,86 @@ def _relational_nix_expression(
         if graph.get("format") == LEAN_MODULE_GRAPH_V2_FORMAT
         else ["  artifactManifest = null;"]
     )
+    prepared_manifest_lines = (
+        ["  preparedManifest = null;"]
+        if target_nodes
+        else [
+            "  preparedManifest = builtins.path {",
+            f"    path = builtins.toPath {json.dumps(str(prepared / 'prepared-proof.json'))};",
+            '    name = "stage-a-prepared-proof.json";',
+            "  };",
+        ]
+    )
     return "\n".join([
         "let",
         f"  nixpkgs = builtins.fetchTree (builtins.fromJSON {json.dumps(json.dumps(locked_nixpkgs, sort_keys=True))});",
-        "  pkgs = import nixpkgs { system = builtins.currentSystem; };",
+        "  pkgs = import nixpkgs {",
+        "    system = builtins.currentSystem;",
+        "    config = {};",
+        "    overlays = [];",
+        "  };",
         "  graphFile = builtins.path {",
         f"    path = builtins.toPath {json.dumps(str(prepared / 'module-graph.json'))};",
         '    name = "stage-a-module-graph.json";',
         "  };",
-        "  preparedManifest = builtins.path {",
-        f"    path = builtins.toPath {json.dumps(str(prepared / 'prepared-proof.json'))};",
-        '    name = "stage-a-prepared-proof.json";',
-        "  };",
+        *prepared_manifest_lines,
         *artifact_manifest_lines,
         f"  sourceRoot = builtins.toPath {json.dumps(str(prepared))};",
-        "  targetNode = " + (
-            "null" if target_node is None else json.dumps(target_node)
-        ) + ";",
         "  targetNodes = [ "
-        + " ".join(json.dumps(node) for node in requested_target_nodes)
+        + " ".join(json.dumps(node) for node in target_nodes)
         + " ];",
+        "  activeNodeIds = [ "
+        + " ".join(json.dumps(node) for node in (active_node_ids or []))
+        + " ];",
+        "  prebuiltNodes = builtins.fromJSON "
+        + json.dumps(json.dumps(prebuilt_nodes or {}, sort_keys=True))
+        + ";",
         f"in import (builtins.toPath {json.dumps(str(evaluator))}) {{",
-        "  inherit pkgs graphFile preparedManifest artifactManifest sourceRoot targetNode targetNodes;",
+        "  inherit pkgs graphFile preparedManifest artifactManifest sourceRoot "
+        "targetNodes activeNodeIds prebuiltNodes;",
         f"  contentAddressed = {content_addressed};",
-        f"  measureResources = {measure_resources};",
         "}",
-    ]), focused_input
+    ])
+
+
+def _relational_focused_input(
+    prepared: Path,
+    graph: Mapping[str, Any],
+    target_nodes: list[str],
+) -> dict[str, int] | None:
+    if not target_nodes:
+        return None
+    closure = _relational_node_closure(dict(graph), target_nodes)
+    modules = sorted({
+        module
+        for node in graph["nodes"]
+        if node["id"] in closure
+        for module in node["modules"]
+    })
+    return {
+        "nodes": len(closure),
+        "modules": len(modules),
+        "source_bytes": sum(
+            (prepared / graph["modules"][module]["source"]).stat().st_size
+            for module in modules
+        ),
+    }
 
 
 def stage_a_build_relational(
     *,
     prepared: Path,
     out: Path,
-    executor: str = "nix",
     flake: Path | None = None,
     builders_file: Path | None = None,
     builder_trusted_public_keys_file: Path | None = None,
-    target_node: str | None = None,
     target_nodes: list[str] | None = None,
 ) -> dict[str, Any]:
     prepared = Path(prepared).resolve()
     out = Path(out).resolve()
-    if executor != "nix":
-        raise StageAInputError(f"unsupported relational proof executor {executor!r}")
     graph = _validate_prepared_relational(prepared)
     graph_node_ids = {node["id"] for node in graph["nodes"]}
-    requested_target_nodes = ([target_node] if target_node is not None else []) + list(
-        target_nodes or []
-    )
+    requested_target_nodes = list(target_nodes or [])
     if len(requested_target_nodes) != len(set(requested_target_nodes)):
         raise StageAInputError("relational target-node inventory contains duplicates")
     missing_target_nodes = sorted(set(requested_target_nodes) - graph_node_ids)
@@ -713,40 +1129,15 @@ def stage_a_build_relational(
 
     evaluator = _relational_nix_evaluator()
     flake_root = _find_relational_flake_root(flake)
-    if not requested_target_nodes:
-        reuse_started = time.monotonic()
-        cached = _cached_relational_build_result(
-            prepared=prepared,
-            out=out,
-            graph=graph,
-            evaluator=evaluator,
-            flake_root=flake_root,
-        )
-        if cached is not None:
-            cached = {
-                **cached,
-                "elapsed_seconds": round(time.monotonic() - reuse_started, 3),
-                "nix_work_reused": True,
-            }
-            write_json(out / "verdict.json", cached)
-            return cached
-    expression, focused_input = _relational_nix_expression(
-        prepared=prepared,
-        graph=graph,
-        evaluator=evaluator,
-        flake_root=flake_root,
-        target_node=target_node,
-        target_nodes=list(target_nodes or []),
+    focused_input = _relational_focused_input(
+        prepared, graph, requested_target_nodes
     )
     builders_path: Path | None = None
     if builders_file is not None:
         builders_path = Path(builders_file).resolve()
         if not builders_path.is_file():
             raise StageAInputError(f"Nix builders file does not exist: {builders_path}")
-    if (
-        builders_path is not None
-        and _content_addressed_derivations_requested()
-    ):
+    if _content_addressed_derivations_requested():
         _check_remote_ca_build_trace_compatibility(builders_path)
     trusted_keys_path = (
         Path(builder_trusted_public_keys_file).resolve()
@@ -754,9 +1145,50 @@ def stage_a_build_relational(
         else None
     )
     trusted_keys = _trusted_builder_public_keys(trusted_keys_path)
-    command = _relational_nix_build_command(
-        expression, builders_path, trusted_keys_path
+    cache_key = _relational_nix_evaluation_cache_key(
+        prepared=prepared,
+        evaluator=evaluator,
+        flake_root=flake_root,
+        requested_target_nodes=requested_target_nodes,
     )
+    evaluation_cache_path = _relational_nix_evaluation_cache_path(cache_key)
+    cached_installables = _cached_relational_nix_installables(
+        evaluation_cache_path,
+        cache_key=cache_key,
+    )
+    evaluation_reused = cached_installables is not None
+    incremental_active_nodes: list[str] = []
+    incremental_boundaries: dict[str, dict[str, str]] = {}
+
+    def plan_incremental_evaluation() -> str:
+        nonlocal incremental_active_nodes, incremental_boundaries
+        incremental_active_nodes, incremental_boundaries = (
+            _relational_incremental_evaluation(
+                graph, requested_target_nodes
+            )
+        )
+        return _relational_nix_expression(
+            prepared=prepared,
+            graph=graph,
+            evaluator=evaluator,
+            flake_root=flake_root,
+            target_nodes=requested_target_nodes,
+            active_node_ids=incremental_active_nodes,
+            prebuilt_nodes=incremental_boundaries,
+        )
+
+    expression = None
+    if cached_installables is not None:
+        command = _relational_nix_installable_build_command(
+            cached_installables,
+            builders_path,
+            trusted_keys_path,
+        )
+    else:
+        expression = plan_incremental_evaluation()
+        command = _relational_nix_build_command(
+            expression, builders_path, trusted_keys_path
+        )
     started = time.monotonic()
     process = subprocess.run(
         command,
@@ -765,6 +1197,19 @@ def stage_a_build_relational(
         stderr=subprocess.PIPE,
         check=False,
     )
+    if process.returncode != 0 and cached_installables is not None:
+        evaluation_reused = False
+        expression = plan_incremental_evaluation()
+        command = _relational_nix_build_command(
+            expression, builders_path, trusted_keys_path
+        )
+        process = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
     elapsed = round(time.monotonic() - started, 3)
     nix_work_reused = _relational_nix_work_reused(
         process.stderr, succeeded=process.returncode == 0
@@ -798,15 +1243,47 @@ def stage_a_build_relational(
         result_paths = [Path(output["outputs"]["out"]) for output in build_outputs]
     except (json.JSONDecodeError, IndexError, KeyError, TypeError) as exc:
         raise StageAInputError("Nix returned a malformed relational graph result") from exc
+    if not evaluation_reused:
+        _publish_relational_nix_evaluation(
+            evaluation_cache_path,
+            cache_key=cache_key,
+            build_outputs=build_outputs,
+        )
+    semantic_boundaries_published = _publish_relational_semantic_boundaries(
+        result_paths,
+        graph,
+    )
+    evaluated_node_count = (
+        0 if evaluation_reused else len(incremental_active_nodes)
+    )
+    prebuilt_boundary_count = (
+        0 if evaluation_reused else len(incremental_boundaries)
+    )
     if requested_target_nodes:
         node_results = [_read_json(path / "module-result.json") for path in result_paths]
         observed_target_nodes = {node_result.get("id") for node_result in node_results}
+        expected_nodes = {
+            node["id"]: node
+            for node in graph["nodes"]
+            if node["id"] in requested_target_nodes
+        }
         if (
             observed_target_nodes != set(requested_target_nodes)
             or len(node_results) != len(requested_target_nodes)
             or any(
                 node_result.get("format") != "stage-a-lean-node-result-v1"
                 or not isinstance(node_result.get("outputs"), list)
+                for node_result in node_results
+            )
+            or any(
+                node_result.get("semantic_id")
+                    != expected_nodes[node_result["id"]]["semantic_id"]
+                or node_result.get("dependency_semantic_ids")
+                    != expected_nodes[node_result["id"]][
+                        "dependency_semantic_ids"
+                    ]
+                or node_result.get("source_sha256")
+                    != expected_nodes[node_result["id"]]["source_sha256"]
                 for node_result in node_results
             )
         ):
@@ -826,6 +1303,10 @@ def stage_a_build_relational(
                 "elapsed_seconds": elapsed,
                 "focused_input": focused_input,
                 "nix_work_reused": nix_work_reused,
+                "nix_evaluation_reused": evaluation_reused,
+                "nix_evaluated_nodes": evaluated_node_count,
+                "nix_prebuilt_boundaries": prebuilt_boundary_count,
+                "semantic_boundaries_published": semantic_boundaries_published,
                 "node": node_result,
             }
             write_json(out / "node-build.json", result)
@@ -843,6 +1324,10 @@ def stage_a_build_relational(
                 "elapsed_seconds": elapsed,
                 "focused_input": focused_input,
                 "nix_work_reused": nix_work_reused,
+                "nix_evaluation_reused": evaluation_reused,
+                "nix_evaluated_nodes": evaluated_node_count,
+                "nix_prebuilt_boundaries": prebuilt_boundary_count,
+                "semantic_boundaries_published": semantic_boundaries_published,
                 "nodes": [result_by_id[node] for node in requested_target_nodes],
             }
             write_json(out / "node-set-build.json", result)
@@ -858,16 +1343,19 @@ def stage_a_build_relational(
     acceptance_node_ids = _relational_node_closure(graph, [final_node])
     acceptance_dependency_ids = acceptance_node_ids - {final_node}
     audit = _read_json(result_path / "audit.json")
-    dependency_pack = _read_json(result_path / "dependency-pack.json")
+    dependency_view = _read_json(result_path / "dependency-view.json")
     if (
-        dependency_pack.get("format") != "stage-a-lean-root-dependency-pack-v1"
-        or dependency_pack.get("node_count") != len(acceptance_dependency_ids)
-        or not isinstance(dependency_pack.get("archive_bytes"), int)
-        or dependency_pack["archive_bytes"] <= 0
-        or not isinstance(dependency_pack.get("archive_sha256"), str)
-        or not re.fullmatch(r"[0-9a-f]{64}", dependency_pack["archive_sha256"])
+        dependency_view.get("format")
+            != "stage-a-lean-root-dependency-view-v2"
+        or dependency_view.get("node_count") != len(acceptance_dependency_ids)
+        or dependency_view.get("reference_count") != len(acceptance_node_ids)
+        or dependency_view.get("root_node") != final_node
+        or dependency_view.get("archive_bytes") != 0
+        or dependency_view.get("materialized_oleans") != 0
     ):
-        raise StageAInputError("Nix relational graph emitted invalid dependency-pack provenance")
+        raise StageAInputError(
+            "Nix relational graph emitted invalid dependency-view provenance"
+        )
     node_provenance_payload = _read_json(result_path / "node-provenance.json")
     node_provenance = node_provenance_payload.get("nodes")
     if (
@@ -886,8 +1374,17 @@ def stage_a_build_relational(
         raise StageAInputError("Nix relational node provenance does not match the prepared graph")
     for node_id, expected_node in expected_nodes.items():
         observed_node = observed_nodes[node_id]
-        if observed_node.get("source_sha256") != expected_node["source_sha256"]:
-            raise StageAInputError(f"Nix node source provenance mismatch for {node_id}")
+        if (
+            observed_node.get("source_sha256") != expected_node["source_sha256"]
+            or observed_node.get("semantic_id") != expected_node["semantic_id"]
+            or observed_node.get("dependency_semantic_ids")
+                != expected_node["dependency_semantic_ids"]
+            or observed_node.get("semantic_recipe_version")
+                != expected_node["semantic_recipe_version"]
+        ):
+            raise StageAInputError(
+                f"Nix node semantic provenance mismatch for {node_id}"
+            )
         outputs = observed_node.get("outputs")
         if not isinstance(outputs, list) or {
             output.get("module") for output in outputs if isinstance(output, dict)
@@ -903,7 +1400,7 @@ def stage_a_build_relational(
         ):
             raise StageAInputError(f"Nix node output hash is invalid for {node_id}")
     path_info_process = subprocess.run(
-        ["nix", "path-info", "--json", str(result_path)],
+        [_nix_executable(), "path-info", "--json", str(result_path)],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -961,11 +1458,40 @@ def stage_a_build_relational(
         if source.is_file():
             shutil.copyfile(source, out / name)
     shutil.copytree(prepared / "artifacts", out / "artifacts")
-    shutil.copytree(prepared / "lean", out / "lean")
+    source_projection_sha256 = _lean_source_projection_sha256(graph)
+    source_reference = {
+        "format": "stage-a-lean-source-reference-v1",
+        "materialized": False,
+        "module_count": len(graph["modules"]),
+        "module_graph_sha256": sha256_file(prepared / "module-graph.json"),
+        "prepared_path": str(prepared),
+        "source_projection_sha256": source_projection_sha256,
+    }
+    write_json(out / "lean-source-reference.json", source_reference)
+    semantic_reference = {
+        "format": "stage-a-lean-semantic-graph-reference-v1",
+        "root_node": final_node,
+        "root_semantic_id": expected_nodes[final_node]["semantic_id"],
+        "node_count": len(acceptance_node_ids),
+        "semantic_projection_sha256": _lean_semantic_projection_sha256(
+            graph, acceptance_node_ids
+        ),
+        "recipe_versions": sorted({
+            expected_node["semantic_recipe_version"]
+            for expected_node in expected_nodes.values()
+        }),
+    }
+    write_json(
+        out / "semantic-graph-reference.json",
+        semantic_reference,
+    )
     shutil.copyfile(result_path / "audit.json", out / "lean-audit.json")
     shutil.copyfile(result_path / "lean.stdout", out / "lean.stdout")
     shutil.copyfile(result_path / "lean.stderr", out / "lean.stderr")
-    shutil.copyfile(result_path / "dependency-pack.json", out / "dependency-pack.json")
+    shutil.copyfile(
+        result_path / "dependency-view.json",
+        out / "dependency-view.json",
+    )
     write_json(out / "relational-proof-ir.json", proof_ir)
     analysis_manifest = _read_json(out / "relational-analysis-manifest.json")
     proof_ir_sha256 = sha256_file(out / "relational-proof-ir.json")
@@ -988,7 +1514,7 @@ def stage_a_build_relational(
     write_json(out / "prepared-proof.json", report_manifest)
     provenance = {
         "format": "stage-a-relational-nix-provenance-v1",
-        "executor": executor,
+        "executor": "nix",
         "flake": str(flake_root),
         "builders_file": str(Path(builders_file).resolve()) if builders_file is not None else None,
         "builder_trusted_public_keys": trusted_keys,
@@ -997,10 +1523,16 @@ def stage_a_build_relational(
         "evaluator_sha256": sha256_file(evaluator),
         "result_path": str(result_path),
         "nodes": node_provenance,
-        "dependency_pack": dependency_pack,
+        "dependency_view": dependency_view,
+        "lean_source_reference": source_reference,
+        "semantic_graph_reference": semantic_reference,
         "nix_path_info": path_info,
         "elapsed_seconds": elapsed,
         "nix_work_reused": nix_work_reused,
+        "nix_evaluation_reused": evaluation_reused,
+        "nix_evaluated_nodes": evaluated_node_count,
+        "nix_prebuilt_boundaries": prebuilt_boundary_count,
+        "semantic_boundaries_published": semantic_boundaries_published,
     }
     write_json(out / "nix-provenance.json", provenance)
     result = {
@@ -1041,17 +1573,28 @@ def stage_a_build_relational(
             out / "composition-progress.json"
         ),
         "module_graph_sha256": sha256_file(out / "module-graph.json"),
+        "semantic_graph_reference_sha256": sha256_file(
+            out / "semantic-graph-reference.json"
+        ),
         "trusted_base_sha256": sha256_file(out / "trusted-base.json"),
         "checks": checks,
         "lean_audit": audit,
         "counts": graph["counts"],
         "elapsed_seconds": elapsed,
         "nix_work_reused": nix_work_reused,
+        "nix_evaluation_reused": evaluation_reused,
+        "nix_evaluated_nodes": evaluated_node_count,
+        "nix_prebuilt_boundaries": prebuilt_boundary_count,
+        "semantic_boundaries_published": semantic_boundaries_published,
         "provenance": {
             "result_path": str(result_path),
             "nix_paths": len(path_info),
             "node_derivations": len(node_provenance),
-            "dependency_pack_bytes": dependency_pack["archive_bytes"],
+            "dependency_archive_bytes": dependency_view["archive_bytes"],
+            "dependency_references": dependency_view["reference_count"],
+            "materialized_dependency_oleans": dependency_view[
+                "materialized_oleans"
+            ],
         },
     }
     write_json(out / "verdict.json", result)
@@ -1430,7 +1973,7 @@ def _check_nix_relational_report(
     audit: dict[str, Any] = {}
     if checks["report_pass"]:
         try:
-            graph = _validate_prepared_relational(report)
+            graph = _validate_prepared_relational(report, require_sources=False)
             proof_ir = _read_json(report / "relational-proof-ir.json")
             acceptance = _read_json(report / "whole-program-acceptance.json")
             composition_progress = _read_json(report / "composition-progress.json")
@@ -1439,7 +1982,11 @@ def _check_nix_relational_report(
             CompositionProgressIR.parse(composition_progress)
             audit = _read_json(report / "lean-audit.json")
             provenance = _read_json(report / "nix-provenance.json")
-            dependency_pack = _read_json(report / "dependency-pack.json")
+            dependency_view = _read_json(report / "dependency-view.json")
+            source_reference = _read_json(report / "lean-source-reference.json")
+            semantic_reference = _read_json(
+                report / "semantic-graph-reference.json"
+            )
             trusted_base = _read_json(report / "trusted-base.json")
         except StageAInputError:
             checks["prepared_report_valid"] = False
@@ -1505,6 +2052,10 @@ def _check_nix_relational_report(
                     sha256_file(report / "module-graph.json")
                     == verdict.get("module_graph_sha256")
                 ),
+                "semantic_graph_reference_hash_matches": (
+                    sha256_file(report / "semantic-graph-reference.json")
+                    == verdict.get("semantic_graph_reference_sha256")
+                ),
                 "trusted_base_hash_matches": (
                     sha256_file(report / "trusted-base.json")
                     == verdict.get("trusted_base_sha256")
@@ -1520,10 +2071,24 @@ def _check_nix_relational_report(
                     == proof_ir.get("candidate", {}).get("sha256")
                 ),
                 "kernel_matches": all(
-                    sha256_file(
-                        _LEAN_SOURCE_ROOT / f"{module}.lean"
-                    ) == sha256_file(report / "lean" / "StageA" / f"{module}.lean")
+                    module not in graph["modules"]
+                    or sha256_file(_LEAN_SOURCE_ROOT / f"{module}.lean")
+                        == graph["modules"][module]["source_sha256"]
                     for module in RELATIONAL_KERNEL_MODULES
+                ),
+                "lean_source_reference_matches": (
+                    source_reference.get("format")
+                        == "stage-a-lean-source-reference-v1"
+                    and source_reference.get("materialized") is False
+                    and source_reference.get("module_count")
+                        == len(graph["modules"])
+                    and source_reference.get("module_graph_sha256")
+                        == sha256_file(report / "module-graph.json")
+                    and source_reference.get("source_projection_sha256")
+                        == _lean_source_projection_sha256(graph)
+                    and provenance.get("lean_source_reference")
+                        == source_reference
+                    and not (report / "lean").exists()
                 ),
             })
             final_node = graph.get("final_node")
@@ -1552,6 +2117,14 @@ def _check_nix_relational_report(
                 and all(
                     observed_nodes[node_id].get("source_sha256")
                         == expected["source_sha256"]
+                    and observed_nodes[node_id].get("semantic_id")
+                        == expected["semantic_id"]
+                    and observed_nodes[node_id].get(
+                        "dependency_semantic_ids"
+                    ) == expected["dependency_semantic_ids"]
+                    and observed_nodes[node_id].get(
+                        "semantic_recipe_version"
+                    ) == expected["semantic_recipe_version"]
                     and {
                         output.get("module")
                         for output in observed_nodes[node_id].get("outputs", [])
@@ -1560,12 +2133,36 @@ def _check_nix_relational_report(
                     for node_id, expected in expected_nodes.items()
                 )
             )
-            checks["dependency_pack_provenance_matches"] = (
-                dependency_pack.get("format")
-                    == "stage-a-lean-root-dependency-pack-v1"
-                and provenance.get("dependency_pack") == dependency_pack
-                and dependency_pack.get("node_count")
+            checks["semantic_graph_reference_matches"] = (
+                semantic_reference.get("format")
+                    == "stage-a-lean-semantic-graph-reference-v1"
+                and semantic_reference.get("root_node") == final_node
+                and semantic_reference.get("root_semantic_id")
+                    == expected_nodes.get(final_node, {}).get("semantic_id")
+                and semantic_reference.get("node_count")
+                    == len(acceptance_node_ids)
+                and semantic_reference.get("semantic_projection_sha256")
+                    == _lean_semantic_projection_sha256(
+                        graph, acceptance_node_ids
+                    )
+                and semantic_reference.get("recipe_versions")
+                    == sorted({
+                        expected["semantic_recipe_version"]
+                        for expected in expected_nodes.values()
+                    })
+                and provenance.get("semantic_graph_reference")
+                    == semantic_reference
+            )
+            checks["dependency_view_provenance_matches"] = (
+                dependency_view.get("format")
+                    == "stage-a-lean-root-dependency-view-v2"
+                and provenance.get("dependency_view") == dependency_view
+                and dependency_view.get("node_count")
                     == len(acceptance_dependency_ids)
+                and dependency_view.get("reference_count")
+                    == len(acceptance_node_ids)
+                and dependency_view.get("archive_bytes") == 0
+                and dependency_view.get("materialized_oleans") == 0
             )
             checks["declared_build_checks_hold"] = all(
                 value is True for value in verdict.get("checks", {}).values()
@@ -1803,6 +2400,11 @@ def _write_relational_module_graph(
     def resource_class(modules: list[str]) -> tuple[str, int]:
         names = " ".join(modules)
         source_bytes = sum(logical_modules[module]["source_bytes"] for module in modules)
+        if "RelationalLaunchRealizabilityCertificate" in modules:
+            # This compact certificate reduces all checked launch-frame leaves.
+            # GNU hello measured an 8.0 GiB peak despite a small source file, so
+            # source size is not a useful estimator for this module.
+            return "high-memory", max(10240, source_bytes // 1024 * 3)
         if any(
             module.startswith("RelationalLaunch") and "Leaf" in module
             for module in modules
@@ -2050,6 +2652,7 @@ def _write_relational_module_graph(
                 "checker_version": CHECKED_ARTIFACT_CHECKER_VERSION,
             })
         nodes.append(node)
+    _attach_relational_semantic_identities(nodes)
 
     lean_version = None
     lean_githash = None
@@ -2138,7 +2741,10 @@ def _write_relational_module_graph(
 
 
 def _validate_relational_module_graph(
-    prepared: Path, graph: dict[str, Any] | None = None
+    prepared: Path,
+    graph: dict[str, Any] | None = None,
+    *,
+    require_sources: bool = True,
 ) -> dict[str, Any]:
     prepared = Path(prepared)
     graph = graph or _read_json(prepared / "module-graph.json")
@@ -2162,14 +2768,30 @@ def _validate_relational_module_graph(
         relative = metadata.get("source")
         if relative != f"lean/StageA/{module}.lean":
             raise StageAInputError(f"module {module} has a noncanonical source path")
-        source = prepared / relative
-        if not source.is_file() or sha256_file(source) != metadata.get("source_sha256"):
-            raise StageAInputError(f"module {module} source hash does not match")
-        observed_imports = _LEAN_IMPORT_PATTERN.findall(
-            source.read_text(encoding="utf-8")
-        )
-        if observed_imports != metadata.get("imports"):
-            raise StageAInputError(f"module {module} import inventory does not match source")
+        source_sha256 = metadata.get("source_sha256")
+        declared_imports = metadata.get("imports")
+        if (
+            not isinstance(source_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", source_sha256) is None
+            or not isinstance(declared_imports, list)
+            or any(not isinstance(dependency, str) for dependency in declared_imports)
+        ):
+            raise StageAInputError(
+                f"module {module} has malformed source provenance"
+            )
+        if require_sources:
+            source = prepared / relative
+            if not source.is_file() or sha256_file(source) != source_sha256:
+                raise StageAInputError(f"module {module} source hash does not match")
+            observed_imports = _LEAN_IMPORT_PATTERN.findall(
+                source.read_text(encoding="utf-8")
+            )
+            if observed_imports != declared_imports:
+                raise StageAInputError(
+                    f"module {module} import inventory does not match source"
+                )
+        else:
+            observed_imports = declared_imports
         if any(dependency not in modules for dependency in observed_imports):
             raise StageAInputError(f"module {module} imports an undeclared StageA module")
     for node in nodes:
@@ -2297,7 +2919,9 @@ def _validate_relational_module_graph(
     return graph
 
 
-def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
+def _validate_prepared_relational(
+    prepared: Path, *, require_sources: bool = True
+) -> dict[str, Any]:
     manifest = _read_json(prepared / "prepared-proof.json")
     try:
         PreparedProofDigests.parse(manifest)
@@ -2317,7 +2941,9 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
         )
     except SchemaError as exc:
         raise StageAInputError(f"malformed Stage A interface manifest: {exc}") from exc
-    graph = _validate_relational_module_graph(prepared)
+    graph = _validate_relational_module_graph(
+        prepared, require_sources=require_sources
+    )
     expected_hashes = {
         "analysis_manifest_sha256": (
             prepared / "relational-analysis-manifest.json"
@@ -2382,7 +3008,7 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
         path = prepared / artifact["path"]
         if not path.is_file() or sha256_file(path) != artifact["sha256"]:
             raise StageAInputError(f"prepared artifact hash mismatch for {artifact['path']}")
-    if any(prepared.rglob("*.olean")):
+    if require_sources and any(prepared.rglob("*.olean")):
         raise StageAInputError("prepared relational proof must not contain prebuilt Lean objects")
     return graph
 

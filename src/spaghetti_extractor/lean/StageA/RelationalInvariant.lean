@@ -1284,10 +1284,31 @@ structure StaticWordSlotRegisterOutputClaim where
   slot : StaticWordRelationSlotPair
   originalAddress : Nat
   candidateAddress : Nat
+  originalAssembledRead : Bool := false
+  candidateAssembledRead : Bool := false
+  originalWrites : List RegisterOffsetWrite := []
+  candidateWrites : List RegisterOffsetWrite := []
 deriving Repr, DecidableEq
+
+def StaticWordSlotRegisterOutputClaim.originalExpression
+    (claim : StaticWordSlotRegisterOutputClaim) : Expr :=
+  if claim.originalAssembledRead then
+    .constantRead32AfterWrites claim.originalAddress
+      (claim.originalWrites.map RegisterOffsetWrite.toWrite)
+  else
+    .read32 (.constant claim.originalAddress)
+
+def StaticWordSlotRegisterOutputClaim.candidateExpression
+    (claim : StaticWordSlotRegisterOutputClaim) : Expr :=
+  if claim.candidateAssembledRead then
+    .constantRead32AfterWrites claim.candidateAddress
+      (claim.candidateWrites.map RegisterOffsetWrite.toWrite)
+  else
+    .read32 (.constant claim.candidateAddress)
 
 def StaticWordSlotRegisterOutputClaim.checked
     (context : StaticProofContext)
+    (sourceInvariant : StateInvariant)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
     (claim : StaticWordSlotRegisterOutputClaim) : Bool :=
   context.staticWordRelationSlots.contains claim.slot &&
@@ -1296,16 +1317,21 @@ def StaticWordSlotRegisterOutputClaim.checked
     staticWordRelationSupportsRegisterValueRelation claim.slot.relation
       claim.output.relation &&
     originalBehavior.registers.get claim.output.original ==
-      .read32 (.constant claim.originalAddress) &&
+      claim.originalExpression &&
     candidateBehavior.registers.get claim.output.candidate ==
-      .read32 (.constant claim.candidateAddress)
+      claim.candidateExpression &&
+    registerOffsetWritesSeparated false sourceInvariant.addressSeparations
+      claim.originalAddress claim.originalWrites &&
+    registerOffsetWritesSeparated true sourceInvariant.addressSeparations
+      claim.candidateAddress claim.candidateWrites
 
 theorem StaticWordSlotRegisterOutputClaim.holds_output_of_stateRel
     (context : StaticProofContext) (world : RelationalWorld)
     (region : RegionRelation)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
     (claim : StaticWordSlotRegisterOutputClaim)
-    (checked : claim.checked context originalBehavior candidateBehavior = true)
+    (checked : claim.checked context region.inputInvariant
+      originalBehavior candidateBehavior = true)
     (originalState candidateState : MachineState)
     (related : StateRel context world region.inputInvariant originalState candidateState) :
     claim.output.relation.holds context.originalPe.imageBase context.candidatePe.imageBase
@@ -1315,17 +1341,59 @@ theorem StaticWordSlotRegisterOutputClaim.holds_output_of_stateRel
   simp only [StaticWordSlotRegisterOutputClaim.checked, Bool.and_eq_true,
     beq_iff_eq] at checked
   rcases checked with
-    ⟨⟨⟨⟨⟨slotMember, originalAddress⟩, candidateAddress⟩, compatible⟩,
-      originalExpression⟩, candidateExpression⟩
+    ⟨⟨⟨⟨⟨⟨⟨slotMember, originalAddress⟩, candidateAddress⟩, compatible⟩,
+      originalExpression⟩, candidateExpression⟩, originalSeparated⟩,
+      candidateSeparated⟩
   have slotsHold := related.staticWordRelationSlotsMemoryHold context world
     region.inputInvariant originalState candidateState
   have slotHolds := slotsHold claim.slot
     (List.contains_iff_mem.mp slotMember)
   simp only [StaticWordRelationSlotPair.memoryHolds] at slotHolds
+  rcases related with
+    ⟨_worldStatic, _stackRangesValid, _stackMemory, _importsStatic,
+      _importsComplete, _importsMemory, _originalImmutable, _candidateImmutable,
+      relatedCore, _importRegisters⟩
+  rcases relatedCore with
+    ⟨_registers, _bounds, separations, _stackWindows, _memory, _undefined,
+      _x87, _flags, _fsBase⟩
+  have originalSide := addressSeparationsRelated_original
+    region.inputInvariant.addressSeparations originalState.registers
+    candidateState.registers separations
+  have candidateSide := addressSeparationsRelated_candidate
+    region.inputInvariant.addressSeparations originalState.registers
+    candidateState.registers separations
+  have originalAvoids := registerOffsetWritesAvoidWord_of_checked false
+    region.inputInvariant.addressSeparations claim.originalAddress
+    claim.originalWrites originalState originalSide originalSeparated
+  have candidateAvoids := registerOffsetWritesAvoidWord_of_checked true
+    region.inputInvariant.addressSeparations claim.candidateAddress
+    claim.candidateWrites candidateState candidateSide candidateSeparated
+  have originalEval : claim.originalExpression.eval originalState =
+      Memory.read32 originalState.memory claim.slot.originalAddress := by
+    cases assembled : claim.originalAssembledRead with
+    | false =>
+        simp [StaticWordSlotRegisterOutputClaim.originalExpression, assembled,
+          Expr.eval, machineStateRead32_eq_memoryRead32, originalAddress]
+    | true =>
+        simp only [StaticWordSlotRegisterOutputClaim.originalExpression,
+          assembled, if_true]
+        rw [Expr.eval_constantRead32AfterWrites]
+        rw [Memory.read32_applyConcreteWrites_of_avoids _ _ _ originalAvoids]
+        rw [originalAddress]
+  have candidateEval : claim.candidateExpression.eval candidateState =
+      Memory.read32 candidateState.memory claim.slot.candidateAddress := by
+    cases assembled : claim.candidateAssembledRead with
+    | false =>
+        simp [StaticWordSlotRegisterOutputClaim.candidateExpression, assembled,
+          Expr.eval, machineStateRead32_eq_memoryRead32, candidateAddress]
+    | true =>
+        simp only [StaticWordSlotRegisterOutputClaim.candidateExpression,
+          assembled, if_true]
+        rw [Expr.eval_constantRead32AfterWrites]
+        rw [Memory.read32_applyConcreteWrites_of_avoids _ _ _ candidateAvoids]
+        rw [candidateAddress]
   simp only [NormalizedSymbolicBehavior.eval, evalNormalizedRegisters_get]
-  rw [originalExpression, candidateExpression]
-  simp only [Expr.eval, machineStateRead32_eq_memoryRead32]
-  rw [← originalAddress, ← candidateAddress]
+  rw [originalExpression, candidateExpression, originalEval, candidateEval]
   exact StaticWordRelationKind.registerValueRelation_holds_of_holds context world
     claim.slot.relation claim.output.relation _ _ compatible slotHolds
 
@@ -1868,7 +1936,8 @@ def RegisterOutputClaim.nonMemoryChecked
       claim.checked context region.inputInvariant originalBehavior candidateBehavior
   | .fixedImmutableExpression claim =>
       claim.checked context region.inputInvariant originalBehavior candidateBehavior
-  | .staticWordSlot claim => claim.checked context originalBehavior candidateBehavior
+  | .staticWordSlot claim =>
+      claim.checked context region.inputInvariant originalBehavior candidateBehavior
   | .stackRead32Sub claim => claim.checked region originalBehavior candidateBehavior
   | .stackRead32Relative claim => claim.checked region originalBehavior candidateBehavior
   | .stackWindowIdentity claim => claim.checked region originalBehavior candidateBehavior

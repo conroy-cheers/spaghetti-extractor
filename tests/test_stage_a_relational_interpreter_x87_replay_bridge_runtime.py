@@ -272,11 +272,14 @@ class StageAX87ReplayBridgeRuntimeTests(unittest.TestCase):
         lane = (root / "nix/gnu-hello-roundtrip.nix").read_text(encoding="utf-8")
         phase = lane[
             lane.index("x87ReplayBridgeRuntimeLean =") :
-            lane.index("kernelBlockLean =", lane.index("x87ReplayBridgeRuntimeLean ="))
+            lane.index(
+                "x87KernelExecutionLean =",
+                lane.index("x87ReplayBridgeRuntimeLean ="),
+            )
         ]
         self.assertIn("x87-replay-bridge-runtime-sources", phase)
-        self.assertIn(".counts.runtime_targets == 313", phase)
-        self.assertIn(".counts.relocated_operands == 23", phase)
+        self.assertIn(".counts.runtime_targets == $targetCount", phase)
+        self.assertIn(".counts.relocated_operands > 0", phase)
         self.assertNotIn(".status ==", phase)
         acceptance = lane[
             lane.index("acceptanceLean =") : lane.index("finalProofSources =")

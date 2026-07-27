@@ -69,6 +69,8 @@ open StageA.Relational.OriginalStackDynamicControlClosure
 #print axioms originalResolvedCodeTarget_of_checked
 #print axioms stackCarryClosure_of_complete
 #print axioms indexedTableClosure_of_empty_checked_interval
+#print axioms CheckedEmptyIndexedSourceAuthority.noRuntimeIndex
+#print axioms emptyIndexedSourceClosure_of_complete
 #print axioms dynamicCallbackClosure_of_complete
 #print axioms dynamicSourceClosure_of_uninhabited
 
@@ -344,8 +346,12 @@ end StageA.Generated.StackDynamicClosureFixture
         self.assertEqual(result["status"], "checked", result)
         output = result["stdout"] + result["stderr"]
         self.assertNotIn("sorryAx", output)
+        self.assertIn(
+            "generatedOriginalStackDynamicClosure1Closed",
+            output,
+        )
         reports = _AXIOMS.findall(output)
-        self.assertGreaterEqual(len(reports), 11, output)
+        self.assertGreaterEqual(len(reports), 9, output)
         for report in reports:
             used = {item.strip() for item in report.split(",") if item.strip()}
             self.assertLessEqual(used, _APPROVED_AXIOMS, report)

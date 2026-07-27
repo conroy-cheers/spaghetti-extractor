@@ -21,9 +21,11 @@ import pefile
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
 from ...errors import StageAInputError
+from ..direct_call_proposal_ir import DirectCallSummaryRequest
 from .internal_direct_call_register_summary import (
     InternalDirectCallRegisterSummaryLeanBindings,
     LeanCalleeEdge,
+    LeanCallerFrameWord,
     LeanExactRegionPair,
     LeanFiniteIndirectJumpDependency,
     LeanFiniteOriginCallDependency,
@@ -58,34 +60,6 @@ _MODULE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*\Z")
 
 class InternalDirectCallSummaryProposalError(StageAInputError):
     """An input artifact cannot safely be used to construct proposals."""
-
-
-@dataclass(frozen=True)
-class DirectCallSummaryRequest:
-    """One terminal direct call instruction and the registers needed across it."""
-
-    callsite_rva: int
-    registers: tuple[str, ...]
-    caller_rva: int | None = None
-
-    def checked(self) -> "DirectCallSummaryRequest":
-        _u32(self.callsite_rva, "request.callsite_rva")
-        if self.caller_rva is not None:
-            _u32(self.caller_rva, "request.caller_rva")
-        if not self.registers:
-            raise InternalDirectCallSummaryProposalError(
-                "request.registers must not be empty"
-            )
-        if len(set(self.registers)) != len(self.registers):
-            raise InternalDirectCallSummaryProposalError(
-                "request.registers contains duplicates"
-            )
-        for register in self.registers:
-            if register not in _REGISTERS:
-                raise InternalDirectCallSummaryProposalError(
-                    f"request register {register!r} is not a supported IA-32 register"
-                )
-        return self
 
 
 @dataclass(frozen=True)
@@ -159,6 +133,7 @@ class FiniteOriginCallAuthorityBinding:
     internal_target_rvas: tuple[int, ...]
     authority_module: str
     indirect_exit_authority_term: str
+    indirect_exit_certificate_exact_term: str
 
     def checked(self) -> "FiniteOriginCallAuthorityBinding":
         _u32(self.source_rva, "finite call authority source_rva")
@@ -189,6 +164,22 @@ class FiniteOriginCallAuthorityBinding:
             raise InternalDirectCallSummaryProposalError(
                 "finite call authority contains duplicate target mappings"
             )
+        if len({target.target_id for target in self.internal_targets}) != len(
+            self.internal_targets
+        ):
+            raise InternalDirectCallSummaryProposalError(
+                "finite call authority contains duplicate target IDs"
+            )
+        if len({target.region_id for target in self.internal_targets}) != len(
+            self.internal_targets
+        ):
+            raise InternalDirectCallSummaryProposalError(
+                "finite call authority contains duplicate target regions"
+            )
+        if len(set(self.internal_target_rvas)) != len(self.internal_target_rvas):
+            raise InternalDirectCallSummaryProposalError(
+                "finite call authority contains duplicate target RVAs"
+            )
         if _MODULE.fullmatch(self.authority_module) is None:
             raise InternalDirectCallSummaryProposalError(
                 "finite call authority module is not a qualified Lean module"
@@ -204,6 +195,19 @@ class FiniteOriginCallAuthorityBinding:
         ):
             raise InternalDirectCallSummaryProposalError(
                 "finite call indirect-exit authority is not a qualified Lean term"
+            )
+        if (
+            not isinstance(self.indirect_exit_certificate_exact_term, str)
+            or re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_']*"
+                r"(?:\.[A-Za-z_][A-Za-z0-9_']*)*",
+                self.indirect_exit_certificate_exact_term,
+            )
+            is None
+        ):
+            raise InternalDirectCallSummaryProposalError(
+                "finite call indirect-exit certificate equality is not a "
+                "qualified Lean term"
             )
         return self
 
@@ -236,9 +240,36 @@ class InternalDirectCallSummaryProposal:
     nested_callsite_rvas: tuple[int, ...]
     machine_import_boundary_ids: tuple[int, ...]
     machine_import_tail_signature_ids: tuple[int, ...]
+    entry_authority: FiniteOriginCallAuthorityBinding | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
+            "entry_authority": (
+                None
+                if self.entry_authority is None
+                else {
+                    "authority_module": self.entry_authority.authority_module,
+                    "continuation_rva": self.entry_authority.continuation_rva,
+                    "continuation_target_id": (
+                        self.entry_authority.continuation_target_id
+                    ),
+                    "indirect_exit_authority_term": (
+                        self.entry_authority.indirect_exit_authority_term
+                    ),
+                    "indirect_exit_certificate_exact_term": (
+                        self.entry_authority.indirect_exit_certificate_exact_term
+                    ),
+                    "instruction_rva": self.entry_authority.instruction_rva,
+                    "internal_target_ids": [
+                        target.target_id
+                        for target in self.entry_authority.internal_targets
+                    ],
+                    "internal_target_rvas": list(
+                        self.entry_authority.internal_target_rvas
+                    ),
+                    "source_rva": self.entry_authority.source_rva,
+                }
+            ),
             "machine_import_boundary_ids": list(self.machine_import_boundary_ids),
             "machine_import_tail_signature_ids": list(
                 self.machine_import_tail_signature_ids
@@ -689,6 +720,18 @@ class _Planner:
             )
         self.by_start = {row.rva: row for row in self.rows}
         self.known_call_targets = self._known_call_targets()
+        self._summary_tree_cache: dict[
+            tuple[Any, ...],
+            tuple[
+                LeanInternalDirectCallRegisterSummaryTree,
+                frozenset[int],
+            ],
+        ] = {}
+        self._row_stack_result_cache: dict[tuple[Any, ...], int | None] = {}
+        self._entry_frame_cache: dict[
+            int,
+            tuple[int, dict[str, int], dict[str, int]],
+        ] = {}
 
     def _materialize_missing_control_paths(
         self,
@@ -1312,9 +1355,72 @@ class _Planner:
             call_row=call_row,
             caller_rva=request.caller_rva,
             requested_registers=registers,
+            caller_frame_words=tuple(
+                LeanCallerFrameWord(offset + 4, offset + 4)
+                for offset in request.caller_frame_word_offsets
+            ),
             active_targets=(),
             call_path=(control.instruction_rva,),
         )
+        return self._proposal_from_tree(request, tree)
+
+    def finite_origin_call_proposal(
+        self, request: DirectCallSummaryRequest
+    ) -> InternalDirectCallSummaryProposal:
+        call_row = self._resolve_callsite(request.callsite_rva, ())
+        control = self._control(call_row, ())
+        if control.kind != "unresolved_indirect_call":
+            raise self._failure(
+                "requested_site_is_not_finite_origin_internal_call",
+                control.instruction_rva,
+                "the requested site is not an exact returning indirect call",
+                "select a returning indirect call with a checked finite target authority",
+                (),
+            )
+        authority = self._finite_origin_call_authority(call_row, ())
+        if authority is None:
+            raise self._failure(
+                "finite_origin_entry_authority_missing",
+                control.instruction_rva,
+                "the requested indirect call has no checked finite target authority",
+                "supply a hash-bound finite-origin call authority for the exact site",
+                (),
+            )
+        if len(authority.internal_targets) != 1:
+            raise self._failure(
+                "finite_origin_entry_has_multiple_targets",
+                control.instruction_rva,
+                "top-level finite-origin call summaries currently require one target",
+                "split the proof by checked target guards or add finite-alternative composition",
+                (),
+            )
+        target = authority.internal_targets[0]
+        tree = self._summary_tree(
+            call_row=call_row,
+            caller_rva=request.caller_rva,
+            requested_registers=_ordered_registers(request.registers),
+            caller_frame_words=tuple(
+                LeanCallerFrameWord(offset + 4, offset + 4)
+                for offset in request.caller_frame_word_offsets
+            ),
+            active_targets=(),
+            call_path=(control.instruction_rva,),
+            indirect_target=target,
+            indirect_dependency_id=control.instruction_rva,
+        )
+        return self._proposal_from_tree(
+            request,
+            tree,
+            entry_authority=authority,
+        )
+
+    def _proposal_from_tree(
+        self,
+        request: DirectCallSummaryRequest,
+        tree: LeanInternalDirectCallRegisterSummaryTree,
+        *,
+        entry_authority: FiniteOriginCallAuthorityBinding | None = None,
+    ) -> InternalDirectCallSummaryProposal:
         region_rvas: set[int] = set()
         nested_sites: set[int] = set()
         boundary_ids: set[int] = set()
@@ -1333,6 +1439,7 @@ class _Planner:
             nested_callsite_rvas=tuple(sorted(nested_sites)),
             machine_import_boundary_ids=tuple(sorted(boundary_ids)),
             machine_import_tail_signature_ids=tuple(sorted(tail_signature_ids)),
+            entry_authority=entry_authority,
         )
 
     def _summary_tree(
@@ -1341,6 +1448,7 @@ class _Planner:
         call_row: _Row,
         caller_rva: int | None,
         requested_registers: tuple[str, ...],
+        caller_frame_words: tuple[LeanCallerFrameWord, ...],
         active_targets: tuple[int, ...],
         call_path: tuple[int, ...],
         indirect_target: LeanFiniteOriginTailTarget | None = None,
@@ -1387,6 +1495,35 @@ class _Planner:
                 "constructing this summary",
                 call_path,
             )
+        cache_key = (
+            call_row.rva,
+            caller_rva,
+            requested_registers,
+            caller_frame_words,
+            (
+                None
+                if indirect_target is None
+                else (indirect_target.target_id, indirect_target.region_id)
+            ),
+            indirect_dependency_id,
+            summary_id_override,
+        )
+        cached = self._summary_tree_cache.get(cache_key)
+        if cached is not None:
+            tree, callee_entries = cached
+            recursive_entries = callee_entries.intersection(active_targets)
+            if recursive_entries:
+                raise self._failure(
+                    "recursive_call_requires_checked_finite_invariant",
+                    call_control.instruction_rva,
+                    "the cached finite summary tree intersects the active "
+                    "call stack; the standalone checker has no checked "
+                    "recursion-invariant input",
+                    "add a Lean-checked finite recursion/ranking invariant "
+                    "interface before constructing this summary",
+                    call_path,
+                )
+            return tree
         continuation = self._row_at(
             continuation_rva,
             category="missing_call_continuation",
@@ -1518,6 +1655,7 @@ class _Planner:
                     call_row=row,
                     caller_rva=None,
                     requested_registers=child_registers,
+                    caller_frame_words=(),
                     active_targets=(*active_targets, callee_rva),
                     call_path=(*call_path, control.instruction_rva),
                 )
@@ -1678,6 +1816,7 @@ class _Planner:
                         requested_registers=_ordered_registers(
                             (*requested_registers, "esp")
                         ),
+                        caller_frame_words=(),
                         active_targets=(*active_targets, callee_rva),
                         call_path=(*call_path, control.instruction_rva),
                         indirect_target=target,
@@ -1782,6 +1921,7 @@ class _Planner:
                     *requested_registers,
                     *missing_frame_registers,
                 )),
+                caller_frame_words=caller_frame_words,
                 active_targets=active_targets,
                 call_path=call_path,
                 indirect_target=indirect_target,
@@ -1884,6 +2024,7 @@ class _Planner:
             edges=tuple(edges),
             returns=tuple(returns),
             requested_registers=requested_registers,
+            caller_frame_words=caller_frame_words,
             entry_kind=entry_kind,
             entry_dependency_id=entry_dependency_id,
             entry_target_id=entry_target_id,
@@ -1907,7 +2048,30 @@ class _Planner:
             stack_entry_offsets=stack_entry_offsets,
             dynamic_stack_entry_region_ids=dynamic_stack_entry_region_ids,
         )
-        return LeanInternalDirectCallRegisterSummaryTree(certificate, children)
+        tree = LeanInternalDirectCallRegisterSummaryTree(certificate, children)
+        callee_entries = frozenset({
+            certificate.callee_entry.original.start,
+            *(
+                entry
+                for child in children
+                for entry in self._summary_tree_callee_entries(child)
+            ),
+        })
+        self._summary_tree_cache[cache_key] = (tree, callee_entries)
+        return tree
+
+    def _summary_tree_callee_entries(
+        self,
+        tree: LeanInternalDirectCallRegisterSummaryTree,
+    ) -> frozenset[int]:
+        return frozenset({
+            tree.certificate.callee_entry.original.start,
+            *(
+                entry
+                for child in tree.nested
+                for entry in self._summary_tree_callee_entries(child)
+            ),
+        })
 
     def _machine_stack_result_delta(
         self, boundary: _Boundary, call_path: tuple[int, ...]
@@ -2080,6 +2244,18 @@ class _Planner:
         frame_anchor: tuple[str, int] | None,
         call_path: tuple[int, ...],
     ) -> int | None:
+        cache_key = (
+            row.rva,
+            control.kind,
+            control.instruction_rva,
+            control.targets,
+            None if control.boundary is None else control.boundary.id,
+            None if control.import_tail is None else control.import_tail.id,
+            entry_offset,
+            frame_anchor,
+        )
+        if cache_key in self._row_stack_result_cache:
+            return self._row_stack_result_cache[cache_key]
         absolute = entry_offset
 
         def adjust(amount: int) -> None:
@@ -2165,6 +2341,7 @@ class _Planner:
             adjust(self._machine_tail_stack_result_delta(
                 control.import_tail, call_path
             ))
+        self._row_stack_result_cache[cache_key] = absolute
         return absolute
 
     def _stack_entry_offsets(
@@ -2479,6 +2656,9 @@ class _Planner:
     def _entry_frame(
         self, row: _Row, call_path: tuple[int, ...]
     ) -> tuple[int, dict[str, int], dict[str, int]]:
+        cached = self._entry_frame_cache.get(row.rva)
+        if cached is not None:
+            return cached
         frame = 0
         saves: dict[str, int] = {}
         anchors: dict[str, int] = {}
@@ -2568,7 +2748,9 @@ class _Planner:
                     "use a fixed push/sub frame or add an exact Lean frame witness form",
                     call_path,
                 )
-        return frame, saves, anchors
+        result = frame, saves, anchors
+        self._entry_frame_cache[row.rva] = result
+        return result
 
     def _return_frame(
         self,
@@ -3237,6 +3419,7 @@ def construct_internal_direct_call_summary_proposals(
     machine_import_report: Path | str,
     requests: Iterable[DirectCallSummaryRequest],
     *,
+    finite_origin_entry_requests: Iterable[DirectCallSummaryRequest] = (),
     finite_origin_call_authorities: Iterable[
         FiniteOriginCallAuthorityBinding
     ] = (),
@@ -3254,11 +3437,21 @@ def construct_internal_direct_call_summary_proposals(
             item.callsite_rva,
             -1 if item.caller_rva is None else item.caller_rva,
             _ordered_registers(item.registers),
+            item.caller_frame_word_offsets,
         ),
     ))
-    if not checked_requests:
+    checked_finite_entry_requests = tuple(sorted(
+        (request.checked() for request in finite_origin_entry_requests),
+        key=lambda item: (
+            item.callsite_rva,
+            -1 if item.caller_rva is None else item.caller_rva,
+            _ordered_registers(item.registers),
+            item.caller_frame_word_offsets,
+        ),
+    ))
+    if not checked_requests and not checked_finite_entry_requests:
         raise InternalDirectCallSummaryProposalError(
-            "at least one direct-call summary request is required"
+            "at least one internal-call summary request is required"
         )
     _report, imports = _load_import_report(pe_path, state_path, report_path)
     checked_tail_authorities = tuple(finite_origin_tail_authorities)
@@ -3279,6 +3472,18 @@ def construct_internal_direct_call_summary_proposals(
         for request in checked_requests:
             try:
                 proposals.append(planner.proposal(request))
+            except _PlanningFailure as failure:
+                blockers.append(ProposalBlocker(
+                    request=request,
+                    category=failure.category,
+                    location_rva=failure.location_rva,
+                    detail=failure.detail,
+                    next_action=failure.next_action,
+                    call_path=failure.call_path,
+                ))
+        for request in checked_finite_entry_requests:
+            try:
+                proposals.append(planner.finite_origin_call_proposal(request))
             except _PlanningFailure as failure:
                 blockers.append(ProposalBlocker(
                     request=request,
@@ -4038,6 +4243,9 @@ def _ordered_registers(registers: Iterable[str]) -> tuple[str, ...]:
 def _request_json(request: DirectCallSummaryRequest) -> dict[str, Any]:
     result: dict[str, Any] = {
         "callsite_rva": request.callsite_rva,
+        "caller_frame_word_offsets": list(
+            request.caller_frame_word_offsets
+        ),
         "registers": list(request.registers),
     }
     if request.caller_rva is not None:

@@ -11,19 +11,32 @@ from unittest import mock
 
 from spaghetti_extractor.stage_binary import StageAInputError
 from spaghetti_extractor.relational.build import (
+    _attach_relational_semantic_identities,
+    _cached_relational_nix_installables,
     _ca_builder_stores,
     _check_remote_ca_build_trace_compatibility,
+    _content_addressed_derivations_requested,
     _finalize_nix_proof_ir,
     _locked_flake_input,
+    _nix_executable,
+    _nix_store_version,
     _relational_nix_build_command,
+    _relational_nix_evaluation_cache_key,
+    _relational_nix_installable_build_command,
     _relational_nix_work_reused,
     _relational_nix_realize_command,
     _relational_nix_expression,
+    _relational_focused_input,
+    _relational_incremental_evaluation,
     _relational_node_closure,
     _relational_raw_build_nodes,
+    _publish_relational_nix_evaluation,
     _validate_relational_module_graph,
     _write_relational_module_graph,
     stage_a_build_relational_from_nix,
+)
+from spaghetti_extractor.relational.cache_qualification import (
+    diff_semantic_invalidation,
 )
 from spaghetti_extractor.relational.schema import (
     RELATIONAL_ACCEPTANCE_THEOREM,
@@ -38,6 +51,13 @@ class StageABuildGraphTests(unittest.TestCase):
 
     def test_nix_reuse_is_classified_from_real_build_events(self):
         self.assertTrue(_relational_nix_work_reused("", succeeded=True))
+        self.assertTrue(
+            _relational_nix_work_reused(
+                "these 757 derivations will be built:\n"
+                "  /nix/store/example.drv\n",
+                succeeded=True,
+            )
+        )
         self.assertFalse(
             _relational_nix_work_reused(
                 "building '/nix/store/example.drv' on 'acacia'\n",
@@ -51,6 +71,52 @@ class StageABuildGraphTests(unittest.TestCase):
             )
         )
         self.assertFalse(_relational_nix_work_reused("", succeeded=False))
+
+    def test_nix_executable_prefers_explicit_override(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "nix-proof-client"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o755)
+            with mock.patch.dict(
+                os.environ,
+                {"SPAGHETTI_EXTRACTOR_NIX": str(executable)},
+            ):
+                self.assertEqual(_nix_executable(), str(executable.resolve()))
+
+    def test_nix_executable_rejects_invalid_override(self):
+        with mock.patch.dict(
+            os.environ,
+            {"SPAGHETTI_EXTRACTOR_NIX": "/missing/stage-a-nix"},
+        ):
+            with self.assertRaisesRegex(
+                StageAInputError,
+                "does not identify an executable Nix client",
+            ):
+                _nix_executable()
+
+    def test_nix_executable_prefers_active_system_client_over_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            active = Path(temporary) / "active-system-nix"
+            ambient = Path(temporary) / "stale-profile-nix"
+            for executable in (active, ambient):
+                executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                executable.chmod(0o755)
+            with (
+                mock.patch.dict(os.environ, {}, clear=True),
+                mock.patch(
+                    "spaghetti_extractor.relational.build._NIXOS_SYSTEM_NIX",
+                    active,
+                ),
+                mock.patch(
+                    "spaghetti_extractor.relational.build.shutil.which",
+                    return_value=str(ambient),
+                ),
+            ):
+                self.assertEqual(_nix_executable(), str(active))
+
+    def test_content_addressed_derivations_are_the_default(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(_content_addressed_derivations_requested())
 
     def test_target_closure_excludes_unrelated_semantic_phase(self):
         graph = {
@@ -78,6 +144,152 @@ class StageABuildGraphTests(unittest.TestCase):
             _relational_node_closure(graph, ["segment"]),
             {"kernel", "candidate-decode", "segment"},
         )
+
+    def test_incremental_evaluation_instantiates_only_changed_closure(self):
+        graph = {
+            "final_node": "segment",
+            "nodes": [
+                {
+                    "id": "kernel",
+                    "modules": ["Kernel"],
+                    "dependencies": [],
+                    "semantic_id": "1" * 64,
+                },
+                {
+                    "id": "candidate-decode",
+                    "modules": ["CandidateDecode"],
+                    "dependencies": ["kernel"],
+                    "semantic_id": "2" * 64,
+                },
+                {
+                    "id": "segment",
+                    "modules": ["Segment"],
+                    "dependencies": ["candidate-decode"],
+                    "semantic_id": "3" * 64,
+                },
+                {
+                    "id": "unrelated",
+                    "modules": ["Unrelated"],
+                    "dependencies": [],
+                    "semantic_id": "4" * 64,
+                },
+            ],
+        }
+
+        def cached(node):
+            if node["id"] == "kernel":
+                return Path("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-kernel")
+            return None
+
+        with mock.patch(
+            "spaghetti_extractor.relational.build."
+            "_cached_relational_semantic_boundary",
+            side_effect=cached,
+        ):
+            active, boundaries = _relational_incremental_evaluation(
+                graph, ["segment"]
+            )
+
+        self.assertEqual(active, ["candidate-decode", "segment"])
+        self.assertEqual(set(boundaries), {"kernel"})
+        self.assertEqual(
+            boundaries["kernel"]["semantic_path"],
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-kernel",
+        )
+
+    def test_semantic_node_identity_tracks_only_dependency_closure(self):
+        nodes = [
+            {
+                "id": "kernel",
+                "modules": ["Kernel"],
+                "dependencies": [],
+                "source_sha256": "1" * 64,
+            },
+            {
+                "id": "segment",
+                "modules": ["Segment"],
+                "dependencies": ["kernel"],
+                "source_sha256": "2" * 64,
+            },
+            {
+                "id": "unrelated",
+                "modules": ["Unrelated"],
+                "dependencies": [],
+                "source_sha256": "3" * 64,
+            },
+        ]
+        _attach_relational_semantic_identities(nodes)
+        initial = {node["id"]: node["semantic_id"] for node in nodes}
+
+        nodes[0]["source_sha256"] = "4" * 64
+        _attach_relational_semantic_identities(nodes)
+        changed = {node["id"]: node["semantic_id"] for node in nodes}
+
+        self.assertNotEqual(initial["kernel"], changed["kernel"])
+        self.assertNotEqual(initial["segment"], changed["segment"])
+        self.assertEqual(initial["unrelated"], changed["unrelated"])
+        self.assertEqual(
+            nodes[1]["dependency_semantic_ids"],
+            [nodes[0]["semantic_id"]],
+        )
+
+    def test_semantic_invalidation_report_rejects_identity_drift(self):
+        def graph() -> dict[str, object]:
+            nodes = [
+                {
+                    "id": "kernel",
+                    "modules": ["Kernel"],
+                    "dependencies": [],
+                    "source_sha256": "1" * 64,
+                    "resource_class": "light",
+                    "estimated_memory_mb": 512,
+                },
+                {
+                    "id": "segment",
+                    "modules": ["Segment"],
+                    "dependencies": ["kernel"],
+                    "source_sha256": "2" * 64,
+                    "resource_class": "light",
+                    "estimated_memory_mb": 512,
+                },
+                {
+                    "id": "unrelated",
+                    "modules": ["Unrelated"],
+                    "dependencies": [],
+                    "source_sha256": "3" * 64,
+                    "resource_class": "light",
+                    "estimated_memory_mb": 512,
+                },
+            ]
+            _attach_relational_semantic_identities(nodes)
+            return {
+                "format": "stage-a-lean-module-graph-v1",
+                "root_module": "Segment",
+                "expected_final_theorem": None,
+                "nodes": nodes,
+            }
+
+        before = graph()
+        after = json.loads(json.dumps(before))
+        after_nodes = {
+            node["id"]: node for node in after["nodes"]
+        }
+        after_nodes["kernel"]["source_sha256"] = "4" * 64
+        _attach_relational_semantic_identities(after["nodes"])
+
+        report = diff_semantic_invalidation(before, after)
+        self.assertEqual(report.status, "satisfied")
+        self.assertEqual(report.direct_changes, ("kernel",))
+        self.assertEqual(
+            report.observed_invalidated,
+            ("kernel", "segment"),
+        )
+        self.assertEqual(report.reused, ("unrelated",))
+
+        after_nodes["unrelated"]["semantic_id"] = "5" * 64
+        report = diff_semantic_invalidation(before, after)
+        self.assertEqual(report.status, "violated")
+        self.assertEqual(report.unexpected_invalidated, ("unrelated",))
 
     def test_acceptance_closure_excludes_auxiliary_proof_roots(self):
         graph = {
@@ -143,6 +355,43 @@ class StageABuildGraphTests(unittest.TestCase):
             self.assertIn(
                 "RelationalAffineLinkedCallBindings", graph["modules"]
             )
+
+    def test_launch_realizability_uses_measured_high_memory_class(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prepared = Path(temporary)
+            stage_a = prepared / "lean" / "StageA"
+            stage_a.mkdir(parents=True)
+            (stage_a / "RelationalBundle.lean").write_text(
+                "def relationalBundle := 0\n", encoding="utf-8"
+            )
+            (stage_a / "RelationalLaunchRealizabilityCertificate.lean").write_text(
+                "def launchRealizability := 0\n", encoding="utf-8"
+            )
+            (prepared / "whole-program-acceptance.json").write_text(
+                json.dumps({
+                    "format": "stage-a-whole-program-acceptance-v1",
+                    "status": "incomplete",
+                    "required_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                    "theorem": None,
+                    "blockers": [{"next_action": "complete composition"}],
+                }),
+                encoding="utf-8",
+            )
+
+            binary = SimpleNamespace(sha256="00" * 32)
+            graph = _write_relational_module_graph(
+                prepared,
+                original_bin=binary,
+                candidate_bin=binary,
+                trusted_base={"approved_axioms": []},
+            )
+
+            launch = next(
+                node for node in graph["nodes"]
+                if node["modules"] == ["RelationalLaunchRealizabilityCertificate"]
+            )
+            self.assertEqual(launch["resource_class"], "high-memory")
+            self.assertGreaterEqual(launch["estimated_memory_mb"], 10240)
 
     def test_linked_acceptance_selects_linked_final_theorem(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -432,6 +681,60 @@ class StageABuildGraphTests(unittest.TestCase):
             [[f"RelationalStaticCodeMapChunk{index}"] for index in range(3)],
         )
 
+    def test_shard_pack_assignment_is_stable_when_one_shard_is_added(self):
+        initial_modules = {
+            *(f"RelationalDefinitionsShard{index}" for index in range(64)),
+            *(f"RelationalProofShard{index}" for index in range(64)),
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_NIX_PACK_BUCKETS": "8",
+            },
+        ):
+            initial_nodes = _relational_raw_build_nodes(initial_modules)
+            extended_nodes = _relational_raw_build_nodes({
+                *initial_modules,
+                "RelationalDefinitionsShard64",
+                "RelationalProofShard64",
+            })
+
+        def assignments(nodes):
+            return {
+                module: node["id"]
+                for node in nodes
+                for module in node["modules"]
+            }
+
+        initial_assignments = assignments(initial_nodes)
+        extended_assignments = assignments(extended_nodes)
+        self.assertEqual(
+            initial_assignments,
+            {
+                module: extended_assignments[module]
+                for module in initial_modules
+            },
+        )
+        changed_packs = {
+            extended_assignments["RelationalDefinitionsShard64"],
+            extended_assignments["RelationalProofShard64"],
+        }
+        initial_members = {
+            node["id"]: set(node["modules"]) for node in initial_nodes
+        }
+        extended_members = {
+            node["id"]: set(node["modules"]) for node in extended_nodes
+        }
+        self.assertTrue(all(
+            initial_members.get(node_id, set())
+            != extended_members[node_id]
+            for node_id in changed_packs
+        ))
+        self.assertTrue(all(
+            initial_members[node_id] == extended_members[node_id]
+            for node_id in set(initial_members) - changed_packs
+        ))
+
     def test_graph_validation_rejects_omitted_packed_import_dependency(self):
         with tempfile.TemporaryDirectory() as temporary:
             prepared = Path(temporary)
@@ -532,18 +835,21 @@ class StageABuildGraphTests(unittest.TestCase):
             (prepared / "prepared-proof.json").write_text("{}\n", encoding="utf-8")
             (prepared / "large-analysis-report.json").write_bytes(b"x" * 4096)
 
-            expression, focused = _relational_nix_expression(
+            expression = _relational_nix_expression(
                 prepared=prepared,
                 graph=graph,
                 evaluator=self.repo / "nix" / "stage-a-lean-graph.nix",
                 flake_root=self.repo,
-                target_node="candidate-decode",
-                target_nodes=[],
+                target_nodes=["candidate-decode"],
+            )
+            focused = _relational_focused_input(
+                prepared, graph, ["candidate-decode"]
             )
 
             self.assertNotIn("prepared = builtins.path", expression)
             self.assertIn("graphFile = builtins.path", expression)
-            self.assertIn("preparedManifest = builtins.path", expression)
+            self.assertIn("preparedManifest = null", expression)
+            self.assertNotIn("stage-a-prepared-proof.json", expression)
             self.assertIn("sourceRoot = builtins.toPath", expression)
             self.assertNotIn("large-analysis-report.json", expression)
             self.assertEqual(focused, {
@@ -568,28 +874,171 @@ class StageABuildGraphTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {
                 "SPAGHETTI_EXTRACTOR_STAGE_A_NIX_CONTENT_ADDRESSED": "false"
             }):
-                expression, _ = _relational_nix_expression(
+                expression = _relational_nix_expression(
                     prepared=prepared,
                     graph=graph,
                     evaluator=self.repo / "nix" / "stage-a-lean-graph.nix",
                     flake_root=self.repo,
-                    target_node=None,
                     target_nodes=[],
                 )
 
         self.assertIn("contentAddressed = false;", expression)
 
-    def test_remote_build_command_disables_local_jobs_and_uses_substitutes(self):
-        command = _relational_nix_build_command(
-            "proof-expression", Path("/tmp/stage-a-builders")
+    def test_nix_expression_projects_prebuilt_semantic_boundaries(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prepared = Path(temporary)
+            stage_a = prepared / "lean" / "StageA"
+            stage_a.mkdir(parents=True)
+            for module in ("Kernel", "Segment"):
+                (stage_a / f"{module}.lean").write_text(
+                    f"def {module.lower()} := 1\n", encoding="utf-8"
+                )
+            (prepared / "module-graph.json").write_text("{}\n", encoding="utf-8")
+            (prepared / "prepared-proof.json").write_text("{}\n", encoding="utf-8")
+            graph = {
+                "modules": {
+                    module: {"source": f"lean/StageA/{module}.lean"}
+                    for module in ("Kernel", "Segment")
+                },
+                "nodes": [
+                    {"id": "kernel", "modules": ["Kernel"], "dependencies": []},
+                    {
+                        "id": "segment",
+                        "modules": ["Segment"],
+                        "dependencies": ["kernel"],
+                    },
+                ],
+            }
+            expression = _relational_nix_expression(
+                prepared=prepared,
+                graph=graph,
+                evaluator=self.repo / "nix" / "stage-a-lean-graph.nix",
+                flake_root=self.repo,
+                target_nodes=["segment"],
+                active_node_ids=["segment"],
+                prebuilt_nodes={
+                    "kernel": {
+                        "node_id": "kernel",
+                        "semantic_id": "1" * 64,
+                        "semantic_path":
+                            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-kernel",
+                    }
+                },
+            )
+
+        self.assertIn('activeNodeIds = [ "segment" ];', expression)
+        self.assertIn(
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-kernel",
+            expression,
+        )
+        self.assertIn(
+            "targetNodes activeNodeIds prebuiltNodes;",
+            expression,
         )
 
-        self.assertEqual(command[:2], ["nix", "build"])
+    def test_remote_build_command_disables_local_jobs_and_uses_substitutes(self):
+        with mock.patch(
+            "spaghetti_extractor.relational.build._nix_builders_spec",
+            return_value="ssh-ng://builder x86_64-linux - 1 1",
+        ):
+            command = _relational_nix_build_command(
+                "proof-expression", Path("/tmp/stage-a-builders")
+            )
+
+        self.assertEqual(Path(command[0]).name, "nix")
+        self.assertEqual(command[1], "build")
         self.assertIn("--max-jobs", command)
         self.assertEqual(command[command.index("--max-jobs") + 1], "0")
-        self.assertIn("@/tmp/stage-a-builders", command)
+        self.assertIn("ssh-ng://builder x86_64-linux - 1 1", command)
         self.assertIn("builders-use-substitutes", command)
         self.assertEqual(command[command.index("builders-use-substitutes") + 1], "true")
+
+    def test_cached_nix_evaluation_realizes_drv_without_expression_evaluation(self):
+        with mock.patch(
+            "spaghetti_extractor.relational.build._nix_builders_spec",
+            return_value="ssh-ng://builder x86_64-linux - 1 1",
+        ):
+            command = _relational_nix_installable_build_command(
+                ["/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-proof.drv^out"],
+                Path("/tmp/stage-a-builders"),
+            )
+
+        self.assertNotIn("--expr", command)
+        self.assertNotIn("--impure", command)
+        self.assertEqual(
+            command[-1],
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-proof.drv^out",
+        )
+
+    def test_nix_evaluation_cache_binds_key_and_drv_installables(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary) / "evaluation.json"
+            drv = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-proof.drv"
+            _publish_relational_nix_evaluation(
+                cache,
+                cache_key="semantic-key",
+                build_outputs=[{
+                    "drvPath": drv,
+                    "outputs": {"out": "/nix/store/result"},
+                }],
+            )
+            with mock.patch("pathlib.Path.is_file", return_value=True):
+                self.assertEqual(
+                    _cached_relational_nix_installables(
+                        cache,
+                        cache_key="semantic-key",
+                    ),
+                    [f"{drv}^out"],
+                )
+                self.assertIsNone(
+                    _cached_relational_nix_installables(
+                        cache,
+                        cache_key="different-key",
+                    )
+                )
+
+    def test_focused_evaluation_cache_ignores_final_manifest_only_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prepared = root / "prepared"
+            prepared.mkdir()
+            (prepared / "module-graph.json").write_text(
+                '{"format":"graph"}\n', encoding="utf-8"
+            )
+            manifest = prepared / "prepared-proof.json"
+            manifest.write_text('{"status":"first"}\n', encoding="utf-8")
+            evaluator = root / "evaluator.nix"
+            evaluator.write_text("{}\n", encoding="utf-8")
+            (root / "flake.lock").write_text("{}\n", encoding="utf-8")
+
+            focused_before = _relational_nix_evaluation_cache_key(
+                prepared=prepared,
+                evaluator=evaluator,
+                flake_root=root,
+                requested_target_nodes=["node"],
+            )
+            final_before = _relational_nix_evaluation_cache_key(
+                prepared=prepared,
+                evaluator=evaluator,
+                flake_root=root,
+                requested_target_nodes=[],
+            )
+            manifest.write_text('{"status":"second"}\n', encoding="utf-8")
+            focused_after = _relational_nix_evaluation_cache_key(
+                prepared=prepared,
+                evaluator=evaluator,
+                flake_root=root,
+                requested_target_nodes=["node"],
+            )
+            final_after = _relational_nix_evaluation_cache_key(
+                prepared=prepared,
+                evaluator=evaluator,
+                flake_root=root,
+                requested_target_nodes=[],
+            )
+
+        self.assertEqual(focused_before, focused_after)
+        self.assertNotEqual(final_before, final_after)
 
     def test_ca_builder_inventory_ignores_non_ca_exceptional_lanes(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -623,6 +1072,9 @@ class StageABuildGraphTests(unittest.TestCase):
                     (2, 34, "2.34.8"),
                     (2, 35, "2.35.2"),
                 ],
+            ), mock.patch(
+                "spaghetti_extractor.relational.build._nix_client_version",
+                return_value=(2, 34, "2.34.8"),
             ):
                 with self.assertRaisesRegex(
                     StageAInputError,
@@ -644,10 +1096,58 @@ class StageABuildGraphTests(unittest.TestCase):
                     (2, 35, "2.35.2"),
                     (2, 35, "2.35.2"),
                 ],
+            ), mock.patch(
+                "spaghetti_extractor.relational.build._nix_client_version",
+                return_value=(2, 35, "2.35.2"),
             ):
                 _check_remote_ca_build_trace_compatibility(builders)
 
-    def test_analysis_dataflow_ca_is_explicit_and_optional(self):
+    def test_ca_build_rejects_client_daemon_protocol_boundary(self):
+        with mock.patch(
+            "spaghetti_extractor.relational.build._nix_client_version",
+            return_value=(2, 34, "2.34.7"),
+        ), mock.patch(
+            "spaghetti_extractor.relational.build._nix_store_version",
+            return_value=(2, 35, "2.35.1"),
+        ):
+            with self.assertRaisesRegex(
+                StageAInputError,
+                "client uses Nix 2.34.7",
+            ):
+                _check_remote_ca_build_trace_compatibility(None)
+
+    def test_remote_store_probe_uses_isolated_persistent_ssh_connection(self):
+        process = mock.Mock(
+            returncode=0,
+            stdout=json.dumps({"version": "2.35.2"}),
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
+            os.environ,
+            {
+                "XDG_CACHE_HOME": temporary,
+                "NIX_SSHOPTS": "-o BatchMode=yes",
+            },
+        ), mock.patch(
+            "spaghetti_extractor.relational.build.subprocess.run",
+            return_value=process,
+        ) as run:
+            self.assertEqual(
+                _nix_store_version(store="ssh-ng://root@builder?ssh-key=/tmp/key"),
+                (2, 35, "2.35.2"),
+            )
+
+        environment = run.call_args.kwargs["env"]
+        self.assertIn("-o BatchMode=yes", environment["NIX_SSHOPTS"])
+        self.assertIn("-o IdentitiesOnly=yes", environment["NIX_SSHOPTS"])
+        self.assertIn("-o ControlMaster=auto", environment["NIX_SSHOPTS"])
+        self.assertIn("-o ControlPersist=4h", environment["NIX_SSHOPTS"])
+        self.assertIn(
+            str(Path(temporary) / "spaghetti-extractor" / "ssh" / "%C"),
+            environment["NIX_SSHOPTS"],
+        )
+
+    def test_analysis_dataflow_uses_ca_projection_boundaries(self):
         dataflow_graph = (
             self.repo / "nix" / "stage-a-register-dataflow-graph.nix"
         ).read_text(encoding="utf-8")
@@ -655,13 +1155,19 @@ class StageABuildGraphTests(unittest.TestCase):
             self.repo / "nix" / "stage-a-relational-analysis-graph.nix"
         ).read_text(encoding="utf-8")
 
-        self.assertIn(", contentAddressed ? false", dataflow_graph)
-        self.assertEqual(
-            dataflow_graph.count("lib.optionalAttrs contentAddressed {"),
-            2,
+        self.assertIn(", contentAddressed ? true", dataflow_graph)
+        self.assertIn("caAttrs = lib.optionalAttrs contentAddressed", dataflow_graph)
+        self.assertEqual(dataflow_graph.count("__contentAddressed = true;"), 1)
+        self.assertNotIn("value = builtins.path", dataflow_graph)
+        self.assertIn(
+            "stage-a-register-dataflow-input-${pack.id}",
+            dataflow_graph,
         )
-        self.assertEqual(dataflow_graph.count("__contentAddressed = true;"), 2)
-        self.assertIn("dataflowContentAddressed ? false", analysis_graph)
+        self.assertIn(
+            "stage-a-register-dataflow-transfer-context",
+            dataflow_graph,
+        )
+        self.assertIn("dataflowContentAddressed ? true", analysis_graph)
         self.assertIn(
             "contentAddressed = dataflowContentAddressed;",
             analysis_graph,
@@ -677,14 +1183,19 @@ class StageABuildGraphTests(unittest.TestCase):
             self.assertNotIn("MachineImportCallContractsDecodeChunk", source)
 
     def test_prepared_realization_command_uses_same_remote_builder_policy(self):
-        command = _relational_nix_realize_command(
-            ".#stage-a-example-preflight", Path("/tmp/stage-a-builders")
-        )
+        with mock.patch(
+            "spaghetti_extractor.relational.build._nix_builders_spec",
+            return_value="ssh-ng://builder x86_64-linux - 1 1",
+        ):
+            command = _relational_nix_realize_command(
+                ".#stage-a-example-preflight", Path("/tmp/stage-a-builders")
+            )
 
-        self.assertEqual(command[:2], ["nix", "build"])
+        self.assertEqual(Path(command[0]).name, "nix")
+        self.assertEqual(command[1], "build")
         self.assertIn("--max-jobs", command)
         self.assertEqual(command[command.index("--max-jobs") + 1], "0")
-        self.assertIn("@/tmp/stage-a-builders", command)
+        self.assertIn("ssh-ng://builder x86_64-linux - 1 1", command)
         self.assertIn("builders-use-substitutes", command)
         self.assertIn("--no-link", command)
         self.assertIn("--json", command)
@@ -696,7 +1207,10 @@ class StageABuildGraphTests(unittest.TestCase):
             "SPAGHETTI_EXTRACTOR_NIX_SUBSTITUTERS": (
                 "https://cache.corncheese.org/nix-cache https://cache.nixos.org/"
             ),
-        }):
+        }), mock.patch(
+            "spaghetti_extractor.relational.build._nix_builders_spec",
+            return_value="ssh-ng://builder x86_64-linux - 1 1",
+        ):
             command = _relational_nix_build_command(
                 "proof-expression", Path("/tmp/stage-a-builders")
             )
@@ -718,11 +1232,15 @@ class StageABuildGraphTests(unittest.TestCase):
                 "builder-b-1:RUZHSA==\n",
                 encoding="utf-8",
             )
-            command = _relational_nix_build_command(
-                "proof-expression",
-                Path("/tmp/stage-a-builders"),
-                keys,
-            )
+            with mock.patch(
+                "spaghetti_extractor.relational.build._nix_builders_spec",
+                return_value="ssh-ng://builder x86_64-linux - 1 1",
+            ):
+                command = _relational_nix_build_command(
+                    "proof-expression",
+                    Path("/tmp/stage-a-builders"),
+                    keys,
+                )
 
         self.assertEqual(
             command[command.index("extra-trusted-public-keys") + 1],
@@ -833,7 +1351,11 @@ class StageABuildGraphTests(unittest.TestCase):
             "  nixpkgs = builtins.fetchTree (builtins.fromJSON "
             + json.dumps(json.dumps(locked_nixpkgs, sort_keys=True))
             + ");",
-            "  pkgs = import nixpkgs { system = builtins.currentSystem; };",
+            "  pkgs = import nixpkgs {",
+            "    system = builtins.currentSystem;",
+            "    config = {};",
+            "    overlays = [];",
+            "  };",
             "  results = import (builtins.toPath " + json.dumps(str(evaluator)) + ") {",
             "    inherit pkgs;",
             "    standaloneSourceRoot = builtins.toPath "

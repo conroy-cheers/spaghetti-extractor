@@ -30,6 +30,7 @@ from .side_extraction_artifact import parse_request
 
 BINARY_CUTPOINT_INVENTORY_FORMAT = "stage-a-binary-cutpoint-inventory-v1"
 _SIDES = {"original", "candidate"}
+_NO_LINKER_MAP_SHA256 = sha256_bytes(b"")
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -415,17 +416,25 @@ def _deduplicate_code_spans(
 def stage_a_inventory_binary(
     *,
     binary: Path,
-    linker_map: Path,
+    linker_map: Path | None = None,
     side: str,
     out: Path,
 ) -> dict[str, Any]:
     if side not in _SIDES:
         raise StageAInputError("binary cutpoint inventory side is invalid")
     binary = Path(binary)
-    linker_map = Path(linker_map)
     parsed = _parse_stage_a_pe(binary)
-    functions = _parse_linker_map_functions(linker_map, parsed)
-    issues = list(_linker_function_issues(side, functions))
+    linker_map = Path(linker_map) if linker_map is not None else None
+    functions = (
+        _parse_linker_map_functions(linker_map, parsed)
+        if linker_map is not None
+        else []
+    )
+    issues = (
+        list(_linker_function_issues(side, functions))
+        if linker_map is not None
+        else []
+    )
     raw_rows: list[dict[str, Any]] = []
     for function in sorted(
         functions, key=lambda row: (int(row["rva_start"]), str(row["name"]))
@@ -476,7 +485,11 @@ def stage_a_inventory_binary(
             raw_rows.append({
                 "span": {"rva_start": block.rva_start, "size": block.size},
                 "source": {
-                    "kind": "executable_section_gap_block",
+                    "kind": (
+                        "executable_section_gap_block"
+                        if linker_map is not None
+                        else "static_executable_section_block"
+                    ),
                     "section": section,
                     "gap_index": row["gap_index"],
                     "gap_block_index": row["gap_block_index"],
@@ -592,7 +605,11 @@ def stage_a_inventory_binary(
         "status": "pass" if not issues else "incomplete",
         "side": side,
         "binary_sha256": parsed.sha256,
-        "linker_map_sha256": sha256_file(linker_map),
+        "linker_map_sha256": (
+            sha256_file(linker_map)
+            if linker_map is not None
+            else _NO_LINKER_MAP_SHA256
+        ),
         "executable_sections": executable_sections,
         "regions": regions,
         "extraction_regions": extraction_regions,
