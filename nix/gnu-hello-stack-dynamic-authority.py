@@ -55,7 +55,7 @@ def _manifest(
     write_json(
         out / "phase-manifest.json",
         {
-            "format": "stage-a-gnu-hello-roundtrip-phase-v1",
+            "format": "stage-a-relational-phase-v1",
             "phase": "mixed-original-stack-dynamic-authority-lean",
             "executes_original_binary": False,
             "executes_candidate_binary": False,

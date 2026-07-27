@@ -9,14 +9,18 @@ from typing import Any, Iterable, Mapping
 
 import pefile
 
+from .artifact_formats import (
+    SEMANTIC_IR_FORMAT,
+    SEMANTIC_TRANSFER_CONTRACT_FORMAT,
+)
 from .stage_binary import StageAInputError
 from .util import sha256_bytes, sha256_file
 
 
 STAGE_B_STATE_MACHINE_FORMAT = "stage-b-state-machine-transfer-v1"
-STAGE_A_SEMANTIC_IR_MODEL = "stage-a-semantic-ir-v1"
+STAGE_A_SEMANTIC_IR_MODEL = SEMANTIC_IR_FORMAT
 STAGE_A_REFERENCE_CONTRACT_FORMAT = "stage-a-reference-contract-v1"
-STAGE_A_SEMANTIC_TRANSFER_FORMAT = "stage-a-semantic-transfer-contract-v1"
+STAGE_A_SEMANTIC_TRANSFER_FORMAT = SEMANTIC_TRANSFER_CONTRACT_FORMAT
 STAGE_A_SEMANTIC_EXPORT_BINDING_FORMAT = "stage-a-semantic-export-binding-v1"
 
 _TRANSFER_FIELDS = (

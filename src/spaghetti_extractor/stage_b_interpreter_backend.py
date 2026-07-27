@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from .artifact_formats import INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
 from .relational.definedness import analyze_definedness_jsonl
 from .stage_b_c_backend import _runtime_header, _runtime_helpers
 from .stage_binary import StageAInputError
@@ -33,7 +34,9 @@ _X87_REPLAY_FORMAT = "stage-a-native-exact-x87-command-replay-obligation-v1"
 _X87_REPLAY_PROGRAM_FORMAT = "stage-b-native-exact-x87-command-replay-program-v1"
 _X87_CHECKED_DECODER = "StageA.Relational.X87.decodeSingletonCommand"
 _X87_CHECKED_EXECUTOR = "StageA.Relational.X87.executeSingletonCommand"
-_INSTRUCTION_EFFECT_SCHEDULE_FORMAT = "stage-a-instruction-ordered-effect-schedule-v1"
+_INSTRUCTION_EFFECT_SCHEDULE_FORMAT = (
+    INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
+)
 _ORDINARY_CHECKED_DECODER = "StageA.Formal.decodeInstructionExact"
 _ORDINARY_CHECKED_EXECUTOR = "StageA.Formal.executeInstruction"
 _X87_PHYSICAL_FIELDS = (

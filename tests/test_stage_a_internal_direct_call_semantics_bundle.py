@@ -6,6 +6,7 @@ import unittest
 from hashlib import sha256
 from pathlib import Path
 
+from spaghetti_extractor.artifact_formats import RELATIONAL_PHASE_FORMAT
 from spaghetti_extractor.relational.lean.internal_direct_call_semantics_bundle import (
     write_mixed_original_direct_call_semantics,
 )
@@ -223,7 +224,9 @@ class StageAInternalDirectCallSemanticsBundleTests(unittest.TestCase):
             )
             modules = json.loads(
                 (out / "phase-manifest.json").read_text(encoding="utf-8")
-            )["modules"]
+            )
+            self.assertEqual(modules["format"], RELATIONAL_PHASE_FORMAT)
+            modules = modules["modules"]
             self.assertEqual(len(modules), 2)
             entry_module = next(
                 module

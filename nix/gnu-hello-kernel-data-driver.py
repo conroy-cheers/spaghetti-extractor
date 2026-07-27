@@ -54,7 +54,7 @@ def _main() -> None:
     write_json(
         out / "phase-manifest.json",
         {
-            "format": "stage-a-gnu-hello-roundtrip-phase-v1",
+            "format": "stage-a-relational-phase-v1",
             "phase": "compiled-kernel-data",
             "executes_original_binary": False,
             "executes_candidate_binary": False,

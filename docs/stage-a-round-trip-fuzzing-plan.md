@@ -574,12 +574,12 @@ Cache keys must include all semantic inputs, tool versions, capability profiles,
 and proof-source hashes. Diagnostic formatting changes should not invalidate
 decode or proof artifacts.
 
-The local development loop should run inside one pinned Nix development
-environment but outside a fresh Nix sandbox per case. Batch cases through
-persistent Python workers and persistent Lean kernel/module caches. Avoid one
-Lean or emulator process per vector.
+Nix is the supported development and qualification layer. Batch cases within
+derivations through persistent Python workers and persistent Lean kernel/module
+caches; avoid one Lean or emulator process per vector. Keep semantic phases in
+separate derivations so an unchanged phase substitutes instead of rerunning.
 
-Nix remains the reproducible qualification layer:
+The reproducible qualification graph includes:
 
 - a small deterministic smoke derivation;
 - corpus-generation derivations by seed range;

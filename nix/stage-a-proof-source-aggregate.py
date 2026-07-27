@@ -21,6 +21,9 @@ DIRECT_CALL_NODE_FAMILY = re.compile(
 )
 DIRECT_CALL_BUILD_PACK_MAX_MODULES = 4
 DIRECT_CALL_BUILD_PACK_SPLIT_THRESHOLD = 8
+# This worker is intentionally stdlib-only and cannot import the package
+# constant without widening its Nix invalidation boundary.
+RELATIONAL_PHASE_FORMAT = "stage-a-relational-phase-v1"
 
 
 def write_json(path: Path, data: Any) -> None:
@@ -286,7 +289,7 @@ def aggregate(args: argparse.Namespace) -> None:
     write_json(
         out / "phase-manifest.json",
         {
-            "format": "stage-a-gnu-hello-roundtrip-phase-v1",
+            "format": RELATIONAL_PHASE_FORMAT,
             "phase": "proof-source-aggregate",
             "executes_original_binary": False,
             "executes_candidate_binary": False,

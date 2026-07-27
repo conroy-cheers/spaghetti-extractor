@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ...artifact_formats import INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
 from ...errors import StageAInputError
 from ...util import sha256_bytes
 from .pe_byte_packs import (
@@ -25,7 +26,7 @@ RELATIONAL_INTERPRETER_X87_MODULE_INVENTORY_FORMAT = (
 RELATIONAL_INTERPRETER_X87_CANDIDATE_REPLAY_INVENTORY_FORMAT = (
     "stage-a-relational-interpreter-x87-candidate-replay-inventory-v1"
 )
-_SCHEDULE_FORMAT = "stage-a-instruction-ordered-effect-schedule-v1"
+_SCHEDULE_FORMAT = INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
 _STATE_MACHINE_FORMAT = "stage-b-state-machine-transfer-v1"
 _X87_CLASS = "x87_singleton_checked_replay"
 _ORDINARY_CLASS = "ordinary_symbolic_instruction"

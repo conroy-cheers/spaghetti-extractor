@@ -107,6 +107,23 @@ class ContractToolTests(unittest.TestCase):
         self.assertNotIn("stage-a-legacy-validate", subcommands)
         self.assertNotIn("stage-a-prove-relational", subcommands)
         self.assertNotIn("stage-a-validate-contract-candidate", subcommands)
+        removed_internal_generators = {
+            "stage-a-generate-interpreter-kernel",
+            "stage-a-generate-interpreter-kernel-lookup",
+            "stage-a-generate-interpreter-kernel-step",
+            "stage-a-generate-interpreter-kernel-invoke",
+            "stage-a-generate-interpreter-kernel-run",
+            "stage-a-generate-interpreter-mixed-kernel-binding",
+        }
+        self.assertTrue(
+            removed_internal_generators.isdisjoint(subcommands),
+            removed_internal_generators.intersection(subcommands),
+        )
+        self.assertNotIn("workspace-prune", subcommands)
+        self.assertNotIn(
+            "--executor",
+            subcommands["stage-a-build-relational"]._option_string_actions,
+        )
 
     def test_generate_map_is_reproducible_for_identical_pe32_pair(self):
         with tempfile.TemporaryDirectory() as tmp:

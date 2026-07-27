@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from .artifact_formats import SEMANTIC_IR_FORMAT
 from .stage_b_state_machine import (
     STAGE_B_STATE_MACHINE_FORMAT,
     normalize_stage_a_semantic_transfer,
@@ -482,7 +483,7 @@ def _row_blockers(row: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
     if row.get("status") != "reimplementable":
         blockers.append("incomplete_transfer")
-    if row.get("expression_model") != "stage-a-semantic-ir-v1":
+    if row.get("expression_model") != SEMANTIC_IR_FORMAT:
         blockers.append("unsupported_expression_model")
     fpu_state = row.get("fpu_state")
     if fpu_state is not None:

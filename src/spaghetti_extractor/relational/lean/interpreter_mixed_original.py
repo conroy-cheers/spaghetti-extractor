@@ -20,6 +20,7 @@ from typing import Any, Mapping, Sequence
 import capstone
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
+from ...artifact_formats import STATIC_MACHINE_IMPORT_CONTRACTS_FORMAT
 from ...errors import StageAInputError
 from ...stage_binary import StageABinary, _parse_stage_a_pe
 from ..analyses.registers import (
@@ -1628,7 +1629,7 @@ def load_original_register_control_call_contract_proposals(
             f"unable to read machine-import report: {error}"
         ) from error
     if not isinstance(payload, Mapping) or payload.get("format") != (
-        "stage-a-static-machine-import-contracts-v1"
+        STATIC_MACHINE_IMPORT_CONTRACTS_FORMAT
     ):
         raise InterpreterMixedOriginalGenerationError(
             "machine-import report has an unsupported format"
@@ -5554,7 +5555,7 @@ def derive_direct_call_summary_requests_from_register_authority(
             )
 
     if machine_import_report.get("format") != (
-        "stage-a-static-machine-import-contracts-v1"
+        STATIC_MACHINE_IMPORT_CONTRACTS_FORMAT
     ):
         raise InterpreterMixedOriginalGenerationError(
             "machine-import report has the wrong format"

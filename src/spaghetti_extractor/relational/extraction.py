@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from ..artifact_formats import NORMALIZED_BEHAVIOR_FORMAT
 from ..stage_binary import StageABinary, StageAInputError
 from ..util import sha256_bytes, sha256_file, write_json
 from .analyses.external import _semantic_external_target_identity
@@ -287,7 +288,10 @@ def _extract_relational_behaviors(
                         "stderr": result.get("stderr", "")
                         + f"\ninvalid semantic IR for {side} region {index_text}: {exc}",
                     }
-                if not isinstance(semantic, dict) or semantic.get("format") != "stage-a-normalized-behavior-v1":
+                if (
+                    not isinstance(semantic, dict)
+                    or semantic.get("format") != NORMALIZED_BEHAVIOR_FORMAT
+                ):
                     for pending in futures:
                         pending.cancel()
                     return None, {
@@ -683,7 +687,7 @@ def _parse_normalized_behavior_output(
             }
         if (
             not isinstance(semantic, dict)
-            or semantic.get("format") != "stage-a-normalized-behavior-v1"
+            or semantic.get("format") != NORMALIZED_BEHAVIOR_FORMAT
         ):
             return None, {
                 **result,
@@ -1622,7 +1626,7 @@ def _read_behavior_cache(path: Path) -> dict[str, Any] | None:
         not isinstance(behavior, str)
         or not behavior
         or not isinstance(semantic_ir, dict)
-        or semantic_ir.get("format") != "stage-a-normalized-behavior-v1"
+        or semantic_ir.get("format") != NORMALIZED_BEHAVIOR_FORMAT
     ):
         return None
     return {"behavior": behavior, "semantic_ir": semantic_ir}

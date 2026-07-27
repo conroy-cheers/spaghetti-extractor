@@ -19,6 +19,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import capstone
 from capstone import x86_const
 
+from ..artifact_formats import INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
 from ..stage_b_engine_layout import (
     EngineLayout,
     EngineLayoutFormatError,
@@ -2147,8 +2148,10 @@ def _exact_x87_replay_obligation(
         return None, "exact replay bytes do not satisfy their SHA-256"
 
     schedule = replay.get("instruction_effect_schedule")
-    if not isinstance(schedule, Mapping) or schedule.get("format") != (
-        "stage-a-instruction-ordered-effect-schedule-v1"
+    if (
+        not isinstance(schedule, Mapping)
+        or schedule.get("format")
+        != INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
     ):
         return None, "instruction effect schedule is missing or has the wrong format"
     if schedule.get("proof_authority") is not False:

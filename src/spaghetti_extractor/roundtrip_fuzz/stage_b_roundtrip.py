@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import pefile
 
+from ..artifact_formats import SEMANTIC_IR_FORMAT
 from ..stage_b_c_backend import stage_b_generate_semantic_c_from_state_machine
 from ..stage_b_state_machine import normalize_stage_a_semantic_transfer
 from ..stage_binary import StageAInputError
@@ -1108,7 +1109,7 @@ def _generate_native_entry_source_from_state_machine(
     else:
         if row.get("status") != "reimplementable" or row.get("reachable") is False:
             blockers.append("native_entry_transfer_not_reimplementable")
-        if row.get("expression_model") != "stage-a-semantic-ir-v1":
+        if row.get("expression_model") != SEMANTIC_IR_FORMAT:
             blockers.append("native_entry_expression_model_unsupported")
         outcome = row.get("outcome") if isinstance(row.get("outcome"), dict) else {}
         if outcome.get("kind") != "return":

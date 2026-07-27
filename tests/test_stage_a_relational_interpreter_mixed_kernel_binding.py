@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import io
 import json
 import re
 import shutil
 import tempfile
 import unittest
-from contextlib import redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 
-from spaghetti_extractor.cli import main as cli_main
 from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
 from spaghetti_extractor.relational.lean.interpreter_mixed_kernel_binding import (
     INTERPRETER_MIXED_KERNEL_BINDING_FORMAT,
@@ -18,6 +15,7 @@ from spaghetti_extractor.relational.lean.interpreter_mixed_kernel_binding import
     InterpreterMixedKernelBindingGenerationError,
     InterpreterMixedKernelBindingSpec,
     REQUIRED_INHABITANTS,
+    generate_interpreter_mixed_kernel_binding,
     load_interpreter_mixed_kernel_binding_spec,
     plan_interpreter_mixed_kernel_binding,
     relational_interpreter_mixed_kernel_binding_source,
@@ -253,7 +251,7 @@ class StageARelationalInterpreterMixedKernelBindingTests(unittest.TestCase):
                     ):
                         load_interpreter_mixed_kernel_binding_spec(manifest)
 
-    def test_cli_persists_incomplete_inventory_and_returns_nonzero(self) -> None:
+    def test_generator_persists_incomplete_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             manifest = root / "manifest.json"
@@ -269,28 +267,14 @@ class StageARelationalInterpreterMixedKernelBindingTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            stdout = io.StringIO()
-            with redirect_stdout(stdout):
-                status = cli_main(
-                    [
-                        "stage-a-generate-interpreter-mixed-kernel-binding",
-                        "--manifest",
-                        str(manifest),
-                        "--out-dir",
-                        str(out),
-                    ]
-                )
-
-            report = json.loads(stdout.getvalue())
+            plan = generate_interpreter_mixed_kernel_binding(manifest, out)
             persisted = json.loads(
                 (out / "interpreter-mixed-kernel-binding-plan.json").read_text(
                     encoding="utf-8"
                 )
             )
 
-        self.assertEqual(status, 1)
-        self.assertEqual(report["status"], "incomplete")
-        self.assertEqual(report["binding_plan_status"], "incomplete")
+        self.assertFalse(plan.complete)
         self.assertEqual(
             persisted["counts"]["unresolved_inhabitants"],
             len(REQUIRED_INHABITANTS),

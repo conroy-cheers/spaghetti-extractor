@@ -403,7 +403,7 @@ let
         load_image = out / "load-image-contract.json"
         load_contract = write_stage_a_load_image_contract(original_pe=original, out=load_image)
         write_json(out / "phase-manifest.json", {
-            "format": "stage-a-gnu-hello-roundtrip-phase-v1",
+            "format": "stage-a-relational-phase-v1",
             "phase": "static-export",
             "executes_original_binary": False,
             "executes_candidate_binary": False,
@@ -742,7 +742,7 @@ let
     ${python} - "$out/phase-manifest.json" <<'PY'
     import json, pathlib, sys
     pathlib.Path(sys.argv[1]).write_text(json.dumps({
-      "format": "stage-a-gnu-hello-roundtrip-phase-v1",
+      "format": "stage-a-relational-phase-v1",
       "phase": "engine-segments",
       "status": "evidence-ready",
       "executes_original_binary": False,

@@ -17,11 +17,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from ..artifact_formats import (
+    SEMANTIC_IR_FORMAT,
+    SEMANTIC_TRANSFER_CONTRACT_FORMAT,
+)
+
 
 DEFINEDNESS_EVIDENCE_FORMAT = "stage-a-definedness-noninterference-v4"
 _UNDEFINED_OPS = frozenset({"undefined_bv", "undefined_flag"})
-_TRANSFER_FORMAT = "stage-a-semantic-transfer-contract-v1"
-_EXPRESSION_MODEL = "stage-a-semantic-ir-v1"
+_TRANSFER_FORMAT = SEMANTIC_TRANSFER_CONTRACT_FORMAT
+_EXPRESSION_MODEL = SEMANTIC_IR_FORMAT
 _REGISTER_NAMES = frozenset({"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"})
 _FLAG_NAMES = frozenset({"cf", "zf", "sf", "of", "pf", "df"})
 _RETURN_KINDS = frozenset({"return"})

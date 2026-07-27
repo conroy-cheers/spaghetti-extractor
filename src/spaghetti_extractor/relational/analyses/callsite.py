@@ -4,6 +4,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ...artifact_formats import NORMALIZED_BEHAVIOR_FORMAT
 from ..schema import REGISTERS
 from ...util import sha256_bytes
 
@@ -14,9 +15,6 @@ CALLSITE_PRESERVATION_ANALYSIS_FORMAT = (
 CALLSITE_PRESERVATION_CERTIFICATE_FORMAT = (
     "stage-a-callsite-preserved-register-summary-v2"
 )
-NORMALIZED_BEHAVIOR_FORMAT = "stage-a-normalized-behavior-v1"
-
-
 def _is_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 

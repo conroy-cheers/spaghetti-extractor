@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from .artifact_formats import INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
 from .stage_binary import StageAInputError
 from .stage_b_engine_layout import (
     render_stage_b_engine_layout_c,
@@ -2064,7 +2065,7 @@ def _qualified_x87_replays(
             raise StageAInputError("x87 instruction effect schedule must be an object")
         if (
             schedule.get("format")
-            != "stage-a-instruction-ordered-effect-schedule-v1"
+            != INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
             or schedule.get("status") != "complete"
             or schedule.get("proof_authority") is not False
             or schedule.get("transfer_bytes_sha256") != transfer_digest

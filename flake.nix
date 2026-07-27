@@ -38,6 +38,27 @@
               z3-solver
             ]
           );
+          mkPythonWorker =
+            {
+              name,
+              source,
+              module,
+              runtimeInputs,
+              preferLocalBuild ? null,
+            }:
+            let
+              worker = pkgs.writeShellApplication {
+                inherit name runtimeInputs;
+                text = ''
+                  export PYTHONPATH="${source}/src''${PYTHONPATH:+:$PYTHONPATH}"
+                  exec python -m ${module} "$@"
+                '';
+              };
+            in
+            if preferLocalBuild == null then
+              worker
+            else
+              worker.overrideAttrs { inherit preferLocalBuild; };
           bochs-conformance = pkgs.callPackage ./nix/bochs-conformance.nix {
             instrumentationSrc = ./tools/bochs-conformance;
           };
@@ -223,7 +244,9 @@
           ];
           spaghettiExtractorAnalysisPythonFiles = [
             ./src/spaghetti_extractor/__init__.py
+            ./src/spaghetti_extractor/artifact_formats.py
             ./src/spaghetti_extractor/contract_tools.py
+            ./src/spaghetti_extractor/_contract_tools
             ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/pe.py
             ./src/spaghetti_extractor/stage_binary.py
@@ -358,6 +381,7 @@
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
               ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/artifact_formats.py
               ./src/spaghetti_extractor/errors.py
               ./src/spaghetti_extractor/pe.py
               ./src/spaghetti_extractor/stage_binary.py
@@ -384,6 +408,7 @@
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
               ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/artifact_formats.py
               ./src/spaghetti_extractor/errors.py
               ./src/spaghetti_extractor/pe.py
               ./src/spaghetti_extractor/stage_binary.py
@@ -445,6 +470,7 @@
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
               ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/artifact_formats.py
               ./src/spaghetti_extractor/errors.py
               ./src/spaghetti_extractor/pe.py
               ./src/spaghetti_extractor/stage_binary.py
@@ -478,6 +504,7 @@
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
               ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/artifact_formats.py
               ./src/spaghetti_extractor/errors.py
               ./src/spaghetti_extractor/pe.py
               ./src/spaghetti_extractor/stage_binary.py
@@ -511,7 +538,9 @@
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
               ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/artifact_formats.py
               ./src/spaghetti_extractor/contract_tools.py
+              ./src/spaghetti_extractor/_contract_tools
               ./src/spaghetti_extractor/errors.py
               ./src/spaghetti_extractor/pe.py
               ./src/spaghetti_extractor/stage_binary.py
@@ -571,6 +600,7 @@
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
               ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/artifact_formats.py
               ./src/spaghetti_extractor/errors.py
               ./src/spaghetti_extractor/pe.py
               ./src/spaghetti_extractor/stage_binary.py
@@ -616,67 +646,55 @@
               ./src/spaghetti_extractor/relational/lean/expressions.py
             ];
           };
-          spaghetti-extractor-analysis = pkgs.writeShellApplication {
+          spaghetti-extractor-analysis = mkPythonWorker {
             name = "spaghetti-extractor-analysis";
+            source = spaghettiExtractorAssemblySource;
+            module = "spaghetti_extractor.relational.assembly_cli";
             runtimeInputs = [ pythonEnv ];
-            text = ''
-              export PYTHONPATH="${spaghettiExtractorAssemblySource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-              exec python -m spaghetti_extractor.relational.assembly_cli "$@"
-            '';
           };
-          spaghetti-extractor-proposal = pkgs.writeShellApplication {
+          spaghetti-extractor-proposal = mkPythonWorker {
             name = "spaghetti-extractor-proposal";
+            source = spaghettiExtractorProposalSource;
+            module = "spaghetti_extractor.relational.proposal_cli";
             runtimeInputs = [ pythonEnv ];
-            text = ''
-              export PYTHONPATH="${spaghettiExtractorProposalSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-              exec python -m spaghetti_extractor.relational.proposal_cli "$@"
-            '';
           };
-          spaghetti-extractor-register-replay = pkgs.writeShellApplication {
+          spaghetti-extractor-register-replay = mkPythonWorker {
             name = "spaghetti-extractor-register-replay";
+            source = spaghettiExtractorRegisterReplaySource;
+            module = "spaghetti_extractor.relational.register_replay_cli";
             runtimeInputs = [ pythonEnv ];
-            text = ''
-              export PYTHONPATH="${spaghettiExtractorRegisterReplaySource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-              exec python -m spaghetti_extractor.relational.register_replay_cli "$@"
-            '';
           };
-          spaghetti-extractor-semantic-products = pkgs.writeShellApplication {
+          spaghetti-extractor-semantic-products = mkPythonWorker {
             name = "spaghetti-extractor-semantic-products";
+            source = spaghettiExtractorSemanticProductsSource;
+            module = "spaghetti_extractor.relational.semantic_products_cli";
             runtimeInputs = [ pythonEnv ];
-            text = ''
-              export PYTHONPATH="${spaghettiExtractorSemanticProductsSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-              exec python -m spaghetti_extractor.relational.semantic_products_cli "$@"
-            '';
           };
-          spaghetti-extractor-memory-products = pkgs.writeShellApplication {
+          spaghetti-extractor-memory-products = mkPythonWorker {
             name = "spaghetti-extractor-memory-products";
+            source = spaghettiExtractorMemoryProductsSource;
+            module = "spaghetti_extractor.relational.memory_products_cli";
             runtimeInputs = [ pythonEnv ];
-            text = ''
-              export PYTHONPATH="${spaghettiExtractorMemoryProductsSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-              exec python -m spaghetti_extractor.relational.memory_products_cli "$@"
-            '';
           };
-          spaghetti-extractor-composition-products = pkgs.writeShellApplication {
+          spaghetti-extractor-composition-products = mkPythonWorker {
             name = "spaghetti-extractor-composition-products";
+            source = spaghettiExtractorCompositionProductsSource;
+            module = "spaghetti_extractor.relational.composition_products_cli";
             runtimeInputs = [ pythonEnv ];
-            text = ''
-              export PYTHONPATH="${spaghettiExtractorCompositionProductsSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-              exec python -m spaghetti_extractor.relational.composition_products_cli "$@"
-            '';
           };
-          spaghetti-extractor-register-dataflow-problem = pkgs.writeShellApplication {
+          spaghetti-extractor-register-dataflow-problem = mkPythonWorker {
             name = "spaghetti-extractor-register-dataflow-problem";
+            source = spaghettiExtractorRegisterDataflowProblemSource;
+            module = "spaghetti_extractor.relational.register_dataflow_problem_cli";
             runtimeInputs = [ pythonEnv ];
-            text = ''
-              export PYTHONPATH="${spaghettiExtractorRegisterDataflowProblemSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-              exec python -m spaghetti_extractor.relational.register_dataflow_problem_cli "$@"
-            '';
           };
           spaghettiExtractorPreparationSource = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
               ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/artifact_formats.py
               ./src/spaghetti_extractor/contract_tools.py
+              ./src/spaghetti_extractor/_contract_tools
               ./src/spaghetti_extractor/errors.py
               ./src/spaghetti_extractor/pe.py
               ./src/spaghetti_extractor/stage_binary.py
@@ -685,20 +703,20 @@
               ./src/spaghetti_extractor/lean/StageA
             ];
           };
-          spaghetti-extractor-preparation = pkgs.writeShellApplication {
+          spaghetti-extractor-preparation = mkPythonWorker {
             name = "spaghetti-extractor-preparation";
+            source = spaghettiExtractorPreparationSource;
+            module = "spaghetti_extractor.relational.preparation_cli";
             runtimeInputs = [
               pythonEnv
               pkgs.lean4
             ];
-            text = ''
-              export PYTHONPATH="${spaghettiExtractorPreparationSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-              exec python -m spaghetti_extractor.relational.preparation_cli "$@"
-            '';
           };
           spaghettiExtractorRegionFactsPythonFiles = [
             ./src/spaghetti_extractor/__init__.py
+            ./src/spaghetti_extractor/artifact_formats.py
             ./src/spaghetti_extractor/contract_tools.py
+            ./src/spaghetti_extractor/_contract_tools
             ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/pe.py
             ./src/spaghetti_extractor/stage_binary.py
@@ -746,20 +764,19 @@
               ))
             ];
           };
-          spaghetti-extractor-region-facts = pkgs.writeShellApplication {
+          spaghetti-extractor-region-facts = mkPythonWorker {
             name = "spaghetti-extractor-region-facts";
+            source = spaghettiExtractorRegionFactsSource;
+            module = "spaghetti_extractor.relational.region_facts_cli";
             runtimeInputs = [
               pythonEnv
               pkgs.lean4
             ];
-            text = ''
-              export PYTHONPATH="${spaghettiExtractorRegionFactsSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-              exec python -m spaghetti_extractor.relational.region_facts_cli "$@"
-            '';
           };
           spaghettiExtractorMappingPythonFiles = [
             ./src/spaghetti_extractor/__init__.py
             ./src/spaghetti_extractor/contract_tools.py
+            ./src/spaghetti_extractor/_contract_tools
             ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/pe.py
             ./src/spaghetti_extractor/stage_binary.py
@@ -778,17 +795,17 @@
             root = ./.;
             fileset = pkgs.lib.fileset.unions spaghettiExtractorMappingPythonFiles;
           };
-          spaghetti-extractor-mapping = pkgs.writeShellApplication {
+          spaghetti-extractor-mapping = mkPythonWorker {
             name = "spaghetti-extractor-mapping";
+            source = spaghettiExtractorMappingSource;
+            module = "spaghetti_extractor.relational.mapping_cli";
             runtimeInputs = [ pythonEnv ];
-            text = ''
-              export PYTHONPATH="${spaghettiExtractorMappingSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-              exec python -m spaghetti_extractor.relational.mapping_cli "$@"
-            '';
           };
           spaghettiExtractorSidePythonFiles = [
             ./src/spaghetti_extractor/__init__.py
+            ./src/spaghetti_extractor/artifact_formats.py
             ./src/spaghetti_extractor/contract_tools.py
+            ./src/spaghetti_extractor/_contract_tools
             ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/pe.py
             ./src/spaghetti_extractor/stage_binary.py
@@ -827,16 +844,15 @@
               ))
             ];
           };
-          spaghetti-extractor-side = pkgs.writeShellApplication {
+          spaghetti-extractor-side = mkPythonWorker {
             name = "spaghetti-extractor-side";
+            source = spaghettiExtractorSideSource;
+            module = "spaghetti_extractor.relational.side_cli";
             runtimeInputs = [ pythonEnv ];
-            text = ''
-              export PYTHONPATH="${spaghettiExtractorSideSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-              exec python -m spaghetti_extractor.relational.side_cli "$@"
-            '';
           };
           spaghettiExtractorNormalizationPythonFiles = [
             ./src/spaghetti_extractor/__init__.py
+            ./src/spaghetti_extractor/artifact_formats.py
             ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/pe.py
             ./src/spaghetti_extractor/stage_binary.py
@@ -873,13 +889,11 @@
               ))
             ];
           };
-          spaghetti-extractor-normalize = pkgs.writeShellApplication {
+          spaghetti-extractor-normalize = mkPythonWorker {
             name = "spaghetti-extractor-normalize";
+            source = spaghettiExtractorNormalizationSource;
+            module = "spaghetti_extractor.relational.pair_normalization_cli";
             runtimeInputs = [ pythonEnv ];
-            text = ''
-              export PYTHONPATH="${spaghettiExtractorNormalizationSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-              exec python -m spaghetti_extractor.relational.pair_normalization_cli "$@"
-            '';
           };
           spaghettiExtractorDataflowPythonFiles = [
             ./src/spaghetti_extractor/__init__.py
@@ -907,16 +921,13 @@
             root = ./.;
             fileset = pkgs.lib.fileset.unions spaghettiExtractorDataflowPythonFiles;
           };
-          spaghetti-extractor-dataflow =
-            (pkgs.writeShellApplication {
-              name = "spaghetti-extractor-dataflow";
-              runtimeInputs = [ pkgs.python3 ];
-              text = ''
-                export PYTHONPATH="${spaghettiExtractorDataflowSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-                exec python -m spaghetti_extractor.relational.register_dataflow_cli "$@"
-              '';
-            }).overrideAttrs
-              { preferLocalBuild = true; };
+          spaghetti-extractor-dataflow = mkPythonWorker {
+            name = "spaghetti-extractor-dataflow";
+            source = spaghettiExtractorDataflowSource;
+            module = "spaghetti_extractor.relational.register_dataflow_cli";
+            runtimeInputs = [ pkgs.python3 ];
+            preferLocalBuild = true;
+          };
           spaghettiExtractorDataflowWorkerPythonFiles = [
             ./src/spaghetti_extractor/__init__.py
             ./src/spaghetti_extractor/errors.py
@@ -938,16 +949,13 @@
             root = ./.;
             fileset = pkgs.lib.fileset.unions spaghettiExtractorDataflowWorkerPythonFiles;
           };
-          spaghetti-extractor-dataflow-worker =
-            (pkgs.writeShellApplication {
-              name = "spaghetti-extractor-dataflow-worker";
-              runtimeInputs = [ pkgs.python3 ];
-              text = ''
-                export PYTHONPATH="${spaghettiExtractorDataflowWorkerSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-                exec python -m spaghetti_extractor.relational.register_dataflow_worker_cli "$@"
-              '';
-            }).overrideAttrs
-              { preferLocalBuild = true; };
+          spaghetti-extractor-dataflow-worker = mkPythonWorker {
+            name = "spaghetti-extractor-dataflow-worker";
+            source = spaghettiExtractorDataflowWorkerSource;
+            module = "spaghetti_extractor.relational.register_dataflow_worker_cli";
+            runtimeInputs = [ pkgs.python3 ];
+            preferLocalBuild = true;
+          };
           spaghettiExtractorDataflowSummarySource = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions (
@@ -958,16 +966,13 @@
               ]
             );
           };
-          spaghetti-extractor-dataflow-summary =
-            (pkgs.writeShellApplication {
-              name = "spaghetti-extractor-dataflow-summary";
-              runtimeInputs = [ pkgs.python3 ];
-              text = ''
-                export PYTHONPATH="${spaghettiExtractorDataflowSummarySource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-                exec python -m spaghetti_extractor.relational.register_dataflow_summary_cli "$@"
-              '';
-            }).overrideAttrs
-              { preferLocalBuild = true; };
+          spaghetti-extractor-dataflow-summary = mkPythonWorker {
+            name = "spaghetti-extractor-dataflow-summary";
+            source = spaghettiExtractorDataflowSummarySource;
+            module = "spaghetti_extractor.relational.register_dataflow_summary_cli";
+            runtimeInputs = [ pkgs.python3 ];
+            preferLocalBuild = true;
+          };
           spaghettiExtractorDataflowPlanPythonFiles = [
             ./src/spaghetti_extractor/__init__.py
             ./src/spaghetti_extractor/errors.py
@@ -989,16 +994,13 @@
             root = ./.;
             fileset = pkgs.lib.fileset.unions spaghettiExtractorDataflowPlanPythonFiles;
           };
-          spaghetti-extractor-dataflow-plan =
-            (pkgs.writeShellApplication {
-              name = "spaghetti-extractor-dataflow-plan";
-              runtimeInputs = [ pkgs.python3 ];
-              text = ''
-                export PYTHONPATH="${spaghettiExtractorDataflowPlanSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-                exec python -m spaghetti_extractor.relational.register_dataflow_plan_cli "$@"
-              '';
-            }).overrideAttrs
-              { preferLocalBuild = true; };
+          spaghetti-extractor-dataflow-plan = mkPythonWorker {
+            name = "spaghetti-extractor-dataflow-plan";
+            source = spaghettiExtractorDataflowPlanSource;
+            module = "spaghetti_extractor.relational.register_dataflow_plan_cli";
+            runtimeInputs = [ pkgs.python3 ];
+            preferLocalBuild = true;
+          };
           spaghettiExtractorDataflowAggregateSource = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions (
@@ -1009,16 +1011,13 @@
               ]
             );
           };
-          spaghetti-extractor-dataflow-aggregate =
-            (pkgs.writeShellApplication {
-              name = "spaghetti-extractor-dataflow-aggregate";
-              runtimeInputs = [ pkgs.python3 ];
-              text = ''
-                export PYTHONPATH="${spaghettiExtractorDataflowAggregateSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-                exec python -m spaghetti_extractor.relational.register_dataflow_aggregate_cli "$@"
-              '';
-            }).overrideAttrs
-              { preferLocalBuild = true; };
+          spaghetti-extractor-dataflow-aggregate = mkPythonWorker {
+            name = "spaghetti-extractor-dataflow-aggregate";
+            source = spaghettiExtractorDataflowAggregateSource;
+            module = "spaghetti_extractor.relational.register_dataflow_aggregate_cli";
+            runtimeInputs = [ pkgs.python3 ];
+            preferLocalBuild = true;
+          };
           spaghettiExtractorDataflowCompareSource = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions (
@@ -1030,16 +1029,13 @@
               ]
             );
           };
-          spaghetti-extractor-dataflow-compare =
-            (pkgs.writeShellApplication {
-              name = "spaghetti-extractor-dataflow-compare";
-              runtimeInputs = [ pkgs.python3 ];
-              text = ''
-                export PYTHONPATH="${spaghettiExtractorDataflowCompareSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-                exec python -m spaghetti_extractor.relational.register_dataflow_compare_cli "$@"
-              '';
-            }).overrideAttrs
-              { preferLocalBuild = true; };
+          spaghetti-extractor-dataflow-compare = mkPythonWorker {
+            name = "spaghetti-extractor-dataflow-compare";
+            source = spaghettiExtractorDataflowCompareSource;
+            module = "spaghetti_extractor.relational.register_dataflow_compare_cli";
+            runtimeInputs = [ pkgs.python3 ];
+            preferLocalBuild = true;
+          };
           stageARelationalAnalysisTools = {
             side = spaghetti-extractor-side;
             normalize = spaghetti-extractor-normalize;
@@ -3763,6 +3759,10 @@
           mkStageARelationalTestSuite =
             name: module: className: testFile:
             let
+              testFiles = if builtins.isList testFile then testFile else [ testFile ];
+              testSourceText = pkgs.lib.concatStringsSep "\n" (
+                map builtins.readFile testFiles
+              );
               testMethods = builtins.filter (method: method != null) (
                 map (
                   line:
@@ -3770,7 +3770,7 @@
                     matched = builtins.match "^    def (test_[A-Za-z0-9_]+)\\(self.*$" line;
                   in
                   if matched == null then null else builtins.head matched
-                ) (pkgs.lib.splitString "\n" (builtins.readFile testFile))
+                ) (pkgs.lib.splitString "\n" testSourceText)
               );
               cases = builtins.listToAttrs (
                 map (
@@ -3780,9 +3780,7 @@
                   in
                   {
                     name = caseName;
-                    value = mkStageARelationalTest "${name}-${caseName}" "${module}.${className}.${method}" [
-                      testFile
-                    ];
+                    value = mkStageARelationalTest "${name}-${caseName}" "${module}.${className}.${method}" testFiles;
                   }
                 ) testMethods
               );
@@ -3978,7 +3976,14 @@
           stageARelationalAcceptanceSuite =
             mkStageARelationalTestSuite "acceptance" "tests.test_stage_a_relational_acceptance"
               "StageARelationalAcceptanceTests"
-              ./tests/test_stage_a_relational_acceptance.py;
+              [
+                ./tests/test_stage_a_relational_acceptance.py
+                ./tests/test_stage_a_acceptance_launch.py
+                ./tests/test_stage_a_acceptance_control_flow.py
+                ./tests/test_stage_a_acceptance_calls_frames.py
+                ./tests/test_stage_a_acceptance_external_environment.py
+                ./tests/test_stage_a_acceptance_final_nix.py
+              ];
           stageARelationalStaticWordSlotCertificateSuite =
             mkStageARelationalTestSuite "lean-static-word-slot-certificate"
               "tests.test_stage_a_relational_static_word_slot_certificate"

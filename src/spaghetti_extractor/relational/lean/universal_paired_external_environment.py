@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from ...artifact_formats import STATIC_MACHINE_IMPORT_CONTRACTS_FORMAT
 from ...stage_binary import StageAInputError
 from ...util import sha256_file, write_json
 
@@ -21,7 +22,6 @@ from ...util import sha256_file, write_json
 UNIVERSAL_PAIRED_EXTERNAL_ENVIRONMENT_FORMAT = (
     "stage-a-universal-paired-external-environment-v1"
 )
-_STATIC_MACHINE_IMPORT_FORMAT = "stage-a-static-machine-import-contracts-v1"
 _LEAN_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -85,7 +85,7 @@ def _load_machine_import_report(
             f"cannot read machine-import report {path}: {exc}"
         ) from exc
     report = _mapping(payload, "machine-import report")
-    if report.get("format") != _STATIC_MACHINE_IMPORT_FORMAT:
+    if report.get("format") != STATIC_MACHINE_IMPORT_CONTRACTS_FORMAT:
         raise StageAInputError("unsupported machine-import report format")
     if report.get("status") != "ready":
         raise StageAInputError("machine-import report is not ready")

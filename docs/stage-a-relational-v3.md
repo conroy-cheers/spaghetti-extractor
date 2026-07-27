@@ -90,8 +90,7 @@ spaghetti-extractor stage-a-build-relational \
   --out build/stage-a-gnu-hello-launch-proof
 ```
 
-`--executor nix` remains accepted as a deprecated compatibility no-op; no other
-executor exists. The coordinator first realizes the named preparation target and then evaluates
+The coordinator first realizes the named preparation target and then evaluates
 the generated Lean DAG from its concrete store path. This is an explicit Nix
 evaluation boundary, not a local compilation fallback: extraction, analysis,
 Lean modules, dependency closures, and OLean outputs remain cached Nix
@@ -243,13 +242,6 @@ corrected aggregate external-call certificate took 12.217 seconds in Nix and
 and 1.512 seconds end to end. Reducing cross-builder transitive `.olean`
 transfer is the remaining remote-execution bottleneck for cold focused
 closures.
-
-The non-Nix compatibility runner now compiles PE attestations and
-`RelationalProofBase` before generated shards that import them, and defers
-static-context consumers until `RelationalStaticContext` exists. This ordering
-matches the generated import DAG; it prevents a local smoke or unit test from
-reporting a missing `.olean` merely because a dependent shard was submitted in
-an earlier scheduling phase.
 
 The former `RelationalProofClosureData` module combined 1.37 MB of unrelated
 generated literals and checks. It exceeded 18 GiB RSS and 10 minutes without

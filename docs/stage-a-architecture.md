@@ -111,10 +111,11 @@ after a Stage A pass is a prover/toolchain defect investigation.
 Prepared proof inputs are source-only and content-addressed. Nix store paths
 are the authoritative analysis and compiled-Lean cache for supported builds.
 Host-local caches may accelerate derivation-worker tests but are never a
-first-class proof build or proof input. `build/` contains disposable or
-explicitly exported work products and must never be an implicit proof input.
-Large generated Ghidra/skeleton data is reused by content hash and regenerated
-only when its own inputs change.
+first-class proof build or proof input. The ignored `build/` tree is wholly
+disposable and must never be an implicit proof input or the durable home of
+manual Stage B source. Hand-repaired or otherwise persistent Stage B source
+must live in a tracked repository path. Large generated Ghidra/skeleton data is
+reused by content hash and regenerated only when its own inputs change.
 
 The user-facing `stage-a-prepare-relational`, `stage-a-build-relational`,
 `stage-a-prove`, and `stage-a-check-proof` commands all coordinate or audit Nix
@@ -365,11 +366,10 @@ legacy 936 MiB tree. Every referenced file must resolve to a regular file under
 manifest. Mutable, relative, missing, or non-store symlinks fail closed. The
 GNU hello output is 156 KiB physically, retains a 1.14 GB Nix closure through
 34 explicit references, and an assembly-only remote rebuild plus exact
-7,430-region comparison takes about 10.2 seconds. Local non-Nix assembly still
-uses regular files. `materialize_relational_analysis_view` provides the
-explicit portable-export boundary and proof preparation currently uses it for
-compatibility. A later preparation refinement can consume the validated view
-directly and avoid that final materialization as well.
+7,430-region comparison takes about 10.2 seconds.
+`materialize_relational_analysis_view` provides the explicit portable-export
+boundary used by proof preparation. A later preparation refinement can consume
+the validated view directly and avoid that final materialization as well.
 
 Floating content-addressed Nix derivations implement early cutoff for the
 fine-grained register-dataflow DAG. Each pack is one multi-output CA derivation:

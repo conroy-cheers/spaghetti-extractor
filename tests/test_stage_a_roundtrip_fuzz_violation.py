@@ -81,8 +81,8 @@ class RoundTripFuzzViolationTests(unittest.TestCase):
 
             self.assertEqual(production["status"], "checked", production)
             self.assertEqual(
-                build_node.call_args.kwargs["target_node"],
-                "relationalcounterexample",
+                build_node.call_args.kwargs["target_nodes"],
+                ["relationalcounterexample"],
             )
             source = Path(production["source"]).read_text(encoding="utf-8")
             self.assertIn("def classifiedMismatch : Bool", source)

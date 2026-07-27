@@ -370,7 +370,7 @@ def _manifest(out: Path, phase: str, inputs: Mapping[str, Path], **extra: Any) -
     write_json(
         out / "phase-manifest.json",
         {
-            "format": "stage-a-gnu-hello-roundtrip-phase-v1",
+            "format": "stage-a-relational-phase-v1",
             "phase": phase,
             "executes_original_binary": False,
             "executes_candidate_binary": False,

@@ -172,6 +172,10 @@ nix run .#spaghetti-extractor-slice -- --work-dir build/spaghetti-extractor-slic
 nix run .#spaghetti-extractor-slice -- --work-dir build/spaghetti-extractor-slices next jq --top-k 10
 ```
 
+The ignored `build/` tree is wholly disposable scratch space. Do not keep
+hand-repaired or otherwise durable Stage B source there; source that must
+survive cleanup belongs in a tracked repository path.
+
 For the hot loop, pass local candidate outputs to `spaghetti-extractor-slice check` or build
 them with `spaghetti-extractor-slice build`. This avoids rebuilding Ghidra exports or Nix
 candidate artifacts when only a small source slice changed.

@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 import z3
 
+from ..artifact_formats import NORMALIZED_BEHAVIOR_FORMAT
 from ..relational.build import stage_a_build_relational
 from ..relational.schema import RELATIONAL_APPROVED_AXIOMS
 from ..relational.lean.definitions import _lean_counterexample_source
@@ -721,10 +722,10 @@ def _derive_concrete_violation_witness(
             "decoded_ir_missing", "the selected region omits normalized semantic IR"
         )
     for side, ir in (("original", original_ir), ("candidate", candidate_ir)):
-        if ir.get("format") != "stage-a-normalized-behavior-v1":
+        if ir.get("format") != NORMALIZED_BEHAVIOR_FORMAT:
             raise _UnsupportedViolationFragment(
                 "unsupported_normalized_behavior",
-                f"{side} behavior is not stage-a-normalized-behavior-v1",
+                f"{side} behavior is not {NORMALIZED_BEHAVIOR_FORMAT}",
             )
         expected_ir_hash = decoded_region.get(f"{side}_ir_sha256")
         if expected_ir_hash is not None and expected_ir_hash != _canonical_sha256(ir):

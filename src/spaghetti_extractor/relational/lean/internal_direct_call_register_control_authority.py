@@ -24,6 +24,7 @@ from typing import Any, Mapping, Sequence
 import capstone
 import pefile
 
+from ...artifact_formats import STATIC_MACHINE_IMPORT_CONTRACTS_FORMAT
 from ...errors import StageAInputError
 from .internal_direct_call_summary_proposal import (
     DirectCallSummaryRequest,
@@ -120,7 +121,7 @@ def _load_machine_import_report(
         raise DirectCallRegisterControlAuthorityError(
             f"cannot read machine-import report {path}: {error}"
         ) from error
-    if report.get("format") != "stage-a-static-machine-import-contracts-v1":
+    if report.get("format") != STATIC_MACHINE_IMPORT_CONTRACTS_FORMAT:
         raise DirectCallRegisterControlAuthorityError(
             "machine-import report has an unsupported format"
         )

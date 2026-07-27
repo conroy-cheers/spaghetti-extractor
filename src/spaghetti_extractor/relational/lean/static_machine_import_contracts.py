@@ -17,6 +17,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import capstone
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
+from ...artifact_formats import STATIC_MACHINE_IMPORT_CONTRACTS_FORMAT
 from ...errors import StageAInputError
 from ...stage_binary import StageABinary, _parse_stage_a_pe
 from ..contract import _machine_import_call_contracts
@@ -27,7 +28,7 @@ from .expressions import (
 )
 
 
-STATIC_MACHINE_IMPORT_FORMAT = "stage-a-static-machine-import-contracts-v1"
+STATIC_MACHINE_IMPORT_FORMAT = STATIC_MACHINE_IMPORT_CONTRACTS_FORMAT
 STATIC_MACHINE_IMPORT_MODULE = "GeneratedStaticMachineImportContracts"
 _PROFILE_FORMATS = {
     "stage-a-external-environment-profile-v1",

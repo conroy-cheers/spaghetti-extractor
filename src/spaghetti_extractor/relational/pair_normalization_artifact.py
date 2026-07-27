@@ -5,6 +5,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from ..artifact_formats import NORMALIZED_BEHAVIOR_FORMAT
 from ..stage_binary import StageAInputError
 from ..util import sha256_bytes
 from .schema import (
@@ -256,7 +257,7 @@ def _expression(value: Any, context: str) -> dict[str, Any]:
 def _semantic_ir(value: Any, context: str) -> dict[str, Any]:
     ir = _object(value, context)
     _exact_fields(ir, _SEMANTIC_IR_FIELDS, context)
-    if ir["format"] != "stage-a-normalized-behavior-v1":
+    if ir["format"] != NORMALIZED_BEHAVIOR_FORMAT:
         raise StageAInputError(f"{context} format mismatch")
 
     registers = _object(ir["registers"], f"{context}.registers")

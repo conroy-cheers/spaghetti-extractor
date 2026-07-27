@@ -11,6 +11,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable
 
+from ..artifact_formats import RELATIONAL_NIX_BUILD_REPORT_FORMAT
 from ..relational.build import stage_a_build_relational
 from ..relational.interfaces import stage_a_interface_manifest
 from ..relational.nix_pipeline import stage_a_prepare_relational_nix
@@ -683,7 +684,8 @@ def _run_case(
     build_duration = round(time.monotonic() - build_started, 3)
     passed = (
         persisted_build_result == build_result
-        and build_result.get("format") == "stage-a-relational-nix-build-v1"
+        and build_result.get("format")
+        == RELATIONAL_NIX_BUILD_REPORT_FORMAT
         and build_result.get("status") == "pass"
         and selected_theorem in RELATIONAL_ACCEPTANCE_THEOREMS
         and build_result.get("expected_final_theorem") == selected_theorem

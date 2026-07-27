@@ -20,6 +20,7 @@ import capstone
 import pefile
 from capstone.x86 import X86_OP_MEM
 
+from ...artifact_formats import SEMANTIC_TRANSFER_CONTRACT_FORMAT
 from ...errors import StageAInputError
 from .reachable_static_pointer_slot import (
     GuardedNonzeroEdgeProposal,
@@ -37,7 +38,7 @@ AUTHORITY_BINDING_FORMAT = (
     "stage-a-exact-original-decoded-authority-binding-v1"
 )
 MIXED_ORIGINAL_FORMAT = "stage-a-interpreter-mixed-original-v1"
-STATE_MACHINE_FORMAT = "stage-a-semantic-transfer-contract-v1"
+STATE_MACHINE_FORMAT = SEMANTIC_TRANSFER_CONTRACT_FORMAT
 
 _IMAGE_SCN_MEM_EXECUTE = 0x20000000
 _IMAGE_SCN_MEM_WRITE = 0x80000000

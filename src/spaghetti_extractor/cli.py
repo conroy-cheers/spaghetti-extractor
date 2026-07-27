@@ -88,25 +88,6 @@ from .stage_b_native_runtime import write_stage_b_native_runtime_package
 from .stage_b_reachable_slice import write_stage_b_reachable_slice
 from .stage_b_skeleton import stage_b_generate_link_roots, stage_b_generate_skeleton
 from .relational.engine_segments import write_engine_segment_evidence
-from .relational.lean.interpreter_kernel import (
-    write_relational_interpreter_kernel_bundle,
-)
-from .relational.lean.interpreter_kernel_invoke import (
-    write_relational_interpreter_kernel_invoke_bundle,
-)
-from .relational.lean.interpreter_kernel_run import (
-    write_relational_interpreter_kernel_run_bundle,
-)
-from .relational.lean.interpreter_kernel_step import (
-    write_relational_interpreter_kernel_step_bundle,
-)
-from .relational.lean.interpreter_kernel_summary import (
-    write_relational_interpreter_kernel_summary_bundle,
-)
-from .relational.lean.interpreter_mixed_kernel_binding import (
-    generate_interpreter_mixed_kernel_binding,
-)
-from .workspace import workspace_prune
 
 
 def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
@@ -152,21 +133,6 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         description="Spaghetti Extractor binary reimplementation and equivalence-proof tooling.",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
-
-    prune = subcommands.add_parser(
-        "workspace-prune",
-        help="inventory or remove disposable caches and runtime state",
-    )
-    prune.add_argument("--root", type=Path, default=Path("build"))
-    prune.add_argument("--include", action="append", type=Path, default=[])
-    prune.add_argument("--apply", action="store_true")
-    prune.set_defaults(
-        func=lambda args: workspace_prune(
-            root=args.root,
-            include=args.include,
-            apply=args.apply,
-        )
-    )
 
     interfaces = subcommands.add_parser(
         "stage-a-export-interfaces",
@@ -437,12 +403,6 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         type=Path,
         default=Path("."),
         help="prepared-proof directory below --prepared-nix-ref output",
-    )
-    build_relational.add_argument(
-        "--executor",
-        choices=("nix",),
-        default="nix",
-        help="deprecated compatibility option; Nix is the only executor",
     )
     _add_nix_build_arguments(build_relational)
     build_relational.add_argument(
@@ -769,76 +729,6 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     engine_segments.add_argument("--product-cutpoint", type=_auto_int, action="append", default=[])
     engine_segments.add_argument("--out", type=Path, required=True)
     engine_segments.set_defaults(func=_cmd_stage_a_generate_engine_segments)
-
-    interpreter_kernel = subcommands.add_parser(
-        "stage-a-generate-interpreter-kernel",
-        help="emit exact candidate-kernel structure and Lean proof obligations",
-    )
-    interpreter_kernel.add_argument("--candidate", type=Path, required=True)
-    interpreter_kernel.add_argument("--linker-map", type=Path, required=True)
-    interpreter_kernel.add_argument(
-        "--interpreter-program-manifest", type=Path, required=True
-    )
-    interpreter_kernel.add_argument("--engine-layout", type=Path, required=True)
-    interpreter_kernel.add_argument(
-        "--native-build-manifest", type=Path, required=True
-    )
-    interpreter_kernel.add_argument("--out-dir", type=Path, required=True)
-    interpreter_kernel.set_defaults(
-        func=lambda args: write_relational_interpreter_kernel_bundle(
-            candidate_pe=args.candidate,
-            linker_map=args.linker_map,
-            interpreter_program_manifest=args.interpreter_program_manifest,
-            engine_layout=args.engine_layout,
-            native_build_manifest=args.native_build_manifest,
-            out=args.out_dir,
-        ).payload()
-    )
-
-    kernel_lookup = subcommands.add_parser(
-        "stage-a-generate-interpreter-kernel-lookup",
-        help="reflect the exact compiled programLookup operation",
-    )
-    kernel_lookup.add_argument("--kernel-plan", type=Path, required=True)
-    kernel_lookup.add_argument("--kernel-data-inventory", type=Path, required=True)
-    kernel_lookup.add_argument("--out-dir", type=Path, required=True)
-    kernel_lookup.set_defaults(func=_cmd_stage_a_generate_interpreter_kernel_lookup)
-
-    kernel_step = subcommands.add_parser(
-        "stage-a-generate-interpreter-kernel-step",
-        help="reflect the exact compiled interpreterStep operation",
-    )
-    kernel_step.add_argument("--kernel-plan", type=Path, required=True)
-    kernel_step.add_argument("--out-dir", type=Path, required=True)
-    kernel_step.set_defaults(func=_cmd_stage_a_generate_interpreter_kernel_step)
-
-    kernel_invoke = subcommands.add_parser(
-        "stage-a-generate-interpreter-kernel-invoke",
-        help="reflect the exact compiled invokeCall operation",
-    )
-    kernel_invoke.add_argument("--kernel-plan", type=Path, required=True)
-    kernel_invoke.add_argument("--candidate", type=Path, required=True)
-    kernel_invoke.add_argument("--out-dir", type=Path, required=True)
-    kernel_invoke.set_defaults(func=_cmd_stage_a_generate_interpreter_kernel_invoke)
-
-    kernel_run = subcommands.add_parser(
-        "stage-a-generate-interpreter-kernel-run",
-        help="reflect the exact compiled runFunction operation",
-    )
-    kernel_run.add_argument("--kernel-plan", type=Path, required=True)
-    kernel_run.add_argument("--candidate", type=Path, required=True)
-    kernel_run.add_argument("--out-dir", type=Path, required=True)
-    kernel_run.set_defaults(func=_cmd_stage_a_generate_interpreter_kernel_run)
-
-    mixed_kernel_binding = subcommands.add_parser(
-        "stage-a-generate-interpreter-mixed-kernel-binding",
-        help="assemble exact mixed-kernel component proofs into the acceptance term",
-    )
-    mixed_kernel_binding.add_argument("--manifest", type=Path, required=True)
-    mixed_kernel_binding.add_argument("--out-dir", type=Path, required=True)
-    mixed_kernel_binding.set_defaults(
-        func=_cmd_stage_a_generate_interpreter_mixed_kernel_binding
-    )
 
     roots = subcommands.add_parser("stage-b-generate-link-roots", help="generate linker root flags for a candidate object")
     roots.add_argument("--original", type=Path, required=True)
@@ -1591,63 +1481,6 @@ def _cmd_stage_a_generate_engine_segments(args: Any) -> dict[str, Any]:
         out=args.out,
     )
     return evidence.to_payload()
-
-
-def _kernel_operation_generation_result(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "status": "ready",
-        "operation": operation,
-        "diagnostic_status": payload.get("status", "unknown"),
-        "acceptance_authority": False,
-        "artifact_sha256": payload.get("artifact_sha256"),
-    }
-
-
-def _cmd_stage_a_generate_interpreter_kernel_lookup(args: Any) -> dict[str, Any]:
-    plan = write_relational_interpreter_kernel_summary_bundle(
-        kernel_plan=args.kernel_plan,
-        data_inventory=args.kernel_data_inventory,
-        out=args.out_dir,
-    )
-    return _kernel_operation_generation_result("programLookup", plan.payload())
-
-
-def _cmd_stage_a_generate_interpreter_kernel_step(args: Any) -> dict[str, Any]:
-    plan = write_relational_interpreter_kernel_step_bundle(
-        kernel_plan=args.kernel_plan,
-        out=args.out_dir,
-    )
-    return _kernel_operation_generation_result("interpreterStep", plan.payload())
-
-
-def _cmd_stage_a_generate_interpreter_kernel_invoke(args: Any) -> dict[str, Any]:
-    plan = write_relational_interpreter_kernel_invoke_bundle(
-        kernel_plan=args.kernel_plan,
-        candidate_pe=args.candidate,
-        out=args.out_dir,
-    )
-    return _kernel_operation_generation_result("invokeCall", plan.payload())
-
-
-def _cmd_stage_a_generate_interpreter_kernel_run(args: Any) -> dict[str, Any]:
-    plan = write_relational_interpreter_kernel_run_bundle(
-        kernel_plan=args.kernel_plan,
-        candidate_pe=args.candidate,
-        out=args.out_dir,
-    )
-    return _kernel_operation_generation_result("runFunction", plan.payload())
-
-
-def _cmd_stage_a_generate_interpreter_mixed_kernel_binding(
-    args: Any,
-) -> dict[str, Any]:
-    plan = generate_interpreter_mixed_kernel_binding(args.manifest, args.out_dir)
-    payload = plan.to_json()
-    return {
-        **payload,
-        "binding_plan_status": payload["status"],
-        "status": "generated" if plan.complete else "incomplete",
-    }
 
 
 def _auto_int(value: str) -> int:

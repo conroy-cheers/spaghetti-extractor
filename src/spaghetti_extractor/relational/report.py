@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from ..artifact_formats import RELATIONAL_NIX_BUILD_REPORT_FORMAT
 from ..stage_binary import StageAInputError
 
 
-STAGE_A_NIX_BUILD_REPORT_FORMAT = "stage-a-relational-nix-build-v1"
+STAGE_A_NIX_BUILD_REPORT_FORMAT = RELATIONAL_NIX_BUILD_REPORT_FORMAT
 STAGE_A_PROOF_HANDOFF_FORMAT = "stage-a-proof-handoff-v1"
 _DISPOSITIONS = frozenset({"fail", "incomplete", "pass"})
 

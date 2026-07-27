@@ -20,6 +20,7 @@ import capstone
 import pefile
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
+from ...artifact_formats import STATIC_MACHINE_IMPORT_CONTRACTS_FORMAT
 from ...errors import StageAInputError
 from ..direct_call_proposal_ir import DirectCallSummaryRequest
 from .internal_direct_call_register_summary import (
@@ -49,7 +50,7 @@ from .internal_direct_call_register_summary import (
 
 
 PROPOSAL_FORMAT = "stage-a-internal-direct-call-summary-proposals-v1"
-STATIC_MACHINE_IMPORT_FORMAT = "stage-a-static-machine-import-contracts-v1"
+STATIC_MACHINE_IMPORT_FORMAT = STATIC_MACHINE_IMPORT_CONTRACTS_FORMAT
 _SUMMARY_NAMESPACE = (
     "StageA.Generated.RelationalInternalDirectCallRegisterSummary"
 )

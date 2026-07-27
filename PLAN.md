@@ -33,6 +33,11 @@ Stage B does not trace or execute the original binary during iteration.
 
 ## Workflow
 
+The ignored `build/` tree is wholly disposable. It may hold regenerated
+workspaces, logs, reports, and candidate outputs, but never the durable copy of
+manual Stage B work. Hand-repaired or otherwise persistent Stage B source must
+live in a tracked repository path.
+
 1. Build the canonical jq Stage A artifacts:
 
    ```sh
@@ -52,7 +57,7 @@ Stage B does not trace or execute the original binary during iteration.
    nix run .#spaghetti-extractor-slice -- --work-dir build/spaghetti-extractor-slices next jq --top-k 20
    ```
 
-4. Rebuild the local candidate outside Nix:
+4. Rebuild the local candidate through the pinned slice environment:
 
    ```sh
    nix run .#spaghetti-extractor-slice -- --work-dir build/spaghetti-extractor-slices build jq \

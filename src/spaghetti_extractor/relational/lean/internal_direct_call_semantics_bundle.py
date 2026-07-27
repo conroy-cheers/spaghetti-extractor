@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from ...artifact_formats import RELATIONAL_PHASE_FORMAT
 from ...util import sha256_file, write_json
 from .internal_direct_call_mixed_original_integration import (
     INTERNAL_DIRECT_CALL_MIXED_ORIGINAL_INTEGRATION_FORMAT,
@@ -115,7 +116,7 @@ def _manifest(
     write_json(
         out / "phase-manifest.json",
         {
-            "format": "stage-a-gnu-hello-roundtrip-phase-v1",
+            "format": RELATIONAL_PHASE_FORMAT,
             "phase": "mixed-original-direct-call-semantics",
             "executes_original_binary": False,
             "executes_candidate_binary": False,
