@@ -13,6 +13,7 @@ from spaghetti_extractor.isa_conformance import (
     isa_conformance_corpus_sha256,
     parse_isa_conformance_corpus,
 )
+from spaghetti_extractor.isa_conformance_unicorn import UNICORN_BACKEND_ID
 from spaghetti_extractor.stage_binary import StageAInputError
 from spaghetti_extractor.util import sha256_bytes, sha256_file, write_json
 from tests.test_stage_a_isa_conformance import _case, _observation, _report
@@ -197,7 +198,7 @@ def _write_evidence(
     }
     unicorn_report = copy.deepcopy(report)
     unicorn_report["backend"] = {
-        "id": "unicorn-x86-32-haswell-v1",
+        "id": UNICORN_BACKEND_ID,
         "kind": "emulator",
         "version": "synthetic-v1",
     }

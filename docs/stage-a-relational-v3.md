@@ -1340,17 +1340,46 @@ independent store path, so editing a composition theorem does not change the
 derivations for unchanged original/candidate PE attestations. Full builds still
 select the final audit node and retain complete node/NAR provenance.
 
-### First whole-program acceptance theorem
+The final audit publishes a second, reference-free `verdict` output alongside
+the replayable proof closure. Round-trip qualification consumes that compact
+output and records the checked theorem, semantic root identity, trust level,
+and manifest hashes. It never embeds live preparation, proof, or derivation
+store paths in case or aggregate reports. This prevents report aggregation from
+copying all semantic nodes and the transitive Lean toolchain to another builder.
+The proof smoke's unchanged replay completes in about one second, and its final
+qualification output has an empty Nix reference set.
 
-`WholeProgramCertificate` is now the only acceptance-capable certificate. It
+### Whole-program acceptance theorem
+
+`LinkedWholeProgramCertificate` is the only acceptance-capable certificate. It
 binds the exact static context, canonical product graph, region inventory,
 inductive invariant table, checked reachability closure, decoded-control
-completeness, local edge refinements, concrete execution-edge refinements,
+completeness, local edge refinements, linked concrete execution refinements,
 paired external environments, and launch relation. Lean's
-`pe32ProgramsEquivalent` theorem composes those fields into a relation over the
-two decoded world executions and proves related observations and successor
-states for every reachable step. The older relational-image certificate remains
-intermediate evidence and cannot select an acceptance theorem.
+`pe32ProgramsEquivalentLinked_raw` theorem composes those fields into a
+relation over the two decoded world executions and proves related observations
+and successor states for every reachable step. `WholeProgramCertificate` and
+the older relational-image certificate remain intermediate evidence and cannot
+select a final `pass`.
+
+The same final theorem now covers parameterized stateful external protocols
+and nested callback returns. Its typed Nix audit quantifies over the generated
+`AcceptanceExternalEnvironmentsRefine` contract and
+`LinkedWorldExternalProtocolEnvironmentsRefine`; it does not substitute the
+weaker raw environment relation. A two-region protocol-call/callback-return
+fixture passes the complete 216-module dynamic proof DAG at Lean trust zero.
+Its cold remote proof took 768 seconds on a contended builder, while the
+unchanged replay reused the same final audit store path and completed in 1.25
+seconds.
+
+The handwritten WinAPI hello fixture is intentionally a frontier check rather
+than a proof-pass fixture. Its `WriteFile` transition has machine-level ABI and
+footprint evidence, but the linked environment cannot yet extract the bounded
+memory observation for that call. The fixture therefore requires
+`opaque_lockstep_memory_observation_unextractable`, emits no acceptance
+theorem, and does not unlock a Wine behavior check. This prevents an
+intermediate edge certificate from being mistaken for whole-program
+equivalence.
 
 For `pe32-console-launch-v1`, Lean additionally checks that the selected launch
 target is a canonical `.entrypoint` root. A top-level return emits an
@@ -1379,9 +1408,12 @@ update profiles, multiple roots, and unresolved control still produce specific
 `whole-program-acceptance.json` blockers.
 
 An exact two-byte PE32 self-loop (`eb fe`) closes this profile end to end. The
-generated `candidatePE32ProgramsEquivalent` theorem checks at Lean trust zero,
-depends only on the approved `propext`, `Classical.choice`, and `Quot.sound`
-axioms, and makes the distributed Nix build return `pass`. The cold 73-module,
+generated `candidatePE32ProgramsEquivalentLinked` theorem checks at Lean trust
+zero, depends only on the approved `propext`, `Classical.choice`, and
+`Quot.sound` axioms, and makes the distributed Nix build return `pass`. Its
+generic acceptance kernel is now the exact import closure of
+`RelationalPEWorldExecution` and `RelationalStaticTree`; interpreter/native
+proof profiles are separate caches. The earlier cold 73-module,
 73-derivation build completed in 104.2 seconds with local derivation builds
 disabled. This establishes that the acceptance path is connected; it does not
 establish realistic PE breadth.

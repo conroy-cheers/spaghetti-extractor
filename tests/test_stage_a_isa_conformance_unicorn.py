@@ -135,7 +135,7 @@ class StageAISAConformanceUnicornTests(unittest.TestCase):
 
     def test_profile_fs_x87_and_system_boundaries_fail_closed(self):
         wrong_cpu = _case(case_id="wrong-cpu")
-        wrong_cpu["profile"]["cpu"] = "i686"
+        wrong_cpu["profile"]["cpu"] = "pentium4"
         fs_state = _case(case_id="fs-state")
         fs_state["initial_state"]["fs"] = {
             "selector": 0x3B,
@@ -173,6 +173,17 @@ class StageAISAConformanceUnicornTests(unittest.TestCase):
                 observation = run_unicorn_case(_corpus(payload).cases[0])
                 self.assertEqual(observation.status, ObservationStatus.UNSUPPORTED)
                 self.assertIn(expected_details[payload["id"]], observation.detail)
+
+    @unittest.skipUnless(unicorn_available(), "optional Unicorn binding unavailable")
+    def test_i686_profile_uses_the_pentium2_execution_model(self):
+        payload = _case(case_id="i686-mov")
+        payload["profile"]["cpu"] = "i686"
+        case = _corpus(payload).cases[0]
+
+        observation = run_unicorn_case(case)
+
+        self.assertEqual(observation.status, ObservationStatus.MATCH)
+        self.assertTrue(case.matches(observation))
 
     @unittest.skipUnless(unicorn_available(), "optional Unicorn binding unavailable")
     def test_executes_one_instruction_and_sets_match_mechanically(self):

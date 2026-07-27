@@ -46,7 +46,7 @@ from ..model import (
     _semantic_constant_bool,
     _target_shaped_register_output_claims_with_stack_windows,
 )
-from ..schema import RELATIONAL_ACCEPTANCE_THEOREM
+from ..schema import RELATIONAL_FINAL_ACCEPTANCE_THEOREM
 
 def _frame_exact_expr_witness(
     inventory: dict[str, Any], original: Any, candidate: Any,
@@ -5106,7 +5106,7 @@ def _whole_program_acceptance_plan(
         return {
             "format": "stage-a-whole-program-acceptance-v1",
             "status": "incomplete",
-            "required_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+            "required_theorem": RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
             "theorem": None,
             "profile": profile,
             "root_node_id": (
@@ -5186,8 +5186,8 @@ def _whole_program_acceptance_plan(
     return {
         "format": "stage-a-whole-program-acceptance-v1",
         "status": "ready",
-        "required_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
-        "theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+        "required_theorem": RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
+        "theorem": RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
         "profile": profile,
         "root_node_id": int(launch_root_node_id),
         "terminal_region_index": (

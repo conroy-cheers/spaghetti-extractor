@@ -1,5 +1,4 @@
 import StageA.RelationalInterpreterKernelLookupABI
-import StageA.RelationalInterpreterKernelLookupNative
 
 namespace StageA.Relational.InterpreterKernelProgramLookupOperation
 

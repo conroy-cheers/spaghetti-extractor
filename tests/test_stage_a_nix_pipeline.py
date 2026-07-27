@@ -3,12 +3,21 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
+from spaghetti_extractor.isa_kernel_qualification import (
+    QualificationStatus,
+    SemanticKernelBinding,
+)
+from spaghetti_extractor.relational import build as relational_build
 from spaghetti_extractor.relational import nix_pipeline
 from spaghetti_extractor.relational.report import NixBuildReport
+from spaghetti_extractor.relational.schema import (
+    RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
+)
 from spaghetti_extractor.stage_binary import StageAInputError
-from spaghetti_extractor.util import write_json
+from spaghetti_extractor.util import sha256_bytes, write_json
 
 
 class StageANixPipelineTests(unittest.TestCase):
@@ -54,7 +63,7 @@ class StageANixPipelineTests(unittest.TestCase):
             })
 
     def test_report_parser_requires_complete_checked_pass_evidence(self) -> None:
-        theorem = "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
+        theorem = RELATIONAL_FINAL_ACCEPTANCE_THEOREM
         report = NixBuildReport.parse({
             "format": "stage-a-relational-nix-build-v1",
             "status": "pass",
@@ -68,6 +77,195 @@ class StageANixPipelineTests(unittest.TestCase):
             },
         })
         self.assertTrue(report.declares_checked_pass)
+
+    def test_full_build_fails_before_nix_without_exact_isa_qualification(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prepared = root / "prepared"
+            prepared.mkdir()
+            out = root / "out"
+            graph = {
+                "nodes": [],
+                "acceptance": {"status": "ready"},
+            }
+            with (
+                mock.patch.object(
+                    relational_build,
+                    "_validate_prepared_relational",
+                    return_value=graph,
+                ),
+                mock.patch.object(
+                    relational_build, "_relational_nix_evaluator"
+                ) as evaluator,
+            ):
+                result = relational_build.stage_a_build_relational(
+                    prepared=prepared,
+                    out=out,
+                )
+
+            self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(
+                result["diagnostic"]["category"],
+                "isa_kernel_qualification_missing",
+            )
+            self.assertFalse(
+                result["checks"]["exact_isa_semantic_kernel_qualified"]
+            )
+            self.assertFalse(result["checks"]["nix_graph_built"])
+            evaluator.assert_not_called()
+            prerequisite = json.loads(
+                (out / "isa-kernel-prerequisite.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertFalse(prerequisite["trust"]["proof_authority"])
+            self.assertFalse(prerequisite["trust"]["closes_stage_a_proof"])
+
+    def test_exact_selection_ignores_unrelated_qualification_frontiers(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prepared = root / "prepared"
+            prepared.mkdir()
+            qualification_path = root / "qualification.json"
+            semantic_kernel_path = root / "kernel.json"
+            write_json(prepared / "isa-requirements.json", {})
+            write_json(qualification_path, {})
+            write_json(semantic_kernel_path, {})
+            semantic_kernel = SimpleNamespace(
+                id="kernel",
+                decoder_sha256="1" * 64,
+                semantics_sha256="2" * 64,
+                lean_version="4.19.0",
+            )
+            qualification = SimpleNamespace(
+                status=QualificationStatus.VETOED
+            )
+            selection = SimpleNamespace(
+                status=QualificationStatus.QUALIFIED
+            )
+            with (
+                mock.patch.object(
+                    relational_build,
+                    "_validate_isa_semantic_kernel_source",
+                    return_value=semantic_kernel,
+                ),
+                mock.patch.object(
+                    relational_build,
+                    "parse_kernel_qualification",
+                    return_value=qualification,
+                ),
+                mock.patch.object(
+                    relational_build,
+                    "select_isa_kernel_qualification_for_inventory",
+                    side_effect=(selection, selection),
+                ),
+                mock.patch.object(
+                    relational_build,
+                    "serialize_kernel_selection",
+                    side_effect=({"side": "original"}, {"side": "candidate"}),
+                ),
+            ):
+                prerequisite = (
+                    relational_build._evaluate_isa_kernel_prerequisite(
+                        prepared=prepared,
+                        graph={},
+                        qualification_path=qualification_path,
+                        semantic_kernel_path=semantic_kernel_path,
+                    )
+                )
+
+            self.assertEqual(prerequisite["status"], "qualified")
+            self.assertEqual(
+                prerequisite["qualification_status"], "vetoed"
+            )
+            self.assertTrue(all(prerequisite["checks"].values()))
+
+    def test_semantic_kernel_bundle_uses_the_declared_hash_domains(
+        self,
+    ) -> None:
+        kernel_modules = tuple(dict.fromkeys(
+            (
+                *relational_build._ISA_KERNEL_SOURCE_MODULES,
+                *relational_build._ISA_KERNEL_SEMANTICS_MODULES,
+            )
+        ))
+        source_hashes = {
+            module: f"{index:x}" * 64
+            for index, module in enumerate(
+                kernel_modules, start=1
+            )
+        }
+        nodes = [
+            {
+                "id": module,
+                "modules": [module],
+                "source_sha256": sha256_bytes(
+                    source_hashes[module].encode("ascii")
+                ),
+                "semantic_id": f"{index + 5:x}" * 64,
+                "semantic_recipe_version":
+                    "stage-a-lean-standalone-recipe-v1",
+            }
+            for index, module in enumerate(
+                kernel_modules
+            )
+        ]
+        by_id = {row["id"]: row for row in nodes}
+        semantics_rows = [
+            {
+                "id": module,
+                "semantic_id": by_id[module]["semantic_id"],
+                "semantic_recipe_version":
+                    by_id[module]["semantic_recipe_version"],
+                "source_sha256": by_id[module]["source_sha256"],
+            }
+            for module in relational_build._ISA_KERNEL_SEMANTICS_MODULES
+        ]
+        semantics_rows.sort(key=lambda row: row["id"])
+        semantics_sha256 = sha256_bytes(
+            (
+                json.dumps(
+                    semantics_rows,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("ascii")
+        )
+        binding = SemanticKernelBinding(
+            id="kernel",
+            decoder_sha256=by_id["ISAQualification"]["semantic_id"],
+            semantics_sha256=semantics_sha256,
+            lean_version="Lean test",
+        )
+        graph = {
+            "lean": {"version": "Lean test"},
+            "modules": {
+                module: {"source_sha256": source_hashes[module]}
+                for module in relational_build._ISA_KERNEL_SOURCE_MODULES
+            },
+        }
+        bundle = {"lean_version": "Lean test", "nodes": nodes}
+
+        relational_build._validate_isa_semantic_kernel_bundle(
+            binding=binding,
+            bundle=bundle,
+            graph=graph,
+        )
+        corrupted_graph = json.loads(json.dumps(graph))
+        corrupted_graph["modules"]["X87"]["source_sha256"] = "f" * 64
+        with self.assertRaisesRegex(
+            StageAInputError, "does not use the qualified X87 source"
+        ):
+            relational_build._validate_isa_semantic_kernel_bundle(
+                binding=binding,
+                bundle=bundle,
+                graph=corrupted_graph,
+            )
 
     def test_realization_requires_exactly_one_output_and_sanitizes_host_config(
         self,
@@ -200,6 +398,8 @@ class StageANixPipelineTests(unittest.TestCase):
                     original=root / "unused-original",
                     candidate=root / "unused-candidate",
                     relation_contract=root / "unused-contract",
+                    isa_kernel_qualification=root / "qualification.json",
+                    isa_semantic_kernel=root / "kernel.json",
                     out=out,
                 )
             persisted = json.loads(

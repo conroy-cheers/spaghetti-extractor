@@ -109,10 +109,6 @@ let
   proofPipelineEnabled = builtins.all (callback: callback != null) proofPipelineCallbacks;
   proofPipelineDisabled = builtins.all (callback: callback == null) proofPipelineCallbacks;
   bundleFileName = caseId: "${builtins.hashString "sha256" caseId}.json";
-  readBundleText = path: builtins.unsafeDiscardStringContext (
-    lib.removeSuffix "\n" (builtins.readFile path)
-  );
-
   generatedCorpus =
     let
       seed = generation.seed or 0;
@@ -318,7 +314,7 @@ let
       format = manifest.format;
       generator_version = manifest.generator_version;
       case_ids = caseIds;
-      manifest = toString sourceManifestPath;
+      manifest = "corpus-manifest.json";
     };
     policy = packPolicy;
     packs = map (pack: {
@@ -381,19 +377,22 @@ let
           preferLocalBuild = false;
           allowSubstitutes = true;
         }
-        (''
-          mkdir -p "$out"
-        '' + concatMapStringsSep "\n" (
-          member:
-          let
-            caseId = member.reference.id;
-          in
+        (
           ''
-            cp \
-              ${escapeShellArg "${casePreparations.${caseId}}/module-graph.json"} \
-              "$out/${bundleFileName caseId}"
+            mkdir -p "$out"
           ''
-        ) measuredCases);
+          + concatMapStringsSep "\n" (
+            member:
+            let
+              caseId = member.reference.id;
+            in
+            ''
+              cp \
+                ${escapeShellArg "${casePreparations.${caseId}}/module-graph.json"} \
+                "$out/${bundleFileName caseId}"
+            ''
+          ) measuredCases
+        );
 
   caseProofDags =
     if !proofPipelineEnabled then
@@ -406,43 +405,11 @@ let
             caseArguments member
             // {
               preparation = casePreparations.${member.reference.id};
-              preparationGraph =
-                "${preparationGraphBundle}/${bundleFileName member.reference.id}";
+              preparationGraph = "${preparationGraphBundle}/${bundleFileName member.reference.id}";
             }
           );
         }) measuredCases
       );
-
-  # The second IFD boundary fans out every proof DAG and audit before report
-  # construction.  Its files contain only the small checked case results.
-  caseResultBundle =
-    if !proofPipelineEnabled then
-      null
-    else
-      pkgs.runCommand "${name}-case-result-bundle"
-        {
-          preferLocalBuild = false;
-          allowSubstitutes = true;
-        }
-        (''
-          mkdir -p "$out"
-        '' + concatMapStringsSep "\n" (
-          member:
-          let
-            caseId = member.reference.id;
-          in
-          ''
-            cp \
-              ${escapeShellArg "${caseAudits.${caseId}}/${caseResultFile}"} \
-              "$out/${bundleFileName caseId}"
-            realpath ${escapeShellArg casePreparations.${caseId}} \
-              > "$out/${bundleFileName caseId}.preparation-store-path"
-            realpath ${escapeShellArg caseProofDags.${caseId}} \
-              > "$out/${bundleFileName caseId}.proof-dag-store-path"
-            realpath ${escapeShellArg caseAudits.${caseId}} \
-              > "$out/${bundleFileName caseId}.audit-store-path"
-          ''
-        ) measuredCases);
 
   caseAudits =
     if !proofPipelineEnabled then
@@ -469,26 +436,11 @@ let
           member:
           let
             caseId = member.reference.id;
-            resultInput = builtins.toFile "${caseId}-case-result.json" (
-              builtins.unsafeDiscardStringContext (
-                builtins.readFile "${caseResultBundle}/${bundleFileName caseId}"
-              )
-            );
-            metadataPath = value: builtins.unsafeDiscardStringContext (toString value);
           in
           {
             id = caseId;
             expected = member.case.expectation.disposition;
-            result = toString resultInput;
-            preparation_store_path = readBundleText
-              "${caseResultBundle}/${bundleFileName caseId}.preparation-store-path";
-            preparation_derivation_path = metadataPath casePreparations.${caseId}.drvPath;
-            proof_dag_store_path = readBundleText
-              "${caseResultBundle}/${bundleFileName caseId}.proof-dag-store-path";
-            proof_dag_derivation_path = metadataPath caseProofDags.${caseId}.drvPath;
-            audit_store_path = readBundleText
-              "${caseResultBundle}/${bundleFileName caseId}.audit-store-path";
-            audit_derivation_path = metadataPath caseAudits.${caseId}.drvPath;
+            result = "${caseAudits.${caseId}}/${caseResultFile}";
             inherit (member) measurement;
           }
         ) pack.members
@@ -548,10 +500,8 @@ let
             if actual == "pass" and not (
                 isinstance(acceptance, dict)
                 and acceptance.get("authority") == "whole_program_lean"
-                and acceptance.get("theorem") in {
-                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent",
-                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked",
-                }
+                and acceptance.get("theorem")
+                    == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
                 and any(
                     phase.get("id") == "proof-build-and-audit"
                     and phase.get("status") == "pass"
@@ -595,12 +545,6 @@ let
                     result.get("expectation_matched") is True
                     and actual == member["expected"]
                 ),
-                "preparation_store_path": member["preparation_store_path"],
-                "preparation_derivation_path": member["preparation_derivation_path"],
-                "proof_dag_store_path": member["proof_dag_store_path"],
-                "proof_dag_derivation_path": member["proof_dag_derivation_path"],
-                "audit_store_path": member["audit_store_path"],
-                "audit_derivation_path": member["audit_derivation_path"],
                 "measurement": member["measurement"],
                 "result": result,
             })
@@ -644,53 +588,16 @@ let
         }) packs
       );
 
-  # A final lightweight fan-in lets every independent pack report build before
-  # aggregate evaluation consumes their content without retaining proof DAGs.
-  packResultBundle =
-    if !proofPipelineEnabled then
-      null
-    else
-      pkgs.runCommand "${name}-pack-result-bundle"
-        {
-          preferLocalBuild = false;
-          allowSubstitutes = true;
-        }
-        (''
-          mkdir -p "$out"
-        '' + concatMapStringsSep "\n" (
-          pack: ''
-            cp \
-              ${escapeShellArg "${proofPacks.${pack.id}}/pack-result.json"} \
-              "$out/${bundleFileName pack.id}"
-            realpath ${escapeShellArg proofPacks.${pack.id}} \
-              > "$out/${bundleFileName pack.id}.store-path"
-          ''
-        ) packs);
-
   aggregateReport =
     if !proofPipelineEnabled then
       null
     else
       let
         packInputs = builtins.toJSON (
-          map (
-            pack:
-            let
-              resultInput = builtins.toFile "${name}-${pack.id}-result.json" (
-                builtins.unsafeDiscardStringContext (
-                  builtins.readFile "${packResultBundle}/${bundleFileName pack.id}"
-                )
-              );
-              metadataPath = value: builtins.unsafeDiscardStringContext (toString value);
-            in
-            {
-              id = pack.id;
-              result = toString resultInput;
-              store_path = readBundleText
-                "${packResultBundle}/${bundleFileName pack.id}.store-path";
-              derivation_path = metadataPath proofPacks.${pack.id}.drvPath;
-            }
-          ) packs
+          map (pack: {
+            id = pack.id;
+            result = "${proofPacks.${pack.id}}/pack-result.json";
+          }) packs
         );
         expectedCounts = builtins.toJSON manifest.expected_counts;
       in
@@ -709,6 +616,8 @@ let
         )
         ''
           mkdir -p "$out/packs"
+          cp ${escapeShellArg "${smoke}/corpus/${corpusManifest}"} \
+            "$out/corpus-manifest.json"
           PACKS=${escapeShellArg packInputs} \
           EXPECTED_COUNTS=${escapeShellArg expectedCounts} \
           EXPECTED_CASE_IDS=${escapeShellArg (builtins.toJSON caseIds)} \
@@ -734,8 +643,6 @@ let
               packs.append({
                   "id": entry["id"],
                   "status": payload.get("status"),
-                  "store_path": entry["store_path"],
-                  "derivation_path": entry["derivation_path"],
                   "result": f"packs/{entry['id']}.json",
               })
               cases.extend(payload.get("cases", []))
@@ -770,8 +677,7 @@ let
                   else "incomplete"
               ),
               "corpus": {
-                  "manifest": "${smoke}/corpus/${corpusManifest}",
-                  "smoke_store_path": "${smoke}",
+                  "manifest": "corpus-manifest.json",
                   "generator_version": ${builtins.toJSON manifest.generator_version},
                   "expected_counts": expected_counts,
               },
@@ -789,7 +695,6 @@ let
               "trust": {
                   "positive_pass_requires": "whole_program_lean",
                   "supported_acceptance_theorems": [
-                      "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent",
                       "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked",
                   ],
                   "negative_pass_is_fatal": True,
@@ -834,16 +739,16 @@ let
             .counts.declared_expectations_match_manifest == true and
             .trust.aggregator_has_proof_authority == false and
             .trust.positive_pass_requires == "whole_program_lean" and
-            (.trust.supported_acceptance_theorems | sort) == ([
-              "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent",
+            .trust.supported_acceptance_theorems == [
               "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
-            ] | sort) and
+            ] and
             .reran_proofs == false and
             .executes_original_binary == false
           ' ${aggregateReport}/run-result.json >/dev/null
           mkdir -p "$out"
           cp ${aggregateReport}/run-result.json "$out/run-result.json"
           cp ${aggregateReport}/pack-plan.json "$out/pack-plan.json"
+          cp ${aggregateReport}/corpus-manifest.json "$out/corpus-manifest.json"
         '';
 in
 assert hasCorpus != hasGeneration;
@@ -893,9 +798,7 @@ assert builtins.all (
     preparationGraphBundle
     caseProofDags
     caseAudits
-    caseResultBundle
     proofPacks
-    packResultBundle
     aggregateReport
     check
     ;

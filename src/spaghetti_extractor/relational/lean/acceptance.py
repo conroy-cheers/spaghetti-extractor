@@ -976,10 +976,6 @@ def _lean_acceptance_linked_shallow_node(
 ) -> str:
     """Lift an existing depth-zero/one node proof through a Lean-checked bridge."""
 
-    if parameterized_protocol_environment:
-        raise StageAInputError(
-            "shallow linked acceptance does not yet support protocol environments"
-        )
     node_id = int(step["node_id"])
     acceptance_environment = (
         step.get("kind") == "external_call"
@@ -988,6 +984,11 @@ def _lean_acceptance_linked_shallow_node(
     )
     environment_binders = (
         "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
+        + (
+            "    (originalProtocolEnvironment candidateProtocolEnvironment : "
+            "WorldExternalProtocolEnvironment)\n"
+            if parameterized_protocol_environment else ""
+        )
         + (
             "    (environmentRefines : AcceptanceExternalEnvironmentsRefine\n"
             "      originalEnvironment candidateEnvironment) :\n"
@@ -998,16 +999,31 @@ def _lean_acceptance_linked_shallow_node(
         if parameterized_environment else "    :\n"
     )
     original_program = (
-        "(originalWorldProgram originalEnvironment)"
+        "(originalWorldProgram originalEnvironment"
+        + (
+            " originalProtocolEnvironment"
+            if parameterized_protocol_environment else ""
+        )
+        + ")"
         if parameterized_environment else "originalWorldProgram"
     )
     candidate_program = (
-        "(candidateWorldProgram candidateEnvironment)"
+        "(candidateWorldProgram candidateEnvironment"
+        + (
+            " candidateProtocolEnvironment"
+            if parameterized_protocol_environment else ""
+        )
+        + ")"
         if parameterized_environment else "candidateWorldProgram"
     )
     old_refined = (
         f"acceptanceRunningNode{node_id}Refined originalEnvironment "
-        "candidateEnvironment environmentRefines"
+        "candidateEnvironment "
+        + (
+            "originalProtocolEnvironment candidateProtocolEnvironment "
+            if parameterized_protocol_environment else ""
+        )
+        + "environmentRefines"
         if parameterized_environment else
         f"acceptanceRunningNode{node_id}Refined"
     )
@@ -1021,6 +1037,10 @@ def _lean_acceptance_linked_shallow_node(
         "  exact acceptanceLinkedRunningNodeRefinedOfShallow\n"
         + (
             "    originalEnvironment candidateEnvironment "
+            + (
+                "originalProtocolEnvironment candidateProtocolEnvironment "
+                if parameterized_protocol_environment else ""
+            )
             if parameterized_environment else "    "
         )
         + f"{node_id}\n"
@@ -1034,20 +1054,31 @@ def _lean_acceptance_linked_shallow_lift(
 ) -> str:
     """Prove the old-to-linked profile bridge once for every generated node."""
 
-    if parameterized_protocol_environment:
-        raise StageAInputError(
-            "shallow linked acceptance does not yet support protocol environments"
-        )
     environment_binders = (
         "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
+        + (
+            "    (originalProtocolEnvironment candidateProtocolEnvironment : "
+            "WorldExternalProtocolEnvironment)\n"
+            if parameterized_protocol_environment else ""
+        )
         if parameterized_environment else ""
     )
     original_program = (
-        "(originalWorldProgram originalEnvironment)"
+        "(originalWorldProgram originalEnvironment"
+        + (
+            " originalProtocolEnvironment"
+            if parameterized_protocol_environment else ""
+        )
+        + ")"
         if parameterized_environment else "originalWorldProgram"
     )
     candidate_program = (
-        "(candidateWorldProgram candidateEnvironment)"
+        "(candidateWorldProgram candidateEnvironment"
+        + (
+            " candidateProtocolEnvironment"
+            if parameterized_protocol_environment else ""
+        )
+        + ")"
         if parameterized_environment else "candidateWorldProgram"
     )
     return (
@@ -1072,6 +1103,37 @@ def _lean_acceptance_linked_shallow_lift(
         "    productControlProfilesOldToLinkedShallow\n"
         "    productControlProfilesLinkedToOldShallow\n"
         "    linkedProductControlProfileLinksEmpty oldRefined\n\n"
+    )
+
+
+def _lean_acceptance_running_node_with_protocol_x87_bridge(
+    step: dict[str, Any],
+    regions: list[dict[str, Any]],
+    behaviors: list[dict[str, Any]],
+    *,
+    parameterized_environment: bool,
+    parameterized_protocol_environment: bool,
+) -> str:
+    source = _lean_acceptance_running_node(
+        step,
+        regions,
+        behaviors,
+        parameterized_environment=parameterized_environment,
+        parameterized_protocol_environment=parameterized_protocol_environment,
+    )
+    if step.get("kind") != "external_protocol":
+        return source
+
+    legacy_clause = (
+        "    · simpa [originalEvent, candidateEvent] using outputX87\n"
+    )
+    if source.count(legacy_clause) != 1:
+        raise StageAInputError(
+            "unsupported external-protocol x87 boundary proof profile"
+        )
+    return source.replace(
+        legacy_clause,
+        "    · simpa [originalEvent, candidateEvent] using outputX87.1\n",
     )
 
 
@@ -3657,9 +3719,7 @@ def _write_relational_acceptance_modules(
     )
     linked_shallow_compatibility_ready = bool(
         acceptance_ready
-        and not parameterized_protocol_environment
         and not launch_frame_offsets
-        and not plan.get("protocol_callback_states")
         and linked_acceptance_steps
         and _linked_shallow_profiles_supported(
             list(plan.get("control_states", [])), linked_control
@@ -3672,6 +3732,7 @@ def _write_relational_acceptance_modules(
     }
     linked_mixed_frame_guard_ready = bool(
         linked_shallow_compatibility_ready
+        and not parameterized_protocol_environment
         and deferred_guard_node_ids
         and all(
             (
@@ -3745,8 +3806,8 @@ def _write_relational_acceptance_modules(
                             "the selected control model"
                         ),
                         "next_action": (
-                            "complete either ordinary or linked whole-program "
-                            "acceptance for every reachable node"
+                            "complete linked whole-program acceptance for every "
+                            "reachable node"
                         ),
                     },
                 ],
@@ -5087,12 +5148,14 @@ def _write_relational_acceptance_modules(
             if (
                 ordinary_acceptance_ready or linked_termination_reuses_ordinary_node
             ) and not uses_deferred_guard:
-                definitions.append(_lean_acceptance_running_node(
+                definitions.append(
+                    _lean_acceptance_running_node_with_protocol_x87_bridge(
                     step, contract["regions"], behaviors,
                     parameterized_environment=parameterized_environment,
                     parameterized_protocol_environment=
                         parameterized_protocol_environment,
-                ))
+                    )
+                )
             if linked_acceptance_ready:
                 linked_running = f"acceptanceLinkedRunningNode{node_id}Refined"
                 linked_environment = (
@@ -5895,34 +5958,128 @@ def _write_relational_acceptance_modules(
         )
     linked_environment_support_source = ""
     if linked_acceptance_ready and not ordinary_acceptance_ready:
-        if parameterized_protocol_environment:
-            raise StageAInputError(
-                "linked acceptance certificate does not yet support protocol environments"
+        if not parameterized_protocol_environment:
+            linked_environment_support_source = (
+                (
+                    "theorem inertEnvironmentRefines :\n"
+                    "    ExternalEnvironmentRefines staticProofContext externalCallSites\n"
+                    "      inertWorldEnvironment inertWorldEnvironment := by\n"
+                    "  unfold ExternalEnvironmentRefines\n"
+                    "  refine ⟨by decide, by decide, ?_⟩\n"
+                    "  intro site member\n  simp [externalCallSites] at member\n\n"
+                    if not parameterized_environment else ""
+                )
+                + "theorem noProtocolExternalCallSitesChecked :\n"
+                "    externalCallSitesExcludeProtocol staticProofContext externalCallSites = true :=\n"
+                "  by decide\n\n"
             )
-        linked_environment_support_source = (
-            (
-                "theorem inertEnvironmentRefines :\n"
-                "    ExternalEnvironmentRefines staticProofContext externalCallSites\n"
-                "      inertWorldEnvironment inertWorldEnvironment := by\n"
-                "  unfold ExternalEnvironmentRefines\n"
-                "  refine ⟨by decide, by decide, ?_⟩\n"
-                "  intro site member\n  simp [externalCallSites] at member\n\n"
-                if not parameterized_environment else ""
-            )
-            + "theorem noProtocolExternalCallSitesChecked :\n"
-            "    externalCallSitesExcludeProtocol staticProofContext externalCallSites = true :=\n"
-            "  by decide\n\n"
-        )
         running_closure_source = ""
         callback_closure_source = ""
         acceptance_certificate_source = ""
 
     linked_acceptance_certificate_source = ""
-    if linked_acceptance_ready and parameterized_environment:
-        if parameterized_protocol_environment:
-            raise StageAInputError(
-                "linked acceptance certificate does not yet support protocol environments"
-            )
+    if (
+        linked_acceptance_ready
+        and parameterized_environment
+        and parameterized_protocol_environment
+    ):
+        linked_acceptance_certificate_source = (
+            "def linkedWholeProgramCertificate\n"
+            "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
+            "    (originalProtocolEnvironment candidateProtocolEnvironment : "
+            "WorldExternalProtocolEnvironment)\n"
+            "    (environmentRefines : AcceptanceExternalEnvironmentsRefine\n"
+            "      originalEnvironment candidateEnvironment)\n"
+            "    (protocolRefines : LinkedWorldExternalProtocolEnvironmentsRefine\n"
+            "      staticProofContext relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence linkedProductControlProfile\n"
+            "      protocolCallbackTargets externalCallSites\n"
+            "      originalProtocolEnvironment candidateProtocolEnvironment) :\n"
+            "    LinkedWholeProgramCertificate staticProofContext relationalProductGraph\n"
+            "      allRegions productInvariantTable relationalProductReachabilityEvidence\n"
+            "      linkedProductControlProfile protocolCallbackTargets externalCallSites consoleLaunch\n"
+            "      originalEnvironment candidateEnvironment\n"
+            "      originalProtocolEnvironment candidateProtocolEnvironment := {\n"
+            "  imageBundle := proofBundle\n"
+            "  executableImagesCovered := ⟨rfl, rfl, rfl, structuralChecked⟩\n"
+            "  originalCodeAliasesSemanticallyValid := "
+            "staticOriginalCodeAliasesSemanticallyChecked\n"
+            "  candidateCodeAliasesSemanticallyValid := "
+            "staticCandidateCodeAliasesSemanticallyChecked\n"
+            "  originalCodeAliasesInstructionSemanticallyValid := "
+            "staticOriginalCodeAliasesInstructionSemanticallyChecked\n"
+            "  candidateCodeAliasesInstructionSemanticallyValid := "
+            "staticCandidateCodeAliasesInstructionSemanticallyChecked\n"
+            "  staticContextValid := staticProofContextChecked\n"
+            "  productGraphValid := relationalProductGraphIndexedValidChecked\n"
+            "  regionsUseCanonicalContext := allRegionsUseStaticContextChecked\n"
+            "  regionsMatchProductGraph := allRegionsMatchProductGraph\n"
+            "  invariantTableValid := productInvariantTableValid\n"
+            "  callbackTargetsValid := by decide\n"
+            "  reachabilityClosed := generatedDeclaredGraphReachabilityCertificateChecked\n"
+            "  decodedControlComplete := "
+            "reachableProductLocalCertificate.reachableControlComplete\n"
+            "  environmentsRefined := environmentRefines.externalRefines\n"
+            "  protocolEnvironmentsRefined := protocolRefines\n"
+            "  launchValid := consoleLaunchValid\n"
+            "  launchRealizable := consoleLaunchLinkedRealizable\n"
+            "  launchControlAllowed := by\n"
+            "    change linkedProductControlProfile.Allows\n"
+            "      consoleLaunch.rootNodeId consoleLaunch.continuationTargetIds\n"
+            "      consoleLaunch.frameOffsets.head? = true\n"
+            "    decide\n"
+            "  runningProductNodesRefined := allAcceptanceLinkedRunningNodesRefined\n"
+            "    originalEnvironment candidateEnvironment originalProtocolEnvironment\n"
+            "    candidateProtocolEnvironment environmentRefines\n"
+            "  callbackRunningProductNodesRefined :=\n"
+            "    ReachableLinkedCallbackRunningProductNodesRefined.of_shallow\n"
+            "      staticProofContext relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence productControlProfile\n"
+            "      linkedProductControlProfile protocolCallbackTargets\n"
+            "      (originalWorldProgram originalEnvironment originalProtocolEnvironment)\n"
+            "      (candidateWorldProgram candidateEnvironment candidateProtocolEnvironment)\n"
+            "      productControlProfilesOldToLinkedShallow\n"
+            "      productControlProfilesLinkedToOldShallow\n"
+            "      linkedProductControlProfileLinksEmpty\n"
+            "      (allAcceptanceCallbackRunningNodesRefined originalEnvironment\n"
+            "        candidateEnvironment originalProtocolEnvironment\n"
+            "        candidateProtocolEnvironment environmentRefines.externalRefines)\n"
+            "  originalInstructionSemanticsAdequate := by\n"
+            "    apply DecodedWorldProgram.instructionSemanticsAdequate_of_regions\n"
+            "    simpa [originalWorldProgram, allRegions] using\n"
+            "      allOriginalRegionsInstructionAdequate\n"
+            "  candidateInstructionSemanticsAdequate := by\n"
+            "    apply DecodedWorldProgram.instructionSemanticsAdequate_of_regions\n"
+            "    simpa [candidateWorldProgram, allRegions] using\n"
+            "      allCandidateRegionsInstructionAdequate\n"
+            "}\n\n"
+            "theorem candidatePE32ProgramsEquivalentLinked\n"
+            "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
+            "    (originalProtocolEnvironment candidateProtocolEnvironment : "
+            "WorldExternalProtocolEnvironment)\n"
+            "    (environmentRefines : AcceptanceExternalEnvironmentsRefine\n"
+            "      originalEnvironment candidateEnvironment)\n"
+            "    (protocolRefines : LinkedWorldExternalProtocolEnvironmentsRefine\n"
+            "      staticProofContext relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence linkedProductControlProfile\n"
+            "      protocolCallbackTargets externalCallSites\n"
+            "      originalProtocolEnvironment candidateProtocolEnvironment) :\n"
+            "    PE32RawProgramsLinkedObservationallyEquivalent staticProofContext\n"
+            "      relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence linkedProductControlProfile consoleLaunch\n"
+            "      (originalWorldProgram originalEnvironment originalProtocolEnvironment)\n"
+            "      (candidateWorldProgram candidateEnvironment candidateProtocolEnvironment) := by\n"
+            "  simpa [originalWorldProgram, candidateWorldProgram] using\n"
+            "    pe32ProgramsEquivalentLinked_raw staticProofContext relationalProductGraph\n"
+            "      allRegions productInvariantTable relationalProductReachabilityEvidence\n"
+            "      linkedProductControlProfile protocolCallbackTargets externalCallSites\n"
+            "      consoleLaunch originalEnvironment candidateEnvironment\n"
+            "      originalProtocolEnvironment candidateProtocolEnvironment\n"
+            "      (linkedWholeProgramCertificate originalEnvironment candidateEnvironment\n"
+            "        originalProtocolEnvironment candidateProtocolEnvironment\n"
+            "        environmentRefines protocolRefines)\n\n"
+        )
+    elif linked_acceptance_ready and parameterized_environment:
         linked_acceptance_certificate_source = (
             "def linkedWholeProgramCertificate\n"
             "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from spaghetti_extractor.relational.schema import (
+    RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
     STAGE_A_RELATIONAL_MODEL_ID,
     STAGE_A_RELATIONAL_PROFILE_ID,
 )
@@ -42,7 +43,7 @@ def write_relational_report(
     }
     proof_ir_path = report / "relational-proof-ir.json"
     proof_ir_path.write_text(json.dumps(proof_ir, sort_keys=True) + "\n", encoding="utf-8")
-    theorem = "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
+    theorem = RELATIONAL_FINAL_ACCEPTANCE_THEOREM
     verdict = {
         "format": "stage-a-relational-nix-build-v1",
         "status": status,

@@ -14,8 +14,8 @@
     {
       lib = {
         mkStageALeanGraph = import ./nix/stage-a-lean-graph.nix;
-        mkStageARelationalAnalysisGraph =
-          import ./nix/stage-a-relational-analysis-graph.nix;
+        mkStageAISAQualificationGraph = import ./nix/stage-a-isa-qualification-graph.nix;
+        mkStageARelationalAnalysisGraph = import ./nix/stage-a-relational-analysis-graph.nix;
         mkStageARoundtripCorpus = import ./nix/stage-a-roundtrip-corpus.nix;
         mkStageARoundtripSmoke = import ./nix/stage-a-roundtrip-smoke.nix;
       };
@@ -55,13 +55,97 @@
                 '';
               };
             in
-            if preferLocalBuild == null then
-              worker
-            else
-              worker.overrideAttrs { inherit preferLocalBuild; };
+            if preferLocalBuild == null then worker else worker.overrideAttrs { inherit preferLocalBuild; };
           bochs-conformance = pkgs.callPackage ./nix/bochs-conformance.nix {
             instrumentationSrc = ./tools/bochs-conformance;
           };
+          xed-isa-catalog = pkgs.stdenv.mkDerivation {
+            pname = "spaghetti-extractor-xed-isa-catalog";
+            version = "1";
+            src = ./tools/xed-isa-catalog;
+            dontConfigure = true;
+            dontFixup = true;
+
+            buildPhase = ''
+              runHook preBuild
+              $CC -std=c11 -O2 -Wall -Wextra -Werror \
+                -I${pkgs.xed}/include \
+                main.c ${pkgs.xed}/lib/libxed.a \
+                -o xed-isa-catalog
+              runHook postBuild
+            '';
+
+            installPhase = ''
+              runHook preInstall
+              install -Dm755 xed-isa-catalog "$out/bin/xed-isa-catalog"
+              install -Dm644 README.md \
+                "$out/share/doc/spaghetti-extractor-xed-isa-catalog/README.md"
+              runHook postInstall
+            '';
+          };
+          stage-a-isa-xed-catalog = pkgs.runCommand
+            "stage-a-isa-xed-catalog-pe32-i686-v1"
+            {
+              nativeBuildInputs = [
+                pkgs.jq
+                xed-isa-catalog
+              ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+              __contentAddressed = true;
+            }
+            ''
+              mkdir -p "$out"
+              xed-isa-catalog > "$out/xed-inst-catalog.json"
+              jq -e '
+                .format == "spaghetti-extractor-xed-inst-catalog-v1"
+                and .profile.id == "pe32-i686-v1"
+                and .profile.chip == "PENTIUMPRO"
+                and .profile.privilege == "ring3"
+                and (.templates | length) > 1000
+                and all(.templates[];
+                  .cpl == 3
+                  and (.iform | type == "string" and length > 0)
+                  and (.isa_set | type == "string" and length > 0)
+                  and (.operands | type == "array")
+                )
+              ' "$out/xed-inst-catalog.json" > /dev/null
+              catalog_sha256="$(sha256sum "$out/xed-inst-catalog.json" | cut -d ' ' -f 1)"
+              extractor_sha256="$(
+                sha256sum ${xed-isa-catalog}/bin/xed-isa-catalog | cut -d ' ' -f 1
+              )"
+              xed_version="$(jq -r '.generator.xed_version' "$out/xed-inst-catalog.json")"
+              template_count="$(jq '.templates | length' "$out/xed-inst-catalog.json")"
+              jq -n \
+                --arg catalog_sha256 "$catalog_sha256" \
+                --arg extractor_sha256 "$extractor_sha256" \
+                --arg extractor_store_path ${pkgs.lib.escapeShellArg (toString xed-isa-catalog)} \
+                --arg xed_store_path ${pkgs.lib.escapeShellArg (toString pkgs.xed)} \
+                --arg xed_version "$xed_version" \
+                --argjson template_count "$template_count" \
+                '{
+                  format: "stage-a-isa-xed-catalog-manifest-v1",
+                  profile: "pe32-i686-v1",
+                  catalog: {
+                    path: "xed-inst-catalog.json",
+                    sha256: $catalog_sha256,
+                    template_count: $template_count
+                  },
+                  extractor: {
+                    store_path: $extractor_store_path,
+                    sha256: $extractor_sha256
+                  },
+                  xed: {
+                    store_path: $xed_store_path,
+                    version: $xed_version
+                  },
+                  trust: {
+                    role: "untrusted_isa_catalog_proposal",
+                    proof_authority: false,
+                    closes_stage_a_proof: false
+                  }
+                }' > "$out/manifest.json"
+            '';
           spaghettiExtractorCoreSource = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
@@ -70,9 +154,24 @@
               ./nix/stage-a-lean-graph.nix
               ./nix/stage-a-lean-compact.nix
               ./nix/stage-a-isa-conformance.nix
+              ./nix/stage-a-isa-qualification-graph.nix
               ./nix/stage-a-register-dataflow-graph.nix
               ./nix/stage-a-relational-analysis-graph.nix
             ];
+          };
+          spaghettiExtractorRoundtripSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            # Corpus generation and static preflight do not consume Lean or
+            # Nix evaluators. Keeping those sources out of this tool prevents
+            # proof-only edits from regenerating binaries and analyses.
+            fileset = pkgs.lib.fileset.difference ./src ./src/spaghetti_extractor/lean;
+          };
+          spaghetti-extractor-roundtrip = mkPythonWorker {
+            name = "spaghetti-extractor";
+            source = spaghettiExtractorRoundtripSource;
+            module = "spaghetti_extractor";
+            runtimeInputs = [ pythonEnv ];
+            preferLocalBuild = false;
           };
           spaghetti-extractor-core = pkgs.python3Packages.buildPythonApplication {
             pname = "spaghetti-extractor";
@@ -112,34 +211,36 @@
           };
           relationalLeanModuleDirectory = ./src/spaghetti_extractor/lean/StageA;
           relationalLeanModuleEntries = builtins.readDir relationalLeanModuleDirectory;
-          relationalLeanModules = map
-            (file: pkgs.lib.removeSuffix ".lean" file)
-            (builtins.filter
-              (file:
-                relationalLeanModuleEntries.${file} == "regular"
-                && pkgs.lib.hasSuffix ".lean" file)
-              (builtins.attrNames relationalLeanModuleEntries));
-          relationalLeanImports = module:
-            pkgs.lib.unique (pkgs.lib.filter (dependency: dependency != null)
-              (map
-                (line:
-                  let
-                    matched = builtins.match
-                      "^import StageA\\.([A-Za-z0-9_]+)$" line;
-                  in
-                    if matched == null then null else builtins.head matched)
-                (pkgs.lib.splitString "\n"
-                  (builtins.readFile
-                    (relationalLeanModuleDirectory + "/${module}.lean")))));
-          relationalLeanModuleClosure = roots:
-            pkgs.lib.sort builtins.lessThan (map
-              (entry: entry.key)
-              (builtins.genericClosure {
-                startSet = map (module: { key = module; }) roots;
-                operator = entry:
-                  map (dependency: { key = dependency; })
-                    (relationalLeanImports entry.key);
-              }));
+          relationalLeanModules = map (file: pkgs.lib.removeSuffix ".lean" file) (
+            builtins.filter (
+              file: relationalLeanModuleEntries.${file} == "regular" && pkgs.lib.hasSuffix ".lean" file
+            ) (builtins.attrNames relationalLeanModuleEntries)
+          );
+          relationalLeanImports =
+            module:
+            pkgs.lib.unique (
+              pkgs.lib.filter (dependency: dependency != null) (
+                map
+                  (
+                    line:
+                    let
+                      matched = builtins.match "^import StageA\\.([A-Za-z0-9_]+)$" line;
+                    in
+                    if matched == null then null else builtins.head matched
+                  )
+                  (pkgs.lib.splitString "\n" (builtins.readFile (relationalLeanModuleDirectory + "/${module}.lean")))
+              )
+            );
+          relationalLeanModuleClosure =
+            roots:
+            pkgs.lib.sort builtins.lessThan (
+              map (entry: entry.key) (
+                builtins.genericClosure {
+                  startSet = map (module: { key = module; }) roots;
+                  operator = entry: map (dependency: { key = dependency; }) (relationalLeanImports entry.key);
+                }
+              )
+            );
           relationalRoundtripRequiredModules = [
             "RelationalEngine"
             "RelationalDefinedness"
@@ -154,15 +255,25 @@
             "RelationalOpaqueLockstepEnvironment"
             "RelationalStaticMachineImportContracts"
           ];
-          relationalRoundtripKernelModules = builtins.filter
-            (module:
-              builtins.elem module relationalRoundtripRequiredModules
-              || builtins.any (prefix: pkgs.lib.hasPrefix prefix module) [
-                "RelationalInterpreter"
-                "RelationalDefinedness"
-                "RelationalNormalization"
-              ])
-            relationalLeanModules;
+          relationalAcceptanceKernelRoots = [
+            "RelationalPEWorldExecution"
+            "RelationalStaticTree"
+          ];
+          relationalAcceptanceKernelModules = relationalLeanModuleClosure relationalAcceptanceKernelRoots;
+          relationalRoundtripKernelRoots = relationalRoundtripRequiredModules;
+          relationalRoundtripKernelModules = relationalLeanModuleClosure relationalRoundtripKernelRoots;
+          relationalInterpreterNativeKernelRoots = [
+            "RelationalInterpreterWholeProgramAcceptance"
+          ];
+          relationalInterpreterNativeKernelModules = relationalLeanModuleClosure relationalInterpreterNativeKernelRoots;
+          relationalProgramLookupNativeKernelRoots = [
+            "RelationalInterpreterKernelLookupNative"
+          ];
+          relationalProgramLookupNativeKernelModules = relationalLeanModuleClosure relationalProgramLookupNativeKernelRoots;
+          relationalProgramLookupOperationKernelRoots = [
+            "RelationalInterpreterKernelProgramLookupOperation"
+          ];
+          relationalProgramLookupOperationKernelModules = relationalLeanModuleClosure relationalProgramLookupOperationKernelRoots;
           relationalRoundtripKernelResources = {
             RelationalEngine = {
               resource_class = "medium";
@@ -191,6 +302,18 @@
             RelationalInterpreterKernel = {
               resource_class = "high-memory";
               estimated_memory_mb = 12288;
+            };
+            RelationalInterpreterKernelLookupNative = {
+              resource_class = "medium";
+              estimated_memory_mb = 4096;
+            };
+            RelationalInterpreterKernelProgramLookupOperation = {
+              resource_class = "medium";
+              estimated_memory_mb = 2048;
+            };
+            RelationalInterpreterWholeProgramAcceptance = {
+              resource_class = "medium";
+              estimated_memory_mb = 4096;
             };
             RelationalSymbolicSoundness = {
               resource_class = "high-memory";
@@ -1042,8 +1165,7 @@
             regionFacts = spaghetti-extractor-region-facts;
             proposal = spaghetti-extractor-proposal;
             semanticProducts = spaghetti-extractor-semantic-products;
-            registerDataflowProblem =
-              spaghetti-extractor-register-dataflow-problem;
+            registerDataflowProblem = spaghetti-extractor-register-dataflow-problem;
             dataflowPlan = spaghetti-extractor-dataflow-plan;
             dataflowWorker = spaghetti-extractor-dataflow-worker;
             dataflowAggregate = spaghetti-extractor-dataflow-aggregate;
@@ -1671,33 +1793,25 @@
                   --out "$out/relation-contract.json" \
                   > "$out/generate-relation.stdout"
               '';
-          stageAFixturesAnalysisGraph =
-            import ./nix/stage-a-relational-analysis-graph.nix {
-              inherit pkgs;
-              name = "stage-a-fixtures";
-              original.binary =
-                "${stage-a-fixtures}/share/spaghetti-extractor/stage-a-fixtures/relational-v3/stage-a-loop-original.exe";
-              candidate.binary =
-                "${stage-a-fixtures}/share/spaghetti-extractor/stage-a-fixtures/relational-v3/stage-a-loop-candidate.exe";
-              relationContract =
-                "${stage-a-fixtures-relation-contract}/relation-contract.json";
-              analysisKernelCache =
-                stage-a-relational-analysis-ifd-kernel-cache;
-              tools = stageARelationalAnalysisTools;
-              # A pure flake check must IFD-read this preparation to instantiate
-              # its generated Lean graph. Floating CA outputs use the public
-              # two-phase coordinator instead.
-              dataflowContentAddressed = false;
-            };
-          stage-a-fixtures-prepared-proof =
-            stageAFixturesAnalysisGraph.preparedProof;
-          stage-a-fixtures-proof-audit =
-            import ./nix/stage-a-lean-graph.nix {
-              inherit pkgs;
-              contentAddressed = true;
-              prepared =
-                stage-a-fixtures-prepared-proof + "/report/relational-v3";
-            };
+          stageAFixturesAnalysisGraph = import ./nix/stage-a-relational-analysis-graph.nix {
+            inherit pkgs;
+            name = "stage-a-fixtures";
+            original.binary = "${stage-a-fixtures}/share/spaghetti-extractor/stage-a-fixtures/relational-v3/stage-a-loop-original.exe";
+            candidate.binary = "${stage-a-fixtures}/share/spaghetti-extractor/stage-a-fixtures/relational-v3/stage-a-loop-candidate.exe";
+            relationContract = "${stage-a-fixtures-relation-contract}/relation-contract.json";
+            analysisKernelCache = stage-a-relational-analysis-ifd-kernel-cache;
+            tools = stageARelationalAnalysisTools;
+            # A pure flake check must IFD-read this preparation to instantiate
+            # its generated Lean graph. Floating CA outputs use the public
+            # two-phase coordinator instead.
+            dataflowContentAddressed = false;
+          };
+          stage-a-fixtures-prepared-proof = stageAFixturesAnalysisGraph.preparedProof;
+          stage-a-fixtures-proof-audit = import ./nix/stage-a-lean-graph.nix {
+            inherit pkgs;
+            contentAddressed = true;
+            prepared = stage-a-fixtures-prepared-proof + "/report/relational-v3";
+          };
           stage-a-fixtures-check =
             pkgs.runCommand "stage-a-fixtures-check"
               {
@@ -1860,12 +1974,10 @@
                 cp -R "$work/relational-v3" "$out/report/relational-v3"
                 cp "$work/prepare.stdout" "$out/report/"
               '';
-          stage-a-exit-evidence-bundle = import ./nix/stage-a-lean-graph.nix {
+          stage-a-exit-proof-audit = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
             contentAddressed = true;
             prepared = stage-a-exit-prepared-proof + "/report/relational-v3";
-            targetNodes = [ "relationalacceptance" ];
-            targetBundle = true;
           };
           stage-a-exit-check =
             pkgs.runCommand "stage-a-exit-check"
@@ -1878,7 +1990,7 @@
                   .status == "prepared" and
                   .original_sha256 != .candidate_sha256 and
                   .expected_final_theorem ==
-                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" and
+                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" and
                   .acceptance.status == "ready" and
                   .acceptance.blockers == [] and
                   .acceptance.launch_realizability.profile ==
@@ -1893,14 +2005,19 @@
                   .composition_progress.counts.unsupported_instructions == 0
                 ' "$prepared/prepared-proof.json" >/dev/null
                 jq -e '
-                  .format == "stage-a-lean-target-bundle-v1" and
+                  .format == "stage-a-relational-lean-audit-v1" and
+                  .status == "checked" and
+                  .theorem ==
+                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" and
                   .lean_trust == 0 and
-                  ([.nodes[].id] | index("relationalacceptance")) != null
-                ' "${stage-a-exit-evidence-bundle}/bundle.json" >/dev/null
+                  .unexpected_axioms == []
+                ' "${stage-a-exit-proof-audit.verdict}/audit.json" >/dev/null
                 mkdir -p "$out"
                 cp "$prepared/prepared-proof.json" "$out/"
-                cp "${stage-a-exit-evidence-bundle}/bundle.json" \
-                  "$out/evidence-bundle.json"
+                cp "${stage-a-exit-proof-audit.verdict}/audit.json" \
+                  "$out/lean-audit.json"
+                cp "${stage-a-exit-proof-audit.verdict}/verdict.json" \
+                  "$out/proof-verdict.json"
               '';
           stage-a-winapi-hello-fixtures = mingw32.stdenv.mkDerivation {
             pname = "stage-a-winapi-hello-fixtures";
@@ -2001,11 +2118,6 @@
                 cp -R "$work/relational-v3" "$out/report/relational-v3"
                 cp "$work/prepare.stdout" "$out/report/"
               '';
-          stage-a-winapi-hello-proof-audit = import ./nix/stage-a-lean-graph.nix {
-            inherit pkgs;
-            contentAddressed = true;
-            prepared = stage-a-winapi-hello-prepared-proof + "/report/relational-v3";
-          };
           stage-a-winapi-hello-check =
             pkgs.runCommand "stage-a-winapi-hello-check"
               {
@@ -2016,18 +2128,15 @@
                 jq -e '
                   .status == "prepared" and
                   .original_sha256 != .candidate_sha256 and
-                  .expected_final_theorem ==
-                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" and
-                  .acceptance.status == "ready" and
-                  .acceptance.blockers == [] and
-                  .acceptance.linked_acceptance.status == "ready" and
-                  .acceptance.linked_acceptance.theorem ==
-                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" and
-                  .acceptance.linked_acceptance.blockers == [] and
+                  .expected_final_theorem == null and
+                  .acceptance.status == "incomplete" and
+                  .acceptance.theorem == null and
+                  .acceptance.linked_acceptance.status == "incomplete" and
+                  .acceptance.linked_acceptance.theorem == null and
                   .acceptance.launch_realizability.profile ==
                     "paired-preferred-base-import-stack-v1" and
                   (.acceptance.launch_realizability.import_bindings | length) == 3 and
-                  .composition_progress.status == "ready_for_lean" and
+                  .composition_progress.status == "incomplete" and
                   .composition_progress.counts.roots == 1 and
                   .composition_progress.counts.rooted_reachable_nodes == 11 and
                   .composition_progress.counts.rooted_reachable_feasible_edges == 8 and
@@ -2038,11 +2147,29 @@
                   .composition_progress.counts.rooted_relational_call_frame_frontier_nodes == 0 and
                   .composition_progress.counts.unresolved_indirect_control_nodes == 0 and
                   .composition_progress.counts.unsupported_instructions == 0 and
-                  .composition_progress.counts.acceptance_blockers == 0
+                  .composition_progress.counts.acceptance_blockers > 0
                 ' "$prepared/prepared-proof.json" >/dev/null
                 jq -e '
+                  .format == "stage-a-whole-program-acceptance-v1" and
+                  .status == "incomplete" and
+                  .theorem == null and
+                  any(.blockers[];
+                    .code == "opaque_lockstep_memory_observation_unextractable"
+                  ) and
+                  .opaque_lockstep_environment.status == "incomplete" and
+                  any(.opaque_lockstep_environment.gaps[];
+                    .code == "opaque_lockstep_memory_observation_unextractable" and
+                    .node_id == 2
+                  )
+                ' "$prepared/whole-program-acceptance.json" >/dev/null
+                jq -e '
                   . as $graph |
-                  .format == "stage-a-lean-module-graph-v1" and
+                  (
+                    .format == "stage-a-lean-module-graph-v1" or
+                    .format == "stage-a-lean-module-graph-v2"
+                  ) and
+                  .expected_final_theorem == null and
+                  .acceptance.status == "incomplete" and
                   ([.nodes[] |
                     select(
                       (.modules | length) == 1 and
@@ -2060,7 +2187,8 @@
                   ) and
                   any(.nodes[];
                     .modules == ["RelationalLaunchRealizabilityCertificate"] and
-                    .resource_class == "light"
+                    .resource_class == "high-memory" and
+                    .estimated_memory_mb >= 4096
                   ) and
                   any(.nodes[];
                     .modules == ["RelationalLaunchCheckCertificate"] and
@@ -2070,20 +2198,11 @@
                       any($graph.nodes[]; .id == $dependency))
                   )
                 ' "$prepared/module-graph.json" >/dev/null
-                jq -e '
-                  .format == "stage-a-relational-lean-audit-v1" and
-                  .status == "checked" and
-                  .theorem ==
-                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" and
-                  .lean_trust == 0 and
-                  .unexpected_axioms == []
-                ' "${stage-a-winapi-hello-proof-audit}/audit.json" >/dev/null
                 mkdir -p "$out"
-                cp "$prepared/prepared-proof.json" "$out/"
-                cp "${stage-a-winapi-hello-proof-audit}/audit.json" \
-                  "$out/lean-audit.json"
-                cp "${stage-a-winapi-hello-proof-audit}/node-provenance.json" \
-                  "$out/lean-node-provenance.json"
+                cp "$prepared/prepared-proof.json" \
+                  "$prepared/whole-program-acceptance.json" \
+                  "$prepared/composition-progress.json" \
+                  "$out/"
               '';
           stage-a-exit-behavior-smoke =
             pkgs.runCommand "stage-a-exit-behavior-smoke"
@@ -2116,29 +2235,6 @@
                 mkdir -p "$out"
                 cp "$TMPDIR/stdout" "$TMPDIR/stderr" "$out/"
                 printf '%s\n' "$status" > "$out/exit-status"
-              '';
-          stage-a-winapi-hello-behavior-smoke =
-            pkgs.runCommand "stage-a-winapi-hello-behavior-smoke"
-              {
-                nativeBuildInputs = [
-                  pkgs.wineWow64Packages.stable
-                  pkgs.xvfb-run
-                ];
-              }
-              ''
-                test -s "${stage-a-winapi-hello-check}/prepared-proof.json"
-                fixture_dir="${stage-a-winapi-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/winapi-hello"
-                export HOME="$TMPDIR/home"
-                export WINEPREFIX="$TMPDIR/wine"
-                export WINEDEBUG=-all
-                export WINEDLLOVERRIDES="mscoree,mshtml="
-                mkdir -p "$HOME"
-                xvfb-run -a wine "$fixture_dir/hello-candidate.exe" \
-                  > "$TMPDIR/stdout" 2> "$TMPDIR/stderr"
-                printf 'Hello, world!\r\n' > "$TMPDIR/expected"
-                cmp "$TMPDIR/expected" "$TMPDIR/stdout"
-                mkdir -p "$out"
-                cp "$TMPDIR/stdout" "$TMPDIR/stderr" "$out/"
               '';
           stage-a-jq-fixtures =
             pkgs.runCommand "stage-a-jq-fixtures"
@@ -3004,33 +3100,25 @@
                   --out "$out/hello-relation-contract.json" \
                   > "$out/generate-relation.stdout"
               '';
-          stageAMinimalHelloAnalysisGraph =
-            import ./nix/stage-a-relational-analysis-graph.nix {
-              inherit pkgs;
-              name = "stage-a-minimal-hello";
-              original = {
-                binary =
-                  "${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment/hello-original.exe";
-                linkerMap =
-                  "${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment/hello-original.map";
-              };
-              candidate = {
-                binary =
-                  "${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment/hello-candidate.exe";
-                linkerMap =
-                  "${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment/hello-candidate.map";
-              };
-              relationContract =
-                "${stage-a-minimal-hello-relation-contract}/hello-relation-contract.json";
-              analysisKernelCache =
-                stage-a-relational-analysis-ifd-kernel-cache;
-              tools = stageARelationalAnalysisTools;
-              # Keep the static check graph evaluable in one pure flake
-              # evaluation. Dynamic production preparation remains CA-backed.
-              dataflowContentAddressed = false;
+          stageAMinimalHelloAnalysisGraph = import ./nix/stage-a-relational-analysis-graph.nix {
+            inherit pkgs;
+            name = "stage-a-minimal-hello";
+            original = {
+              binary = "${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment/hello-original.exe";
+              linkerMap = "${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment/hello-original.map";
             };
-          stage-a-minimal-hello-prepared-proof =
-            stageAMinimalHelloAnalysisGraph.preparedProof;
+            candidate = {
+              binary = "${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment/hello-candidate.exe";
+              linkerMap = "${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment/hello-candidate.map";
+            };
+            relationContract = "${stage-a-minimal-hello-relation-contract}/hello-relation-contract.json";
+            analysisKernelCache = stage-a-relational-analysis-ifd-kernel-cache;
+            tools = stageARelationalAnalysisTools;
+            # Keep the static check graph evaluable in one pure flake
+            # evaluation. Dynamic production preparation remains CA-backed.
+            dataflowContentAddressed = false;
+          };
+          stage-a-minimal-hello-prepared-proof = stageAMinimalHelloAnalysisGraph.preparedProof;
           stage-a-minimal-hello-proof-smoke = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
             contentAddressed = true;
@@ -3328,40 +3416,7 @@
               ) relationalAnalysisKernelModules
             );
           };
-          relationalKernelModules = relationalLeanModuleClosure ([
-            "X87"
-            "RelationalX87"
-            "Formal"
-            "RelationalX87Decode"
-            "ISAQualification"
-            "ISAConformance"
-            "ISAConformanceRunner"
-            "RelationalDecode"
-            "RelationalSemanticsChecker"
-            "RelationalCheckedArtifacts"
-            "RelationalLoader"
-            "RelationalFiniteIndex"
-            "RelationalMachine"
-            "RelationalPEExecution"
-            "RelationalISAQualification"
-            "Relational"
-            "RelationalX87Machine"
-            "RelationalInvariant"
-            "RelationalExactExpr"
-            "RelationalExecution"
-            "RelationalImage"
-            "RelationalSegment"
-            "RelationalComposition"
-            "RelationalLinkedFrames"
-            "RelationalEnvironment"
-            "RelationalCallbacks"
-            "RelationalAffineFrames"
-            "RelationalAffineLinkedFrames"
-            "RelationalCertificates"
-            "RelationalLinkedExecution"
-            "RelationalPEWorldExecution"
-            "RelationalStaticTree"
-          ] ++ relationalRoundtripKernelModules);
+          relationalKernelModules = relationalAcceptanceKernelModules;
           isaKernelModules = [
             "X87"
             "Formal"
@@ -3376,6 +3431,113 @@
             targetNodes = isaKernelModules;
             targetBundle = true;
           };
+          stage-a-isa-kernel-identity = pkgs.runCommand
+            "stage-a-isa-kernel-identity"
+            {
+              nativeBuildInputs = [ pkgs.jq ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+              __contentAddressed = true;
+            }
+            ''
+              bundle=${stage-a-isa-kernel-cache}/bundle.json
+              decoder_sha256="$(
+                jq -er '
+                  .nodes
+                  | map(select(.id == "ISAQualification"))
+                  | if length == 1 then .[0].semantic_id else error("decoder node") end
+                ' "$bundle"
+              )"
+              semantics_sha256="$(
+                jq -cS '
+                  .nodes
+                  | map(select(
+                      .id == "X87"
+                      or .id == "Formal"
+                      or .id == "ISAConformance"
+                      or .id == "ISAConformanceRunner"
+                    ))
+                  | sort_by(.id)
+                  | map({
+                      id,
+                      semantic_id,
+                      semantic_recipe_version,
+                      source_sha256
+                    })
+                ' "$bundle" | sha256sum | cut -d ' ' -f 1
+              )"
+              lean_version="$(jq -er '.lean_version' "$bundle")"
+              mkdir -p "$out"
+              jq -n \
+                --arg decoder_sha256 "$decoder_sha256" \
+                --arg semantics_sha256 "$semantics_sha256" \
+                --arg lean_version "$lean_version" \
+                --arg bundle_store_path ${pkgs.lib.escapeShellArg (toString stage-a-isa-kernel-cache)} \
+                '{
+                  format: "stage-a-isa-semantic-kernel-binding-v1",
+                  id: "stage-a-pe32-i686-lean-kernel-v1",
+                  decoder_sha256: $decoder_sha256,
+                  semantics_sha256: $semantics_sha256,
+                  lean_version: $lean_version,
+                  source: {
+                    bundle_store_path: $bundle_store_path,
+                    bundle: "bundle.json"
+                  },
+                  trust: {
+                    role: "compiled_lean_semantic_kernel_identity",
+                    proof_authority: false,
+                    closes_stage_a_proof: false
+                  }
+                }' > "$out/kernel.json"
+            '';
+          stage-a-isa-core-smoke-corpus = pkgs.runCommand
+            "stage-a-isa-core-smoke-corpus"
+            {
+              nativeBuildInputs = [
+                pkgs.jq
+                spaghetti-extractor
+              ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+              __contentAddressed = true;
+            }
+            ''
+              mkdir -p "$out"
+              spaghetti-extractor stage-a-generate-isa-corpus \
+                --catalog ${./isa-catalogs/pe32-i686-core-smoke-v1.json} \
+                --seed 0 \
+                --out "$out" \
+                > "$out/result.json"
+              jq -e '
+                .format == "stage-a-generated-isa-corpus-result-v1"
+                and .status == "generated"
+                and .proof_authority == false
+                and .closes_stage_a_proof == false
+              ' "$out/result.json" > /dev/null
+            '';
+          stageAISAQualificationSmoke =
+            import ./nix/stage-a-isa-qualification-graph.nix {
+              inherit pkgs;
+              name = "stage-a-isa-core-smoke";
+              spaghettiExtractor = spaghetti-extractor;
+              kernelCache = stage-a-isa-kernel-cache;
+              semanticKernel = stage-a-isa-kernel-identity + "/kernel.json";
+              corpus = stage-a-isa-core-smoke-corpus + "/corpus.json";
+              generatedCorpus =
+                stage-a-isa-core-smoke-corpus + "/generated-corpus.json";
+              bochsRunner =
+                bochs-conformance
+                + "/bin/spaghetti-bochs-conformance-runner";
+              xedCatalog =
+                stage-a-isa-xed-catalog + "/xed-inst-catalog.json";
+              contentAddressed = true;
+            };
+          stage-a-isa-core-smoke-qualification =
+            stageAISAQualificationSmoke.qualificationCheck;
+          stage-a-isa-core-smoke-campaign =
+            stageAISAQualificationSmoke.campaign;
+          stage-a-isa-core-smoke-bundle =
+            stageAISAQualificationSmoke.bundle;
           stage-a-relational-analysis-kernel-cache = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
             contentAddressed = true;
@@ -3384,24 +3546,31 @@
             targetNodes = relationalAnalysisKernelModules;
             targetBundle = true;
           };
-          stage-a-relational-analysis-ifd-kernel-cache =
-            import ./nix/stage-a-lean-graph.nix {
-              inherit pkgs;
-              contentAddressed = false;
-              standaloneSourceRoot =
-                relationalAnalysisLeanSource
-                + "/src/spaghetti_extractor/lean/StageA";
-              standaloneModules = relationalAnalysisKernelModules;
-              targetNodes = relationalAnalysisKernelModules;
-              targetBundle = true;
-            };
-          stage-a-relational-kernel-cache = import ./nix/stage-a-lean-graph.nix {
+          stage-a-relational-analysis-ifd-kernel-cache = import ./nix/stage-a-lean-graph.nix {
+            inherit pkgs;
+            contentAddressed = false;
+            standaloneSourceRoot = relationalAnalysisLeanSource + "/src/spaghetti_extractor/lean/StageA";
+            standaloneModules = relationalAnalysisKernelModules;
+            targetNodes = relationalAnalysisKernelModules;
+            targetBundle = true;
+          };
+          stage-a-relational-acceptance-kernel-cache = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
             standaloneSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
-            standaloneModules = relationalKernelModules;
+            standaloneModules = relationalAcceptanceKernelModules;
             standaloneModuleResources = relationalRoundtripKernelResources;
-            targetNodes = relationalKernelModules;
+            targetNodes = relationalAcceptanceKernelRoots;
             targetBundle = true;
+          };
+          stage-a-relational-kernel-cache = stage-a-relational-acceptance-kernel-cache;
+          stage-a-relational-acceptance-graph-smoke = import ./nix/stage-a-lean-graph.nix {
+            inherit pkgs;
+            contentAddressed = true;
+            standaloneSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
+            standaloneModules = relationalAcceptanceKernelModules;
+            standaloneModuleResources = relationalRoundtripKernelResources;
+            targetNodes = relationalAcceptanceKernelRoots;
+            graphSmoke = true;
           };
           # Generated-proof IFD consumers need a stable source-root path during
           # pure evaluation. Keep this input-addressed while the main kernel
@@ -3410,39 +3579,49 @@
             inherit pkgs;
             contentAddressed = false;
             standaloneSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
-            standaloneModules = relationalKernelModules;
+            standaloneModules = relationalAcceptanceKernelModules;
             standaloneModuleResources = relationalRoundtripKernelResources;
-            targetNodes = relationalKernelModules;
+            targetNodes = relationalAcceptanceKernelRoots;
             targetBundle = true;
           };
           stage-a-roundtrip-lean-graph-smoke = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
             contentAddressed = true;
             standaloneSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
-            standaloneModules = relationalKernelModules;
+            standaloneModules = relationalRoundtripKernelModules;
             standaloneModuleResources = relationalRoundtripKernelResources;
-            targetNodes = relationalRoundtripKernelModules;
+            targetNodes = relationalRoundtripKernelRoots;
             graphSmoke = true;
           };
           stage-a-roundtrip-lean-remote-smoke = import ./nix/stage-a-lean-graph.nix {
             inherit pkgs;
             contentAddressed = true;
             standaloneSourceRoot = ./nix/fixtures/stage-a-remote-lean-smoke;
-            standaloneModules = [ "RemoteSmokeA" "RemoteSmokeB" ];
-            targetNodes = [ "RemoteSmokeA" "RemoteSmokeB" ];
+            standaloneModules = [
+              "RemoteSmokeA"
+              "RemoteSmokeB"
+            ];
+            targetNodes = [
+              "RemoteSmokeA"
+              "RemoteSmokeB"
+            ];
             targetBundle = true;
             targetAxiomAudit = {
               module = "RemoteSmokeA";
               declaration = "inputAddressedRemoteSmokeA";
-              approved_axioms = [];
+              approved_axioms = [ ];
             };
           };
-          mkStageARoundtripLeanTarget = targetNodes:
+          mkStageARoundtripLeanTarget =
+            targetNodes:
+            let
+              standaloneModules = relationalLeanModuleClosure targetNodes;
+            in
             import ./nix/stage-a-lean-graph.nix {
               inherit pkgs targetNodes;
               contentAddressed = true;
               standaloneSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
-              standaloneModules = relationalKernelModules;
+              inherit standaloneModules;
               standaloneModuleResources = relationalRoundtripKernelResources;
               targetBundle = true;
             };
@@ -3481,9 +3660,37 @@
             inherit pkgs;
             contentAddressed = true;
             standaloneSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
-            standaloneModules = relationalKernelModules;
+            standaloneModules = relationalRoundtripKernelModules;
             standaloneModuleResources = relationalRoundtripKernelResources;
-            targetNodes = relationalRoundtripKernelModules;
+            targetNodes = relationalRoundtripKernelRoots;
+            targetBundle = true;
+          };
+          stage-a-roundtrip-interpreter-kernel-cache = stage-a-roundtrip-lean-kernel-cache;
+          stage-a-roundtrip-interpreter-native-kernel-cache = import ./nix/stage-a-lean-graph.nix {
+            inherit pkgs;
+            contentAddressed = true;
+            standaloneSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
+            standaloneModules = relationalInterpreterNativeKernelModules;
+            standaloneModuleResources = relationalRoundtripKernelResources;
+            targetNodes = relationalInterpreterNativeKernelRoots;
+            targetBundle = true;
+          };
+          stage-a-roundtrip-lean-kernel-lookup-native = import ./nix/stage-a-lean-graph.nix {
+            inherit pkgs;
+            contentAddressed = true;
+            standaloneSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
+            standaloneModules = relationalProgramLookupNativeKernelModules;
+            standaloneModuleResources = relationalRoundtripKernelResources;
+            targetNodes = relationalProgramLookupNativeKernelRoots;
+            targetBundle = true;
+          };
+          stage-a-roundtrip-lean-program-lookup-operation = import ./nix/stage-a-lean-graph.nix {
+            inherit pkgs;
+            contentAddressed = true;
+            standaloneSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
+            standaloneModules = relationalProgramLookupOperationKernelModules;
+            standaloneModuleResources = relationalRoundtripKernelResources;
+            targetNodes = relationalProgramLookupOperationKernelRoots;
             targetBundle = true;
           };
           gnuHelloRoundtrip = import ./nix/gnu-hello-roundtrip.nix {
@@ -3500,8 +3707,7 @@
           stage-b-gnu-hello-roundtrip-native-runtime = gnuHelloRoundtrip.nativeRuntime;
           stage-b-gnu-hello-roundtrip-candidate = gnuHelloRoundtrip.candidate;
           stage-a-gnu-hello-roundtrip-engine-segments = gnuHelloRoundtrip.engineSegments;
-          stage-a-gnu-hello-roundtrip-compiled-kernel-source =
-            gnuHelloRoundtrip.kernelLean;
+          stage-a-gnu-hello-roundtrip-compiled-kernel-source = gnuHelloRoundtrip.kernelLean;
           stage-a-gnu-hello-roundtrip-static-machine-import-source =
             gnuHelloRoundtrip.staticMachineImportContractsLean;
           stage-a-gnu-hello-roundtrip-universal-paired-external-environment-source =
@@ -3510,8 +3716,7 @@
             gnuHelloRoundtrip.staticMachineImportProofSources;
           stage-a-gnu-hello-roundtrip-static-machine-import-proof =
             gnuHelloRoundtrip.staticMachineImportProof;
-          stage-a-gnu-hello-roundtrip-mixed-original-source =
-            gnuHelloRoundtrip.mixedOriginalLean;
+          stage-a-gnu-hello-roundtrip-mixed-original-source = gnuHelloRoundtrip.mixedOriginalLean;
           stage-a-gnu-hello-roundtrip-mixed-original-static-reachability-source =
             gnuHelloRoundtrip.mixedOriginalStaticReachabilityLean;
           stage-a-gnu-hello-roundtrip-mixed-original-static-reachability-proof-sources =
@@ -3556,12 +3761,9 @@
             gnuHelloRoundtrip.mixedOriginalCarrierBindingProofSources;
           stage-a-gnu-hello-roundtrip-mixed-original-carrier-binding-proof =
             gnuHelloRoundtrip.mixedOriginalCarrierBindingProof;
-          stage-a-gnu-hello-roundtrip-mixed-original-diagnostic =
-            gnuHelloRoundtrip.mixedOriginalDiagnostic;
-          stage-a-gnu-hello-roundtrip-kernel-data-source =
-            gnuHelloRoundtrip.kernelDataLean;
-          stage-a-gnu-hello-roundtrip-kernel-abi-source =
-            gnuHelloRoundtrip.kernelAbiLean;
+          stage-a-gnu-hello-roundtrip-mixed-original-diagnostic = gnuHelloRoundtrip.mixedOriginalDiagnostic;
+          stage-a-gnu-hello-roundtrip-kernel-data-source = gnuHelloRoundtrip.kernelDataLean;
+          stage-a-gnu-hello-roundtrip-kernel-abi-source = gnuHelloRoundtrip.kernelAbiLean;
           stage-a-gnu-hello-roundtrip-constructive-source-coverage-source =
             gnuHelloRoundtrip.constructiveSourceCoverageLean;
           stage-a-gnu-hello-roundtrip-constructive-source-coverage-proof-sources =
@@ -3574,44 +3776,30 @@
             gnuHelloRoundtrip.canonicalRelationCoreProofSources;
           stage-a-gnu-hello-roundtrip-canonical-relation-core-proof =
             gnuHelloRoundtrip.canonicalRelationCoreProof;
-          stage-a-gnu-hello-roundtrip-native-launch-graph-source =
-            gnuHelloRoundtrip.nativeLaunchGraphLean;
+          stage-a-gnu-hello-roundtrip-native-launch-graph-source = gnuHelloRoundtrip.nativeLaunchGraphLean;
           stage-a-gnu-hello-roundtrip-native-launch-graph-proof-sources =
             gnuHelloRoundtrip.nativeLaunchGraphProofSources;
-          stage-a-gnu-hello-roundtrip-native-launch-graph-proof =
-            gnuHelloRoundtrip.nativeLaunchGraphProof;
+          stage-a-gnu-hello-roundtrip-native-launch-graph-proof = gnuHelloRoundtrip.nativeLaunchGraphProof;
           stage-a-gnu-hello-roundtrip-proof-sources = gnuHelloRoundtrip.proofSources;
-          stage-a-gnu-hello-roundtrip-acceptance-source =
-            gnuHelloRoundtrip.acceptanceLean;
-          stage-a-gnu-hello-roundtrip-final-proof-sources =
-            gnuHelloRoundtrip.finalProofSources;
+          stage-a-gnu-hello-roundtrip-acceptance-source = gnuHelloRoundtrip.acceptanceLean;
+          stage-a-gnu-hello-roundtrip-final-proof-sources = gnuHelloRoundtrip.finalProofSources;
           stage-a-gnu-hello-roundtrip-proof-fragments = gnuHelloRoundtrip.proofFragments;
-          stage-a-gnu-hello-roundtrip-x87-schedule-benchmark =
-            gnuHelloRoundtrip.x87ScheduleBenchmark;
-          stage-a-gnu-hello-roundtrip-ordinary-refinement =
-            gnuHelloRoundtrip.ordinaryRefinementFragments;
-          stage-a-gnu-hello-roundtrip-x87-candidate-replay-source =
-            gnuHelloRoundtrip.x87CandidateReplayLean;
-          stage-a-gnu-hello-roundtrip-x87-candidate-replay =
-            gnuHelloRoundtrip.x87CandidateReplayFragments;
+          stage-a-gnu-hello-roundtrip-x87-schedule-benchmark = gnuHelloRoundtrip.x87ScheduleBenchmark;
+          stage-a-gnu-hello-roundtrip-ordinary-refinement = gnuHelloRoundtrip.ordinaryRefinementFragments;
+          stage-a-gnu-hello-roundtrip-x87-candidate-replay-source = gnuHelloRoundtrip.x87CandidateReplayLean;
+          stage-a-gnu-hello-roundtrip-x87-candidate-replay = gnuHelloRoundtrip.x87CandidateReplayFragments;
           stage-a-gnu-hello-roundtrip-x87-replay-bridge-runtime-source =
             gnuHelloRoundtrip.x87ReplayBridgeRuntimeLean;
           stage-a-gnu-hello-roundtrip-x87-replay-bridge-runtime =
             gnuHelloRoundtrip.x87ReplayBridgeRuntimeFragments;
-          stage-a-gnu-hello-roundtrip-x87-kernel-execution-source =
-            gnuHelloRoundtrip.x87KernelExecutionLean;
-          stage-a-gnu-hello-roundtrip-x87-kernel-execution =
-            gnuHelloRoundtrip.x87KernelExecutionFragments;
-          stage-a-gnu-hello-roundtrip-kernel-lookup-source =
-            gnuHelloRoundtrip.kernelLookupLean;
-          stage-a-gnu-hello-roundtrip-kernel-lookup-native-source =
-            gnuHelloRoundtrip.kernelLookupNativeLean;
+          stage-a-gnu-hello-roundtrip-x87-kernel-execution-source = gnuHelloRoundtrip.x87KernelExecutionLean;
+          stage-a-gnu-hello-roundtrip-x87-kernel-execution = gnuHelloRoundtrip.x87KernelExecutionFragments;
+          stage-a-gnu-hello-roundtrip-kernel-lookup-source = gnuHelloRoundtrip.kernelLookupLean;
+          stage-a-gnu-hello-roundtrip-kernel-lookup-native-source = gnuHelloRoundtrip.kernelLookupNativeLean;
           stage-a-gnu-hello-roundtrip-kernel-lookup-operation-source =
             gnuHelloRoundtrip.kernelLookupOperationLean;
-          stage-a-gnu-hello-roundtrip-kernel-step-source =
-            gnuHelloRoundtrip.kernelStepLean;
-          stage-a-gnu-hello-roundtrip-kernel-step-native-source =
-            gnuHelloRoundtrip.kernelStepNativeLean;
+          stage-a-gnu-hello-roundtrip-kernel-step-source = gnuHelloRoundtrip.kernelStepLean;
+          stage-a-gnu-hello-roundtrip-kernel-step-native-source = gnuHelloRoundtrip.kernelStepNativeLean;
           stage-a-gnu-hello-roundtrip-kernel-step-operation-source =
             gnuHelloRoundtrip.kernelStepOperationLean;
           stage-a-gnu-hello-roundtrip-kernel-step-program-lookup-call-source =
@@ -3628,16 +3816,11 @@
             gnuHelloRoundtrip.kernelOperationFrameParametricLean;
           stage-a-gnu-hello-roundtrip-kernel-frame-executor-source =
             gnuHelloRoundtrip.kernelFrameExecutorLean;
-          stage-a-gnu-hello-roundtrip-kernel-run-source =
-            gnuHelloRoundtrip.kernelRunLean;
-          stage-a-gnu-hello-roundtrip-kernel-run-native-source =
-            gnuHelloRoundtrip.kernelRunNativeLean;
-          stage-a-gnu-hello-roundtrip-kernel-run-native-proof =
-            gnuHelloRoundtrip.kernelRunNativeProof;
-          stage-a-gnu-hello-roundtrip-kernel-run-operation-source =
-            gnuHelloRoundtrip.kernelRunOperationLean;
-          stage-a-gnu-hello-roundtrip-kernel-run-operation-proof =
-            gnuHelloRoundtrip.kernelRunOperationProof;
+          stage-a-gnu-hello-roundtrip-kernel-run-source = gnuHelloRoundtrip.kernelRunLean;
+          stage-a-gnu-hello-roundtrip-kernel-run-native-source = gnuHelloRoundtrip.kernelRunNativeLean;
+          stage-a-gnu-hello-roundtrip-kernel-run-native-proof = gnuHelloRoundtrip.kernelRunNativeProof;
+          stage-a-gnu-hello-roundtrip-kernel-run-operation-source = gnuHelloRoundtrip.kernelRunOperationLean;
+          stage-a-gnu-hello-roundtrip-kernel-run-operation-proof = gnuHelloRoundtrip.kernelRunOperationProof;
           stage-a-gnu-hello-roundtrip-kernel-cdecl-epilogue-source =
             gnuHelloRoundtrip.kernelCdeclEpilogueLean;
           stage-a-gnu-hello-roundtrip-kernel-cdecl-epilogue-symbolic-closure-source =
@@ -3660,56 +3843,69 @@
             gnuHelloRoundtrip.kernelAbstractOperationTransitionLean;
           stage-a-gnu-hello-roundtrip-kernel-abstract-operation-transition-proof =
             gnuHelloRoundtrip.kernelAbstractOperationTransitionProof;
-          stage-a-gnu-hello-roundtrip-kernel-invoke-source =
-            gnuHelloRoundtrip.kernelInvokeLean;
-          stage-a-gnu-hello-roundtrip-kernel-invoke-native-source =
-            gnuHelloRoundtrip.kernelInvokeNativeLean;
+          stage-a-gnu-hello-roundtrip-kernel-invoke-source = gnuHelloRoundtrip.kernelInvokeLean;
+          stage-a-gnu-hello-roundtrip-kernel-invoke-native-source = gnuHelloRoundtrip.kernelInvokeNativeLean;
           stage-a-gnu-hello-roundtrip-kernel-invoke-operation-source =
             gnuHelloRoundtrip.kernelInvokeOperationLean;
           stage-a-gnu-hello-roundtrip-mixed-candidate-authority-source =
             gnuHelloRoundtrip.mixedCandidateAuthorityLean;
           stage-a-gnu-hello-roundtrip-proof = gnuHelloRoundtrip.proofReport;
           stage-a-gnu-hello-roundtrip-final = gnuHelloRoundtrip.final;
-          stage-a-nix-graph-integration = pkgs.runCommand
-            "stage-a-nix-graph-integration"
-            {
-              nativeBuildInputs = [ pkgs.jq ];
-              preferLocalBuild = true;
-            }
-            ''
-              manifest="${stage-a-roundtrip-lean-graph-smoke}/graph-smoke.json"
-              jq -e \
-                --argjson expected '${builtins.toJSON relationalRoundtripKernelModules}' \
-                --argjson required '${builtins.toJSON relationalRoundtripRequiredModules}' \
-                '
-                  . as $manifest |
-                  .format == "stage-a-lean-graph-smoke-v1" and
-                  .status == "ready" and
-                  .lean_trust == 0 and
-                  (.module_count == (.modules | length)) and
-                  (.node_count == (.nodes | length)) and
-                  ((.target_nodes | sort) == ($expected | sort)) and
-                  ($required | all(. as $module |
-                    $manifest.modules | index($module) != null)) and
-                  ($expected | all(. as $module |
-                    $manifest.modules | index($module) != null)) and
-                  (.nodes | all(
-                    (.resource_class == "light" or
-                     .resource_class == "medium" or
-                     .resource_class == "high-memory") and
-                    .estimated_memory_mb > 0))
-                ' "$manifest" >/dev/null
-              mkdir -p "$out"
-              cp "$manifest" "$out/graph-smoke.json"
-              cat > "$out/commands.txt" <<'COMMANDS'
-              nix build .#stage-a-roundtrip-lean-graph-smoke --no-link
-              nix build .#stage-a-roundtrip-lean-remote-smoke --no-link --max-jobs 0 --builders "@${./nix/stage-a-builders}" --option builders-use-substitutes true
-              nix build .#stage-a-roundtrip-lean-transfer .#stage-a-roundtrip-lean-x87 --no-link --max-jobs 0 --builders "@${./nix/stage-a-builders}" --option builders-use-substitutes true
-              nix build .#stage-a-roundtrip-lean-kernel-cache --no-link --max-jobs 0 --builders "@${./nix/stage-a-builders}" --option builders-use-substitutes true
-              COMMANDS
-            '';
-          mkStageARelationalTest =
-            name: module: testFiles:
+          stage-a-nix-graph-integration =
+            pkgs.runCommand "stage-a-nix-graph-integration"
+              {
+                nativeBuildInputs = [ pkgs.jq ];
+                preferLocalBuild = true;
+              }
+              ''
+                manifest="${stage-a-roundtrip-lean-graph-smoke}/graph-smoke.json"
+                jq -e \
+                  --argjson expected '${builtins.toJSON relationalRoundtripKernelRoots}' \
+                  --argjson required '${builtins.toJSON relationalRoundtripRequiredModules}' \
+                  '
+                    . as $manifest |
+                    .format == "stage-a-lean-graph-smoke-v1" and
+                    .status == "ready" and
+                    .lean_trust == 0 and
+                    (.module_count == (.modules | length)) and
+                    (.node_count == (.nodes | length)) and
+                    ((.target_nodes | sort) == ($expected | sort)) and
+                    ($required | all(. as $module |
+                      $manifest.modules | index($module) != null)) and
+                    ($expected | all(. as $module |
+                      $manifest.modules | index($module) != null)) and
+                    (.nodes | all(
+                      (.resource_class == "light" or
+                       .resource_class == "medium" or
+                       .resource_class == "high-memory") and
+                      .estimated_memory_mb > 0))
+                  ' "$manifest" >/dev/null
+                acceptance_manifest="${stage-a-relational-acceptance-graph-smoke}/graph-smoke.json"
+                jq -e \
+                  --argjson expected '${builtins.toJSON relationalAcceptanceKernelRoots}' \
+                  '
+                    . as $manifest |
+                    .format == "stage-a-lean-graph-smoke-v1" and
+                    .status == "ready" and
+                    .lean_trust == 0 and
+                    ((.target_nodes | sort) == ($expected | sort)) and
+                    (.modules | index("RelationalInterpreterKernelLookupNative") == null) and
+                    (.modules | index("RelationalInterpreterKernelProgramLookupOperation") == null) and
+                    (.modules | index("RelationalInterpreterWholeProgramAcceptance") == null)
+                  ' "$acceptance_manifest" >/dev/null
+                mkdir -p "$out"
+                cp "$manifest" "$out/graph-smoke.json"
+                cp "$acceptance_manifest" "$out/acceptance-graph-smoke.json"
+                cat > "$out/commands.txt" <<'COMMANDS'
+                nix build .#stage-a-roundtrip-lean-graph-smoke --no-link
+                nix build .#stage-a-relational-acceptance-graph-smoke --no-link
+                nix build .#stage-a-roundtrip-lean-remote-smoke --no-link --max-jobs 0 --builders "@${./nix/stage-a-builders}" --option builders-use-substitutes true
+                nix build .#stage-a-roundtrip-lean-transfer .#stage-a-roundtrip-lean-x87 --no-link --max-jobs 0 --builders "@${./nix/stage-a-builders}" --option builders-use-substitutes true
+                nix build .#stage-a-roundtrip-lean-kernel-cache --no-link --max-jobs 0 --builders "@${./nix/stage-a-builders}" --option builders-use-substitutes true
+                COMMANDS
+              '';
+          mkStageARelationalTestWithKernel =
+            precompiledKernel: name: module: testFiles:
             let
               usesLean =
                 builtins.elem name [
@@ -3746,8 +3942,8 @@
                 export HOME="$TMPDIR/home"
                 export XDG_CACHE_HOME="$TMPDIR/xdg-cache"
                 export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$TMPDIR/relational-cache"
-                ${pkgs.lib.optionalString usesLean ''
-                  export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
+                ${pkgs.lib.optionalString (usesLean && precompiledKernel != null) ''
+                  export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${precompiledKernel}"
                 ''}
                 export PYTHONPATH="${spaghetti-extractor}/${pkgs.python3.sitePackages}:${pythonEnv}/${pkgs.python3.sitePackages}:${testSource}:${testSource}/tests"
                 mkdir -p "$HOME" "$XDG_CACHE_HOME" "$SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE"
@@ -3756,13 +3952,12 @@
                 mkdir -p "$out/${name}"
                 printf '%s\n' '${module}' > "$out/${name}/test-module.txt"
               '';
+          mkStageARelationalTest = mkStageARelationalTestWithKernel stage-a-relational-acceptance-kernel-cache;
           mkStageARelationalTestSuite =
             name: module: className: testFile:
             let
               testFiles = if builtins.isList testFile then testFile else [ testFile ];
-              testSourceText = pkgs.lib.concatStringsSep "\n" (
-                map builtins.readFile testFiles
-              );
+              testSourceText = pkgs.lib.concatStringsSep "\n" (map builtins.readFile testFiles);
               testMethods = builtins.filter (method: method != null) (
                 map (
                   line:
@@ -3888,7 +4083,10 @@
               [ ./tests/test_stage_a_isa_conformance_unicorn.py ];
           stage-a-relational-tests-isa-conformance-bochs =
             mkStageARelationalTest "isa-conformance-bochs" "tests.test_stage_a_isa_conformance_bochs"
-              [ ./tests/test_stage_a_isa_conformance_bochs.py ];
+              [
+                ./tests/test_stage_a_isa_conformance_bochs.py
+                ./tools/bochs-conformance/instrument.cc
+              ];
           stage-a-relational-tests-isa-conformance-differential =
             mkStageARelationalTest "lean-isa-conformance-differential"
               "tests.test_stage_a_isa_conformance_differential"
@@ -3905,6 +4103,17 @@
               [
                 ./tests/test_stage_a_isa_conformance_80386.py
                 ./tests/test_stage_a_isa_conformance_80386_differential.py
+              ];
+          stage-a-relational-tests-isa-qualification-tooling =
+            mkStageARelationalTest "isa-qualification-tooling"
+              "tests.test_stage_a_isa_catalog tests.test_stage_a_isa_corpus_generator tests.test_stage_a_isa_kernel_qualification tests.test_stage_a_isa_campaign tests.test_stage_a_isa_cli tests.test_stage_a_nix_pipeline"
+              [
+                ./tests/test_stage_a_isa_catalog.py
+                ./tests/test_stage_a_isa_corpus_generator.py
+                ./tests/test_stage_a_isa_kernel_qualification.py
+                ./tests/test_stage_a_isa_campaign.py
+                ./tests/test_stage_a_isa_cli.py
+                ./tests/test_stage_a_nix_pipeline.py
               ];
           stage-a-relational-tests-bounded-table-call-generation =
             mkStageARelationalTest "bounded-table-call-generation"
@@ -4127,6 +4336,7 @@
               stage-a-relational-tests-isa-conformance-differential
               stage-a-relational-tests-isa-conformance-80386
               stage-a-relational-tests-isa-conformance-80386-differential
+              stage-a-relational-tests-isa-qualification-tooling
               stage-a-relational-tests-bounded-table-call-generation
               stage-a-relational-tests-bounded-table-call-kernel
               stage-a-relational-tests-callsite-preservation
@@ -4225,25 +4435,31 @@
               checkedInputs = mkRoundtripCaseCheckedInputs args;
               analysisGraph = import ./nix/stage-a-relational-analysis-graph.nix {
                 inherit pkgs;
-                name = pkgs.lib.strings.sanitizeDerivationName
-                  "${args.caseId}-roundtrip";
+                name = pkgs.lib.strings.sanitizeDerivationName "${args.caseId}-roundtrip";
                 original.binary = "${checkedInputs}/original.pe";
                 candidate.binary = "${checkedInputs}/candidate.pe";
                 relationContract = "${checkedInputs}/relation-contract.json";
-                analysisKernelCache =
-                  stage-a-relational-analysis-kernel-cache;
+                analysisKernelCache = stage-a-relational-analysis-ifd-kernel-cache;
                 tools = stageARelationalAnalysisTools;
+                # Corpus generation is already an IFD boundary. These tiny
+                # fuzz cases use one coarse dataflow worker so evaluation does
+                # not need a second, nested manifest read. Large binary graphs
+                # retain fine-grained CA dataflow packs. The coarse preparation
+                # remains input-addressed until its generated Lean graph has a
+                # concrete path; the proof DAG itself is still CA.
+                dataflowFineGrained = false;
+                dataflowContentAddressed = false;
               };
-              prepared =
-                "${analysisGraph.preparedProof}/report/relational-v3";
+              prepared = "${analysisGraph.preparedProof}/report/relational-v3";
+              violatedCase = args.case.expectation.disposition == "violated";
             in
             pkgs.runCommand (pkgs.lib.strings.sanitizeDerivationName "${args.caseId}-roundtrip-preparation")
               {
                 nativeBuildInputs = [
-                  spaghetti-extractor
                   pkgs.coreutils
                   pkgs.jq
-                ];
+                ]
+                ++ pkgs.lib.optional violatedCase spaghetti-extractor-roundtrip;
                 preferLocalBuild = false;
                 allowSubstitutes = true;
                 passthru = {
@@ -4253,9 +4469,9 @@
               }
               ''
                 ${
-                  if args.case.expectation.disposition == "violated" then
+                  if violatedCase then
                     ''
-                      ${spaghetti-extractor}/bin/spaghetti-extractor \
+                      ${spaghetti-extractor-roundtrip}/bin/spaghetti-extractor \
                         stage-a-prepare-violation \
                         --case ${pkgs.lib.escapeShellArg args.caseManifest} \
                         --case-root ${pkgs.lib.escapeShellArg args.caseRoot} \
@@ -4292,24 +4508,29 @@
             if args.case.expectation.disposition == "pass" then
               import ./nix/stage-a-lean-graph.nix {
                 inherit pkgs;
-                schedulingMode = "closure";
+                schedulingMode = "dag";
                 prepared = args.preparation;
-                precompiledKernel = stage-a-relational-kernel-cache;
+                precompiledKernel = stage-a-relational-acceptance-kernel-cache;
                 contentAddressed = args.contentAddressed;
               }
             else
               assert builtins.elem negativeNode nodeIds;
               import ./nix/stage-a-lean-graph.nix {
                 inherit pkgs;
-                schedulingMode = "closure";
+                schedulingMode = "dag";
                 prepared = args.preparation;
-                precompiledKernel = stage-a-relational-kernel-cache;
+                precompiledKernel = stage-a-relational-acceptance-kernel-cache;
                 targetNodes = [ negativeNode ];
                 targetBundle = true;
                 contentAddressed = args.contentAddressed;
               };
           mkRoundtripCaseAudit =
             args:
+            let
+              passCase = args.case.expectation.disposition == "pass";
+              proofEvidence = if passCase then args.proofDag.verdict else args.proofDag;
+              preparedEvidence = if passCase then proofEvidence else args.preparation;
+            in
             pkgs.runCommand (pkgs.lib.strings.sanitizeDerivationName "${args.caseId}-roundtrip-audit")
               (
                 {
@@ -4334,8 +4555,8 @@
                 mkdir -p "$out"
                 python3 - \
                   ${pkgs.lib.escapeShellArg args.caseManifest} \
-                  ${pkgs.lib.escapeShellArg (toString args.preparation)} \
-                  ${pkgs.lib.escapeShellArg (toString args.proofDag)} \
+                  ${pkgs.lib.escapeShellArg (toString preparedEvidence)} \
+                  ${pkgs.lib.escapeShellArg (toString proofEvidence)} \
                   "$out/result.json" <<'PY'
                 import hashlib
                 import json
@@ -4352,7 +4573,6 @@
                 )
                 expectation = case["expectation"]["disposition"]
                 supported_theorems = {
-                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent",
                     "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked",
                 }
 
@@ -4366,6 +4586,9 @@
                 reason_code = "final_theorem_not_checked"
                 if expectation == "pass" and (proof / "audit.json").is_file():
                     audit = json.loads((proof / "audit.json").read_text(encoding="utf-8"))
+                    verdict = json.loads(
+                        (proof / "verdict.json").read_text(encoding="utf-8")
+                    )
                     theorem = manifest.get("expected_final_theorem")
                     graph_matches = (
                         (proof / "module-graph.json").is_file()
@@ -4390,6 +4613,13 @@
                         and isinstance(observed, list)
                         and set(observed).issubset(approved)
                         and audit.get("unexpected_axioms") == []
+                        and verdict.get("format")
+                            == "stage-a-relational-proof-verdict-v1"
+                        and verdict.get("status") == "checked"
+                        and verdict.get("theorem") == theorem
+                        and verdict.get("lean_trust") == 0
+                        and isinstance(verdict.get("root_semantic_id"), str)
+                        and len(verdict["root_semantic_id"]) == 64
                         and graph_matches
                         and manifest_matches
                         and (proof / "node-provenance.json").is_file()
@@ -4401,12 +4631,13 @@
                         acceptance = {
                             "theorem": theorem,
                             "authority": "whole_program_lean",
+                            "root_semantic_id": verdict["root_semantic_id"],
                         }
                 elif expectation == "violated":
                     import subprocess
                     violation_out = result_path.parent / "violation-audit-work"
                     command = [
-                        "${spaghetti-extractor}/bin/spaghetti-extractor",
+                        "${spaghetti-extractor-roundtrip}/bin/spaghetti-extractor",
                         "stage-a-audit-violation",
                         "--case", str(case_path),
                         "--case-root", ${builtins.toJSON args.caseRoot},
@@ -4485,9 +4716,23 @@
                     ),
                     "violation": violation,
                     "error": None,
-                    "nix": {
-                        "preparation_store_path": str(prepared),
-                        "proof_dag_store_path": str(proof),
+                    "proof_artifact": {
+                        "prepared_manifest_sha256": digest(
+                            prepared / "prepared-proof.json"
+                        ),
+                        "module_graph_sha256": digest(
+                            prepared / "module-graph.json"
+                        ),
+                        "audit_sha256": (
+                            digest(proof / "audit.json")
+                            if (proof / "audit.json").is_file()
+                            else None
+                        ),
+                        "root_semantic_id": (
+                            acceptance.get("root_semantic_id")
+                            if isinstance(acceptance, dict)
+                            else None
+                        ),
                         "proof_phases_are_content_addressed": ${if args.contentAddressed then "True" else "False"},
                         "recursive_nix_invocations": 0,
                     },
@@ -4510,7 +4755,7 @@
             }:
             import ./nix/stage-a-roundtrip-corpus.nix {
               inherit pkgs name contentAddressed;
-              spaghettiExtractor = spaghetti-extractor;
+              spaghettiExtractor = spaghetti-extractor-roundtrip;
               # Conservative class estimates calibrated from the first compact
               # 36-case proof run. They affect scheduling only, never proof
               # inputs or acceptance authority.
@@ -4638,6 +4883,12 @@
           default = spaghetti-extractor;
           inherit
             bochs-conformance
+            xed-isa-catalog
+            stage-a-isa-xed-catalog
+            stage-a-isa-core-smoke-corpus
+            stage-a-isa-core-smoke-qualification
+            stage-a-isa-core-smoke-campaign
+            stage-a-isa-core-smoke-bundle
             singlestep-80386-conformance
             spaghetti-extractor
             spaghetti-extractor-analysis
@@ -4661,6 +4912,7 @@
             stage-a-analysis-source-boundary-check
             stage-a-isa-conformance-bochs-80386
             stage-a-isa-kernel-cache
+            stage-a-isa-kernel-identity
             stage-a-fixtures
             stage-a-fixtures-check
             stage-a-fixtures-root
@@ -4668,16 +4920,14 @@
             stage-a-exit-static-map
             stage-a-exit-relation-contract
             stage-a-exit-prepared-proof
-            stage-a-exit-evidence-bundle
+            stage-a-exit-proof-audit
             stage-a-exit-check
             stage-a-exit-behavior-smoke
             stage-a-winapi-hello-fixtures
             stage-a-winapi-hello-static-map
             stage-a-winapi-hello-relation-contract
             stage-a-winapi-hello-prepared-proof
-            stage-a-winapi-hello-proof-audit
             stage-a-winapi-hello-check
-            stage-a-winapi-hello-behavior-smoke
             stage-a-gnu-hello-fixtures
             stage-a-gnu-hello-original-inventory
             stage-a-gnu-hello-candidate-inventory
@@ -4760,6 +5010,8 @@
             stage-a-jq-fixtures-root
             stage-a-relational-analysis-kernel-cache
             stage-a-relational-analysis-ifd-kernel-cache
+            stage-a-relational-acceptance-kernel-cache
+            stage-a-relational-acceptance-graph-smoke
             stage-a-relational-kernel-cache
             stage-a-roundtrip-lean-graph-smoke
             stage-a-roundtrip-lean-remote-smoke
@@ -4773,6 +5025,10 @@
             stage-a-roundtrip-lean-symbolic-soundness
             stage-a-roundtrip-lean-environment
             stage-a-roundtrip-lean-kernel-cache
+            stage-a-roundtrip-interpreter-kernel-cache
+            stage-a-roundtrip-interpreter-native-kernel-cache
+            stage-a-roundtrip-lean-kernel-lookup-native
+            stage-a-roundtrip-lean-program-lookup-operation
             stage-a-gnu-hello-roundtrip-smoke
             stage-a-gnu-hello-roundtrip-static-export
             stage-b-gnu-hello-roundtrip-interpreter
@@ -4893,6 +5149,7 @@
             stage-a-relational-tests-isa-conformance-differential
             stage-a-relational-tests-isa-conformance-80386
             stage-a-relational-tests-isa-conformance-80386-differential
+            stage-a-relational-tests-isa-qualification-tooling
             stage-a-relational-tests-bounded-table-call-generation
             stage-a-relational-tests-bounded-table-call-kernel
             stage-a-relational-tests-reverse-sentinel-scanner-integration
@@ -5028,11 +5285,11 @@
           inherit (packages)
             spaghetti-extractor
             stage-a-isa-conformance-bochs-80386
+            stage-a-isa-core-smoke-qualification
             stage-a-fixtures-check
             stage-a-exit-check
             stage-a-exit-behavior-smoke
             stage-a-winapi-hello-check
-            stage-a-winapi-hello-behavior-smoke
             stage-a-gnu-hello-preflight
             stage-a-gnu-hello-roundtrip-smoke
             stage-a-minimal-hello-check

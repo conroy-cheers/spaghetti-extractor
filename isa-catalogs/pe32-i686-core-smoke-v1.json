@@ -1,0 +1,72 @@
+{
+  "entries": [
+    {
+      "defined_outputs": {
+        "eflags": 2261,
+        "eip": 4294967295,
+        "fs": {
+          "base": 0,
+          "selector": 0
+        },
+        "gprs": {
+          "eax": 4294967295,
+          "ebp": 4294967295,
+          "ebx": 4294967295,
+          "ecx": 4294967295,
+          "edi": 4294967295,
+          "edx": 4294967295,
+          "esi": 4294967295,
+          "esp": 4294967295
+        },
+        "memory": [],
+        "x87": {
+          "control_word": 0,
+          "data_pointer": 0,
+          "instruction_pointer": 0,
+          "last_opcode": 0,
+          "registers": [
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+          ],
+          "status_word": 0,
+          "tag_word": 0
+        }
+      },
+      "effects": [
+        {
+          "class": "register",
+          "id": "eax-write",
+          "reads": [],
+          "width_bits": 32,
+          "writes": [
+            "eax"
+          ]
+        }
+      ],
+      "encoding_id": "xed-mov-gprv-immv-eax",
+      "form_id": "xed-1f98d475d83ac3a20a22114f0f11326a0370b6273c7ef9afc406dffd0f855ee7",
+      "format": "pe32-i686-form-v1",
+      "instruction_bytes": [
+        184,
+        120,
+        86,
+        52,
+        18
+      ],
+      "required_features": []
+    }
+  ],
+  "format": "stage-a-isa-form-catalog-v1",
+  "profile": "pe32-i686-v1",
+  "source": {
+    "extractor": "xed-isa-catalog+checked-encoding-enrichment",
+    "input_sha256": "616a0255f93dd74b9221673d71545185d1827a16199915ed2bb8a11595f2fee6",
+    "version": "v1"
+  }
+}

@@ -417,6 +417,8 @@ def make_relational_v3_stage_a_proof_callback(
     original_pe: Path,
     flake: Path | None = None,
     builders_file: Path | None = None,
+    isa_kernel_qualification: Path | None = None,
+    isa_semantic_kernel: Path | None = None,
     execute_proof: bool = True,
 ) -> StageAProofCallback:
     """Create the ordinary relational-v3 proof handoff for an opaque Stage B build.
@@ -433,6 +435,16 @@ def make_relational_v3_stage_a_proof_callback(
     flake_path = Path(flake).resolve() if flake is not None else None
     builders_path = (
         Path(builders_file).resolve() if builders_file is not None else None
+    )
+    qualification_path = (
+        Path(isa_kernel_qualification).resolve()
+        if isa_kernel_qualification is not None
+        else None
+    )
+    semantic_kernel_path = (
+        Path(isa_semantic_kernel).resolve()
+        if isa_semantic_kernel is not None
+        else None
     )
 
     def prove(request: StageAProofRequest) -> StageAProofResult:
@@ -533,6 +545,8 @@ def make_relational_v3_stage_a_proof_callback(
                 out=built,
                 flake=flake_path,
                 builders_file=builders_path,
+                isa_kernel_qualification=qualification_path,
+                isa_semantic_kernel=semantic_kernel_path,
             )
         except (OSError, StageAInputError, ValueError) as exc:
             handoff = _append_handoff_frontier(
@@ -608,6 +622,8 @@ def run_opaque_stage_b_relational_roundtrip(
     compiler: str = "i686-w64-mingw32-gcc",
     flake: Path | None = None,
     builders_file: Path | None = None,
+    isa_kernel_qualification: Path | None = None,
+    isa_semantic_kernel: Path | None = None,
     execute_proof: bool = True,
 ) -> dict[str, Any]:
     """Run the public opaque Stage B path through normal relational-v3 proof."""
@@ -622,6 +638,8 @@ def run_opaque_stage_b_relational_roundtrip(
             original_pe=original_pe,
             flake=flake,
             builders_file=builders_file,
+            isa_kernel_qualification=isa_kernel_qualification,
+            isa_semantic_kernel=isa_semantic_kernel,
             execute_proof=execute_proof,
         ),
         stage_a_original_pe=original_pe,
@@ -636,6 +654,8 @@ def run_static_opaque_stage_b_relational_roundtrip(
     compiler: str = "i686-w64-mingw32-gcc",
     flake: Path | None = None,
     builders_file: Path | None = None,
+    isa_kernel_qualification: Path | None = None,
+    isa_semantic_kernel: Path | None = None,
     execute_proof: bool = True,
 ) -> dict[str, Any]:
     """Exercise the complete opaque-static Stage A -> Stage B -> Stage A loop.
@@ -710,6 +730,8 @@ def run_static_opaque_stage_b_relational_roundtrip(
         compiler=compiler,
         flake=flake,
         builders_file=builders_file,
+        isa_kernel_qualification=isa_kernel_qualification,
+        isa_semantic_kernel=isa_semantic_kernel,
         execute_proof=False,
     )
     compilation = bootstrap.get("compilation")
@@ -762,6 +784,8 @@ def run_static_opaque_stage_b_relational_roundtrip(
         compiler=compiler,
         flake=flake,
         builders_file=builders_file,
+        isa_kernel_qualification=isa_kernel_qualification,
+        isa_semantic_kernel=isa_semantic_kernel,
         execute_proof=execute_proof,
     )
     write_json(out / "static-roundtrip-bootstrap.json", {
@@ -1705,9 +1729,9 @@ def _validate_proof_result(
             reasons.append("stage_a_pass_without_checked_relational_verdict")
         if not result.lean_kernel_checked:
             reasons.append("stage_a_pass_without_lean_kernel_check")
-        from ..relational.schema import RELATIONAL_ACCEPTANCE_THEOREMS
+        from ..relational.schema import RELATIONAL_FINAL_ACCEPTANCE_THEOREM
 
-        if result.final_theorem not in RELATIONAL_ACCEPTANCE_THEOREMS:
+        if result.final_theorem != RELATIONAL_FINAL_ACCEPTANCE_THEOREM:
             reasons.append("stage_a_pass_without_whole_program_theorem")
         if report.get("theorem") != result.final_theorem:
             reasons.append("stage_a_pass_theorem_disagrees_with_verdict")

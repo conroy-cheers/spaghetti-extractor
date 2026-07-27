@@ -21,7 +21,6 @@ from ..contract import _raw_base_relocations
 from ..model import _semantic_hash, _target_shaped_register_output_claims
 from ..schema import (
     FLAG_BITS,
-    RELATIONAL_ACCEPTANCE_THEOREM,
     RELATIONAL_KERNEL_MODULES,
 )
 from ..isa_requirements import isa_requirement_replay_projection

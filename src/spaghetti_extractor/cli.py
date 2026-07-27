@@ -20,6 +20,13 @@ from .isa_conformance_nix import stage_a_check_isa_conformance_nix
 from .isa_conformance_unicorn import run_unicorn_corpus
 from .isa_conformance_bochs import run_bochs_corpus
 from .isa_conformance_80386 import import_singlestep_80386_json
+from .isa_cli import (
+    build_isa_kernel_qualification as write_isa_kernel_qualification,
+    generate_isa_corpus,
+    normalize_isa_catalog,
+    select_isa_kernel_qualification as write_isa_kernel_selection,
+    write_isa_qualification_campaign,
+)
 from .relational.mapping import stage_a_generate_map
 from .relational.contract import stage_a_generate_relation_contract
 from .relational.build import (
@@ -127,6 +134,29 @@ def _add_nix_build_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_isa_kernel_qualification_arguments(
+    parser: argparse.ArgumentParser, *, required: bool
+) -> None:
+    parser.add_argument(
+        "--isa-kernel-qualification",
+        type=Path,
+        required=required,
+        help=(
+            "veto-only kernel qualification used to select every exact PE "
+            "semantic form before final acceptance"
+        ),
+    )
+    parser.add_argument(
+        "--isa-semantic-kernel",
+        type=Path,
+        required=required,
+        help=(
+            "compiled semantic-kernel identity and Nix bundle provenance "
+            "bound by the qualification"
+        ),
+    )
+
+
 def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog or "spaghetti-extractor",
@@ -199,6 +229,7 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     fuzz_run.add_argument("--case", action="append", default=[], dest="case_ids")
     fuzz_run.add_argument("--flake", type=Path)
     fuzz_run.add_argument("--builders-file", type=Path)
+    _add_isa_kernel_qualification_arguments(fuzz_run, required=False)
     fuzz_run.add_argument(
         "--genericity-baseline",
         type=Path,
@@ -348,6 +379,124 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         )
     )
 
+    normalize_isa = subcommands.add_parser(
+        "stage-a-normalize-isa-catalog",
+        help="normalize and inventory pinned XED metadata without proof authority",
+    )
+    normalize_isa.add_argument("--catalog", type=Path, required=True)
+    normalize_isa.add_argument("--out", type=Path, required=True)
+    normalize_isa.set_defaults(
+        func=lambda args: normalize_isa_catalog(
+            catalog=args.catalog,
+            out=args.out,
+        )
+    )
+
+    isa_campaign = subcommands.add_parser(
+        "stage-a-plan-isa-qualification",
+        help=(
+            "rank the complete XED profile inventory against optional "
+            "kernel qualification evidence"
+        ),
+    )
+    isa_campaign.add_argument("--catalog", type=Path, required=True)
+    isa_campaign.add_argument("--qualification", type=Path)
+    isa_campaign.add_argument("--selection", type=Path)
+    isa_campaign.add_argument("--crosswalk", type=Path)
+    isa_campaign.add_argument("--out", type=Path, required=True)
+    isa_campaign.set_defaults(
+        func=lambda args: write_isa_qualification_campaign(
+            catalog=args.catalog,
+            qualification=args.qualification,
+            selection=args.selection,
+            crosswalk=args.crosswalk,
+            out=args.out,
+        )
+    )
+
+    generate_isa = subcommands.add_parser(
+        "stage-a-generate-isa-corpus",
+        help="generate deterministic boundary cases from a generic enriched ISA catalog",
+    )
+    generate_isa.add_argument("--catalog", type=Path, required=True)
+    generate_isa.add_argument("--seed", type=int, default=0)
+    generate_isa.add_argument("--out", type=Path, required=True)
+    generate_isa.set_defaults(
+        func=lambda args: generate_isa_corpus(
+            catalog=args.catalog,
+            seed=args.seed,
+            out=args.out,
+        )
+    )
+
+    build_isa_qualification = subcommands.add_parser(
+        "stage-a-build-isa-kernel-qualification",
+        help=(
+            "compare masked Bochs, Unicorn, and Lean observations for one "
+            "semantic-kernel revision"
+        ),
+    )
+    build_isa_qualification.add_argument("--corpus", type=Path, required=True)
+    build_isa_qualification.add_argument("--lean-forms", type=Path, required=True)
+    build_isa_qualification.add_argument(
+        "--bochs-report", type=Path, required=True
+    )
+    build_isa_qualification.add_argument(
+        "--unicorn-report", type=Path, required=True
+    )
+    build_isa_qualification.add_argument(
+        "--lean-report", type=Path, required=True
+    )
+    build_isa_qualification.add_argument(
+        "--semantic-kernel", type=Path, required=True
+    )
+    build_isa_qualification.add_argument("--out", type=Path, required=True)
+    build_isa_qualification.add_argument("--crosswalk-out", type=Path)
+    build_isa_qualification.add_argument("--generated-corpus", type=Path)
+    build_isa_qualification.set_defaults(
+        func=lambda args: write_isa_kernel_qualification(
+            corpus=args.corpus,
+            lean_forms=args.lean_forms,
+            bochs_report=args.bochs_report,
+            unicorn_report=args.unicorn_report,
+            lean_report=args.lean_report,
+            semantic_kernel=args.semantic_kernel,
+            out=args.out,
+            crosswalk_out=args.crosswalk_out,
+            generated_corpus=args.generated_corpus,
+        )
+    )
+
+    select_isa_qualification = subcommands.add_parser(
+        "stage-a-select-isa-kernel-qualification",
+        help=(
+            "select cached kernel qualification for exact PE instruction "
+            "requirements and localize any mismatch"
+        ),
+    )
+    select_isa_qualification.add_argument(
+        "--requirements", type=Path, required=True
+    )
+    select_isa_qualification.add_argument(
+        "--qualification", type=Path, required=True
+    )
+    select_isa_qualification.add_argument(
+        "--semantic-kernel", type=Path, required=True
+    )
+    select_isa_qualification.add_argument(
+        "--side", choices=("original", "candidate"), required=True
+    )
+    select_isa_qualification.add_argument("--out", type=Path, required=True)
+    select_isa_qualification.set_defaults(
+        func=lambda args: write_isa_kernel_selection(
+            requirements=args.requirements,
+            qualification=args.qualification,
+            semantic_kernel=args.semantic_kernel,
+            side=args.side,
+            out=args.out,
+        )
+    )
+
     import_80386 = subcommands.add_parser(
         "stage-a-import-80386-conformance",
         help="import a fail-closed PE32 subset of hardware-generated 80386 vectors",
@@ -371,6 +520,7 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     prove.add_argument("--candidate", type=Path, required=True)
     prove.add_argument("--relation-contract", type=Path, required=True)
     _add_nix_build_arguments(prove)
+    _add_isa_kernel_qualification_arguments(prove, required=True)
     prove.add_argument("--out", type=Path, required=True)
     prove.set_defaults(func=_cmd_stage_a_prove)
 
@@ -405,6 +555,9 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         help="prepared-proof directory below --prepared-nix-ref output",
     )
     _add_nix_build_arguments(build_relational)
+    _add_isa_kernel_qualification_arguments(
+        build_relational, required=False
+    )
     build_relational.add_argument(
         "--target-node",
         action="append",
@@ -827,6 +980,8 @@ def _cmd_stage_a_prove(args: Any) -> dict[str, Any]:
         relation_contract=args.relation_contract,
         flake=args.flake,
         builders_file=args.builders_file,
+        isa_kernel_qualification=args.isa_kernel_qualification,
+        isa_semantic_kernel=args.isa_semantic_kernel,
         builder_trusted_public_keys_file=(
             args.builder_trusted_public_keys_file
         ),
@@ -889,6 +1044,8 @@ def _cmd_stage_a_fuzz_run(args: Any) -> dict[str, Any]:
         out=args.out,
         flake=args.flake,
         builders_file=args.builders_file,
+        isa_kernel_qualification=args.isa_kernel_qualification,
+        isa_semantic_kernel=args.isa_semantic_kernel,
         case_ids=args.case_ids,
         stop_after_static_preflight=args.stop_after_static_preflight,
         genericity_baseline=args.genericity_baseline,
@@ -963,6 +1120,8 @@ def _cmd_stage_a_build_relational(args: Any) -> dict[str, Any]:
             args.builder_trusted_public_keys_file
         ),
         "target_nodes": args.target_node,
+        "isa_kernel_qualification": args.isa_kernel_qualification,
+        "isa_semantic_kernel": args.isa_semantic_kernel,
         "out": args.out,
     }
     if args.prepared_nix_ref is not None:
@@ -1545,6 +1704,7 @@ def _exit_status(result: dict[str, Any]) -> int:
         "reduced",
         "ready",
         "satisfied",
+        "qualified",
     }:
         return 0
     if verdict == "pass":

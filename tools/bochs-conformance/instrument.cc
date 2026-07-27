@@ -21,9 +21,16 @@ extern int fetchDecode32(const Bit8u *iptr, bool is_32,
 
 namespace {
 
+struct memory_region_t {
+  Bit32u address;
+  Bit32u length;
+  Bit32u data_offset;
+  bool writable;
+};
+
 struct request_t {
   Bit32u sequence;
-  Bit8u bytes[15];
+  Bit8u bytes[BC_INSTRUCTION_SLOT_BYTES];
   unsigned length;
   Bit32u eip;
   Bit32u eflags;
@@ -37,6 +44,10 @@ struct request_t {
   Bit32u esp;
   Bit32u requirements;
   Bit16u ia_opcode;
+  unsigned memory_region_count;
+  unsigned memory_bytes_count;
+  memory_region_t memory_regions[BC_MAX_MEMORY_REGIONS];
+  Bit8u memory_bytes[BC_MAX_MEMORY_BYTES];
 };
 
 FILE *input_file = NULL;
@@ -44,10 +55,11 @@ FILE *output_file = NULL;
 request_t pending_request;
 bool pending = false;
 bool active = false;
-bool saw_memory = false;
 bool saw_io = false;
 bool saw_system = false;
 bool saw_branch = false;
+const char *memory_violation = NULL;
+const char *observed_control = "fallthrough";
 bool input_ended = false;
 Bit32u resume_eip = 0;
 Bit32u next_sequence = 0;
@@ -91,7 +103,9 @@ bool parse_hex32(const std::string &text, Bit32u *result)
 
 bool parse_bytes(const std::string &text, request_t *request)
 {
-  if (text.empty() || text.size() > 30 || (text.size() & 1) != 0) return false;
+  if (text.empty() ||
+      text.size() > BC_INSTRUCTION_SLOT_BYTES * 2 ||
+      (text.size() & 1) != 0) return false;
   request->length = unsigned(text.size() / 2);
   for (unsigned index = 0; index < request->length; ++index) {
     unsigned high, low;
@@ -100,6 +114,88 @@ bool parse_bytes(const std::string &text, request_t *request)
       return false;
     }
     request->bytes[index] = Bit8u((high << 4) | low);
+  }
+  return true;
+}
+
+bool parse_memory_permissions(const std::string &text, bool *writable)
+{
+  if (text == "r" || text == "rx") {
+    *writable = false;
+    return true;
+  }
+  if (text == "rw" || text == "rwx") {
+    *writable = true;
+    return true;
+  }
+  return false;
+}
+
+bool parse_memory(const std::string &text, request_t *request)
+{
+  request->memory_region_count = 0;
+  request->memory_bytes_count = 0;
+  if (text == "-") return true;
+  size_t start = 0;
+  for (;;) {
+    const size_t end = text.find(',', start);
+    const std::string token = text.substr(start, end - start);
+    const size_t first_colon = token.find(':');
+    const size_t second_colon =
+      first_colon == std::string::npos
+        ? std::string::npos
+        : token.find(':', first_colon + 1);
+    if (first_colon == std::string::npos ||
+        second_colon == std::string::npos ||
+        token.find(':', second_colon + 1) != std::string::npos ||
+        request->memory_region_count >= BC_MAX_MEMORY_REGIONS) {
+      return false;
+    }
+    Bit32u address;
+    bool writable;
+    const std::string encoded = token.substr(second_colon + 1);
+    if (!parse_hex32(token.substr(0, first_colon), &address) ||
+        !parse_memory_permissions(
+          token.substr(first_colon + 1, second_colon - first_colon - 1),
+          &writable) ||
+        encoded.empty() || (encoded.size() & 1) != 0) {
+      return false;
+    }
+    const unsigned length = unsigned(encoded.size() / 2);
+    if (length > BC_MAX_MEMORY_BYTES - request->memory_bytes_count ||
+        address < BC_TEST_ADDRESS_MIN ||
+        Bit64u(address) + length > BC_GUEST_RAM_END) {
+      return false;
+    }
+    memory_region_t &region =
+      request->memory_regions[request->memory_region_count++];
+    region.address = address;
+    region.length = length;
+    region.data_offset = request->memory_bytes_count;
+    region.writable = writable;
+    for (unsigned index = 0; index < length; ++index) {
+      unsigned high, low;
+      if (!parse_hex_digit(encoded[index * 2], &high) ||
+          !parse_hex_digit(encoded[index * 2 + 1], &low)) {
+        return false;
+      }
+      request->memory_bytes[request->memory_bytes_count++] =
+        Bit8u((high << 4) | low);
+    }
+    if (end == std::string::npos) break;
+    start = end + 1;
+    if (start == text.size()) return false;
+  }
+  for (unsigned left = 0; left < request->memory_region_count; ++left) {
+    const memory_region_t &a = request->memory_regions[left];
+    for (unsigned right = left + 1;
+         right < request->memory_region_count; ++right) {
+      const memory_region_t &b = request->memory_regions[right];
+      if (a.address < Bit64u(b.address) + b.length &&
+          b.address < Bit64u(a.address) + a.length) {
+        return false;
+      }
+    }
   }
   return true;
 }
@@ -114,18 +210,6 @@ std::vector<std::string> split_tabs(const std::string &line)
     if (end == std::string::npos) return fields;
     start = end + 1;
   }
-}
-
-bool starts_with(const char *value, const char *prefix)
-{
-  return strncmp(value, prefix, strlen(prefix)) == 0;
-}
-
-bool mnemonic_is(const char *opcode, const char *mnemonic)
-{
-  const size_t length = strlen(mnemonic);
-  return strncmp(opcode, mnemonic, length) == 0 &&
-         (opcode[length] == '\0' || opcode[length] == '_');
 }
 
 bool has_segment_override(const request_t &request)
@@ -144,79 +228,21 @@ bool has_segment_override(const request_t &request)
   return false;
 }
 
-bool control_instruction(const char *opcode)
-{
-  return opcode[0] == 'J' || mnemonic_is(opcode, "CALL") ||
-         mnemonic_is(opcode, "CALLF") || mnemonic_is(opcode, "IRET") ||
-         mnemonic_is(opcode, "LOOP") || mnemonic_is(opcode, "LOOPE") ||
-         mnemonic_is(opcode, "LOOPNE") || mnemonic_is(opcode, "RET") ||
-         mnemonic_is(opcode, "RETF") || mnemonic_is(opcode, "XABORT") ||
-         mnemonic_is(opcode, "XBEGIN");
-}
-
-bool io_instruction(const char *opcode)
-{
-  return mnemonic_is(opcode, "IN") || mnemonic_is(opcode, "INSB") ||
-         mnemonic_is(opcode, "INSD") || mnemonic_is(opcode, "INSW") ||
-         mnemonic_is(opcode, "OUT") || mnemonic_is(opcode, "OUTSB") ||
-         mnemonic_is(opcode, "OUTSD") || mnemonic_is(opcode, "OUTSW") ||
-         starts_with(opcode, "REP_INS") || starts_with(opcode, "REP_OUTS");
-}
-
-bool implicit_stack_instruction(const char *opcode)
-{
-  return mnemonic_is(opcode, "ENTER") || mnemonic_is(opcode, "LEAVE") ||
-         mnemonic_is(opcode, "POPA") || starts_with(opcode, "POPF_") ||
-         starts_with(opcode, "POP_") || mnemonic_is(opcode, "PUSHA") ||
-         starts_with(opcode, "PUSHF_") || starts_with(opcode, "PUSH_");
-}
-
-bool reviewed_integer_instruction(const char *opcode)
-{
-  // New mnemonics must be reviewed here; operand and side-effect checks remain
-  // authoritative for each concrete encoding.
-  static const char *const reviewed[] = {
-    "AAA", "AAD", "AAM", "AAS", "ADC", "ADCX", "ADD", "ADOX",
-    "AND", "ANDN", "BEXTR", "BLSI", "BLSMSK", "BLSR", "BSF",
-    "BSR", "BSWAP", "BT", "BTC", "BTR", "BTS", "BZHI", "CBW",
-    "CDQ", "CLC", "CLD", "CMC", "CMP", "CMPXCHG", "CWD", "CWDE",
-    "DAA", "DAS", "DEC", "DIV", "IDIV", "IMUL", "INC", "LAHF",
-    "LZCNT", "MOV", "MOVBE", "MOVSX", "MOVZX", "MUL", "MULX",
-    "NEG", "NOP", "NOT", "OR", "PDEP", "PEXT", "POPCNT", "RCL",
-    "RCR", "ROL", "ROR", "RORX", "SAHF", "SAR", "SARX", "SBB",
-    "SHL", "SHLD", "SHLX", "SHR", "SHRD", "SHRX", "STC", "STD",
-    "SUB", "TEST", "TZCNT", "XADD", "XCHG", "XOR"
-  };
-  if (starts_with(opcode, "CMOV") || starts_with(opcode, "SET")) return true;
-  for (size_t index = 0; index < sizeof(reviewed) / sizeof(reviewed[0]); ++index) {
-    if (mnemonic_is(opcode, reviewed[index])) return true;
-  }
-  return false;
-}
-
-const char *operand_scope(const bxInstruction_c &instruction,
-                          const bxIAOpcodeTable &opcode)
+const char *operand_scope(const bxIAOpcodeTable &opcode)
 {
   for (unsigned index = 0; index < 4; ++index) {
     const unsigned descriptor = opcode.src[index];
     const unsigned origin = BX_DISASM_SRC_ORIGIN(descriptor);
     const unsigned type = BX_DISASM_SRC_TYPE(descriptor);
     if (origin == BX_SRC_NONE) continue;
-    if (origin == BX_SRC_BRANCH_OFFSET ||
-        (origin == BX_SRC_IMM && type == BX_DIRECT_PTR)) {
-      return "branch_not_implemented";
-    }
-    if ((origin == BX_SRC_RM || origin == BX_SRC_VECTOR_RM) &&
-        !instruction.modC0()) {
-      return "memory_not_implemented";
-    }
-    if (origin == BX_SRC_VSIB ||
-        (origin == BX_SRC_IMM && type >= BX_DIRECT_MEMREF_B &&
-         type <= BX_DIRECT_MEMREF_Q) ||
-        (origin == BX_SRC_IMPLICIT && type >= BX_RSIREF_B &&
-         type <= BX_VEC_RDIREF)) {
-      return "memory_not_implemented";
-    }
+    if (origin == BX_SRC_BRANCH_OFFSET) continue;
+    if (origin == BX_SRC_IMM && type == BX_DIRECT_PTR)
+      return "far_control_not_implemented";
+    if (origin == BX_SRC_VSIB) return "vector_memory_not_implemented";
+    if (origin == BX_SRC_IMM && type >= BX_DIRECT_MEMREF_B &&
+        type <= BX_DIRECT_MEMREF_Q) continue;
+    if (origin == BX_SRC_IMPLICIT && type >= BX_RSIREF_B &&
+        type <= BX_VEC_RDIREF) continue;
     if (type == BX_FPU_REG) return "x87_not_implemented";
     if (type == BX_SEGREG) return "segment_state_not_implemented";
     if (type == BX_CREG || type == BX_DREG) return "system_not_implemented";
@@ -244,11 +270,7 @@ const char *review_instruction(request_t *request)
     return "instruction_not_implemented";
   }
   request->ia_opcode = instruction.getIaOpcode();
-  const char *opcode = instruction.getIaOpcodeNameShort();
   if (has_segment_override(*request)) return "segment_state_not_implemented";
-  if (control_instruction(opcode)) return "branch_not_implemented";
-  if (io_instruction(opcode)) return "io_not_implemented";
-  if (implicit_stack_instruction(opcode)) return "memory_not_implemented";
 
   const bxIAOpcodeTable &opcode_info = BxOpcodesTable[request->ia_opcode];
   if ((opcode_info.opflags & BX_PREPARE_FPU) != 0) return "x87_not_implemented";
@@ -257,17 +279,14 @@ const char *review_instruction(request_t *request)
         BX_PREPARE_OPMASK | BX_PREPARE_EVEX | BX_PREPARE_AMX)) != 0) {
     return "register_class_not_implemented";
   }
-  const char *scope = operand_scope(instruction, opcode_info);
+  const char *scope = operand_scope(opcode_info);
   if (scope != NULL) return scope;
-  if (!reviewed_integer_instruction(opcode)) {
-    return "system_or_unreviewed_instruction_not_implemented";
-  }
   return NULL;
 }
 
 bool read_request(request_t *request)
 {
-  char buffer[1024];
+  static char buffer[BC_MAX_MEMORY_BYTES * 2 + 4096];
   if (fgets(buffer, sizeof(buffer), input_file) == NULL) {
     if (ferror(input_file)) private_fatal("private_input_read_failed");
     return false;
@@ -283,7 +302,7 @@ bool read_request(request_t *request)
     private_fatal("private_input_contains_carriage_return");
   }
   std::vector<std::string> fields = split_tabs(buffer);
-  if (fields.size() != 15 || fields[0] != "CASE" || fields[1] != "1") {
+  if (fields.size() != 16 || fields[0] != "CASE" || fields[1] != "2") {
     private_fatal("private_input_schema_mismatch");
   }
   if (!parse_hex32(fields[2], &request->sequence) ||
@@ -298,7 +317,8 @@ bool read_request(request_t *request)
       !parse_hex32(fields[11], &request->edi) ||
       !parse_hex32(fields[12], &request->ebp) ||
       !parse_hex32(fields[13], &request->esp) ||
-      !parse_hex32(fields[14], &request->requirements)) {
+      !parse_hex32(fields[14], &request->requirements) ||
+      !parse_memory(fields[15], request)) {
     private_fatal("private_input_value_invalid");
   }
   if (request->sequence != next_sequence++) {
@@ -314,6 +334,11 @@ void write_physical(Bit32u address, const void *data, unsigned length)
     Bit8u value = bytes[index];
     BX_MEM(0)->writePhysicalPage(BX_CPU(0), address + index, 1, &value);
   }
+}
+
+void read_physical(Bit32u address, void *data, unsigned length)
+{
+  BX_MEM(0)->readPhysicalPage(BX_CPU(0), address, length, data);
 }
 
 void read_mailbox(struct bc_mailbox *mailbox)
@@ -356,6 +381,45 @@ void emit_error(Bit32u sequence, const char *detail)
   fflush(output_file);
 }
 
+void emit_complete(unsigned cpu, Bit32u final_eip)
+{
+  BX_CPU_C *processor = BX_CPU(cpu);
+  fprintf(output_file,
+    "OBS\t%08x\tcomplete\t%08x\t%08x\t%08x\t%08x\t%08x\t%08x"
+    "\t%08x\t%08x\t%08x\t%08x\t%s\tnone\t",
+    pending_request.sequence,
+    processor->gen_reg[0].dword.erx,
+    processor->gen_reg[3].dword.erx,
+    processor->gen_reg[1].dword.erx,
+    processor->gen_reg[2].dword.erx,
+    processor->gen_reg[6].dword.erx,
+    processor->gen_reg[7].dword.erx,
+    processor->gen_reg[5].dword.erx,
+    processor->gen_reg[4].dword.erx,
+    final_eip,
+    processor->read_eflags(),
+    observed_control);
+  if (pending_request.memory_region_count == 0) {
+    fputc('-', output_file);
+  }
+  else {
+    Bit8u snapshot[BC_MAX_MEMORY_BYTES];
+    for (unsigned region_index = 0;
+         region_index < pending_request.memory_region_count; ++region_index) {
+      const memory_region_t &region =
+        pending_request.memory_regions[region_index];
+      if (region_index != 0) fputc(',', output_file);
+      fprintf(output_file, "%08x:", region.address);
+      read_physical(region.address, snapshot, region.length);
+      for (unsigned byte_index = 0; byte_index < region.length; ++byte_index) {
+        fprintf(output_file, "%02x", snapshot[byte_index]);
+      }
+    }
+  }
+  fputc('\n', output_file);
+  fflush(output_file);
+}
+
 void redirect_to_harness(unsigned cpu_id)
 {
   BX_CPU_C *cpu = BX_CPU(cpu_id);
@@ -394,17 +458,27 @@ void service_request(void)
     write_mailbox(NULL, BC_MAILBOX_SKIP);
     return;
   }
-  if (request.requirements != 0) {
-    const char *detail = "phase1_capability_not_implemented";
-    if (request.requirements == BC_REQUIRE_MEMORY) detail = "memory_not_implemented";
-    if (request.requirements == BC_REQUIRE_FAULT) detail = "fault_not_implemented";
-    if (request.requirements == BC_REQUIRE_X87) detail = "x87_not_implemented";
-    if (request.requirements == BC_REQUIRE_SEGMENT_STATE) detail = "segment_state_not_implemented";
-    if (request.requirements == BC_REQUIRE_BRANCH) detail = "branch_not_implemented";
-    if (request.requirements == BC_REQUIRE_PROFILE) detail = "profile_not_implemented";
+  const Bit32u supported_requirements =
+    BC_REQUIRE_MEMORY | BC_REQUIRE_BRANCH;
+  if ((request.requirements & ~supported_requirements) != 0) {
+    const char *detail = "capability_not_implemented";
+    if ((request.requirements & BC_REQUIRE_MEMORY_BOUNDS) != 0)
+      detail = "memory_bounds_not_implemented";
+    else if ((request.requirements & BC_REQUIRE_FAULT) != 0)
+      detail = "fault_state_not_implemented";
+    else if ((request.requirements & BC_REQUIRE_X87) != 0)
+      detail = "x87_not_implemented";
+    else if ((request.requirements & BC_REQUIRE_SEGMENT_STATE) != 0)
+      detail = "segment_state_not_implemented";
+    else if ((request.requirements & BC_REQUIRE_PROFILE) != 0)
+      detail = "profile_not_implemented";
     emit_unsupported(request.sequence, detail);
     write_mailbox(NULL, BC_MAILBOX_SKIP);
     return;
+  }
+  if (((request.requirements & BC_REQUIRE_MEMORY) != 0) !=
+      (request.memory_region_count != 0)) {
+    private_fatal("private_input_memory_requirement_mismatch");
   }
   if (request.eip < BC_TEST_ADDRESS_MIN || request.eip > BC_TEST_ADDRESS_MAX) {
     emit_error(request.sequence, "eip_outside_phase1_guest_ram");
@@ -423,8 +497,21 @@ void service_request(void)
     write_mailbox(NULL, BC_MAILBOX_SKIP);
     return;
   }
+  for (unsigned index = 0; index < request.memory_region_count; ++index) {
+    const memory_region_t &region = request.memory_regions[index];
+    if (region.address < Bit64u(request.eip) + BC_INSTRUCTION_SLOT_BYTES &&
+        request.eip < Bit64u(region.address) + region.length) {
+      emit_error(request.sequence, "memory_overlaps_instruction");
+      write_mailbox(NULL, BC_MAILBOX_SKIP);
+      return;
+    }
+    write_physical(
+      region.address,
+      request.memory_bytes + region.data_offset,
+      region.length);
+  }
 
-  Bit8u code[15];
+  Bit8u code[BC_INSTRUCTION_SLOT_BYTES];
   memset(code, 0xcc, sizeof(code));
   memcpy(code, request.bytes, request.length);
   write_physical(request.eip, code, sizeof(code));
@@ -477,7 +564,9 @@ void bx_instr_before_execution(unsigned cpu, bxInstruction_c *instruction)
     private_fatal("executed_instruction_mismatch");
   }
   active = true;
-  saw_memory = saw_io = saw_system = saw_branch = false;
+  saw_io = saw_system = saw_branch = false;
+  memory_violation = NULL;
+  observed_control = "fallthrough";
 }
 
 void bx_instr_after_execution(unsigned cpu, bxInstruction_c *instruction)
@@ -486,8 +575,8 @@ void bx_instr_after_execution(unsigned cpu, bxInstruction_c *instruction)
   if (!active) return;
   BX_CPU_C *processor = BX_CPU(cpu);
   Bit32u final_eip = processor->get_eip();
-  if (saw_memory) {
-    emit_unsupported(pending_request.sequence, "memory_not_implemented");
+  if (memory_violation != NULL) {
+    emit_unsupported(pending_request.sequence, memory_violation);
   }
   else if (saw_io) {
     emit_unsupported(pending_request.sequence, "io_not_implemented");
@@ -495,32 +584,16 @@ void bx_instr_after_execution(unsigned cpu, bxInstruction_c *instruction)
   else if (saw_system) {
     emit_unsupported(pending_request.sequence, "instruction_scope_not_implemented");
   }
-  else if (saw_branch) {
-    emit_unsupported(pending_request.sequence, "branch_not_implemented");
-  }
-  else if (final_eip != pending_request.eip + pending_request.length) {
-    emit_unsupported(pending_request.sequence, "branch_not_implemented");
+  else if (!saw_branch &&
+           final_eip != pending_request.eip + pending_request.length) {
+    emit_unsupported(pending_request.sequence, "unclassified_control_flow");
   }
   else if ((processor->read_eflags() & ~BC_SAFE_EFLAGS_MASK) != 0 ||
            (processor->read_eflags() & 0x2) == 0) {
     emit_unsupported(pending_request.sequence, "eflags_left_safe_profile");
   }
   else {
-    fprintf(output_file,
-      "OBS\t%08x\tcomplete\t%08x\t%08x\t%08x\t%08x\t%08x\t%08x"
-      "\t%08x\t%08x\t%08x\t%08x\n",
-      pending_request.sequence,
-      processor->gen_reg[0].dword.erx,
-      processor->gen_reg[3].dword.erx,
-      processor->gen_reg[1].dword.erx,
-      processor->gen_reg[2].dword.erx,
-      processor->gen_reg[6].dword.erx,
-      processor->gen_reg[7].dword.erx,
-      processor->gen_reg[5].dword.erx,
-      processor->gen_reg[4].dword.erx,
-      final_eip,
-      processor->read_eflags());
-    fflush(output_file);
+    emit_complete(cpu, final_eip);
   }
   active = pending = false;
   redirect_to_harness(cpu);
@@ -551,8 +624,39 @@ void bx_instr_hlt(unsigned cpu)
 void bx_instr_lin_access(unsigned cpu, bx_address lin, bx_address phy,
                          unsigned len, unsigned memtype, unsigned rw)
 {
-  (void) cpu; (void) lin; (void) phy; (void) len; (void) memtype; (void) rw;
-  if (active) saw_memory = true;
+  (void) cpu;
+  (void) memtype;
+  if (!active) return;
+  if (memory_violation != NULL) return;
+  if (lin != phy) {
+    memory_violation = "non_identity_memory_translation";
+    return;
+  }
+  if (len == 0 || Bit64u(lin) + len > BC_GUEST_RAM_END) {
+    memory_violation = "memory_access_out_of_bounds";
+    return;
+  }
+  const memory_region_t *covering = NULL;
+  for (unsigned index = 0;
+       index < pending_request.memory_region_count; ++index) {
+    const memory_region_t &region = pending_request.memory_regions[index];
+    if (region.address <= lin &&
+        Bit64u(lin) + len <= Bit64u(region.address) + region.length) {
+      covering = &region;
+      break;
+    }
+  }
+  if (covering == NULL) {
+    memory_violation = "undeclared_memory_access";
+    return;
+  }
+  if ((rw == BX_WRITE || rw == BX_RW) && !covering->writable) {
+    memory_violation = "write_to_read_only_memory";
+    return;
+  }
+  if (rw != BX_READ && rw != BX_WRITE && rw != BX_RW) {
+    memory_violation = "memory_access_kind_not_implemented";
+  }
 }
 
 void bx_instr_inp(Bit16u addr, unsigned len)
@@ -590,17 +694,48 @@ void bx_instr_debug_promt(void) {}
 void bx_instr_debug_cmd(const char *cmd) { (void) cmd; }
 void bx_instr_cnear_branch_taken(unsigned cpu, bx_address old_eip,
                                  bx_address new_eip)
-{ (void) cpu; (void) old_eip; (void) new_eip; if (active) saw_branch = true; }
+{
+  (void) cpu; (void) old_eip; (void) new_eip;
+  if (active) { saw_branch = true; observed_control = "direct_branch"; }
+}
 void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address old_eip)
-{ (void) cpu; (void) old_eip; if (active) saw_branch = true; }
+{
+  (void) cpu; (void) old_eip;
+  if (active) { saw_branch = true; observed_control = "direct_branch"; }
+}
 void bx_instr_ucnear_branch(unsigned cpu, unsigned what, bx_address old_eip,
                             bx_address new_eip)
-{ (void) cpu; (void) what; (void) old_eip; (void) new_eip; if (active) saw_branch = true; }
+{
+  (void) cpu; (void) old_eip; (void) new_eip;
+  if (!active) return;
+  saw_branch = true;
+  switch (what) {
+    case BX_INSTR_IS_JMP:
+      observed_control = "direct_branch";
+      break;
+    case BX_INSTR_IS_JMP_INDIRECT:
+      observed_control = "indirect_branch";
+      break;
+    case BX_INSTR_IS_CALL:
+      observed_control = "direct_call";
+      break;
+    case BX_INSTR_IS_CALL_INDIRECT:
+      observed_control = "indirect_call";
+      break;
+    case BX_INSTR_IS_RET:
+      observed_control = "return";
+      break;
+    default:
+      saw_system = true;
+      break;
+  }
+}
 void bx_instr_far_branch(unsigned cpu, unsigned what, Bit16u old_cs,
                          bx_address old_eip, Bit16u new_cs, bx_address new_eip)
 {
   (void) cpu; (void) what; (void) old_cs; (void) old_eip;
-  (void) new_cs; (void) new_eip; if (active) saw_branch = true;
+  (void) new_cs; (void) new_eip;
+  if (active) { saw_branch = true; saw_system = true; }
 }
 void bx_instr_opcode(unsigned cpu, bxInstruction_c *instruction,
                      const Bit8u *opcode, unsigned len, bool is32, bool is64)

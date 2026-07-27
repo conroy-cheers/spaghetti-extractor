@@ -8,7 +8,7 @@ from spaghetti_extractor.relational.ir import (
 )
 from spaghetti_extractor.relational.phases import AnalysisArtifact, ExtractedProgramPair
 from spaghetti_extractor.relational.schema import SchemaError
-from spaghetti_extractor.relational.schema import RELATIONAL_ACCEPTANCE_THEOREM
+from spaghetti_extractor.relational.schema import RELATIONAL_FINAL_ACCEPTANCE_THEOREM
 
 
 class RelationalIRTests(unittest.TestCase):
@@ -63,13 +63,13 @@ class RelationalIRTests(unittest.TestCase):
             "format": "stage-a-whole-program-acceptance-v1",
             "status": "incomplete",
             "profile": "profile",
-            "required_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+            "required_theorem": RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
             "theorem": None,
             "blockers": [],
         }
         self.assertEqual(
             WholeProgramAcceptanceIR.parse(acceptance).required_theorem,
-            RELATIONAL_ACCEPTANCE_THEOREM,
+            RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
         )
         progress = {
             "format": "stage-a-composition-progress-v1",

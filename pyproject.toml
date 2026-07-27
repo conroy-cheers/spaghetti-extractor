@@ -38,6 +38,7 @@ spaghetti_extractor = [ "lean/**/*.lean" ]
   "nix/stage-a-lean-compact.nix",
   "nix/stage-a-lean-graph.nix",
   "nix/stage-a-isa-conformance.nix",
+  "nix/stage-a-isa-qualification-graph.nix",
   "nix/stage-a-register-dataflow-graph.nix",
   "nix/stage-a-relational-analysis-graph.nix",
 ]

@@ -14,6 +14,9 @@ from spaghetti_extractor.contract_tools import (
     stage_a_export_reference_contract,
     stage_a_generate_map,
 )
+from spaghetti_extractor.relational.schema import (
+    RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
+)
 from spaghetti_extractor.roundtrip_fuzz.lowering import build_gnu_pe32
 from spaghetti_extractor.roundtrip_fuzz.provenance import (
     build_opaque_stage_b_input_bundle,
@@ -260,7 +263,7 @@ def _passing_proof(captured: list[StageAProofRequest] | None = None):
         if captured is not None:
             captured.append(request)
         report = request.out_dir / "stage-a-proof.json"
-        theorem = "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
+        theorem = RELATIONAL_FINAL_ACCEPTANCE_THEOREM
         write_json(report, {
             "format": "stage-a-relational-nix-build-v1",
             "status": "pass",
@@ -297,7 +300,7 @@ def _passing_proof(captured: list[StageAProofRequest] | None = None):
                 "format": "test-stage-a-proof-provenance-v1",
                 "lean": "pinned-test-lean",
             },
-            final_theorem="StageA.GeneratedRelational.candidatePE32ProgramsEquivalent",
+            final_theorem=RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
             lean_kernel_checked=True,
         )
 
@@ -447,12 +450,9 @@ class OpaqueStageBRoundTripTests(unittest.TestCase):
             self.assertIn("-fomit-frame-pointer", flags)
             self.assertEqual(result["status"], "pass", result)
             self.assertTrue(result["proof"]["lean_kernel_checked"], result)
-            self.assertIn(
+            self.assertEqual(
                 result["proof"]["final_theorem"],
-                {
-                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent",
-                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked",
-                },
+                RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
             )
             final_candidate = final_out / result["compilation"]["candidate_pe"]["path"]
             self.assertEqual(sha256_file(first_candidate), sha256_file(final_candidate))
@@ -598,7 +598,7 @@ class OpaqueStageBRoundTripTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             report = root / "verdict.json"
-            theorem = "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
+            theorem = RELATIONAL_FINAL_ACCEPTANCE_THEOREM
             payload = {
                 "format": "stage-a-relational-nix-build-v1",
                 "status": "pass",

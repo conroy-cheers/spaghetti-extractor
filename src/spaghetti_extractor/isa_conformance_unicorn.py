@@ -45,8 +45,13 @@ else:
     _UNICORN_IMPORT_DETAIL = ""
 
 
-UNICORN_BACKEND_ID = "unicorn-x86-32-haswell-v1"
-UNICORN_CPU_PROFILE = "haswell"
+UNICORN_BACKEND_ID = "unicorn-x86-32-batch-v2"
+UNICORN_CPU_PROFILES = {
+    "haswell": "UC_CPU_X86_HASWELL",
+    # Unicorn has no Pentium Pro model. Pentium II is the nearest
+    # architectural superset; pe32-i686-v1 excludes MMX and later forms.
+    "i686": "UC_CPU_X86_PENTIUM2",
+}
 PAGE_SIZE = 0x1000
 MAX_MAPPED_BYTES = 16 * 1024 * 1024
 MAX_OBSERVED_BYTES = 1024 * 1024
@@ -382,13 +387,13 @@ def _preflight(case: InstructionTestCase) -> _DecodedCase | str:
         return "Unicorn backend supports only protected 32-bit execution"
     if case.profile.environment != "pe32":
         return "Unicorn backend supports only the PE32 environment profile"
-    if case.profile.cpu != UNICORN_CPU_PROFILE:
+    if case.profile.cpu not in UNICORN_CPU_PROFILES:
         return (
-            f"unsupported CPU profile {case.profile.cpu!r}; expected "
-            f"{UNICORN_CPU_PROFILE!r}"
+            f"unsupported CPU profile {case.profile.cpu!r}; expected one of "
+            f"{sorted(UNICORN_CPU_PROFILES)!r}"
         )
     if case.profile.features:
-        return "feature overrides are unsupported; use the fixed Haswell CPU profile"
+        return "feature overrides are unsupported; use a fixed CPU profile"
     if case.initial_state.fs.selector != 0 or case.initial_state.fs.base != 0:
         return "non-flat FS selector/base state is not representable by this backend"
     if not _fs_outputs_are_unobserved(case):
@@ -547,14 +552,19 @@ def _register_inventory() -> dict[str, int]:
     }
 
 
-def _new_engine() -> Any:
+def _new_engine(cpu_profile: str) -> Any:
     assert _unicorn is not None and _unicorn_x86 is not None
     engine = _unicorn.Uc(_unicorn.UC_ARCH_X86, _unicorn.UC_MODE_32)
     if not hasattr(engine, "ctl_set_cpu_model"):
         raise RuntimeError("Unicorn binding cannot select a CPU model")
-    model = getattr(_unicorn_x86, "UC_CPU_X86_HASWELL", None)
+    model_name = UNICORN_CPU_PROFILES.get(cpu_profile)
+    if model_name is None:
+        raise RuntimeError(f"unsupported Unicorn CPU profile {cpu_profile!r}")
+    model = getattr(_unicorn_x86, model_name, None)
     if model is None:
-        raise RuntimeError("Unicorn binding does not expose the Haswell CPU model")
+        raise RuntimeError(
+            f"Unicorn binding does not expose CPU model {model_name}"
+        )
     engine.ctl_set_cpu_model(model)
     return engine
 
@@ -626,7 +636,7 @@ def run_unicorn_case(case: InstructionTestCase) -> BackendObservation:
     if memory_issue is not None:
         return _unsupported(case, memory_issue)
     try:
-        engine = _new_engine()
+        engine = _new_engine(case.profile.cpu)
     except Exception as exc:
         return _unsupported(case, f"Unicorn CPU setup is unsupported: {exc}")
     try:
@@ -796,7 +806,7 @@ __all__ = [
     "MAX_MAPPED_BYTES",
     "MAX_OBSERVED_BYTES",
     "UNICORN_BACKEND_ID",
-    "UNICORN_CPU_PROFILE",
+    "UNICORN_CPU_PROFILES",
     "run_unicorn_case",
     "run_unicorn_corpus",
     "unicorn_available",

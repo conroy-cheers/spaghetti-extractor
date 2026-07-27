@@ -55,6 +55,46 @@ class StageAAcceptanceExternalEnvironmentTests(StageARelationalTestBase):
         )
         self.assertNotEqual(plan["profile"], "stateful-external-protocol-v1")
 
+    def test_linked_shallow_lift_threads_protocol_environment_pair(self):
+        source = _lean_acceptance_linked_shallow_lift(
+            parameterized_environment=True,
+            parameterized_protocol_environment=True,
+        )
+
+        self.assertIn(
+            "(originalProtocolEnvironment candidateProtocolEnvironment : "
+            "WorldExternalProtocolEnvironment)",
+            source,
+        )
+        self.assertIn(
+            "(originalWorldProgram originalEnvironment originalProtocolEnvironment)",
+            source,
+        )
+        self.assertIn(
+            "(candidateWorldProgram candidateEnvironment candidateProtocolEnvironment)",
+            source,
+        )
+
+    def test_linked_shallow_node_threads_protocol_environment_pair(self):
+        source = _lean_acceptance_linked_shallow_node(
+            {"kind": "external_protocol", "node_id": 7},
+            parameterized_environment=True,
+            parameterized_protocol_environment=True,
+        )
+
+        self.assertIn(
+            "acceptanceLinkedRunningNodeRefinedOfShallow\n"
+            "    originalEnvironment candidateEnvironment "
+            "originalProtocolEnvironment candidateProtocolEnvironment 7",
+            source,
+        )
+        self.assertIn(
+            "acceptanceRunningNode7Refined originalEnvironment "
+            "candidateEnvironment originalProtocolEnvironment "
+            "candidateProtocolEnvironment environmentRefines",
+            source,
+        )
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
     def test_external_call_loop_checks_paired_environment_end_to_end(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -381,6 +421,51 @@ class StageAAcceptanceExternalEnvironmentTests(StageARelationalTestBase):
             self.assertEqual(
                 _validate_prepared_relational(prepared)["acceptance"]["status"],
                 "ready",
+            )
+            self.assertEqual(
+                result["acceptance"]["linked_acceptance"],
+                {
+                    "status": "ready",
+                    "profile": "lean-checked-shallow-profile-compatibility-v1",
+                    "theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+                    "blockers": [],
+                },
+            )
+            generated_acceptance = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted((prepared / "lean" / "StageA").glob(
+                    "RelationalAcceptance*.lean"
+                ))
+            )
+            self.assertIn(
+                "theorem candidatePE32ProgramsEquivalentLinked",
+                generated_acceptance,
+            )
+            self.assertIn(
+                "(originalProtocolEnvironment candidateProtocolEnvironment : "
+                "WorldExternalProtocolEnvironment)",
+                generated_acceptance,
+            )
+            self.assertIn(
+                "protocolRefines : LinkedWorldExternalProtocolEnvironmentsRefine",
+                generated_acceptance,
+            )
+            self.assertIn(
+                "LinkedWholeProgramCertificate staticProofContext",
+                generated_acceptance,
+            )
+            self.assertIn(
+                "protocolEnvironmentsRefined := protocolRefines",
+                generated_acceptance,
+            )
+            self.assertIn(
+                "ReachableLinkedCallbackRunningProductNodesRefined.of_shallow",
+                generated_acceptance,
+            )
+            self.assertIn("using outputX87.1", generated_acceptance)
+            self.assertNotIn(
+                "LinkedWorldExternalProtocolEnvironmentsRefine.of_no_protocol_sites",
+                generated_acceptance,
             )
             lean = _run_lean_relational(
                 prepared / "lean", bundle="RelationalAcceptance"

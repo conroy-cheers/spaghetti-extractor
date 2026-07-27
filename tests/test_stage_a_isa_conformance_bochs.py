@@ -137,6 +137,13 @@ def _bochs_case(
     expected_eflags=0x202,
     defined_gprs=(),
     defined_eflags=0,
+    initial_gprs=None,
+    initial_eflags=0x202,
+    memory=None,
+    expected_memory=None,
+    defined_memory=None,
+    expected_control="fallthrough",
+    expected_eip=None,
 ):
     initial = {
         "gprs": {
@@ -150,12 +157,17 @@ def _bochs_case(
             "esp": 0x00008E00,
         },
         "eip": 0x00401000,
-        "eflags": 0x202,
+        "eflags": initial_eflags,
         "fs": {"selector": 0, "base": 0},
         "x87": _x87(),
     }
+    initial["gprs"].update(initial_gprs or {})
     final = json.loads(json.dumps(initial))
-    final["eip"] += len(instruction_bytes)
+    final["eip"] = (
+        initial["eip"] + len(instruction_bytes)
+        if expected_eip is None
+        else expected_eip
+    )
     final["eflags"] = expected_eflags
     final["gprs"].update(expected_gprs or {})
     return {
@@ -170,7 +182,7 @@ def _bochs_case(
         },
         "image_base": 0x00400000,
         "initial_state": initial,
-        "memory": [],
+        "memory": memory or [],
         "defined_outputs": {
             "gprs": {
                 register: 0xFFFFFFFF if register in defined_gprs else 0
@@ -180,12 +192,12 @@ def _bochs_case(
             "eflags": defined_eflags,
             "fs": {"selector": 0, "base": 0},
             "x87": _zero_x87_mask(),
-            "memory": [],
+            "memory": defined_memory or [],
         },
         "expected": {
             "final_state": final,
-            "memory": [],
-            "control": "fallthrough",
+            "memory": expected_memory or [],
+            "control": expected_control,
             "fault": "none",
         },
     }
@@ -236,6 +248,15 @@ def terminal(statuses):
 
 
 class StageAISAConformanceBochsTests(unittest.TestCase):
+    def test_instrumentation_uses_generic_decoder_scope_not_mnemonic_rules(self):
+        source = (
+            _REPO_ROOT / "tools/bochs-conformance/instrument.cc"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("reviewed_integer_instruction", source)
+        self.assertNotIn("mnemonic_is", source)
+        self.assertIn("BX_DISASM_SRC_ORIGIN", source)
+        self.assertIn("BX_INSTR_IS_CALL_INDIRECT", source)
+
     def test_batch_is_canonical_and_match_status_is_computed_locally(self):
         corpus = _corpus("match-case", "mismatch-case")
         with tempfile.TemporaryDirectory() as temporary:
@@ -412,7 +433,76 @@ emit({
     "requires a built source backend or SPAGHETTI_BOCHS_INTEGRATION_RUNNER",
 )
 class StageAISAConformanceBochsIntegrationTests(unittest.TestCase):
-    def test_reviewed_register_cases_execute_and_unsafe_scopes_stay_unsupported(self):
+    def test_i686_profile_uses_the_pentium2_execution_model(self):
+        case = _bochs_case(
+            "i686-mov-reg-imm",
+            [0xB8, 0x78, 0x56, 0x34, 0x12],
+            expected_gprs={"eax": 0x12345678},
+            defined_gprs={"eax"},
+        )
+        case["profile"]["cpu"] = "i686"
+        corpus = parse_isa_conformance_corpus(
+            {
+                "format": "stage-a-isa-conformance-corpus-v1",
+                "id": "bochs-i686-profile-integration-v1",
+                "cases": [case],
+            }
+        )
+
+        report = run_bochs_corpus(
+            corpus,
+            runner=_REAL_BOCHS_RUNNER,
+            timeout_seconds=120,
+        )
+
+        self.assertEqual(
+            report.observations[0].status,
+            ObservationStatus.MATCH,
+            report.observations[0].detail,
+        )
+
+    def test_generic_register_memory_and_branch_cases_execute_fail_closed(self):
+        memory_read = [
+            {
+                "address": 0x00060000,
+                "bytes": [0x78, 0x56, 0x34, 0x12],
+                "permissions": "r",
+            }
+        ]
+        memory_write = [
+            {
+                "address": 0x00060000,
+                "bytes": [0, 0, 0, 0],
+                "permissions": "rw",
+            }
+        ]
+        memory_reset = [
+            {
+                "address": 0x00060000,
+                "bytes": [0xEF, 0xBE, 0xAD, 0xDE],
+                "permissions": "rw",
+            }
+        ]
+        memory_outside_guest = [
+            {
+                "address": 0x00001000,
+                "bytes": [0, 0, 0, 0],
+                "permissions": "rw",
+            }
+        ]
+        call_stack = [
+            {
+                "address": 0x00020000,
+                "bytes": [0] * 16,
+                "permissions": "rw",
+            }
+        ]
+        call_stack_after = [
+            {
+                "address": 0x00020000,
+                "bytes": [0] * 12 + [0x05, 0x10, 0x40, 0],
+            }
+        ]
         cases = [
             _bochs_case(
                 "mov-reg-imm",
@@ -421,9 +511,72 @@ class StageAISAConformanceBochsIntegrationTests(unittest.TestCase):
                 defined_gprs={"eax"},
             ),
             _bochs_case(
-                "memory-form",
+                "undeclared-memory",
                 [0x8B, 0x00],
                 defined_gprs={"eax"},
+            ),
+            _bochs_case(
+                "memory-read",
+                [0x8B, 0x00],
+                expected_gprs={"eax": 0x12345678},
+                defined_gprs={"eax"},
+                initial_gprs={"eax": 0x00060000},
+                memory=memory_read,
+                expected_memory=[
+                    {"address": 0x00060000, "bytes": [0x78, 0x56, 0x34, 0x12]}
+                ],
+                defined_memory=[
+                    {"address": 0x00060000, "mask": [0xFF, 0xFF, 0xFF, 0xFF]}
+                ],
+            ),
+            _bochs_case(
+                "memory-write",
+                [0x89, 0x10],
+                initial_gprs={"eax": 0x00060000},
+                memory=memory_write,
+                expected_memory=[
+                    {"address": 0x00060000, "bytes": [0x80, 0, 0, 0]}
+                ],
+                defined_memory=[
+                    {"address": 0x00060000, "mask": [0xFF, 0xFF, 0xFF, 0xFF]}
+                ],
+            ),
+            _bochs_case(
+                "memory-reset-between-cases",
+                [0x8B, 0x00],
+                initial_gprs={"eax": 0x00060000},
+                expected_gprs={"eax": 0xDEADBEEF},
+                defined_gprs={"eax"},
+                memory=memory_reset,
+                expected_memory=[
+                    {"address": 0x00060000, "bytes": [0xEF, 0xBE, 0xAD, 0xDE]}
+                ],
+                defined_memory=[
+                    {"address": 0x00060000, "mask": [0xFF, 0xFF, 0xFF, 0xFF]}
+                ],
+            ),
+            _bochs_case(
+                "write-read-only-memory",
+                [0x89, 0x10],
+                initial_gprs={"eax": 0x00060000},
+                memory=memory_read,
+                expected_memory=[
+                    {"address": 0x00060000, "bytes": [0x80, 0, 0, 0]}
+                ],
+                defined_memory=[
+                    {"address": 0x00060000, "mask": [0xFF, 0xFF, 0xFF, 0xFF]}
+                ],
+            ),
+            _bochs_case(
+                "memory-outside-controlled-guest",
+                [0x89, 0x10],
+                memory=memory_outside_guest,
+                expected_memory=[
+                    {"address": 0x00001000, "bytes": [0x80, 0, 0, 0]}
+                ],
+                defined_memory=[
+                    {"address": 0x00001000, "mask": [0xFF, 0xFF, 0xFF, 0xFF]}
+                ],
             ),
             _bochs_case(
                 "mov-reg-reg",
@@ -435,6 +588,40 @@ class StageAISAConformanceBochsIntegrationTests(unittest.TestCase):
             _bochs_case(
                 "same-target-conditional-branch",
                 [0x75, 0x00],
+                expected_control="direct_branch",
+            ),
+            _bochs_case(
+                "taken-direct-branch",
+                [0xEB, 0x05],
+                expected_control="direct_branch",
+                expected_eip=0x00401007,
+            ),
+            _bochs_case(
+                "not-taken-direct-branch",
+                [0x75, 0x02],
+                initial_eflags=0x242,
+                expected_eflags=0x242,
+                expected_control="direct_branch",
+            ),
+            _bochs_case(
+                "indirect-branch",
+                [0xFF, 0xE0],
+                expected_control="indirect_branch",
+                expected_eip=0x00006000,
+            ),
+            _bochs_case(
+                "direct-call-with-stack-write",
+                [0xE8, 0x05, 0, 0, 0],
+                initial_gprs={"esp": 0x00020010},
+                expected_gprs={"esp": 0x0002000C},
+                defined_gprs={"esp"},
+                memory=call_stack,
+                expected_memory=call_stack_after,
+                defined_memory=[
+                    {"address": 0x00020000, "mask": [0xFF] * 16}
+                ],
+                expected_control="direct_call",
+                expected_eip=0x0040100A,
             ),
             _bochs_case(
                 "test-reg-reg",
@@ -481,25 +668,63 @@ class StageAISAConformanceBochsIntegrationTests(unittest.TestCase):
             observation.case_id: observation.status
             for observation in report.observations
         }
+        details = {
+            observation.case_id: observation.detail
+            for observation in report.observations
+        }
         for case_id in (
             "mov-reg-imm",
             "mov-reg-reg",
+            "memory-read",
+            "memory-write",
+            "memory-reset-between-cases",
+            "same-target-conditional-branch",
+            "taken-direct-branch",
+            "not-taken-direct-branch",
+            "indirect-branch",
+            "direct-call-with-stack-write",
             "test-reg-reg",
+            "system-cli",
             "xor-reg-reg",
             "add-reg-reg-16",
         ):
-            self.assertEqual(statuses[case_id], ObservationStatus.MATCH)
+            self.assertEqual(
+                statuses[case_id],
+                ObservationStatus.MATCH,
+                msg={
+                    row.case_id: (row.status.value, row.detail)
+                    for row in report.observations
+                },
+            )
         for case_id in (
-            "memory-form",
+            "undeclared-memory",
+            "write-read-only-memory",
+            "memory-outside-controlled-guest",
             "two-instruction-stream",
-            "same-target-conditional-branch",
-            "system-cli",
             "io-in",
             "segment-load",
             "x87-register",
             "faulting-ud2",
         ):
-            self.assertEqual(statuses[case_id], ObservationStatus.UNSUPPORTED)
+            self.assertEqual(
+                statuses[case_id],
+                ObservationStatus.UNSUPPORTED,
+                msg={
+                    row.case_id: (row.status.value, row.detail)
+                    for row in report.observations
+                },
+            )
+        self.assertEqual(details["undeclared-memory"], "undeclared_memory_access")
+        self.assertEqual(
+            details["write-read-only-memory"], "write_to_read_only_memory"
+        )
+        self.assertEqual(
+            details["memory-outside-controlled-guest"],
+            "memory_bounds_not_implemented",
+        )
+        self.assertEqual(
+            details["faulting-ud2"], "fault_not_implemented_vector_6"
+        )
         self.assertFalse(report.trust.proof_authority)
         self.assertFalse(report.trust.closes_stage_a_proof)
 

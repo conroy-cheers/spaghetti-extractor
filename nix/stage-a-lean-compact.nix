@@ -226,10 +226,6 @@ let
     }
   '') topologicalModules;
 
-  supportedAuditTheorems = [
-    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
-    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
-  ];
   selectedAuditTheorem = graph.expected_final_theorem or null;
   acceptanceNodeSteps = graph.acceptance.node_steps or null;
   acceptanceNodeStepsValid =
@@ -251,70 +247,43 @@ let
   parameterizedProtocolEnvironment =
     acceptanceNodeStepsValid
     && builtins.any (step: step.kind == "external_protocol") acceptanceNodeSteps;
-  ordinaryCanonicalResult = originalProgram: candidateProgram: ''
-    PE32RawProgramsObservationallyEquivalent staticProofContext
-      relationalProductGraph productInvariantTable
-      relationalProductReachabilityEvidence productControlProfile consoleLaunch
-      ${originalProgram} ${candidateProgram}
-  '';
   linkedCanonicalResult = originalProgram: candidateProgram: ''
     PE32RawProgramsLinkedObservationallyEquivalent staticProofContext
       relationalProductGraph productInvariantTable
       relationalProductReachabilityEvidence linkedProductControlProfile consoleLaunch
       ${originalProgram} ${candidateProgram}
   '';
-  ordinaryCanonicalType =
+  linkedCanonicalType =
     if parameterizedProtocolEnvironment then
       ''
         forall (originalEnvironment candidateEnvironment : WorldExternalEnvironment)
           (originalProtocolEnvironment candidateProtocolEnvironment :
             WorldExternalProtocolEnvironment),
-          ExternalEnvironmentRefines staticProofContext externalCallSites
+          AcceptanceExternalEnvironmentsRefine
               originalEnvironment candidateEnvironment ->
-            WorldExternalProtocolEnvironmentsRefine staticProofContext
+            LinkedWorldExternalProtocolEnvironmentsRefine staticProofContext
                 relationalProductGraph productInvariantTable
-                relationalProductReachabilityEvidence productControlProfile
+                relationalProductReachabilityEvidence linkedProductControlProfile
                 protocolCallbackTargets externalCallSites
                 originalProtocolEnvironment candidateProtocolEnvironment ->
-              ${ordinaryCanonicalResult "(originalWorldProgram originalEnvironment originalProtocolEnvironment)" "(candidateWorldProgram candidateEnvironment candidateProtocolEnvironment)"}
+              ${linkedCanonicalResult "(originalWorldProgram originalEnvironment originalProtocolEnvironment)" "(candidateWorldProgram candidateEnvironment candidateProtocolEnvironment)"}
       ''
     else if parameterizedEnvironment then
       ''
         forall (originalEnvironment candidateEnvironment : WorldExternalEnvironment),
-          ExternalEnvironmentRefines staticProofContext externalCallSites
-              originalEnvironment candidateEnvironment ->
-            ${ordinaryCanonicalResult "(originalWorldProgram originalEnvironment)" "(candidateWorldProgram candidateEnvironment)"}
-      ''
-    else
-      ordinaryCanonicalResult "originalWorldProgram" "candidateWorldProgram";
-  linkedCanonicalType =
-    if parameterizedProtocolEnvironment then
-      throw "linked final-theorem audit does not support protocol environments"
-    else if parameterizedEnvironment then
-      ''
-        forall (originalEnvironment candidateEnvironment : WorldExternalEnvironment),
-          ExternalEnvironmentRefines staticProofContext externalCallSites
+          AcceptanceExternalEnvironmentsRefine
               originalEnvironment candidateEnvironment ->
             ${linkedCanonicalResult "(originalWorldProgram originalEnvironment)" "(candidateWorldProgram candidateEnvironment)"}
       ''
     else
       linkedCanonicalResult "originalWorldProgram" "candidateWorldProgram";
   canonicalAuditType =
-    if selectedAuditTheorem == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" then
-      ordinaryCanonicalType
-    else if
-      selectedAuditTheorem == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
-    then
+    if selectedAuditTheorem == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" then
       linkedCanonicalType
     else
-      throw "unsupported Stage A final theorem for typed audit";
+      throw "Stage A final audit requires the linked whole-program theorem";
   canonicalAuditProfile =
-    (
-      if selectedAuditTheorem == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" then
-        "linked-raw-pe32"
-      else
-        "raw-pe32"
-    )
+    "linked-raw-pe32"
     + (
       if parameterizedProtocolEnvironment then
         "-stateful-protocol"
@@ -347,16 +316,9 @@ let
     && builtins.all builtins.isString graph.approved_axioms
     && builtins.length graph.approved_axioms == builtins.length (lib.unique graph.approved_axioms);
   approvedAxioms = builtins.toJSON graph.approved_axioms;
-  ordinaryAcceptanceReady =
-    acceptanceNodeStepsValid
-    && graph.acceptance.status == "ready"
-    && graph.acceptance.required_theorem == selectedAuditTheorem
-    && graph.acceptance.theorem == graph.expected_final_theorem
-    && graph.expected_final_theorem == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent";
   linkedAcceptance = graph.acceptance.linked_acceptance or null;
   linkedAcceptanceReady =
     acceptanceNodeStepsValid
-    && !parameterizedProtocolEnvironment
     && graph.acceptance.status == "ready"
     && graph.acceptance.required_theorem == selectedAuditTheorem
     && graph.acceptance.theorem == selectedAuditTheorem
@@ -365,13 +327,8 @@ let
     && linkedAcceptance.theorem == selectedAuditTheorem
     && selectedAuditTheorem == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked";
   acceptanceReady =
-    builtins.elem selectedAuditTheorem supportedAuditTheorems
-    && (
-      if selectedAuditTheorem == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" then
-        ordinaryAcceptanceReady
-      else
-        linkedAcceptanceReady
-    );
+    selectedAuditTheorem == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
+    && linkedAcceptanceReady;
 in
 assert effectiveGraphFile != null;
 assert effectivePreparedManifest != null;

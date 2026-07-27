@@ -5,7 +5,7 @@ from typing import Any, Mapping
 
 from ..relational.interfaces import stage_a_interface_manifest
 from ..relational.schema import (
-    RELATIONAL_ACCEPTANCE_THEOREM,
+    RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
     STAGE_A_RELATIONAL_MODEL_ID,
     StageAInterfaceManifest,
 )
@@ -19,7 +19,7 @@ ROUNDTRIP_INTERFACE_INVENTORY_FORMAT = "stage-a-roundtrip-interface-inventory-v1
 def roundtrip_interface_inventory() -> dict[str, Any]:
     interface = stage_a_interface_manifest()
     parsed = StageAInterfaceManifest.parse(interface)
-    if parsed.acceptance_theorem != RELATIONAL_ACCEPTANCE_THEOREM:
+    if parsed.acceptance_theorem != RELATIONAL_FINAL_ACCEPTANCE_THEOREM:
         raise StageAInputError("Stage A interface manifest selected another acceptance theorem")
     cache_artifacts = [
         {
@@ -36,7 +36,7 @@ def roundtrip_interface_inventory() -> dict[str, Any]:
         "format": ROUNDTRIP_INTERFACE_INVENTORY_FORMAT,
         "model": STAGE_A_RELATIONAL_MODEL_ID,
         "acceptance": {
-            "theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+            "theorem": RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
             "only_pass_authority": True,
         },
         "public_stage_a_pipeline": [
@@ -107,6 +107,6 @@ def write_roundtrip_interface_inventory(*, out: Path) -> dict[str, Any]:
         "status": "generated",
         "path": str(out),
         "sha256": sha256_file(out),
-        "acceptance_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+        "acceptance_theorem": RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
         "cache_boundaries": len(payload["cache_boundaries"]),
     }

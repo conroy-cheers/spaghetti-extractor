@@ -271,6 +271,8 @@ def stage_a_prove_relational_nix(
     flake: Path | None = None,
     builders_file: Path | None = None,
     builder_trusted_public_keys_file: Path | None = None,
+    isa_kernel_qualification: Path,
+    isa_semantic_kernel: Path,
 ) -> dict[str, Any]:
     prepared, preparation = _realize_relational_preparation(
         original=original,
@@ -286,6 +288,8 @@ def stage_a_prove_relational_nix(
         flake=flake,
         builders_file=builders_file,
         builder_trusted_public_keys_file=builder_trusted_public_keys_file,
+        isa_kernel_qualification=isa_kernel_qualification,
+        isa_semantic_kernel=isa_semantic_kernel,
     )
     out = Path(out)
     write_json(out / "nix-preparation-provenance.json", preparation)

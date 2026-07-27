@@ -572,7 +572,7 @@ class StageAAcceptanceFinalNixTests(StageARelationalTestBase):
             self.assertEqual(graph["acceptance"]["status"], "incomplete")
             self.assertEqual(
                 graph["acceptance"]["required_theorem"],
-                "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent",
+                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
             )
             self.assertEqual(
                 graph["acceptance"]["blockers"][0]["code"],
@@ -1106,8 +1106,19 @@ class StageAAcceptanceFinalNixTests(StageARelationalTestBase):
                 _validate_prepared_relational(prepared)
 
     @unittest.skipUnless(
-        shutil.which("lean") and shutil.which("nix") and os.environ.get("SPAGHETTI_EXTRACTOR_RUN_NIX_INTEGRATION") == "1",
-        "set SPAGHETTI_EXTRACTOR_RUN_NIX_INTEGRATION=1 to run the Nix derivation graph",
+        shutil.which("lean")
+        and shutil.which("nix")
+        and os.environ.get("SPAGHETTI_EXTRACTOR_RUN_NIX_INTEGRATION") == "1"
+        and os.environ.get(
+            "SPAGHETTI_EXTRACTOR_STAGE_A_TEST_ISA_QUALIFICATION"
+        )
+        and os.environ.get(
+            "SPAGHETTI_EXTRACTOR_STAGE_A_TEST_ISA_SEMANTIC_KERNEL"
+        ),
+        (
+            "set SPAGHETTI_EXTRACTOR_RUN_NIX_INTEGRATION=1 and provide "
+            "exact ISA qualification and semantic-kernel artifacts"
+        ),
     )
     def test_nix_executor_builds_and_trust_zero_audits_prepared_graph(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1135,6 +1146,16 @@ class StageAAcceptanceFinalNixTests(StageARelationalTestBase):
                         )
                     )
                     else None
+                ),
+                isa_kernel_qualification=Path(
+                    os.environ[
+                        "SPAGHETTI_EXTRACTOR_STAGE_A_TEST_ISA_QUALIFICATION"
+                    ]
+                ),
+                isa_semantic_kernel=Path(
+                    os.environ[
+                        "SPAGHETTI_EXTRACTOR_STAGE_A_TEST_ISA_SEMANTIC_KERNEL"
+                    ]
                 ),
             )
 

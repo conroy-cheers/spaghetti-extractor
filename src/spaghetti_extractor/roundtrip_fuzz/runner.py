@@ -17,7 +17,7 @@ from ..relational.interfaces import stage_a_interface_manifest
 from ..relational.nix_pipeline import stage_a_prepare_relational_nix
 from ..relational.pipeline import stage_a_preflight_relational
 from ..relational.schema import (
-    RELATIONAL_ACCEPTANCE_THEOREMS,
+    RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
     SchemaError,
     selected_relational_acceptance_theorem,
 )
@@ -137,6 +137,8 @@ def run_roundtrip_corpus(
     out: Path,
     flake: Path | None = None,
     builders_file: Path | None = None,
+    isa_kernel_qualification: Path | None = None,
+    isa_semantic_kernel: Path | None = None,
     case_ids: tuple[str, ...] | list[str] = (),
     stop_after_static_preflight: bool = False,
     genericity_baseline: Path | None = None,
@@ -183,6 +185,8 @@ def run_roundtrip_corpus(
                 out=case_out,
                 flake=flake,
                 builders_file=builders_file,
+                isa_kernel_qualification=isa_kernel_qualification,
+                isa_semantic_kernel=isa_semantic_kernel,
                 prepare=_prepare,
                 build=_build,
                 preflight=_preflight,
@@ -336,6 +340,8 @@ def _run_case(
     out: Path,
     flake: Path | None,
     builders_file: Path | None,
+    isa_kernel_qualification: Path | None,
+    isa_semantic_kernel: Path | None,
     prepare: PrepareFunction,
     build: BuildFunction,
     preflight: PreflightFunction,
@@ -350,6 +356,8 @@ def _run_case(
             out=out,
             flake=flake,
             builders_file=builders_file,
+            isa_kernel_qualification=isa_kernel_qualification,
+            isa_semantic_kernel=isa_semantic_kernel,
         )
     phases: list[PhaseResult] = []
     discovery_frontiers: list[dict[str, Any]] = []
@@ -559,7 +567,7 @@ def _run_case(
             selected_theorem = selected_relational_acceptance_theorem(acceptance)
         except SchemaError:
             acceptance_reason = "invalid_selected_acceptance_theorem"
-    acceptance_ready = selected_theorem in RELATIONAL_ACCEPTANCE_THEOREMS
+    acceptance_ready = selected_theorem == RELATIONAL_FINAL_ACCEPTANCE_THEOREM
     phases.append(PhaseResult(
         id="proof-preparation",
         status="ready" if acceptance_ready else "incomplete",
@@ -592,11 +600,20 @@ def _run_case(
     proof_verdict = proof_out / "verdict.json"
     build_started = time.monotonic()
     try:
+        build_arguments: dict[str, Any] = {
+            "prepared": prepared,
+            "out": proof_out,
+            "flake": flake,
+            "builders_file": builders_file,
+        }
+        if isa_kernel_qualification is not None:
+            build_arguments["isa_kernel_qualification"] = (
+                isa_kernel_qualification
+            )
+        if isa_semantic_kernel is not None:
+            build_arguments["isa_semantic_kernel"] = isa_semantic_kernel
         build_result = build(
-            prepared=prepared,
-            out=proof_out,
-            flake=flake,
-            builders_file=builders_file,
+            **build_arguments,
         )
     except StageAInputError as error:
         phases.append(PhaseResult(
@@ -687,7 +704,7 @@ def _run_case(
         and build_result.get("format")
         == RELATIONAL_NIX_BUILD_REPORT_FORMAT
         and build_result.get("status") == "pass"
-        and selected_theorem in RELATIONAL_ACCEPTANCE_THEOREMS
+        and selected_theorem == RELATIONAL_FINAL_ACCEPTANCE_THEOREM
         and build_result.get("expected_final_theorem") == selected_theorem
         and build_result.get("acceptance") == acceptance
         and build_result.get("original", {}).get("sha256")
@@ -758,6 +775,8 @@ def _run_stage_b_case(
     out: Path,
     flake: Path | None,
     builders_file: Path | None,
+    isa_kernel_qualification: Path | None,
+    isa_semantic_kernel: Path | None,
 ) -> CaseRunResult:
     started = time.monotonic()
     stage_b_out = out / "stage-b-roundtrip"
@@ -767,6 +786,8 @@ def _run_stage_b_case(
         out=stage_b_out,
         flake=flake,
         builders_file=builders_file,
+        isa_kernel_qualification=isa_kernel_qualification,
+        isa_semantic_kernel=isa_semantic_kernel,
     )
     status = str(result.get("status") or "incomplete")
     actual = {
@@ -779,7 +800,7 @@ def _run_stage_b_case(
     accepted = (
         actual is ExpectedDisposition.PASS
         and proof.get("lean_kernel_checked") is True
-        and final_theorem in RELATIONAL_ACCEPTANCE_THEOREMS
+        and final_theorem == RELATIONAL_FINAL_ACCEPTANCE_THEOREM
     )
     if actual is ExpectedDisposition.PASS and not accepted:
         actual = ExpectedDisposition.INCOMPLETE

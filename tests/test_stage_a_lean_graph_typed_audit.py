@@ -19,8 +19,8 @@ class StageALeanGraphTypedAuditTests(unittest.TestCase):
         source = self.evaluator.read_text(encoding="utf-8")
 
         self.assertIn("theorem typedFinalTheorem", source)
-        self.assertIn("PE32RawProgramsObservationallyEquivalent", source)
         self.assertIn("PE32RawProgramsLinkedObservationallyEquivalent", source)
+        self.assertNotIn("PE32RawProgramsObservationallyEquivalent", source)
         self.assertIn("#print axioms typedFinalTheorem", source)
         self.assertNotIn("#print axioms ${selectedAuditTheorem}", source)
         self.assertIn('"proposition_type_checked": True', source)
@@ -39,11 +39,9 @@ class StageALeanGraphTypedAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             profiles = {
-                "ordinary_closed": "raw-pe32-closed",
-                "ordinary_environment": "raw-pe32-external-environment",
-                "ordinary_protocol": "raw-pe32-stateful-protocol",
                 "linked_closed": "linked-raw-pe32-closed",
                 "linked_environment": "linked-raw-pe32-external-environment",
+                "linked_protocol": "linked-raw-pe32-stateful-protocol",
             }
             for mode, expected_profile in profiles.items():
                 with self.subTest(mode=mode):
@@ -70,8 +68,8 @@ class StageALeanGraphTypedAuditTests(unittest.TestCase):
                     self.assertEqual(audit["unexpected_axioms"], [])
 
             invalid = root / "invalid"
-            self._write_fixture(invalid, weakened=True, mode="ordinary_closed")
-            invalid_process = self._build_fixture(invalid, mode="ordinary_closed")
+            self._write_fixture(invalid, weakened=True, mode="linked_closed")
+            invalid_process = self._build_fixture(invalid, mode="linked_closed")
             self.assertNotEqual(invalid_process.returncode, 0)
             self.assertIn("stage-a-relational-proof-audit", invalid_process.stderr)
 
@@ -79,7 +77,7 @@ class StageALeanGraphTypedAuditTests(unittest.TestCase):
         stage_a = root / "lean" / "StageA"
         stage_a.mkdir(parents=True)
         linked = mode.startswith("linked_")
-        protocol = mode == "ordinary_protocol"
+        protocol = mode == "linked_protocol"
         parameterized = mode.endswith("environment") or protocol
         result_name = (
             "PE32RawProgramsLinkedObservationallyEquivalent"
@@ -99,11 +97,11 @@ def candidateWorldProgram
             theorem_binders = """    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)
     (originalProtocolEnvironment candidateProtocolEnvironment :
       WorldExternalProtocolEnvironment)
-    (_environmentRefines : ExternalEnvironmentRefines staticProofContext
-      externalCallSites originalEnvironment candidateEnvironment)
-    (_protocolRefines : WorldExternalProtocolEnvironmentsRefine staticProofContext
+    (_environmentRefines : AcceptanceExternalEnvironmentsRefine
+      originalEnvironment candidateEnvironment)
+    (_protocolRefines : LinkedWorldExternalProtocolEnvironmentsRefine staticProofContext
       relationalProductGraph productInvariantTable
-      relationalProductReachabilityEvidence productControlProfile
+      relationalProductReachabilityEvidence linkedProductControlProfile
       protocolCallbackTargets externalCallSites
       originalProtocolEnvironment candidateProtocolEnvironment) :"""
             programs = (
@@ -116,8 +114,8 @@ def candidateWorldProgram
 def candidateWorldProgram
     (_environment : WorldExternalEnvironment) : DecodedWorldProgram := 0"""
             theorem_binders = """    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)
-    (_environmentRefines : ExternalEnvironmentRefines staticProofContext
-      externalCallSites originalEnvironment candidateEnvironment) :"""
+    (_environmentRefines : AcceptanceExternalEnvironmentsRefine
+      originalEnvironment candidateEnvironment) :"""
             programs = (
                 "(originalWorldProgram originalEnvironment) "
                 "(candidateWorldProgram candidateEnvironment)"
@@ -159,11 +157,25 @@ inductive ExternalEnvironmentRefines
     (_original _candidate : WorldExternalEnvironment) : Prop where
   | intro
 
+inductive AcceptanceExternalEnvironmentsRefine
+    (_original _candidate : WorldExternalEnvironment) : Prop where
+  | intro
+
 inductive WorldExternalProtocolEnvironmentsRefine
     (_context : StaticProofContext) (_graph : RelationalProductGraph)
     (_invariants : ProductInvariantTable)
     (_reachability : RelationalProductReachabilityEvidence)
     (_control : ProductControlProfile)
+    (_callbacks : ProtocolCallbackTargetProfile)
+    (_sites : List ExternalCallSiteContract)
+    (_original _candidate : WorldExternalProtocolEnvironment) : Prop where
+  | intro
+
+inductive LinkedWorldExternalProtocolEnvironmentsRefine
+    (_context : StaticProofContext) (_graph : RelationalProductGraph)
+    (_invariants : ProductInvariantTable)
+    (_reachability : RelationalProductReachabilityEvidence)
+    (_control : LinkedControlAuthority)
     (_callbacks : ProtocolCallbackTargetProfile)
     (_sites : List ExternalCallSiteContract)
     (_original _candidate : WorldExternalProtocolEnvironment) : Prop where

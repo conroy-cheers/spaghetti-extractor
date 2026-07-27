@@ -408,9 +408,47 @@ evaluation, scheduling, and result validation run on the coordinator.
 Lean nodes expose a compact semantic output and a separate audit output. A
 semantic output contains only that node's `.olean` files, checked interface, and
 direct dependency references. Transitive dependencies are followed into an
-ephemeral module overlay at build time. The final audit and focused target
-views retain store references rather than copying a closure or constructing a
-root archive.
+ephemeral module overlay at build time. A focused target bundle symlinks its
+exact transitive `.olean` closure into one module namespace while retaining the
+individual store references; it does not copy that closure or construct a root
+archive.
+
+The final theorem audit also has two outputs. Its ordinary output retains the
+complete proof-node closure for inspection and independent replay. Its
+`verdict` output contains only the checked theorem identity, trust level,
+semantic root ID, manifests, and content hashes. The builder rejects a verdict
+containing a `/nix/store/` reference. Qualification case, pack, aggregate, and
+check reports consume only this reference-free output, so a small JSON fan-in
+cannot cause Nix to transfer the entire `.olean` and Lean toolchain closure
+again. Full proof artifacts remain explicit build outputs rather than hidden
+report dependencies.
+
+Round-trip corpus generation and static preflight use a lightweight Python
+source projection that excludes Lean sources and Nix evaluators. Consequently,
+proof-only Lean or executor edits do not regenerate the deterministic PE corpus
+or its static analysis inputs.
+
+Static proof kernels are selected from explicit roots and their parsed Lean
+import closures. The generic whole-program acceptance cache is rooted at
+`RelationalPEWorldExecution` and `RelationalStaticTree`. Stage B interpreter
+execution, exact-native acceptance, and the native `programLookup`
+implementation have independent roots and caches. A failure in one of those
+optional implementations therefore cannot block an acceptance fixture that
+does not import it. Prefix-based `RelationalInterpreter*` discovery is
+prohibited because module names are not proof dependencies.
+
+Graph-smoke outputs validate graph shape, identities, dependencies, and
+resource classes without compiling Lean. Kernel-cache targets compile the
+corresponding exact closures. The distinction is explicit in the flake output
+names and graph manifests.
+
+The ordinary `WholeProgramCertificate` remains reusable intermediate evidence.
+Final acceptance is authorized only by
+`candidatePE32ProgramsEquivalentLinked`, whose
+`LinkedWholeProgramCertificate` connects the product graph to concrete linked
+execution and the selected external-environment refinement. Schema validation,
+round-trip qualification, Nix audits, and verdict production all require that
+linked theorem for `pass`.
 
 Each generated node has a canonical semantic ID over its source, recipe
 version, and direct dependency semantic IDs. Stable hash buckets prevent

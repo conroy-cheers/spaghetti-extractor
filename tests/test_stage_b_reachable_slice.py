@@ -8,11 +8,14 @@ from pathlib import Path
 from spaghetti_extractor.stage_b_reachable_slice import (
     write_stage_b_reachable_slice,
 )
+from spaghetti_extractor.relational.schema import (
+    RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
+)
 from spaghetti_extractor.stage_binary import StageAInputError
 from spaghetti_extractor.util import sha256_file
 
 
-_THEOREM = "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
+_THEOREM = RELATIONAL_FINAL_ACCEPTANCE_THEOREM
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -47,6 +50,10 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, Path]:
         "status": "ready",
         "required_theorem": _THEOREM,
         "theorem": _THEOREM,
+        "linked_acceptance": {
+            "status": "ready",
+            "theorem": _THEOREM,
+        },
     }
     rows = [
         {

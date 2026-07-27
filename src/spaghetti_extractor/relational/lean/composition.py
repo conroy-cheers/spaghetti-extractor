@@ -18,7 +18,6 @@ from ..contract import _raw_base_relocations
 from ..model import _semantic_hash
 from ..schema import (
     FLAG_BITS,
-    RELATIONAL_ACCEPTANCE_THEOREM,
     RELATIONAL_KERNEL_MODULES,
 )
 

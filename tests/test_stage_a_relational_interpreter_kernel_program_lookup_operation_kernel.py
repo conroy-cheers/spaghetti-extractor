@@ -38,6 +38,14 @@ class StageARelationalInterpreterKernelProgramLookupOperationKernelTests(
             source_root = (
                 Path(__file__).parents[1] / "src/spaghetti_extractor/lean/StageA"
             )
+            operation_source = (
+                source_root
+                / "RelationalInterpreterKernelProgramLookupOperation.lean"
+            ).read_text(encoding="utf-8")
+            self.assertNotIn(
+                "import StageA.RelationalInterpreterKernelLookupNative",
+                operation_source,
+            )
             _copy_module_closure(
                 source_root,
                 stage_a,

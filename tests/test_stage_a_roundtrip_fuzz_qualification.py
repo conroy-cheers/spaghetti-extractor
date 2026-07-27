@@ -7,8 +7,7 @@ import unittest
 from pathlib import Path
 
 from spaghetti_extractor.relational.schema import (
-    RELATIONAL_ACCEPTANCE_THEOREM,
-    RELATIONAL_ACCEPTANCE_THEOREMS,
+    RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
 )
 from spaghetti_extractor.roundtrip_fuzz.metrics import (
     GenericityEvidence,
@@ -341,9 +340,9 @@ class StageARoundTripFuzzQualificationTests(unittest.TestCase):
             "cases": aggregate_cases,
             "trust": {
                 "positive_pass_requires": "whole_program_lean",
-                "supported_acceptance_theorems": sorted(
-                    RELATIONAL_ACCEPTANCE_THEOREMS
-                ),
+                "supported_acceptance_theorems": [
+                    RELATIONAL_FINAL_ACCEPTANCE_THEOREM
+                ],
                 "negative_pass_is_fatal": True,
                 "aggregator_has_proof_authority": False,
             },
@@ -378,7 +377,7 @@ class StageARoundTripFuzzQualificationTests(unittest.TestCase):
         if case.expectation.disposition is ExpectedDisposition.PASS:
             phases = [{"id": "proof-build-and-audit", "status": "pass"}]
             acceptance: dict[str, object] | None = {
-                "theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                "theorem": RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
                 "authority": "whole_program_lean",
             }
             violation = None

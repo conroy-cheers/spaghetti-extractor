@@ -17,6 +17,7 @@ MACHINE_FORMAT = "stage-a-isa-conformance-bochs-machine-v1"
 RESULT_FORMAT = "stage-a-isa-conformance-bochs-result-v1"
 BACKEND_ID = "bochs-x86-32-batch-v1"
 BACKEND_VERSION = "3.0"
+PRIVATE_PROTOCOL_VERSION = "2"
 
 REQUIRE_MEMORY = 0x01
 REQUIRE_FAULT = 0x02
@@ -25,6 +26,13 @@ REQUIRE_SEGMENT = 0x08
 REQUIRE_BRANCH = 0x10
 REQUIRE_PROFILE = 0x20
 REQUIRE_INSTRUCTION = 0x40
+REQUIRE_MEMORY_BOUNDS = 0x80
+
+MAX_MEMORY_REGIONS = 32
+MAX_MEMORY_BYTES = 65536
+INSTRUCTION_SLOT_BYTES = 15
+GUEST_MEMORY_MIN = 0x00010000
+GUEST_MEMORY_END = 0x01000000
 
 GPRS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
 PROFILE_FIELDS = {
@@ -58,12 +66,11 @@ CASE_FIELDS = {
     "expected",
 }
 
-SUPPORTED_PROFILE = {
-    "architecture": "x86",
-    "cpu": "haswell",
-    "execution_mode": "protected-32",
-    "environment": "pe32",
-    "features": [],
+SUPPORTED_PROFILE_MODELS = {
+    ("x86", "haswell", "protected-32", "pe32", ()): "corei7_haswell_4770",
+    # Bochs has no Pentium Pro preset. Pentium II is the nearest architectural
+    # superset; the pe32-i686-v1 catalog excludes MMX and later forms.
+    ("x86", "i686", "protected-32", "pe32", ()): "p2_klamath",
 }
 RESET_X87 = {
     "control_word": 0x037F,
@@ -199,8 +206,7 @@ def validate_case(case: dict[str, Any], context: str) -> None:
         )
 
     validate_state(case["initial_state"], f"{context}.initial_state")
-    if not isinstance(case["memory"], list):
-        raise RunnerError(f"{context}.memory must be a list")
+    validate_memory(case["memory"], f"{context}.memory")
 
     defined = exact_object(
         case["defined_outputs"], DEFINED_FIELDS, f"{context}.defined_outputs"
@@ -225,6 +231,89 @@ def validate_case(case: dict[str, Any], context: str) -> None:
         )
 
 
+def profile_key(profile: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        profile["architecture"],
+        profile["cpu"],
+        profile["execution_mode"],
+        profile["environment"],
+        tuple(profile["features"]),
+    )
+
+
+def profile_model(profile: dict[str, Any]) -> str | None:
+    return SUPPORTED_PROFILE_MODELS.get(profile_key(profile))
+
+
+def validate_memory(value: Any, context: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise RunnerError(f"{context} must be a list")
+    regions: list[dict[str, Any]] = []
+    ranges: list[tuple[int, int]] = []
+    for index, raw_region in enumerate(value):
+        region_context = f"{context}[{index}]"
+        region = exact_object(
+            raw_region, {"address", "bytes", "permissions"}, region_context
+        )
+        address = u32(region["address"], f"{region_context}.address")
+        data = region["bytes"]
+        if (
+            not isinstance(data, list)
+            or not data
+            or any(
+                isinstance(byte, bool)
+                or not isinstance(byte, int)
+                or not 0 <= byte <= 255
+                for byte in data
+            )
+        ):
+            raise RunnerError(f"{region_context}.bytes must be non-empty bytes")
+        permissions = region["permissions"]
+        if permissions not in {"r", "rw", "rx", "rwx"}:
+            raise RunnerError(
+                f"{region_context}.permissions must be r, rw, rx, or rwx"
+            )
+        end = address + len(data)
+        if end > 2**32:
+            raise RunnerError(f"{region_context} wraps the address space")
+        ranges.append((address, end))
+        regions.append(region)
+    sorted_ranges = sorted(ranges)
+    for index, (start, end) in enumerate(sorted_ranges):
+        if index and start < sorted_ranges[index - 1][1]:
+            raise RunnerError(f"{context} contains overlapping regions")
+        if start == end:
+            raise RunnerError(f"{context} contains an empty region")
+    return regions
+
+
+def memory_capability_supported(case: dict[str, Any]) -> bool:
+    regions = case["memory"]
+    if len(regions) > MAX_MEMORY_REGIONS:
+        return False
+    if sum(len(region["bytes"]) for region in regions) > MAX_MEMORY_BYTES:
+        return False
+    instruction_start = case["initial_state"]["eip"]
+    instruction_end = instruction_start + INSTRUCTION_SLOT_BYTES
+    for region in regions:
+        start = region["address"]
+        end = start + len(region["bytes"])
+        if start < GUEST_MEMORY_MIN or end > GUEST_MEMORY_END:
+            return False
+        if start < instruction_end and instruction_start < end:
+            return False
+    for mask in case["defined_outputs"]["memory"]:
+        start = mask["address"]
+        end = start + len(mask["mask"])
+        if not any(
+            region["address"] <= start
+            and end <= region["address"] + len(region["bytes"])
+            for region in regions
+        ):
+            return False
+    return True
+
+
 def case_requirements(case: dict[str, Any]) -> int:
     profile = case["profile"]
     defined = case["defined_outputs"]
@@ -232,10 +321,12 @@ def case_requirements(case: dict[str, Any]) -> int:
     initial_fs = case["initial_state"]["fs"]
     initial_x87 = case["initial_state"]["x87"]
     requirements = 0
-    if profile != SUPPORTED_PROFILE:
+    if profile_model(profile) is None:
         requirements |= REQUIRE_PROFILE
     if case["memory"] or defined["memory"] or expected["memory"]:
         requirements |= REQUIRE_MEMORY
+        if not memory_capability_supported(case):
+            requirements |= REQUIRE_MEMORY_BOUNDS
     if expected["fault"] != "none" or expected["final_state"] is None:
         requirements |= REQUIRE_FAULT
     if any_mask(defined["x87"]) or initial_x87 != RESET_X87:
@@ -251,12 +342,21 @@ def case_requirements(case: dict[str, Any]) -> int:
     return requirements
 
 
+def private_memory_field(case: dict[str, Any]) -> str:
+    if not memory_capability_supported(case) or not case["memory"]:
+        return "-"
+    return ",".join(
+        f"{region['address']:08x}:{region['permissions']}:{bytes(region['bytes']).hex()}"
+        for region in case["memory"]
+    )
+
+
 def private_case_line(sequence: int, case: dict[str, Any]) -> str:
     state = case["initial_state"]
     gprs = state["gprs"]
     values = [
         "CASE",
-        "1",
+        PRIVATE_PROTOCOL_VERSION,
         f"{sequence:08x}",
         bytes_value(case["instruction_bytes"], "instruction_bytes").hex(),
         f"{u32(state['eip'], 'initial_state.eip'):08x}",
@@ -266,6 +366,7 @@ def private_case_line(sequence: int, case: dict[str, Any]) -> str:
         f"{u32(gprs[name], f'initial_state.gprs.{name}'):08x}" for name in GPRS
     )
     values.append(f"{case_requirements(case):08x}")
+    values.append(private_memory_field(case))
     return "\t".join(values)
 
 
@@ -280,10 +381,46 @@ def parse_private_output(text: str, case_count: int) -> list[dict[str, Any]]:
             raise RunnerError("private observation is malformed or out of order")
         status = fields[2]
         if status == "complete":
-            if len(fields) != 13:
+            if len(fields) != 16:
                 raise RunnerError("private complete observation is malformed")
-            words = [int(field, 16) for field in fields[3:]]
-            records.append({"status": status, "words": words, "detail": ""})
+            try:
+                words = [int(field, 16) for field in fields[3:13]]
+            except ValueError as exc:
+                raise RunnerError(
+                    "private complete observation contains an invalid word"
+                ) from exc
+            if any(not 0 <= word < 2**32 for word in words):
+                raise RunnerError(
+                    "private complete observation word exceeds 32 bits"
+                )
+            control = fields[13]
+            fault = fields[14]
+            if control not in {
+                "fallthrough",
+                "direct_branch",
+                "indirect_branch",
+                "direct_call",
+                "indirect_call",
+                "return",
+            }:
+                raise RunnerError(
+                    "private complete observation control is unsupported"
+                )
+            if fault != "none":
+                raise RunnerError(
+                    "private complete observation fault is unsupported"
+                )
+            memory = parse_private_memory(fields[15])
+            records.append(
+                {
+                    "status": status,
+                    "words": words,
+                    "control": control,
+                    "fault": fault,
+                    "memory": memory,
+                    "detail": "",
+                }
+            )
         elif status in {"unsupported", "error"}:
             if len(fields) != 4 or not fields[3]:
                 raise RunnerError("private incomplete observation is malformed")
@@ -293,6 +430,63 @@ def parse_private_output(text: str, case_count: int) -> list[dict[str, Any]]:
     if lines[-1] != f"DONE\t{case_count:08x}":
         raise RunnerError("private terminal record is malformed")
     return records
+
+
+def parse_private_memory(value: str) -> list[dict[str, Any]]:
+    if value == "-":
+        return []
+    regions: list[dict[str, Any]] = []
+    for token in value.split(","):
+        fields = token.split(":")
+        if len(fields) != 2 or len(fields[0]) != 8 or not fields[1]:
+            raise RunnerError("private memory observation is malformed")
+        try:
+            address = int(fields[0], 16)
+            data = bytes.fromhex(fields[1])
+        except ValueError as exc:
+            raise RunnerError("private memory observation is malformed") from exc
+        if len(fields[1]) != len(data) * 2:
+            raise RunnerError("private memory observation is malformed")
+        regions.append({"address": address, "bytes": list(data)})
+    return regions
+
+
+def select_observed_memory(
+    case: dict[str, Any], snapshots: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    expected_inventory = [
+        (region["address"], len(region["bytes"])) for region in case["memory"]
+    ]
+    observed_inventory = [
+        (snapshot["address"], len(snapshot["bytes"])) for snapshot in snapshots
+    ]
+    if observed_inventory != expected_inventory:
+        raise RunnerError(
+            "private memory observation does not match the mapped-region inventory"
+        )
+    result: list[dict[str, Any]] = []
+    for mask in case["defined_outputs"]["memory"]:
+        start = mask["address"]
+        end = start + len(mask["mask"])
+        matches = [
+            snapshot
+            for snapshot in snapshots
+            if snapshot["address"] <= start
+            and end <= snapshot["address"] + len(snapshot["bytes"])
+        ]
+        if len(matches) != 1:
+            raise RunnerError(
+                "private memory observation does not cover an output mask"
+            )
+        snapshot = matches[0]
+        offset = start - snapshot["address"]
+        result.append(
+            {
+                "address": start,
+                "bytes": snapshot["bytes"][offset : offset + len(mask["mask"])],
+            }
+        )
+    return result
 
 
 def machine_record(
@@ -325,13 +519,16 @@ def machine_record(
         "case_id": case["id"],
         "status": "complete",
         "final_state": final_state,
-        "memory": [],
-        "actual": {"control": "fallthrough", "fault": "none"},
+        "memory": select_observed_memory(case, private["memory"]),
+        "actual": {
+            "control": private["control"],
+            "fault": private["fault"],
+        },
         "detail": "",
     }
 
 
-def bochsrc(guest: Path, log: Path) -> str:
+def bochsrc(guest: Path, log: Path, cpu_model: str) -> str:
     bios_root = Path(
         os.environ.get(
             "BOCHS_CONFORMANCE_BIOS_DIR",
@@ -357,7 +554,10 @@ def bochsrc(guest: Path, log: Path) -> str:
             "info: action=report",
             "debug: action=ignore",
             "clock: sync=none, time0=0",
-            "cpu: model=corei7_haswell_4770, count=1, ips=10000000, reset_on_triple_fault=1",
+            (
+                f"cpu: model={cpu_model}, count=1, ips=10000000, "
+                "reset_on_triple_fault=1"
+            ),
             "mouse: enabled=0",
             "",
         ]
@@ -387,6 +587,14 @@ def run() -> None:
         raise RunnerError("corpus must contain at least one case")
     for index, case in enumerate(cases):
         validate_case(case, f"case[{index}]")
+    cpu_models = {
+        profile_model(case["profile"])
+        for case in cases
+        if profile_model(case["profile"]) is not None
+    }
+    if len(cpu_models) > 1:
+        raise RunnerError("corpus mixes incompatible CPU execution profiles")
+    cpu_model = next(iter(cpu_models), "corei7_haswell_4770")
 
     script_root = Path(__file__).resolve().parent
     bochs = Path(
@@ -420,7 +628,7 @@ def run() -> None:
             ),
             encoding="ascii",
         )
-        config.write_text(bochsrc(guest, log), encoding="ascii")
+        config.write_text(bochsrc(guest, log, cpu_model), encoding="ascii")
         environment = dict(os.environ)
         environment.update(
             BOCHS_CONFORMANCE_PRIVATE_INPUT=str(private_input),

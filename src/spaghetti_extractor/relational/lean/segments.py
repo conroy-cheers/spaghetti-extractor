@@ -16,7 +16,6 @@ from ..model import _semantic_hash, _target_shaped_register_output_claims
 from ..schema import (
     FLAG_BITS,
     REGISTERS,
-    RELATIONAL_ACCEPTANCE_THEOREM,
     RELATIONAL_KERNEL_MODULES,
 )
 

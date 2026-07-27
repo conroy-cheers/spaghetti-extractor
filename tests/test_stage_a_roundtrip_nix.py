@@ -1697,20 +1697,28 @@ class StageARoundtripNixTests(unittest.TestCase):
         self.assertIn("preparationGraphBundle", corpus)
         self.assertIn("caseProofDags", corpus)
         self.assertIn("caseAudits", corpus)
-        self.assertIn("caseResultBundle", corpus)
-        self.assertIn("packResultBundle", corpus)
+        self.assertNotIn("caseResultBundle", corpus)
+        self.assertNotIn("packResultBundle", corpus)
         self.assertIn("builtins.readFile args.preparationGraph", flake)
         self.assertNotIn(
             'builtins.readFile (args.preparation + "/module-graph.json")',
             flake,
         )
-        self.assertIn('builtins.toFile "${caseId}-case-result.json"', corpus)
         self.assertIn(
-            'builtins.toFile "${name}-${pack.id}-result.json"', corpus
+            'result = "${caseAudits.${caseId}}/${caseResultFile}";',
+            corpus,
         )
-        self.assertGreaterEqual(
-            corpus.count("builtins.unsafeDiscardStringContext"), 2
+        self.assertIn(
+            'result = "${proofPacks.${pack.id}}/pack-result.json";',
+            corpus,
         )
+        self.assertIn("args.proofDag.verdict", flake)
+        self.assertNotIn('"preparation_store_path"', corpus)
+        self.assertNotIn('"proof_dag_store_path"', corpus)
+        self.assertNotIn('"audit_store_path"', corpus)
+        self.assertNotIn('"store_path"', corpus)
+        self.assertNotIn('"derivation_path"', corpus)
+        self.assertNotIn("builtins.unsafeDiscardStringContext", corpus)
 
     def test_flake_exports_stable_roundtrip_interfaces(self) -> None:
         flake = self.flake_nix.read_text(encoding="utf-8")
@@ -1766,6 +1774,47 @@ class StageARoundtripNixTests(unittest.TestCase):
         self.assertNotIn("--builders @nix/stage-a-builders", flake)
         self.assertNotIn("stage-a-roundtrip-lean-kernel-cache-ca", flake)
 
+    def test_lean_kernel_profiles_use_exact_import_closures(self) -> None:
+        flake = self.flake_nix.read_text(encoding="utf-8")
+        graph = (self.repo / "nix" / "stage-a-lean-graph.nix").read_text(
+            encoding="utf-8"
+        )
+        compact = (self.repo / "nix" / "stage-a-lean-compact.nix").read_text(
+            encoding="utf-8"
+        )
+        profile_start = flake.index("relationalAcceptanceKernelRoots =")
+        profile_end = flake.index(
+            "relationalRoundtripKernelResources =", profile_start
+        )
+        profiles = flake[profile_start:profile_end]
+
+        self.assertIn('"RelationalPEWorldExecution"', profiles)
+        self.assertIn('"RelationalStaticTree"', profiles)
+        self.assertIn('"RelationalInterpreterWholeProgramAcceptance"', profiles)
+        self.assertIn('"RelationalInterpreterKernelLookupNative"', profiles)
+        self.assertIn('"RelationalInterpreterKernelProgramLookupOperation"', profiles)
+        self.assertNotIn("hasPrefix", profiles)
+        self.assertNotIn("builtins.filter", profiles)
+        self.assertIn("selectedTargetClosureNodes", graph)
+        self.assertIn('"stage-a-lean-target-bundle-v2"', graph)
+        self.assertIn('"target_nodes": json.loads(sys.argv[6])', graph)
+        self.assertIn('"closure_nodes": json.loads(sys.argv[7])', graph)
+        for executor in (graph, compact):
+            self.assertIn(
+                "LinkedWorldExternalProtocolEnvironmentsRefine",
+                executor,
+            )
+            self.assertGreaterEqual(
+                executor.count("AcceptanceExternalEnvironmentsRefine"),
+                2,
+            )
+            self.assertNotIn("PE32RawProgramsObservationallyEquivalent", executor)
+            self.assertNotIn("ordinaryAcceptanceReady", executor)
+            self.assertNotIn(
+                "linked final-theorem audit does not support protocol environments",
+                executor,
+            )
+
     def test_flake_wires_real_non_recursive_proof_callbacks(self) -> None:
         flake = self.flake_nix.read_text(encoding="utf-8")
         start = flake.index("mkRoundtripCasePreparation =")
@@ -1775,12 +1824,22 @@ class StageARoundtripNixTests(unittest.TestCase):
         self.assertIn(
             "import ./nix/stage-a-relational-analysis-graph.nix", callbacks
         )
+        self.assertIn(
+            "analysisKernelCache = "
+            "stage-a-relational-analysis-ifd-kernel-cache;",
+            callbacks,
+        )
         self.assertNotIn("stage-a-prepare-relational", callbacks)
         self.assertIn("import ./nix/stage-a-lean-graph.nix", callbacks)
-        self.assertIn('schedulingMode = "closure";', callbacks)
+        self.assertIn('schedulingMode = "dag";', callbacks)
         self.assertIn(
-            "precompiledKernel = stage-a-relational-kernel-cache;", callbacks
+            "precompiledKernel = stage-a-relational-acceptance-kernel-cache;",
+            callbacks,
         )
+        self.assertIn("dataflowFineGrained = false;", callbacks)
+        self.assertIn("dataflowContentAddressed = false;", callbacks)
+        self.assertIn("args.proofDag.verdict", callbacks)
+        self.assertIn("spaghetti-extractor-roundtrip", callbacks)
         self.assertIn('targetNodes = [ negativeNode ];', callbacks)
         self.assertIn('"relationalcounterexample"', callbacks)
         self.assertIn('"whole_program_lean"', callbacks)
@@ -1800,6 +1859,15 @@ class StageARoundtripNixTests(unittest.TestCase):
         )
         self.assertIn("mkCaseProofDag = mkRoundtripCaseProofDag;", qualification)
         self.assertIn("mkCaseAudit = mkRoundtripCaseAudit;", qualification)
+        self.assertIn(
+            "spaghettiExtractor = spaghetti-extractor-roundtrip;",
+            qualification,
+        )
+        self.assertIn("spaghettiExtractorRoundtripSource =", flake)
+        self.assertIn(
+            "pkgs.lib.fileset.difference ./src ./src/spaghetti_extractor/lean",
+            flake,
+        )
         self.assertIn("caseMeasurementDefaults = {", qualification)
         self.assertIn('resourceClass = "whole-program-proof";', qualification)
         self.assertIn('resourceClass = "checked-witness";', qualification)
@@ -1836,11 +1904,15 @@ class StageARoundtripNixTests(unittest.TestCase):
         )
         self.assertIn('"materialized_oleans": 0', graph)
         self.assertIn('"archive_bytes": 0', graph)
+        self.assertIn('"stage-a-relational-proof-verdict-v1"', graph)
+        self.assertIn('"compact proof verdict retained Nix store references', graph)
+        self.assertIn('"out"\n            "verdict"', graph)
+        self.assertIn('cp "$out/audit.json" "$verdict/audit.json"', graph)
         self.assertNotIn("dependency-pack", graph)
         self.assertIn('contentAddressed ? true', graph)
         self.assertIn("module-build-packs.json", graph)
         self.assertIn("stage-a-lean-build-packs-v1", graph)
-        self.assertIn("standaloneSource = module:", graph)
+        self.assertRegex(graph, r"standaloneSource\s*=\s*module:")
         self.assertIn("builtins.toFile", graph)
         self.assertIn("builtins.unsafeDiscardStringContext", graph)
         self.assertNotIn("passAsFile = sourceNames", graph)
@@ -1849,9 +1921,9 @@ class StageARoundtripNixTests(unittest.TestCase):
             '"${standaloneRoot}/source-packs/${packId}/." "$out/"',
             graph,
         )
-        self.assertIn(
-            "if standalone then standaloneSource module else",
+        self.assertRegex(
             graph,
+            r"if standalone then\s+standaloneSource module\s+else",
         )
         self.assertIn(
             'lib.optionalAttrs contentAddressed { __contentAddressed = true; }',
@@ -1866,10 +1938,10 @@ class StageARoundtripNixTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn(
-            'standaloneMetadataSource = module:\n'
-            '    standaloneSourceRoot + "/${module}.lean";',
+        self.assertRegex(
             graph,
+            r'standaloneMetadataSource\s*=\s*module:\s*'
+            r'standaloneSourceRoot \+ "/\$\{module\}\.lean";',
         )
         self.assertIn(
             "builtins.readFile (standaloneMetadataSource module)",
@@ -2041,10 +2113,12 @@ class StageARoundtripNixTests(unittest.TestCase):
     def test_qualification_accepts_only_supported_whole_program_theorems(self) -> None:
         corpus = self.corpus_nix.read_text(encoding="utf-8")
 
-        self.assertIn("candidatePE32ProgramsEquivalent\"", corpus)
         self.assertIn("candidatePE32ProgramsEquivalentLinked\"", corpus)
-        self.assertNotIn(
-            'acceptance.get("theorem")\n                    ==',
+        self.assertNotIn("candidatePE32ProgramsEquivalent\"", corpus)
+        self.assertIn(
+            'acceptance.get("theorem")\n'
+            '                    == "StageA.GeneratedRelational.'
+            'candidatePE32ProgramsEquivalentLinked"',
             corpus,
         )
         self.assertIn('"supported_acceptance_theorems"', corpus)
@@ -2181,28 +2255,29 @@ class StageARoundtripNixTests(unittest.TestCase):
         self.assertFalse(report["executes_original_binary"])
         self.assertEqual(len(report["packs"]), 3)
         self.assertTrue(all(
-            pack["store_path"].startswith("/nix/store/")
-            and pack["derivation_path"].endswith(".drv")
+            "store_path" not in pack
+            and "derivation_path" not in pack
             for pack in report["packs"]
         ), report["packs"])
         self.assertTrue(all(
-            case["preparation_store_path"].startswith("/nix/store/")
-            and case["preparation_derivation_path"].endswith(".drv")
-            and case["proof_dag_store_path"].startswith("/nix/store/")
-            and case["proof_dag_derivation_path"].endswith(".drv")
-            and case["audit_store_path"].startswith("/nix/store/")
-            and case["audit_derivation_path"].endswith(".drv")
-            for case in report["cases"]
-        ))
-        self.assertTrue(all(
-            len({
-                case["preparation_derivation_path"],
-                case["proof_dag_derivation_path"],
-                case["audit_derivation_path"],
-            }) == 3
+            "preparation_store_path" not in case
+            and "preparation_derivation_path" not in case
+            and "proof_dag_store_path" not in case
+            and "proof_dag_derivation_path" not in case
+            and "audit_store_path" not in case
+            and "audit_derivation_path" not in case
             for case in report["cases"]
         ))
         self.assertEqual(len(plan["packs"]), 3)
+        references = subprocess.run(
+            ["nix-store", "-q", "--references", str(output)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(references.returncode, 0, references.stderr)
+        self.assertEqual(references.stdout.strip(), "")
 
     @unittest.skipUnless(
         shutil.which("nix")
@@ -2410,7 +2485,7 @@ class StageARoundtripNixTests(unittest.TestCase):
                       "acceptance": ${
                         if args.case.expectation.disposition == "pass"
                         then builtins.toJSON {
-                          theorem = "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent";
+                          theorem = "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked";
                           authority = "whole_program_lean";
                         }
                         else builtins.toJSON {

@@ -275,10 +275,8 @@ rec {
 
   originalSupplementRequest = mkSupplementRequest "original" originalInventory;
   candidateSupplementRequest = mkSupplementRequest "candidate" candidateInventory;
-  originalIsaRequest =
-    mkMergedIsaRequest "original" originalInventory originalSupplementRequest;
-  candidateIsaRequest =
-    mkMergedIsaRequest "candidate" candidateInventory candidateSupplementRequest;
+  originalIsaRequest = mkMergedIsaRequest "original" originalInventory originalSupplementRequest;
+  candidateIsaRequest = mkMergedIsaRequest "candidate" candidateInventory candidateSupplementRequest;
   originalIsa = mkSideIsa "original" "${originalIsaRequest}/request.json";
   candidateIsa = mkSideIsa "candidate" "${candidateIsaRequest}/request.json";
   originalSupplementExtraction = mkSupplementExtraction "original" originalSupplementRequest;
@@ -713,12 +711,8 @@ rec {
             all(.blockers[]; (.code | type) == "string" and (.code | length) > 0)
           ) or (
             .status == "ready" and
-            (
-              .theorem ==
-                "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" or
-              .theorem ==
-                "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
-            ) and
+            .theorem ==
+              "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" and
             (.blockers | length) == 0
           )
         ' "$work/relational-v3/whole-program-acceptance.json" >/dev/null
@@ -731,12 +725,8 @@ rec {
               (.acceptance.blockers | length) > 0
             ) or (
               .acceptance.status == "ready" and
-              (
-                .expected_final_theorem ==
-                  "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" or
-                .expected_final_theorem ==
-                  "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
-              ) and
+              .expected_final_theorem ==
+                "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" and
               (.acceptance.blockers | length) == 0
             )
           )

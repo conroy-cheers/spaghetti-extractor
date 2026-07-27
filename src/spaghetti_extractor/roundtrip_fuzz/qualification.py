@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..relational.schema import RELATIONAL_ACCEPTANCE_THEOREMS
+from ..relational.schema import RELATIONAL_FINAL_ACCEPTANCE_THEOREM
 from ..stage_binary import StageAInputError
 from ..util import json_dumps, sha256_file, write_json
 from .metrics import (
@@ -158,12 +158,12 @@ def _validate_aggregate(
         trust["supported_acceptance_theorems"],
         "round-trip Nix aggregate supported theorem inventory",
     )
+    final_theorem_inventory = [RELATIONAL_FINAL_ACCEPTANCE_THEOREM]
     if (
         trust["positive_pass_requires"] != "whole_program_lean"
         or trust["negative_pass_is_fatal"] is not True
         or trust["aggregator_has_proof_authority"] is not False
-        or set(theorem_inventory) != RELATIONAL_ACCEPTANCE_THEOREMS
-        or len(theorem_inventory) != len(RELATIONAL_ACCEPTANCE_THEOREMS)
+        or theorem_inventory != final_theorem_inventory
     ):
         raise StageAInputError("round-trip Nix aggregate trust policy is unsupported")
 
@@ -412,7 +412,7 @@ def _validate_inner_result(result: Mapping[str, Any], case: CaseManifest) -> Non
             )
         if (
             acceptance["authority"] != "whole_program_lean"
-            or acceptance["theorem"] not in RELATIONAL_ACCEPTANCE_THEOREMS
+            or acceptance["theorem"] != RELATIONAL_FINAL_ACCEPTANCE_THEOREM
             or phases.get("proof-build-and-audit") != "pass"
         ):
             raise StageAInputError(

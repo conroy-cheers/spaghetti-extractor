@@ -374,7 +374,7 @@ class StageAAcceptanceControlFlowTests(StageARelationalTestBase):
             finalized = _finalize_nix_proof_ir(
                 proof_ir,
                 theorem_checked=True,
-                theorem=RELATIONAL_ACCEPTANCE_THEOREM,
+                theorem=RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
                 result_path=Path("/nix/store/test-whole-program-proof"),
             )
             self.assertEqual(finalized["status"], "satisfied")

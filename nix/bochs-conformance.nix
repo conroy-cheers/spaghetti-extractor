@@ -122,7 +122,13 @@ let
       architecture = "x86";
       executionMode = "protected-32";
       level = 6;
-      model = "corei7_haswell_4770";
+      models = [
+        "corei7_haswell_4770"
+        "p2_klamath"
+      ];
+      i686CatalogChip = "PENTIUMPRO";
+      i686ExecutionModel = "p2_klamath";
+      i686ExecutionModelIsSuperset = true;
       x86_64Compiled = true;
       fpu = true;
       avx = true;

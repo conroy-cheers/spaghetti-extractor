@@ -19,8 +19,8 @@ class StageALeanCompactTests(unittest.TestCase):
         source = self.evaluator.read_text(encoding="utf-8")
 
         self.assertIn("theorem typedFinalTheorem", source)
-        self.assertIn("PE32RawProgramsObservationallyEquivalent", source)
         self.assertIn("PE32RawProgramsLinkedObservationallyEquivalent", source)
+        self.assertNotIn("PE32RawProgramsObservationallyEquivalent", source)
         self.assertIn("#print axioms typedFinalTheorem", source)
         self.assertIn('lean -j 1 --trust=0', source)
         self.assertIn('cmp -s "$source"', source)
@@ -131,11 +131,13 @@ class StageALeanCompactTests(unittest.TestCase):
             self._write_fixture(root)
             bundle = root / "lean" / "StageA" / "RelationalBundle.lean"
             source = bundle.read_text(encoding="utf-8")
-            declaration = source.index("theorem candidatePE32ProgramsEquivalent")
+            declaration = source.index(
+                "theorem candidatePE32ProgramsEquivalentLinked"
+            )
             namespace_end = source.index("end StageA.GeneratedRelational")
             weakened = (
                 source[:declaration]
-                + "theorem candidatePE32ProgramsEquivalent : True := by\n"
+                + "theorem candidatePE32ProgramsEquivalentLinked : True := by\n"
                 + "  trivial\n"
                 + source[namespace_end:]
             )
@@ -157,11 +159,11 @@ class StageALeanCompactTests(unittest.TestCase):
             self._write_fixture(root)
             bundle = root / "lean" / "StageA" / "RelationalBundle.lean"
             source = bundle.read_text(encoding="utf-8")
-            theorem = "theorem candidatePE32ProgramsEquivalent :"
+            theorem = "theorem candidatePE32ProgramsEquivalentLinked :"
             axiom = """axiom compactUnsound :
-    PE32RawProgramsObservationallyEquivalent staticProofContext
+    PE32RawProgramsLinkedObservationallyEquivalent staticProofContext
       relationalProductGraph productInvariantTable
-      relationalProductReachabilityEvidence productControlProfile consoleLaunch
+      relationalProductReachabilityEvidence linkedProductControlProfile consoleLaunch
       originalWorldProgram candidateWorldProgram
 
 """
@@ -247,10 +249,10 @@ def protocolCallbackTargets : ProtocolCallbackTargetProfile := 0
 def originalWorldProgram : DecodedWorldProgram := 0
 def candidateWorldProgram : DecodedWorldProgram := 0
 
-theorem candidatePE32ProgramsEquivalent :
-    PE32RawProgramsObservationallyEquivalent staticProofContext
+theorem candidatePE32ProgramsEquivalentLinked :
+    PE32RawProgramsLinkedObservationallyEquivalent staticProofContext
       relationalProductGraph productInvariantTable
-      relationalProductReachabilityEvidence productControlProfile consoleLaunch
+      relationalProductReachabilityEvidence linkedProductControlProfile consoleLaunch
       originalWorldProgram candidateWorldProgram := by
   exact .intro
 end StageA.GeneratedRelational
@@ -288,7 +290,9 @@ end StageA.GeneratedRelationalCounterexample
                 "counterexample", ["RelationalCounterexample"], ["kernel"], sources
             ),
         ]
-        theorem = "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
+        theorem = (
+            "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
+        )
         graph = {
             "format": "stage-a-lean-module-graph-v1",
             "lean": {"trust": 0},
@@ -301,7 +305,7 @@ end StageA.GeneratedRelationalCounterexample
                 "required_theorem": theorem,
                 "theorem": theorem,
                 "node_steps": [],
-                "linked_acceptance": {"status": "incomplete", "theorem": None},
+                "linked_acceptance": {"status": "ready", "theorem": theorem},
             },
             "approved_axioms": [],
             "modules": modules,

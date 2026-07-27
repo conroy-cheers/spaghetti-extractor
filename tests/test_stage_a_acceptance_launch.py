@@ -991,7 +991,7 @@ class StageAAcceptanceLaunchTests(StageARelationalTestBase):
 
             self.assertEqual(result["acceptance"]["status"], "ready", result)
             self.assertEqual(
-                result["acceptance"]["theorem"], RELATIONAL_ACCEPTANCE_THEOREM
+                result["acceptance"]["theorem"], RELATIONAL_LINKED_ACCEPTANCE_THEOREM
             )
             self.assertEqual(result["acceptance"]["blockers"], [])
             self.assertEqual(

@@ -10,6 +10,17 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlencode
 
+from ..isa_cli import (
+    load_isa_semantic_kernel_binding,
+    select_isa_kernel_qualification_for_inventory,
+)
+from ..isa_kernel_qualification import (
+    ISAKernelQualificationError,
+    QualificationStatus,
+    SemanticKernelBinding,
+    parse_kernel_qualification,
+    serialize_kernel_selection,
+)
 from ..stage_binary import StageABinary, StageAInputError
 from ..util import sha256_bytes, sha256_file, write_json
 from .analysis_artifact import validate_relational_analysis
@@ -22,8 +33,7 @@ from .checked_artifacts import (
 from .contract import _load_contract
 from .report_schema import RELATIONAL_PREPARED_REPORT_FILES
 from .schema import (
-    RELATIONAL_ACCEPTANCE_THEOREMS,
-    RELATIONAL_ACCEPTANCE_THEOREM,
+    RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
     RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
     RELATIONAL_KERNEL_MODULES,
     LEAN_MODULE_GRAPH_FORMATS,
@@ -53,6 +63,17 @@ _LEAN_SEMANTIC_NODE_ID_FORMAT = "stage-a-lean-semantic-node-id-v1"
 _LEAN_SEMANTIC_RECIPE_VERSION = "stage-a-lean-semantic-recipe-v1"
 _NIX_EVALUATION_CACHE_FORMAT = "stage-a-nix-evaluation-cache-v1"
 _NIX_SEMANTIC_BOUNDARY_FORMAT = "stage-a-nix-semantic-boundary-v1"
+_ISA_KERNEL_SOURCE_MODULES = (
+    "X87",
+    "Formal",
+    "ISAQualification",
+)
+_ISA_KERNEL_SEMANTICS_MODULES = (
+    "X87",
+    "Formal",
+    "ISAConformance",
+    "ISAConformanceRunner",
+)
 
 
 def _nix_executable() -> str:
@@ -683,6 +704,8 @@ def stage_a_build_relational_from_nix(
     builders_file: Path | None = None,
     builder_trusted_public_keys_file: Path | None = None,
     target_nodes: list[str] | None = None,
+    isa_kernel_qualification: Path | None = None,
+    isa_semantic_kernel: Path | None = None,
 ) -> dict[str, Any]:
     """Realize a prepared proof first, then build its dynamic Lean graph.
 
@@ -762,6 +785,8 @@ def stage_a_build_relational_from_nix(
         builders_file=builders_path,
         builder_trusted_public_keys_file=trusted_keys_path,
         target_nodes=target_nodes,
+        isa_kernel_qualification=isa_kernel_qualification,
+        isa_semantic_kernel=isa_semantic_kernel,
     )
     realization = {
         "format": "stage-a-prepared-nix-realization-v1",
@@ -1081,6 +1106,263 @@ def _relational_focused_input(
     }
 
 
+def _isa_semantic_kernel_bundle_path(
+    payload: Mapping[str, Any],
+) -> Path:
+    if set(payload) != {
+        "format",
+        "id",
+        "decoder_sha256",
+        "semantics_sha256",
+        "lean_version",
+        "source",
+        "trust",
+    }:
+        raise StageAInputError(
+            "ISA semantic-kernel binding has unexpected or missing fields"
+        )
+    if payload.get("trust") != {
+        "role": "compiled_lean_semantic_kernel_identity",
+        "proof_authority": False,
+        "closes_stage_a_proof": False,
+    }:
+        raise StageAInputError(
+            "ISA semantic-kernel binding has invalid trust metadata"
+        )
+    if any(
+        not isinstance(payload.get(field), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", payload[field])
+        for field in ("decoder_sha256", "semantics_sha256")
+    ):
+        raise StageAInputError(
+            "ISA semantic-kernel binding has invalid semantic hashes"
+        )
+    source = payload.get("source")
+    if not isinstance(source, Mapping) or set(source) != {
+        "bundle_store_path",
+        "bundle",
+    }:
+        raise StageAInputError(
+            "ISA semantic-kernel binding omits compiled source provenance"
+        )
+    bundle_store_path = source.get("bundle_store_path")
+    bundle_name = source.get("bundle")
+    if (
+        not isinstance(bundle_store_path, str)
+        or not bundle_store_path.startswith("/nix/store/")
+        or bundle_name != "bundle.json"
+    ):
+        raise StageAInputError(
+            "ISA semantic-kernel binding has invalid Nix bundle provenance"
+        )
+    return Path(bundle_store_path) / bundle_name
+
+
+def _validate_isa_semantic_kernel_bundle(
+    *,
+    binding: SemanticKernelBinding,
+    bundle: Mapping[str, Any],
+    graph: Mapping[str, Any],
+) -> dict[str, Mapping[str, Any]]:
+    if bundle.get("lean_version") != binding.lean_version:
+        raise StageAInputError(
+            "ISA semantic-kernel Lean version disagrees with its compiled bundle"
+        )
+    graph_lean = graph.get("lean")
+    if (
+        not isinstance(graph_lean, Mapping)
+        or graph_lean.get("version") != binding.lean_version
+    ):
+        raise StageAInputError(
+            "prepared whole-program graph uses a different Lean version "
+            "from the ISA semantic kernel"
+        )
+    bundle_nodes = bundle.get("nodes")
+    if not isinstance(bundle_nodes, list) or any(
+        not isinstance(node, Mapping) for node in bundle_nodes
+    ):
+        raise StageAInputError("ISA semantic-kernel bundle has invalid nodes")
+    by_id = {
+        node.get("id"): node
+        for node in bundle_nodes
+        if isinstance(node.get("id"), str)
+    }
+    required = {
+        *_ISA_KERNEL_SOURCE_MODULES,
+        *_ISA_KERNEL_SEMANTICS_MODULES,
+    }
+    if not required <= set(by_id):
+        raise StageAInputError(
+            "ISA semantic-kernel bundle omits required semantic modules"
+        )
+    if by_id["ISAQualification"].get("semantic_id") != binding.decoder_sha256:
+        raise StageAInputError(
+            "ISA semantic-kernel decoder hash disagrees with its compiled bundle"
+        )
+    semantics_rows = [
+        {
+            "id": module,
+            "semantic_id": by_id[module].get("semantic_id"),
+            "semantic_recipe_version": by_id[module].get(
+                "semantic_recipe_version"
+            ),
+            "source_sha256": by_id[module].get("source_sha256"),
+        }
+        for module in _ISA_KERNEL_SEMANTICS_MODULES
+    ]
+    semantics_rows.sort(key=lambda row: row["id"])
+    semantics_sha256 = sha256_bytes(
+        (
+            json.dumps(
+                semantics_rows,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("ascii")
+    )
+    if semantics_sha256 != binding.semantics_sha256:
+        raise StageAInputError(
+            "ISA semantic-kernel semantics hash disagrees with its compiled bundle"
+        )
+    graph_modules = graph.get("modules")
+    if not isinstance(graph_modules, Mapping):
+        raise StageAInputError("prepared whole-program graph omits Lean modules")
+    for module in _ISA_KERNEL_SOURCE_MODULES:
+        metadata = graph_modules.get(module)
+        source_sha256 = (
+            metadata.get("source_sha256")
+            if isinstance(metadata, Mapping)
+            else None
+        )
+        expected_node_source_sha256 = (
+            sha256_bytes(source_sha256.encode("ascii"))
+            if isinstance(source_sha256, str)
+            and re.fullmatch(r"[0-9a-f]{64}", source_sha256)
+            else None
+        )
+        if (
+            not isinstance(metadata, Mapping)
+            or by_id[module].get("modules") != [module]
+            or by_id[module].get("source_sha256")
+            != expected_node_source_sha256
+        ):
+            raise StageAInputError(
+                f"prepared whole-program graph does not use the qualified {module} source"
+            )
+    return by_id
+
+
+def _validate_isa_semantic_kernel_source(
+    *,
+    semantic_kernel_path: Path,
+    prepared: Path,
+    graph: Mapping[str, Any],
+) -> SemanticKernelBinding:
+    payload = _read_json(semantic_kernel_path)
+    binding = load_isa_semantic_kernel_binding(semantic_kernel_path)
+    bundle_path = _isa_semantic_kernel_bundle_path(payload)
+    bundle = _read_json(bundle_path)
+    _validate_isa_semantic_kernel_bundle(
+        binding=binding,
+        bundle=bundle,
+        graph=graph,
+    )
+    graph_modules = graph.get("modules")
+    assert isinstance(graph_modules, Mapping)
+    for module in _ISA_KERNEL_SOURCE_MODULES:
+        metadata = graph_modules.get(module)
+        source_path = (
+            metadata.get("source") if isinstance(metadata, Mapping) else None
+        )
+        if (
+            not isinstance(source_path, str)
+            or sha256_file(prepared / source_path)
+            != metadata.get("source_sha256")
+        ):
+            raise StageAInputError(
+                f"prepared whole-program graph does not use the qualified {module} source"
+            )
+    return binding
+
+
+def _evaluate_isa_kernel_prerequisite(
+    *,
+    prepared: Path,
+    graph: Mapping[str, Any],
+    qualification_path: Path,
+    semantic_kernel_path: Path,
+) -> dict[str, Any]:
+    semantic_kernel = _validate_isa_semantic_kernel_source(
+        semantic_kernel_path=semantic_kernel_path,
+        prepared=prepared,
+        graph=graph,
+    )
+    try:
+        qualification = parse_kernel_qualification(
+            _read_json(qualification_path)
+        )
+        requirements = _read_json(prepared / "isa-requirements.json")
+        original = select_isa_kernel_qualification_for_inventory(
+            requirements=requirements,
+            qualification=qualification,
+            semantic_kernel=semantic_kernel,
+            side="original",
+        )
+        candidate = select_isa_kernel_qualification_for_inventory(
+            requirements=requirements,
+            qualification=qualification,
+            semantic_kernel=semantic_kernel,
+            side="candidate",
+        )
+    except ISAKernelQualificationError as exc:
+        raise StageAInputError(
+            f"invalid ISA semantic-kernel qualification: {exc}"
+        ) from exc
+    statuses = (original.status, candidate.status)
+    status = max(
+        statuses,
+        key=lambda value: {
+            QualificationStatus.QUALIFIED: 0,
+            QualificationStatus.INCOMPLETE: 1,
+            QualificationStatus.DISPUTED: 2,
+            QualificationStatus.VETOED: 3,
+        }[value],
+    )
+    return {
+        "format": "stage-a-exact-isa-kernel-prerequisite-v1",
+        "status": status.value,
+        "requirements_sha256": sha256_file(
+            prepared / "isa-requirements.json"
+        ),
+        "qualification_sha256": sha256_file(qualification_path),
+        "semantic_kernel_sha256": sha256_file(semantic_kernel_path),
+        "semantic_kernel": {
+            "id": semantic_kernel.id,
+            "decoder_sha256": semantic_kernel.decoder_sha256,
+            "semantics_sha256": semantic_kernel.semantics_sha256,
+            "lean_version": semantic_kernel.lean_version,
+        },
+        "qualification_status": qualification.status.value,
+        "original_selection": serialize_kernel_selection(original),
+        "candidate_selection": serialize_kernel_selection(candidate),
+        "checks": {
+            "qualification_artifact_valid": True,
+            "original_selection_qualified": (
+                original.status is QualificationStatus.QUALIFIED
+            ),
+            "candidate_selection_qualified": (
+                candidate.status is QualificationStatus.QUALIFIED
+            ),
+        },
+        "trust": {
+            "role": "isa_kernel_qualification_evidence_only",
+            "proof_authority": False,
+            "closes_stage_a_proof": False,
+        },
+    }
+
+
 def stage_a_build_relational(
     *,
     prepared: Path,
@@ -1089,6 +1371,8 @@ def stage_a_build_relational(
     builders_file: Path | None = None,
     builder_trusted_public_keys_file: Path | None = None,
     target_nodes: list[str] | None = None,
+    isa_kernel_qualification: Path | None = None,
+    isa_semantic_kernel: Path | None = None,
 ) -> dict[str, Any]:
     prepared = Path(prepared).resolve()
     out = Path(out).resolve()
@@ -1127,6 +1411,121 @@ def stage_a_build_relational(
         }
         write_json(out / "verdict.json", result)
         return result
+
+    isa_prerequisite: dict[str, Any] | None = None
+    if not requested_target_nodes:
+        if isa_kernel_qualification is None or isa_semantic_kernel is None:
+            _remove_relational_build_output(out)
+            out.mkdir(parents=True)
+            isa_prerequisite = {
+                "format": "stage-a-exact-isa-kernel-prerequisite-v1",
+                "status": "incomplete",
+                "checks": {
+                    "qualification_supplied": (
+                        isa_kernel_qualification is not None
+                    ),
+                    "semantic_kernel_supplied": (
+                        isa_semantic_kernel is not None
+                    ),
+                },
+                "trust": {
+                    "role": "isa_kernel_qualification_evidence_only",
+                    "proof_authority": False,
+                    "closes_stage_a_proof": False,
+                },
+            }
+            write_json(
+                out / "isa-kernel-prerequisite.json", isa_prerequisite
+            )
+            result = {
+                "format": STAGE_A_NIX_BUILD_REPORT_FORMAT,
+                "status": "incomplete",
+                "verdict": "incomplete",
+                "acceptance": acceptance,
+                "checks": {
+                    "prepared_graph_valid": True,
+                    "whole_program_acceptance_ready": True,
+                    "exact_isa_semantic_kernel_qualified": False,
+                    "nix_graph_built": False,
+                },
+                "diagnostic": {
+                    "category": "isa_kernel_qualification_missing",
+                    "severity": "hard",
+                    "next_action": (
+                        "supply the cached qualification and compiled semantic-"
+                        "kernel identity for exact original/candidate selection"
+                    ),
+                },
+                "elapsed_seconds": 0.0,
+            }
+            write_json(out / "verdict.json", result)
+            return result
+        try:
+            isa_prerequisite = _evaluate_isa_kernel_prerequisite(
+                prepared=prepared,
+                graph=graph,
+                qualification_path=Path(
+                    isa_kernel_qualification
+                ).resolve(),
+                semantic_kernel_path=Path(isa_semantic_kernel).resolve(),
+            )
+        except StageAInputError as exc:
+            _remove_relational_build_output(out)
+            out.mkdir(parents=True)
+            result = {
+                "format": STAGE_A_NIX_BUILD_REPORT_FORMAT,
+                "status": "incomplete",
+                "verdict": "incomplete",
+                "acceptance": acceptance,
+                "checks": {
+                    "prepared_graph_valid": True,
+                    "whole_program_acceptance_ready": True,
+                    "exact_isa_semantic_kernel_qualified": False,
+                    "nix_graph_built": False,
+                },
+                "diagnostic": {
+                    "category": "isa_kernel_qualification_invalid",
+                    "severity": "hard",
+                    "message": str(exc),
+                    "next_action": (
+                        "rebuild ISA qualification for the exact compiled "
+                        "semantic kernel"
+                    ),
+                },
+                "elapsed_seconds": 0.0,
+            }
+            write_json(out / "verdict.json", result)
+            return result
+        if isa_prerequisite["status"] != QualificationStatus.QUALIFIED.value:
+            _remove_relational_build_output(out)
+            out.mkdir(parents=True)
+            write_json(
+                out / "isa-kernel-prerequisite.json", isa_prerequisite
+            )
+            result = {
+                "format": STAGE_A_NIX_BUILD_REPORT_FORMAT,
+                "status": "incomplete",
+                "verdict": "incomplete",
+                "acceptance": acceptance,
+                "checks": {
+                    "prepared_graph_valid": True,
+                    "whole_program_acceptance_ready": True,
+                    "exact_isa_semantic_kernel_qualified": False,
+                    "nix_graph_built": False,
+                },
+                "diagnostic": {
+                    "category": "isa_kernel_qualification_incomplete",
+                    "severity": "hard",
+                    "qualification_status": isa_prerequisite["status"],
+                    "next_action": (
+                        "resolve the localized ISA selection diagnostics before "
+                        "building the whole-program theorem"
+                    ),
+                },
+                "elapsed_seconds": 0.0,
+            }
+            write_json(out / "verdict.json", result)
+            return result
 
     evaluator = _relational_nix_evaluator()
     flake_root = _find_relational_flake_root(flake)
@@ -1446,6 +1845,12 @@ def stage_a_build_relational(
             family.get("status") in {"satisfied", "not_applicable"}
             for family in proof_ir.get("families", [])
         ),
+        "exact_isa_semantic_kernel_qualified": (
+            isa_prerequisite is not None
+            and isa_prerequisite.get("status")
+            == QualificationStatus.QUALIFIED.value
+            and all(isa_prerequisite.get("checks", {}).values())
+        ),
         "original_artifact_matches": sha256_file(prepared / graph["artifacts"]["original"]["path"])
         == graph["artifacts"]["original"]["sha256"],
         "candidate_artifact_matches": sha256_file(prepared / graph["artifacts"]["candidate"]["path"])
@@ -1459,6 +1864,23 @@ def stage_a_build_relational(
         if source.is_file():
             shutil.copyfile(source, out / name)
     shutil.copytree(prepared / "artifacts", out / "artifacts")
+    assert isa_prerequisite is not None
+    write_json(out / "isa-kernel-prerequisite.json", isa_prerequisite)
+    shutil.copyfile(
+        Path(isa_kernel_qualification).resolve(),
+        out / "isa-kernel-qualification.json",
+    )
+    shutil.copyfile(
+        Path(isa_semantic_kernel).resolve(),
+        out / "isa-semantic-kernel.json",
+    )
+    isa_semantic_kernel_bundle = _isa_semantic_kernel_bundle_path(
+        _read_json(Path(isa_semantic_kernel).resolve())
+    )
+    shutil.copyfile(
+        isa_semantic_kernel_bundle,
+        out / "isa-semantic-kernel-bundle.json",
+    )
     source_projection_sha256 = _lean_source_projection_sha256(graph)
     source_reference = {
         "format": "stage-a-lean-source-reference-v1",
@@ -1567,6 +1989,18 @@ def stage_a_build_relational(
         ),
         "product_graph_sha256": sha256_file(out / "relational-product-graph.json"),
         "isa_requirements_sha256": sha256_file(out / "isa-requirements.json"),
+        "isa_kernel_prerequisite_sha256": sha256_file(
+            out / "isa-kernel-prerequisite.json"
+        ),
+        "isa_kernel_qualification_sha256": sha256_file(
+            out / "isa-kernel-qualification.json"
+        ),
+        "isa_semantic_kernel_sha256": sha256_file(
+            out / "isa-semantic-kernel.json"
+        ),
+        "isa_semantic_kernel_bundle_sha256": sha256_file(
+            out / "isa-semantic-kernel-bundle.json"
+        ),
         "whole_program_acceptance_sha256": sha256_file(
             out / "whole-program-acceptance.json"
         ),
@@ -1610,7 +2044,7 @@ def _finalize_proof_ir(
     evidence: dict[str, Any],
 ) -> dict[str, Any]:
     acceptance_theorem_checked = (
-        theorem_checked and theorem in RELATIONAL_ACCEPTANCE_THEOREMS
+        theorem_checked and theorem == RELATIONAL_FINAL_ACCEPTANCE_THEOREM
     )
     certificate_type = (
         "LinkedWholeProgramCertificate"
@@ -1989,7 +2423,51 @@ def _check_nix_relational_report(
                 report / "semantic-graph-reference.json"
             )
             trusted_base = _read_json(report / "trusted-base.json")
+            isa_prerequisite = _read_json(
+                report / "isa-kernel-prerequisite.json"
+            )
+            isa_qualification_path = report / "isa-kernel-qualification.json"
+            isa_semantic_kernel_path = report / "isa-semantic-kernel.json"
+            isa_semantic_kernel_bundle_path = (
+                report / "isa-semantic-kernel-bundle.json"
+            )
+            isa_qualification = parse_kernel_qualification(
+                _read_json(isa_qualification_path)
+            )
+            isa_semantic_kernel = load_isa_semantic_kernel_binding(
+                isa_semantic_kernel_path
+            )
+            _isa_semantic_kernel_bundle_path(
+                _read_json(isa_semantic_kernel_path)
+            )
+            isa_semantic_kernel_bundle = _read_json(
+                isa_semantic_kernel_bundle_path
+            )
+            _validate_isa_semantic_kernel_bundle(
+                binding=isa_semantic_kernel,
+                bundle=isa_semantic_kernel_bundle,
+                graph=graph,
+            )
+            isa_requirements = _read_json(report / "isa-requirements.json")
+            original_isa_selection = (
+                select_isa_kernel_qualification_for_inventory(
+                    requirements=isa_requirements,
+                    qualification=isa_qualification,
+                    semantic_kernel=isa_semantic_kernel,
+                    side="original",
+                )
+            )
+            candidate_isa_selection = (
+                select_isa_kernel_qualification_for_inventory(
+                    requirements=isa_requirements,
+                    qualification=isa_qualification,
+                    semantic_kernel=isa_semantic_kernel,
+                    side="candidate",
+                )
+            )
         except StageAInputError:
+            checks["prepared_report_valid"] = False
+        except ISAKernelQualificationError:
             checks["prepared_report_valid"] = False
         else:
             checks["prepared_report_valid"] = True
@@ -1997,7 +2475,7 @@ def _check_nix_relational_report(
             checks.update({
                 "acceptance_ready": (
                     acceptance.get("status") == "ready"
-                    and expected_theorem in RELATIONAL_ACCEPTANCE_THEOREMS
+                    and expected_theorem == RELATIONAL_FINAL_ACCEPTANCE_THEOREM
                     and acceptance.get("required_theorem") == expected_theorem
                     and acceptance.get("theorem") == expected_theorem
                     and verdict.get("expected_final_theorem") == expected_theorem
@@ -2035,6 +2513,63 @@ def _check_nix_relational_report(
                 "isa_requirements_hash_matches": (
                     sha256_file(report / "isa-requirements.json")
                     == verdict.get("isa_requirements_sha256")
+                ),
+                "isa_kernel_prerequisite_hash_matches": (
+                    sha256_file(report / "isa-kernel-prerequisite.json")
+                    == verdict.get("isa_kernel_prerequisite_sha256")
+                ),
+                "isa_kernel_qualification_hash_matches": (
+                    sha256_file(isa_qualification_path)
+                    == verdict.get("isa_kernel_qualification_sha256")
+                ),
+                "isa_semantic_kernel_hash_matches": (
+                    sha256_file(isa_semantic_kernel_path)
+                    == verdict.get("isa_semantic_kernel_sha256")
+                ),
+                "isa_semantic_kernel_bundle_hash_matches": (
+                    sha256_file(isa_semantic_kernel_bundle_path)
+                    == verdict.get("isa_semantic_kernel_bundle_sha256")
+                ),
+                "exact_isa_semantic_kernel_qualified": (
+                    original_isa_selection.status
+                        is QualificationStatus.QUALIFIED
+                    and candidate_isa_selection.status
+                        is QualificationStatus.QUALIFIED
+                    and isa_prerequisite.get("format")
+                        == "stage-a-exact-isa-kernel-prerequisite-v1"
+                    and isa_prerequisite.get("status")
+                        == QualificationStatus.QUALIFIED.value
+                    and isa_prerequisite.get("requirements_sha256")
+                        == sha256_file(report / "isa-requirements.json")
+                    and isa_prerequisite.get("qualification_sha256")
+                        == sha256_file(isa_qualification_path)
+                    and isa_prerequisite.get("semantic_kernel_sha256")
+                        == sha256_file(isa_semantic_kernel_path)
+                    and isa_prerequisite.get("semantic_kernel") == {
+                        "id": isa_semantic_kernel.id,
+                        "decoder_sha256":
+                            isa_semantic_kernel.decoder_sha256,
+                        "semantics_sha256":
+                            isa_semantic_kernel.semantics_sha256,
+                        "lean_version": isa_semantic_kernel.lean_version,
+                    }
+                    and isa_prerequisite.get("qualification_status")
+                        == isa_qualification.status.value
+                    and isa_prerequisite.get("original_selection")
+                        == serialize_kernel_selection(original_isa_selection)
+                    and isa_prerequisite.get("candidate_selection")
+                        == serialize_kernel_selection(candidate_isa_selection)
+                    and all(
+                        value is True
+                        for value in isa_prerequisite.get(
+                            "checks", {}
+                        ).values()
+                    )
+                    and isa_prerequisite.get("trust") == {
+                        "role": "isa_kernel_qualification_evidence_only",
+                        "proof_authority": False,
+                        "closes_stage_a_proof": False,
+                    }
                 ),
                 "acceptance_hash_matches": (
                     sha256_file(report / "whole-program-acceptance.json")
@@ -2274,7 +2809,7 @@ def _write_relational_module_graph(
     acceptance = _read_json(acceptance_path) if acceptance_path.is_file() else {
         "format": "stage-a-whole-program-acceptance-v1",
         "status": "incomplete",
-        "required_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+        "required_theorem": RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
         "theorem": None,
         "profile": None,
         "blockers": [{

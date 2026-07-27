@@ -131,6 +131,7 @@ RELATIONAL_ACCEPTANCE_THEOREM = (
 RELATIONAL_LINKED_ACCEPTANCE_THEOREM = (
     "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
 )
+RELATIONAL_FINAL_ACCEPTANCE_THEOREM = RELATIONAL_LINKED_ACCEPTANCE_THEOREM
 RELATIONAL_ACCEPTANCE_THEOREM_INVENTORY = {
     RELATIONAL_ACCEPTANCE_THEOREM: {
         "proposition": "StageA.Relational.PE32RawProgramsObservationallyEquivalent",
@@ -151,11 +152,9 @@ RELATIONAL_ACCEPTANCE_THEOREMS = frozenset(
 def choose_relational_acceptance_theorem(
     *, ordinary_ready: bool, linked_ready: bool
 ) -> str | None:
-    """Select the least specialized checked whole-program proposition."""
-    if ordinary_ready:
-        return RELATIONAL_ACCEPTANCE_THEOREM
+    """Select the linked concrete-EIP theorem that alone may authorize pass."""
     if linked_ready:
-        return RELATIONAL_LINKED_ACCEPTANCE_THEOREM
+        return RELATIONAL_FINAL_ACCEPTANCE_THEOREM
     return None
 
 
@@ -166,8 +165,10 @@ def selected_relational_acceptance_theorem(
     status = acceptance.get("status")
     required = acceptance.get("required_theorem")
     theorem = acceptance.get("theorem")
-    if required not in RELATIONAL_ACCEPTANCE_THEOREMS:
-        raise SchemaError("whole-program acceptance requires an unsupported theorem")
+    if required != RELATIONAL_FINAL_ACCEPTANCE_THEOREM:
+        raise SchemaError(
+            "whole-program acceptance requires the linked final theorem"
+        )
     if status == "incomplete":
         if theorem is not None:
             raise SchemaError(
@@ -180,16 +181,15 @@ def selected_relational_acceptance_theorem(
         raise SchemaError(
             "ready whole-program acceptance theorem does not match its requirement"
         )
-    if theorem == RELATIONAL_LINKED_ACCEPTANCE_THEOREM:
-        linked = acceptance.get("linked_acceptance")
-        if (
-            not isinstance(linked, Mapping)
-            or linked.get("status") != "ready"
-            or linked.get("theorem") != theorem
-        ):
-            raise SchemaError(
-                "linked whole-program acceptance omits its checked linked authority"
-            )
+    linked = acceptance.get("linked_acceptance")
+    if (
+        not isinstance(linked, Mapping)
+        or linked.get("status") != "ready"
+        or linked.get("theorem") != theorem
+    ):
+        raise SchemaError(
+            "linked whole-program acceptance omits its checked linked authority"
+        )
     return str(theorem)
 
 
@@ -739,7 +739,7 @@ class StageAInterfaceManifest:
         if (
             len(theorem_names) != len(set(theorem_names))
             or set(theorem_names) != RELATIONAL_ACCEPTANCE_THEOREMS
-            or theorem != RELATIONAL_ACCEPTANCE_THEOREM
+            or theorem != RELATIONAL_FINAL_ACCEPTANCE_THEOREM
         ):
             raise SchemaError("interface manifest acceptance theorem inventory is incomplete")
         if acceptance.get("only_pass_authority") is not True:

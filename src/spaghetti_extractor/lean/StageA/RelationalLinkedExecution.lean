@@ -1145,6 +1145,67 @@ theorem LinkedRunningProductNodeStepRefined.of_shallow
                 (.running node.targetId candidateState calls eventIndex world)).next
               oldResult.2⟩
 
+theorem LinkedCallbackRunningProductNodeStepRefined.of_shallow
+    (context : StaticProofContext) (graph : RelationalProductGraph)
+    (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (oldControl : ProductControlProfile)
+    (linkedControl : LinkedProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (original candidate : DecodedWorldProgram) (nodeId : Nat)
+    (oldToLinked : ProductControlProfilesOldToLinkedShallow oldControl linkedControl)
+    (linkedToOld : ProductControlProfilesLinkedToOldShallow oldControl linkedControl)
+    (profileLinksEmpty : linkedControl.links = [])
+    (oldRefined : CallbackRunningProductNodeStepRefined context graph invariants
+      reachability oldControl callbackTargets original candidate nodeId) :
+    LinkedCallbackRunningProductNodeStepRefined context graph invariants reachability
+      linkedControl callbackTargets original candidate nodeId := by
+  unfold CallbackRunningProductNodeStepRefined at oldRefined
+  unfold LinkedCallbackRunningProductNodeStepRefined
+  cases nodeResult : graph.getNode? nodeId with
+  | none =>
+      simpa [nodeResult] using oldRefined
+  | some node =>
+      cases invariantResult : invariants.nodeInvariants[nodeId]? with
+      | none =>
+          simpa [nodeResult, invariantResult] using oldRefined
+      | some invariant =>
+          simp only [nodeResult, invariantResult] at oldRefined ⊢
+          intro frames calls active links eventIndex world originalState candidateState
+            originalCallbacks candidateCallbacks linkedControlAllowed linkedStackHolds
+            linksAllowed linkedFrameFacts stackTargetsReachable statesRelated
+            callbacksNonempty callbacksRelated callbackFramesHold
+          have linksEmpty :=
+            LinkedProductControlProfile.LinksAllowed.eq_nil_of_profile_links
+              linkedControl links profileLinksEmpty linksAllowed
+          subst links
+          have shallowCalls :=
+            RelationalLinkedRuntimeCallStackHolds.shallow_calls_of_links_nil context
+              originalState candidateState frames calls active linkedStackHolds
+          rcases linkedToOld nodeId calls active linkedControlAllowed shallowCalls with
+            ⟨inventories, projection, oldControlAllowed⟩
+          have oldStackHolds := RelationalLinkedRuntimeCallStackHolds.toOldShallow
+            context originalState candidateState frames calls inventories active
+            linkedStackHolds projection
+          have oldFrameFacts := RelationalLinkedRuntimeCallFactsHold.toOldShallow
+            context world calls inventories active originalState.registers
+            candidateState.registers linkedFrameFacts projection
+          have oldResult := oldRefined frames calls inventories eventIndex world
+            originalState candidateState originalCallbacks candidateCallbacks
+            oldControlAllowed oldStackHolds oldFrameFacts stackTargetsReachable
+            statesRelated callbacksNonempty callbacksRelated callbackFramesHold
+          exact ⟨oldResult.1,
+            WorldExecutionsRelated.toLinkedShallow context graph invariants reachability
+              oldControl linkedControl callbackTargets original.externalCallSites
+              oldToLinked
+              (original.transitionSystem.step
+                (.callbackRunning node.targetId originalState calls eventIndex world
+                  originalCallbacks)).next
+              (candidate.transitionSystem.step
+                (.callbackRunning node.targetId candidateState calls eventIndex world
+                  candidateCallbacks)).next
+              oldResult.2⟩
+
 /-- Lift a legacy local proof when this particular source node is known to have
 an empty or singleton runtime stack.  Unlike `of_shallow`, the linked profile
 may contain link candidates used by other nodes; the concrete source stack
@@ -1231,6 +1292,27 @@ def ReachableLinkedCallbackRunningProductNodesRefined (context : StaticProofCont
     callbackTargets.contains nodeId = true →
     LinkedCallbackRunningProductNodeStepRefined context graph invariants reachability
       control callbackTargets original candidate nodeId
+
+theorem ReachableLinkedCallbackRunningProductNodesRefined.of_shallow
+    (context : StaticProofContext) (graph : RelationalProductGraph)
+    (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (oldControl : ProductControlProfile)
+    (linkedControl : LinkedProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (original candidate : DecodedWorldProgram)
+    (oldToLinked : ProductControlProfilesOldToLinkedShallow oldControl linkedControl)
+    (linkedToOld : ProductControlProfilesLinkedToOldShallow oldControl linkedControl)
+    (profileLinksEmpty : linkedControl.links = [])
+    (oldRefined : ReachableCallbackRunningProductNodesRefined context graph invariants
+      reachability oldControl callbackTargets original candidate) :
+    ReachableLinkedCallbackRunningProductNodesRefined context graph invariants
+      reachability linkedControl callbackTargets original candidate := by
+  intro nodeId nodeBefore callbackTargetAllowed
+  exact LinkedCallbackRunningProductNodeStepRefined.of_shallow context graph invariants
+    reachability oldControl linkedControl callbackTargets original candidate nodeId
+    oldToLinked linkedToOld profileLinksEmpty
+    (oldRefined nodeId nodeBefore callbackTargetAllowed)
 
 theorem reachableLinkedCallbackRunningProductNodesRefined_of_no_protocol_sites
     (context : StaticProofContext)

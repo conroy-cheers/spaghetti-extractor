@@ -8,6 +8,7 @@ from spaghetti_extractor.relational.schema import (
     ModuleGraph,
     PreparedProofDigests,
     RELATIONAL_ACCEPTANCE_THEOREM,
+    RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
     RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
     SchemaError,
     StageAInterfaceManifest,
@@ -17,12 +18,12 @@ from spaghetti_extractor.relational.interfaces import stage_a_interface_manifest
 
 
 class RelationalSchemaTests(unittest.TestCase):
-    def test_acceptance_theorem_selection_prefers_ordinary_then_linked(self):
+    def test_acceptance_theorem_selection_requires_linked_authority(self):
         self.assertEqual(
             choose_relational_acceptance_theorem(
                 ordinary_ready=True, linked_ready=True
             ),
-            RELATIONAL_ACCEPTANCE_THEOREM,
+            RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
         )
         self.assertEqual(
             choose_relational_acceptance_theorem(
@@ -30,6 +31,9 @@ class RelationalSchemaTests(unittest.TestCase):
             ),
             RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
         )
+        self.assertIsNone(choose_relational_acceptance_theorem(
+            ordinary_ready=True, linked_ready=False
+        ))
         self.assertIsNone(choose_relational_acceptance_theorem(
             ordinary_ready=False, linked_ready=False
         ))
@@ -98,7 +102,7 @@ class RelationalSchemaTests(unittest.TestCase):
 
         self.assertEqual(
             parsed.acceptance_theorem,
-            RELATIONAL_ACCEPTANCE_THEOREM,
+            RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
         )
         self.assertEqual(
             set(parsed.acceptance_theorems),

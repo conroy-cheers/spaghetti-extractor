@@ -40,6 +40,7 @@ from spaghetti_extractor.relational.cache_qualification import (
 )
 from spaghetti_extractor.relational.schema import (
     RELATIONAL_ACCEPTANCE_THEOREM,
+    RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
     RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
 )
 
@@ -332,7 +333,7 @@ class StageABuildGraphTests(unittest.TestCase):
                 json.dumps({
                     "format": "stage-a-whole-program-acceptance-v1",
                     "status": "incomplete",
-                    "required_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                    "required_theorem": RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
                     "theorem": None,
                     "blockers": [{"next_action": "complete composition"}],
                 }),
@@ -370,7 +371,7 @@ class StageABuildGraphTests(unittest.TestCase):
                 json.dumps({
                     "format": "stage-a-whole-program-acceptance-v1",
                     "status": "incomplete",
-                    "required_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                    "required_theorem": RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
                     "theorem": None,
                     "blockers": [{"next_action": "complete composition"}],
                 }),
@@ -480,7 +481,7 @@ class StageABuildGraphTests(unittest.TestCase):
         finalized = _finalize_nix_proof_ir(
             {"obligations": obligations},
             theorem_checked=True,
-            theorem=RELATIONAL_ACCEPTANCE_THEOREM,
+            theorem=RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
             result_path=Path("/nix/store/checked-proof"),
         )
 
@@ -495,15 +496,15 @@ class StageABuildGraphTests(unittest.TestCase):
         }
         self.assertEqual(
             evidence_by_kind["paired_stack_range_world"]["certificate_field"],
-            "WholeProgramCertificate.launchRealizable",
+            "LinkedWholeProgramCertificate.launchRealizable",
         )
         self.assertEqual(
             evidence_by_kind["return_pop"]["certificate_field"],
-            "WholeProgramCertificate.runningProductNodesRefined",
+            "LinkedWholeProgramCertificate.runningProductNodesRefined",
         )
         self.assertEqual(
             evidence_by_kind["relational_segment_refinement"]["certificate_field"],
-            "WholeProgramCertificate.reachableExecutionEdgesRefined",
+            "LinkedWholeProgramCertificate.runningProductNodesRefined",
         )
 
     def test_final_theorem_projects_runtime_obligations_from_its_certificate(self):
@@ -527,7 +528,7 @@ class StageABuildGraphTests(unittest.TestCase):
                 ]
             },
             theorem_checked=True,
-            theorem=RELATIONAL_ACCEPTANCE_THEOREM,
+            theorem=RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
             result_path=Path("/nix/store/checked-proof"),
         )
 
@@ -537,11 +538,11 @@ class StageABuildGraphTests(unittest.TestCase):
             for obligation in finalized["obligations"]
         }
         self.assertIn(
-            "WholeProgramCertificate.runningProductNodesRefined",
+            "LinkedWholeProgramCertificate.runningProductNodesRefined",
             evidence_by_kind["direct_call_push"]["certificate_fields"],
         )
         self.assertIn(
-            "WholeProgramCertificate.environmentsRefined",
+            "LinkedWholeProgramCertificate.environmentsRefined",
             evidence_by_kind["machine_import_call_boundary"]["certificate_fields"],
         )
         self.assertEqual(
@@ -549,8 +550,7 @@ class StageABuildGraphTests(unittest.TestCase):
                 "certificate_fields"
             ],
             [
-                "WholeProgramCertificate.reachableExecutionEdgesRefined",
-                "WholeProgramCertificate.runningProductNodesRefined",
+                "LinkedWholeProgramCertificate.runningProductNodesRefined",
             ],
         )
 
@@ -1109,6 +1109,14 @@ class StageABuildGraphTests(unittest.TestCase):
         self.assertIn("dataflowContentAddressed ? true", analysis_graph)
         self.assertIn(
             "contentAddressed = dataflowContentAddressed;",
+            analysis_graph,
+        )
+        self.assertIn(
+            "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked",
+            analysis_graph,
+        )
+        self.assertNotIn(
+            '"StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" or',
             analysis_graph,
         )
 

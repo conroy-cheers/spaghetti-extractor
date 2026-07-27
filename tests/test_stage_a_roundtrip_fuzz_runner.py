@@ -44,7 +44,7 @@ def _ready_preflight(**_kwargs):
 
 
 def _ready_acceptance(
-    theorem: str = RELATIONAL_ACCEPTANCE_THEOREM,
+    theorem: str = RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
 ) -> dict[str, object]:
     acceptance: dict[str, object] = {
         "status": "ready",
@@ -79,10 +79,14 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 "run_static_opaque_stage_b_relational_roundtrip",
                 return_value=result,
             ) as roundtrip:
+                qualification = root / "qualification.json"
+                semantic_kernel = root / "kernel.json"
                 report = run_roundtrip_corpus(
                     corpus=corpus_path,
                     mode="stage-b-roundtrip",
                     out=root / "run",
+                    isa_kernel_qualification=qualification,
+                    isa_semantic_kernel=semantic_kernel,
                 )
 
             self.assertEqual(report["counts"]["pass"], 1)
@@ -92,6 +96,14 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
             )
             roundtrip.assert_called_once()
+            self.assertEqual(
+                roundtrip.call_args.kwargs["isa_kernel_qualification"],
+                qualification,
+            )
+            self.assertEqual(
+                roundtrip.call_args.kwargs["isa_semantic_kernel"],
+                semantic_kernel,
+            )
 
     def test_ready_acceptance_does_not_report_auxiliary_affine_analysis_as_frontier(self) -> None:
         result = {
@@ -117,6 +129,8 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
             root = Path(temporary)
             corpus_path = self._write_corpus(root)
             calls = {"prepare": 0, "build": 0}
+            qualification = root / "qualification.json"
+            semantic_kernel = root / "kernel.json"
 
             def prepare(**kwargs):
                 calls["prepare"] += 1
@@ -139,6 +153,12 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
 
             def build(**kwargs):
                 calls["build"] += 1
+                self.assertEqual(
+                    kwargs["isa_kernel_qualification"], qualification
+                )
+                self.assertEqual(
+                    kwargs["isa_semantic_kernel"], semantic_kernel
+                )
                 out = Path(kwargs["out"])
                 out.mkdir(parents=True, exist_ok=True)
                 reused = (out / "verdict.json").is_file()
@@ -146,7 +166,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 payload = {
                     "format": "stage-a-relational-nix-build-v1",
                     "status": "pass",
-                    "expected_final_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                    "expected_final_theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
                     "acceptance": _ready_acceptance(),
                     "original": {"sha256": sha256_file(case_root / "original.exe")},
                     "candidate": {"sha256": sha256_file(case_root / "candidate.exe")},
@@ -167,6 +187,8 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 corpus=corpus_path,
                 mode="proof-core",
                 out=out,
+                isa_kernel_qualification=qualification,
+                isa_semantic_kernel=semantic_kernel,
                 _prepare=prepare,
                 _build=build,
                 _preflight=_ready_preflight,
@@ -175,6 +197,8 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 corpus=corpus_path,
                 mode="proof-core",
                 out=out,
+                isa_kernel_qualification=qualification,
+                isa_semantic_kernel=semantic_kernel,
                 _prepare=lambda **_kwargs: self.fail("warm run prepared again"),
                 _build=build,
                 _preflight=lambda **_kwargs: self.fail("warm run preflighted again"),
@@ -195,7 +219,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
             self.assertTrue(second_phases["proof-preparation"]["cache_hit"])
             self.assertTrue(second_phases["proof-build-and-audit"]["cache_hit"])
 
-    def test_discovery_hands_recovered_contracts_to_ordinary_proof_core(self) -> None:
+    def test_discovery_hands_recovered_contracts_to_final_proof_core(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             corpus_path = self._write_corpus(root)
@@ -280,7 +304,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 payload = {
                     "format": "stage-a-relational-nix-build-v1",
                     "status": "pass",
-                    "expected_final_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                    "expected_final_theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
                     "acceptance": _ready_acceptance(),
                     "original": {"sha256": sha256_file(case_root / "original.exe")},
                     "candidate": {"sha256": sha256_file(case_root / "candidate.exe")},
@@ -558,7 +582,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 payload = {
                     "format": "stage-a-relational-nix-build-v1",
                     "status": "pass",
-                    "expected_final_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                    "expected_final_theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
                     "acceptance": _ready_acceptance(),
                     "original": {"sha256": sha256_file(case_root / "original.exe")},
                     "candidate": {"sha256": sha256_file(case_root / "candidate.exe")},
@@ -620,7 +644,7 @@ class RoundTripFuzzRunnerTests(unittest.TestCase):
                 payload = {
                     "format": "stage-a-relational-nix-build-v1",
                     "status": "pass",
-                    "expected_final_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                    "expected_final_theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
                     "acceptance": _ready_acceptance(),
                     "original": {"sha256": sha256_file(case_root / "original.exe")},
                     "candidate": {"sha256": sha256_file(case_root / "candidate.exe")},

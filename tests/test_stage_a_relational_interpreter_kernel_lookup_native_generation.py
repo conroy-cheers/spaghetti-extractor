@@ -293,6 +293,21 @@ class StageARelationalInterpreterKernelLookupNativeGenerationTests(
         source_root = (
             Path(__file__).parents[1] / "src/spaghetti_extractor/lean/StageA"
         )
+        native_source = (
+            source_root / "RelationalInterpreterKernelLookupNative.lean"
+        ).read_text(encoding="utf-8")
+        executor_reductions = [
+            line
+            for line in native_source.splitlines()
+            if "executeInstruction," in line
+        ]
+        self.assertTrue(executor_reductions)
+        self.assertTrue(
+            all(
+                "executeInstructionWithContext" in line
+                for line in executor_reductions
+            )
+        )
         lean_root = self.root / "native-support"
         stage_a = lean_root / "StageA"
         stage_a.mkdir(parents=True)

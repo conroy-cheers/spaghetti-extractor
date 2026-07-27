@@ -24,11 +24,32 @@ only synthetic or hardware-generated instruction cases.
 
 ## Current capability
 
-The initial qualified profile deliberately admits only PE32 register/flags
-forms of `01 /r` with `mod=3` and `05 id`. This covers the pinned `6601` and
-`6605` SingleStepTests/80386 shards. Memory, faults, branches, non-flat segment
-state, x87, and every other encoding return `unsupported`; they are never
-approximated or silently accepted.
+The private protocol supports generic one-instruction register, flags, bounded
+memory, and near-control observations. It does not contain a mnemonic or
+opcode-family allowlist. Bochs' decoder metadata admits scalar GPR/immediate
+and ordinary memory operands, while runtime instrumentation enforces the
+declared state boundary:
+
+- at most 32 non-overlapping mapped regions and 64 KiB per case;
+- mapped addresses inside the controlled 16 MiB guest RAM and outside the
+  injected instruction;
+- every linear access wholly contained in one declared region;
+- writes permitted only for `rw` or `rwx` regions;
+- exact reinjection of every mapped byte before every case;
+- a final snapshot of every mapped region;
+- branch/call/return class from Bochs callbacks plus the architectural next
+  EIP.
+
+The runner returns `unsupported` for undeclared accesses, permission
+violations, unsupported translations, and inputs outside these bounds. This is
+an oracle containment policy, not x86 memory protection: paging remains off in
+the controlled guest.
+
+Architectural fault-state capture, nonzero FS selectors/bases, x87, vector
+registers, I/O, far control, repeated instructions, and system effects remain
+explicitly unsupported. Fault diagnostics retain the Bochs exception vector,
+but do not claim a complete fault observation until recoverable pre-delivery
+state is implemented.
 
 Build the full current Bochs corpus check with:
 
@@ -36,8 +57,7 @@ Build the full current Bochs corpus check with:
 nix build .#stage-a-isa-conformance-bochs-80386 --no-link
 ```
 
-The next capability increments should add explicit state and observation
-support in this order: memory accesses and writes, architectural fault vectors,
-segment descriptors and limits, x87 state, then additional reviewed opcode
-families. Each increment requires a small focused fixture before adding a
-hardware-corpus shard.
+The next capability increments should add recoverable architectural fault
+observations, per-case segment descriptors and FS state, x87 state, then
+separately versioned vector-register profiles. Each increment requires a small
+focused fixture before adding a hardware-corpus shard.
