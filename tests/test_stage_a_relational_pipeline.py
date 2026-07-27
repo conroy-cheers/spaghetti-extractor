@@ -10,7 +10,6 @@ from spaghetti_extractor.relational.lean.common import (
 from spaghetti_extractor.relational.model import _semantic_hash
 from spaghetti_extractor.relational.pipeline import _extraction_failure_blocker
 from spaghetti_extractor.relational.preflight import side_diagnostics
-from spaghetti_extractor.relational.verdict import _lean_diagnostic
 from spaghetti_extractor.relational.x87_profile import (
     qualified_singleton_bytes,
     state_only_singleton_bytes,
@@ -32,13 +31,13 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
                     "_extract_relational_behaviors"
                 ) as extract,
                 patch(
-                    "spaghetti_extractor.relational.executor."
+                    "spaghetti_extractor.relational.lean.compiler."
                     "_run_lean_relational"
                 ) as run_lean,
             ):
                 with self.assertRaisesRegex(
                     StageAInputError,
-                    "accepts only stage-a-relational-nix-build-v1 reports",
+                    "requires a stage-a-relational-nix-build-v1 verdict",
                 ):
                     stage_a_check_relational_proof(report=report)
 
@@ -49,7 +48,11 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
         with tempfile.TemporaryDirectory() as temporary:
             report = Path(temporary)
             out = report / "check.json"
-            verdict = {"format": "stage-a-relational-nix-build-v1"}
+            verdict = {
+                "format": "stage-a-relational-nix-build-v1",
+                "status": "incomplete",
+                "verdict": "incomplete",
+            }
             (report / "verdict.json").write_text(
                 json.dumps(verdict),
                 encoding="utf-8",
@@ -133,13 +136,6 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
         }
 
         self.assertIn("could not normalize", _extraction_failure_blocker(extraction))
-        diagnostic = _lean_diagnostic(extraction)
-        self.assertEqual(
-            diagnostic["category"],
-            "formal_region_target_normalization_incomplete",
-        )
-        self.assertEqual(diagnostic["side"], "original")
-        self.assertEqual(diagnostic["region_id"], 7429)
 
     def test_fixed_code_pointer_register_relation_emits_target_and_hashes_it(self):
         relation = {
@@ -590,17 +586,13 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
                 (0x1007, 2),
             )
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
                 out=root / "report",
             )
-            self.assertEqual(result["verdict"], "incomplete")
-            self.assertEqual(
-                result["proof"]["lean"]["status"], "checked",
-                result["proof"]["lean"],
-            )
+            self.assertEqual(result["status"], "prepared")
 
     def test_contract_rejects_executable_coverage_gap_before_lean(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -609,14 +601,14 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
             candidate = self._write_pe(root / "candidate.exe", b"\x8d\x03\xeb\xfc")
             contract = self._write_contract(root / "relation.json", region_size=2)
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "incomplete")
+            self.assertEqual(result["status"], "incomplete")
             self.assertIn("executable_coverage_gap", {issue["category"] for issue in result["issues"]})
 
     def test_contract_rejects_unresolved_logical_target(self):
@@ -626,14 +618,14 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
             candidate = self._write_pe(root / "candidate.exe", b"\x8d\x03\xeb\xfc")
             contract = self._write_contract(root / "relation.json", target_rva=0x1002)
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "incomplete")
+            self.assertEqual(result["status"], "incomplete")
             self.assertIn("unresolved_code_target", {issue["category"] for issue in result["issues"]})
 
     def test_contract_requires_explicit_adversarial_environment(self):
@@ -646,14 +638,14 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
             del payload["environment"]
             contract.write_text(json.dumps(payload), encoding="utf-8")
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "incomplete")
+            self.assertEqual(result["status"], "incomplete")
             self.assertIn("environment_contract_missing", {issue["category"] for issue in result["issues"]})
 
     def test_unsupported_instruction_emits_actionable_semantic_gap_before_lean(self):
@@ -665,15 +657,15 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
             contract = self._write_contract(root / "relation.json", region_size=5)
             report = root / "report"
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
                 out=report,
             )
 
-            self.assertEqual(result["verdict"], "incomplete")
-            self.assertEqual(result["diagnostic"]["category"], "semantic_preflight_incomplete")
+            self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(result["reason_code"], "semantic_preflight_incomplete")
             gaps = json.loads((report / "semantic-gaps.json").read_text(encoding="utf-8"))
             self.assertEqual(gaps["issues"][0]["category"], "formal_instruction_unsupported")
             self.assertIn("Lean decoder", gaps["issues"][0]["next_action"])
@@ -687,46 +679,37 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
             contract = self._write_contract(root / "relation.json", region_size=7, candidate_region_size=8)
             report = root / "report"
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
                 out=report,
             )
 
-            self.assertEqual(result["verdict"], "incomplete")
-            self.assertFalse(result["claim_scope"]["acceptance_eligible"])
-            with self.assertRaisesRegex(
-                StageAInputError,
-                "accepts only stage-a-relational-nix-build-v1 reports",
-            ):
-                stage_a_check_relational_proof(report=report)
+            self.assertEqual(result["status"], "prepared")
+            self.assertFalse((report / "verdict.json").exists())
             proof_ir = json.loads((report / "relational-proof-ir.json").read_text(encoding="utf-8"))
-            self.assertEqual(proof_ir["obligations"][0]["status"], "proved")
-            self.assertEqual(proof_ir["obligations"][0]["evidence"]["kind"], "lean_normalization")
+            self.assertEqual(
+                proof_ir["obligations"][0]["status"],
+                "pending_lrat",
+            )
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for checked counterexamples")
-    def test_semantic_mutation_produces_lean_checked_counterexample(self):
+    def test_semantic_mutation_is_prepared_for_the_nix_proof(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             original = self._write_pe(root / "original.exe", b"\x89\xd8\xeb\xfc")
             candidate = self._write_pe(root / "candidate.exe", b"\x89\xc8\xeb\xfc")
             contract = self._write_contract(root / "relation.json")
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "fail")
-            self.assertEqual(result["proof"]["theorem"], "StageA.GeneratedRelationalCounterexample.exactCounterexample")
-            self.assertEqual(
-                result["proof"]["lean"]["status"], "checked",
-                result["proof"]["lean"],
-            )
-            self.assertEqual(result["diagnostic"]["category"], "checked_relational_counterexample")
+            self.assertEqual(result["status"], "prepared")
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for width-aware relational proofs")
     def test_word_test_and_compare_zero_are_exactly_equivalent(self):
@@ -770,15 +753,14 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
             ]
             contract.write_text(json.dumps(payload), encoding="utf-8")
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "incomplete")
-            self.assertEqual(result["proof"]["lean"]["status"], "checked")
+            self.assertEqual(result["status"], "prepared")
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for condition-code relational proofs")
     def test_setcc_and_cmovcc_compose_across_equivalent_flag_producers(self):
@@ -792,15 +774,14 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
                 candidate_region_size=10,
             )
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "incomplete")
-            self.assertEqual(result["proof"]["lean"]["status"], "checked")
+            self.assertEqual(result["status"], "prepared")
 
     def test_cmov_expression_emits_general_compositional_components(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -994,18 +975,14 @@ end StageA.FlagsCompose
             contract = root / "relation.json"
             contract.write_text(json.dumps(payload), encoding="utf-8")
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "incomplete")
-            self.assertEqual(
-                result["proof"]["lean"]["status"], "checked",
-                result["proof"]["lean"],
-            )
+            self.assertEqual(result["status"], "prepared")
             bundle = (root / "report" / "lean" / "StageA" / "RelationalBundle.lean").read_text(
                 encoding="utf-8"
             )
@@ -1029,12 +1006,11 @@ end StageA.FlagsCompose
             candidate = self._write_pe(root / "candidate.exe", code)
             contract = self._write_contract(root / "relation.json", region_size=len(code))
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original, candidate=candidate,
                 relation_contract=contract, out=root / "report",
             )
-            self.assertEqual(result["verdict"], "incomplete", result)
-            self.assertEqual(result["proof"]["lean"]["status"], "checked")
+            self.assertEqual(result["status"], "prepared", result)
             bundle = (root / "report" / "lean" / "StageA" / "RelationalBundle.lean").read_text(
                 encoding="utf-8"
             )
@@ -1055,18 +1031,14 @@ end StageA.FlagsCompose
             candidate = self._write_pe(root / "candidate.exe", code)
             contract = self._write_contract(root / "relation.json", region_size=len(code))
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "pass", result)
-            self.assertEqual(result["proof"]["lean"]["status"], "checked")
-            self.assertTrue(
-                result["claim_scope"]["whole_program_observational_equivalence"]
-            )
+            self.assertEqual(result["status"], "prepared", result)
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for x87 memory proofs")
     def test_x87_memory_conversion_and_writes_are_checked(self):
@@ -1077,22 +1049,14 @@ end StageA.FlagsCompose
             candidate = self._write_pe(root / "candidate.exe", code)
             contract = self._write_contract(root / "relation.json", region_size=len(code))
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "incomplete")
-            self.assertEqual(
-                result["proof"]["lean"]["status"],
-                "failed",
-            )
-            self.assertEqual(
-                result["diagnostic"]["category"],
-                "relational_proof_not_closed",
-            )
+            self.assertEqual(result["status"], "prepared")
             semantic_gaps = json.loads(
                 (root / "report" / "semantic-gaps.json").read_text(
                     encoding="utf-8"
@@ -1131,17 +1095,13 @@ end StageA.FlagsCompose
             self.assertEqual(payload["value_targets"][0]["original_value"], 0x402000)
             self.assertEqual(payload["value_targets"][0]["candidate_value"], 0x403000)
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
                 out=root / "report",
             )
-            self.assertEqual(result["verdict"], "incomplete")
-            self.assertEqual(
-                result["proof"]["lean"]["status"],
-                "checked",
-            )
+            self.assertEqual(result["status"], "prepared")
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for immutable image-data proofs")
     def test_relocated_readonly_x87_data_is_decoded_from_exact_pe_bytes(self):
@@ -1167,22 +1127,11 @@ end StageA.FlagsCompose
             self.assertEqual(generated["status"], "generated")
             self.assertEqual(payload["value_targets"], [])
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original, candidate=candidate,
                 relation_contract=contract, out=root / "report",
             )
-            self.assertEqual(result["verdict"], "incomplete")
-            self.assertEqual(
-                result["proof"]["lean"]["status"],
-                "failed",
-            )
-            self.assertEqual(
-                result["diagnostic"]["category"],
-                "relational_proof_not_closed",
-            )
-            self.assertFalse(
-                result["claim_scope"]["whole_program_observational_equivalence"]
-            )
+            self.assertEqual(result["status"], "prepared")
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for indexed mapped-memory proofs")
     def test_relocation_pointer_table_emits_and_checks_bounded_index_mapping(self):
@@ -1222,35 +1171,33 @@ end StageA.FlagsCompose
             ]
             self.assertEqual(normalized_mapped[0]["relocation_offsets"], [0, 4])
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original, candidate=candidate,
                 relation_contract=contract, out=root / "report",
             )
-            self.assertEqual(result["verdict"], "incomplete", result)
-            self.assertEqual(result["proof"]["lean"]["status"], "checked")
+            self.assertEqual(result["status"], "prepared", result)
             proof_ir = json.loads(
                 (root / "report" / "relational-proof-ir.json").read_text(encoding="utf-8")
             )
             assumption_kinds = {
-                obligation["kind"]: obligation["status"]
+                obligation["kind"]
                 for obligation in proof_ir["obligations"]
                 if obligation["kind"] != "relational_region_equivalence"
             }
             self.assertEqual(assumption_kinds, {
-                "cfg_bound_invariant": "incomplete",
-                "cfg_register_relation_preservation": "incomplete",
-                "mapped_relocation_image_relation": "proved",
-                "relational_product_graph_decoded_exit_completeness": "candidate_requires_lean_replay",
-                "relational_product_graph_declared_edge_refinement": "incomplete",
-                "relational_product_graph_reachable_local_refinement": "incomplete",
-                "relational_product_graph_structure": "candidate_requires_lean_replay",
-                "relational_segment_refinement": "incomplete",
-                "static_proof_context": "proved",
-                "product_graph_composition": "incomplete",
-                "whole_program_observational_equivalence": "incomplete",
+                "cfg_bound_invariant",
+                "cfg_register_relation_preservation",
+                "mapped_relocation_image_relation",
+                "relational_product_graph_decoded_exit_completeness",
+                "relational_product_graph_declared_edge_refinement",
+                "relational_product_graph_reachable_local_refinement",
+                "relational_product_graph_structure",
+                "relational_segment_refinement",
+                "static_proof_context",
+                "product_graph_composition",
+                "whole_program_observational_equivalence",
             })
             self.assertEqual(proof_ir["status"], "incomplete")
-            self.assertEqual(result["counts"]["incomplete_assumptions"], 9)
             segment_diagnostics = json.loads(
                 (root / "report" / "relational-segment-diagnostics.json").read_text(
                     encoding="utf-8"
@@ -1278,10 +1225,7 @@ end StageA.FlagsCompose
                 obligation for obligation in proof_ir["obligations"]
                 if obligation["kind"] == "mapped_relocation_image_relation"
             )
-            self.assertEqual(
-                relocation["evidence"]["kind"],
-                "lean_checked_mapped_relocation_image_relation",
-            )
+            self.assertEqual(relocation["status"], "pending_lean")
             bundle = (root / "report" / "lean" / "StageA" / "RelationalBundle.lean").read_text(
                 encoding="utf-8"
             )
@@ -1324,15 +1268,11 @@ end StageA.FlagsCompose
             self.assertEqual(len(normalized["regions"][0]["address_separations"]), 16)
 
             report = root / "report"
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original, candidate=candidate,
                 relation_contract=contract, out=report,
             )
-            self.assertEqual(result["verdict"], "incomplete", result)
-            self.assertEqual(
-                result["proof"]["lean"]["status"], "checked",
-                result["proof"]["lean"],
-            )
+            self.assertEqual(result["status"], "prepared", result)
             proof_ir = json.loads((report / "relational-proof-ir.json").read_text(encoding="utf-8"))
             assumption_kinds = {
                 obligation["kind"]
@@ -1370,8 +1310,4 @@ end StageA.FlagsCompose
             )
             self.assertEqual(proof_ir["status"], "incomplete")
 
-            with self.assertRaisesRegex(
-                StageAInputError,
-                "accepts only stage-a-relational-nix-build-v1 reports",
-            ):
-                stage_a_check_relational_proof(report=report)
+            self.assertFalse((report / "verdict.json").exists())

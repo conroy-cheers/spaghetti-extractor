@@ -4219,34 +4219,9 @@ def _aggregate(args: argparse.Namespace) -> None:
         )
         for pack_id, pack_modules in build_packs.items()
     }
-    # Source identity must have the same granularity as compilation identity.
-    # Coarser hash buckets make an unrelated source edit change a build pack's
-    # input store path and recursively invalidate its graph descendants.
-    source_packs = {
-        pack_id: sorted(pack_modules)
-        for pack_id, pack_modules in build_packs.items()
-    }
-    module_source_packs = dict(module_build_packs)
-    source_pack_root = out / "source-packs"
-    for pack_id, pack_modules in source_packs.items():
-        pack = source_pack_root / pack_id
-        pack.mkdir(parents=True, exist_ok=True)
-        for module in pack_modules:
-            shutil.copyfile(
-                stage_a / f"{module}.lean",
-                pack / f"{module}.lean",
-            )
     write_json(out / "standalone-modules.json", modules)
     write_json(out / "proof-targets.json", sorted(targets))
     write_json(out / "module-resources.json", resources)
-    source_pack_manifest = {
-        "format": "stage-a-lean-source-packs-v1",
-        "modules": module_source_packs,
-        "packs": {
-            pack_id: sorted(pack_modules)
-            for pack_id, pack_modules in sorted(source_packs.items())
-        },
-    }
     build_pack_manifest = {
         "format": "stage-a-lean-build-packs-v1",
         "modules": module_build_packs,
@@ -4255,11 +4230,8 @@ def _aggregate(args: argparse.Namespace) -> None:
             for pack_id, pack_modules in sorted(build_packs.items())
         },
     }
-    write_json(out / "module-source-packs.json", source_pack_manifest)
     write_json(out / "module-build-packs.json", build_pack_manifest)
-    write_json(stage_a / "module-source-packs.json", source_pack_manifest)
     write_json(stage_a / "module-build-packs.json", build_pack_manifest)
-    (stage_a / "source-packs").symlink_to("../source-packs", target_is_directory=True)
     _manifest(
         out,
         "proof-source-aggregate",
@@ -4270,12 +4242,10 @@ def _aggregate(args: argparse.Namespace) -> None:
         target_closure_only=args.target_closure_only,
         public_outputs={
             "module_build_packs": "module-build-packs.json",
-            "module_source_packs": "module-source-packs.json",
         },
         counts={
             "build_packs": len(build_packs),
             "modules": len(modules),
-            "source_packs": len(source_packs),
             "targets": len(targets),
         },
     )

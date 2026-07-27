@@ -1033,7 +1033,7 @@ The exact PE authority is also a DAG. Deterministic `ImagePack` modules contain
 bounded byte trees; a side-specific `Image` module assembles those packs and
 checks PE metadata once. Independent `ImportsAttestation` and
 `RelocationsAttestation` modules validate their respective tables. The
-compatibility facade imports all three, while ordinary `DecodeChunk` bindings
+final acceptance root imports all three, while ordinary `DecodeChunk` bindings
 import only `Image`. Full acceptance retains imports and relocations, but a
 candidate-region edit no longer serializes unrelated table checks before its
 exact binding can compile. Decode bindings expose the checked behavior against

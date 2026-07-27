@@ -31,12 +31,21 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
+    def test_removed_host_orchestration_modules_stay_removed(self):
+        package = self.repo / "src" / "spaghetti_extractor"
+        for path in (
+            package / "stage_a_relational.py",
+            package / "relational" / "executor.py",
+            package / "relational" / "proof_diagnostics.py",
+            package / "relational" / "verdict.py",
+        ):
+            self.assertFalse(path.exists(), path)
+
     def test_extraction_does_not_import_proof_generation_or_executor(self):
         self._assert_clean_import(
             "spaghetti_extractor.relational.extraction",
             (
                 "spaghetti_extractor.relational.lean.definitions",
-                "spaghetti_extractor.relational.executor",
             ),
         )
 
@@ -45,7 +54,6 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
             "spaghetti_extractor.relational.analyses.segments",
             (
                 "spaghetti_extractor.relational.lean.definitions",
-                "spaghetti_extractor.relational.executor",
             ),
         )
 
@@ -57,7 +65,6 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
                 "spaghetti_extractor.relational.analysis_artifact",
                 "spaghetti_extractor.relational.build",
                 "spaghetti_extractor.relational.pipeline",
-                "spaghetti_extractor.relational.verdict",
                 "spaghetti_extractor.relational.lean.acceptance",
                 "spaghetti_extractor.relational.lean.generation",
             ),
@@ -70,9 +77,7 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
                 "spaghetti_extractor.relational.analysis",
                 "spaghetti_extractor.relational.analysis_artifact",
                 "spaghetti_extractor.relational.build",
-                "spaghetti_extractor.relational.executor",
                 "spaghetti_extractor.relational.pipeline",
-                "spaghetti_extractor.relational.verdict",
                 "spaghetti_extractor.relational.lean.acceptance",
                 "spaghetti_extractor.relational.lean.composition",
                 "spaghetti_extractor.relational.lean.definitions",
@@ -89,7 +94,6 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
                 "spaghetti_extractor.relational.analysis_artifact",
                 "spaghetti_extractor.relational.mapping",
                 "spaghetti_extractor.relational.pipeline",
-                "spaghetti_extractor.relational.verdict",
             ),
         )
 
@@ -101,15 +105,12 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
                 "spaghetti_extractor.relational.analysis_artifact",
                 "spaghetti_extractor.relational.extraction",
                 "spaghetti_extractor.relational.pipeline",
-                "spaghetti_extractor.relational.verdict",
             ),
         )
 
-    def test_compatibility_modules_reexport_moved_functions(self):
-        from spaghetti_extractor.relational import executor
+    def test_lean_compatibility_modules_reexport_moved_functions(self):
         from spaghetti_extractor.relational.lean import (
             analysis_source,
-            compiler,
             definitions,
         )
 
@@ -125,8 +126,6 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
             definitions._lean_x87_state_only_pair,
             analysis_source._lean_x87_state_only_pair,
         )
-        self.assertIs(executor._relational_cache_dir, compiler._relational_cache_dir)
-        self.assertIs(executor._run_lean_relational, compiler._run_lean_relational)
 
     def test_analysis_kernel_copier_emits_only_decode_dependencies(self):
         from spaghetti_extractor.relational.lean.analysis_source import (

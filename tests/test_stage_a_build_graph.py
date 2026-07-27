@@ -42,7 +42,6 @@ from spaghetti_extractor.relational.schema import (
     RELATIONAL_ACCEPTANCE_THEOREM,
     RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
 )
-from spaghetti_extractor.relational.verdict import _write_relational_verdict
 
 
 class StageABuildGraphTests(unittest.TestCase):
@@ -465,66 +464,6 @@ class StageABuildGraphTests(unittest.TestCase):
             finalized["obligations"][0]["evidence"]["certificate_field"],
             "LinkedWholeProgramCertificate.runningProductNodesRefined",
         )
-
-    def test_verdict_accepts_only_the_selected_linked_theorem(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            out = Path(temporary)
-            (out / "certificates").mkdir()
-            (out / "relation-contract.json").write_text("{}\n", encoding="utf-8")
-            (out / "trusted-base.json").write_text("{}\n", encoding="utf-8")
-            (out / "whole-program-acceptance.json").write_text(
-                json.dumps({
-                    "format": "stage-a-whole-program-acceptance-v1",
-                    "status": "ready",
-                    "required_theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
-                    "theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
-                    "linked_acceptance": {
-                        "status": "ready",
-                        "theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
-                    },
-                }),
-                encoding="utf-8",
-            )
-            binary_path = out / "binary.exe"
-            binary_path.write_bytes(b"PE")
-            binary = SimpleNamespace(path=binary_path, sha256="00" * 32)
-            arguments = {
-                "out": out,
-                "started_at": "2026-07-22T00:00:00Z",
-                "original": binary,
-                "candidate": binary,
-                "contract": {"regions": []},
-                "proof_ir": {"obligations": []},
-                "trusted_base": {},
-                "certificates": [],
-                "blocker": None,
-            }
-
-            accepted = _write_relational_verdict(
-                **arguments,
-                verdict="pass",
-                lean={
-                    "status": "checked",
-                    "theorem": RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
-                },
-            )
-            self.assertEqual(accepted["verdict"], "pass")
-            self.assertEqual(
-                accepted["expected_final_theorem"],
-                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
-            )
-            self.assertTrue(accepted["claim_scope"]["acceptance_eligible"])
-
-            rejected = _write_relational_verdict(
-                **arguments,
-                verdict="pass",
-                lean={
-                    "status": "checked",
-                    "theorem": RELATIONAL_ACCEPTANCE_THEOREM,
-                },
-            )
-            self.assertEqual(rejected["verdict"], "incomplete")
-            self.assertFalse(rejected["claim_scope"]["acceptance_eligible"])
 
     def test_final_theorem_records_runtime_frame_and_launch_obligation_witnesses(self):
         obligations = [

@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from spaghetti_extractor.relational import nix_pipeline
+from spaghetti_extractor.relational.report import NixBuildReport
 from spaghetti_extractor.stage_binary import StageAInputError
 from spaghetti_extractor.util import write_json
 
@@ -34,6 +35,39 @@ class StageANixPipelineTests(unittest.TestCase):
                 flake_root=root,
             )
         self.assertIn("config = {};", expression)
+
+    def test_report_parser_rejects_legacy_and_disagreeing_verdicts(self) -> None:
+        with self.assertRaisesRegex(
+            StageAInputError,
+            "stage-a-relational-nix-build-v1",
+        ):
+            NixBuildReport.parse({
+                "format": "stage-a-relational-verdict-v1",
+                "status": "pass",
+                "verdict": "pass",
+            })
+        with self.assertRaisesRegex(StageAInputError, "disagree"):
+            NixBuildReport.parse({
+                "format": "stage-a-relational-nix-build-v1",
+                "status": "pass",
+                "verdict": "incomplete",
+            })
+
+    def test_report_parser_requires_complete_checked_pass_evidence(self) -> None:
+        theorem = "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
+        report = NixBuildReport.parse({
+            "format": "stage-a-relational-nix-build-v1",
+            "status": "pass",
+            "verdict": "pass",
+            "expected_final_theorem": theorem,
+            "checks": {"graph": True, "proof": True},
+            "lean_audit": {
+                "status": "checked",
+                "lean_trust": 0,
+                "theorem": theorem,
+            },
+        })
+        self.assertTrue(report.declares_checked_pass)
 
     def test_realization_requires_exactly_one_output_and_sanitizes_host_config(
         self,

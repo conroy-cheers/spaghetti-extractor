@@ -40,7 +40,7 @@ from .isa_conformance import (
     parse_isa_conformance_report,
     serialize_isa_conformance_report,
 )
-from .relational.executor import _run_lean_relational
+from .relational.lean.compiler import _run_lean_relational
 
 
 LEAN_ISA_BACKEND_ID = "stage-a-lean-machine-semantics"

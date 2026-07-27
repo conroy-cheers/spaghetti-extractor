@@ -4072,14 +4072,14 @@ class StageARelationalStateTests(StageARelationalTestBase):
             contract.write_text(json.dumps(payload), encoding="utf-8")
 
             with patch.dict(os.environ, {"SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_SHARD_THRESHOLD": "1"}):
-                result = stage_a_prove_relational(
+                result = stage_a_prepare_relational(
                     original=original,
                     candidate=candidate,
                     relation_contract=contract,
                     out=root / "report",
                 )
 
-            self.assertEqual(result["proof"]["lean"]["status"], "checked", result)
+            self.assertEqual(result["status"], "prepared", result)
             synthesis = json.loads(
                 (root / "report" / "relational-invariants.json").read_text(encoding="utf-8")
             )
@@ -4118,10 +4118,10 @@ class StageARelationalStateTests(StageARelationalTestBase):
                 obligation for obligation in proof_ir["obligations"]
                 if obligation["kind"] == "cfg_bound_invariant"
             )
-            self.assertEqual(bound["status"], "proved")
-            self.assertEqual(
-                bound["evidence"]["kind"],
-                "lean_checked_inductive_invariant_family",
+            self.assertEqual(bound["status"], "incomplete")
+            self.assertIn(
+                "Lean",
+                bound["blocker"],
             )
 
             inventory_with_edge = next(

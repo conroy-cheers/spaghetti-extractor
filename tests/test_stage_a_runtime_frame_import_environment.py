@@ -5,10 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.stage_a_relational import (
-    RELATIONAL_KERNEL_MODULES,
-    _run_lean_relational,
-)
+from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
+from spaghetti_extractor.relational.schema import RELATIONAL_KERNEL_MODULES
 
 
 class StageARuntimeFrameImportEnvironmentTests(unittest.TestCase):

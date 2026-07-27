@@ -1838,12 +1838,10 @@ class StageARoundtripNixTests(unittest.TestCase):
         self.assertIn('"archive_bytes": 0', graph)
         self.assertNotIn("dependency-pack", graph)
         self.assertIn('contentAddressed ? true', graph)
-        self.assertIn("module-source-packs.json", graph)
         self.assertIn("module-build-packs.json", graph)
-        self.assertIn("stage-a-lean-source-packs-v1", graph)
         self.assertIn("stage-a-lean-build-packs-v1", graph)
-        self.assertIn("standaloneDirectSource = module:", graph)
-        self.assertIn("value = builtins.toFile", graph)
+        self.assertIn("standaloneSource = module:", graph)
+        self.assertIn("builtins.toFile", graph)
         self.assertIn("builtins.unsafeDiscardStringContext", graph)
         self.assertNotIn("passAsFile = sourceNames", graph)
         self.assertNotIn('"stage-a-source-pack-${packId}")', graph)
@@ -1889,12 +1887,6 @@ class StageARoundtripNixTests(unittest.TestCase):
             'builtins.hashFile "sha256" (standaloneSource module)',
             graph,
         )
-        self.assertIn(
-            "if standaloneSourcePacksAvailable then\n"
-            "      standaloneSourcePackRoots.",
-            graph,
-        )
-
     @unittest.skipUnless(shutil.which("nix"), "Nix is unavailable")
     def test_lean_graph_evaluation_forces_only_target_canonical_source(
         self,
@@ -2035,98 +2027,6 @@ class StageARoundtripNixTests(unittest.TestCase):
                     for path in input_sources
                 )
             )
-
-    @unittest.skipUnless(shutil.which("nix"), "Nix is unavailable")
-    def test_lean_graph_reads_legacy_nested_source_pack_layout(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            aggregate = root / "aggregate"
-            sources = aggregate / "StageA"
-            target_pack = aggregate / "source-packs" / "target-pack"
-            sources.mkdir(parents=True)
-            target_pack.mkdir(parents=True)
-            target_source = "def targetValue := true\n"
-            unrelated_source = "def unrelatedValue := true\n"
-            (sources / "Target.lean").write_text(
-                target_source,
-                encoding="ascii",
-            )
-            (sources / "Unrelated.lean").write_text(
-                unrelated_source,
-                encoding="ascii",
-            )
-            (target_pack / "Target.lean").write_text(
-                target_source,
-                encoding="ascii",
-            )
-            source_packs = {
-                "format": "stage-a-lean-source-packs-v1",
-                "modules": {
-                    "Target": "target-pack",
-                    "Unrelated": "unrelated-pack",
-                },
-                "packs": {
-                    "target-pack": ["Target"],
-                    "unrelated-pack": ["Unrelated"],
-                },
-            }
-            build_packs = {
-                "format": "stage-a-lean-build-packs-v1",
-                "modules": source_packs["modules"],
-                "packs": source_packs["packs"],
-            }
-            (sources / "module-source-packs.json").write_text(
-                json.dumps(source_packs),
-                encoding="ascii",
-            )
-            (sources / "module-build-packs.json").write_text(
-                json.dumps(build_packs),
-                encoding="ascii",
-            )
-            (sources / "source-packs").symlink_to(
-                "../source-packs",
-                target_is_directory=True,
-            )
-            expression = root / "legacy-target-node.nix"
-            expression.write_text(
-                textwrap.dedent(
-                    f"""
-                    let
-                      pkgs = import <nixpkgs> {{
-                        system = builtins.currentSystem;
-                      }};
-                      results = import {self.repo / "nix" / "stage-a-lean-graph.nix"} {{
-                        inherit pkgs;
-                        standaloneSourceRoot =
-                          builtins.toPath {json.dumps(str(sources))};
-                        standaloneModules = [ "Target" "Unrelated" ];
-                        targetNodes = [ "Target" ];
-                        contentAddressed = false;
-                      }};
-                    in
-                    builtins.head results
-                    """
-                ),
-                encoding="utf-8",
-            )
-
-            process = subprocess.run(
-                [
-                    "nix",
-                    "build",
-                    "--impure",
-                    "--no-link",
-                    "--file",
-                    str(expression),
-                ],
-                cwd=self.repo,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-
-            self.assertEqual(process.returncode, 0, process.stderr)
 
     def test_target_bundle_can_fail_closed_on_unapproved_axioms(self) -> None:
         graph = (self.repo / "nix" / "stage-a-lean-graph.nix").read_text(

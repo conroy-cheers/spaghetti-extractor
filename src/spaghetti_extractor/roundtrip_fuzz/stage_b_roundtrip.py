@@ -15,6 +15,10 @@ from ..stage_b_c_backend import stage_b_generate_semantic_c_from_state_machine
 from ..stage_b_state_machine import normalize_stage_a_semantic_transfer
 from ..stage_binary import StageAInputError
 from ..util import sha256_file, write_json
+from ..relational.report import (
+    NixBuildReport,
+    STAGE_A_PROOF_HANDOFF_FORMAT,
+)
 from .provenance import (
     OpaqueStageBInput,
     is_stage_a_proof_only_manual_role,
@@ -314,7 +318,7 @@ def stage_a_proof_result_from_relational_report(
     provenance: Mapping[str, Any],
     handoff: Mapping[str, Any] | None = None,
 ) -> StageAProofResult:
-    """Adapt a real relational-v3 verdict into the opaque round-trip callback result."""
+    """Adapt a canonical Nix proof report into the round-trip callback result."""
 
     report = Path(report)
     try:
@@ -322,7 +326,7 @@ def stage_a_proof_result_from_relational_report(
     except (OSError, json.JSONDecodeError) as exc:
         raise StageAInputError(f"cannot read Stage A relational verdict: {exc}") from exc
     if not isinstance(payload, dict):
-        raise StageAInputError("Stage A proof callback requires a relational-v3 verdict.json")
+        raise StageAInputError("Stage A proof callback requires a Nix proof report")
     view = _relational_report_view(payload, report_root=report.parent)
     verdict = view["verdict"]
     status = {_PASS: _PASS, "fail": _VIOLATED, _INCOMPLETE: _INCOMPLETE}.get(verdict)
@@ -348,61 +352,63 @@ def stage_a_proof_result_from_relational_report(
 def _relational_report_view(
     payload: Mapping[str, Any], *, report_root: Path | None = None
 ) -> dict[str, Any]:
-    """Normalize prepared/local and Nix relational verdicts without upgrading trust."""
+    """Validate the sole authoritative Nix report without upgrading trust."""
 
-    report_format = payload.get("format")
-    if report_format == "stage-a-relational-verdict-v1":
-        proof = payload.get("proof") if isinstance(payload.get("proof"), dict) else {}
-        lean = proof.get("lean") if isinstance(proof.get("lean"), dict) else {}
-        return {
-            "format": report_format,
-            "verdict": payload.get("verdict"),
-            "profile": payload.get("profile"),
-            "acceptance_authority": payload.get("acceptance_authority"),
-            "claim_scope": payload.get("claim_scope"),
-            "original": payload.get("original"),
-            "candidate": payload.get("candidate"),
-            "theorem": proof.get("theorem"),
-            "lean_kernel_checked": lean.get("status") == "checked",
-        }
-    if report_format == "stage-a-relational-nix-build-v1":
-        audit = payload.get("lean_audit") if isinstance(payload.get("lean_audit"), dict) else {}
-        checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
-        declared_checked = (
-            payload.get("verdict") == _PASS
-            and payload.get("status") == _PASS
-            and checks
-            and all(value is True for value in checks.values())
-            and audit.get("status") == "checked"
-            and audit.get("lean_trust") == 0
-            and audit.get("theorem") == payload.get("expected_final_theorem")
-        )
-        independently_checked = False
-        if declared_checked and report_root is not None:
-            from ..relational.pipeline import stage_a_check_relational_proof
+    report = NixBuildReport.parse(payload)
+    independently_checked = False
+    if report.declares_checked_pass and report_root is not None:
+        from ..relational.pipeline import stage_a_check_relational_proof
 
-            try:
-                replay = stage_a_check_relational_proof(report=report_root)
-            except (OSError, StageAInputError, ValueError):
-                replay = {}
-            independently_checked = replay.get("status") == _PASS
-        checked = declared_checked and independently_checked
-        return {
-            "format": report_format,
-            "verdict": (
-                payload.get("verdict")
-                if payload.get("verdict") != _PASS or checked
-                else _INCOMPLETE
-            ),
-            "profile": payload.get("profile"),
-            "acceptance_authority": "whole_program_lean" if checked else None,
-            "claim_scope": payload.get("claim_scope"),
-            "original": payload.get("original"),
-            "candidate": payload.get("candidate"),
-            "theorem": payload.get("expected_final_theorem") if checked else None,
-            "lean_kernel_checked": checked,
-        }
-    raise StageAInputError("Stage A proof callback requires a relational-v3 verdict.json")
+        try:
+            replay = stage_a_check_relational_proof(report=report_root)
+        except (OSError, StageAInputError, ValueError):
+            replay = {}
+        independently_checked = replay.get("status") == _PASS
+    checked = report.declares_checked_pass and independently_checked
+    return {
+        "format": payload.get("format"),
+        "verdict": (
+            report.verdict
+            if report.verdict != _PASS or checked
+            else _INCOMPLETE
+        ),
+        "profile": payload.get("profile"),
+        "acceptance_authority": "whole_program_lean" if checked else None,
+        "claim_scope": payload.get("claim_scope"),
+        "original": payload.get("original"),
+        "candidate": payload.get("candidate"),
+        "theorem": payload.get("expected_final_theorem") if checked else None,
+        "lean_kernel_checked": checked,
+    }
+
+
+def _stage_a_proof_result_from_handoff(
+    *,
+    report: Path,
+    consumed_inputs: Sequence[Path],
+    provenance: Mapping[str, Any],
+    handoff: Mapping[str, Any],
+) -> StageAProofResult:
+    payload = _read_optional_json(report)
+    if (
+        payload.get("format") != STAGE_A_PROOF_HANDOFF_FORMAT
+        or payload.get("acceptance_authority") is not False
+        or payload.get("status") != _INCOMPLETE
+    ):
+        raise StageAInputError("Stage A proof handoff diagnostic is malformed")
+    handoff_payload = _json_value(handoff)
+    frontier = handoff_payload.get("frontier", [])
+    return StageAProofResult(
+        status=_INCOMPLETE,
+        report=report,
+        consumed_inputs=tuple(Path(path) for path in consumed_inputs),
+        provenance=provenance,
+        final_theorem=None,
+        lean_kernel_checked=False,
+        unchecked_markers=(),
+        diagnostics=tuple(frontier) if isinstance(frontier, list) else (),
+        handoff=handoff_payload,
+    )
 
 
 def make_relational_v3_stage_a_proof_callback(
@@ -437,11 +443,11 @@ def make_relational_v3_stage_a_proof_callback(
         relation_contract = request.relation_contract
         if relation_contract is None:
             handoff = _proof_handoff_without_relation_contract(request)
-            report = _write_incomplete_relational_handoff_report(
+            report = _write_proof_handoff_report(
                 request=request,
                 handoff=handoff,
             )
-            return stage_a_proof_result_from_relational_report(
+            return _stage_a_proof_result_from_handoff(
                 report=report,
                 consumed_inputs=consumed,
                 provenance=_stage_a_handoff_provenance(
@@ -476,10 +482,10 @@ def make_relational_v3_stage_a_proof_callback(
                 message=str(exc),
                 next_action="repair the recorded relation contract or static proof inputs",
             )
-            report = _write_incomplete_relational_handoff_report(
+            report = _write_proof_handoff_report(
                 request=request, handoff=handoff
             )
-            return stage_a_proof_result_from_relational_report(
+            return _stage_a_proof_result_from_handoff(
                 report=report,
                 consumed_inputs=consumed,
                 provenance=_stage_a_handoff_provenance(
@@ -493,7 +499,6 @@ def make_relational_v3_stage_a_proof_callback(
             )
 
         handoff = _proof_handoff_from_prepared(prepared, phase="prepared")
-        prepared_report = prepared / "verdict.json"
         prepared_ready = _prepared_acceptance_ready(prepared)
         if not prepared_ready or not execute_proof:
             if prepared_ready and not execute_proof:
@@ -503,27 +508,10 @@ def make_relational_v3_stage_a_proof_callback(
                     message="the relational graph is prepared but has not been built",
                     next_action="build the prepared graph with the pinned Nix executor",
                 )
-            if not prepared_report.is_file():
-                prepared_report = _write_incomplete_relational_handoff_report(
-                    request=request, handoff=handoff
-                )
-            else:
-                prepared_payload = _read_optional_json(prepared_report)
-                prepared_view = _relational_report_view(
-                    prepared_payload, report_root=prepared_report.parent
-                )
-                original = prepared_view.get("original")
-                candidate = prepared_view.get("candidate")
-                if (
-                    not isinstance(original, dict)
-                    or original.get("sha256") != request.original_pe_sha256
-                    or not isinstance(candidate, dict)
-                    or candidate.get("sha256") != sha256_file(request.candidate_pe)
-                ):
-                    prepared_report = _write_incomplete_relational_handoff_report(
-                        request=request, handoff=handoff
-                    )
-            return stage_a_proof_result_from_relational_report(
+            prepared_report = _write_proof_handoff_report(
+                request=request, handoff=handoff
+            )
+            return _stage_a_proof_result_from_handoff(
                 report=prepared_report,
                 consumed_inputs=consumed,
                 provenance=_stage_a_handoff_provenance(
@@ -552,8 +540,20 @@ def make_relational_v3_stage_a_proof_callback(
                 message=str(exc),
                 next_action="inspect the Nix proof logs and retry the unchanged prepared graph",
             )
-            report = _write_incomplete_relational_handoff_report(
+            report = _write_proof_handoff_report(
                 request=request, handoff=handoff
+            )
+            return _stage_a_proof_result_from_handoff(
+                report=report,
+                consumed_inputs=consumed,
+                provenance=_stage_a_handoff_provenance(
+                    original_pe=original_pe,
+                    request=request,
+                    relation_contract=relation_contract,
+                    prepared=prepared,
+                    built=built if built.is_dir() else None,
+                ),
+                handoff=handoff,
             )
         else:
             report = built / "verdict.json"
@@ -568,8 +568,20 @@ def make_relational_v3_stage_a_proof_callback(
                     message="the Nix proof build omitted its verdict",
                     next_action="repair the proof-build artifact handoff",
                 )
-                report = _write_incomplete_relational_handoff_report(
+                report = _write_proof_handoff_report(
                     request=request, handoff=handoff
+                )
+                return _stage_a_proof_result_from_handoff(
+                    report=report,
+                    consumed_inputs=consumed,
+                    provenance=_stage_a_handoff_provenance(
+                        original_pe=original_pe,
+                        request=request,
+                        relation_contract=relation_contract,
+                        prepared=prepared,
+                        built=built if built.is_dir() else None,
+                    ),
+                    handoff=handoff,
                 )
         return stage_a_proof_result_from_relational_report(
             report=report,
@@ -969,7 +981,7 @@ def _prepared_acceptance_ready(prepared: Path) -> bool:
     )
 
 
-def _write_incomplete_relational_handoff_report(
+def _write_proof_handoff_report(
     *, request: StageAProofRequest, handoff: Mapping[str, Any]
 ) -> Path:
     report = request.out_dir / "handoff-verdict.json"
@@ -977,9 +989,9 @@ def _write_incomplete_relational_handoff_report(
     frontier = handoff.get("frontier") if isinstance(handoff.get("frontier"), list) else []
     first = frontier[0] if frontier and isinstance(frontier[0], dict) else {}
     write_json(report, {
-        "format": "stage-a-relational-verdict-v1",
-        "verdict": _INCOMPLETE,
-        "acceptance_authority": "whole_program_lean",
+        "format": STAGE_A_PROOF_HANDOFF_FORMAT,
+        "status": _INCOMPLETE,
+        "acceptance_authority": False,
         "profile": "x86-pe32-lean-relational-v3",
         "model": "x86-pe32-relational-v3",
         "claim_scope": {
@@ -989,7 +1001,6 @@ def _write_incomplete_relational_handoff_report(
         },
         "original": {"sha256": request.original_pe_sha256},
         "candidate": {"sha256": sha256_file(request.candidate_pe)},
-        "proof": {"theorem": None, "lean": {"status": _INCOMPLETE}},
         "diagnostic": {
             "category": first.get("category", "stage_a_proof_handoff_incomplete"),
             "severity": "hard",
@@ -1661,7 +1672,15 @@ def _validate_proof_result(
     )
     _contained_file(request.out_dir, result.report, context="Stage A proof report")
     reasons: list[str] = []
-    report = _load_relational_proof_report(result.report)
+    raw_report = _read_optional_json(result.report)
+    report = (
+        _load_proof_handoff_report(result.report)
+        if (
+            result.status == _INCOMPLETE
+            and raw_report.get("format") == STAGE_A_PROOF_HANDOFF_FORMAT
+        )
+        else _load_relational_proof_report(result.report)
+    )
     if report.get("verdict") != ({_PASS: _PASS, _INCOMPLETE: _INCOMPLETE, _VIOLATED: "fail"}[result.status]):
         reasons.append("stage_a_callback_status_disagrees_with_verdict")
     original = report.get("original") if isinstance(report.get("original"), dict) else {}
@@ -1707,11 +1726,32 @@ def _load_relational_proof_report(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         raise StageAInputError(f"cannot read Stage A proof report: {exc}") from exc
     if not isinstance(payload, dict):
-        raise StageAInputError("Stage A proof report must be a relational-v3 verdict.json")
+        raise StageAInputError("Stage A proof report must be a Nix proof report")
     view = _relational_report_view(payload, report_root=Path(path).parent)
     if view.get("profile") != "x86-pe32-lean-relational-v3":
         raise StageAInputError("Stage A proof report has an unsupported profile")
     return view
+
+
+def _load_proof_handoff_report(path: Path) -> dict[str, Any]:
+    payload = _read_optional_json(path)
+    if (
+        payload.get("format") != STAGE_A_PROOF_HANDOFF_FORMAT
+        or payload.get("status") != _INCOMPLETE
+        or payload.get("acceptance_authority") is not False
+    ):
+        raise StageAInputError("Stage A proof handoff diagnostic is malformed")
+    return {
+        "format": payload.get("format"),
+        "verdict": _INCOMPLETE,
+        "acceptance_authority": None,
+        "profile": payload.get("profile"),
+        "claim_scope": payload.get("claim_scope"),
+        "original": payload.get("original"),
+        "candidate": payload.get("candidate"),
+        "theorem": None,
+        "lean_kernel_checked": False,
+    }
 
 
 def _result_payload(

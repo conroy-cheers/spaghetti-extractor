@@ -824,7 +824,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 relation_contract=writable_contract,
                 out=root / "writable-prepared",
             )
-            self.assertEqual(writable_result["verdict"], "incomplete", writable_result)
+            self.assertEqual(writable_result["status"], "incomplete", writable_result)
             self.assertIn(
                 "pre_entry_tls_callback_array_mutable",
                 {
@@ -1104,7 +1104,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             )
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for sharded relational proofs")
-    def test_sharded_local_proof_uses_canonical_static_context(self):
+    def test_sharded_preparation_uses_canonical_static_context(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             original = self._write_pe(root / "original.exe", b"\x89\xd8\xeb\xfc")
@@ -1113,18 +1113,14 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             report = root / "report"
 
             with patch.dict(os.environ, {"SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_SHARD_THRESHOLD": "1"}):
-                result = stage_a_prove_relational(
+                result = stage_a_prepare_relational(
                     original=original,
                     candidate=candidate,
                     relation_contract=contract,
                     out=report,
                 )
 
-            self.assertEqual(result["verdict"], "pass", result)
-            self.assertEqual(result["proof"]["lean"]["status"], "checked", result)
-            self.assertTrue(
-                result["claim_scope"]["whole_program_observational_equivalence"]
-            )
+            self.assertEqual(result["status"], "prepared", result)
             shard = (report / "lean" / "StageA" / "RelationalProofShard0.lean").read_text(
                 encoding="utf-8"
             )
@@ -2823,7 +2819,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertNotIn("sorryAx", lean["stdout"])
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
-    def test_local_proof_driver_passes_only_on_replayable_acceptance_theorem(self):
+    def test_preparation_selects_the_replayable_acceptance_theorem(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             original = self._write_pe(root / "original.exe", b"\xeb\xfe")
@@ -2831,22 +2827,14 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             contract = self._write_contract(root / "relation.json", region_size=2)
             report = root / "report"
 
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
                 out=report,
             )
 
-            self.assertEqual(result["verdict"], "pass", result)
-            self.assertEqual(
-                result["proof"]["theorem"],
-                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
-            )
-            self.assertTrue(
-                result["claim_scope"]["whole_program_observational_equivalence"]
-            )
-            self.assertTrue(result["claim_scope"]["acceptance_eligible"])
+            self.assertEqual(result["status"], "prepared", result)
             graph = _validate_relational_module_graph(report)
             self.assertEqual(graph["root_module"], "RelationalAcceptance")
             self.assertEqual(
@@ -2854,23 +2842,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
             )
 
-            replay = stage_a_check_relational_proof(report=report)
-            self.assertEqual(replay["status"], "pass", replay)
-            self.assertEqual(
-                replay["lean_check"]["theorem"],
-                RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
-            )
-
-            acceptance_source = (
-                report / "lean" / "StageA" / "RelationalAcceptance.lean"
-            )
-            acceptance_source.write_text(
-                acceptance_source.read_text(encoding="utf-8") + "\n",
-                encoding="utf-8",
-            )
-            tampered = stage_a_check_relational_proof(report=report)
-            self.assertEqual(tampered["status"], "incomplete")
-            self.assertFalse(tampered["checks"]["module_graph_valid"])
+            self.assertFalse((report / "verdict.json").exists())
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
     def test_direct_call_return_loop_checks_runtime_frames_end_to_end(self):
@@ -7074,15 +7046,14 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             with patch.dict(
                 os.environ, {"SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_SHARD_THRESHOLD": "1"}
             ):
-                result = stage_a_prove_relational(
+                result = stage_a_prepare_relational(
                     original=original,
                     candidate=candidate,
                     relation_contract=contract,
                     out=report,
                 )
 
-            self.assertEqual(result["verdict"], "pass", result)
-            self.assertEqual(result["proof"]["lean"]["status"], "checked", result)
+            self.assertEqual(result["status"], "prepared", result)
             relations = json.loads(
                 (report / "relational-register-relations.json").read_text(
                     encoding="utf-8"
@@ -7125,10 +7096,9 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 obligation for obligation in proof_ir["obligations"]
                 if obligation["kind"] == "memory_transition_preservation"
             )
-            self.assertEqual(transition["status"], "proved")
             self.assertEqual(
-                transition["evidence"]["kind"],
-                "lean_checked_exact_memory_pullback_transition",
+                transition["status"],
+                "candidate_requires_lean_replay",
             )
             memory_contracts = json.loads(
                 (report / "relational-memory-contracts.json").read_text(
@@ -7191,14 +7161,14 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             with patch.dict(
                 os.environ, {"SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_SHARD_THRESHOLD": "1"}
             ):
-                result = stage_a_prove_relational(
+                result = stage_a_prepare_relational(
                     original=original,
                     candidate=candidate,
                     relation_contract=contract,
                     out=root / "report",
                 )
 
-            self.assertEqual(result["proof"]["lean"]["status"], "checked", result)
+            self.assertEqual(result["status"], "prepared", result)
             relations = json.loads(
                 (root / "report" / "relational-register-relations.json").read_text(
                     encoding="utf-8"

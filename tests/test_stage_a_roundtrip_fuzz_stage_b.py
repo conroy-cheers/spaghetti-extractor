@@ -260,10 +260,11 @@ def _passing_proof(captured: list[StageAProofRequest] | None = None):
         if captured is not None:
             captured.append(request)
         report = request.out_dir / "stage-a-proof.json"
+        theorem = "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
         write_json(report, {
-            "format": "stage-a-relational-verdict-v1",
+            "format": "stage-a-relational-nix-build-v1",
+            "status": "pass",
             "verdict": "pass",
-            "acceptance_authority": "whole_program_lean",
             "profile": "x86-pe32-lean-relational-v3",
             "claim_scope": {
                 "whole_program_observational_equivalence": True,
@@ -271,9 +272,12 @@ def _passing_proof(captured: list[StageAProofRequest] | None = None):
             },
             "original": {"sha256": request.original_pe_sha256},
             "candidate": {"sha256": sha256_file(request.candidate_pe)},
-            "proof": {
-                "theorem": "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent",
-                "lean": {"status": "checked"},
+            "expected_final_theorem": theorem,
+            "checks": {"graph": True, "proof": True},
+            "lean_audit": {
+                "status": "checked",
+                "lean_trust": 0,
+                "theorem": theorem,
             },
         })
         return StageAProofResult(
@@ -301,6 +305,15 @@ def _passing_proof(captured: list[StageAProofRequest] | None = None):
 
 
 class OpaqueStageBRoundTripTests(unittest.TestCase):
+    def setUp(self):
+        proof_checker = patch(
+            "spaghetti_extractor.relational.pipeline."
+            "stage_a_check_relational_proof",
+            return_value={"status": "pass"},
+        )
+        proof_checker.start()
+        self.addCleanup(proof_checker.stop)
+
     def test_native_entry_lowering_fails_closed_on_register_dependent_result(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -550,13 +563,13 @@ class OpaqueStageBRoundTripTests(unittest.TestCase):
             self.assertEqual(result["status"], "incomplete", result)
             self.assertEqual(result["reason_codes"], ["stage_a_final_proof_incomplete"])
             handoff = result["proof"]["handoff"]
-            self.assertEqual(handoff["phase"], "prepared")
+            self.assertEqual(handoff["phase"], "prepare")
             self.assertEqual(
                 handoff["frontier"][0]["category"],
-                "relational_proof_preparation_incomplete",
+                "relational_proof_preparation_failed",
             )
-            self.assertIn("relational contract", handoff["frontier"][0]["message"])
-            self.assertIn("verdict.json", handoff["prepared_proof"]["artifacts"])
+            self.assertIn("Nix relational preparation failed", handoff["frontier"][0]["message"])
+            self.assertIsNone(handoff["prepared_proof"])
             proof_roles = {
                 item["role"] for item in result["proof"]["consumed_inputs"]
             }
@@ -783,9 +796,9 @@ class OpaqueStageBRoundTripTests(unittest.TestCase):
             def proof(request: StageAProofRequest) -> StageAProofResult:
                 report = request.out_dir / "stage-a-proof.json"
                 write_json(report, {
-                    "format": "stage-a-relational-verdict-v1",
+                    "format": "stage-a-relational-nix-build-v1",
+                    "status": "pass",
                     "verdict": "pass",
-                    "acceptance_authority": "whole_program_lean",
                     "profile": "x86-pe32-lean-relational-v3",
                     "claim_scope": {
                         "whole_program_observational_equivalence": False,
@@ -793,7 +806,13 @@ class OpaqueStageBRoundTripTests(unittest.TestCase):
                     },
                     "original": {"sha256": request.original_pe_sha256},
                     "candidate": {"sha256": sha256_file(request.candidate_pe)},
-                    "proof": {"theorem": "", "lean": {"status": "incomplete"}},
+                    "expected_final_theorem": "",
+                    "checks": {"graph": False, "proof": False},
+                    "lean_audit": {
+                        "status": "incomplete",
+                        "lean_trust": None,
+                        "theorem": None,
+                    },
                 })
                 return StageAProofResult(
                     status="pass",
@@ -827,9 +846,9 @@ class OpaqueStageBRoundTripTests(unittest.TestCase):
             def proof(request: StageAProofRequest) -> StageAProofResult:
                 report = request.out_dir / "stage-a-proof.json"
                 write_json(report, {
-                    "format": "stage-a-relational-verdict-v1",
+                    "format": "stage-a-relational-nix-build-v1",
+                    "status": "fail",
                     "verdict": "fail",
-                    "acceptance_authority": "whole_program_lean",
                     "profile": "x86-pe32-lean-relational-v3",
                     "claim_scope": {
                         "whole_program_observational_equivalence": False,
@@ -837,7 +856,13 @@ class OpaqueStageBRoundTripTests(unittest.TestCase):
                     },
                     "original": {"sha256": request.original_pe_sha256},
                     "candidate": {"sha256": sha256_file(request.candidate_pe)},
-                    "proof": {"theorem": "", "lean": {"status": "incomplete"}},
+                    "expected_final_theorem": "",
+                    "checks": {"graph": False, "proof": False},
+                    "lean_audit": {
+                        "status": "incomplete",
+                        "lean_trust": None,
+                        "theorem": None,
+                    },
                 })
                 return StageAProofResult(
                     status="violated",
@@ -965,9 +990,9 @@ class OpaqueStageBRoundTripTests(unittest.TestCase):
             def proof(request: StageAProofRequest) -> StageAProofResult:
                 report = request.out_dir / "verdict.json"
                 write_json(report, {
-                    "format": "stage-a-relational-verdict-v1",
+                    "format": "stage-a-relational-nix-build-v1",
+                    "status": "incomplete",
                     "verdict": "incomplete",
-                    "acceptance_authority": "whole_program_lean",
                     "profile": "x86-pe32-lean-relational-v3",
                     "claim_scope": {
                         "whole_program_observational_equivalence": False,
@@ -975,7 +1000,13 @@ class OpaqueStageBRoundTripTests(unittest.TestCase):
                     },
                     "original": {"sha256": request.original_pe_sha256},
                     "candidate": {"sha256": sha256_file(request.candidate_pe)},
-                    "proof": {"theorem": "", "lean": {"status": "incomplete"}},
+                    "expected_final_theorem": "",
+                    "checks": {"graph": False, "proof": False},
+                    "lean_audit": {
+                        "status": "incomplete",
+                        "lean_trust": None,
+                        "theorem": None,
+                    },
                 })
                 return stage_a_proof_result_from_relational_report(
                     report=report,

@@ -2328,11 +2328,11 @@ end StageA.ImportCallWitness
             self.assertEqual(generated["status"], "generated", generated)
 
             report = root / "report"
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original, candidate=candidate,
                 relation_contract=contract, out=report,
             )
-            self.assertEqual(result["proof"]["lean"]["status"], "checked", result)
+            self.assertEqual(result["status"], "prepared", result)
             graph = json.loads(
                 (report / "relational-product-graph.json").read_text(encoding="utf-8")
             )
@@ -2386,13 +2386,13 @@ end StageA.ImportCallWitness
             }
             contract = root / "relation.json"
             contract.write_text(json.dumps(payload), encoding="utf-8")
-            result = stage_a_prove_relational(
+            result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
                 out=root / "report",
             )
-            self.assertEqual(result["proof"]["lean"]["status"], "checked", result)
+            self.assertEqual(result["status"], "prepared", result)
             graph = json.loads(
                 (root / "report" / "relational-product-graph.json").read_text()
             )

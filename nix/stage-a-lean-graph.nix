@@ -38,56 +38,13 @@ let
   standalone = standaloneSourceRoot != null;
   standaloneAggregateRoot =
     if standalone then builtins.dirOf (toString standaloneSourceRoot) else null;
-  # Temporary compatibility for aggregate outputs with physical source packs.
-  standaloneNestedSourcePackManifestPath =
-    if standalone then standaloneSourceRoot + "/module-source-packs.json"
-    else null;
-  standaloneSourcePackManifestPath =
-    if standalone
-      && builtins.pathExists standaloneNestedSourcePackManifestPath
-    then standaloneNestedSourcePackManifestPath
-    else if standalone then
-      standaloneAggregateRoot + "/module-source-packs.json"
-    else null;
-  standaloneSourcePackRoot =
-    if standalone then builtins.dirOf (toString standaloneSourcePackManifestPath)
-    else null;
-  standaloneSourcePacksAvailable =
-    standalone
-    && builtins.pathExists standaloneSourcePackManifestPath;
-  standaloneSourcePackManifest =
-    if standaloneSourcePacksAvailable then
-      builtins.fromJSON (builtins.readFile standaloneSourcePackManifestPath)
-    else null;
-  standaloneModuleSourcePacks =
-    if standaloneSourcePacksAvailable then
-      standaloneSourcePackManifest.modules
-    else {};
-  standaloneSourcePackRoots =
-    if standaloneSourcePacksAvailable then
-      builtins.listToAttrs (map (packId: {
-        name = packId;
-        value = builtins.listToAttrs (map (module: {
-          name = module;
-          value = builtins.toFile
-            "stage-a-source-${module}.lean"
-            (builtins.unsafeDiscardStringContext (builtins.readFile
-              (standaloneSourcePackRoot
-                + "/source-packs/${packId}/${module}.lean")));
-        }) standaloneSourcePackManifest.packs.${packId});
-      }) (builtins.attrNames standaloneSourcePackManifest.packs))
-    else {};
   standaloneMetadataSource = module:
     standaloneSourceRoot + "/${module}.lean";
-  standaloneDirectSource = module:
+  standaloneSource = module:
     builtins.toFile
       "stage-a-source-${module}.lean"
       (builtins.unsafeDiscardStringContext
         (builtins.readFile (standaloneMetadataSource module)));
-  standaloneSource = module:
-    if standaloneSourcePacksAvailable then
-      standaloneSourcePackRoots.${standaloneModuleSourcePacks.${module}}.${module}
-    else standaloneDirectSource module;
   standaloneNestedBuildPackManifestPath =
     if standalone then standaloneSourceRoot + "/module-build-packs.json"
     else null;
@@ -148,21 +105,6 @@ let
     builtins.all (dependency: builtins.hasAttr dependency standaloneModuleSet)
       standaloneModuleMetadata.${module}.imports
   ) standaloneModules;
-  standaloneSourcePacksValid =
-    !standaloneSourcePacksAvailable || (
-      standaloneSourcePackManifest.format == "stage-a-lean-source-packs-v1"
-      && lib.sort builtins.lessThan
-        (builtins.attrNames standaloneSourcePackManifest.modules)
-        == lib.sort builtins.lessThan standaloneModules
-      && lib.sort builtins.lessThan
-        (lib.concatLists (builtins.attrValues standaloneSourcePackManifest.packs))
-        == lib.sort builtins.lessThan standaloneModules
-      && builtins.all (module:
-        let packId = standaloneSourcePackManifest.modules.${module};
-        in builtins.hasAttr packId standaloneSourcePackManifest.packs
-          && builtins.elem module standaloneSourcePackManifest.packs.${packId}
-      ) standaloneModules
-    );
   standaloneBuildPacksValid =
     !standaloneBuildPacksAvailable || (
       standaloneBuildPackManifest.format == "stage-a-lean-build-packs-v1"
@@ -1094,7 +1036,6 @@ assert activeDependenciesAvailable;
 assert graphCheckedArtifactManifestValid;
 assert graphNodeArtifactMetadataValid;
 assert !standalone || (standaloneModules != [] && standaloneImportsValid);
-assert standaloneSourcePacksValid;
 assert standaloneBuildPacksValid;
 assert !standalone || (
   prepared == null

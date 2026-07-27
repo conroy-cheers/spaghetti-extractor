@@ -265,6 +265,7 @@
             ./src/spaghetti_extractor/relational/region_facts.py
             ./src/spaghetti_extractor/relational/region_facts_artifact.py
             ./src/spaghetti_extractor/relational/region_facts_cli.py
+            ./src/spaghetti_extractor/relational/report.py
             ./src/spaghetti_extractor/relational/report_schema.py
             ./src/spaghetti_extractor/relational/runtime_frame_artifact.py
             ./src/spaghetti_extractor/relational/register_dataflow_artifact.py
@@ -288,7 +289,7 @@
             ./src/spaghetti_extractor/relational/side_extraction.py
             ./src/spaghetti_extractor/relational/side_extraction_artifact.py
             ./src/spaghetti_extractor/relational/side_isa_artifact.py
-            ./src/spaghetti_extractor/relational/verdict.py
+            ./src/spaghetti_extractor/relational/worker_diagnostics.py
             ./src/spaghetti_extractor/relational/analyses/__init__.py
             ./src/spaghetti_extractor/relational/analyses/affine_linked_control.py
             ./src/spaghetti_extractor/relational/analyses/callsite.py
@@ -680,9 +681,7 @@
               ./src/spaghetti_extractor/pe.py
               ./src/spaghetti_extractor/stage_binary.py
               ./src/spaghetti_extractor/util.py
-              (pkgs.lib.fileset.difference
-                ./src/spaghetti_extractor/relational
-                ./src/spaghetti_extractor/relational/executor.py)
+              ./src/spaghetti_extractor/relational
               ./src/spaghetti_extractor/lean/StageA
             ];
           };

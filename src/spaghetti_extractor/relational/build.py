@@ -38,6 +38,7 @@ from .schema import (
 )
 from .ir import CompositionProgressIR, RelationalProofIR, WholeProgramAcceptanceIR
 from .lean.compiler import _relational_cache_dir
+from .report import STAGE_A_NIX_BUILD_REPORT_FORMAT
 
 
 _LEAN_SOURCE_ROOT = Path(__file__).resolve().parent.parent / "lean" / "StageA"
@@ -1108,7 +1109,7 @@ def stage_a_build_relational(
         _remove_relational_build_output(out)
         out.mkdir(parents=True)
         result = {
-            "format": "stage-a-relational-nix-build-v1",
+            "format": STAGE_A_NIX_BUILD_REPORT_FORMAT,
             "status": "incomplete",
             "verdict": "incomplete",
             "acceptance": acceptance,
@@ -1220,7 +1221,7 @@ def stage_a_build_relational(
         (out / "nix.stdout").write_text(process.stdout, encoding="utf-8")
         (out / "nix.stderr").write_text(process.stderr, encoding="utf-8")
         failure = {
-            "format": "stage-a-relational-nix-build-v1",
+            "format": STAGE_A_NIX_BUILD_REPORT_FORMAT,
             "status": "incomplete",
             "verdict": "incomplete",
             "diagnostic": {
@@ -1536,7 +1537,7 @@ def stage_a_build_relational(
     }
     write_json(out / "nix-provenance.json", provenance)
     result = {
-        "format": "stage-a-relational-nix-build-v1",
+        "format": STAGE_A_NIX_BUILD_REPORT_FORMAT,
         "status": status,
         "verdict": status,
         "profile": STAGE_A_RELATIONAL_PROFILE_ID,

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.relational.executor import _run_lean_relational
+from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
 
 
 def _align(value: int, alignment: int) -> int:

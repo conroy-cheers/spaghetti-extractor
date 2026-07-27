@@ -42,8 +42,10 @@ def write_relational_report(
     }
     proof_ir_path = report / "relational-proof-ir.json"
     proof_ir_path.write_text(json.dumps(proof_ir, sort_keys=True) + "\n", encoding="utf-8")
+    theorem = "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
     verdict = {
-        "format": "stage-a-relational-verdict-v1",
+        "format": "stage-a-relational-nix-build-v1",
+        "status": status,
         "verdict": status,
         "profile": STAGE_A_RELATIONAL_PROFILE_ID,
         "model": STAGE_A_RELATIONAL_MODEL_ID,
@@ -56,9 +58,15 @@ def write_relational_report(
         "original": {"path": str(original), "sha256": sha256_file(original)},
         "candidate": {"path": str(candidate), "sha256": sha256_file(candidate)},
         "proof_ir_sha256": sha256_file(proof_ir_path),
-        "proof": {
-            "theorem": "StageA.pe32ProgramsEquivalent" if satisfied else None,
-            "lean": {"status": "checked" if satisfied else "incomplete"},
+        "expected_final_theorem": theorem,
+        "checks": {
+            "graph": satisfied,
+            "proof": satisfied,
+        },
+        "lean_audit": {
+            "status": "checked" if satisfied else "incomplete",
+            "lean_trust": 0 if satisfied else None,
+            "theorem": theorem if satisfied else None,
         },
     }
     (report / "verdict.json").write_text(

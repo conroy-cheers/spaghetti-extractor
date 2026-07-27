@@ -11,7 +11,7 @@ from pathlib import Path
 from spaghetti_extractor.relational.analyses.segments import (
     _segment_refinement_candidates,
 )
-from spaghetti_extractor.relational.executor import _run_lean_relational
+from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
 from spaghetti_extractor.relational.extraction import (
     _extract_relational_behaviors,
 )

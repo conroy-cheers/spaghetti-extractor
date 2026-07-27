@@ -181,8 +181,8 @@ candidate artifacts when only a small source slice changed.
 Retained:
 
 - `src/spaghetti_extractor/relational/`: authoritative whole-program relational pipeline,
-  typed artifact boundaries, analyses, Lean generation, and verdict logic.
-- `src/spaghetti_extractor/stage_a_relational.py`: compatibility import facade only.
+  typed artifact boundaries, analyses, Lean generation, Nix orchestration, and report
+  validation. Its `api.py` module is the public Python interface.
 - `src/spaghetti_extractor/contract_tools.py`: untrusted mapping proposals and reusable
   contract serialization used around the relational proof core.
 - `src/spaghetti_extractor/stage_b*.py`: jq skeleton, provenance, candidate-only delta, and

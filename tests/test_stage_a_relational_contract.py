@@ -8,9 +8,9 @@ from spaghetti_extractor.relational.contract import (
 from spaghetti_extractor.relational.analyses.segments import (
     _direct_call_stack_writes_claim,
 )
-from spaghetti_extractor.relational.executor import (
-    _compile_formal_kernel,
+from spaghetti_extractor.relational.lean.compiler import (
     _precompiled_kernel_olean,
+    _run_lean_relational,
 )
 from spaghetti_extractor.relational.schema import PROTOCOL_CALLBACK_CONTROL_FORMAT
 
@@ -1542,12 +1542,20 @@ class StageARelationalContractTests(StageARelationalTestBase):
             with patch.dict(os.environ, {
                 "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE": str(root / "cache"),
             }):
-                first = _compile_formal_kernel(root / "lean")
+                first = _run_lean_relational(
+                    root / "lean",
+                    bundle="Formal",
+                    reuse_bundle_cache=True,
+                )
                 self.assertEqual(first["status"], "checked", first)
                 (stage_a / "Dependency.olean").unlink()
                 (stage_a / "Formal.olean").unlink()
 
-                second = _compile_formal_kernel(root / "lean")
+                second = _run_lean_relational(
+                    root / "lean",
+                    bundle="Formal",
+                    reuse_bundle_cache=True,
+                )
 
             self.assertEqual(second["status"], "checked", second)
             self.assertTrue((stage_a / "Dependency.olean").is_file())
@@ -1598,17 +1606,27 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 )
 
     def test_relational_nix_build_command_disables_local_jobs_for_builders_file(self):
-        builders_file = Path("/tmp/stage-a-builders")
+        with tempfile.TemporaryDirectory() as temporary:
+            builders_file = Path(temporary) / "stage-a-builders"
+            builder_spec = (
+                "ssh-ng://builder x86_64-linux - 8 2 "
+                "big-parallel,ca-derivations -\n"
+            )
+            builders_file.write_text(builder_spec, encoding="utf-8")
 
-        remote_command = _relational_nix_build_command("proof-expression", builders_file)
-        local_command = _relational_nix_build_command("proof-expression", None)
+            remote_command = _relational_nix_build_command(
+                "proof-expression", builders_file
+            )
+            local_command = _relational_nix_build_command(
+                "proof-expression", None
+            )
 
         self.assertEqual(Path(remote_command[0]).name, "nix")
         self.assertEqual(
             remote_command[1:10],
             [
                 "build", "--max-jobs", "0", "--cores", "2", "--builders",
-                "@/tmp/stage-a-builders", "--no-link", "--json",
+                builder_spec.strip(), "--no-link", "--json",
             ],
         )
         self.assertNotIn("--max-jobs", local_command)

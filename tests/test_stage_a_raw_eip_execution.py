@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.relational.executor import _run_lean_relational
+from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
 from spaghetti_extractor.relational.schema import RELATIONAL_KERNEL_MODULES
 from pe_fixtures import pe32_image
 

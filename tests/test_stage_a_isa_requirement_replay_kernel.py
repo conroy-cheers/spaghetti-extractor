@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.relational.executor import _run_lean_relational
+from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
 from spaghetti_extractor.relational.lean.common import (
     _lean_byte_tree_definitions,
     _lean_pe,

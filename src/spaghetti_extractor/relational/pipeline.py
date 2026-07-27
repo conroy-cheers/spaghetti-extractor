@@ -186,10 +186,6 @@ from .contract import (
 )
 
 
-from .verdict import (
-    _write_incomplete,
-    _write_relational_verdict,
-)
 from .extraction import (
     _assembled_iat_read_candidates,
     _assembled_u32_after_register_writes,
@@ -218,6 +214,8 @@ from .extraction import (
     _semantic_x87_load_pullback_supported,
     _unique_import_at_absolute_address,
 )
+from .report import NixBuildReport
+from .worker_diagnostics import WorkerPhase, write_worker_diagnostic
 from .model import (
     PURE_SEMANTIC_EXPR_OPERATIONS,
     _semantic_constant_bool,
@@ -255,7 +253,6 @@ from .schema import (
     MACHINE_CALL_WORLD_EFFECTS,
     REGISTERS,
     RELATION_CONTRACT_FORMAT,
-    RELATIONAL_ACCEPTANCE_THEOREMS,
     RELATIONAL_APPROVED_AXIOMS,
     RELATIONAL_ENVIRONMENT_ID,
     RELATIONAL_KERNEL_MODULES,
@@ -264,9 +261,7 @@ from .schema import (
     RELATIONAL_SEGMENT_CERTIFICATE_FORMAT,
     STAGE_A_RELATIONAL_MODEL_ID,
     STAGE_A_RELATIONAL_PROFILE_ID,
-    SchemaError,
     integer as _integer,
-    selected_relational_acceptance_theorem,
 )
 
 _LEAN_SOURCE_ROOT = Path(__file__).resolve().parent.parent / "lean" / "StageA"
@@ -491,8 +486,7 @@ def _write_prepared_relational_graph(
     external_call_sites: dict[str, Any],
     stack_window_analysis: dict[str, Any],
     trusted_base: dict[str, Any],
-    prepare_only: bool,
-) -> tuple[list[str], dict[str, Any] | None]:
+) -> dict[str, Any]:
     from .build import _write_relational_module_graph
     from .lean.generation import _write_sharded_relational_proof
 
@@ -535,8 +529,6 @@ def _write_prepared_relational_graph(
         candidate_bin=candidate_bin,
         trusted_base=trusted_base,
     )
-    if not prepare_only:
-        return shard_modules, None
     for olean in (out / "lean").rglob("*.olean"):
         olean.unlink()
     prepared = _prepared_relational_payload(
@@ -547,10 +539,10 @@ def _write_prepared_relational_graph(
         composition_progress=composition_progress,
     )
     write_json(out / "prepared-proof.json", prepared)
-    return shard_modules, prepared
+    return prepared
 
 
-def stage_a_prove_relational(
+def _run_relational_worker(
     *,
     original: Path,
     candidate: Path,
@@ -562,10 +554,10 @@ def stage_a_prove_relational(
     original_isa: Path | None = None,
     candidate_isa: Path | None = None,
     region_facts: Path | None = None,
-    _prepare_only: bool = False,
-    _analyze_only: bool = False,
-    _proposal_only: bool = False,
+    phase: WorkerPhase,
 ) -> dict[str, Any]:
+    _proposal_only = phase == "proposal"
+    _analyze_only = phase in {"analysis", "proposal"}
     started_at = utc_now()
     out = Path(out)
     if out.exists():
@@ -580,15 +572,25 @@ def stage_a_prove_relational(
         contract = _load_contract(Path(relation_contract))
         normalized, issues = _normalize_contract(contract, original_bin, candidate_bin)
     except (OSError, StageAInputError, ValueError) as exc:
-        return _write_incomplete(out, started_at, original, candidate, str(exc))
+        return write_worker_diagnostic(
+            out=out,
+            phase=phase,
+            started_at=started_at,
+            original=Path(original),
+            candidate=Path(candidate),
+            reason_code="structural_validation_failed",
+            message=str(exc),
+        )
 
     if issues:
-        return _write_incomplete(
-            out,
-            started_at,
-            original,
-            candidate,
-            "relational contract failed structural validation",
+        return write_worker_diagnostic(
+            out=out,
+            phase=phase,
+            started_at=started_at,
+            original=Path(original),
+            candidate=Path(candidate),
+            reason_code="contract_structural_validation_failed",
+            message="relational contract failed structural validation",
             issues=issues,
         )
 
@@ -635,24 +637,18 @@ def stage_a_prove_relational(
     semantic_preflight = _relational_semantic_preflight(original_artifact, candidate_artifact, normalized)
     write_json(out / "semantic-gaps.json", semantic_preflight)
     if semantic_preflight["status"] != "supported":
-        return _write_relational_verdict(
-            out,
-            started_at,
-            original_bin,
-            candidate_bin,
-            normalized,
-            proof_ir,
-            trusted_base,
-            "incomplete",
-            {
-                "status": "semantic_preflight_incomplete",
-                "returncode": None,
-                "stdout": "",
-                "stderr": "",
-                "issues": semantic_preflight["issues"],
-            },
-            certificates=[],
-            blocker="x86 semantic preflight found regions outside the reviewed Lean decoder",
+        return write_worker_diagnostic(
+            out=out,
+            phase=phase,
+            started_at=started_at,
+            original=Path(original),
+            candidate=Path(candidate),
+            reason_code="semantic_preflight_incomplete",
+            message=(
+                "x86 semantic preflight found regions outside the reviewed "
+                "Lean decoder"
+            ),
+            issues=semantic_preflight["issues"],
         )
 
     if (original_extraction is None) != (candidate_extraction is None):
@@ -737,18 +733,20 @@ def stage_a_prove_relational(
             use_cache=True,
         )
     if behaviors is None:
-        return _write_relational_verdict(
-            out,
-            started_at,
-            original_bin,
-            candidate_bin,
-            normalized,
-            proof_ir,
-            trusted_base,
-            "incomplete",
-            extraction,
-            certificates=[],
-            blocker=_extraction_failure_blocker(extraction),
+        extraction_issues = extraction.get("issues", [])
+        return write_worker_diagnostic(
+            out=out,
+            phase=phase,
+            started_at=started_at,
+            original=Path(original),
+            candidate=Path(candidate),
+            reason_code="semantic_extraction_incomplete",
+            message=_extraction_failure_blocker(extraction),
+            issues=(
+                extraction_issues
+                if isinstance(extraction_issues, list)
+                else []
+            ),
         )
     extracted = ExtractedProgramPair.create(
         contract=normalized,
@@ -1387,7 +1385,7 @@ def stage_a_prove_relational(
         shutil.rmtree(out / "lean")
         shutil.rmtree(out / "certificates")
         return analysis_manifest
-    shard_modules, prepared = _write_prepared_relational_graph(
+    return _write_prepared_relational_graph(
         out,
         original_bin=original_bin,
         candidate_bin=candidate_bin,
@@ -1406,140 +1404,6 @@ def stage_a_prove_relational(
         external_call_sites=external_call_sites,
         stack_window_analysis=stack_window_analysis,
         trusted_base=trusted_base,
-        prepare_only=_prepare_only,
-    )
-    if prepared is not None:
-        return prepared
-    production = _run_sharded_relational(out / "lean", shard_modules)
-    if production["status"] != "checked":
-        from .proof_diagnostics import check_relational_counterexample
-
-        counterexample = check_relational_counterexample(
-            out / "lean",
-            original_bin,
-            candidate_bin,
-            original_artifact.read_bytes(),
-            candidate_artifact.read_bytes(),
-            normalized,
-            behaviors,
-            production,
-        )
-        if counterexample is not None:
-            return _write_relational_verdict(
-                out,
-                started_at,
-                original_bin,
-                candidate_bin,
-                normalized,
-                proof_ir,
-                trusted_base,
-                "fail",
-                counterexample,
-                certificates=[],
-                blocker="Lean checked a concrete relational counterexample",
-            )
-        return _write_relational_verdict(
-            out,
-            started_at,
-            original_bin,
-            candidate_bin,
-            normalized,
-            proof_ir,
-            trusted_base,
-            "incomplete",
-            production,
-            certificates=[],
-            blocker="Lean did not close every relational obligation",
-        )
-
-    from .build import _finalize_local_proof_ir
-    from .executor import _collect_certificates
-    from .lean.generation import _write_sharded_relational_proof
-
-    certificates = _collect_certificates(out / "lean", out / "certificates")
-    covered_indices = {entry["region_index"] for entry in certificates}
-    certificates.extend(
-        {"region_index": index, "kind": "lean_normalization"}
-        for index in range(len(normalized["regions"]))
-        if index not in covered_indices
-    )
-    certificates.sort(key=lambda entry: entry["region_index"])
-    for entry in certificates:
-        index = entry.get("region_index")
-        if isinstance(index, int) and 0 <= index < len(normalized["regions"]):
-            entry["region_id"] = normalized["regions"][index]["id"]
-    if len(certificates) != len(normalized["regions"]):
-        return _write_relational_verdict(
-            out,
-            started_at,
-            original_bin,
-            candidate_bin,
-            normalized,
-            proof_ir,
-            trusted_base,
-            "incomplete",
-            production,
-            certificates=certificates,
-            blocker="Lean proof production did not emit one LRAT certificate per region",
-        )
-
-    shard_modules, _ = _write_sharded_relational_proof(
-        out / "lean", original_bin, candidate_bin,
-        original_artifact.read_bytes(), candidate_artifact.read_bytes(),
-        normalized, behaviors, invariant_synthesis=invariant_synthesis,
-        memory_contracts=memory_contracts, register_relations=register_relations,
-        product_graph=product_graph,
-        runtime_frame_affine=runtime_frame_affine,
-        import_register_seeds=import_register_seeds,
-        import_register_analysis=import_register_analysis,
-        external_call_sites=external_call_sites,
-        segment_candidates=segment_candidates,
-        isa_requirements=isa_requirements.to_payload(),
-        replay=True, certificates=certificates,
-    )
-    replay = _run_sharded_relational(out / "lean", shard_modules)
-    theorem = str(replay.get("theorem") or "")
-    acceptance = _read_json(out / "whole-program-acceptance.json")
-    try:
-        expected_theorem = selected_relational_acceptance_theorem(acceptance)
-    except SchemaError:
-        expected_theorem = None
-    theorem_checked = (
-        replay["status"] == "checked"
-        and expected_theorem is not None
-        and theorem == expected_theorem
-    )
-    finalized_proof_ir = _finalize_local_proof_ir(
-        proof_ir,
-        theorem_checked=theorem_checked,
-        theorem=theorem,
-    )
-    assumption_obligations = [
-        obligation for obligation in finalized_proof_ir["obligations"]
-        if obligation["kind"] != "relational_region_equivalence"
-        and obligation.get("status") != "proved"
-    ]
-    verdict = (
-        "pass" if theorem_checked and not assumption_obligations
-        else "incomplete"
-    )
-    return _write_relational_verdict(
-        out,
-        started_at,
-        original_bin,
-        candidate_bin,
-        normalized,
-        finalized_proof_ir,
-        trusted_base,
-        verdict,
-        replay,
-        certificates=certificates,
-        blocker=(
-            None if verdict == "pass"
-            else "whole-program relational obligations remain open"
-            if replay["status"] == "checked"
-            else "independent LRAT replay did not check"
-        ),
     )
 
 def stage_a_prepare_relational(
@@ -1549,12 +1413,12 @@ def stage_a_prepare_relational(
     relation_contract: Path,
     out: Path,
 ) -> dict[str, Any]:
-    return stage_a_prove_relational(
+    return _run_relational_worker(
         original=original,
         candidate=candidate,
         relation_contract=relation_contract,
         out=out,
-        _prepare_only=True,
+        phase="preparation",
     )
 
 
@@ -1639,7 +1503,7 @@ def stage_a_analyze_relational(
     candidate_isa: Path | None = None,
     region_facts: Path | None = None,
 ) -> dict[str, Any]:
-    return stage_a_prove_relational(
+    return _run_relational_worker(
         original=original,
         candidate=candidate,
         relation_contract=relation_contract,
@@ -1650,7 +1514,7 @@ def stage_a_analyze_relational(
         original_isa=original_isa,
         candidate_isa=candidate_isa,
         region_facts=region_facts,
-        _analyze_only=True,
+        phase="analysis",
     )
 
 
@@ -1665,7 +1529,7 @@ def stage_a_discover_relational_proposals(
     normalized_behaviors: Path | None = None,
     region_facts: Path | None = None,
 ) -> dict[str, Any]:
-    return stage_a_prove_relational(
+    return _run_relational_worker(
         original=original,
         candidate=candidate,
         relation_contract=relation_contract,
@@ -1674,8 +1538,7 @@ def stage_a_discover_relational_proposals(
         candidate_extraction=candidate_extraction,
         normalized_behaviors=normalized_behaviors,
         region_facts=region_facts,
-        _analyze_only=True,
-        _proposal_only=True,
+        phase="proposal",
     )
 
 
@@ -1782,7 +1645,7 @@ def stage_a_generate_relational(
     (out / "lean" / "StageA").mkdir(parents=True)
     (out / "certificates").mkdir(parents=True)
     _copy_relational_kernel_sources(out / "lean" / "StageA")
-    _shards, prepared = _write_prepared_relational_graph(
+    prepared = _write_prepared_relational_graph(
         out,
         original_bin=original_bin,
         candidate_bin=candidate_bin,
@@ -1801,10 +1664,7 @@ def stage_a_generate_relational(
         external_call_sites=external_call_sites,
         stack_window_analysis=stack_window_analysis,
         trusted_base=trusted_base,
-        prepare_only=True,
     )
-    if prepared is None:
-        raise AssertionError("relational generation did not emit a prepared proof")
     validate_relational_analysis(out)
     return prepared
 
@@ -1813,938 +1673,8 @@ def stage_a_check_relational_proof(
 ) -> dict[str, Any]:
     report = Path(report)
     verdict = _read_json(report / "verdict.json")
-    report_format = verdict.get("format")
-    if report_format != "stage-a-relational-nix-build-v1":
-        raise StageAInputError(
-            "stage_a_check_relational_proof accepts only "
-            "stage-a-relational-nix-build-v1 reports; "
-            f"got {report_format!r}"
-        )
+    NixBuildReport.parse(verdict)
 
     from .build import _check_nix_relational_report
 
     return _check_nix_relational_report(report=report, verdict=verdict, out=out)
-
-
-def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[str, Any]:
-    from .executor import (
-        _compile_formal_kernel,
-        _compile_relational_kernel,
-        _failed_shard_hint_path,
-        _relational_proof_jobs,
-        _run_lean_relational,
-        _run_lean_relational_cached,
-    )
-
-    started = time.monotonic()
-    formal = _compile_formal_kernel(lean_dir)
-    if formal.get("status") != "checked":
-        formal["pipeline_elapsed_seconds"] = round(time.monotonic() - started, 3)
-        return formal
-    relational_kernel = _compile_relational_kernel(lean_dir)
-    prerequisites: dict[str, dict[str, Any]] = {
-        "relational_kernel": relational_kernel,
-    }
-    if relational_kernel.get("status") != "checked":
-        return {
-            **relational_kernel,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    segment_kernel = _run_lean_relational_cached(
-        lean_dir, bundle="RelationalSegment"
-    )
-    prerequisites["relational_segment"] = segment_kernel
-    if segment_kernel.get("status") != "checked":
-        return {
-            **segment_kernel,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    composition_kernel = _run_lean_relational_cached(
-        lean_dir, bundle="RelationalComposition"
-    )
-    prerequisites["relational_composition"] = composition_kernel
-    if composition_kernel.get("status") != "checked":
-        return {
-            **composition_kernel,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    environment_kernel = _run_lean_relational_cached(
-        lean_dir, bundle="RelationalEnvironment"
-    )
-    prerequisites["relational_environment"] = environment_kernel
-    if environment_kernel.get("status") != "checked":
-        return {
-            **environment_kernel,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    global_mapping = _run_lean_relational_cached(
-        lean_dir, bundle="RelationalGlobalMappingContext"
-    )
-    prerequisites["global_mapping_context"] = global_mapping
-    if global_mapping.get("status") != "checked":
-        return {
-            **global_mapping,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    jobs = min(len(shard_modules), _relational_proof_jobs())
-    definition_modules = sorted(
-        path.stem
-        for path in (lean_dir / "StageA").glob("RelationalDefinitionsShard*.lean")
-    )
-    definition_results: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=min(jobs, len(definition_modules) or 1)) as executor:
-        futures = {
-            executor.submit(
-                _run_lean_relational_cached,
-                lean_dir,
-                bundle=module,
-            ): module
-            for module in definition_modules
-        }
-        for future in as_completed(futures):
-            result = future.result()
-            result["module"] = futures[future]
-            definition_results.append(result)
-            if result.get("status") != "checked":
-                return {
-                    **result,
-                    "phase": "region_definitions",
-                    "definition_results": definition_results,
-                    "prerequisites": prerequisites,
-                    "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-                }
-    prerequisites["region_definitions"] = {
-        "status": "checked",
-        "modules": len(definition_results),
-    }
-    pe_attestation_jobs = {
-        "original": lambda: _run_lean_relational_cached(
-            lean_dir, bundle="RelationalProofOriginal"
-        ),
-        "candidate": lambda: _run_lean_relational_cached(
-            lean_dir, bundle="RelationalProofCandidate"
-        ),
-    }
-    with ThreadPoolExecutor(max_workers=len(pe_attestation_jobs)) as executor:
-        futures = {
-            executor.submit(run): name for name, run in pe_attestation_jobs.items()
-        }
-        for future in as_completed(futures):
-            prerequisites[futures[future]] = future.result()
-    failed_attestation = next(
-        (
-            prerequisites[name]
-            for name in pe_attestation_jobs
-            if prerequisites[name].get("status") != "checked"
-        ),
-        None,
-    )
-    if failed_attestation is not None:
-        return {
-            **failed_attestation,
-            "phase": "pe_attestations",
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    machine_call_contracts = _run_lean_relational_cached(
-        lean_dir, bundle="RelationalMachineImportCallContracts"
-    )
-    prerequisites["machine_import_call_contracts"] = machine_call_contracts
-    if machine_call_contracts.get("status") != "checked":
-        return {
-            **machine_call_contracts,
-            "phase": "machine_import_call_contracts",
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    base = _run_lean_relational_cached(lean_dir, bundle="RelationalProofBase")
-    prerequisites["relational_proof_base"] = base
-    if base.get("status") != "checked":
-        return {
-            **base,
-            "phase": "relational_proof_base",
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    heavy_threshold = max(
-        1,
-        int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_HEAVY_SHARD_BYTES", "500000")),
-    )
-    heavy_jobs = min(
-        jobs,
-        max(1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_HEAVY_JOBS", "1"))),
-    )
-    source_sizes = {
-        module: (lean_dir / "StageA" / f"{module}.lean").stat().st_size
-        for module in shard_modules
-    }
-    static_context_shards = sorted(
-        module for module in shard_modules
-        if "import StageA.RelationalStaticContext" in
-        (lean_dir / "StageA" / f"{module}.lean").read_text(encoding="utf-8")
-    )
-    pending_modules = sorted(
-        set(shard_modules) - set(static_context_shards),
-        key=lambda module: source_sizes[module], reverse=True,
-    )
-    failure_hint_path = _failed_shard_hint_path(lean_dir)
-    prioritized_module: str | None = None
-    if failure_hint_path is not None:
-        try:
-            hint = json.loads(failure_hint_path.read_text(encoding="utf-8"))
-            hinted_module = hint.get("module")
-        except (OSError, json.JSONDecodeError):
-            hinted_module = None
-        if hinted_module in pending_modules:
-            pending_modules.remove(hinted_module)
-            pending_modules.insert(0, hinted_module)
-            prioritized_module = hinted_module
-    cancellation = Event()
-    results: list[dict[str, Any]] = []
-    running_heavy = 0
-
-    with ThreadPoolExecutor(max_workers=jobs) as executor:
-        future_modules: dict[Any, str] = {}
-
-        def submit_available() -> None:
-            nonlocal running_heavy
-            while pending_modules and len(future_modules) < jobs:
-                selected = next(
-                    (
-                        index for index, module in enumerate(pending_modules)
-                        if source_sizes[module] <= heavy_threshold or running_heavy < heavy_jobs
-                    ),
-                    None,
-                )
-                if selected is None:
-                    return
-                module = pending_modules.pop(selected)
-                if source_sizes[module] > heavy_threshold:
-                    running_heavy += 1
-                future = executor.submit(
-                    _run_lean_relational_cached,
-                    lean_dir,
-                    bundle=module,
-                    cancel_event=cancellation,
-                )
-                future_modules[future] = module
-
-        submit_available()
-        while future_modules:
-            completed, _ = wait(future_modules, return_when=FIRST_COMPLETED)
-            for future in completed:
-                module = future_modules.pop(future)
-                if source_sizes[module] > heavy_threshold:
-                    running_heavy -= 1
-                result = future.result()
-                result["module"] = module
-                result["source_bytes"] = source_sizes[module]
-                results.append(result)
-                if result.get("status") != "checked":
-                    cancellation.set()
-                    if failure_hint_path is not None:
-                        failure_hint_path.parent.mkdir(parents=True, exist_ok=True)
-                        write_json(
-                            failure_hint_path,
-                            {
-                                "format": "stage-a-relational-failed-shard-hint-v1",
-                                "module": module,
-                            },
-                        )
-                    for pending in future_modules:
-                        pending.cancel()
-                    result["completed_shards"] = len(results)
-                    result["total_shards"] = len(shard_modules)
-                    result["shard_results"] = results[:-1]
-                    result["scheduler"] = {
-                        "jobs": jobs,
-                        "heavy_jobs": heavy_jobs,
-                        "heavy_threshold_bytes": heavy_threshold,
-                        "max_shard_source_bytes": max(source_sizes.values(), default=0),
-                        "prerequisites": prerequisites,
-                        "prioritized_failure_hint": prioritized_module,
-                    }
-                    result["pipeline_elapsed_seconds"] = round(time.monotonic() - started, 3)
-                    return result
-            submit_available()
-    static_tree_kernel = _run_lean_relational_cached(
-        lean_dir, bundle="RelationalStaticTree"
-    )
-    prerequisites["relational_static_tree"] = static_tree_kernel
-    if static_tree_kernel.get("status") != "checked":
-        return {
-            **static_tree_kernel,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    static_context_base = _run_lean_relational_cached(
-        lean_dir, bundle="RelationalStaticContextBase"
-    )
-    prerequisites["static_context_base"] = static_context_base
-    if static_context_base.get("status") != "checked":
-        return {
-            **static_context_base,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    static_data_context = _run_lean_relational_cached(
-        lean_dir, bundle="RelationalStaticDataContext"
-    )
-    prerequisites["static_data_context"] = static_data_context
-    if static_data_context.get("status") != "checked":
-        return {
-            **static_data_context,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    static_map_modules = sorted(
-        path.stem
-        for path in (lean_dir / "StageA").glob(
-            "RelationalStaticCodeMapChunk*.lean"
-        )
-    )
-    static_map_results: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(
-        max_workers=min(jobs, len(static_map_modules) or 1)
-    ) as executor:
-        futures = {
-            executor.submit(
-                _run_lean_relational_cached, lean_dir, bundle=module
-            ): module
-            for module in static_map_modules
-        }
-        for future in as_completed(futures):
-            result = future.result()
-            result["module"] = futures[future]
-            static_map_results.append(result)
-            if result.get("status") != "checked":
-                return {
-                    **result,
-                    "phase": "static_code_map_chunks",
-                    "static_map_results": static_map_results,
-                    "prerequisites": prerequisites,
-                    "pipeline_elapsed_seconds": round(
-                        time.monotonic() - started, 3
-                    ),
-                }
-    prerequisites["static_code_map_chunks"] = {
-        "status": "checked",
-        "modules": len(static_map_results),
-    }
-    static_tree_modules: dict[int, list[str]] = {}
-    for path in (lean_dir / "StageA").glob("RelationalStatic*Tree*Node*.lean"):
-        match = re.search(r"Tree(\d+)Node\d+$", path.stem)
-        if match is not None:
-            static_tree_modules.setdefault(int(match.group(1)), []).append(path.stem)
-    static_tree_results: list[dict[str, Any]] = []
-    for level in sorted(static_tree_modules):
-        level_modules = sorted(static_tree_modules[level])
-        with ThreadPoolExecutor(
-            max_workers=min(jobs, len(level_modules) or 1)
-        ) as executor:
-            futures = {
-                executor.submit(
-                    _run_lean_relational_cached, lean_dir, bundle=module
-                ): module
-                for module in level_modules
-            }
-            for future in as_completed(futures):
-                result = future.result()
-                result["module"] = futures[future]
-                static_tree_results.append(result)
-                if result.get("status") != "checked":
-                    return {
-                        **result,
-                        "phase": "static_code_map_tree",
-                        "static_tree_results": static_tree_results,
-                        "prerequisites": prerequisites,
-                        "pipeline_elapsed_seconds": round(
-                            time.monotonic() - started, 3
-                        ),
-                    }
-    prerequisites["static_code_map_tree"] = {
-        "status": "checked",
-        "modules": len(static_tree_results),
-        "levels": len(static_tree_modules),
-    }
-    static_context = _run_lean_relational_cached(
-        lean_dir, bundle="RelationalStaticContext"
-    )
-    prerequisites["static_context"] = static_context
-    if static_context.get("status") != "checked":
-        return {
-            **static_context,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    deferred_results: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(
-        max_workers=min(jobs, len(static_context_shards) or 1)
-    ) as executor:
-        futures = {
-            executor.submit(
-                _run_lean_relational_cached, lean_dir, bundle=module
-            ): module
-            for module in static_context_shards
-        }
-        for future in as_completed(futures):
-            result = future.result()
-            module = futures[future]
-            result["module"] = module
-            result["source_bytes"] = source_sizes[module]
-            deferred_results.append(result)
-            results.append(result)
-            if result.get("status") != "checked":
-                return {
-                    **result,
-                    "phase": "static_context_shards",
-                    "completed_shards": len(results),
-                    "total_shards": len(shard_modules),
-                    "shard_results": results[:-1],
-                    "prerequisites": prerequisites,
-                    "pipeline_elapsed_seconds": round(
-                        time.monotonic() - started, 3
-                    ),
-                }
-    prerequisites["static_context_shards"] = {
-        "status": "checked",
-        "modules": len(deferred_results),
-    }
-    product_graph_context = _run_lean_relational_cached(
-        lean_dir, bundle="RelationalProductGraphContext"
-    )
-    prerequisites["product_graph_context"] = product_graph_context
-    if product_graph_context.get("status") != "checked":
-        return {
-            **product_graph_context,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    reachable_product_local_evidence = _run_lean_relational_cached(
-        lean_dir, bundle="RelationalReachableProductLocalEvidence"
-    )
-    prerequisites["reachable_product_local_evidence"] = (
-        reachable_product_local_evidence
-    )
-    if reachable_product_local_evidence.get("status") != "checked":
-        return {
-            **reachable_product_local_evidence,
-            "phase": "reachable_product_local_evidence",
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-
-    def generated_modules(pattern: str | tuple[str, ...]) -> list[str]:
-        def sort_key(module: str) -> tuple[int, str]:
-            match = re.search(r"Chunk(\d+)$", module)
-            return (int(match.group(1)) if match else -1, module)
-
-        patterns = (pattern,) if isinstance(pattern, str) else pattern
-        return sorted(
-            {
-                path.stem
-                for item in patterns
-                for path in (lean_dir / "StageA").glob(item)
-            },
-            key=sort_key,
-        )
-
-    def run_generated_phase(
-        modules: list[str],
-    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-        phase_results: list[dict[str, Any]] = []
-        phase_cancellation = Event()
-        with ThreadPoolExecutor(max_workers=jobs) as executor:
-            phase_futures = {
-                executor.submit(
-                    _run_lean_relational_cached,
-                    lean_dir,
-                    bundle=module,
-                    cancel_event=phase_cancellation,
-                ): module
-                for module in modules
-            }
-            for future in as_completed(phase_futures):
-                module = phase_futures[future]
-                result = future.result()
-                result["module"] = module
-                result["source_bytes"] = (
-                    lean_dir / "StageA" / f"{module}.lean"
-                ).stat().st_size
-                phase_results.append(result)
-                if result.get("status") != "checked":
-                    phase_cancellation.set()
-                    for pending in phase_futures:
-                        pending.cancel()
-                    return phase_results, result
-        return phase_results, None
-
-    region_chunk_modules = generated_modules("RelationalRegionChunk[0-9]*.lean")
-    region_chunk_results, failed = run_generated_phase(region_chunk_modules)
-    if failed is not None:
-        return {
-            **failed,
-            "phase": "region_chunk_modules",
-            "region_chunk_results": region_chunk_results[:-1],
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    prerequisites["region_chunk_modules"] = {
-        "status": "checked",
-        "modules": len(region_chunk_results),
-    }
-    region_chunks = _run_lean_relational_cached(
-        lean_dir, bundle="RelationalRegionChunks"
-    )
-    prerequisites["region_chunks"] = region_chunks
-    if region_chunks.get("status") != "checked":
-        return {
-            **region_chunks,
-            "phase": "region_chunks",
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-
-    phase_results: dict[str, list[dict[str, Any]]] = {}
-    for phase, pattern in (
-        ("exact_decode_chunks", "RelationalProof*DecodeChunk*.lean"),
-        (
-            "instruction_adequacy_chunks",
-            "RelationalProof*InstructionAdequacyChunk*.lean",
-        ),
-        (
-            "segment_refinement_chunks",
-            (
-                "RelationalSegmentRefinementChunk*.lean",
-                "RelationalSegmentRefinementEdge*.lean",
-            ),
-        ),
-        (
-            "external_call_refinement_edges",
-            "RelationalExternalCallRefinementEdge*.lean",
-        ),
-        ("product_graph_chunks", "RelationalProductGraphChunk*.lean"),
-        ("import_register_seed_chunks", "RelationalImportRegisterSeedChunk*.lean"),
-        (
-            "dynamic_range_indirect_call_chunks",
-            "RelationalDynamicRangeIndirectCallChunk*.lean",
-        ),
-        ("stack_separation_regions", "RelationalStackSeparationRegion*.lean"),
-        ("product_decoded_control_chunks", "RelationalProductDecodedControlChunk*.lean"),
-        ("product_reachability_chunks", "RelationalProductReachabilityChunk*.lean"),
-        (
-            "product_edge_refinement_chunks",
-            "RelationalProductEdgeRefinementChunk*.lean",
-        ),
-        ("product_node_coverage_chunks", "RelationalProductNodeCoverageChunk*.lean"),
-        (
-            "reachable_product_node_chunks",
-            "RelationalReachableProductNodeChunk*.lean",
-        ),
-        (
-            "reachable_product_edge_chunks",
-            "RelationalReachableProductEdgeChunk*.lean",
-        ),
-    ):
-        modules = generated_modules(pattern)
-        phase_results[phase], failed = run_generated_phase(modules)
-        if failed is not None:
-            return {
-                **failed,
-                "phase": phase,
-                "completed_phase_modules": len(phase_results[phase]),
-                "total_phase_modules": len(modules),
-                "phase_results": phase_results,
-                "shard_results": results,
-                "prerequisites": prerequisites,
-                "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-            }
-
-    instruction_adequacy_certificate = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalInstructionAdequacyCertificate",
-    )
-    phase_results["instruction_adequacy_certificate"] = [
-        instruction_adequacy_certificate
-    ]
-    if instruction_adequacy_certificate.get("status") != "checked":
-        return {
-            **instruction_adequacy_certificate,
-            "phase": "instruction_adequacy_certificate",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-
-    segment_certificate = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalSegmentRefinementCertificate",
-    )
-    phase_results["segment_refinement_certificate"] = [segment_certificate]
-    if segment_certificate.get("status") != "checked":
-        return {
-            **segment_certificate,
-            "phase": "segment_refinement_certificate",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    external_call_certificate = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalExternalCallRefinementCertificate",
-    )
-    phase_results["external_call_refinement_certificate"] = [
-        external_call_certificate
-    ]
-    if external_call_certificate.get("status") != "checked":
-        return {
-            **external_call_certificate,
-            "phase": "external_call_refinement_certificate",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    stack_separation_certificate = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalStackSeparationCertificate",
-    )
-    phase_results["stack_separation_certificate"] = [stack_separation_certificate]
-    if stack_separation_certificate.get("status") != "checked":
-        return {
-            **stack_separation_certificate,
-            "phase": "stack_separation_certificate",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    product_graph_certificate = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalProductGraphCertificate",
-    )
-    phase_results["product_graph_certificate"] = [product_graph_certificate]
-    if product_graph_certificate.get("status") != "checked":
-        return {
-            **product_graph_certificate,
-            "phase": "product_graph_certificate",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    import_register_seed_certificate = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalImportRegisterSeedCertificate",
-    )
-    phase_results["import_register_seed_certificate"] = [
-        import_register_seed_certificate
-    ]
-    if import_register_seed_certificate.get("status") != "checked":
-        return {
-            **import_register_seed_certificate,
-            "phase": "import_register_seed_certificate",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    dynamic_range_indirect_call_certificate = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalDynamicRangeIndirectCallCertificate",
-    )
-    phase_results["dynamic_range_indirect_call_certificate"] = [
-        dynamic_range_indirect_call_certificate
-    ]
-    if dynamic_range_indirect_call_certificate.get("status") != "checked":
-        return {
-            **dynamic_range_indirect_call_certificate,
-            "phase": "dynamic_range_indirect_call_certificate",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    product_decoded_control_certificate = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalProductDecodedControlCertificate",
-    )
-    phase_results["product_decoded_control_certificate"] = [
-        product_decoded_control_certificate
-    ]
-    if product_decoded_control_certificate.get("status") != "checked":
-        return {
-            **product_decoded_control_certificate,
-            "phase": "product_decoded_control_certificate",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    product_reachability_certificate = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalProductReachabilityCertificate",
-    )
-    phase_results["product_reachability_certificate"] = [
-        product_reachability_certificate
-    ]
-    if product_reachability_certificate.get("status") != "checked":
-        return {
-            **product_reachability_certificate,
-            "phase": "product_reachability_certificate",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    product_edge_refinement_certificate = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalProductEdgeRefinementCertificate",
-    )
-    phase_results["product_edge_refinement_certificate"] = [
-        product_edge_refinement_certificate
-    ]
-    if product_edge_refinement_certificate.get("status") != "checked":
-        return {
-            **product_edge_refinement_certificate,
-            "phase": "product_edge_refinement_certificate",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    product_node_coverage_certificate = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalProductNodeCoverageCertificate",
-    )
-    phase_results["product_node_coverage_certificate"] = [
-        product_node_coverage_certificate
-    ]
-    if product_node_coverage_certificate.get("status") != "checked":
-        return {
-            **product_node_coverage_certificate,
-            "phase": "product_node_coverage_certificate",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    reachable_product_node_certificate = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalReachableProductNodeCertificate",
-    )
-    phase_results["reachable_product_node_certificate"] = [
-        reachable_product_node_certificate
-    ]
-    if reachable_product_node_certificate.get("status") != "checked":
-        return {
-            **reachable_product_node_certificate,
-            "phase": "reachable_product_node_certificate",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    reachable_product_edge_certificate = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalReachableProductEdgeCertificate",
-    )
-    phase_results["reachable_product_edge_certificate"] = [
-        reachable_product_edge_certificate
-    ]
-    if reachable_product_edge_certificate.get("status") != "checked":
-        return {
-            **reachable_product_edge_certificate,
-            "phase": "reachable_product_edge_certificate",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    reachable_product_local_certificate = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalReachableProductLocalCertificate",
-    )
-    phase_results["reachable_product_local_certificate"] = [
-        reachable_product_local_certificate
-    ]
-    if reachable_product_local_certificate.get("status") != "checked":
-        return {
-            **reachable_product_local_certificate,
-            "phase": "reachable_product_local_certificate",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-
-    closure_data_leaves = sorted(set(
-        [
-            "RelationalExternalCallSites",
-            "RelationalProofRequiredInputsData",
-            "RelationalProofPaddingData",
-            "RelationalProofRegionInventoryData",
-            "RelationalProofOriginalCoverageData",
-            "RelationalProofCandidateCoverageData",
-        ]
-        + generated_modules("RelationalProofRegionIndexChunk*.lean")
-        + generated_modules("RelationalProofStaticUsageLeaf*.lean")
-    ))
-    phase_results["structural_data_leaves"], failed = run_generated_phase(
-        closure_data_leaves
-    )
-    if failed is not None:
-        return {
-            **failed,
-            "phase": "structural_data_leaves",
-            "completed_phase_modules": len(
-                phase_results["structural_data_leaves"]
-            ),
-            "total_phase_modules": len(closure_data_leaves),
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    closure_data_aggregates = [
-        "RelationalProofRegionIndexData",
-        *generated_modules("RelationalProofStaticUsageChunk*.lean"),
-    ]
-    phase_results["structural_data_aggregates"], failed = run_generated_phase(
-        closure_data_aggregates
-    )
-    if failed is not None:
-        return {
-            **failed,
-            "phase": "structural_data_aggregates",
-            "completed_phase_modules": len(
-                phase_results["structural_data_aggregates"]
-            ),
-            "total_phase_modules": len(closure_data_aggregates),
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    static_usage_certificate = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalProofStaticUsageCertificate",
-    )
-    phase_results["structural_static_usage_certificate"] = [
-        static_usage_certificate
-    ]
-    if static_usage_certificate.get("status") != "checked":
-        return {
-            **static_usage_certificate,
-            "phase": "structural_static_usage_certificate",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-    closure_data = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalProofClosureData",
-    )
-    phase_results["structural_data"] = [closure_data]
-    if closure_data.get("status") != "checked":
-        return {
-            **closure_data,
-            "phase": "structural_data",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-
-    structural_fact_modules = sorted(set(
-        generated_modules("RelationalProofStructuralRegionChunk*.lean")
-        + generated_modules("RelationalProofStructuralPadding*Chunk*.lean")
-        + generated_modules("RelationalProofStructuralCoverage*.lean")
-        + ["RelationalProofStructuralIndependent"]
-    ))
-    phase_results["structural_facts"], failed = run_generated_phase(
-        structural_fact_modules
-    )
-    if failed is not None:
-        return {
-            **failed,
-            "phase": "structural_facts",
-            "completed_phase_modules": len(phase_results["structural_facts"]),
-            "total_phase_modules": len(structural_fact_modules),
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-
-    structural_aggregates = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalProofStructuralAggregates",
-    )
-    phase_results["structural_aggregates"] = [structural_aggregates]
-    if structural_aggregates.get("status") != "checked":
-        return {
-            **structural_aggregates,
-            "phase": "structural_aggregates",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-
-    closure = _run_lean_relational_cached(
-        lean_dir,
-        bundle="RelationalProofClosureBase",
-    )
-    phase_results["structural_closure"] = [closure]
-    if closure.get("status") != "checked":
-        return {
-            **closure,
-            "phase": "structural_closure",
-            "phase_results": phase_results,
-            "shard_results": results,
-            "prerequisites": prerequisites,
-            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
-        }
-
-    acceptance_path = lean_dir.parent / "whole-program-acceptance.json"
-    acceptance = (
-        _read_json(acceptance_path) if acceptance_path.is_file() else {}
-    )
-    try:
-        expected_theorem = selected_relational_acceptance_theorem(acceptance)
-    except SchemaError:
-        expected_theorem = None
-    acceptance_ready = expected_theorem in RELATIONAL_ACCEPTANCE_THEOREMS
-    final_bundle = "RelationalAcceptance" if acceptance_ready else "RelationalBundle"
-    final = _run_lean_relational(lean_dir, bundle=final_bundle)
-    if final.get("status") == "checked":
-        final["theorem"] = (
-            expected_theorem
-            if acceptance_ready
-            else "StageA.GeneratedRelational.candidateRelationalEvidenceBundle"
-        )
-    if final.get("status") == "checked" and failure_hint_path is not None:
-        failure_hint_path.unlink(missing_ok=True)
-    final["shards"] = len(shard_modules)
-    final["shard_results"] = results
-    final["phase_results"] = phase_results
-    final["scheduler"] = {
-        "jobs": jobs,
-        "heavy_jobs": heavy_jobs,
-        "heavy_threshold_bytes": heavy_threshold,
-        "max_shard_source_bytes": max(source_sizes.values(), default=0),
-        "total_shard_source_bytes": sum(source_sizes.values()),
-        "prerequisites": prerequisites,
-        "prioritized_failure_hint": prioritized_module,
-    }
-    final["pipeline_elapsed_seconds"] = round(time.monotonic() - started, 3)
-    return final

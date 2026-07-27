@@ -1,7 +1,5 @@
 """Whole-program relational Stage A implementation.
 
-`spaghetti_extractor.stage_a_relational` remains the compatibility facade. New code should
-live in this package and expose typed phase boundaries rather than sharing a
-mutable report dictionary across the pipeline.
+Public orchestration is exported by :mod:`spaghetti_extractor.relational.api`.
+Phase workers and proof internals remain private to this package.
 """
-

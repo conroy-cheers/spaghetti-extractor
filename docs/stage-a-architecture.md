@@ -17,9 +17,9 @@ and candidate-only feedback commands are not acceptance gates.
 
 ## Python Phases
 
-`spaghetti_extractor.stage_a_relational` is a compatibility facade. Implementation lives in
-`spaghetti_extractor.relational`:
+Implementation and the stable API live in `spaghetti_extractor.relational`:
 
+- `api.py` exposes the Nix-backed preparation, proof, build, and report-checking API.
 - `schema.py` parses immutable, runtime-validated artifact boundaries.
 - `ir.py` validates proof, graph, acceptance, and progress records.
 - `phases.py` makes decoded, state-analysis, and composition phase order
@@ -43,9 +43,10 @@ and candidate-only feedback commands are not acceptance gates.
 - `nix_pipeline.py` realizes the analysis and proof derivation DAGs.
 - `build.py` validates prepared source graphs and drives the Nix derivation
   DAG.
-- `executor.py` is a derivation-worker implementation used by Nix and
-  test-only semantic fixtures; it is not a supported host build interface.
-- `verdict.py` alone translates a checked final theorem into acceptance.
+- `lean/compiler.py` is the low-level Lean process adapter used inside Nix
+  workers and by semantic kernel fixtures; it has no acceptance authority.
+- `worker_diagnostics.py` emits fail-closed phase diagnostics that cannot be
+  mistaken for proof verdicts.
 - `pipeline.py` orchestrates the phases without owning their data models.
 
 JSON is accepted and emitted only at explicit phase boundaries. New internal

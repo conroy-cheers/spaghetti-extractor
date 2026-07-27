@@ -11,89 +11,116 @@ from threading import Event, Timer
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from spaghetti_extractor.stage_a_relational import (
+from spaghetti_extractor.relational.analyses.control import (
+    _attach_dynamic_indirect_call_analysis,
+    _attach_import_register_analysis,
+    _composition_progress,
+    _dynamic_range_indirect_call_candidates,
+    _immutable_indirect_call_candidates,
+    _relational_product_graph,
+)
+from spaghetti_extractor.relational.analyses.external import (
+    _attach_external_call_site_analysis,
+    _direct_import_thunk_call_candidates,
+    _external_argument_relation_claims,
+    _external_call_site_candidates,
+    _machine_import_call_contract_analysis,
+    _semantic_affine_word_read,
+)
+from spaghetti_extractor.relational.analyses.invariants import (
+    _synthesize_relational_invariants,
+)
+from spaghetti_extractor.relational.analyses.memory import (
+    _attach_static_word_relation_slots,
+)
+from spaghetti_extractor.relational.analyses.registers import (
+    _attach_import_seed_address_separations,
+    _iat_import_register_seed_candidates,
+    _infer_import_register_invariants,
+    _synthesize_register_relations,
+)
+from spaghetti_extractor.relational.analyses.segments import (
+    _attach_register_relation_analysis,
+    _direct_call_stack_amount,
+    _dynamic_range_register_output_claims,
+    _dynamic_range_transfer_claims,
+    _import_register_transfer_claims,
+    _lower_stack_register_relations,
+    _paired_prepared_word_writes_claim,
+    _paired_stack_guard_claim,
+    _paired_stack_word_write_claim,
+    _paired_stack_word_writes_claim,
+    _prepared_dynamic_stack_spill_claim,
+    _related_word_zero_guard_claim,
+    _stack_read32_sub_output_claim,
+    _static_dynamic_pointer_slot_guard_claim,
+)
+from spaghetti_extractor.relational.analyses.stack import (
+    _attach_return_slot_contracts,
+    _attach_return_write_address_separations,
+    _attach_stack_window_invariants,
+    _direct_call_push_claim,
+    _return_pop_claim,
+    _semantic_read32_after_writes,
+    _stack_window_transfer_claims,
+)
+from spaghetti_extractor.relational.api import (
+    stage_a_build_relational,
+    stage_a_check_relational_proof,
+)
+from spaghetti_extractor.relational.build import (
+    _finalize_nix_proof_ir,
+    _relational_nix_build_command,
+    _validate_prepared_relational,
+    _validate_relational_module_graph,
+)
+from spaghetti_extractor.relational.contract import (
+    _dynamic_range_relations,
+    _machine_import_call_contracts,
+    _mapped_relocation_offsets,
+    _normalize_contract,
+    _static_dynamic_pointer_slots,
+    _static_word_relation_slots,
+    stage_a_generate_relation_contract,
+)
+from spaghetti_extractor.relational.diagnostics import (
+    _dynamic_pointer_traversal_diagnostic,
+    _nonzero_word_guard,
+    _static_dynamic_pointer_seed_diagnostic,
+)
+from spaghetti_extractor.relational.extraction import (
+    _assembled_iat_read_candidates,
+    _cached_behavior_affected_by_machine_contracts,
+    _iat_read_classification,
+    _relational_extraction_semantics_sha256,
+    _semantic_memory_pullback_support,
+    _semantic_x87_load_pullback_supported,
+)
+from spaghetti_extractor.relational.lean.compiler import (
+    _persistent_olean_path,
+    _relational_cache_dir,
+    _run_lean_relational,
+)
+from spaghetti_extractor.relational.lean.generation import (
+    _compact_acceptance_blockers,
+    _external_register_policy_replay_candidate,
+    _lean_identical_state_only_write_registers,
+    _lean_identical_state_only_writes_component,
+    _normalized_behavior_fast_path,
+    _partition_proof_shards,
+    _whole_program_acceptance_plan,
+    _write_reachable_product_local_certificate,
+)
+from spaghetti_extractor.relational.model import _semantic_constant_bool
+from spaghetti_extractor.relational.pipeline import (
+    stage_a_prepare_relational,
+)
+from spaghetti_extractor.relational.schema import (
     RELATIONAL_ACCEPTANCE_THEOREM,
     RELATIONAL_ENVIRONMENT_ID,
     RELATIONAL_KERNEL_MODULES,
     RELATIONAL_OBSERVATIONS,
     RELATIONAL_SEGMENT_CERTIFICATE_FORMAT,
-    _attach_import_register_analysis,
-    _attach_import_seed_address_separations,
-    _attach_dynamic_indirect_call_analysis,
-    _attach_external_call_site_analysis,
-    _attach_return_write_address_separations,
-    _attach_return_slot_contracts,
-    _attach_stack_window_invariants,
-    _attach_static_word_relation_slots,
-    _attach_register_relation_analysis,
-    _assembled_iat_read_candidates,
-    _cached_behavior_affected_by_machine_contracts,
-    _compact_acceptance_blockers,
-    _composition_progress,
-    _direct_call_push_claim,
-    _direct_call_stack_amount,
-    _direct_import_thunk_call_candidates,
-    _dynamic_range_indirect_call_candidates,
-    _dynamic_pointer_traversal_diagnostic,
-    _dynamic_range_register_output_claims,
-    _dynamic_range_relations,
-    _dynamic_range_transfer_claims,
-    _external_argument_relation_claims,
-    _external_call_site_candidates,
-    _external_register_policy_replay_candidate,
-    _finalize_nix_proof_ir,
-    _immutable_indirect_call_candidates,
-    _iat_import_register_seed_candidates,
-    _import_register_transfer_claims,
-    _infer_import_register_invariants,
-    _iat_read_classification,
-    _lean_identical_state_only_write_registers,
-    _lean_identical_state_only_writes_component,
-    _lower_stack_register_relations,
-    _machine_import_call_contract_analysis,
-    _machine_import_call_contracts,
-    _mapped_relocation_offsets,
-    _normalize_contract,
-    _normalized_behavior_fast_path,
-    _nonzero_word_guard,
-    _partition_proof_shards,
-    _persistent_olean_path,
-    _prepared_dynamic_stack_spill_claim,
-    _paired_stack_guard_claim,
-    _paired_prepared_word_writes_claim,
-    _paired_stack_word_write_claim,
-    _paired_stack_word_writes_claim,
-    _relational_nix_build_command,
-    _relational_cache_dir,
-    _return_pop_claim,
-    _relational_extraction_semantics_sha256,
-    _related_word_zero_guard_claim,
-    _relational_product_graph,
-    _run_lean_relational,
-    _semantic_affine_word_read,
-    _semantic_memory_pullback_support,
-    _semantic_read32_after_writes,
-    _semantic_constant_bool,
-    _semantic_x87_load_pullback_supported,
-    _stack_read32_sub_output_claim,
-    _stack_window_transfer_claims,
-    _static_dynamic_pointer_slots,
-    _static_word_relation_slots,
-    _static_dynamic_pointer_slot_guard_claim,
-    _static_dynamic_pointer_seed_diagnostic,
-    _synthesize_register_relations,
-    _synthesize_relational_invariants,
-    _validate_relational_module_graph,
-    _validate_prepared_relational,
-    _whole_program_acceptance_plan,
-    _write_reachable_product_local_certificate,
-    stage_a_build_relational,
-    stage_a_check_relational_proof,
-    stage_a_generate_relation_contract,
-)
-from spaghetti_extractor.relational.pipeline import (
-    stage_a_prepare_relational,
-    stage_a_prove_relational,
 )
 from spaghetti_extractor.stage_binary import StageAImport, StageAInputError, _parse_stage_a_pe
 
