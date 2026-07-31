@@ -14,6 +14,7 @@ from spaghetti_extractor.relational.lean.interpreter_kernel_abi import (
     RelationalInterpreterKernelABIGenerationError,
     abi_plan_payload_sha256,
     build_relational_interpreter_kernel_abi_plan,
+    relational_interpreter_kernel_abi_parameters_source,
     relational_interpreter_kernel_abi_source,
 )
 from spaghetti_extractor.relational.lean.interpreter_kernel_data import (
@@ -228,6 +229,19 @@ class StageARelationalInterpreterKernelABIGenerationTests(unittest.TestCase):
         self.assertRegex(abi_plan_payload_sha256(plan), r"[0-9a-f]{64}\Z")
 
         source = relational_interpreter_kernel_abi_source(plan)
+        parameters_source = relational_interpreter_kernel_abi_parameters_source(
+            plan
+        )
+        self.assertIn(
+            "import StageA.GeneratedRelationalInterpreterKernelABIParameters",
+            source,
+        )
+        self.assertNotIn("def generatedInterpreterEngineLayout", source)
+        self.assertIn("def generatedInterpreterEngineLayout", parameters_source)
+        self.assertIn(
+            "def generatedInterpreterKernelABIParameters", parameters_source
+        )
+        self.assertNotIn("GeneratedInterpreterKernelDataBundle", parameters_source)
         self.assertIn("buildConcreteKernelABI?", source)
         self.assertIn("generatedInterpreterKernelABIRelation?", source)
         self.assertIn("Option KernelABIRelation", source)

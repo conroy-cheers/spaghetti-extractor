@@ -48,6 +48,84 @@ def lookupProgramRecord (records : List ProgramRecord)
     (sourceRva : Nat) : Option ProgramRecord :=
   records.find? (fun record => record.sourceRva == sourceRva)
 
+/-- The semantic value extracted from one checked raw program record.  The
+record remains authoritative: downstream proofs consume these exact equations
+rather than decoding the same record again. -/
+structure CheckedSemanticProgramRecordValue (record : ProgramRecord) where
+  transfer : SemanticTransfer
+  decodeExact : record.decode = some transfer
+  checkedExact : transfer.checked = true
+
+private def fallbackSemanticTransfer : SemanticTransfer := {
+  sourceRva := 0
+  wordNodes := []
+  calls := []
+  body := []
+  outcome := .externalJump
+}
+
+def checkedSemanticTransfer (record : ProgramRecord) : SemanticTransfer :=
+  record.decode.getD fallbackSemanticTransfer
+
+theorem checkedSemanticTransfer_decodeExact
+    (record : ProgramRecord) (checked : record.checked = true) :
+    record.decode = some (checkedSemanticTransfer record) := by
+  unfold ProgramRecord.checked at checked
+  cases decoded : record.decode with
+  | none => simp [decoded] at checked
+  | some transfer => simp [checkedSemanticTransfer, decoded]
+
+theorem checkedSemanticTransfer_checkedExact
+    (record : ProgramRecord) (checked : record.checked = true) :
+    (checkedSemanticTransfer record).checked = true := by
+  unfold ProgramRecord.checked at checked
+  cases decoded : record.decode with
+  | none => simp [decoded] at checked
+  | some transfer =>
+      simpa [checkedSemanticTransfer, decoded] using checked
+
+def CheckedSemanticProgramRecordValue.ofChecked
+    (record : ProgramRecord) (checked : record.checked = true) :
+    CheckedSemanticProgramRecordValue record := {
+  transfer := checkedSemanticTransfer record
+  decodeExact := checkedSemanticTransfer_decodeExact record checked
+  checkedExact := checkedSemanticTransfer_checkedExact record checked
+}
+
+/-- A compact lookup-bound semantic record for the closed Step/Run/Invoke
+proofs.  Generated code cannot substitute a different record, transfer, or
+source RVA. -/
+structure CheckedSemanticProgramRecord
+    (records : List ProgramRecord) (sourceRva : Nat) where
+  record : ProgramRecord
+  sourceRvaExact : record.sourceRva = sourceRva
+  lookupExact : lookupProgramRecord records sourceRva = some record
+  semantic : CheckedSemanticProgramRecordValue record
+
+/-- Membership plus unique source RVAs determines interpreter lookup.  Pack
+modules prove membership locally, avoiding a fresh global `find?` reduction
+for every downstream certificate. -/
+theorem lookupProgramRecord_eq_some_of_mem_sourceRva
+    (unique : (records.map fun value => value.sourceRva).Nodup)
+    (member : record ∈ records) :
+    lookupProgramRecord records record.sourceRva = some record := by
+  induction records with
+  | nil => simp at member
+  | cons head tail induction =>
+      simp only [List.map_cons, List.nodup_cons] at unique
+      rcases List.mem_cons.mp member with rfl | inTail
+      · simp [lookupProgramRecord]
+      · have sourceRvaNe : head.sourceRva ≠ record.sourceRva := by
+          intro same
+          apply unique.1
+          exact List.mem_map.mpr ⟨record, inTail, same.symm⟩
+        change List.find? (fun value => value.sourceRva == record.sourceRva)
+          (head :: tail) = some record
+        simp only [List.find?_cons]
+        rw [show (head.sourceRva == record.sourceRva) = false by
+          simp [sourceRvaNe]]
+        exact induction unique.2 inTail
+
 /-- Linear certificate checker for the source-RVA order emitted by the table.
 Using `List.Nodup`'s decision procedure directly is quadratic and needlessly
 revisits opaque semantic records in the final bundle. -/
@@ -518,6 +596,175 @@ structure ImmutableRangeBindingPlan where
   rawCount : Nat
   slices : List RawByteSlicePlan
 deriving Repr, DecidableEq
+
+/-- Compact metadata for one immutable PE span. Exact bytes are intentionally
+kept out of this certificate: generated authority leaves bind them through
+`PEBytePackSliceChain`, while this reusable checker discharges section, IAT,
+and raw-layout facts exactly once. -/
+structure ImmutableRangeMetadataPlan where
+  sectionIndex : Nat
+  rawOffset : Nat
+  rawCount : Nat
+deriving Repr, DecidableEq
+
+def immutableRangeMetadataAddressChecked
+    (layout : CandidateDataLayout) (imports : List PEImport)
+    (rva size : Nat)
+    (plan : ImmutableRangeMetadataPlan) : Bool :=
+  match layout.sections[plan.sectionIndex]? with
+  | none => false
+  | some sec =>
+      let accepted :=
+        (size == 0 || rva + size > layout.sizeOfImage ||
+          !imageRangeExcludesIat imports rva size) == false
+      let sectionExact := layout.sections.filter (fun candidate =>
+        !candidate.writable && candidate.virtualAddress <= rva &&
+          rva + size <=
+            candidate.virtualAddress + candidate.mappedSize) == [sec]
+      let offset := rva - sec.virtualAddress
+      let rawCount :=
+        if offset < sec.rawSize then min size (sec.rawSize - offset) else 0
+      accepted && sectionExact && offset + size <= sec.mappedSize &&
+        (plan.rawOffset == sec.rawPointer + offset &&
+          plan.rawCount == rawCount)
+
+def immutableRangeMetadataChecked
+    (layout : CandidateDataLayout) (imports : List PEImport)
+    (range : ImmutableByteRange)
+    (plan : ImmutableRangeMetadataPlan) : Bool :=
+  immutableRangeMetadataAddressChecked layout imports range.rva range.size plan
+
+/-- Byte-free metadata requests permit one compact, opaque layout/import check
+per transfer record. Exact bytes remain bound independently by slice-chain
+certificates. -/
+structure ImmutableRangeMetadataRequest where
+  rva : Nat
+  size : Nat
+  plan : ImmutableRangeMetadataPlan
+deriving Repr, DecidableEq
+
+def immutableRangeMetadataRequestChecked
+    (layout : CandidateDataLayout) (imports : List PEImport)
+    (request : ImmutableRangeMetadataRequest) : Bool :=
+  immutableRangeMetadataAddressChecked layout imports request.rva request.size
+    request.plan
+
+def immutableRangeMetadataBatchChecked
+    (layout : CandidateDataLayout) (imports : List PEImport)
+    (requests : List ImmutableRangeMetadataRequest) : Bool :=
+  requests.all (immutableRangeMetadataRequestChecked layout imports)
+
+structure ImmutableRangeMetadataBatchCertificate
+    (layout : CandidateDataLayout) (imports : List PEImport)
+    (requests : List ImmutableRangeMetadataRequest) where
+  checked : immutableRangeMetadataBatchChecked layout imports requests = true
+
+def ImmutableRangeMetadataBatchCertificate.of_checked
+    (layout : CandidateDataLayout) (imports : List PEImport)
+    (requests : List ImmutableRangeMetadataRequest)
+    (checked : immutableRangeMetadataBatchChecked layout imports requests = true) :
+    ImmutableRangeMetadataBatchCertificate layout imports requests :=
+  { checked }
+
+theorem ImmutableRangeMetadataBatchCertificate.checkedAt
+    {layout : CandidateDataLayout} {imports : List PEImport}
+    {requests : List ImmutableRangeMetadataRequest}
+    (certificate :
+      ImmutableRangeMetadataBatchCertificate layout imports requests)
+    (index : Fin requests.length) :
+    immutableRangeMetadataRequestChecked layout imports
+      (requests.get index) = true := by
+  have allChecked := certificate.checked
+  simp only [immutableRangeMetadataBatchChecked, List.all_eq_true]
+    at allChecked
+  exact allChecked _ (List.get_mem requests index)
+
+structure ImmutableRangeMetadataCertificate
+    (layout : CandidateDataLayout) (imports : List PEImport)
+    (range : ImmutableByteRange)
+    (plan : ImmutableRangeMetadataPlan) where
+  mappedSection : Section
+  sectionFound : layout.sections[plan.sectionIndex]? = some mappedSection
+  accepted :
+    (range.size == 0 || range.rva + range.size > layout.sizeOfImage ||
+      !imageRangeExcludesIat imports range.rva range.size) = false
+  sectionExact : layout.sections.filter (fun candidate =>
+    !candidate.writable && candidate.virtualAddress <= range.rva &&
+      range.rva + range.size <=
+        candidate.virtualAddress + candidate.mappedSize) = [mappedSection]
+  mappedFits : range.rva - mappedSection.virtualAddress + range.size <=
+    mappedSection.mappedSize
+  rawOffsetExact :
+    plan.rawOffset = mappedSection.rawPointer +
+      (range.rva - mappedSection.virtualAddress)
+  rawCountExact :
+    plan.rawCount =
+      (if range.rva - mappedSection.virtualAddress < mappedSection.rawSize then
+        min range.size
+          (mappedSection.rawSize - (range.rva - mappedSection.virtualAddress))
+      else 0)
+
+noncomputable def ImmutableRangeMetadataCertificate.of_checked
+    (layout : CandidateDataLayout) (imports : List PEImport)
+    (range : ImmutableByteRange) (plan : ImmutableRangeMetadataPlan)
+    (checked :
+      immutableRangeMetadataChecked layout imports range plan = true) :
+    ImmutableRangeMetadataCertificate layout imports range plan := by
+  unfold immutableRangeMetadataChecked immutableRangeMetadataAddressChecked
+    at checked
+  split at checked
+  next => contradiction
+  next mappedSection sectionFound =>
+    simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at checked
+    rcases checked with
+      ⟨⟨⟨accepted, sectionExact⟩, mappedFits⟩, rawOffsetExact,
+        rawCountExact⟩
+    exact {
+      mappedSection
+      sectionFound
+      accepted
+      sectionExact
+      mappedFits
+      rawOffsetExact
+      rawCountExact
+    }
+
+theorem ImmutableRangeMetadataCertificate.exact_of_slices
+    {pe : PE32} {layout : CandidateDataLayout} {imports : List PEImport}
+    {range : ImmutableByteRange} {plan : ImmutableRangeMetadataPlan}
+    (certificate :
+      ImmutableRangeMetadataCertificate layout imports range plan)
+    (layoutExact : CandidateDataLayout.ofPE pe = layout)
+    (slices : List (PEBytePackSlice pe))
+    (chain : PEBytePackSliceChain pe plan.rawOffset plan.rawCount slices)
+    (rawBytes : Bytes)
+    (slicesRead : readPEBytePackSlices slices = some rawBytes)
+    (expectedExact :
+      rawBytes ++ List.replicate (range.size - plan.rawCount) 0 =
+        range.bytes) :
+    immutableRvaBytes pe imports range.rva range.size = some range.bytes := by
+  unfold immutableRvaBytes immutableMappedBytes
+  have imageExact : pe.sizeOfImage = layout.sizeOfImage := by
+    rw [<- layoutExact]
+    rfl
+  rw [imageExact, certificate.accepted]
+  simp only [Bool.false_eq_true, ↓reduceIte]
+  have sectionsExact : pe.sections = layout.sections := by
+    rw [<- layoutExact]
+    rfl
+  have sectionExact : pe.sections.filter (fun candidate =>
+      !candidate.writable && candidate.virtualAddress <= range.rva &&
+        ({ start := range.rva, size := range.size } : Span).stop <=
+          candidate.virtualAddress + candidate.mappedSize) =
+      [certificate.mappedSection] := by
+    rw [sectionsExact]
+    simpa [Span.stop] using certificate.sectionExact
+  rw [sectionExact]
+  simp only
+  rw [if_neg (Nat.not_lt_of_ge certificate.mappedFits)]
+  rw [<- certificate.rawCountExact, <- certificate.rawOffsetExact]
+  rw [chain.readBytes_eq, slicesRead]
+  simp [expectedExact]
 
 def immutableRangeBindingChecked {pe : PE32}
     (layout : CandidateDataLayout) (imports : List PEImport)
@@ -2454,5 +2701,31 @@ theorem ProgramTableCertificate.semantic_lookup_is_compiled_lookup
     lookupProgramRecord semanticRecords sourceRva =
       lookupProgramRecord (decodedShardRecords certificate.shards) sourceRva :=
   (certificate.lookup_agrees sourceRva).symm
+
+/-- Bind one locally checked shard record to the canonical whole-program
+lookup.  Generated shard modules check every record once; downstream semantic
+and call-tree certificates reuse this constructor without decoding the record
+or evaluating a whole-program `find?` again. -/
+noncomputable def ProgramTableCertificate.checkedSemanticRecordOfShardMember
+    (certificate : ProgramTableCertificate pe imports relocations
+      tableRva countRva semanticRecords)
+    (shard : ProgramTableShardCertificate pe imports relocations tableRva)
+    (record : ProgramRecord) (sourceRva : Nat)
+    (shardMember : shard ∈ certificate.shards)
+    (recordMember : record ∈ shard.records)
+    (sourceRvaExact : record.sourceRva = sourceRva)
+    (recordChecked : record.checked = true) :
+    CheckedSemanticProgramRecord semanticRecords sourceRva := {
+  record := record
+  sourceRvaExact := sourceRvaExact
+  lookupExact := by
+    rw [← sourceRvaExact]
+    apply lookupProgramRecord_eq_some_of_mem_sourceRva
+      certificate.sourceRvasUnique
+    rw [certificate.semanticRecordsExact]
+    simp only [decodedShardRecords, List.mem_flatMap]
+    exact ⟨shard, shardMember, recordMember⟩
+  semantic := CheckedSemanticProgramRecordValue.ofChecked record recordChecked
+}
 
 end StageA.Relational.InterpreterKernelData

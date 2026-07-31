@@ -128,10 +128,12 @@ class StageARelationalInterpreterMixedConstructiveSourceInventoryTests(
             payload["checked_finite_facts"]["unused_candidate_records_allowed"]
         )
         self.assertEqual(
-            payload["typed_residuals"][:2],
+            payload["typed_residuals"][:3],
             [
                 "ConstructiveMixedKernelStateFacts reachability.targetIds "
                 "relationContract originalBefore candidateBefore",
+                "ConstructiveMixedKernelPhaseStateFacts relationContract "
+                "evidence",
                 "constructiveMixedKernelSourceEvidence? generatedRules "
                 "originalBefore candidateBefore = some evidence",
             ],
@@ -171,6 +173,8 @@ class StageARelationalInterpreterMixedConstructiveSourceInventoryTests(
             "MixedKernelOperationComponentCertificate",
             "structure GeneratedConstructiveSourceResidual",
             "ConstructiveMixedKernelStateFacts",
+            "ConstructiveMixedKernelPhaseStateFacts",
+            "phaseStateFacts",
             "classificationExact",
             "semantic :",
             "constructiveMixedKernelInvariant_holds",

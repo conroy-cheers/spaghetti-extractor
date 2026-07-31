@@ -302,54 +302,7 @@ theorem abstractInterpreterStep_eq_bind_lookup
         (fun record => record.interpret environment logical) := by
   rfl
 
-theorem InterpreterStepMachineCertificate.refines
-    {program : CompiledKernelProgram} {pe : PE32} {imports : List PEImport}
-    {abi : KernelABIRelation} {semanticRecords : List ProgramRecord}
-    {steps : NativeExecution -> NativeExecution -> Prop}
-    {dispatches : KernelDispatchRelation}
-    (certificate : InterpreterStepMachineCertificate program pe imports abi
-      semanticRecords steps dispatches) :
-    KernelOperationRefinesUsing program abi dispatches .interpreterStep := by
-  intro request before operationMatches requestRelated response transition
-  cases request with
-  | programLookup records sourceRva =>
-      simp [AbstractKernelRequest.operation] at operationMatches
-  | runFunction records environment resolveCodeTarget sourceRva logical =>
-      simp [AbstractKernelRequest.operation] at operationMatches
-  | invokeCall records environment resolveCodeTarget event logical =>
-      simp [AbstractKernelRequest.operation] at operationMatches
-  | interpreterStep records environment sourceRva logical =>
-      have entry := certificate.establishEntry records environment sourceRva
-        logical before requestRelated
-      have recordsExact := entry.recordsExact
-      subst records
-      cases transition
-      let lookupPhase := certificate.lookup environment sourceRva logical before
-        requestRelated
-      let actionPhase := certificate.actions environment sourceRva logical before
-        requestRelated lookupPhase
-      let epilogue := certificate.epilogue environment sourceRva logical before
-        requestRelated lookupPhase actionPhase
-      have combinedPhases : steps
-          (.running certificate.function.span.start 0 before [] 0 [])
-          actionPhase.afterActions :=
-        certificate.execution.trans lookupPhase.path actionPhase.trace.path
-      have complete : steps
-          (.running certificate.function.span.start 0 before [] 0 [])
-          (.returned epilogue.after epilogue.nativeEvents) :=
-        certificate.execution.trans combinedPhases epilogue.path
-      have resultExact : actionPhase.result =
-          abstractInterpreterStep semanticRecords environment sourceRva logical := by
-        rw [abstractInterpreterStep_eq_bind_lookup, <- lookupPhase.recordExact]
-        exact actionPhase.trace.resultExact
-      refine ⟨certificate.function.span.start, epilogue.after,
-        epilogue.nativeEvents, certificate.entryRvaExact,
-        certificate.execution.dispatch certificate.function.span.start before
-          epilogue.after epilogue.nativeEvents complete, ?_, epilogue.memoryFrame⟩
-      simpa [resultExact] using epilogue.responseRelated
-
 #print axioms abstractInterpreterStep_eq_bind_lookup
 #print axioms InterpreterStepRecordTrace.resultExact
-#print axioms InterpreterStepMachineCertificate.refines
 
 end StageA.Relational.InterpreterKernelStep

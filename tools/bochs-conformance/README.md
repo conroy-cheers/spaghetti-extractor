@@ -40,16 +40,42 @@ declared state boundary:
 - branch/call/return class from Bochs callbacks plus the architectural next
   EIP.
 
+Protocol v5 executes each target instruction with CPL 3, supports a controlled
+GDT-backed FS selector and hidden base, and injects and observes the complete
+x87 state represented by the canonical corpus:
+
+- control, status, and full tag words;
+- the 11-bit last opcode and 32-bit instruction/data pointers;
+- eight exact 80-bit registers in x86 little-endian memory form.
+
+The corpus register list is logical `ST(0)` through `ST(7)`. The adapter rotates
+those values through the TOP field when reading or writing Bochs' physical
+register array. Every case receives a fresh x87 state, so a prior case cannot
+leak stack contents, tags, or exception state into the next one. Inputs that
+cannot be represented exactly, malformed observations, unsupported x87 faults,
+and x87 accesses outside declared memory remain fail-closed.
+
+The canonical schema does not expose the legacy FCS/FDS selector fields. The
+adapter initializes them deterministically to zero. They are not returned as
+observations and therefore cannot be used as qualification evidence. Extending
+the schema is required before selector-sensitive environment behavior can be
+qualified.
+
 The runner returns `unsupported` for undeclared accesses, permission
 violations, unsupported translations, and inputs outside these bounds. This is
 an oracle containment policy, not x86 memory protection: paging remains off in
 the controlled guest.
 
-Architectural fault-state capture, nonzero FS selectors/bases, x87, vector
-registers, I/O, far control, repeated instructions, and system effects remain
-explicitly unsupported. Fault diagnostics retain the Bochs exception vector,
-but do not claim a complete fault observation until recoverable pre-delivery
-state is implemented.
+The private protocol captures divide-error (`#DE`, vector 0) faults before
+guest exception delivery. It emits the faulting EIP, general registers,
+EFLAGS, and every mapped-memory snapshot as a complete `control=fault`,
+`fault=divide_error` observation, then redirects directly to the harness
+decode loop. All other exception vectors remain fail-closed unsupported.
+
+Single-instruction `REP` string operations execute within the same bounded
+memory policy. Vector registers, I/O, far control, system effects, LDT-backed
+FS state, and x87 or other architectural fault classes beyond the reviewed
+observations remain explicitly unsupported.
 
 Build the full current Bochs corpus check with:
 
@@ -57,7 +83,6 @@ Build the full current Bochs corpus check with:
 nix build .#stage-a-isa-conformance-bochs-80386 --no-link
 ```
 
-The next capability increments should add recoverable architectural fault
-observations, per-case segment descriptors and FS state, x87 state, then
-separately versioned vector-register profiles. Each increment requires a small
-focused fixture before adding a hardware-corpus shard.
+The next capability increments should add other reviewed architectural fault
+classes and separately versioned vector-register profiles. Each increment
+requires a small focused fixture before adding a hardware-corpus shard.

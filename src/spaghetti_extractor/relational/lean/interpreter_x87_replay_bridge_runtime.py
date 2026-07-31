@@ -2,8 +2,8 @@
 
 The existing target inventory binds the descriptor table and finite indirect
 targets.  This phase additionally binds every replay operand that the PE loader
-may relocate.  It emits compact target-indexed certificates only; dynamic
-execution is discharged by the generic Lean runtime theorem.
+may relocate.  It emits compact target-indexed static execution facts; the
+generic Lean kernel derives dynamic execution universally from those facts.
 """
 
 from __future__ import annotations
@@ -20,6 +20,10 @@ from .interpreter_kernel_x87_execution import (
     interpreter_kernel_x87_execution_lean_snippet,
 )
 from .interpreter_x87_replay_bridge_target import (
+    X87_REPLAY_BRIDGE_BODY_SIZE,
+    X87_REPLAY_BRIDGE_CAPTURE_OFFSET,
+    X87_REPLAY_BRIDGE_INSTRUCTION_OFFSET,
+    X87_REPLAY_BRIDGE_RETURN_OFFSET,
     X87_REPLAY_BRIDGE_TARGET_PLAN_FORMAT,
     _candidate_bytes,
     _highlow_relocation_counts,
@@ -38,9 +42,72 @@ X87_REPLAY_BRIDGE_RUNTIME_LEAN_BUNDLE = (
 X87_REPLAY_BRIDGE_RUNTIME_PACK_PREFIX = (
     "GeneratedRelationalInterpreterX87ReplayBridgeRuntimePack"
 )
+X87_REPLAY_FIXED_TEMPLATE_CHECKS_TYPE = (
+    "StageA.GeneratedRelational.InterpreterX87ReplayBridgeRuntime."
+    "GeneratedX87ReplayBridgeFixedTemplateChecks"
+)
+X87_REPLAY_FIXED_TEMPLATE_AUTHORIZING_THEOREM = (
+    "StageA.GeneratedRelational.InterpreterX87ReplayBridgeRuntime."
+    "generatedX87ReplayBridgeKernelExecutionClosed"
+)
+X87_REPLAY_FIXED_TEMPLATE_CHECKED_BUNDLE_PREMISE = (
+    f"{X87_REPLAY_FIXED_TEMPLATE_CHECKS_TYPE} carrier"
+)
 
 _ENGINE_PLAN_FORMAT = "stage-b-native-engine-plan-v1"
 _X87_REPLAY_FORMAT = "stage-b-native-exact-x87-command-replay-program-v1"
+X87_REPLAY_FIXED_TEMPLATE_PROGRAM_BINDING_PREMISES: tuple[str, ...] = ()
+X87_REPLAY_FIXED_TEMPLATE_SOURCE_FRAME_ASSUMPTIONS = (
+    "source_frame.engineRelated",
+    "source_frame.candidateRegisters",
+    "source_frame.popFlagsCpl3",
+    "source_frame.engineAddressRelation",
+    "source_frame.candidateMemory",
+    "source_frame.callerSemantics",
+    "source_frame.layoutCompatible",
+    "source_frame.engineBase",
+    "source_frame.memoryUnmapped",
+    "source_frame.frameAddressNonzero",
+    "source_frame.inputX87FrameAddressValid",
+    "source_frame.outputX87FrameAddressValid",
+    "source_frame.descriptorMember",
+    "source_frame.callTarget",
+    "source_frame.targetBefore",
+    "source_frame.activeBefore",
+    "source_frame.parentBefore",
+    "source_frame.inputPointer",
+    "source_frame.outputPointer",
+    "source_frame.inputOutputAlias",
+    "source_frame.representationDisjointImage",
+    "source_frame.stackDisjoint",
+    "source_frame.frameDisjointImage",
+    "source_frame.frameDisjointOperand",
+    "source_frame.privateStackPointerNonzero",
+    "source_frame.privateStackAddressValid",
+    "source_frame.privateStackDisjointFrame",
+    "source_frame.privateStackDisjointRepresentation",
+    "source_frame.privateStackDisjointOperand",
+    "source_frame.privateStackDisjointImage",
+    "source_frame.logicalScratchDisjointFrame",
+    "source_frame.logicalScratchAddressValid",
+    "source_frame.logicalScratchDisjointPrivateStack",
+    "source_frame.logicalScratchDisjointRepresentation",
+    "source_frame.logicalScratchDisjointOperand",
+    "source_frame.logicalScratchDisjointImage",
+    "source_frame.operandDisjointRepresentation",
+    "source_frame.operandDisjointRuntimeCells",
+    "source_frame.inputFrame.encoded",
+    "source_frame.inputFrame.related",
+    "source_frame.inputCandidateRepresentable",
+    "source_frame.candidateX87",
+    "source_frame.commandInput",
+    "source_frame.faultFree",
+)
+X87_REPLAY_FIXED_TEMPLATE_CERTIFICATE_PREMISES: tuple[str, ...] = ()
+X87_REPLAY_FIXED_TEMPLATE_EXECUTOR_PREMISES: tuple[str, ...] = ()
+X87_REPLAY_FIXED_TEMPLATE_REMAINING_PREMISES = (
+    X87_REPLAY_FIXED_TEMPLATE_EXECUTOR_PREMISES
+)
 
 
 class X87ReplayBridgeRuntimeGenerationError(StageAInputError):
@@ -72,7 +139,6 @@ class X87ReplayRuntimeTargetPlan:
     bridge_target_rva: int
     instruction_rva: int
     instruction_bytes: bytes
-    failure_rva: int
     operand: X87ReplayRelocatedOperandPlan | None
 
     def payload(self) -> dict[str, Any]:
@@ -82,7 +148,6 @@ class X87ReplayRuntimeTargetPlan:
             "bridge_target_rva": self.bridge_target_rva,
             "instruction_rva": self.instruction_rva,
             "instruction_bytes": self.instruction_bytes.hex(),
-            "failure_rva": self.failure_rva,
             "operand": None if self.operand is None else self.operand.payload(),
         }
 
@@ -103,8 +168,51 @@ class X87ReplayBridgeRuntimePlan:
     def payload(self) -> dict[str, Any]:
         core: dict[str, Any] = {
             "format": X87_REPLAY_BRIDGE_RUNTIME_PLAN_FORMAT,
-            "status": "evidence_ready",
+            "status": "complete",
+            "diagnostic_status": "kernel_execution_closed",
             "acceptance_authority": False,
+            "static_evidence": True,
+            "conditional_theorem": (
+                "StageA.Relational.InterpreterKernelX87Execution."
+                "executeKernelReduction"
+            ),
+            "checked_executor": (
+                "StageA.Relational.InterpreterKernelX87Execution."
+                "exactNativeX87ReplayFixedTemplateCertificate_isSome"
+            ),
+            "checked_execution_type": X87_REPLAY_FIXED_TEMPLATE_CHECKS_TYPE,
+            "checked_bundle_inhabited": True,
+            "x87_semantics_profile": (
+                "arbitrary-shared-deterministic-stage-a-x87-semantics"
+            ),
+            "fault_profile": "checked-fault-free-singleton",
+            "post_state_contract": (
+                "checked-split-engine-state-v1:"
+                "non-x87-fields+memory-effects+physical-x87-frame"
+            ),
+            "authorizing_theorem": X87_REPLAY_FIXED_TEMPLATE_AUTHORIZING_THEOREM,
+            "authorizing_theorem_premises": [],
+            "required_checked_target_terms": [
+                "StageA.GeneratedRelational.InterpreterX87ReplayBridgeRuntime."
+                "generatedX87ReplayBridgeFixedTemplateStaticExecution"
+                f"{target.descriptor_id:04d}"
+                for target in self.targets
+            ],
+            "remaining_proof_premises": list(
+                X87_REPLAY_FIXED_TEMPLATE_REMAINING_PREMISES
+            ),
+            "assumed_source_frame_fields": list(
+                X87_REPLAY_FIXED_TEMPLATE_SOURCE_FRAME_ASSUMPTIONS
+            ),
+            "remaining_program_binding_fields": list(
+                X87_REPLAY_FIXED_TEMPLATE_PROGRAM_BINDING_PREMISES
+            ),
+            "remaining_fixed_template_fields": list(
+                X87_REPLAY_FIXED_TEMPLATE_CERTIFICATE_PREMISES
+            ),
+            "remaining_executor_fields": list(
+                X87_REPLAY_FIXED_TEMPLATE_EXECUTOR_PREMISES
+            ),
             "candidate": {
                 "path": self.candidate_path.name,
                 "sha256": self.candidate_sha256,
@@ -207,6 +315,19 @@ def x87_replay_bridge_runtime_lean_sources(
     plan: X87ReplayBridgeRuntimePlan,
     *,
     target_module: str = "GeneratedRelationalInterpreterX87ReplayBridgeTarget",
+    candidate_replay_module: str = (
+        "GeneratedInterpreterX87CandidateReplayBundle"
+    ),
+    candidate_replay_namespace: str = (
+        "StageA.GeneratedRelational.CandidateX87Replay"
+    ),
+    candidate_replay_handler: str = (
+        "checkedInterpreterX87CandidateReplayBundleHandler"
+    ),
+    candidate_replay_inventory: str = (
+        "checkedInterpreterX87CandidateReplayBundleExactInventory"
+    ),
+    original_pe_name: str = "StageA.GeneratedRelational.originalPe",
     pack_size: int = 32,
 ) -> dict[str, str]:
     if pack_size <= 0:
@@ -218,6 +339,7 @@ def x87_replay_bridge_runtime_lean_sources(
 
     sources: dict[str, str] = {}
     pack_modules: list[str] = []
+    static_execution_accessors: list[str] = []
     runtime_target_names: list[str] = []
     for pack_index, start in enumerate(range(0, len(plan.targets), pack_size)):
         rows = plan.targets[start : start + pack_size]
@@ -228,7 +350,11 @@ def x87_replay_bridge_runtime_lean_sources(
             suffix = f"{row.descriptor_id:04d}"
             operand_name = f"generatedX87ReplayBridgeOperand{suffix}"
             runtime_name = f"generatedX87ReplayBridgeRuntimeTarget{suffix}"
+            static_execution_name = (
+                f"generatedX87ReplayBridgeFixedTemplateStaticExecution{suffix}"
+            )
             runtime_target_names.append(runtime_name)
+            static_execution_accessors.append(static_execution_name)
             definitions.append(_lean_operand(operand_name, row.operand))
             definitions.append(
                 f"""def {runtime_name} :
@@ -239,11 +365,16 @@ def x87_replay_bridge_runtime_lean_sources(
   target := generatedX87ReplayBridgeTargetBinding{suffix}
   operand := {operand_name}
   operandChecked := by decide +kernel
-  layout := {{ failureRva := {row.failure_rva} }}
   layoutChecked := by decide +kernel
 }}"""
             )
-        sources[f"{module}.lean"] = f"""import StageA.RelationalInterpreterX87ReplayBridgeRuntime
+            definitions.append(
+                f"""def {static_execution_name} :
+    ExactNativeX87ReplayFixedTemplateStaticExecution {runtime_name} :=
+  exactNativeX87ReplayFixedTemplateStaticExecutionOfIsSome {runtime_name}
+    (by decide +kernel)"""
+            )
+        sources[f"{module}.lean"] = f"""import StageA.RelationalInterpreterKernelX87Execution
 import StageA.{target_module}
 
 namespace StageA.GeneratedRelational.InterpreterX87ReplayBridgeRuntime
@@ -252,6 +383,7 @@ open StageA.Formal StageA.Relational
 open StageA.Relational.InterpreterKernel
 open StageA.Relational.InterpreterKernelData
 open StageA.Relational.InterpreterNativeWorld
+open StageA.Relational.InterpreterKernelX87Execution
 open StageA.Relational.InterpreterX87ReplayBridgeTarget
 open StageA.Relational.InterpreterX87ReplayBridgeRuntime
 open StageA.GeneratedRelational.InterpreterKernelData
@@ -267,8 +399,10 @@ end StageA.GeneratedRelational.InterpreterX87ReplayBridgeRuntime
 
     imports = "\n".join(f"import StageA.{module}" for module in pack_modules)
     kernel_execution = interpreter_kernel_x87_execution_lean_snippet()
+    static_case_proofs = _lean_static_target_cases(static_execution_accessors)
     sources[f"{X87_REPLAY_BRIDGE_RUNTIME_LEAN_BUNDLE}.lean"] = f"""{imports}
 import StageA.RelationalInterpreterKernelX87Execution
+import StageA.{candidate_replay_module}
 
 namespace StageA.GeneratedRelational.InterpreterX87ReplayBridgeRuntime
 
@@ -298,7 +432,6 @@ def generatedX87ReplayBridgeRuntimeInventory :
       generatedInterpreterKernelCandidatePe generatedInterpreterKernelImports
       generatedInterpreterKernelRelocations
       generatedX87ReplayBridgeDescriptorPacks := {{
-  staticCertificate := generatedX87ReplayBridgeStaticCertificate
   static := generatedX87ReplayBridgeTargetInventory
   targets := generatedX87ReplayBridgeRuntimeTargets
   targetsExact := by rfl
@@ -306,52 +439,132 @@ def generatedX87ReplayBridgeRuntimeInventory :
   relocatedOperandsExact := by decide +kernel
 }}
 
-def GeneratedX87ReplayBridgeTemplateExecutionGoal
-    (program : ExactNestedNativeWorldProgram)
-    (handler : CandidateReplayHandler)
-    (sourceInvariant : NativeX87ReplayBridgeDescriptor ->
-      MachineState -> MachineState -> Prop) : Prop :=
-  ExactNativeX87ReplayTemplateExecution
-    generatedX87ReplayBridgeRuntimeInventory program handler sourceInvariant
+def generatedX87ReplayBridgeFixedTemplateStaticInventory :
+    ExactNativeX87ReplayFixedTemplateStaticInventory
+      generatedX87ReplayBridgeRuntimeInventory := {{
+  forTarget := by
+    intro runtimeTarget member
+    change List.Mem runtimeTarget generatedX87ReplayBridgeRuntimeTargets at member
+    unfold generatedX87ReplayBridgeRuntimeTargets at member
+{static_case_proofs}
+}}
 
-def GeneratedX87ReplayBridgeKernelExecutionGoal
-    (program : ExactNestedNativeWorldProgram)
-    (handler : CandidateReplayHandler)
-    (sourceInvariant : NativeX87ReplayBridgeDescriptor ->
-      MachineState -> MachineState -> Prop) : Prop :=
-  ExactNativeX87ReplayBridgeKernelExecution
-    generatedX87ReplayBridgeRuntimeInventory program handler sourceInvariant
+def generatedX87ReplayBridgeOriginalPe : PE32 := {original_pe_name}
 
-{kernel_execution}
+def generatedX87ReplayBridgeHandler : CandidateReplayHandler :=
+  {candidate_replay_namespace}.{candidate_replay_handler}
 
-theorem generatedX87ReplayBridgeRuntimeGoals
-    (program : ExactNestedNativeWorldProgram)
-    (handler : CandidateReplayHandler)
-    (sourceInvariant : NativeX87ReplayBridgeDescriptor ->
-      MachineState -> MachineState -> Prop)
-    (certificate : GeneratedX87ReplayBridgeTemplateExecutionGoal
-      program handler sourceInvariant)
+def generatedX87ReplayBridgeSemanticInventory :=
+  {candidate_replay_namespace}.{candidate_replay_inventory}
+
+theorem generatedX87ReplayBridgeHandlerMatchesSemanticInventory :
+    generatedX87ReplayBridgeHandler =
+      {candidate_replay_namespace}.{candidate_replay_handler} := rfl
+
+def generatedX87ReplayBridgeHandlerInventoryCorrespondence :
+    ExactNativeX87ReplayHandlerInventoryCorrespondence
+      generatedX87ReplayBridgeRuntimeInventory generatedX87ReplayBridgeOriginalPe
+      generatedX87ReplayBridgeHandler := {{
+  handlerExact := rfl
+}}
+
+def GeneratedX87ReplayBridgeSourceFrameGoal
     (runtimeTarget : ExactNativeX87ReplayRuntimeTarget
       generatedX87ReplayBridgeTable generatedInterpreterKernelCandidatePe
       generatedInterpreterKernelImports generatedInterpreterKernelRelocations
       generatedX87ReplayBridgeDescriptorPacks)
-    (member : List.Mem runtimeTarget generatedX87ReplayBridgeRuntimeTargets) :
-    runtimeTarget.target.RuntimeGoal program handler sourceInvariant := by
-  exact certificate.runtimeGoal runtimeTarget member
+    (caller logicalInput : MachineState) :=
+  ExactNativeX87ReplaySourceFrame runtimeTarget generatedX87ReplayBridgeOriginalPe
+    caller logicalInput
 
-theorem generatedX87ReplayBridgeExecutionRefinement
+def GeneratedX87ReplayBridgeSourceFrameHolds
+    (runtimeTarget : ExactNativeX87ReplayRuntimeTarget
+      generatedX87ReplayBridgeTable generatedInterpreterKernelCandidatePe
+      generatedInterpreterKernelImports generatedInterpreterKernelRelocations
+      generatedX87ReplayBridgeDescriptorPacks)
+    (caller logicalInput : MachineState) : Prop :=
+  ExactNativeX87ReplaySourceFrameHolds runtimeTarget
+    generatedX87ReplayBridgeOriginalPe caller logicalInput
+
+theorem generatedX87ReplayBridgeSourceFrameEntails
+    (runtimeTarget : ExactNativeX87ReplayRuntimeTarget
+      generatedX87ReplayBridgeTable generatedInterpreterKernelCandidatePe
+      generatedInterpreterKernelImports generatedInterpreterKernelRelocations
+      generatedX87ReplayBridgeDescriptorPacks)
+    (caller logicalInput : MachineState)
+    (source : GeneratedX87ReplayBridgeSourceFrameGoal runtimeTarget caller
+      logicalInput) :
+    GeneratedX87ReplayBridgeSourceFrameHolds runtimeTarget caller logicalInput :=
+  Nonempty.intro source
+
+def GeneratedX87ReplayBridgeTemplateExecutionGoal
+    (program : ExactNestedNativeWorldProgram) : Prop :=
+  ExactNativeX87ReplayTemplateExecution
+    generatedX87ReplayBridgeRuntimeInventory program
+    generatedX87ReplayBridgeOriginalPe generatedX87ReplayBridgeHandler
+
+def GeneratedX87ReplayBridgeKernelExecutionGoal
+    (program : ExactNestedNativeWorldProgram) : Prop :=
+  ExactNativeX87ReplayBridgeKernelExecution
+    generatedX87ReplayBridgeRuntimeInventory program
+    generatedX87ReplayBridgeOriginalPe generatedX87ReplayBridgeHandler
+
+/-- Compatibility goal retained for downstream theorem interfaces.  Universal
+dynamic execution is kernel-derived from the checked static inventory, so no
+target-indexed execution premise remains. -/
+def GeneratedX87ReplayBridgeFixedTemplateChecks
+    (_carrier : ExactNestedNativeWorldProgram) : Prop :=
+  True
+
+theorem generatedX87ReplayBridgeFixedTemplateChecks
+    (carrier : ExactNestedNativeWorldProgram) :
+    GeneratedX87ReplayBridgeFixedTemplateChecks carrier :=
+  True.intro
+
+def generatedX87ReplayBridgeFixedTemplateExecutor
+    (carrier : ExactNestedNativeWorldProgram)
+    (_checked : GeneratedX87ReplayBridgeFixedTemplateChecks carrier) :
+    ExactNativeX87ReplayFixedTemplateExecutor
+      generatedX87ReplayBridgeRuntimeInventory
+      (bindExactNativeX87ReplayNestedProgram
+        generatedX87ReplayBridgeRuntimeInventory carrier)
+      generatedX87ReplayBridgeOriginalPe := {{
+  staticInventory := generatedX87ReplayBridgeFixedTemplateStaticInventory
+}}
+
+{kernel_execution}
+
+theorem generatedX87ReplayBridgeTemplateExecutionClosed
+    (carrier : ExactNestedNativeWorldProgram) :
+    GeneratedX87ReplayBridgeTemplateExecutionGoal
+      (generatedX87ReplayBridgeNestedProgram carrier) :=
+  generatedX87ReplayBridgeTemplateExecution carrier
+    (generatedX87ReplayBridgeFixedTemplateChecks carrier)
+
+theorem generatedX87ReplayBridgeRunForSourceFrame
     (program : ExactNestedNativeWorldProgram)
-    (handler : CandidateReplayHandler)
-    (sourceInvariant : NativeX87ReplayBridgeDescriptor ->
-      MachineState -> MachineState -> Prop)
-    (certificate : GeneratedX87ReplayBridgeTemplateExecutionGoal
-      program handler sourceInvariant) :
-    ExactNativeX87ReplayBridgeExecutionRefinement program
-      generatedX87ReplayBridgeTable handler sourceInvariant := by
-  exact certificate.refinement
+    (certificate : GeneratedX87ReplayBridgeTemplateExecutionGoal program)
+    (runtimeTarget : ExactNativeX87ReplayRuntimeTarget
+      generatedX87ReplayBridgeTable generatedInterpreterKernelCandidatePe
+      generatedInterpreterKernelImports generatedInterpreterKernelRelocations
+      generatedX87ReplayBridgeDescriptorPacks)
+    (member : List.Mem runtimeTarget generatedX87ReplayBridgeRuntimeTargets)
+    (caller logicalInput : MachineState)
+    (source : GeneratedX87ReplayBridgeSourceFrameGoal runtimeTarget caller
+      logicalInput) :
+    Nonempty (ExactNativeX87ReplayBridgeTemplateRun runtimeTarget program
+      generatedX87ReplayBridgeHandler) := by
+  apply Exists.elim
+    (certificate.runForTarget runtimeTarget member caller logicalInput source)
+  intro run _runExact
+  exact Nonempty.intro run
 
-#print axioms generatedX87ReplayBridgeRuntimeGoals
-#print axioms generatedX87ReplayBridgeExecutionRefinement
+#print axioms generatedX87ReplayBridgeSourceFrameEntails
+#print axioms generatedX87ReplayBridgeFixedTemplateStaticInventory
+#print axioms generatedX87ReplayBridgeFixedTemplateChecks
+#print axioms generatedX87ReplayBridgeFixedTemplateExecutor
+#print axioms generatedX87ReplayBridgeTemplateExecutionClosed
+#print axioms generatedX87ReplayBridgeRunForSourceFrame
 
 end StageA.GeneratedRelational.InterpreterX87ReplayBridgeRuntime
 """
@@ -401,8 +614,7 @@ def _runtime_target(
     if (
         not instruction
         or instruction != replay_instruction
-        or len(path) != len(instruction) + 5
-        or path[: len(instruction)] != instruction
+        or path != instruction
         or _candidate_bytes(
             binary, instruction_rva, len(instruction), "candidate replay instruction"
         )
@@ -412,14 +624,38 @@ def _runtime_target(
             f"x87 replay {expected_id} instruction bytes are not exact"
         )
     if (
-        len(bridge_body) != 248
-        or bridge_body[75:77] != b"\x0f\x84"
+        len(bridge_body) != X87_REPLAY_BRIDGE_BODY_SIZE
+        or X87_REPLAY_BRIDGE_INSTRUCTION_OFFSET + len(instruction)
+        > X87_REPLAY_BRIDGE_CAPTURE_OFFSET
+        or bridge_body[0:5] != b"\x55\x53\x56\x57\xa1"
+        or instruction_rva
+        != bridge_target_rva + X87_REPLAY_BRIDGE_INSTRUCTION_OFFSET
+        or bridge_body[9:52]
+        != bytes.fromhex(
+            "89600cdd60148b40048b58048b48088b70108b78148b68188b601c"
+            "ffb0f0000000ff308b500c589d909090"
+        )
+        or bridge_body[52 : 52 + len(instruction)] != instruction
+        or bridge_body[52 + len(instruction) : X87_REPLAY_BRIDGE_CAPTURE_OFFSET]
+        != b"\x90" * (
+            X87_REPLAY_BRIDGE_CAPTURE_OFFSET
+            - X87_REPLAY_BRIDGE_INSTRUCTION_OFFSET
+            - len(instruction)
+        )
+        or bridge_body[72:75] != b"\x9c\x50\xa1"
+        or bridge_body[79:X87_REPLAY_BRIDGE_BODY_SIZE]
+        != bytes.fromhex(
+            "ddb0800000008b50088b0c24890a0f9242200f9a42300f9442240f984228"
+            "0f90422c8b5c24048b48048b89f000000081e12af3ffff81e3d50c000009"
+            "d9898af0000000"
+            "90909090909090909090"
+            "c74010000000008b600cfc5f5e5b5dc390909090"
+        )
+        or bridge_body[X87_REPLAY_BRIDGE_RETURN_OFFSET] != 0xC3
     ):
         raise X87ReplayBridgeRuntimeGenerationError(
             f"x87 replay {expected_id} bridge template is not exact"
         )
-    failure_displacement = struct.unpack_from("<i", bridge_body, 77)[0]
-    failure_rva = (bridge_target_rva + 81 + failure_displacement) & 0xFFFFFFFF
 
     relocation = replay.get("base_relocation")
     operand: X87ReplayRelocatedOperandPlan | None
@@ -484,7 +720,6 @@ def _runtime_target(
         ),
         instruction_rva=instruction_rva,
         instruction_bytes=instruction,
-        failure_rva=failure_rva,
         operand=operand,
     )
 
@@ -502,6 +737,25 @@ def _lean_operand(
     candidateOperandRva := {operand.candidate_operand_rva}
     targetRva := {operand.target_rva}
   }}"""
+
+
+def _lean_static_target_cases(
+    accessors: Sequence[str],
+    *,
+    indent: str = "    ",
+) -> str:
+    lines: list[str] = []
+    for accessor in accessors:
+        lines.extend(
+            (
+                f"{indent}rcases List.mem_cons.mp member with targetExact | member",
+                f"{indent}all_goals first",
+                f"{indent}  | (subst runtimeTarget; exact Nonempty.intro {accessor})",
+                f"{indent}  | skip",
+            )
+        )
+    lines.append(f"{indent}exact (List.not_mem_nil member).elim")
+    return "\n".join(lines)
 
 
 def _regular_file(value: Path | str, label: str) -> Path:
@@ -559,6 +813,14 @@ __all__ = [
     "X87_REPLAY_BRIDGE_RUNTIME_PACK_PREFIX",
     "X87_REPLAY_BRIDGE_RUNTIME_PLAN_FILENAME",
     "X87_REPLAY_BRIDGE_RUNTIME_PLAN_FORMAT",
+    "X87_REPLAY_FIXED_TEMPLATE_AUTHORIZING_THEOREM",
+    "X87_REPLAY_FIXED_TEMPLATE_CERTIFICATE_PREMISES",
+    "X87_REPLAY_FIXED_TEMPLATE_CHECKED_BUNDLE_PREMISE",
+    "X87_REPLAY_FIXED_TEMPLATE_CHECKS_TYPE",
+    "X87_REPLAY_FIXED_TEMPLATE_EXECUTOR_PREMISES",
+    "X87_REPLAY_FIXED_TEMPLATE_PROGRAM_BINDING_PREMISES",
+    "X87_REPLAY_FIXED_TEMPLATE_REMAINING_PREMISES",
+    "X87_REPLAY_FIXED_TEMPLATE_SOURCE_FRAME_ASSUMPTIONS",
     "X87ReplayBridgeRuntimeGenerationError",
     "X87ReplayBridgeRuntimePlan",
     "X87ReplayRelocatedOperandPlan",

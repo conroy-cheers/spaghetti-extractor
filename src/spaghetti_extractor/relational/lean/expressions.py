@@ -2091,6 +2091,15 @@ def _lean_acceptance_outcome(outcome: dict[str, Any]) -> str:
             f"({_lean_semantic_bool_expr(outcome['direction'])}) "
             f"{int(outcome['continuation'])}"
         )
+    if operation == "bulk_fill":
+        return (
+            "StageA.Relational.NormalizedOutcomeExpr.bulkFill "
+            f"({_lean_semantic_expr(outcome['destination'])}) "
+            f"({_lean_semantic_expr(outcome['value'])}) "
+            f"({_lean_semantic_expr(outcome['count'])}) "
+            f"({_lean_semantic_bool_expr(outcome['direction'])}) "
+            f"{int(outcome['continuation'])}"
+        )
     if operation == "indirect_call":
         return (
             "StageA.Relational.NormalizedOutcomeExpr.indirectCall "

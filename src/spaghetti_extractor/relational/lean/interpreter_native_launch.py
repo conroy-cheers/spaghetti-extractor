@@ -335,6 +335,10 @@ class RelationalInterpreterNativeLaunchGraphPlan:
             },
             "lean_module": self.spec.module_name,
             "lean_namespace": self.spec.namespace,
+            "lean_terms": {
+                "checked_graph": "generatedCheckedNativeLaunchGraph",
+                "static_graph": "generatedNativeLaunchGraphStaticChecked",
+            },
             "cutpoints": [
                 {"kind": kind, "rva": rva} for kind, rva in self.cutpoints
             ],
@@ -796,6 +800,13 @@ theorem generatedNativeLaunchGraphStaticChecked :
       generatedNativeLaunchGraphCandidatePe
       generatedNativeLaunchGraphImports = true := by
   decide +kernel
+
+def generatedCheckedNativeLaunchGraph : CheckedExactNativeLaunchGraph := {{
+  candidatePe := generatedNativeLaunchGraphCandidatePe
+  candidateImports := generatedNativeLaunchGraphImports
+  certificate := generatedNativeLaunchGraphCertificate
+  staticChecked := generatedNativeLaunchGraphStaticChecked
+}}
 
 {replay}
 

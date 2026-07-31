@@ -6,6 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from spaghetti_extractor.relational.lean.reachable_static_pointer_slot import (
+    WriteClassificationProposal,
+)
 from spaghetti_extractor.relational.lean.reachable_static_pointer_slot_proposal import (
     ReachableStaticPointerSlotProposalError,
     construct_reachable_static_pointer_slot_proposal,
@@ -339,7 +342,7 @@ class StageAReachableStaticPointerSlotProposalTests(unittest.TestCase):
             self.assertEqual(classification.kind, "slot_code_target")
             self.assertEqual(classification.target_id, 0)
 
-    def test_dynamic_and_call_frame_writers_fail_closed(self) -> None:
+    def test_dynamic_writers_become_runtime_obligations(self) -> None:
         slot_write = b"\xa3" + SLOT_A_VA.to_bytes(4, "little")
         stack_value = {
             "op": "load",
@@ -383,10 +386,68 @@ class StageAReachableStaticPointerSlotProposalTests(unittest.TestCase):
             self.assertIsNone(plan.proposal)
             self.assertEqual(
                 {item.category for item in plan.blockers},
-                {
-                    "call_frame_writer_provenance_required",
-                    "dynamic_write_may_alias_slot",
-                },
+                {"call_frame_writer_provenance_required"},
+            )
+
+    def test_narrow_write_widths_are_preserved_and_overlap_fails_closed(self) -> None:
+        byte_write = {
+            "address": {"op": "reg", "name": "eax", "width": 32},
+            "kind": "write",
+            "value": {"op": "const", "value": 0, "width": 32},
+            "width": 1,
+        }
+        partial_word_write = {
+            "address": {
+                "op": "const",
+                "value": SLOT_A_VA - 1,
+                "width": 32,
+            },
+            "kind": "write",
+            "value": {"op": "const", "value": 0, "width": 32},
+            "width": 2,
+        }
+        rows = [
+            _record(
+                TEXT_RVA,
+                b"\xc6\x00\x00\xc3",
+                {"kind": "return"},
+                memory_events=[byte_write],
+                instruction_sizes=(3, 1),
+            ),
+            _record(
+                TEXT_RVA + 4,
+                b"\x66\xc7\x05"
+                + (SLOT_A_VA - 1).to_bytes(4, "little")
+                + b"\x00\x00\xc3",
+                {"kind": "return"},
+                memory_events=[partial_word_write],
+                instruction_sizes=(9, 1),
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = _write_artifacts(
+                Path(temporary),
+                pe_bytes=_fixture_pe(
+                    code=b"".join(
+                        bytes.fromhex(instruction["bytes"])
+                        for row in rows
+                        for instruction in row["instructions"]
+                    )
+                ),
+                rows=rows,
+            )
+            plan = construct_reachable_static_pointer_slot_proposal(
+                *paths, SLOT_A_RVA
+            )
+            self.assertIn(
+                "overlapping_write_may_corrupt_slot",
+                {item.category for item in plan.blockers},
+            )
+            self.assertEqual(len(plan.regions), 1)
+            assert plan.regions[0].writes is not None
+            self.assertEqual(
+                plan.regions[0].writes,
+                (WriteClassificationProposal("runtime_separated", width=1),),
             )
 
     def test_hash_and_exact_instruction_mutations_are_rejected(self) -> None:

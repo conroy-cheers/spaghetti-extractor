@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 
 from spaghetti_extractor.relational.lean.interpreter_kernel import (
+    INTERPRETER_KERNEL_FUNCTION_MODULE_PREFIX,
     INTERPRETER_KERNEL_LEAN_FILENAME,
     write_relational_interpreter_kernel_bundle,
 )
@@ -45,7 +46,20 @@ def generate(
         str(out / INTERPRETER_KERNEL_LEAN_FILENAME),
         str(stage_a / INTERPRETER_KERNEL_LEAN_FILENAME),
     )
+    for source in sorted(
+        out.glob(f"{INTERPRETER_KERNEL_FUNCTION_MODULE_PREFIX}*.lean")
+    ):
+        shutil.move(str(source), str(stage_a / source.name))
     modules = sorted(path.stem for path in stage_a.glob("*.lean"))
+    function_modules = [
+        module
+        for module in modules
+        if module.startswith(INTERPRETER_KERNEL_FUNCTION_MODULE_PREFIX)
+    ]
+    if len(function_modules) != len(plan.functions):
+        raise RuntimeError(
+            "compiled-kernel function module count does not match the plan"
+        )
     inputs = {
         "candidate": candidate,
         "engine_layout": engine_layout,
@@ -70,7 +84,10 @@ def generate(
             ),
             "modules": modules,
             "targets": [Path(INTERPRETER_KERNEL_LEAN_FILENAME).stem],
-            "counts": {"modules": len(modules)},
+            "counts": {
+                "modules": len(modules),
+                "function_modules": len(function_modules),
+            },
         },
     )
 

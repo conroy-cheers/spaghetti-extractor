@@ -118,7 +118,8 @@ def programLookupNativeTemplateChecked (program : CompiledKernelProgram)
   programLookupTemplateChecked program pe imports function parameters &&
     function.blocks.length == programLookupNativeBlockShapes.length &&
     (List.zip programLookupNativeBlockShapes function.blocks).all
-      (fun pair => pair.1.control.matches parameters.entryRva pair.2)
+      (fun pair => pair.1.control.matches parameters.entryRva pair.2) &&
+    decide (parameters.entryRva + 161 <= 2 ^ 32)
 
 structure ProgramLookupNativeTemplateCertificate
     (program : CompiledKernelProgram) (pe : PE32) (imports : List PEImport)
@@ -154,6 +155,55 @@ def programLookupTemplateCertificateToNative
   template := certificate
   nativeChecked
 }
+
+theorem ProgramLookupNativeTemplateCertificate.entryEndBounded
+    (certificate : ProgramLookupNativeTemplateCertificate program pe imports
+      function) :
+    certificate.template.parameters.entryRva + 161 <= 2 ^ 32 := by
+  have checked := certificate.nativeChecked
+  simp only [programLookupNativeTemplateChecked, Bool.and_eq_true,
+    decide_eq_true_eq] at checked
+  exact checked.2
+
+class ProgramLookupNativeAddressBounds
+    (parameters : ProgramLookupTemplateParameters) : Prop where
+  entryEndBounded : parameters.entryRva + 161 <= 2 ^ 32
+
+theorem programLookupRelativeTarget8Forward
+    (parameters : ProgramLookupTemplateParameters)
+    [bounds : ProgramLookupNativeAddressBounds parameters]
+    (nextOffset byte targetOffset : Nat)
+    (byteSmall : byte < 128)
+    (targetExact : targetOffset = nextOffset + byte)
+    (targetWithin : targetOffset < 161) :
+    relativeTarget8 (parameters.entryRva + nextOffset) byte =
+      parameters.entryRva + targetOffset := by
+  unfold relativeTarget8 signExtendImmediate8
+  rw [if_pos byteSmall, Nat.mod_eq_of_lt]
+  · omega
+  · have bounded := bounds.entryEndBounded
+    omega
+
+theorem programLookupRelativeTarget8Backward
+    (parameters : ProgramLookupTemplateParameters)
+    [bounds : ProgramLookupNativeAddressBounds parameters]
+    (nextOffset byte targetOffset : Nat)
+    (byteLarge : 128 <= byte)
+    (byteBounded : byte <= 256)
+    (targetExact : targetOffset + (256 - byte) = nextOffset)
+    (targetWithin : targetOffset < 161) :
+    relativeTarget8 (parameters.entryRva + nextOffset) byte =
+      parameters.entryRva + targetOffset := by
+  unfold relativeTarget8 signExtendImmediate8
+  rw [if_neg (Nat.not_lt_of_ge byteLarge)]
+  have sumExact :
+      parameters.entryRva + nextOffset + (2 ^ 32 - (256 - byte)) =
+        2 ^ 32 + (parameters.entryRva + targetOffset) := by
+    omega
+  rw [sumExact, Nat.add_mod, Nat.mod_self, Nat.zero_add, Nat.mod_mod,
+    Nat.mod_eq_of_lt (by
+      have bounded := bounds.entryEndBounded
+      omega)]
 
 /-- Deterministic execution of exactly `fuel` instructions in the real native
 executor.  Terminal states remain terminal, matching `stepNativeExecution`. -/
@@ -297,6 +347,8 @@ structure ProgramLookupNativePreservedState
   ecx : state.registers.ecx = before.registers.ecx
   esi : state.registers.esi = before.registers.esi
   edi : state.registers.edi = before.registers.edi
+  directionFlag :
+    state.eflags.extractLsb' 10 1 = before.eflags.extractLsb' 10 1
   undefinedValue : state.undefinedValue = before.undefinedValue
   x87 : ProgramLookupArchitecturalX87Preserved before state
   x87Physical : state.x87Physical = before.x87Physical
@@ -311,6 +363,7 @@ theorem ProgramLookupNativePreservedState.trans
   ecx := second.ecx.trans first.ecx
   esi := second.esi.trans first.esi
   edi := second.edi.trans first.edi
+  directionFlag := second.directionFlag.trans first.directionFlag
   undefinedValue := second.undefinedValue.trans first.undefinedValue
   x87 := first.x87.trans second.x87
   x87Physical := second.x87Physical.trans first.x87Physical
@@ -999,6 +1052,31 @@ def programLookupNativeExpectedStepState (pe : PE32) (imports : List PEImport)
   | .running _ _ nextState _ _ _ => nextState
   | _ => state
 
+theorem programLookupNativeExpectedStepState_of_running
+    (running : exists nextState,
+      stepProgramLookupNativeExpectedInstruction pe imports environment
+          parameters offset undefinedSlot state [] 0 [] =
+        .running nextRva nextUndefinedSlot nextState [] 0 []) :
+    stepProgramLookupNativeExpectedInstruction pe imports environment
+        parameters offset undefinedSlot state [] 0 [] =
+      .running nextRva nextUndefinedSlot
+        (programLookupNativeExpectedStepState pe imports environment parameters
+          offset undefinedSlot state) [] 0 [] := by
+  obtain ⟨nextState, running⟩ := running
+  unfold programLookupNativeExpectedStepState
+  rw [running]
+
+@[simp] theorem programLookupNativeImmediateIsNotMaskedZero
+    (amount : Nat) (positive : 0 < amount) (belowMask : amount < 32) :
+    ShiftCount.isMaskedZero (.immediate amount) = false := by
+  simp [ShiftCount.isMaskedZero, Nat.mod_eq_of_lt belowMask,
+    Nat.ne_of_gt positive]
+
+@[simp] theorem programLookupNativeImmediateExpression
+    (state : SymbolicBehavior) (amount : Nat) (belowMask : amount < 32) :
+    ShiftCount.expression state (.immediate amount) = .constant amount := by
+  simp [ShiftCount.expression, Nat.mod_eq_of_lt belowMask]
+
 theorem ProgramLookupNativeInstructionInventory.stepLinearExact
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
@@ -1066,94 +1144,128 @@ def programLookupNativeGuardResult (pe : PE32) (imports : List PEImport)
 theorem programLookupNativeStep95Taken
     (pe : PE32) (imports : List PEImport) (environment : NativeEnvironment)
     (parameters : ProgramLookupTemplateParameters) (undefinedSlot : Nat)
+    [ProgramLookupNativeAddressBounds parameters]
     (state : MachineState) (carry : programLookupFlagIs state 0 true) :
     stepProgramLookupNativeExpectedInstruction pe imports environment parameters
         95 undefinedSlot state [] 0 [] =
       .running (parameters.entryRva + 23) 0
         (programLookupNativeExpectedStepState pe imports environment parameters 95
           undefinedSlot state) [] 0 [] := by
+  apply programLookupNativeExpectedStepState_of_running
+  have target :
+      relativeTarget8 (parameters.entryRva + 97) 182 =
+        parameters.entryRva + 23 := by
+    exact programLookupRelativeTarget8Backward parameters 97 182 23
+      (by omega) (by omega) (by omega) (by omega)
+  have carrySet :
+      state.eflags.extractLsb' 0 1 = 1#1 := by
+    simpa [programLookupFlagIs, evalFlagBit] using carry
   simp (config := { maxSteps := 1000000 })
     [programLookupNativeExpectedStepState,
       stepProgramLookupNativeExpectedInstruction,
       programLookupNativeExpectedDecoded?, programLookupNativeExpectedInstruction?,
       stepDecodedPE32Instruction, continueProgramLookupNativeExecution,
-      nextNativeExecution, executeInstructionWithContext, executeInstruction, relativeTarget8,
+      nextNativeExecution, executeInstructionWithContext, executeInstruction,
       concreteBehaviorNextMachineState, SymbolicBehavior.eval, initialSymbolic,
       initialSymbolicX87, Registers.set, Registers.get,
       StageA.Formal.Expr.eval, StageA.Formal.BoolExpr.eval,
       StageA.Formal.FlagsExpr.eval, StageA.Formal.applyWrites,
-      conditionExpression, evalFlagBit, programLookupFlagIs] at carry ⊢
-  exact carry
+      conditionExpression, evalFlagBit, programLookupFlagIs, carrySet, target,
+      Nat.add_assoc] at carry ⊢
 
 theorem programLookupNativeStep95Exit
     (pe : PE32) (imports : List PEImport) (environment : NativeEnvironment)
     (parameters : ProgramLookupTemplateParameters) (undefinedSlot : Nat)
+    [ProgramLookupNativeAddressBounds parameters]
     (state : MachineState) (carry : programLookupFlagIs state 0 false) :
     stepProgramLookupNativeExpectedInstruction pe imports environment parameters
         95 undefinedSlot state [] 0 [] =
       .running (parameters.entryRva + 97) 0
         (programLookupNativeExpectedStepState pe imports environment parameters 95
           undefinedSlot state) [] 0 [] := by
+  apply programLookupNativeExpectedStepState_of_running
+  have carryClear :
+      state.eflags.extractLsb' 0 1 = 0#1 := by
+    simpa [programLookupFlagIs, evalFlagBit] using carry
+  have carryNotSet :
+      ¬ state.eflags.extractLsb' 0 1 = 1#1 := by
+    rw [carryClear]
+    decide
   simp (config := { maxSteps := 1000000 })
     [programLookupNativeExpectedStepState,
       stepProgramLookupNativeExpectedInstruction,
       programLookupNativeExpectedDecoded?, programLookupNativeExpectedInstruction?,
       stepDecodedPE32Instruction, continueProgramLookupNativeExecution,
-      nextNativeExecution, executeInstructionWithContext, executeInstruction, relativeTarget8,
+      nextNativeExecution, executeInstructionWithContext, executeInstruction,
       concreteBehaviorNextMachineState, SymbolicBehavior.eval, initialSymbolic,
       initialSymbolicX87, Registers.set, Registers.get,
       StageA.Formal.Expr.eval, StageA.Formal.BoolExpr.eval,
       StageA.Formal.FlagsExpr.eval, StageA.Formal.applyWrites,
-      conditionExpression, evalFlagBit, programLookupFlagIs] at carry ⊢
-  intro one
-  rw [carry] at one
-  exact (by decide : (0#1 : BitVec 1) ≠ 1#1) one
+      conditionExpression, evalFlagBit, programLookupFlagIs, carryNotSet,
+      Nat.add_assoc] at carry ⊢
 
 theorem programLookupNativeStep70Lower
     (pe : PE32) (imports : List PEImport) (environment : NativeEnvironment)
     (parameters : ProgramLookupTemplateParameters) (undefinedSlot : Nat)
+    [ProgramLookupNativeAddressBounds parameters]
     (state : MachineState) (carry : programLookupFlagIs state 0 true) :
     stepProgramLookupNativeExpectedInstruction pe imports environment parameters
         70 undefinedSlot state [] 0 [] =
       .running (parameters.entryRva + 72) 0
         (programLookupNativeExpectedStepState pe imports environment parameters 70
           undefinedSlot state) [] 0 [] := by
+  apply programLookupNativeExpectedStepState_of_running
+  have carrySet :
+      state.eflags.extractLsb' 0 1 = 1#1 := by
+    simpa [programLookupFlagIs, evalFlagBit] using carry
   simp (config := { maxSteps := 1000000 })
     [programLookupNativeExpectedStepState,
       stepProgramLookupNativeExpectedInstruction,
       programLookupNativeExpectedDecoded?, programLookupNativeExpectedInstruction?,
       stepDecodedPE32Instruction, continueProgramLookupNativeExecution,
-      nextNativeExecution, executeInstructionWithContext, executeInstruction, relativeTarget8,
+      nextNativeExecution, executeInstructionWithContext, executeInstruction,
       concreteBehaviorNextMachineState, SymbolicBehavior.eval, initialSymbolic,
       initialSymbolicX87, Registers.set, Registers.get,
       StageA.Formal.Expr.eval, StageA.Formal.BoolExpr.eval,
       StageA.Formal.FlagsExpr.eval, StageA.Formal.applyWrites,
-      conditionExpression, evalFlagBit, programLookupFlagIs] at carry ⊢
-  exact carry
+      conditionExpression, evalFlagBit, programLookupFlagIs, carrySet,
+      Nat.add_assoc] at carry ⊢
 
 theorem programLookupNativeStep70Upper
     (pe : PE32) (imports : List PEImport) (environment : NativeEnvironment)
     (parameters : ProgramLookupTemplateParameters) (undefinedSlot : Nat)
+    [ProgramLookupNativeAddressBounds parameters]
     (state : MachineState) (carry : programLookupFlagIs state 0 false) :
     stepProgramLookupNativeExpectedInstruction pe imports environment parameters
         70 undefinedSlot state [] 0 [] =
       .running (parameters.entryRva + 83) 0
         (programLookupNativeExpectedStepState pe imports environment parameters 70
           undefinedSlot state) [] 0 [] := by
+  apply programLookupNativeExpectedStepState_of_running
+  have target :
+      relativeTarget8 (parameters.entryRva + 72) 11 =
+        parameters.entryRva + 83 := by
+    exact programLookupRelativeTarget8Forward parameters 72 11 83
+      (by omega) (by omega) (by omega)
+  have carryClear :
+      state.eflags.extractLsb' 0 1 = 0#1 := by
+    simpa [programLookupFlagIs, evalFlagBit] using carry
+  have carryNotSet :
+      ¬ state.eflags.extractLsb' 0 1 = 1#1 := by
+    rw [carryClear]
+    decide
   simp (config := { maxSteps := 1000000 })
     [programLookupNativeExpectedStepState,
       stepProgramLookupNativeExpectedInstruction,
       programLookupNativeExpectedDecoded?, programLookupNativeExpectedInstruction?,
       stepDecodedPE32Instruction, continueProgramLookupNativeExecution,
-      nextNativeExecution, executeInstructionWithContext, executeInstruction, relativeTarget8,
+      nextNativeExecution, executeInstructionWithContext, executeInstruction,
       concreteBehaviorNextMachineState, SymbolicBehavior.eval, initialSymbolic,
       initialSymbolicX87, Registers.set, Registers.get,
       StageA.Formal.Expr.eval, StageA.Formal.BoolExpr.eval,
       StageA.Formal.FlagsExpr.eval, StageA.Formal.applyWrites,
-      conditionExpression, evalFlagBit, programLookupFlagIs] at carry ⊢
-  intro one
-  rw [carry] at one
-  exact (by decide : (0#1 : BitVec 1) ≠ 1#1) one
+      conditionExpression, evalFlagBit, programLookupFlagIs, carryNotSet, target,
+      Nat.add_assoc] at carry ⊢
 
 inductive ProgramLookupNativeLoopLinearSuccessor : Nat -> Nat -> Prop
   | offset23 : ProgramLookupNativeLoopLinearSuccessor 23 26
@@ -1189,6 +1301,7 @@ theorem programLookupNativeExpectedLoopLinearShape
       .running (parameters.entryRva + nextOffset) (undefinedSlot + 1)
         (programLookupNativeExpectedStepState pe imports environment parameters
           offset undefinedSlot state) [] 0 [] := by
+  apply programLookupNativeExpectedStepState_of_running
   cases edge <;>
     simp (config := { maxSteps := 200000 })
       [programLookupNativeExpectedStepState,
@@ -1444,98 +1557,129 @@ theorem ProgramLookupNativeInstructionInventory.runFinishRecordExact
 theorem programLookupNativeStep105Taken
     (pe : PE32) (imports : List PEImport) (environment : NativeEnvironment)
     (parameters : ProgramLookupTemplateParameters) (undefinedSlot : Nat)
+    [ProgramLookupNativeAddressBounds parameters]
     (state : MachineState) (carry : programLookupFlagIs state 0 false) :
     stepProgramLookupNativeExpectedInstruction pe imports environment parameters
         105 undefinedSlot state [] 0 [] =
       .running (parameters.entryRva + 152) 0
         (programLookupNativeExpectedStepState pe imports environment parameters 105
           undefinedSlot state) [] 0 [] := by
+  apply programLookupNativeExpectedStepState_of_running
+  have target :
+      relativeTarget8 (parameters.entryRva + 107) 45 =
+        parameters.entryRva + 152 := by
+    exact programLookupRelativeTarget8Forward parameters 107 45 152
+      (by omega) (by omega) (by omega)
+  have carryClear :
+      state.eflags.extractLsb' 0 1 = 0#1 := by
+    simpa [programLookupFlagIs, evalFlagBit] using carry
+  have carryNotSet :
+      ¬ state.eflags.extractLsb' 0 1 = 1#1 := by
+    rw [carryClear]
+    decide
   simp (config := { maxSteps := 1000000 })
     [programLookupNativeExpectedStepState,
       stepProgramLookupNativeExpectedInstruction,
       programLookupNativeExpectedDecoded?, programLookupNativeExpectedInstruction?,
       stepDecodedPE32Instruction, continueProgramLookupNativeExecution,
-      nextNativeExecution, executeInstructionWithContext, executeInstruction, relativeTarget8,
+      nextNativeExecution, executeInstructionWithContext, executeInstruction,
       concreteBehaviorNextMachineState, SymbolicBehavior.eval, initialSymbolic,
       initialSymbolicX87, Registers.set, Registers.get, StageA.Formal.Expr.eval,
       StageA.Formal.BoolExpr.eval, StageA.Formal.FlagsExpr.eval,
       StageA.Formal.applyWrites, conditionExpression, evalFlagBit,
-      programLookupFlagIs] at carry ⊢
-  intro one
-  rw [carry] at one
-  exact (by decide : (0#1 : BitVec 1) ≠ 1#1) one
+      programLookupFlagIs, carryNotSet, target, Nat.add_assoc] at carry ⊢
 
 theorem programLookupNativeStep105NotTaken
     (pe : PE32) (imports : List PEImport) (environment : NativeEnvironment)
     (parameters : ProgramLookupTemplateParameters) (undefinedSlot : Nat)
+    [ProgramLookupNativeAddressBounds parameters]
     (state : MachineState) (carry : programLookupFlagIs state 0 true) :
     stepProgramLookupNativeExpectedInstruction pe imports environment parameters
         105 undefinedSlot state [] 0 [] =
       .running (parameters.entryRva + 107) 0
         (programLookupNativeExpectedStepState pe imports environment parameters 105
           undefinedSlot state) [] 0 [] := by
+  apply programLookupNativeExpectedStepState_of_running
+  have carrySet :
+      state.eflags.extractLsb' 0 1 = 1#1 := by
+    simpa [programLookupFlagIs, evalFlagBit] using carry
   simp (config := { maxSteps := 1000000 })
     [programLookupNativeExpectedStepState,
       stepProgramLookupNativeExpectedInstruction,
       programLookupNativeExpectedDecoded?, programLookupNativeExpectedInstruction?,
       stepDecodedPE32Instruction, continueProgramLookupNativeExecution,
-      nextNativeExecution, executeInstructionWithContext, executeInstruction, relativeTarget8,
+      nextNativeExecution, executeInstructionWithContext, executeInstruction,
       concreteBehaviorNextMachineState, SymbolicBehavior.eval, initialSymbolic,
       initialSymbolicX87, Registers.set, Registers.get, StageA.Formal.Expr.eval,
       StageA.Formal.BoolExpr.eval, StageA.Formal.FlagsExpr.eval,
       StageA.Formal.applyWrites, conditionExpression, evalFlagBit,
-      programLookupFlagIs] at carry ⊢
-  exact carry
+      programLookupFlagIs, carrySet, Nat.add_assoc] at carry ⊢
 
 theorem programLookupNativeStep130Taken
     (pe : PE32) (imports : List PEImport) (environment : NativeEnvironment)
     (parameters : ProgramLookupTemplateParameters) (undefinedSlot : Nat)
+    [ProgramLookupNativeAddressBounds parameters]
     (state : MachineState) (zeroClear : programLookupFlagIs state 6 false) :
     stepProgramLookupNativeExpectedInstruction pe imports environment parameters
         130 undefinedSlot state [] 0 [] =
       .running (parameters.entryRva + 152) 0
         (programLookupNativeExpectedStepState pe imports environment parameters 130
           undefinedSlot state) [] 0 [] := by
+  apply programLookupNativeExpectedStepState_of_running
+  have target :
+      relativeTarget8 (parameters.entryRva + 132) 20 =
+        parameters.entryRva + 152 := by
+    exact programLookupRelativeTarget8Forward parameters 132 20 152
+      (by omega) (by omega) (by omega)
+  have zeroClear' :
+      state.eflags.extractLsb' 6 1 = 0#1 := by
+    simpa [programLookupFlagIs, evalFlagBit] using zeroClear
+  have zeroNotSet :
+      ¬ state.eflags.extractLsb' 6 1 = 1#1 := by
+    rw [zeroClear']
+    decide
   simp (config := { maxSteps := 1000000 })
     [programLookupNativeExpectedStepState,
       stepProgramLookupNativeExpectedInstruction,
       programLookupNativeExpectedDecoded?, programLookupNativeExpectedInstruction?,
       stepDecodedPE32Instruction, continueProgramLookupNativeExecution,
-      nextNativeExecution, executeInstructionWithContext, executeInstruction, relativeTarget8,
+      nextNativeExecution, executeInstructionWithContext, executeInstruction,
       concreteBehaviorNextMachineState, SymbolicBehavior.eval, initialSymbolic,
       initialSymbolicX87, Registers.set, Registers.get, StageA.Formal.Expr.eval,
       StageA.Formal.BoolExpr.eval, StageA.Formal.FlagsExpr.eval,
       StageA.Formal.applyWrites, conditionExpression, evalFlagBit,
-      programLookupFlagIs] at zeroClear ⊢
-  intro one
-  rw [zeroClear] at one
-  exact (by decide : (0#1 : BitVec 1) ≠ 1#1) one
+      programLookupFlagIs, zeroNotSet, target, Nat.add_assoc] at zeroClear ⊢
 
 theorem programLookupNativeStep130NotTaken
     (pe : PE32) (imports : List PEImport) (environment : NativeEnvironment)
     (parameters : ProgramLookupTemplateParameters) (undefinedSlot : Nat)
+    [ProgramLookupNativeAddressBounds parameters]
     (state : MachineState) (zeroSet : programLookupFlagIs state 6 true) :
     stepProgramLookupNativeExpectedInstruction pe imports environment parameters
         130 undefinedSlot state [] 0 [] =
       .running (parameters.entryRva + 132) 0
         (programLookupNativeExpectedStepState pe imports environment parameters 130
           undefinedSlot state) [] 0 [] := by
+  apply programLookupNativeExpectedStepState_of_running
+  have zeroSet' :
+      state.eflags.extractLsb' 6 1 = 1#1 := by
+    simpa [programLookupFlagIs, evalFlagBit] using zeroSet
   simp (config := { maxSteps := 1000000 })
     [programLookupNativeExpectedStepState,
       stepProgramLookupNativeExpectedInstruction,
       programLookupNativeExpectedDecoded?, programLookupNativeExpectedInstruction?,
       stepDecodedPE32Instruction, continueProgramLookupNativeExecution,
-      nextNativeExecution, executeInstructionWithContext, executeInstruction, relativeTarget8,
+      nextNativeExecution, executeInstructionWithContext, executeInstruction,
       concreteBehaviorNextMachineState, SymbolicBehavior.eval, initialSymbolic,
       initialSymbolicX87, Registers.set, Registers.get, StageA.Formal.Expr.eval,
       StageA.Formal.BoolExpr.eval, StageA.Formal.FlagsExpr.eval,
       StageA.Formal.applyWrites, conditionExpression, evalFlagBit,
-      programLookupFlagIs] at zeroSet ⊢
-  exact zeroSet
+      programLookupFlagIs, zeroSet', Nat.add_assoc] at zeroSet ⊢
 
 theorem ProgramLookupNativeInstructionInventory.stepJump150Exact
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
+    [ProgramLookupNativeAddressBounds parameters]
     (undefinedSlot : Nat) (state : MachineState) :
     stepNativeExecution pe imports environment
         (.running (parameters.entryRva + 150) undefinedSlot state [] 0 []) =
@@ -1543,20 +1687,27 @@ theorem ProgramLookupNativeInstructionInventory.stepJump150Exact
         (programLookupNativeExpectedStepState pe imports environment parameters 150
           undefinedSlot state) [] 0 [] := by
   rw [inventory.stepNativeAt imports environment 150 (by decide)]
+  have target :
+      relativeTarget8 (parameters.entryRva + 152) 5 =
+        parameters.entryRva + 157 := by
+    exact programLookupRelativeTarget8Forward parameters 152 5 157
+      (by omega) (by omega) (by omega)
   simp (config := { maxSteps := 1000000 })
     [programLookupNativeExpectedStepState,
       stepProgramLookupNativeExpectedInstruction,
       programLookupNativeExpectedDecoded?, programLookupNativeExpectedInstruction?,
       stepDecodedPE32Instruction, continueProgramLookupNativeExecution,
-      nextNativeExecution, executeInstructionWithContext, executeInstruction, relativeTarget8,
+      nextNativeExecution, executeInstructionWithContext, executeInstruction,
       concreteBehaviorNextMachineState, SymbolicBehavior.eval, initialSymbolic,
       initialSymbolicX87, Registers.set, Registers.get, StageA.Formal.Expr.eval,
       StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval,
-      StageA.Formal.FlagsExpr.eval, StageA.Formal.applyWrites]
+      StageA.Formal.FlagsExpr.eval, StageA.Formal.applyWrites, target,
+      Nat.add_assoc]
 
 theorem ProgramLookupNativeInstructionInventory.runFinishPointerExact
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
+    [ProgramLookupNativeAddressBounds parameters]
     (undefinedSlot : Nat) (state : MachineState) :
     runProgramLookupNativeFuel pe imports environment 7
         (.running (parameters.entryRva + 132) undefinedSlot state [] 0 []) =
@@ -2076,6 +2227,7 @@ def programLookupNativeLowerUpdateResult (pe : PE32)
 theorem ProgramLookupNativeInstructionInventory.stepJump81Exact
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
+    [ProgramLookupNativeAddressBounds parameters]
     (undefinedSlot : Nat) (state : MachineState) :
     stepNativeExecution pe imports environment
         (.running (parameters.entryRva + 81) undefinedSlot state [] 0 []) =
@@ -2083,20 +2235,27 @@ theorem ProgramLookupNativeInstructionInventory.stepJump81Exact
         (programLookupNativeExpectedStepState pe imports environment parameters
           81 undefinedSlot state) [] 0 [] := by
   rw [inventory.stepNativeAt imports environment 81 (by decide)]
+  have target :
+      relativeTarget8 (parameters.entryRva + 83) 6 =
+        parameters.entryRva + 89 := by
+    exact programLookupRelativeTarget8Forward parameters 83 6 89
+      (by omega) (by omega) (by omega)
   simp (config := { maxSteps := 200000 })
     [programLookupNativeExpectedStepState,
       stepProgramLookupNativeExpectedInstruction,
       programLookupNativeExpectedDecoded?, programLookupNativeExpectedInstruction?,
       stepDecodedPE32Instruction, continueProgramLookupNativeExecution,
-      nextNativeExecution, executeInstructionWithContext, executeInstruction, relativeTarget8,
+      nextNativeExecution, executeInstructionWithContext, executeInstruction,
       concreteBehaviorNextMachineState, SymbolicBehavior.eval, initialSymbolic,
       initialSymbolicX87, Registers.set, Registers.get, StageA.Formal.Expr.eval,
       StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval,
-      StageA.Formal.FlagsExpr.eval, StageA.Formal.applyWrites]
+      StageA.Formal.FlagsExpr.eval, StageA.Formal.applyWrites, target,
+      Nat.add_assoc]
 
 theorem ProgramLookupNativeInstructionInventory.runLowerUpdateExact
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
+    [ProgramLookupNativeAddressBounds parameters]
     (undefinedSlot : Nat) (state : MachineState) :
     runProgramLookupNativeFuel pe imports environment 4
         (.running (parameters.entryRva + 72) undefinedSlot state [] 0 []) =
@@ -2304,6 +2463,7 @@ private theorem programLookupNativeStep95Result_preserved
       ecx := ?_
       esi := ?_
       edi := ?_
+      directionFlag := ?_
       undefinedValue := ?_
       x87 := programLookupNativeOrdinaryX87_preserved_of_x87_eq state after x87Exact
       x87Physical := ?_
@@ -2420,6 +2580,7 @@ theorem programLookupNativeGuardResult_preserved
       ecx := ?_
       esi := ?_
       edi := ?_
+      directionFlag := ?_
       undefinedValue := ?_
       x87 := programLookupNativeOrdinaryX87_preserved_of_x87_eq state state92
         firstX87
@@ -2461,6 +2622,7 @@ theorem programLookupNativeGuardResult_preserved
       ecx := ?_
       esi := ?_
       edi := ?_
+      directionFlag := ?_
       undefinedValue := ?_
       x87 := programLookupNativeOrdinaryX87_preserved_of_x87_eq state92 state95
         secondX87
@@ -2534,6 +2696,7 @@ theorem programLookupNativeLoopLinear_machinePreserved
       ecx := ?_
       esi := ?_
       edi := ?_
+      directionFlag := ?_
       undefinedValue := ?_
       x87
       x87Physical := ?_
@@ -2717,6 +2880,7 @@ theorem programLookupNativeStep81_machinePreserved
       ecx := ?_
       esi := ?_
       edi := ?_
+      directionFlag := ?_
       undefinedValue := ?_
       x87 := programLookupNativeOrdinaryX87_preserved_of_x87_eq state after x87Exact
       x87Physical := ?_
@@ -2768,6 +2932,7 @@ theorem programLookupNativeStep70_machinePreserved
         ecx := ?_
         esi := ?_
         edi := ?_
+        directionFlag := ?_
         undefinedValue := ?_
         x87 := programLookupNativeOrdinaryX87_preserved_of_x87_eq state after x87Exact
         x87Physical := ?_
@@ -2832,6 +2997,7 @@ theorem programLookupNativeFinishStep_machinePreserved
       after.registers.ecx = state.registers.ecx /\
       after.registers.esi = state.registers.esi /\
       after.registers.edi = state.registers.edi /\
+      after.eflags.extractLsb' 10 1 = state.eflags.extractLsb' 10 1 /\
       after.undefinedValue = state.undefinedValue /\
       after.x87Physical = state.x87Physical /\
       after.x87Semantics = state.x87Semantics /\
@@ -2851,7 +3017,8 @@ theorem programLookupNativeFinishStep_machinePreserved
           StageA.Formal.Expr.eval, StageA.Formal.X87Expr.eval,
           StageA.Formal.BoolExpr.eval, StageA.Formal.FlagsExpr.eval,
           StageA.Formal.applyWrites, conditionExpression, evalFlagBit]
-  rcases facts with ⟨esp, ebp, ebx, ecx, esi, edi, undefinedValue,
+  rcases facts with ⟨esp, ebp, ebx, ecx, esi, edi, directionFlag,
+    undefinedValue,
     x87Physical, x87Semantics, fsBase⟩
   exact {
     esp
@@ -2861,6 +3028,7 @@ theorem programLookupNativeFinishStep_machinePreserved
       ecx
       esi
       edi
+      directionFlag
       undefinedValue
       x87
       x87Physical
@@ -3185,6 +3353,18 @@ def programLookupNativeInitialFlags (state : MachineState) : Word :=
     StageA.Formal.BoolExpr.eval] using
     programLookupNativeOneBitConditionalReconstructs
       (state.eflags.extractLsb' 7 1)
+
+@[simp] theorem programLookupNativeInitialFlags_df (state : MachineState) :
+    (programLookupNativeInitialFlags state).extractLsb' 10 1 =
+      state.eflags.extractLsb' 10 1 := by
+  simpa only [programLookupNativeInitialFlags, initialSymbolic] using
+    StageA.Formal.FlagsExpr.eval_extract_df state {
+      zero := some (.inputFlag 6)
+      carry := some (.inputFlag 0)
+      sign := some (.inputFlag 7)
+      overflow := some (.inputFlag 11)
+      parity := some (.inputFlag 2)
+    }
 
 @[simp] theorem programLookupNativeInitialFlags_of (state : MachineState) :
     (programLookupNativeInitialFlags state).extractLsb' 11 1 =
@@ -3612,28 +3792,36 @@ theorem ProgramLookupNativeInstructionInventory.stepStoreHighExact
 theorem ProgramLookupNativeInstructionInventory.stepJumpToLoopExact
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
+    [ProgramLookupNativeAddressBounds parameters]
     (state : MachineState) :
     stepNativeExecution pe imports environment
         (.running (parameters.entryRva + 21) 6 state [] 0 []) =
       .running (parameters.entryRva + 89) 0
         (programLookupNativeControlResult state) [] 0 [] := by
   rw [inventory.stepNativeAt imports environment 21 (by decide)]
+  have target :
+      relativeTarget8 (parameters.entryRva + 23) 66 =
+        parameters.entryRva + 89 := by
+    exact programLookupRelativeTarget8Forward parameters 23 66 89
+      (by omega) (by omega) (by omega)
   simp (config := { maxSteps := 200000 })
     [programLookupNativeControlResult, programLookupNativeInitialFlags,
       stepProgramLookupNativeExpectedInstruction,
       programLookupNativeExpectedDecoded?,
       programLookupNativeExpectedInstruction?, stepDecodedPE32Instruction,
       continueProgramLookupNativeExecution, nextNativeExecution,
-      executeInstructionWithContext, executeInstruction, relativeTarget8,
+      executeInstructionWithContext, executeInstruction,
       concreteBehaviorNextMachineState, SymbolicBehavior.eval, initialSymbolic,
       initialSymbolicX87, Registers.set, Registers.get,
       StageA.Formal.Expr.eval, StageA.Formal.X87Expr.eval,
       StageA.Formal.BoolExpr.eval, StageA.Formal.FlagsExpr.eval,
-      StageA.Formal.applyWrites, programLookupNativeOrdinaryX87]
+      StageA.Formal.applyWrites, programLookupNativeOrdinaryX87, target,
+      Nat.add_assoc]
 
 theorem ProgramLookupNativeInstructionInventory.runPrologueExact
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
+    [ProgramLookupNativeAddressBounds parameters]
     (state : MachineState) :
     runProgramLookupNativeFuel pe imports environment 7
         (.running parameters.entryRva 0 state [] 0 []) =
@@ -3701,33 +3889,6 @@ theorem programLookupFrameWordFits (stackPointer : Word) (offset : Nat)
   rw [Nat.mod_eq_sub_mod (by omega)]
   rw [Nat.mod_eq_of_lt (by omega)]
   omega
-
-theorem MemoryAgreesOutside.write32Inside
-    (footprint : CandidateFootprint) (beforeMemory : Memory)
-    (writeAddress value : Word)
-    (inside : forall byte, byte < 4 ->
-      footprint (writeAddress + BitVec.ofNat 32 byte)) :
-    MemoryAgreesOutside footprint
-      (beforeMemory.write32 writeAddress value) beforeMemory := by
-  intro query outside
-  unfold Memory.write32
-  by_cases byte0 : query = writeAddress
-  · exfalso
-    apply outside
-    simpa [byte0] using inside 0 (by omega)
-  rw [if_neg byte0]
-  by_cases byte1 : query = writeAddress + BitVec.ofNat 32 1
-  · exfalso
-    exact outside (byte1 ▸ inside 1 (by omega))
-  rw [if_neg byte1]
-  by_cases byte2 : query = writeAddress + BitVec.ofNat 32 2
-  · exfalso
-    exact outside (byte2 ▸ inside 2 (by omega))
-  rw [if_neg byte2]
-  by_cases byte3 : query = writeAddress + BitVec.ofNat 32 3
-  · exfalso
-    exact outside (byte3 ▸ inside 3 (by omega))
-  rw [if_neg byte3]
 
 theorem programLookupFrameWriteAgreesOutside (stackPointer : Word)
     (beforeMemory : Memory) (offset : Nat) (value : Word)
@@ -3942,6 +4103,7 @@ theorem programLookupNativePrologueResult_preserved
     ecx := ?_
     esi := ?_
     edi := ?_
+    directionFlag := ?_
     undefinedValue := ?_
     x87 := pushX87.trans (setEbpX87.trans (reserveX87.trans
       (lowX87.trans (countX87.trans (highX87.trans controlX87)))))
@@ -4459,6 +4621,7 @@ theorem programLookupNativeMidpointResult_memory
 theorem ProgramLookupNativeInstructionInventory.runLoopGuardTakenExact
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
+    [ProgramLookupNativeAddressBounds parameters]
     (records : List StageA.Relational.Interpreter.ProgramRecord)
     (transferCount sourceRva low high undefinedSlot : Nat)
     (before state : MachineState)
@@ -4534,6 +4697,7 @@ theorem ProgramLookupNativeInstructionInventory.runLoopGuardTakenExact
 theorem ProgramLookupNativeInstructionInventory.runLoopGuardExitExact
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
+    [ProgramLookupNativeAddressBounds parameters]
     (records : List StageA.Relational.Interpreter.ProgramRecord)
     (transferCount sourceRva index undefinedSlot : Nat)
     (before state : MachineState)
@@ -5104,6 +5268,7 @@ theorem programLookupNativeFinishCompareResult_zero_iff
       exactWrite32WithDisjointTail?, programLookupNativeEbpMemory,
       programLookupNativeMemoryOperand, StageA.Formal.Expr.eval,
       StageA.Formal.BoolExpr.eval, StageA.Formal.applyWrites, evalFlagBit,
+      subtractionFlags_applyToExpression_extract_zero,
       subtractionFlags, framePointerExact, programLookupSourceArgumentEbpAddress,
       sourceExact, eaxExact, BitVec.toNat_ofNat,
       Nat.mod_eq_of_lt recordFits, Nat.mod_eq_of_lt sourceFits]
@@ -5241,6 +5406,7 @@ def programLookupNativeUpperIterationResult
 theorem ProgramLookupNativeInstructionInventory.runLowerIterationExact
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
+    [ProgramLookupNativeAddressBounds parameters]
     (records : List StageA.Relational.Interpreter.ProgramRecord)
     (transferCount sourceRva low high undefinedSlot : Nat)
     (before state : MachineState)
@@ -5276,6 +5442,7 @@ theorem ProgramLookupNativeInstructionInventory.runLowerIterationExact
 theorem ProgramLookupNativeInstructionInventory.runUpperIterationExact
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
+    [ProgramLookupNativeAddressBounds parameters]
     (records : List StageA.Relational.Interpreter.ProgramRecord)
     (transferCount sourceRva low high undefinedSlot : Nat)
     (before state : MachineState)
@@ -5311,6 +5478,7 @@ theorem ProgramLookupNativeInstructionInventory.runUpperIterationExact
 theorem ProgramLookupNativeInstructionInventory.lowerIterationLaw
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
+    [ProgramLookupNativeAddressBounds parameters]
     (records : List StageA.Relational.Interpreter.ProgramRecord)
     (transferCount sourceRva low high midpoint : Nat)
     (record : StageA.Relational.Interpreter.ProgramRecord)
@@ -5507,6 +5675,7 @@ theorem ProgramLookupNativeInstructionInventory.lowerIterationLaw
 theorem ProgramLookupNativeInstructionInventory.upperIterationLaw
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
+    [ProgramLookupNativeAddressBounds parameters]
     (records : List StageA.Relational.Interpreter.ProgramRecord)
     (transferCount sourceRva low high midpoint : Nat)
     (record : StageA.Relational.Interpreter.ProgramRecord)
@@ -5697,6 +5866,7 @@ authoritative loop cutpoint. -/
 theorem ProgramLookupNativeInstructionInventory.finishLaw
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
+    [ProgramLookupNativeAddressBounds parameters]
     (records : List StageA.Relational.Interpreter.ProgramRecord)
     (recordsSorted : sourceRvasStrictlySorted records)
     (transferCount sourceRva index undefinedSlot : Nat)
@@ -6010,6 +6180,8 @@ structure ProgramLookupNativeReturnState
   zeroSet : programLookupFlagIs after 6 true
   signClear : programLookupFlagIs after 7 false
   overflowClear : programLookupFlagIs after 11 false
+  directionFlagPreserved :
+    after.eflags.extractLsb' 10 1 = before.eflags.extractLsb' 10 1
   undefinedValuesPreserved : after.undefinedValue = before.undefinedValue
   x87Preserved : ProgramLookupArchitecturalX87Preserved before after
   x87PhysicalPreserved : after.x87Physical = before.x87Physical
@@ -6054,6 +6226,7 @@ theorem ProgramLookupNativeEpilogueCutpoint.result
     zeroSet := ?_
     signClear := ?_
     overflowClear := ?_
+    directionFlagPreserved := ?_
     undefinedValuesPreserved := ?_
     x87Preserved := cutpoint.preserved.x87.trans
       (leaveX87.trans (xorX87.trans retX87))
@@ -6108,6 +6281,25 @@ theorem ProgramLookupNativeEpilogueCutpoint.result
       programLookupNativeRetResult, programLookupNativeXorEdxResult,
       logicalFlags, evalFlagBit, StageA.Formal.BoolExpr.eval,
       StageA.Formal.Expr.eval]
+  · calc
+      (programLookupNativeEpilogueResult undefinedSlot state).eflags.extractLsb'
+          10 1 =
+          (programLookupNativeXorEdxResult (undefinedSlot + 1)
+            (programLookupNativeLeaveResult state)).eflags.extractLsb'
+              10 1 := by
+        simp only [programLookupNativeEpilogueResult,
+          programLookupNativeRetResult, programLookupNativeInitialFlags_df]
+      _ =
+          (programLookupNativeLeaveResult state).eflags.extractLsb' 10 1 := by
+        simpa only [programLookupNativeXorEdxResult] using
+          StageA.Formal.FlagsExpr.eval_extract_df
+            (programLookupNativeLeaveResult state)
+            (logicalFlags (undefinedSlot + 1) (.constant 0))
+      _ = state.eflags.extractLsb' 10 1 := by
+        simp only [programLookupNativeLeaveResult,
+          programLookupNativeInitialFlags_df]
+      _ = before.eflags.extractLsb' 10 1 :=
+        cutpoint.preserved.directionFlag
   · simpa [programLookupNativeEpilogueResult, programLookupNativeRetResult,
       programLookupNativeXorEdxResult, programLookupNativeLeaveResult] using
       cutpoint.preserved.undefinedValue
@@ -6270,6 +6462,7 @@ theorem programLookupNativePrologueResult_loopCutpoint
 theorem ProgramLookupNativeInstructionInventory.prologue
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
+    [ProgramLookupNativeAddressBounds parameters]
     (sourceRva : Nat) (before : MachineState)
     (entry : ProgramLookupNativeLoadedEntry pe parameters records transferCount
       sourceRva before) :
@@ -6366,6 +6559,8 @@ theorem ProgramLookupNativeReturnState.responseFacts
   simp only [AbstractKernelRequest.operation, requestArguments, WordsAt] at words
   refine {
     cdecl := ?_
+    directionFlagClear := returned.directionFlagPreserved.trans
+      request.directionFlagClear
     candidateImage := ?_
     originalProgramTable := ?_
     payload := ?_
@@ -6395,11 +6590,15 @@ theorem ProgramLookupNativeReturnState.responseFacts
       rw [espExact']
       exact words.2.1
     · trivial
-  · intro rva raw immutable expected loaded
+  · intro rva size bytes immutable offset expected offsetBefore indexed
     rw [returned.memoryFrame]
-    · exact request.candidateImage rva raw immutable expected loaded
-    · exact programLookupFrameAvoidsImage abi records sourceRva before request rva
-        (immutableRvaBytesOne_bounded pe imports rva raw immutable)
+    · exact request.candidateImage rva size bytes immutable offset expected
+        offsetBefore indexed
+    · simpa [Nat.add_assoc] using
+        (programLookupFrameAvoidsImage abi records sourceRva before request
+          (rva + offset) (by
+            have bounded := immutableRvaBytes_bounded immutable
+            omega))
   · refine {
       tableSpan := ?_
       countSpan := ?_
@@ -6516,6 +6715,7 @@ structure ProgramLookupNativeLocalSemantics
 theorem ProgramLookupNativeInstructionInventory.prologueLaw
     (inventory : ProgramLookupNativeInstructionInventory pe parameters)
     (imports : List PEImport) (environment : NativeEnvironment)
+    [ProgramLookupNativeAddressBounds parameters]
     (sourceRva : Nat) (before : MachineState)
     (entry : ProgramLookupNativeLoadedEntry pe parameters
       records transferCount sourceRva before) :
@@ -6554,7 +6754,11 @@ def programLookupNativeLocalSemantics
     (recordsSorted : sourceRvasStrictlySorted records)
     (transferCount : Nat) :
     ProgramLookupNativeLocalSemantics pe imports environment records transferCount
-      certificate := {
+      certificate := by
+  letI : ProgramLookupNativeAddressBounds certificate.template.parameters := {
+    entryEndBounded := certificate.entryEndBounded
+  }
+  exact {
   prologue := by
     intro sourceRva before entry
     exact inventory.prologueLaw imports environment sourceRva before entry
@@ -6578,7 +6782,7 @@ def programLookupNativeLocalSemantics
     intro sourceRva before state undefinedSlot cutpoint
     exact inventory.epilogueLaw imports environment sourceRva before state
       undefinedSlot cutpoint
-}
+  }
 
 /-- Candidate ABI interpretation of native return facts.  It contains no
 execution premise or final-state constructor. -/

@@ -428,6 +428,15 @@ class StageAInternalDirectCallRegisterControlAuthorityTests(unittest.TestCase):
             bindings=bindings,
         )
 
+        self.assertNotIn(
+            "open StageA.Relational.InternalDirectCallRegisterSummary",
+            source,
+        )
+        self.assertIn(
+            "StageA.Relational.InternalDirectCallRegisterSummary."
+            "findStackEntryOffset?",
+            source,
+        )
         self.assertIn(
             "callerFrameWords :=",
             source,
@@ -524,6 +533,15 @@ class StageAInternalDirectCallRegisterControlAuthorityTests(unittest.TestCase):
             ),
         )
 
+        self.assertNotIn(
+            "open StageA.Relational.InternalDirectCallRegisterSummary",
+            source,
+        )
+        self.assertIn(
+            "StageA.Relational.InternalDirectCallRegisterSummary."
+            "findStackEntryOffset?",
+            source,
+        )
         self.assertNotIn("generatedIdentityChecked", entry_source)
         self.assertNotIn("generatedRequestedBySummary", entry_source)
         self.assertIn(
@@ -561,6 +579,17 @@ class StageAInternalDirectCallRegisterControlAuthorityTests(unittest.TestCase):
             f"rcases {entry_namespace}.generatedEntryMetadataChecked",
             source,
         )
+        self.assertEqual(
+            source.count(
+                f"unfold {entry_namespace}.generatedSummaryTree"
+            ),
+            2,
+        )
+        self.assertIn(
+            "generatedContext.candidateImports = true /\\",
+            source,
+        )
+        self.assertNotIn(" = true /      ", source)
         self.assertNotIn("generatedIdentityChecked", source)
         self.assertNotIn("sorry", source)
 
@@ -653,7 +682,7 @@ class StageAInternalDirectCallRegisterControlAuthorityTests(unittest.TestCase):
         )
         self.assertIn("generatedEntryAuthorityChecked", source)
         self.assertIn("generatedReturningRegisterCertificate", source)
-        self.assertIn("targetRegister := .ebx", source)
+        self.assertIn("targetRegister := Reg.ebx", source)
         self.assertIn("targetRegisterRequested := by decide +kernel", source)
         self.assertIn("targetRegisterOutputChecked := by decide +kernel", source)
         self.assertIn(

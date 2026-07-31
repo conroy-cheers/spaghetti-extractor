@@ -29,6 +29,11 @@ from spaghetti_extractor.relational.lean.interpreter_kernel_invoke_operation imp
     relational_interpreter_kernel_invoke_operation_source,
     write_relational_interpreter_kernel_invoke_operation_bundle,
 )
+from spaghetti_extractor.relational.lean.interpreter_kernel_run_operation import (
+    INTERPRETER_KERNEL_RUN_OPERATION_FORMAT,
+    INTERPRETER_KERNEL_RUN_OPERATION_REMAINING_PREMISES,
+    INTERPRETER_KERNEL_RUN_OPERATION_THEOREM,
+)
 from spaghetti_extractor.util import sha256_file
 
 
@@ -42,6 +47,9 @@ class StageARelationalInterpreterKernelInvokeOperationTests(unittest.TestCase):
         self.abi = self.root / "interpreter-kernel-abi-plan.json"
         self.callback = self.root / "interpreter-kernel-callback-plan.json"
         self.invoke = self.root / "interpreter-kernel-invoke-native-plan.json"
+        self.run_operation = (
+            self.root / "interpreter-kernel-run-operation-plan.json"
+        )
 
         self.candidate.write_bytes(b"exact invoke operation fixture" * 23)
         digest = sha256_file(self.candidate)
@@ -215,6 +223,24 @@ class StageARelationalInterpreterKernelInvokeOperationTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        self.run_operation.write_text(
+            json.dumps(
+                {
+                    "format": INTERPRETER_KERNEL_RUN_OPERATION_FORMAT,
+                    "operation": "runFunction",
+                    "candidate": {"sha256": digest, "size": size},
+                    "checked_static_authority": {"entry_rva": 0x2000},
+                    "remaining_proof_premises": list(
+                        INTERPRETER_KERNEL_RUN_OPERATION_REMAINING_PREMISES
+                    ),
+                    "result": {
+                        "theorem": INTERPRETER_KERNEL_RUN_OPERATION_THEOREM
+                    },
+                    "failure_mode": "incomplete",
+                }
+            ),
+            encoding="utf-8",
+        )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -227,6 +253,7 @@ class StageARelationalInterpreterKernelInvokeOperationTests(unittest.TestCase):
             abi_plan=self.abi,
             callback_plan=self.callback,
             invoke_native_plan=self.invoke,
+            run_operation_plan=self.run_operation,
         )
 
     def test_plan_closes_static_authority_and_reports_dynamic_frontiers(
@@ -242,9 +269,19 @@ class StageARelationalInterpreterKernelInvokeOperationTests(unittest.TestCase):
             payload["remaining_proof_premises"],
             list(INTERPRETER_KERNEL_INVOKE_OPERATION_REMAINING_PREMISES),
         )
-        self.assertEqual(len(payload["proof_frontiers"]), 5)
+        self.assertEqual(len(payload["proof_frontiers"]), 4)
+        self.assertEqual(
+            [frontier["id"] for frontier in payload["proof_frontiers"]],
+            [
+                "invoke-call:finite-call-tree",
+                "invoke-call:external-arm-closure",
+                "invoke-call:internal-arm-closure",
+                "invoke-call:indirect-arm-closure",
+            ],
+        )
         static = payload["checked_static_authority"]
         self.assertEqual(static["entry_rva"], 0x3000)
+        self.assertEqual(static["return_rva"], 0x30C9)
         self.assertEqual(static["run_function_rva"], 0x2000)
         self.assertEqual(static["resolver_site_rva"], 0x307C)
         self.assertEqual(static["callback_target_rvas"], [0x4100, 0x4200])
@@ -262,7 +299,7 @@ class StageARelationalInterpreterKernelInvokeOperationTests(unittest.TestCase):
         )
         self.assertEqual(payload["result"]["status"], "typed-interface-ready")
 
-    def test_source_exposes_universal_theorem_with_five_typed_inputs(
+    def test_source_exposes_checked_run_and_call_tree_certificates(
         self,
     ) -> None:
         source = relational_interpreter_kernel_invoke_operation_source(
@@ -273,30 +310,33 @@ class StageARelationalInterpreterKernelInvokeOperationTests(unittest.TestCase):
             "generatedInvokeCallOperationInstructionDecodes",
             "generatedInvokeCallOperationStatic",
             "generatedInvokeCallOperationABIEntry",
+            "generatedInvokeCallCDeclEpilogueInventory",
+            "generatedInvokeCallCDeclEpilogueChecked",
+            "generatedInvokeCallCDeclEpilogueStatic",
             "generatedInvokeCallExternalHelperChecked",
             "generatedInvokeCallExternalHelperInstructionDecodes",
             "generatedInvokeCallExternalHelperBinding",
-            "GeneratedInvokeCallRunFunctionCertificates",
-            "RunFunctionNativeOperationCertificate",
+            "GeneratedInvokeCallCheckedNativeEvidence",
+            "GeneratedInvokeCallCheckedArmClosures",
+            "InvokeCallNativeCheckedArmClosures",
+            "native.closures.externalAuthority",
+            "InvokeCallNativeCheckedInternalBranchAuthority",
+            "InvokeCallNativeCheckedIndirectBranchAuthority",
+            "generatedInvokeCallCheckedCertificate",
             "GeneratedInvokeCallExternalHelperExecution",
             "GeneratedInvokeCallExternalEnvironmentRefinement",
             "generatedInvokeCallExternalArm",
             "GeneratedInvokeCallInternalArm",
             "GeneratedInvokeCallIndirectArm",
             "theorem generatedInvokeCallOperationRefinesUsing",
-            "InvokeCallNativeOperationCertificate.mk",
+            "InvokeCallNativeCheckedOperationCertificate",
+            "InvokeCallClosedCallTreeAuthority.ofClosure",
         ):
             self.assertIn(required, source)
         theorem = source.split(
             "theorem generatedInvokeCallOperationRefinesUsing", 1
         )[1].split("#print axioms", 1)[0]
-        for premise in (
-            "runFunction",
-            "externalExecution",
-            "externalEnvironment",
-            "internal",
-            "indirect",
-        ):
+        for premise in ("callTree", "native"):
             self.assertIn(f"({premise} :", theorem)
         self.assertIn(
             "InvokeCallNativeExternalHelperBinding generatedCompiledKernelProgram",
@@ -307,7 +347,24 @@ class StageARelationalInterpreterKernelInvokeOperationTests(unittest.TestCase):
             "generatedCompiledKernelProgram",
             source,
         )
-        self.assertNotIn("forall continuationRva returnAddress", source)
+        self.assertNotIn("GeneratedInvokeCallRunFunctionRefinements", source)
+        self.assertNotIn("RunFunctionNativeOperationCertificate", source)
+        self.assertNotIn("GeneratedInvokeCallRunFunctionCertificates", source)
+        self.assertNotIn("InvokeCallNativeOperationCertificate.mk", source)
+        evidence = source.split(
+            "structure GeneratedInvokeCallCheckedNativeEvidence", 1
+        )[1].split(
+            "def GeneratedInvokeCallCheckedNativeEvidence.externalExecution", 1
+        )[0]
+        self.assertIn("closures :", evidence)
+        for forbidden_field in (
+            "externalExecution :",
+            "externalEnvironment :",
+            "internal :",
+            "indirect :",
+        ):
+            self.assertNotIn(forbidden_field, evidence)
+        self.assertEqual(source.count("KernelOperationRefinesUsing"), 1)
         for marker in ("sorry", "axiom", "unsafe", "native_decide"):
             self.assertIsNone(re.search(rf"\b{marker}\b", source), marker)
 
@@ -330,6 +387,19 @@ class StageARelationalInterpreterKernelInvokeOperationTests(unittest.TestCase):
         with self.assertRaisesRegex(
             RelationalInterpreterKernelInvokeOperationGenerationError,
             "no exact nonempty function body",
+        ):
+            self._build()
+
+    def test_rejects_invoke_without_exact_plain_cdecl_return(self) -> None:
+        kernel = json.loads(self.kernel.read_text(encoding="utf-8"))
+        invoke = kernel["kernel_functions"][1]
+        invoke["blocks"][-1]["instructions"][-1]["bytes"] = "c20400"
+        self.kernel.write_text(json.dumps(kernel), encoding="utf-8")
+        self._refresh_dependent_hashes()
+
+        with self.assertRaisesRegex(
+            RelationalInterpreterKernelInvokeOperationGenerationError,
+            "plain cdecl return",
         ):
             self._build()
 
@@ -361,6 +431,19 @@ class StageARelationalInterpreterKernelInvokeOperationTests(unittest.TestCase):
         ):
             self._build()
 
+    def test_rejects_stale_upstream_artifact_format(self) -> None:
+        invoke = json.loads(self.invoke.read_text(encoding="utf-8"))
+        invoke["format"] = (
+            "stage-a-relational-interpreter-kernel-invoke-native-plan-v0"
+        )
+        self.invoke.write_text(json.dumps(invoke), encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            RelationalInterpreterKernelInvokeOperationGenerationError,
+            "invoke-native plan format is unsupported",
+        ):
+            self._build()
+
     def test_writer_is_deterministic_and_module_names_fail_closed(self) -> None:
         first = self.root / "first"
         second = self.root / "second"
@@ -371,6 +454,7 @@ class StageARelationalInterpreterKernelInvokeOperationTests(unittest.TestCase):
             "abi_plan": self.abi,
             "callback_plan": self.callback,
             "invoke_native_plan": self.invoke,
+            "run_operation_plan": self.run_operation,
         }
         write_relational_interpreter_kernel_invoke_operation_bundle(
             out=first, **kwargs

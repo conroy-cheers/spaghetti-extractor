@@ -405,6 +405,113 @@ def writeX87FrameBytes : Memory -> Word -> List (BitVec 8) -> Memory
       writeX87FrameBytes (Memory.write8 memory address byte)
         (address + BitVec.ofNat 32 1) tail
 
+theorem writeX87FrameBytes_eq_of_outside
+    (memory : Memory) (address query : Word) (bytes : List (BitVec 8))
+    (outside : ∀ offset, offset < bytes.length ->
+      query ≠ address + BitVec.ofNat 32 offset) :
+    writeX87FrameBytes memory address bytes query = memory query := by
+  induction bytes generalizing memory address with
+  | nil => rfl
+  | cons byte tail induction =>
+      rw [writeX87FrameBytes]
+      rw [induction]
+      · have headOutside : query ≠ address := by
+          simpa using outside 0 (by simp)
+        unfold Memory.write8
+        split
+        · next equal =>
+            exact False.elim (headOutside equal)
+        · rfl
+      · intro offset offsetBefore
+        have tailOutside := outside (offset + 1) (by simp; omega)
+        simpa [BitVec.add_assoc, ← BitVec.ofNat_add, Nat.add_comm] using
+          tailOutside
+
+theorem wordOffset_injective_of_fits
+    (address : Word) (count left right : Nat)
+    (fits : address.toNat + count <= 2 ^ 32)
+    (leftBefore : left < count) (rightBefore : right < count)
+    (equal :
+      address + BitVec.ofNat 32 left =
+        address + BitVec.ofNat 32 right) :
+    left = right := by
+  have leftWord : left < 2 ^ 32 := by omega
+  have rightWord : right < 2 ^ 32 := by omega
+  have leftSum : address.toNat + left < 2 ^ 32 := by omega
+  have rightSum : address.toNat + right < 2 ^ 32 := by omega
+  have equalNat := congrArg BitVec.toNat equal
+  simp only [BitVec.toNat_add, BitVec.toNat_ofNat] at equalNat
+  rw [Nat.mod_eq_of_lt leftWord, Nat.mod_eq_of_lt rightWord,
+    Nat.mod_eq_of_lt leftSum, Nat.mod_eq_of_lt rightSum] at equalNat
+  omega
+
+theorem writeX87FrameBytes_getD
+    (memory : Memory) (address : Word) (bytes : List (BitVec 8))
+    (offset : Nat)
+    (fits : address.toNat + bytes.length <= 2 ^ 32)
+    (offsetBefore : offset < bytes.length) :
+    writeX87FrameBytes memory address bytes
+        (address + BitVec.ofNat 32 offset) =
+      bytes.getD offset (BitVec.ofNat 8 0) := by
+  induction bytes generalizing memory address offset with
+  | nil => simp at offsetBefore
+  | cons byte tail induction =>
+      cases offset with
+      | zero =>
+          have tailPreserves :
+              writeX87FrameBytes (Memory.write8 memory address byte)
+                  (address + BitVec.ofNat 32 1) tail address =
+                (Memory.write8 memory address byte) address := by
+            apply writeX87FrameBytes_eq_of_outside
+            intro tailOffset tailOffsetBefore overlap
+            have offsetsEqual := wordOffset_injective_of_fits address
+              (tail.length + 1) 0 (tailOffset + 1) (by simpa using fits)
+              (by omega) (by omega) (by
+                simpa [BitVec.add_assoc, ← BitVec.ofNat_add, Nat.add_comm] using
+                  overlap)
+            omega
+          rw [writeX87FrameBytes]
+          simpa [Memory.write8] using tailPreserves
+      | succ tailOffset =>
+          rw [writeX87FrameBytes]
+          have tailOffsetBefore : tailOffset < tail.length := by
+            simpa using offsetBefore
+          have addressStep :
+              (address + BitVec.ofNat 32 1).toNat = address.toNat + 1 := by
+            rw [BitVec.toNat_add, BitVec.toNat_ofNat]
+            simp only [Nat.one_mod]
+            rw [Nat.mod_eq_of_lt]
+            omega
+          have tailFits :
+              (address + BitVec.ofNat 32 1).toNat + tail.length <=
+                2 ^ 32 := by
+            calc
+              (address + BitVec.ofNat 32 1).toNat + tail.length =
+                  address.toNat + 1 + tail.length := by rw [addressStep]
+              _ = address.toNat + (byte :: tail).length := by simp; omega
+              _ <= 2 ^ 32 := fits
+          simpa [BitVec.add_assoc, ← BitVec.ofNat_add, Nat.add_comm,
+            List.getD] using
+            induction (Memory.write8 memory address byte)
+              (address + BitVec.ofNat 32 1) tailOffset tailFits
+              tailOffsetBefore
+
+theorem readBytes_writeX87FrameBytes
+    (memory : Memory) (address : Word) (bytes : List (BitVec 8))
+    (fits : address.toNat + bytes.length <= 2 ^ 32) :
+    Engine.readBytes (writeX87FrameBytes memory address bytes)
+      address bytes.length = bytes := by
+  apply List.ext_get
+  · simp [Engine.readBytes]
+  · intro offset resultBefore bytesBefore
+    have right :
+        bytes.get ⟨offset, bytesBefore⟩ =
+          bytes.getD offset (BitVec.ofNat 8 0) :=
+      List.getElem_eq_getD (h := bytesBefore) (BitVec.ofNat 8 0)
+    rw [right]
+    simpa [Engine.readBytes] using
+      writeX87FrameBytes_getD memory address bytes offset fits bytesBefore
+
 def kernelX87PhysicalSlot (state : StageA.X87.PhysicalState)
     (index : Nat) : StageA.X87.Slot :=
   if bounded : index < 8 then state.slots.get ⟨index, bounded⟩ else .empty
@@ -505,6 +612,10 @@ def decodeKernelX87Frame (image : List (BitVec 8)) :
     dataSelector := BitVec.ofNat 16 (decodeX87FrameNat image 24 2)
   }
 
+def KernelX87PhysicalStateRepresentable
+    (state : StageA.X87.PhysicalState) : Prop :=
+  decodeKernelX87Frame (encodeKernelX87Frame state) = some state
+
 def kernelX87FrameAddress (addressing : Addressing)
     (state : MachineState) : Word :=
   (addressing.expression initialSymbolic.registers).eval state
@@ -528,6 +639,72 @@ def executeKernelX87Frame? (decoded : KernelX87FrameDecoded)
         x87 := kernelX87LegacyState restored state.x87.semantics
         x87Physical := restored }
 
+/-- Physical frame save/restore cannot replace the parametric x87 semantics
+implementation carried by the machine state. -/
+theorem executeKernelX87Frame?_x87Semantics
+    (decoded : KernelX87FrameDecoded) (state after : MachineState)
+    (executed : executeKernelX87Frame? decoded state = some after) :
+    after.x87Semantics = state.x87Semantics := by
+  unfold executeKernelX87Frame? at executed
+  simp only [Option.bind_eq_bind] at executed
+  split at executed <;> try contradiction
+  cases operationExact : decoded.operation with
+  | fnSave =>
+      simp only [operationExact] at executed
+      injection executed with afterExact
+      subst after
+      rfl
+  | frStor =>
+      simp only [operationExact] at executed
+      rw [Option.bind_eq_some_iff] at executed
+      obtain ⟨restored, _restoredExact, executed⟩ := executed
+      injection executed with afterExact
+      subst after
+      rfl
+
+theorem executeKernelX87Frame?_frStor_of_encoded
+    (addressing : Addressing) (size : Nat) (state : MachineState)
+    (restored : StageA.X87.PhysicalState) (address : Word)
+    (addressExact : kernelX87FrameAddress addressing state = address)
+    (addressValid : kernelX87FrameAddressValid address = true)
+    (encoded : readBytes state.memory address kernelX87FrameBytes =
+      encodeKernelX87Frame restored)
+    (representable : KernelX87PhysicalStateRepresentable restored) :
+    ∃ after, executeKernelX87Frame?
+        { operation := .frStor, addressing, size } state = some after ∧
+      after.x87Physical = restored := by
+  refine ⟨{ state with
+    x87 := kernelX87LegacyState restored state.x87.semantics
+    x87Physical := restored }, ?_, rfl⟩
+  unfold executeKernelX87Frame?
+  simp only [addressExact, addressValid, Bool.not_true, Bool.false_eq_true]
+  rw [encoded, representable]
+  rfl
+
+theorem executeKernelX87Frame?_fnSave_encodes
+    (addressing : Addressing) (size : Nat)
+    (state : MachineState) (address : Word)
+    (addressExact : kernelX87FrameAddress addressing state = address)
+    (addressValid : kernelX87FrameAddressValid address = true) :
+    ∃ after, executeKernelX87Frame?
+        { operation := .fnSave, addressing, size } state = some after ∧
+      readBytes after.memory address kernelX87FrameBytes =
+        encodeKernelX87Frame state.x87Physical := by
+  let after : MachineState := { state with
+    memory := writeX87FrameBytes state.memory address
+      (encodeKernelX87Frame state.x87Physical)
+    x87 := kernelX87LegacyState StageA.X87.initialPhysicalState
+      state.x87.semantics
+    x87Physical := StageA.X87.initialPhysicalState }
+  refine ⟨after, ?_, ?_⟩
+  · simp [executeKernelX87Frame?, addressExact, addressValid, after]
+  · have fits : address.toNat + kernelX87FrameBytes <= 2 ^ 32 := by
+      simpa [kernelX87FrameAddressValid] using addressValid
+    simpa [after, encodeKernelX87Frame_length] using
+      readBytes_writeX87FrameBytes state.memory address
+        (encodeKernelX87Frame state.x87Physical) (by
+          simpa [encodeKernelX87Frame_length] using fits)
+
 /-- Engine-relative protocol evidence used by operation proofs.  The static
 checker establishes the exact frame operation; this proposition additionally
 ties its 108-byte image to the checked semantic `EngineRep` at an ABI boundary. -/
@@ -549,6 +726,7 @@ def outcomeStaticSuccessors : OutcomeExpr -> Option (List Nat)
   | .externalCall _ _ continuation => some [continuation]
   | .externalJump _ _ => some []
   | .bulkCopy _ continuation => some [continuation]
+  | .bulkFill _ continuation => some [continuation]
   | .checkedContinue _ continuation => some [continuation]
   | .atomicCompareExchange _ _ _ continuation => some [continuation]
   /- The dynamic callee is checked by the callback-target inventory, but a
@@ -983,10 +1161,9 @@ theorem stepKernelX87Frame?_exact (pe : PE32) (rva undefinedSlot : Nat)
 bytes.  Architectural x87 faults remain fail-closed in this native profile;
 successful commands use the same reviewed physical-state semantics as the
 original x87 schedules. -/
-def stepKernelX87Command? (pe : PE32) (rva undefinedSlot : Nat)
-    (state : MachineState) : Option PE32InstructionExecution := do
-  let fetched <- executableInstructionWindow pe rva
-  let descriptor <- StageA.Relational.X87.decodeCommandExact fetched
+def executeKernelX87Command? (pe : PE32) (rva undefinedSlot : Nat)
+    (state : MachineState) (descriptor : StageA.Relational.X87.DecodedCommand) :
+    Option PE32InstructionExecution := do
   let input := StageA.Relational.X87.commandStepInput pe rva descriptor state
   if !input.checkedFor descriptor.command then none else
   if !descriptor.command.waitModeChecked descriptor.waitMode then none else
@@ -1001,6 +1178,40 @@ def stepKernelX87Command? (pe : PE32) (rva undefinedSlot : Nat)
     memoryAddress (rva + descriptor.size)
   some (.running (rva + descriptor.size) (undefinedSlot + 1)
     (behavior.nextMachineState state))
+
+/-- A successful architectural x87 command updates the physical response,
+memory/register outputs, and flags but retains the semantics implementation
+that produced that response. -/
+theorem executeKernelX87Command?_running_x87Semantics
+    (pe : PE32) (rva undefinedSlot nextRva nextSlot : Nat)
+    (state after : MachineState)
+    (descriptor : StageA.Relational.X87.DecodedCommand)
+    (executed : executeKernelX87Command? pe rva undefinedSlot state descriptor =
+      some (.running nextRva nextSlot after)) :
+    after.x87Semantics = state.x87Semantics := by
+  unfold executeKernelX87Command? at executed
+  simp only [Option.bind_eq_bind] at executed
+  split at executed <;> try contradiction
+  split at executed <;> try contradiction
+  split at executed <;> try contradiction
+  split at executed <;> try contradiction
+  all_goals
+    rw [Option.bind_eq_some_iff] at executed
+    obtain ⟨memoryAddress, _memoryAddressExact, executed⟩ := executed
+    simp only [Option.some.injEq,
+      PE32InstructionExecution.running.injEq] at executed
+    rcases executed with ⟨_nextRva, _nextSlot, afterExact⟩
+    subst after
+    rfl
+
+/-- Fetch and execute one exact ordinary x87 command.  Callers that have already
+classified the fetched bytes should use `executeKernelX87Command?` so a semantic
+failure cannot be confused with a decoder miss. -/
+def stepKernelX87Command? (pe : PE32) (rva undefinedSlot : Nat)
+    (state : MachineState) : Option PE32InstructionExecution := do
+  let fetched <- executableInstructionWindow pe rva
+  let descriptor <- StageA.Relational.X87.decodeCommandExact fetched
+  executeKernelX87Command? pe rva undefinedSlot state descriptor
 
 /-- Execute one exact candidate-kernel instruction.  A byte sequence decoded as
 an x87 frame operation cannot fall back to the ordinary decoder when its
@@ -1017,8 +1228,12 @@ def stepKernelPE32Instruction (pe : PE32) (imports : List PEImport) :
                   .running (rva + decoded.size) (undefinedSlot + 1) nextState
               | none => .fault
           | none =>
-              match stepKernelX87Command? pe rva undefinedSlot state with
-              | some next => next
+              match StageA.Relational.X87.decodeCommandExact fetched with
+              | some descriptor =>
+                  match executeKernelX87Command? pe rva undefinedSlot state
+                      descriptor with
+                  | some next => next
+                  | none => .fault
               | none => stepPE32Instruction pe imports execution
       | none => .fault
   | terminal => terminal
@@ -1078,6 +1293,10 @@ def nextNativeExecution (environment : NativeEnvironment)
           (eventIndex + 1) (events ++ [event])
   | .bulkCopy destination source count direction continuation =>
       let memory := Memory.bulkCopyDwords state.memory destination source direction
+        count.toNat
+      .running continuation 0 { state with memory } calls eventIndex events
+  | .bulkFill destination value count direction continuation =>
+      let memory := Memory.bulkFillDwords state.memory destination value direction
         count.toNat
       .running continuation 0 { state with memory } calls eventIndex events
   | .checkedContinue valid continuation =>
@@ -1142,6 +1361,17 @@ def NativeDispatches (pe : PE32) (imports : List PEImport)
 
 abbrev CandidateFootprint := Word -> Prop
 
+def CandidateFootprintsDisjoint
+    (left right : CandidateFootprint) : Prop :=
+  ∀ address, left address -> ¬ right address
+
+theorem CandidateFootprintsDisjoint.symm
+    {left right : CandidateFootprint}
+    (disjoint : CandidateFootprintsDisjoint left right) :
+    CandidateFootprintsDisjoint right left := by
+  intro address rightMember leftMember
+  exact disjoint address leftMember rightMember
+
 def MemoryAgreesOutside (footprint : CandidateFootprint)
     (after before : Memory) : Prop :=
   ∀ address, ¬ footprint address -> after address = before address
@@ -1158,6 +1388,45 @@ theorem MemoryAgreesOutside.trans {footprint : CandidateFootprint}
     MemoryAgreesOutside footprint third first := by
   intro address outside
   exact (right address outside).trans (left address outside)
+
+theorem MemoryAgreesOutside.write32Inside
+    (footprint : CandidateFootprint) (beforeMemory : Memory)
+    (writeAddress value : Word)
+    (inside : ∀ byte, byte < 4 →
+      footprint (writeAddress + BitVec.ofNat 32 byte)) :
+    MemoryAgreesOutside footprint
+      (beforeMemory.write32 writeAddress value) beforeMemory := by
+  intro query outside
+  unfold Memory.write32
+  by_cases byte0 : query = writeAddress
+  · exfalso
+    apply outside
+    simpa [byte0] using inside 0 (by omega)
+  rw [if_neg byte0]
+  by_cases byte1 : query = writeAddress + BitVec.ofNat 32 1
+  · exfalso
+    exact outside (byte1 ▸ inside 1 (by omega))
+  rw [if_neg byte1]
+  by_cases byte2 : query = writeAddress + BitVec.ofNat 32 2
+  · exfalso
+    exact outside (byte2 ▸ inside 2 (by omega))
+  rw [if_neg byte2]
+  by_cases byte3 : query = writeAddress + BitVec.ofNat 32 3
+  · exfalso
+    exact outside (byte3 ▸ inside 3 (by omega))
+  rw [if_neg byte3]
+
+theorem MemoryAgreesOutside.writeX87FrameInside
+    (footprint : CandidateFootprint) (beforeMemory : Memory)
+    (writeAddress : Word) (bytes : List (BitVec 8))
+    (inside : ∀ offset, offset < bytes.length →
+      footprint (writeAddress + BitVec.ofNat 32 offset)) :
+    MemoryAgreesOutside footprint
+      (writeX87FrameBytes beforeMemory writeAddress bytes) beforeMemory := by
+  intro query outside
+  apply writeX87FrameBytes_eq_of_outside
+  intro offset offsetBefore equal
+  exact outside (equal ▸ inside offset offsetBefore)
 
 def FootprintDisjointFromRepresentation (rep : EngineRep)
     (footprint : CandidateFootprint) : Prop :=
@@ -1215,6 +1484,45 @@ def abstractInterpreterStep (records : List ProgramRecord)
   let record <- lookupProgramRecord records sourceRva
   record.interpret environment state
 
+/-! `abstractInterpreterStep` is retained as the executable, external-call-only
+reference evaluator.  It is not the authoritative semantics for the recursive
+kernel operations: internal and indirect calls are interpreted by the
+call-aware relations below. -/
+
+def abstractInterpreterInitialRuntime
+    (state : InterpreterMachine) : RuntimeState := {
+  input := state
+  current := state
+  callOutput := state
+  words := fun _ => none
+  events := []
+}
+
+def abstractInterpreterCallRuntime (runtime : RuntimeState)
+    (event : CallEvent) (result : CallResult) : RuntimeState := {
+  runtime with
+  current := result.state
+  callOutput := result.state
+  events := runtime.events ++ [.call event]
+}
+
+def abstractInterpreterCallOutcome (runtime : RuntimeState)
+    (event : CallEvent) (result : CallResult) :
+    Option (Sum MacroResult RuntimeState) :=
+  let next := abstractInterpreterCallRuntime runtime event result
+  match result.status with
+  | .ok => some (.inr next)
+  | .divideError => some (.inl (halted next .divideError))
+  | .memoryFault => some (.inl (halted next .memoryFault))
+  | .externalFault => some (.inl (halted next .externalFault))
+  | .unimplemented => some (.inl (halted next .unimplemented))
+
+def abstractInterpreterTransferOutcome (outcome : SemanticOutcome) :
+    Option (Sum MacroResult RuntimeState) -> Option MacroResult
+  | none => none
+  | some (.inl result) => some result
+  | some (.inr runtime) => outcome.complete runtime
+
 def completionContinuation? (resolveCodeTarget : Word -> Option Nat) :
     Completion -> Option Nat
   | .fallthrough target | .jump target | .branch target => some target
@@ -1229,28 +1537,165 @@ def completionCallStatus? : Completion -> Option CallStatus
   | .unimplemented => some .unimplemented
   | _ => none
 
-/-- Finite derivations are the semantics of `stage_b_run_function`.  An
-infinite internal loop has no terminating derivation, matching partial
-correctness; termination correspondence remains a whole-program obligation. -/
-inductive AbstractRunFunction (records : List ProgramRecord)
-    (environment : StageA.Relational.Interpreter.Environment)
-    (resolveCodeTarget : Word -> Option Nat) :
-    Nat -> InterpreterMachine -> CallResult -> Prop
-  | unavailable (sourceRva state) :
-      abstractInterpreterStep records environment sourceRva state = none ->
-      AbstractRunFunction records environment resolveCodeTarget sourceRva state
-        { status := .unimplemented, state := state }
-  | terminal (sourceRva state result status) :
-      abstractInterpreterStep records environment sourceRva state = some result ->
-      completionCallStatus? result.completion = some status ->
-      AbstractRunFunction records environment resolveCodeTarget sourceRva state
-        { status := status, state := result.state }
-  | next (sourceRva state result continuation final) :
-      abstractInterpreterStep records environment sourceRva state = some result ->
-      completionContinuation? resolveCodeTarget result.completion = some continuation ->
-      AbstractRunFunction records environment resolveCodeTarget continuation
-        result.state final ->
-      AbstractRunFunction records environment resolveCodeTarget sourceRva state final
+mutual
+  /-- Authoritative call-aware semantics for one interpreter Step.  The
+  executable evaluator above cannot own internal calls because their result is
+  the nested Run result, not an arbitrary external-environment result. -/
+  inductive AbstractInterpreterStepDerivation
+      (records : List ProgramRecord)
+      (environment : StageA.Relational.Interpreter.Environment)
+      (resolveCodeTarget : Word -> Option Nat) :
+      Nat -> InterpreterMachine -> Option MacroResult -> Prop
+    | lookupUnavailable (sourceRva state)
+        (lookupExact : lookupProgramRecord records sourceRva = none) :
+        AbstractInterpreterStepDerivation records environment resolveCodeTarget
+          sourceRva state none
+    | decodeUnavailable (sourceRva state record)
+        (lookupExact : lookupProgramRecord records sourceRva = some record)
+        (decodeExact : record.decode = none) :
+        AbstractInterpreterStepDerivation records environment resolveCodeTarget
+          sourceRva state none
+    | unchecked (sourceRva state record transfer)
+        (lookupExact : lookupProgramRecord records sourceRva = some record)
+        (decodeExact : record.decode = some transfer)
+        (checkedExact : transfer.checked = false) :
+        AbstractInterpreterStepDerivation records environment resolveCodeTarget
+          sourceRva state none
+    | execute (sourceRva state record transfer result)
+        (lookupExact : lookupProgramRecord records sourceRva = some record)
+        (decodeExact : record.decode = some transfer)
+        (checkedExact : transfer.checked = true)
+        (execution : AbstractSemanticTransferDerivation records environment
+          resolveCodeTarget transfer state result) :
+        AbstractInterpreterStepDerivation records environment resolveCodeTarget
+          sourceRva state result
+
+  inductive AbstractSemanticTransferDerivation
+      (records : List ProgramRecord)
+      (environment : StageA.Relational.Interpreter.Environment)
+      (resolveCodeTarget : Word -> Option Nat) :
+      SemanticTransfer -> InterpreterMachine -> Option MacroResult -> Prop
+    | execute (transfer state bodyResult)
+        (body : AbstractInterpreterBodyDerivation records environment
+          resolveCodeTarget transfer (abstractInterpreterInitialRuntime state)
+          transfer.body bodyResult) :
+        AbstractSemanticTransferDerivation records environment resolveCodeTarget
+          transfer state
+          (abstractInterpreterTransferOutcome transfer.outcome bodyResult)
+
+  inductive AbstractInterpreterBodyDerivation
+      (records : List ProgramRecord)
+      (environment : StageA.Relational.Interpreter.Environment)
+      (resolveCodeTarget : Word -> Option Nat) :
+      SemanticTransfer -> RuntimeState -> List SemanticAction ->
+        Option (Sum MacroResult RuntimeState) -> Prop
+    | done (runtime) :
+        AbstractInterpreterBodyDerivation records environment resolveCodeTarget
+          transfer runtime [] (some (.inr runtime))
+    | actionUnavailable (runtime action tail)
+        (head : AbstractInterpreterActionDerivation records environment
+          resolveCodeTarget transfer runtime action none) :
+        AbstractInterpreterBodyDerivation records environment resolveCodeTarget
+          transfer runtime (action :: tail) none
+    | actionHalted (runtime action tail result)
+        (head : AbstractInterpreterActionDerivation records environment
+          resolveCodeTarget transfer runtime action (some (.inl result))) :
+        AbstractInterpreterBodyDerivation records environment resolveCodeTarget
+          transfer runtime (action :: tail) (some (.inl result))
+    | actionNext (runtime action tail next result)
+        (head : AbstractInterpreterActionDerivation records environment
+          resolveCodeTarget transfer runtime action (some (.inr next)))
+        (rest : AbstractInterpreterBodyDerivation records environment
+          resolveCodeTarget transfer next tail result) :
+        AbstractInterpreterBodyDerivation records environment resolveCodeTarget
+          transfer runtime (action :: tail) result
+
+  inductive AbstractInterpreterActionDerivation
+      (records : List ProgramRecord)
+      (environment : StageA.Relational.Interpreter.Environment)
+      (resolveCodeTarget : Word -> Option Nat) :
+      SemanticTransfer -> RuntimeState -> SemanticAction ->
+        Option (Sum MacroResult RuntimeState) -> Prop
+    | nonCall (runtime action result)
+        (notCall : ∀ callIndex, action != .call callIndex)
+        (resultExact :
+          transfer.executeAction environment runtime action = result) :
+        AbstractInterpreterActionDerivation records environment resolveCodeTarget
+          transfer runtime action result
+    | call (runtime callIndex result)
+        (edge : AbstractInterpreterCallTraceEdge records environment
+          resolveCodeTarget transfer runtime callIndex result) :
+        AbstractInterpreterActionDerivation records environment resolveCodeTarget
+          transfer runtime (.call callIndex) result
+
+  inductive AbstractInterpreterCallTraceEdge
+      (records : List ProgramRecord)
+      (environment : StageA.Relational.Interpreter.Environment)
+      (resolveCodeTarget : Word -> Option Nat) :
+      SemanticTransfer -> RuntimeState -> Nat ->
+        Option (Sum MacroResult RuntimeState) -> Prop
+    | invoke (runtime callIndex call event input result)
+        (callExact : transfer.calls[callIndex]? = some call)
+        (eventExact : call.event runtime = some (event, input))
+        (invocation : AbstractInvokeCallDerivation records environment
+          resolveCodeTarget event input result) :
+        AbstractInterpreterCallTraceEdge records environment resolveCodeTarget
+          transfer runtime callIndex
+          (abstractInterpreterCallOutcome runtime event result)
+
+  /-- Finite derivations are the semantics of `stage_b_run_function`.  An
+  infinite internal loop has no terminating derivation, matching partial
+  correctness; termination correspondence remains a whole-program obligation. -/
+  inductive AbstractRunFunction (records : List ProgramRecord)
+      (environment : StageA.Relational.Interpreter.Environment)
+      (resolveCodeTarget : Word -> Option Nat) :
+      Nat -> InterpreterMachine -> CallResult -> Prop
+    | unavailable (sourceRva state)
+        (step : AbstractInterpreterStepDerivation records environment
+          resolveCodeTarget sourceRva state none) :
+        AbstractRunFunction records environment resolveCodeTarget sourceRva state
+          { status := .unimplemented, state := state }
+    | terminal (sourceRva state result status)
+        (step : AbstractInterpreterStepDerivation records environment
+          resolveCodeTarget sourceRva state (some result))
+        (statusExact : completionCallStatus? result.completion = some status) :
+        AbstractRunFunction records environment resolveCodeTarget sourceRva state
+          { status := status, state := result.state }
+    | next (sourceRva state result continuation final)
+        (step : AbstractInterpreterStepDerivation records environment
+          resolveCodeTarget sourceRva state (some result))
+        (continuationExact :
+          completionContinuation? resolveCodeTarget result.completion =
+            some continuation)
+        (rest : AbstractRunFunction records environment resolveCodeTarget
+          continuation result.state final) :
+        AbstractRunFunction records environment resolveCodeTarget sourceRva state
+          final
+
+  /-- External calls alone are delegated to `environment.invokeCall`.
+  Internal and indirect calls execute a nested semantic Run. -/
+  inductive AbstractInvokeCallDerivation (records : List ProgramRecord)
+      (environment : StageA.Relational.Interpreter.Environment)
+      (resolveCodeTarget : Word -> Option Nat) :
+      CallEvent -> InterpreterMachine -> CallResult -> Prop
+    | external (event state)
+        (kindExact : event.kind = .external) :
+        AbstractInvokeCallDerivation records environment resolveCodeTarget event
+          state (environment.invokeCall event state)
+    | internal (event state result)
+        (kindExact : event.kind = .internal)
+        (run : AbstractRunFunction records environment resolveCodeTarget
+          event.targetRva.toNat state result) :
+        AbstractInvokeCallDerivation records environment resolveCodeTarget event
+          state result
+    | indirect (event state target result)
+        (kindExact : event.kind = .indirect)
+        (targetExact : resolveCodeTarget event.targetRva = some target)
+        (run : AbstractRunFunction records environment resolveCodeTarget
+          target state result) :
+        AbstractInvokeCallDerivation records environment resolveCodeTarget event
+          state result
+end
 
 inductive AbstractKernelRequest where
   | programLookup (records : List ProgramRecord) (sourceRva : Nat)
@@ -1284,11 +1729,12 @@ inductive AbstractKernelTransition :
   | programLookup (records sourceRva) :
       AbstractKernelTransition (.programLookup records sourceRva)
         (.programLookup (lookupProgramRecord records sourceRva))
-  | interpreterStep (records environment sourceRva state) :
+  | interpreterStep (records environment resolveCodeTarget sourceRva state result) :
+      AbstractInterpreterStepDerivation records environment resolveCodeTarget
+        sourceRva state result ->
       AbstractKernelTransition
         (.interpreterStep records environment sourceRva state)
-        (.interpreterStep
-          (abstractInterpreterStep records environment sourceRva state))
+        (.interpreterStep result)
   | runFunction (records environment resolveCodeTarget sourceRva state result) :
       AbstractRunFunction records environment resolveCodeTarget sourceRva state
         result ->

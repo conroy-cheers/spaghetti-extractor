@@ -50,21 +50,16 @@ theorem ConcreteKernelABI.cdeclStaticPreservationFacts
     countBounded := facts.countBounded
   }
 
-theorem checkedCDeclWriteFootprint_avoidsLoadedImage
-    (footprint : CheckedCDeclWriteFootprint)
+theorem loadedImageAddressOutsideWorkspace
     (abi : ConcreteKernelABI pe imports relocations tableOffset countOffset
       records)
-    (request : AbstractKernelRequest)
-    (checked : footprint.checked abi request = true)
     (rva : Nat) (rvaBefore : rva < pe.sizeOfImage) :
-    ¬ footprint.contains (word32 (pe.imageBase + rva)) := by
-  intro changed
-  have workspace : addressInSpan abi.parameters.writableWorkspace
-      (word32 (pe.imageBase + rva)) :=
-    footprint.insideScratch abi request checked _ changed
+    ¬ addressInSpan abi.parameters.writableWorkspace
+      (word32 (pe.imageBase + rva)) := by
+  intro workspace
   let facts := ConcreteKernelABI.cdeclStaticPreservationFacts abi
-  have imageBounded := facts.imageBounded
   have imageAddressBounded : pe.imageBase + rva < 2 ^ 32 := by
+    have := facts.imageBounded
     omega
   have imageAddressExact : (word32 (pe.imageBase + rva)).toNat =
       pe.imageBase + rva := by
@@ -86,8 +81,129 @@ theorem checkedCDeclWriteFootprint_avoidsLoadedImage
   · have beforeWorkspace : pe.imageBase + pe.sizeOfImage <=
         pe.imageBase + rva := Nat.le_trans imageBefore workspaceLower'
     have beforeImageEnd : pe.imageBase + rva <
-        pe.imageBase + pe.sizeOfImage := Nat.add_lt_add_left rvaBefore pe.imageBase
+        pe.imageBase + pe.sizeOfImage :=
+      Nat.add_lt_add_left rvaBefore pe.imageBase
     exact (Nat.not_lt_of_ge beforeWorkspace) beforeImageEnd
+
+theorem checkedCDeclWriteFootprint_avoidsLoadedImage
+    (footprint : CheckedCDeclWriteFootprint)
+    (abi : ConcreteKernelABI pe imports relocations tableOffset countOffset
+      records)
+    (request : AbstractKernelRequest)
+    (checked : footprint.checked abi request = true)
+    (rva : Nat) (rvaBefore : rva < pe.sizeOfImage) :
+    ¬ footprint.contains (word32 (pe.imageBase + rva)) := by
+  intro changed
+  have workspace : addressInSpan abi.parameters.writableWorkspace
+      (word32 (pe.imageBase + rva)) :=
+    footprint.insideScratch abi request checked _ changed
+  exact loadedImageAddressOutsideWorkspace abi rva rvaBefore workspace
+
+theorem workspaceFrame_preservesLoadedSpan
+    (abi : ConcreteKernelABI pe imports relocations tableOffset countOffset
+      records)
+    (frame : MemoryAgreesOutside
+      (addressInSpan abi.parameters.writableWorkspace) after before)
+    (span : Span)
+    (loaded : LoadedSpanHolds pe relocations pe.imageBase span before)
+    (spanBounded : span.stop <= pe.sizeOfImage) :
+    LoadedSpanHolds pe relocations pe.imageBase span after := by
+  intro offset offsetBefore expected expectedLoaded
+  rw [frame]
+  · exact loaded offset offsetBefore expected expectedLoaded
+  · simpa [Nat.add_assoc] using
+      (loadedImageAddressOutsideWorkspace abi (span.start + offset) (by
+        simp only [Span.stop] at spanBounded
+        omega))
+
+theorem workspaceFrame_preservesCandidateImage
+    (abi : ConcreteKernelABI pe imports relocations tableOffset countOffset
+      records)
+    (frame : MemoryAgreesOutside
+      (addressInSpan abi.parameters.writableWorkspace) after before)
+    (loaded : LoadedCandidateImageMemory pe imports relocations before) :
+    LoadedCandidateImageMemory pe imports relocations after := by
+  intro rva size bytes immutable offset expected offsetBefore indexed
+  rw [frame]
+  · exact loaded rva size bytes immutable offset expected offsetBefore indexed
+  · simpa [Nat.add_assoc] using
+      (loadedImageAddressOutsideWorkspace abi (rva + offset) (by
+        have bounded := immutableRvaBytes_bounded immutable
+        omega))
+
+theorem workspaceFrame_preservesImageRead32
+    (abi : ConcreteKernelABI pe imports relocations tableOffset countOffset
+      records)
+    (frame : MemoryAgreesOutside
+      (addressInSpan abi.parameters.writableWorkspace) after before)
+    (rva : Nat) (rvaBounded : rva + 4 <= pe.sizeOfImage) :
+    Memory.read32 after (word32 (pe.imageBase + rva)) =
+      Memory.read32 before (word32 (pe.imageBase + rva)) := by
+  unfold Memory.read32
+  have address (extra : Nat) :
+      word32 (pe.imageBase + rva) + word32 extra =
+        word32 (pe.imageBase + (rva + extra)) := by
+    simp [word32, ← BitVec.ofNat_add, Nat.add_assoc]
+  have address1 :
+      word32 (pe.imageBase + rva) + BitVec.ofNat 32 1 =
+        word32 (pe.imageBase + (rva + 1)) := by
+    simpa [word32] using address 1
+  have address2 :
+      word32 (pe.imageBase + rva) + BitVec.ofNat 32 2 =
+        word32 (pe.imageBase + (rva + 2)) := by
+    simpa [word32] using address 2
+  have address3 :
+      word32 (pe.imageBase + rva) + BitVec.ofNat 32 3 =
+        word32 (pe.imageBase + (rva + 3)) := by
+    simpa [word32] using address 3
+  rw [frame]
+  · rw [address1, frame]
+    · rw [address2, frame]
+      · rw [address3, frame]
+        exact loadedImageAddressOutsideWorkspace abi (rva + 3) (by omega)
+      · simpa only [address2] using
+          (loadedImageAddressOutsideWorkspace abi (rva + 2) (by omega))
+    · simpa only [address1] using
+        (loadedImageAddressOutsideWorkspace abi (rva + 1) (by omega))
+  · exact loadedImageAddressOutsideWorkspace abi rva (by omega)
+
+theorem workspaceFrame_preservesOriginalProgramTable
+    (abi : ConcreteKernelABI pe imports relocations tableOffset countOffset
+      records)
+    (frame : MemoryAgreesOutside
+      (addressInSpan abi.parameters.writableWorkspace) after before)
+    (loaded : LoadedOriginalProgramTable abi before) :
+    LoadedOriginalProgramTable abi after := by
+  let facts := ConcreteKernelABI.cdeclStaticPreservationFacts abi
+  refine {
+    tableSpan := ?_
+    countSpan := ?_
+    countWord := ?_
+    sourceWords := ?_
+  }
+  · apply workspaceFrame_preservesLoadedSpan abi frame
+      abi.tableSpan loaded.tableSpan
+    simpa [ConcreteKernelABI.tableSpan, Span.stop] using facts.tableBounded
+  · apply workspaceFrame_preservesLoadedSpan abi frame
+      abi.countSpan loaded.countSpan
+    simpa [ConcreteKernelABI.countSpan, Span.stop] using facts.countBounded
+  · rw [workspaceFrame_preservesImageRead32 abi frame countOffset
+      facts.countBounded]
+    exact loaded.countWord
+  · intro index record recordAt
+    have indexBefore : index < records.length :=
+      List.getElem?_eq_some_iff.mp recordAt |>.1
+    have transferCountExact :=
+      programTableCertificate_transferCount_eq_records_length
+        abi.tableCertificate
+    rw [Nat.add_assoc pe.imageBase tableOffset
+      (index * transferRecordSize)]
+    rw [workspaceFrame_preservesImageRead32 abi frame
+      (tableOffset + index * transferRecordSize)]
+    · simpa [Nat.add_assoc] using loaded.sourceWords index record recordAt
+    · have tableBounded := facts.tableBounded
+      simp only [transferRecordSize] at tableBounded ⊢
+      omega
 
 theorem memoryFrame_preservesLoadedSpan
     (footprint : CheckedCDeclWriteFootprint)
@@ -118,12 +234,14 @@ theorem memoryFrame_preservesCandidateImage
     (frame : MemoryAgreesOutside footprint.contains after before)
     (loaded : LoadedCandidateImageMemory pe imports relocations before) :
     LoadedCandidateImageMemory pe imports relocations after := by
-  intro rva raw immutable expected loadedByte
+  intro rva size bytes immutable offset expected offsetBefore indexed
   rw [frame]
-  · exact loaded rva raw immutable expected loadedByte
-  · exact checkedCDeclWriteFootprint_avoidsLoadedImage footprint abi request
-      checked rva
-      (immutableRvaBytesOne_bounded pe imports rva raw immutable)
+  · exact loaded rva size bytes immutable offset expected offsetBefore indexed
+  · simpa [Nat.add_assoc] using
+      (checkedCDeclWriteFootprint_avoidsLoadedImage footprint abi request
+        checked (rva + offset) (by
+          have bounded := immutableRvaBytes_bounded immutable
+          omega))
 
 theorem memoryFrame_preservesImageRead32
     (footprint : CheckedCDeclWriteFootprint)
@@ -292,6 +410,11 @@ theorem StaticallyPreservedCDeclEpilogueCertificate.path
   certificate.toChecked.path
 
 #print axioms ConcreteKernelABI.cdeclStaticPreservationFacts
+#print axioms loadedImageAddressOutsideWorkspace
+#print axioms workspaceFrame_preservesLoadedSpan
+#print axioms workspaceFrame_preservesCandidateImage
+#print axioms workspaceFrame_preservesImageRead32
+#print axioms workspaceFrame_preservesOriginalProgramTable
 #print axioms checkedCDeclWriteFootprint_avoidsLoadedImage
 #print axioms memoryFrame_preservesLoadedSpan
 #print axioms memoryFrame_preservesCandidateImage

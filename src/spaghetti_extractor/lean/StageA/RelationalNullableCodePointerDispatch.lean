@@ -1,11 +1,15 @@
 import StageA.RelationalComposition
 import StageA.RelationalNullableCodePointerTable
+import StageA.RelationalOriginalStackDynamicControlClosure
 
 namespace StageA.Relational.NullableCodePointerDispatch
 
 open StageA.Formal
 open StageA.Relational
+open StageA.Relational.InterpreterMixedContext
 open StageA.Relational.NullableCodePointerTable
+open StageA.Relational.OriginalIndirectControlAuthority
+open StageA.Relational.OriginalStackDynamicControlClosure
 
 /-- A region identity is checked against the canonical code map before its
 exact bytes are decoded.  Spans are carried explicitly because a code target
@@ -98,6 +102,26 @@ def tableCertificateCheckedAgainst (context : StaticProofContext)
           | none => false
     | _, _, _, _, _, _, _ => false
 
+/-- The table proposal must describe the one-word reverse sentinel literally.
+The bounded table checker independently reads the zero terminator and every
+relocation-backed non-null row from both immutable images. -/
+def exactReverseSentinelTableChecked (context : StaticProofContext)
+    (certificate : NullableCodePointerTable.Certificate)
+    (table : BoundedImmutableCodePointerTableCallClaim) : Bool :=
+  certificate.headerWords == [2 ^ 32 - 1] &&
+    table.layout == .sentinelTerminatedReverseCount &&
+    readImmutableImageWord context.originalPe table.originalBase 4 ==
+      some (2 ^ 32 - 1) &&
+    readImmutableImageWord context.candidatePe table.candidateBase 4 ==
+      some (2 ^ 32 - 1) &&
+    readImmutableImageWord context.originalPe
+        (table.originalAddress table.upperExclusive) 4 == some 0 &&
+    readImmutableImageWord context.candidatePe
+        (table.candidateAddress table.upperExclusive) 4 == some 0 &&
+    table.staticShapeChecked context &&
+    table.rowsChecked context &&
+    tableCertificateCheckedAgainst context certificate table
+
 def bridgeBehaviorChecked (claim : ReverseSentinelScannerClaim)
     (guardTargetId : Nat) (behavior : DecodedRegionBehavior) : Bool :=
   behavior.original.registers.get claim.originalCountRegister ==
@@ -131,9 +155,31 @@ def dispatchGuardBehaviorChecked (claim : ReverseSentinelScannerClaim)
     NormalizedOutcomeExpr.guardForTarget behavior.candidate.outcome dispatchTargetId ==
       some (registerNonzeroGuard claim.candidateCountRegister)
 
-/-- A local mixed-dispatch binding.  `dispatchPredecessorIds` is checked for
-shape here, but its global completeness is deliberately a proposition supplied
-by product-graph composition below. -/
+def NormalizedOutcomeExpr.bypassForTarget
+    (outcome : NormalizedOutcomeExpr) (targetId : Nat) : Option Nat :=
+  match outcome with
+  | .branch _ taken fallthrough =>
+      if taken == targetId && fallthrough != targetId then some fallthrough
+      else if fallthrough == targetId && taken != targetId then some taken
+      else none
+  | _ => none
+
+/-- The nonzero guard alone is not enough: the opposite branch must be the
+declared bypass, so the checked gate has exactly the two intended successors. -/
+def dispatchGateBehaviorChecked (claim : ReverseSentinelScannerClaim)
+    (dispatchTargetId bypassTargetId : Nat)
+    (behavior : DecodedRegionBehavior) : Bool :=
+  dispatchGuardBehaviorChecked claim dispatchTargetId behavior &&
+    NormalizedOutcomeExpr.bypassForTarget behavior.original.outcome
+        dispatchTargetId ==
+      some bypassTargetId &&
+    NormalizedOutcomeExpr.bypassForTarget behavior.candidate.outcome
+        dispatchTargetId ==
+      some bypassTargetId
+
+/-- A local mixed-dispatch binding. `dispatchPredecessorIds` is checked for
+shape here. Its global completeness is supplied either by the legacy typed
+composition premise below or by the checked rooted certificate. -/
 structure Claim where
   tableCertificate : NullableCodePointerTable.Certificate
   tableCall : BoundedImmutableCodePointerTableCallClaim
@@ -182,7 +228,7 @@ def Claim.bindingShapeChecked (context : StaticProofContext) (claim : Claim) : B
 
 def Claim.identityChecked (context : StaticProofContext) (claim : Claim) : Bool :=
   claim.bindingShapeChecked context &&
-    tableCertificateCheckedAgainst context claim.tableCertificate claim.tableCall
+    exactReverseSentinelTableChecked context claim.tableCertificate claim.tableCall
 
 def Claim.semanticChecked (context : StaticProofContext) (claim : Claim)
     (cluster : DecodedDispatchCluster) : Bool :=
@@ -192,7 +238,8 @@ def Claim.semanticChecked (context : StaticProofContext) (claim : Claim)
     claim.scanner.exitChecked claim.scannerPostInvariant
       claim.scannerFinishedInvariant cluster.test.original cluster.test.candidate &&
     bridgeBehaviorChecked claim.scanner claim.guardRegion.targetId cluster.bridge &&
-    dispatchGuardBehaviorChecked claim.scanner claim.dispatchRegion.targetId cluster.guard &&
+    dispatchGateBehaviorChecked claim.scanner claim.dispatchRegion.targetId
+      claim.dispatchBypassTargetId cluster.guard &&
     claim.tableCall.staticShapeChecked context &&
     claim.tableCall.rowsChecked context &&
     claim.tableCall.behaviorChecked cluster.dispatch.original cluster.dispatch.candidate &&
@@ -418,5 +465,280 @@ theorem actualDecodedMixedDispatchClosure_of_checked
     exact boundedImmutableCodePointerTableCallTargetsClosed_of_checked context
       claim.dispatchInvariant cluster.dispatch.original cluster.dispatch.candidate
       claim.tableCall structurallyValid boundedChecked
+
+/-! ## Checked rooted unreachability
+
+The original cutpoint graph may contain a constructor-scanner loop immediately
+before a nullable dispatch.  A unique-predecessor chain is therefore not a
+sound graph model.  The certificate below instead checks an exact root path,
+the maximal strongly connected component containing the source, and every
+incoming edge of that component against the decoded-original context.
+
+These static graph facts do not prove a register value.  Whole-program
+composition must still establish the empty interval bound for every reachable
+source state.  Keeping that fact as an explicit premise prevents graph
+reachability from being mistaken for an EBX-value proof.
+-/
+
+structure OriginalIncomingEdge where
+  sourceTargetId : Nat
+  targetTargetId : Nat
+deriving Repr, DecidableEq
+
+/-- Compact decoded-graph data derived from the canonical code-map and region
+indices. ExactOriginalDecodedAuthority separately establishes that every
+indexed source passes the expensive PE-span and destination checks, so graph
+algorithms must not repeat those checks for every lookup. -/
+structure OriginalDecodedGraphSource where
+  root : Bool
+  targets : List Nat
+deriving Repr, DecidableEq
+
+def originalGraphSource?
+    (context : OriginalDecodedStaticContext)
+    (targetId : Nat) : Option OriginalDecodedGraphSource := do
+  let target <- context.codeMap.get? targetId
+  let region <- context.regions.get? target.regionIndex
+  if target.id != targetId || region.id != target.id then
+    none
+  else
+    pure { root := region.root, targets := region.targets }
+
+def originalRootTargetIds (context : OriginalDecodedStaticContext) : List Nat :=
+  (List.range context.codeMap.entries.size).filter fun targetId =>
+    match originalGraphSource? context targetId with
+    | some source => source.root
+    | none => false
+
+def originalIncomingEdgesForTarget (context : OriginalDecodedStaticContext)
+    (targetTargetId : Nat) : List OriginalIncomingEdge :=
+  (List.range context.codeMap.entries.size).filterMap fun sourceTargetId =>
+    match originalGraphSource? context sourceTargetId with
+    | some source =>
+        if source.targets.contains targetTargetId then
+          some { sourceTargetId, targetTargetId }
+        else
+          none
+    | none => none
+
+def originalIncomingEdgesForTargets (context : OriginalDecodedStaticContext)
+    (targetTargetIds : List Nat) : List OriginalIncomingEdge :=
+  targetTargetIds.flatMap (originalIncomingEdgesForTarget context)
+
+def originalSuccessorTargetIds (context : OriginalDecodedStaticContext)
+    (sourceTargetId : Nat) : List Nat :=
+  match originalGraphSource? context sourceTargetId with
+  | some source => source.targets
+  | none => []
+
+def originalReachabilityStepWithin (context : OriginalDecodedStaticContext)
+    (allowedTargetIds targetIds : List Nat) : List Nat :=
+  (targetIds ++ targetIds.flatMap fun targetId =>
+    (originalSuccessorTargetIds context targetId).filter
+      allowedTargetIds.contains).eraseDups
+
+def originalReachabilityWithinAux (context : OriginalDecodedStaticContext)
+    (allowedTargetIds : List Nat) :
+    Nat → List Nat → List Nat
+  | 0, targetIds => targetIds
+  | fuel + 1, targetIds =>
+      let next :=
+        originalReachabilityStepWithin context allowedTargetIds targetIds
+      if next == targetIds then targetIds
+      else originalReachabilityWithinAux context allowedTargetIds fuel next
+
+def originalReachabilityWithin (context : OriginalDecodedStaticContext)
+    (allowedTargetIds : List Nat) (sourceTargetId : Nat) : List Nat :=
+  originalReachabilityWithinAux context allowedTargetIds
+    (allowedTargetIds.length + 1) [sourceTargetId]
+
+def originalForwardReachabilityStep
+    (context : OriginalDecodedStaticContext)
+    (targetIds : List Nat) : List Nat :=
+  (targetIds ++ targetIds.flatMap
+    (originalSuccessorTargetIds context)).eraseDups
+
+def originalForwardReachabilityAux
+    (context : OriginalDecodedStaticContext) :
+    Nat → List Nat → List Nat
+  | 0, targetIds => targetIds
+  | fuel + 1, targetIds =>
+      let next := originalForwardReachabilityStep context targetIds
+      if next == targetIds then targetIds
+      else originalForwardReachabilityAux context fuel next
+
+def originalForwardReachability
+    (context : OriginalDecodedStaticContext)
+    (sourceTargetId : Nat) : List Nat :=
+  originalForwardReachabilityAux context
+    (context.codeMap.entries.size + 1) [sourceTargetId]
+
+/-- One reverse step scans each canonical source once, avoiding the quadratic
+target-by-source predecessor enumeration used for report serialization. -/
+def originalReverseReachabilityStep
+    (context : OriginalDecodedStaticContext)
+    (targetIds : List Nat) : List Nat :=
+  (targetIds ++ (List.range context.codeMap.entries.size).filter fun sourceId =>
+    (originalSuccessorTargetIds context sourceId).any
+      targetIds.contains).eraseDups
+
+def originalReverseReachabilityAux
+    (context : OriginalDecodedStaticContext) :
+    Nat → List Nat → List Nat
+  | 0, targetIds => targetIds
+  | fuel + 1, targetIds =>
+      let next := originalReverseReachabilityStep context targetIds
+      if next == targetIds then targetIds
+      else originalReverseReachabilityAux context fuel next
+
+def originalReverseReachability
+    (context : OriginalDecodedStaticContext)
+    (targetTargetId : Nat) : List Nat :=
+  originalReverseReachabilityAux context
+    (context.codeMap.entries.size + 1) [targetTargetId]
+
+/-- The maximal source SCC is the intersection of exact forward and reverse
+closures.  Reverse closure scans the image once per frontier round, so callers
+do not rerun a whole-image closure for every forward target. -/
+def originalSccTargetIds (context : OriginalDecodedStaticContext)
+    (sourceTargetId : Nat) : List Nat :=
+  let reverse := originalReverseReachability context sourceTargetId
+  (originalForwardReachability context sourceTargetId).filter reverse.contains
+
+def originalSccChecked (context : OriginalDecodedStaticContext)
+    (sourceTargetId : Nat) (sccTargetIds : List Nat) : Bool :=
+  !sccTargetIds.isEmpty &&
+    NullableCodePointerTable.noDuplicates sccTargetIds &&
+    NullableCodePointerTable.sameFiniteSet sccTargetIds
+      (originalSccTargetIds context sourceTargetId) &&
+    sccTargetIds.contains sourceTargetId &&
+    sccTargetIds.all fun targetId =>
+      (originalGraphSource? context targetId).isSome &&
+        (originalReachabilityWithin context sccTargetIds
+          sourceTargetId).contains targetId &&
+        (originalReachabilityWithin context sccTargetIds
+          targetId).contains sourceTargetId
+
+/- A forward-closed target set containing the source is a checked superset of
+all targets reachable from that source. This is the fact SCC maximality needs,
+without recomputing a whole-image forward and reverse fixed point. -/
+def originalForwardClosedChecked (context : OriginalDecodedStaticContext)
+    (sourceTargetId : Nat) (forwardTargetIds : List Nat) : Bool :=
+  NullableCodePointerTable.noDuplicates forwardTargetIds &&
+    forwardTargetIds.contains sourceTargetId &&
+    forwardTargetIds.all fun targetId =>
+      (originalGraphSource? context targetId).isSome &&
+        (originalSuccessorTargetIds context targetId).all
+          forwardTargetIds.contains
+
+/- A strongly connected set is maximal when every source-reachable target is
+inside a checked forward-closed superset and no outside member of that
+superset has an edge back into the set. The exact incoming inventory is
+recomputed from the decoded graph. -/
+def originalSccBoundaryChecked (context : OriginalDecodedStaticContext)
+    (sourceTargetId : Nat) (forwardTargetIds sccTargetIds : List Nat)
+    (incomingEdges : List OriginalIncomingEdge) : Bool :=
+  !sccTargetIds.isEmpty &&
+    NullableCodePointerTable.noDuplicates sccTargetIds &&
+    sccTargetIds.contains sourceTargetId &&
+    originalForwardClosedChecked context sourceTargetId forwardTargetIds &&
+    (sccTargetIds.all fun targetId =>
+      (originalGraphSource? context targetId).isSome &&
+        (originalReachabilityWithin context sccTargetIds
+          sourceTargetId).contains targetId &&
+        (originalReachabilityWithin context sccTargetIds
+          targetId).contains sourceTargetId) &&
+    incomingEdges == originalIncomingEdgesForTargets context sccTargetIds &&
+    incomingEdges.all fun edge =>
+      sccTargetIds.contains edge.sourceTargetId ||
+        !forwardTargetIds.contains edge.sourceTargetId
+
+def originalPathEdgesChecked (context : OriginalDecodedStaticContext) :
+    List Nat → Bool
+  | [] | [_] => true
+  | sourceTargetId :: targetTargetId :: rest =>
+      (originalSuccessorTargetIds context sourceTargetId).contains
+          targetTargetId &&
+        originalPathEdgesChecked context (targetTargetId :: rest)
+
+def originalRootPathChecked (context : OriginalDecodedStaticContext)
+    (sourceTargetId : Nat) (rootPathTargetIds : List Nat) : Bool :=
+  match rootPathTargetIds with
+  | [] => false
+  | rootTargetId :: _ =>
+      originalRootTargetIds context |>.contains rootTargetId &&
+        rootPathTargetIds.reverse.head? == some sourceTargetId &&
+        NullableCodePointerTable.noDuplicates rootPathTargetIds &&
+        originalPathEdgesChecked context rootPathTargetIds
+
+/-- Canonical finite graph data. Roots, path edges, the maximal source SCC,
+strong connectivity, and the complete incoming boundary are recomputed by
+Lean. -/
+structure RootedSccCertificate where
+  rootTargetIds : List Nat
+  rootPathTargetIds : List Nat
+  forwardTargetIds : List Nat
+  sccTargetIds : List Nat
+  incomingEdges : List OriginalIncomingEdge
+deriving Repr, DecidableEq
+
+def RootedSccCertificate.checked
+    (originalContext : OriginalDecodedStaticContext)
+    (_decodedAuthority : ExactOriginalDecodedAuthority originalContext)
+    (site : OriginalIndirectControlSite)
+    (certificate : RootedSccCertificate) : Bool :=
+  site.checked originalContext &&
+  !certificate.rootTargetIds.isEmpty &&
+    certificate.rootTargetIds == originalRootTargetIds originalContext &&
+    originalRootPathChecked originalContext site.sourceTargetId
+      certificate.rootPathTargetIds &&
+    originalSccBoundaryChecked originalContext site.sourceTargetId
+      certificate.forwardTargetIds certificate.sccTargetIds
+      certificate.incomingEdges &&
+    (certificate.sccTargetIds.all fun targetId =>
+      !certificate.rootTargetIds.contains targetId)
+
+structure CheckedRootedSccCertificate
+    (originalContext : OriginalDecodedStaticContext)
+    (site : OriginalIndirectControlSite) where
+  decodedAuthority : ExactOriginalDecodedAuthority originalContext
+  certificate : RootedSccCertificate
+  checked :
+    certificate.checked originalContext decodedAuthority site = true
+
+/-- Graph closure and register-value closure remain separate.  The checked SCC
+authority rules out omissions in the static constructor loop, while the
+runtime premise must be derived from exact scanner/test/loop semantics by the
+whole-program composition proof. -/
+structure CompleteRootedSccDispatchPremise
+    (emptyAuthority : CheckedEmptyIndexedSourceAuthority originalContext)
+    (graphAuthority :
+      CheckedRootedSccCertificate originalContext emptyAuthority.site)
+    (reachable : ActualSourceReachability) : Prop where
+  everyReachableIndexBound : emptyAuthority.ReachabilityBound reachable
+
+theorem sourceUninhabited_of_checkedRootedScc
+    (emptyAuthority : CheckedEmptyIndexedSourceAuthority originalContext)
+    (graphAuthority :
+      CheckedRootedSccCertificate originalContext emptyAuthority.site)
+    (reachable : ActualSourceReachability)
+    (complete :
+      CompleteRootedSccDispatchPremise emptyAuthority graphAuthority reachable) :
+    SourceUninhabited reachable := by
+  rintro ⟨world, originalState, reached⟩
+  exact emptyAuthority.noRuntimeIndex originalState
+    (complete.everyReachableIndexBound world originalState reached)
+
+theorem originalIndirectControlClosure_of_checkedRootedScc
+    (emptyAuthority : CheckedEmptyIndexedSourceAuthority originalContext)
+    (graphAuthority :
+      CheckedRootedSccCertificate originalContext emptyAuthority.site)
+    (reachable : ActualSourceReachability)
+    (complete :
+      CompleteRootedSccDispatchPremise emptyAuthority graphAuthority reachable) :
+    OriginalIndirectControlClosure originalContext emptyAuthority.site reachable :=
+  OriginalIndirectControlClosure.unreachable
+    (sourceUninhabited_of_checkedRootedScc emptyAuthority graphAuthority
+      reachable complete)
 
 end StageA.Relational.NullableCodePointerDispatch

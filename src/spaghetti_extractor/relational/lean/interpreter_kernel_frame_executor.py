@@ -1,11 +1,12 @@
 """Emit executor evidence for frame-parametric ``interpreterStep``.
 
-The generated module turns exact native path evidence into
+The generated module turns producer-selected canonical path evidence into
 ``NativeWorldFramePathRefinement`` using the reviewed executor theorem.  It
-does not trust a result status.  Imported actions retain explicit shifted
-environment, footprint, successor-world, and frame-disjointness contracts.
-The generated interpreter-step candidate has no resolved-callable executor,
-so that separate branch is closed from the exact program definition.
+does not trust a result status.  Imported actions are selected by reindexing
+the native-world environment from the caller event index and retain explicit
+footprint, successor-world, and frame-disjointness contracts.  The generated
+interpreter-step candidate has no resolved-callable executor, so that separate
+branch is closed from the exact program definition.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from .interpreter_kernel_operation_frame_parametric import (
 
 
 INTERPRETER_KERNEL_FRAME_EXECUTOR_FORMAT = (
-    "stage-a-relational-interpreter-kernel-frame-executor-plan-v1"
+    "stage-a-relational-interpreter-kernel-frame-executor-plan-v2"
 )
 INTERPRETER_KERNEL_FRAME_EXECUTOR_PLAN_FILENAME = (
     "interpreter-kernel-frame-executor-plan.json"
@@ -39,10 +40,9 @@ INTERPRETER_KERNEL_FRAME_EXECUTOR_THEOREM = (
     "generatedInterpreterStepFrameExecutorCertificate"
 )
 INTERPRETER_KERNEL_FRAME_EXECUTOR_REMAINING_PREMISES = (
-    "standalone_interpreter_step_operation_for_every_world",
-    "imported_environment_shift_footprint_and_world_update_contract",
+    "producer_coupled_canonical_interpreter_step_path_for_compatible_contexts",
+    "imported_environment_footprint_and_world_update_contract",
     "imported_footprint_disjoint_from_caller_return_slot",
-    "exact_prefix_event_index_and_return_word_trace",
 )
 
 _LEAN_MODULE = re.compile(
@@ -94,9 +94,9 @@ class InterpreterKernelFrameExecutorPlan:
             },
             "closed_components": [
                 "exact_candidate_identity",
+                "caller_event_indexed_native_world_environment",
                 "native_transition_contextual_step_embedding",
-                "no_early_terminal_from_exact_running_prefixes",
-                "return_compatibility_from_stack_word_and_exact_decode",
+                "selected_path_running_prefixes_event_indices_and_return",
                 "resolved_callable_branch_disabled_by_exact_candidate_program",
             ],
             "remaining_proof_premises": list(
@@ -104,26 +104,27 @@ class InterpreterKernelFrameExecutorPlan:
             ),
             "proof_frontiers": [
                 {
-                    "id": "interpreter-step:standalone-world-family",
+                    "id": "interpreter-step:producer-selected-path-family",
                     "premise": (
-                        "standalone_interpreter_step_operation_for_every_world"
+                        "producer_coupled_canonical_interpreter_step_path_for_"
+                        "every_context_world"
                     ),
                     "rva": self.step_entry_rva,
                     "next_action": (
-                        "provide the existing standalone interpreterStep "
-                        "operation certificate for every initial world"
+                        "produce one exact interpreterStep path for each caller "
+                        "with explicit fuel, running prefixes, exact event "
+                        "indices, and a compatible concrete return"
                     ),
                 },
                 {
                     "id": "interpreter-step:imported-environment-contract",
                     "premise": (
-                        "imported_environment_shift_footprint_and_world_update_"
-                        "contract"
+                        "imported_environment_footprint_and_world_update_contract"
                     ),
                     "rva": self.step_entry_rva,
                     "next_action": (
-                        "check shifted imported actions and their exact memory "
-                        "footprints and successor-world updates"
+                        "check caller-indexed imported actions and their exact "
+                        "memory footprints and successor-world updates"
                     ),
                 },
                 {
@@ -135,17 +136,6 @@ class InterpreterKernelFrameExecutorPlan:
                     "next_action": (
                         "prove the four-byte caller return slot is outside each "
                         "reachable imported-action write footprint"
-                    ),
-                },
-                {
-                    "id": "interpreter-step:exact-path-trace",
-                    "premise": (
-                        "exact_prefix_event_index_and_return_word_trace"
-                    ),
-                    "rva": self.step_entry_rva,
-                    "next_action": (
-                        "emit exact running-prefix RVAs, event indices, stack "
-                        "return words, and decoded return-source equations"
                     ),
                 },
             ],
@@ -232,11 +222,10 @@ def relational_interpreter_kernel_frame_executor_source(
     plan: InterpreterKernelFrameExecutorPlan,
     *,
     frame_parametric_module: str = (
-        "StageA.GeneratedRelational."
-        "InterpreterKernelOperationFrameParametric"
+        "StageA.GeneratedRelationalInterpreterKernelOperationFrameParametric"
     ),
     step_native_module: str = (
-        "StageA.GeneratedRelational.InterpreterKernelStepNative"
+        "StageA.GeneratedRelationalInterpreterKernelStepNative"
     ),
 ) -> str:
     for context, module in (
@@ -274,51 +263,20 @@ structure GeneratedInterpreterStepFrameExecutorPathEvidence
     (context : NativeWorldFrameContext)
     {{before after : NativeWorldExecution}}
     {{observations : List WorldRelationalObservable}}
-    {{fuel : Nat}}
-    (path : StandaloneNativeWorldPath
-      (generatedInterpreterStepNativeProgram environment)
-      before after observations fuel) where
+    (selected : ProducerSelectedStandaloneNativeWorldPath
+      (generatedInterpreterStepNativeProgram environment) context
+      before after observations) where
   imported : ImportedFrameEnvironmentContract
     (generatedInterpreterStepNativeProgram environment) context
   returnSlot : Word
   importedDisjoint : forall event,
     FrameFootprintDisjoint returnSlot (imported.footprint event)
-  prefixRva : forall consumed, consumed < fuel ->
-    exists rva,
-      (runRelatedSteps
-        (generatedInterpreterStepNativeProgram environment).transitionSystem
-        consumed before).1.rva? = some rva
-  eventIndexExact : forall consumed, consumed < fuel ->
-    nativeWorldExecutionEventIndexExact
-      (runRelatedSteps
-        (generatedInterpreterStepNativeProgram environment).transitionSystem
-        consumed before).1
-  emptyFrameStackSlot : forall consumed (beforeEnd : consumed < fuel)
-      rva undefinedSlot state localIndex localEvents world,
-    (runRelatedSteps
-      (generatedInterpreterStepNativeProgram environment).transitionSystem
-      consumed before).1 =
-        .running rva undefinedSlot state [] localIndex localEvents world ->
-      state.registers.esp = returnSlot /\\
-        Memory.read32 state.memory returnSlot = context.frame.returnAddress
-  decodedReturnReadsStack : forall consumed (beforeEnd : consumed < fuel)
-      rva undefinedSlot state localIndex localEvents world target afterState,
-    (runRelatedSteps
-      (generatedInterpreterStepNativeProgram environment).transitionSystem
-      consumed before).1 =
-        .running rva undefinedSlot state [] localIndex localEvents world ->
-      stepKernelPE32Instruction
-          (generatedInterpreterStepNativeProgram environment).pe
-          (generatedInterpreterStepNativeProgram environment).imports
-          (.running rva undefinedSlot state) =
-        .stopped (.returned target) afterState ->
-      target = Memory.read32 state.memory state.registers.esp
 
 def GeneratedInterpreterStepFrameExecutorPathEvidence.toExecutorContract
     (evidence : GeneratedInterpreterStepFrameExecutorPathEvidence
-      environment context path) :
+      environment context selected) :
     NativeWorldFrameExecutorPathContract
-      (generatedInterpreterStepNativeProgram environment) context path := {{
+      (generatedInterpreterStepNativeProgram environment) context selected := {{
   environment :=
     NativeWorldFrameExecutorEnvironmentContract.ofDisabled
       (generatedInterpreterStepNativeProgram environment) context rfl
@@ -326,47 +284,60 @@ def GeneratedInterpreterStepFrameExecutorPathEvidence.toExecutorContract
   returnSlot := evidence.returnSlot
   importedDisjoint := evidence.importedDisjoint
   callableDisjoint := fun _ => FrameFootprintDisjoint.empty evidence.returnSlot
-  prefixRva := evidence.prefixRva
-  eventIndexExact := evidence.eventIndexExact
   callableTailCompatible := by
     intro consumed beforeEnd
     exact NativeWorldFrameCallableTailCompatibleAt.ofDisabled
       (generatedInterpreterStepNativeProgram environment) _ rfl
-  emptyFrameStackSlot := evidence.emptyFrameStackSlot
-  decodedReturnReadsStack := evidence.decodedReturnReadsStack
 }}
 
 abbrev GeneratedInterpreterStepFrameExecutorEvidenceFamily
     (environment : NativeWorldEnvironment) :=
-  forall context world entryRva before after events afterWorld observations fuel
-      (path : StandaloneNativeWorldPath
-        (generatedInterpreterStepNativeProgram environment)
+  forall context world entryRva before after events afterWorld observations
+      (selected : ProducerSelectedStandaloneNativeWorldPath
+        (generatedInterpreterStepNativeProgram environment) context
         (.running entryRva 0 before [] 0 [] world)
-        (.returned after events afterWorld) observations fuel),
-    GeneratedInterpreterStepFrameExecutorPathEvidence environment context path
+        (.returned after events afterWorld) observations),
+    GeneratedInterpreterStepFrameExecutorPathEvidence
+      environment context selected
+
+def generatedInterpreterStepFrameExecutorCertificateFor
+    (operationABI : KernelABIRelation)
+    (environment : NativeWorldEnvironment)
+    (producer :
+      GeneratedInterpreterStepSelectedPathProducerFor operationABI environment)
+    (pathEvidence :
+      GeneratedInterpreterStepFrameExecutorEvidenceFamily environment) :
+    KernelOperationFrameParametricCertificate generatedCompiledKernelProgram
+      operationABI
+      (generatedInterpreterStepNativeProgram environment)
+      .interpreterStep :=
+  ({{
+    producer
+    pathContract := by
+      intro context world entryRva before after events afterWorld observations
+        selected
+      exact (pathEvidence context world entryRva before after events afterWorld
+        observations selected).toExecutorContract
+  }} : KernelOperationFrameExecutorCertificate generatedCompiledKernelProgram
+    operationABI
+    (generatedInterpreterStepNativeProgram environment)
+    .interpreterStep).toFrameParametric
 
 def generatedInterpreterStepFrameExecutorCertificate
     (environment : NativeWorldEnvironment)
-    (standalone : GeneratedStandaloneInterpreterStepOperation environment)
+    (producer : GeneratedInterpreterStepSelectedPathProducer environment)
     (pathEvidence :
       GeneratedInterpreterStepFrameExecutorEvidenceFamily environment) :
     KernelOperationFrameParametricCertificate generatedCompiledKernelProgram
       generatedInterpreterKernelABIRelation
       (generatedInterpreterStepNativeProgram environment)
       .interpreterStep :=
-  ({{ standalone
-     pathContract := by
-    intro context world entryRva before after events afterWorld observations fuel
-      path
-    exact (pathEvidence context world entryRva before after events afterWorld
-      observations fuel path).toExecutorContract
-  }} : KernelOperationFrameExecutorCertificate generatedCompiledKernelProgram
-    generatedInterpreterKernelABIRelation
-    (generatedInterpreterStepNativeProgram environment)
-    .interpreterStep).toFrameParametric
+  generatedInterpreterStepFrameExecutorCertificateFor
+    generatedInterpreterKernelABIRelation environment producer pathEvidence
 
 #print axioms
   GeneratedInterpreterStepFrameExecutorPathEvidence.toExecutorContract
+#print axioms generatedInterpreterStepFrameExecutorCertificateFor
 #print axioms generatedInterpreterStepFrameExecutorCertificate
 
 end StageA.GeneratedRelational.InterpreterKernelFrameExecutor

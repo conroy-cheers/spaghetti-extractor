@@ -322,16 +322,8 @@ theorem immutableRvaBytesOne_bounded
     (pe : PE32) (imports : List PEImport) (rva raw : Nat)
     (exactBytes : immutableRvaBytes pe imports rva 1 = some [raw]) :
     rva < pe.sizeOfImage := by
-  unfold immutableRvaBytes at exactBytes
-  split at exactBytes
-  · simp at exactBytes
-  · rename_i accepted
-    by_cases before : rva < pe.sizeOfImage
-    · exact before
-    · exfalso
-      apply accepted
-      have tooLarge : rva + 1 > pe.sizeOfImage := by omega
-      simp [tooLarge]
+  have bounded := immutableRvaBytes_bounded exactBytes
+  omega
 
 theorem programLookupFrameMemory_preservesCandidateImage
     (abi : ConcreteKernelABI pe imports relocations tableOffset countOffset
@@ -340,11 +332,15 @@ theorem programLookupFrameMemory_preservesCandidateImage
     (entry : ABIRequestFacts abi (.programLookup records sourceRva) before) :
     LoadedCandidateImageMemory pe imports relocations
       (programLookupTemplateFrameMemory before.registers.esp before.memory) := by
-  intro rva raw immutable expected loaded
+  intro rva size bytes immutable offset expected offsetBefore indexed
   rw [programLookupTemplateFrameMemory_agreesOutside]
-  · exact entry.candidateImage rva raw immutable expected loaded
-  · exact programLookupFrameAvoidsImage abi records sourceRva before entry rva
-      (immutableRvaBytesOne_bounded pe imports rva raw immutable)
+  · exact entry.candidateImage rva size bytes immutable offset expected
+      offsetBefore indexed
+  · simpa [Nat.add_assoc] using
+      (programLookupFrameAvoidsImage abi records sourceRva before entry
+        (rva + offset) (by
+          have bounded := immutableRvaBytes_bounded immutable
+          omega))
 
 theorem programLookupFrameMemory_preservesImageRead32
     (abi : ConcreteKernelABI pe imports relocations tableOffset countOffset
@@ -528,12 +524,15 @@ noncomputable def concreteProgramLookupInvocation
     rw [tableExact]
     refine {
       cdecl := programLookupReturnedFrameHolds abi sourceRva before request
+      directionFlagClear := ?_
       candidateImage :=
         programLookupFrameMemory_preservesCandidateImage abi sourceRva before request
       originalProgramTable :=
         programLookupFrameMemory_preservesProgramTable abi sourceRva before request
       payload := ?_
     }
+    · simpa [DirectionFlagClear, programLookupTemplateReturnedState] using
+        request.directionFlagClear
     change
       (programLookupTemplateReturnedState pe tableOffset records sourceRva before).registers.eax =
           lookupResultPointer records pe.imageBase tableOffset sourceRva ∧

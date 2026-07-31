@@ -462,6 +462,110 @@ def executeX87Singleton (pe : PE32) (record : RawInstructionRecord)
     x87Response := some effect.response
   }
 
+/-- Every exact singleton decode executes under a qualified x87 semantics.
+The only possible store commands are memory commands, so exact decoding also
+provides the address required to materialize their memory effect. -/
+theorem executeSingletonCommand_isSome_of_decoded
+    (pe : PE32) (span : Span) (state : MachineState)
+    (descriptor : StageA.Relational.X87.DecodedCommand)
+    (decoded :
+      StageA.Relational.X87.decodeSingletonCommand pe span = some descriptor) :
+    (StageA.Relational.X87.executeSingletonCommand false pe span
+      [singletonTarget span] state).isSome = true := by
+  let input := StageA.Relational.X87.commandStepInput pe span.start descriptor state
+  let response := state.x87Semantics.execute descriptor.command
+    descriptor.waitMode state.x87Physical input
+  have inputValid : input.validFor descriptor.command := by
+    exact StageA.Relational.X87.commandStepInput_valid pe span.start descriptor state
+  have inputChecked : input.checkedFor descriptor.command = true :=
+    StageA.X87.StepInput.checkedFor_of_valid input descriptor.command inputValid
+  have waitValid := StageA.Relational.X87.decodeSingletonCommand_waitModeValid
+    pe span descriptor decoded
+  have waitChecked : descriptor.command.waitModeChecked descriptor.waitMode = true :=
+    StageA.X87.Command.waitModeChecked_of_valid descriptor.command
+      descriptor.waitMode waitValid
+  have responseValid : response.structurallyValid descriptor.command
+      descriptor.waitMode := by
+    exact state.x87Semantics.execute_structurallyValid
+      state.x87Semantics.complies descriptor.command descriptor.waitMode
+      state.x87Physical input waitValid inputValid
+  have responseChecked :
+      response.checkedFor descriptor.command descriptor.waitMode = true :=
+    StageA.X87.Response.checkedFor_of_structurallyValid response
+      descriptor.command descriptor.waitMode responseValid
+  have inputCheckedExact :
+      (StageA.Relational.X87.commandStepInput pe span.start descriptor state).checkedFor
+        descriptor.command = true := by
+    simpa [input] using inputChecked
+  have responseCheckedExact :
+      (state.x87Semantics.execute descriptor.command descriptor.waitMode
+        state.x87Physical
+        (StageA.Relational.X87.commandStepInput pe span.start descriptor state)).checkedFor
+          descriptor.command descriptor.waitMode = true := by
+    simpa [response, input] using responseChecked
+  unfold StageA.Relational.X87.executeSingletonCommand
+  rw [decoded]
+  simp only [normalizeCodeTarget, singletonTarget, List.find?_cons,
+    Bool.false_eq_true, Bool.false_or, beq_self_eq_true, if_false,
+    Option.map_some]
+  cases storeExact : response.store with
+  | none =>
+      have storeExact' :
+          (state.x87Semantics.execute descriptor.command descriptor.waitMode
+            state.x87Physical
+            (StageA.Relational.X87.commandStepInput pe span.start descriptor
+              state)).store = none := by
+        simpa [response, input] using storeExact
+      simp [inputCheckedExact, waitChecked, responseCheckedExact, storeExact']
+  | some store =>
+      have usesMemory : descriptor.command.usesMemoryOperand = true := by
+        apply StageA.X87.Command.usesMemoryOperand_of_expectedStoreKind
+          descriptor.command store.kind
+        simpa [storeExact] using responseValid.1.symm
+      have operandSome : descriptor.memoryOperand.isSome = true := by
+        rw [← StageA.Relational.X87.decodeSingletonCommand_memoryOperand pe span
+          descriptor decoded]
+        exact usesMemory
+      cases operandExact : descriptor.memoryOperand with
+      | none => simp [operandExact] at operandSome
+      | some addressing =>
+          have storeExact' :
+              (state.x87Semantics.execute descriptor.command descriptor.waitMode
+                state.x87Physical
+                (StageA.Relational.X87.commandStepInput pe span.start descriptor
+                  state)).store = some store := by
+            simpa [response, input] using storeExact
+          simp [inputCheckedExact, waitChecked, responseCheckedExact, storeExact',
+            StageA.Relational.X87.commandDataAddress, operandExact]
+
+theorem executeX87Singleton_isSome_of_decoded
+    (pe : PE32) (record : RawInstructionRecord) (state : MachineState)
+    (recordClass : record.decodeClass = some .x87Singleton)
+    (descriptor : StageA.Relational.X87.DecodedCommand)
+    (decoded :
+      StageA.Relational.X87.decodeSingletonCommand pe record.span =
+        some descriptor) :
+    (executeX87Singleton pe record state).isSome = true := by
+  have commandExecuted := executeSingletonCommand_isSome_of_decoded pe
+    record.span state descriptor decoded
+  cases executed : StageA.Relational.X87.executeSingletonCommand false pe
+      record.span [singletonTarget record.span] state with
+  | none => simp [executed] at commandExecuted
+  | some behavior =>
+      have effectSome :=
+        StageA.Relational.X87.executeSingletonCommand_effect_isSome false pe
+          record.span [singletonTarget record.span] state behavior executed
+      have outcome :=
+        StageA.Relational.X87.executeSingletonCommand_outcome_of_continuation
+          false pe record.span [singletonTarget record.span] state behavior
+          record.span.stop (by simp [normalizeCodeTarget, singletonTarget])
+          executed
+      unfold executeX87Singleton
+      cases effectExact : behavior.x87Effect with
+      | none => simp [effectExact] at effectSome
+      | some effect =>
+          simp [recordClass, decoded, executed, effectExact, outcome]
+
 def PhysicalX87FieldsEstablished (result : StepResult) : Prop :=
   match result.x87Response with
   | none => True
@@ -497,6 +601,7 @@ structure X87SingletonExecutionWitness (pe : PE32)
   exactControl : result.control = .fallthrough record.span.stop
   noCalls : result.calls = []
   exactResponse : result.x87Response = some effect.response
+  physicalState : result.state.x87Physical = effect.response.nextState
   physicalFields : PhysicalX87FieldsEstablished result
 
 def executeX87Singleton_witness (pe : PE32)
@@ -535,10 +640,284 @@ def executeX87Singleton_witness (pe : PE32)
                 exactControl := rfl
                 noCalls := rfl
                 exactResponse := rfl
+                physicalState := by
+                  simp [RelationalBehavior.nextMachineState, effectFound]
                 physicalFields := ?_
               }
               simp [PhysicalX87FieldsEstablished,
                 RelationalBehavior.nextMachineState, effectFound]
+
+/-- The decoded command/input pair needed to compare an original singleton
+execution with the relocated candidate instruction.  The record bytes remain
+PE-checked by each decoder; this proposition carries only the semantic
+correspondence used by `StageA.Relational.X87.execute_related`. -/
+structure X87SingletonCommandInputRelated
+    (relation : StageA.Relational.X87.AddressRelation)
+    (originalPe candidatePe : PE32)
+    (originalRecord candidateRecord : RawInstructionRecord)
+    (originalInput candidateInput : MachineState) where
+  originalDescriptor : StageA.Relational.X87.DecodedCommand
+  candidateDescriptor : StageA.Relational.X87.DecodedCommand
+  originalDecoded :
+    StageA.Relational.X87.decodeSingletonCommand originalPe originalRecord.span =
+      some originalDescriptor
+  candidateDecoded :
+    StageA.Relational.X87.decodeSingletonCommand candidatePe candidateRecord.span =
+      some candidateDescriptor
+  commandExact : originalDescriptor.command = candidateDescriptor.command
+  waitModeExact : originalDescriptor.waitMode = candidateDescriptor.waitMode
+  inputs : StageA.Relational.X87.InputRelated relation
+    (StageA.Relational.X87.commandStepInput originalPe originalRecord.span.start
+      originalDescriptor originalInput)
+    (StageA.Relational.X87.commandStepInput candidatePe candidateRecord.span.start
+      candidateDescriptor candidateInput)
+
+/-- Address-relation weakening for x87 command inputs. -/
+theorem x87InputRelated_mono
+    {left right : StageA.Relational.X87.AddressRelation}
+    {original candidate : StageA.X87.StepInput}
+    (related : StageA.Relational.X87.InputRelated left original candidate)
+    (code : ∀ originalAddress candidateAddress,
+      left.code originalAddress candidateAddress ->
+        right.code originalAddress candidateAddress)
+    (data : ∀ originalAddress candidateAddress,
+      left.data originalAddress candidateAddress ->
+        right.data originalAddress candidateAddress) :
+    StageA.Relational.X87.InputRelated right original candidate := by
+  rcases related with
+    ⟨operand, opcode, instruction, codeSelector, dataPointer, dataSelector⟩
+  exact ⟨operand, opcode, code _ _ instruction, codeSelector,
+    data _ _ dataPointer, dataSelector⟩
+
+/-- Build a replay command-input certificate for a state-only x87 instruction
+from the general relational command-step theorem. -/
+def X87SingletonCommandInputRelated.ofNoMemory
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relation : StageA.Relational.X87.AddressRelation)
+    (originalRecord candidateRecord : RawInstructionRecord)
+    (originalInput candidateInput : MachineState)
+    (descriptor : StageA.Relational.X87.DecodedCommand)
+    (originalDecoded :
+      StageA.Relational.X87.decodeSingletonCommand context.originalPe
+        originalRecord.span = some descriptor)
+    (candidateDecoded :
+      StageA.Relational.X87.decodeSingletonCommand context.candidatePe
+        candidateRecord.span = some descriptor)
+    (noMemory : descriptor.memoryOperand = none)
+    (noOperand : descriptor.command.expectedOperandBytes = none)
+    (states : StageA.Relational.X87.StateRelated
+      (x87AddressRelation context world) originalInput.x87Physical
+      candidateInput.x87Physical)
+    (instruction : (x87AddressRelation context world).code
+      (BitVec.ofNat 32
+        (context.originalPe.imageBase + originalRecord.span.start))
+      (BitVec.ofNat 32
+        (context.candidatePe.imageBase + candidateRecord.span.start)))
+    (code : ∀ originalAddress candidateAddress,
+      (x87AddressRelation context world).code originalAddress candidateAddress ->
+        relation.code originalAddress candidateAddress)
+    (data : ∀ originalAddress candidateAddress,
+      (x87AddressRelation context world).data originalAddress candidateAddress ->
+        relation.data originalAddress candidateAddress) :
+    X87SingletonCommandInputRelated relation context.originalPe
+      context.candidatePe originalRecord candidateRecord originalInput
+      candidateInput := {
+  originalDescriptor := descriptor
+  candidateDescriptor := descriptor
+  originalDecoded
+  candidateDecoded
+  commandExact := rfl
+  waitModeExact := rfl
+  inputs := x87InputRelated_mono
+    (StageA.Relational.X87.commandStepInput_related_of_no_memory context world
+      descriptor originalRecord.span.start candidateRecord.span.start
+      originalInput candidateInput noMemory noOperand states instruction)
+    code data
+}
+
+/-- Build a replay command-input certificate for an x87 memory instruction
+whose relocated operand reads exactly the related original value. -/
+def X87SingletonCommandInputRelated.ofExactMemory
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relation : StageA.Relational.X87.AddressRelation)
+    (originalRecord candidateRecord : RawInstructionRecord)
+    (originalInput candidateInput : MachineState)
+    (descriptor : StageA.Relational.X87.DecodedCommand)
+    (originalDecoded :
+      StageA.Relational.X87.decodeSingletonCommand context.originalPe
+        originalRecord.span = some descriptor)
+    (candidateDecoded :
+      StageA.Relational.X87.decodeSingletonCommand context.candidatePe
+        candidateRecord.span = some descriptor)
+    (bytes : Nat)
+    (operandBytes : descriptor.command.expectedOperandBytes = some bytes)
+    (originalAddress candidateAddress : Word)
+    (originalDataAddress :
+      StageA.Relational.X87.commandDataAddress descriptor originalInput =
+        some originalAddress)
+    (candidateDataAddress :
+      StageA.Relational.X87.commandDataAddress descriptor candidateInput =
+        some candidateAddress)
+    (operandExact : originalInput.readX87Word originalAddress bytes =
+      candidateInput.readX87Word candidateAddress bytes)
+    (operandAddress : (x87AddressRelation context world).data
+      originalAddress candidateAddress)
+    (instruction : (x87AddressRelation context world).code
+      (BitVec.ofNat 32
+        (context.originalPe.imageBase + originalRecord.span.start))
+      (BitVec.ofNat 32
+        (context.candidatePe.imageBase + candidateRecord.span.start)))
+    (code : ∀ originalAddress candidateAddress,
+      (x87AddressRelation context world).code originalAddress candidateAddress ->
+        relation.code originalAddress candidateAddress)
+    (data : ∀ originalAddress candidateAddress,
+      (x87AddressRelation context world).data originalAddress candidateAddress ->
+        relation.data originalAddress candidateAddress) :
+    X87SingletonCommandInputRelated relation context.originalPe
+      context.candidatePe originalRecord candidateRecord originalInput
+      candidateInput := {
+  originalDescriptor := descriptor
+  candidateDescriptor := descriptor
+  originalDecoded
+  candidateDecoded
+  commandExact := rfl
+  waitModeExact := rfl
+  inputs := x87InputRelated_mono
+    (StageA.Relational.X87.commandStepInput_related_of_exact_memory context world
+      descriptor originalRecord.span.start candidateRecord.span.start
+      originalInput candidateInput bytes operandBytes originalAddress
+      candidateAddress originalDataAddress candidateDataAddress operandExact
+      operandAddress instruction)
+    code data
+}
+
+/-- A successful singleton result exposes the exact physical response selected
+by the decoded x87 command. -/
+theorem X87SingletonExecutionWitness.responseExecution
+    {pe : PE32} {record : RawInstructionRecord}
+    {input : MachineState} {result : StepResult}
+    (witness : X87SingletonExecutionWitness pe record input result) :
+    witness.effect.response =
+      input.x87Semantics.execute witness.descriptor.command
+        witness.descriptor.waitMode input.x87Physical
+        (StageA.Relational.X87.commandStepInput pe record.span.start
+          witness.descriptor input) := by
+  have executed := witness.executed
+  unfold StageA.Relational.X87.executeSingletonCommand at executed
+  rw [witness.decoded] at executed
+  simp [normalizeCodeTarget, singletonTarget] at executed
+  split at executed
+  · rcases executed with ⟨_, _, _, behaviorExact⟩
+    have behaviorExact := Option.some.inj behaviorExact
+    have effectBound := witness.effectBound
+    rw [← behaviorExact] at effectBound
+    simp [StageA.Relational.X87.singletonBehavior] at effectBound
+    exact congrArg StageA.X87.MachineEffect.response effectBound.symm
+  · rcases executed with ⟨_, _, _, executed⟩
+    cases addressFound :
+        StageA.Relational.X87.commandDataAddress witness.descriptor input with
+    | none => simp [addressFound] at executed
+    | some address =>
+        simp [addressFound] at executed
+        have behaviorExact := executed
+        have effectBound := witness.effectBound
+        rw [← behaviorExact] at effectBound
+        simp [StageA.Relational.X87.singletonBehavior] at effectBound
+        exact congrArg StageA.X87.MachineEffect.response effectBound.symm
+
+/-- Related successful singleton executions have related architectural x87
+responses and related physical result states. -/
+theorem executeX87Singleton_related
+    (relation : StageA.Relational.X87.AddressRelation)
+    (originalPe candidatePe : PE32)
+    (originalRecord candidateRecord : RawInstructionRecord)
+    (originalInput candidateInput : MachineState)
+    (originalResult candidateResult : StepResult)
+    (commandInput : X87SingletonCommandInputRelated relation originalPe
+      candidatePe originalRecord candidateRecord originalInput candidateInput)
+    (states : StageA.Relational.X87.StateRelated relation
+      originalInput.x87Physical candidateInput.x87Physical)
+    (semantics : originalInput.x87Semantics = candidateInput.x87Semantics)
+    (originalExecuted :
+      executeX87Singleton originalPe originalRecord originalInput =
+        some originalResult)
+    (candidateExecuted :
+      executeX87Singleton candidatePe candidateRecord candidateInput =
+        some candidateResult) :
+    ∃ originalResponse candidateResponse,
+      originalResult.x87Response = some originalResponse ∧
+      candidateResult.x87Response = some candidateResponse ∧
+      StageA.Relational.X87.ResponseRelated relation
+        originalResponse candidateResponse ∧
+      StageA.Relational.X87.StateRelated relation
+        originalResult.state.x87Physical candidateResult.state.x87Physical := by
+  let originalWitness := executeX87Singleton_witness originalPe originalRecord
+    originalInput originalResult originalExecuted
+  let candidateWitness := executeX87Singleton_witness candidatePe candidateRecord
+    candidateInput candidateResult candidateExecuted
+  have originalDescriptor :
+      originalWitness.descriptor = commandInput.originalDescriptor := by
+    rw [← Option.some.injEq, ← originalWitness.decoded, commandInput.originalDecoded]
+  have candidateDescriptor :
+      candidateWitness.descriptor = commandInput.candidateDescriptor := by
+    rw [← Option.some.injEq, ← candidateWitness.decoded, commandInput.candidateDecoded]
+  have command :
+      originalWitness.descriptor.command =
+        candidateWitness.descriptor.command := by
+    simpa [originalDescriptor, candidateDescriptor] using commandInput.commandExact
+  have waitMode :
+      originalWitness.descriptor.waitMode =
+        candidateWitness.descriptor.waitMode := by
+    simpa [originalDescriptor, candidateDescriptor] using commandInput.waitModeExact
+  have inputs : StageA.Relational.X87.InputRelated relation
+      (StageA.Relational.X87.commandStepInput originalPe originalRecord.span.start
+        originalWitness.descriptor originalInput)
+      (StageA.Relational.X87.commandStepInput candidatePe candidateRecord.span.start
+        candidateWitness.descriptor candidateInput) := by
+    simpa [originalDescriptor, candidateDescriptor] using commandInput.inputs
+  have responseRelated := StageA.Relational.X87.execute_related
+    originalInput.x87Semantics relation originalWitness.descriptor.command
+    originalWitness.descriptor.waitMode originalInput.x87Physical
+    candidateInput.x87Physical
+    (StageA.Relational.X87.commandStepInput originalPe originalRecord.span.start
+      originalWitness.descriptor originalInput)
+    (StageA.Relational.X87.commandStepInput candidatePe candidateRecord.span.start
+      candidateWitness.descriptor candidateInput)
+    states inputs
+  rw [← originalWitness.responseExecution] at responseRelated
+  rw [command, waitMode, semantics] at responseRelated
+  rw [← candidateWitness.responseExecution] at responseRelated
+  refine ⟨originalWitness.effect.response, candidateWitness.effect.response,
+    originalWitness.exactResponse, candidateWitness.exactResponse,
+    responseRelated, ?_⟩
+  rw [originalWitness.physicalState, candidateWitness.physicalState]
+  exact responseRelated.1
+
+theorem executeX87Singleton_state_related
+    (relation : StageA.Relational.X87.AddressRelation)
+    (originalPe candidatePe : PE32)
+    (originalRecord candidateRecord : RawInstructionRecord)
+    (originalInput candidateInput : MachineState)
+    (originalResult candidateResult : StepResult)
+    (commandInput : X87SingletonCommandInputRelated relation originalPe
+      candidatePe originalRecord candidateRecord originalInput candidateInput)
+    (states : StageA.Relational.X87.StateRelated relation
+      originalInput.x87Physical candidateInput.x87Physical)
+    (semantics : originalInput.x87Semantics = candidateInput.x87Semantics)
+    (originalExecuted :
+      executeX87Singleton originalPe originalRecord originalInput =
+        some originalResult)
+    (candidateExecuted :
+      executeX87Singleton candidatePe candidateRecord candidateInput =
+        some candidateResult) :
+    StageA.Relational.X87.StateRelated relation
+      originalResult.state.x87Physical candidateResult.state.x87Physical := by
+  rcases executeX87Singleton_related relation originalPe candidatePe
+      originalRecord candidateRecord originalInput candidateInput originalResult
+      candidateResult commandInput states semantics originalExecuted
+      candidateExecuted with
+    ⟨_, _, _, _, _, related⟩
+  exact related
 
 structure ExecutionTrace where
   memoryEffects : List MemoryEffect := []
@@ -590,6 +969,8 @@ def pureOutcomeOfConcrete : ConcreteOutcome -> PureOutcome
       .externalJump (normalizeImport imported) arguments
   | .bulkCopy destination source count direction continuation =>
       .bulkCopy destination source count direction continuation
+  | .bulkFill destination value count direction continuation =>
+      .bulkFill destination value count direction continuation
   | .indirectCall target continuation _ => .indirectCall target continuation
   | .indirectJump target => .indirectJump target
   | .checkedContinue valid continuation => .checkedContinue valid continuation
@@ -934,7 +1315,7 @@ semantics.  Only the exact span and x87 class are consumed by
 `executeX87Singleton`; descriptor hashes and bytes are checked separately by
 `CandidateReplayRecordChecked` against the original schedule. -/
 def replayInstructionRecord (replay : RawX87Replay) :
-  RawInstructionRecord := {
+    RawInstructionRecord := {
   index := 0
   kind := 1
   span := { start := replay.rvaStart, size := replay.rvaEnd - replay.rvaStart }
@@ -943,6 +1324,18 @@ def replayInstructionRecord (replay : RawX87Replay) :
   canonicalBytes := []
   recordSha256 := ""
   transferBytesSha256 := replay.transferInstructionBytesSha256
+}
+
+/-- The candidate-PE decoding record for a relocated replay instruction.  The
+semantic decoder reads the exact candidate PE at `candidateRva`; replay bytes
+remain static evidence and are not treated as candidate instruction bytes. -/
+def replayInstructionRecordAt (replay : RawX87Replay) (candidateRva : Nat) :
+    RawInstructionRecord := {
+  replayInstructionRecord replay with
+  span := {
+    start := candidateRva
+    size := replay.rvaEnd - replay.rvaStart
+  }
 }
 
 def candidateReplayDescriptorForAction (originalPe : PE32)

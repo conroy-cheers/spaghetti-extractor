@@ -270,6 +270,8 @@ def _ordered_effects(transfer: Any) -> list[str]:
             effects.append(".divideGuard")
         elif action.op == "rep_movsd":
             effects.append(".repMovsd")
+        elif action.op == "rep_stosd":
+            effects.append(".repStosd")
     return effects
 
 

@@ -734,6 +734,12 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
       { next := resumeWorldExecution callbacks continuation { state with memory } calls
           eventIndex world,
         observation := none }
+  | .bulkFill destination value count direction continuation =>
+      let memory := Memory.bulkFillDwords state.memory destination value direction
+        count.toNat
+      { next := resumeWorldExecution callbacks continuation { state with memory } calls
+          eventIndex world,
+        observation := none }
   | .indirectCall target continuation =>
       match program.callableProgram, program.callableEnvironment with
       | some callableProgram, some callableEnvironment =>

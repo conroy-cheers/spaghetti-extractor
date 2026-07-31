@@ -20,7 +20,8 @@ a branch-specific way to construct it without accepting a submitted transition
 or response.  This dependent derivation contains only the semantic facts that
 are not definitionally determined by the request:
 
-* lookup and Step carry no residual fact;
+  * lookup carries no residual fact;
+  * Step carries its call-aware semantic derivation;
 * Run carries its existing `AbstractRunFunction` derivation;
 * external Invoke carries only the checked branch discriminator;
 * internal Invoke carries its branch discriminator and nested Run derivation;
@@ -35,11 +36,12 @@ inductive CheckedAbstractOperationDerivation :
       CheckedAbstractOperationDerivation
         (.programLookup records sourceRva)
         (.programLookup (lookupProgramRecord records sourceRva))
-  | interpreterStep (records environment sourceRva state) :
+  | interpreterStep
+      (derivation : AbstractInterpreterStepDerivation records environment
+        resolveCodeTarget sourceRva state result) :
       CheckedAbstractOperationDerivation
         (.interpreterStep records environment sourceRva state)
-        (.interpreterStep
-          (abstractInterpreterStep records environment sourceRva state))
+        (.interpreterStep result)
   | runFunction
       (derivation : AbstractRunFunction records environment resolveCodeTarget
         sourceRva state result) :
@@ -73,8 +75,8 @@ def CheckedAbstractOperationDerivation.toTransition
   cases derivation with
   | programLookup records sourceRva =>
       exact .programLookup records sourceRva
-  | interpreterStep records environment sourceRva state =>
-      exact .interpreterStep records environment sourceRva state
+  | interpreterStep derivation =>
+      exact .interpreterStep _ _ _ _ _ _ derivation
   | runFunction abstractRun =>
       exact .runFunction _ _ _ _ _ _ abstractRun
   | invokeExternal kind =>
@@ -96,13 +98,14 @@ def programLookupTransition (records : List ProgramRecord) (sourceRva : Nat) :
 def interpreterStepTransition
     (records : List ProgramRecord)
     (environment : StageA.Relational.Interpreter.Environment)
-    (sourceRva : Nat) (state : InterpreterMachine) :
+    (resolveCodeTarget : Word -> Option Nat)
+    (sourceRva : Nat) (state : InterpreterMachine) (result : Option MacroResult)
+    (derivation : AbstractInterpreterStepDerivation records environment
+      resolveCodeTarget sourceRva state result) :
     AbstractKernelTransition
       (.interpreterStep records environment sourceRva state)
-      (.interpreterStep
-        (abstractInterpreterStep records environment sourceRva state)) :=
-  (CheckedAbstractOperationDerivation.interpreterStep records environment
-    sourceRva state).toTransition
+      (.interpreterStep result) :=
+  (CheckedAbstractOperationDerivation.interpreterStep derivation).toTransition
 
 def AbstractRunFunction.toKernelTransition
     (derivation : AbstractRunFunction records environment resolveCodeTarget

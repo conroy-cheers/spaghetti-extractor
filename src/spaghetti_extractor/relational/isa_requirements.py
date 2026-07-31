@@ -20,6 +20,12 @@ from typing import Any, Mapping
 import capstone
 from capstone import x86_const
 
+from ..isa_semantic_forms import (
+    LEAN_ISA_REQUIREMENT_FORM_FORMAT,
+    lean_semantic_form_classifier_sha256,
+    lean_semantic_form_core,
+    lean_semantic_form_id,
+)
 from ..stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, write_json
 from .preflight import instruction_supported
@@ -29,9 +35,8 @@ from .side_extraction_artifact import request_payload as side_extraction_request
 
 ISA_REQUIREMENT_INVENTORY_FORMAT = "stage-a-isa-requirement-inventory-v1"
 ISA_REQUIREMENT_FORM_FORMAT = "stage-a-x86-instruction-form-v1"
-LEAN_ISA_REQUIREMENT_FORM_FORMAT = "stage-a-lean-x86-semantic-form-v1"
 LEAN_ISA_FORM_INVENTORY_FORMAT = "stage-a-lean-isa-form-inventory-v1"
-_LEAN_FORM_EXTRACTION_DRIVER_VERSION = "one-pe-chunked-request-inventory-v3"
+_LEAN_FORM_EXTRACTION_DRIVER_VERSION = "region-byte-slice-inventory-v4"
 
 _SIDES = ("original", "candidate")
 _PREFIX_NAMES = {
@@ -535,9 +540,7 @@ def _lean_form_source_hashes() -> dict[str, str]:
         f"{module}.lean": sha256_file(_LEAN_SOURCE_ROOT / f"{module}.lean")
         for module in RELATIONAL_ANALYSIS_KERNEL_MODULES
     }
-    classifier = _canonical_sha256(
-        {name: files[name] for name in ("Formal.lean", "ISAQualification.lean")}
-    )
+    classifier = lean_semantic_form_classifier_sha256(_LEAN_SOURCE_ROOT)
     extractor = _canonical_sha256(
         {
             name: files[name]
@@ -632,16 +635,19 @@ def _lean_side_form_extraction_source(
     if side not in _SIDES:
         raise StageAInputError(f"unsupported ISA extraction side {side!r}")
     requests: list[str] = []
+    data_offset = 0
     for node_id, region in enumerate(regions):
         span = region.get("span")
         if not isinstance(span, Mapping):
             raise StageAInputError(
                 f"ISA extraction request region {node_id} has no span"
             )
+        size = int(span["size"])
         requests.append(
-            f"{{ nodeId := {node_id}, span := {{ start := "
-            + f"{int(span['rva_start'])}, size := {int(span['size'])} }} }}"
+            f"{{ nodeId := {node_id}, dataOffset := {data_offset}, span := "
+            + f"{{ start := {int(span['rva_start'])}, size := {size} }} }}"
         )
+        data_offset += size
     request_chunk_size = 128
     request_chunks = [
         requests[offset : offset + request_chunk_size]
@@ -663,6 +669,7 @@ set_option maxHeartbeats 0
 
 structure Request where
   nodeId : Nat
+  dataOffset : Nat
   span : Span
 
 def requestChunks : List (List Request) := [
@@ -670,13 +677,17 @@ def requestChunks : List (List Request) := [
 ]
 
 def run : IO Unit := do
-  let data <- IO.FS.readBinFile "artifacts/input.pe"
-  let bytes : Bytes := data.toList.map (fun byte => byte.toNat)
-  let some pe := parsePE32 bytes |
-    throw (IO.userError "PE parse failed")
+  let data <- IO.FS.readBinFile "artifacts/regions.bin"
   for chunk in requestChunks do
     for request in chunk do
-      let some occurrences := decodeInstructionFormsSpan pe request.span |
+      let dataStop := request.dataOffset + request.span.size
+      if data.size < dataStop then
+        throw (IO.userError s!"region {request.nodeId} bytes are truncated")
+      let bytes : Bytes :=
+        (data.extract request.dataOffset dataStop).toList.map
+          (fun byte => byte.toNat)
+      let some occurrences :=
+          decodeInstructionFormsBytes request.span.start bytes |
         throw (IO.userError s!"region {request.nodeId} did not decode")
       IO.println <| Json.compress <| Json.mkObj [
         ("side", toJson """ + json.dumps(side) + """),
@@ -879,7 +890,19 @@ def extract_lean_instruction_forms_side(
                 _LEAN_SOURCE_ROOT / f"{module}.lean",
                 stage_a / f"{module}.lean",
             )
-        shutil.copyfile(binary, artifacts / "input.pe")
+        parsed_binary = _parse_stage_a_pe(binary)
+        region_bytes = bytearray()
+        for index, region in enumerate(regions):
+            span = region["span"]
+            start = int(span["rva_start"])
+            size = int(span["size"])
+            encoded = parsed_binary.pe.get_data(start, size)
+            if len(encoded) != size:
+                raise StageAInputError(
+                    f"{side} ISA extraction region {index} bytes are truncated"
+                )
+            region_bytes.extend(encoded)
+        (artifacts / "regions.bin").write_bytes(region_bytes)
         bundle = f"GeneratedISARequirementInventory{str(side).title()}"
         (stage_a / f"{bundle}.lean").write_text(
             _lean_side_form_extraction_source(str(side), regions),
@@ -1180,13 +1203,14 @@ def build_isa_requirement_inventory(
             )
         for occurrence, formal in zip(capstone_rows, formal_rows, strict=True):
             semantic_form = str(formal["form"])
-            formal_core = {
-                "format": LEAN_ISA_REQUIREMENT_FORM_FORMAT,
-                "model": STAGE_A_RELATIONAL_MODEL_ID,
-                "classifier_sha256": lean_form_source_sha256,
-                "semantic_form": semantic_form,
-            }
-            formal_id = "lean-x86-form-" + _canonical_sha256(formal_core)[:20]
+            formal_core = lean_semantic_form_core(
+                semantic_form,
+                classifier_sha256=lean_form_source_sha256,
+            )
+            formal_id = lean_semantic_form_id(
+                semantic_form,
+                classifier_sha256=lean_form_source_sha256,
+            )
             formal_form_by_occurrence[occurrence.id] = (
                 formal_id,
                 occurrence.form_id,

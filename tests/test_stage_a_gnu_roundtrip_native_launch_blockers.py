@@ -69,16 +69,17 @@ def _write_x87_kernel_execution_manifest(path: Path, driver) -> None:
     path.write_text(
         json.dumps(
             {
+                "format": "stage-a-relational-phase-v1",
                 "phase": "x87-kernel-execution-lean",
                 "status": "source-ready",
-                "diagnostic_status": "semantic_premises_required",
+                "diagnostic_status": "kernel_execution_closed",
                 "proof_authority": False,
-                "failure_mode": "incomplete",
+                "failure_mode": "none",
                 "candidate_sha256": "cd" * 32,
                 "runtime_targets": 3,
                 "theorem": (
                     "StageA.GeneratedRelational.InterpreterKernelX87Execution."
-                    "generatedX87ReplayBridgeKernelExecution"
+                    "generatedX87ReplayBridgeKernelExecutionClosed"
                 ),
                 "remaining_authority": {
                     "lean_type": (
@@ -141,7 +142,7 @@ def test_native_launch_request_rejects_writable_tls_callback_array(
     assert parsed.pe.closed
 
 
-def test_acceptance_source_keeps_launch_and_environment_obligations_uninhabited(
+def test_acceptance_source_binds_generated_launch_graph_without_closing_runtime_obligations(
     tmp_path: Path,
 ) -> None:
     driver = _load_driver()
@@ -205,16 +206,20 @@ def test_acceptance_source_keeps_launch_and_environment_obligations_uninhabited(
     requirements = (
         out / "StageA" / "GeneratedGnuHelloRoundTripRequirements.lean"
     ).read_text(encoding="utf-8")
+    assert "ExactGnuHelloCandidateNativeLaunchRouteBinding" not in requirements
     assert (
-        "inductive ExactGnuHelloCandidateNativeLaunchRouteBinding : Prop"
+        "import StageA.GeneratedRelationalInterpreterNativeLaunchGraph"
         in requirements
     )
-    assert "candidateNativeLaunchCertificateStaticChecked" in requirements
     assert (
-        "candidateNativeLaunchCertificate : ExactNativeLaunchGraphCertificate"
-        in requirements
+        "ExactCanonicalMixedLaunchWrapperRefinementBinding" in requirements
     )
-    assert "candidateNativeLaunchCertificateSemanticSound" not in requirements
+    assert (
+        "NativeLaunchGraph.generatedCheckedNativeLaunchGraph" in requirements
+    )
+    assert "core.launch_wrapper_refinements" in requirements
+    assert "environmentRefines" in requirements
+    assert "candidateNativeLaunchCertificate" not in requirements
     assert (
         "kernelABIExact : HEq core.concrete_abi" in requirements
         and "KernelABI.generatedConcreteInterpreterKernelABI" in requirements
@@ -245,7 +250,6 @@ def test_acceptance_source_keeps_launch_and_environment_obligations_uninhabited(
         "mixed_original_exact_reachability_missing",
         "exact_candidate_native_launch_wrapper_missing",
         "universal_paired_environment_refinement_missing",
-        "x87_replay_kernel_execution_premises_missing",
     ]
     matrix = {row["layer"]: row for row in obligations["authority_integration_matrix"]}
     assert (

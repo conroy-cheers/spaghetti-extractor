@@ -34,12 +34,18 @@ structure CutpointEdge where
   edgeId : Nat
   sourceTargetId : Nat
   targetTargetId : Nat
+  decodedIncoming : Bool := true
 deriving Repr, DecidableEq
 
 structure CutpointGraph where
   targetIds : List Nat
   edges : List CutpointEdge
 deriving Repr, DecidableEq
+
+structure IncomingPair where
+  sourceTargetId : Nat
+  targetTargetId : Nat
+deriving Repr, DecidableEq, BEq
 
 inductive TransferKind where
   | finiteOriginCallResult
@@ -59,6 +65,7 @@ structure Transfer where
 deriving Repr, DecidableEq
 
 structure Route where
+  stableId : String := ""
   originTargetId : Nat
   locations : List Location
   facts : List Fact
@@ -69,10 +76,20 @@ deriving Repr, DecidableEq
 def noDuplicates [BEq α] (items : List α) : Bool :=
   items.length == items.eraseDups.length
 
+def sameFiniteSet [BEq α] (left right : List α) : Bool :=
+  noDuplicates left &&
+    noDuplicates right &&
+    left.all right.contains &&
+    right.all left.contains
+
 def CutpointGraph.checked (graph : CutpointGraph) : Bool :=
   !graph.targetIds.isEmpty &&
     noDuplicates graph.targetIds &&
     noDuplicates (graph.edges.map (·.edgeId)) &&
+    noDuplicates (graph.edges.map fun edge => {
+      sourceTargetId := edge.sourceTargetId
+      targetTargetId := edge.targetTargetId
+    : IncomingPair}) &&
     graph.edges.all fun edge =>
       graph.targetIds.contains edge.sourceTargetId &&
         graph.targetIds.contains edge.targetTargetId
@@ -92,6 +109,33 @@ def Route.transfer? (route : Route) (edgeId : Nat) : Option Transfer :=
 
 def Route.factKnown (route : Route) (fact : Fact) : Bool :=
   route.facts.contains fact && (route.location? fact.locationId).isSome
+
+def Route.trackedTargetIds (route : Route) : List Nat :=
+  route.facts.map (·.targetId)
+
+def CutpointGraph.incomingPairsFor
+    (graph : CutpointGraph) (targetIds : List Nat) : List IncomingPair :=
+  graph.edges.filterMap fun edge =>
+    if edge.decodedIncoming && targetIds.contains edge.targetTargetId then
+      some {
+        sourceTargetId := edge.sourceTargetId
+        targetTargetId := edge.targetTargetId
+      }
+    else
+      none
+
+def decodedIncomingPairsFor
+    (context : OriginalDecodedStaticContext)
+    (targetIds : List Nat) : List IncomingPair :=
+  (List.range context.codeMap.entries.size).flatMap fun sourceTargetId =>
+    match context.source? sourceTargetId with
+    | none => []
+    | some source =>
+        source.region.targets.filterMap fun targetTargetId =>
+          if targetIds.contains targetTargetId then
+            some { sourceTargetId, targetTargetId }
+          else
+            none
 
 def Transfer.edgeChecked
     (graph : CutpointGraph) (transfer : Transfer) : Bool :=
@@ -195,6 +239,33 @@ def Route.checked
     (route : Route) : Bool :=
   route.structureChecked graph && route.originChecked context
 
+/-- Recompute every decoded predecessor of every tracked fact. This prevents a
+submitted route graph from making an unhandled incoming edge disappear. -/
+def Route.exactIncomingChecked
+    (context : OriginalDecodedStaticContext) (graph : CutpointGraph)
+    (route : Route) : Bool :=
+  let trackedTargetIds := route.trackedTargetIds
+  (trackedTargetIds.all fun targetId => (context.source? targetId).isSome) &&
+    sameFiniteSet (graph.incomingPairsFor trackedTargetIds)
+      (decodedIncomingPairsFor context trackedTargetIds)
+
+def Route.exactChecked
+    (context : OriginalDecodedStaticContext) (graph : CutpointGraph)
+    (route : Route) : Bool :=
+  route.stableId != "" &&
+    route.checked context graph &&
+    route.exactIncomingChecked context graph
+
+/-- A route becomes proof authority only when its graph is checked against the
+exact decoded image. The decoded authority prevents generated context data from
+serving as an unchecked graph oracle. -/
+structure CheckedRoute
+    (context : OriginalDecodedStaticContext) where
+  decodedAuthority : ExactOriginalDecodedAuthority context
+  graph : CutpointGraph
+  route : Route
+  checked : route.exactChecked context graph = true
+
 theorem Route.incomingCovered_of_structureChecked
     (graph : CutpointGraph) (route : Route)
     (checked : route.structureChecked graph = true) :
@@ -226,6 +297,22 @@ theorem Route.originKnown_of_checked
   rw [Route.checked] at checked
   simp only [Bool.and_eq_true] at checked
   simpa only [Route.originChecked] using checked.2
+
+theorem Route.checked_of_exactChecked
+    (context : OriginalDecodedStaticContext) (graph : CutpointGraph)
+    (route : Route) (checked : route.exactChecked context graph = true) :
+    route.checked context graph = true := by
+  rw [Route.exactChecked] at checked
+  simp only [Bool.and_eq_true] at checked
+  exact checked.1.2
+
+theorem Route.exactIncoming_of_exactChecked
+    (context : OriginalDecodedStaticContext) (graph : CutpointGraph)
+    (route : Route) (checked : route.exactChecked context graph = true) :
+    route.exactIncomingChecked context graph = true := by
+  rw [Route.exactChecked] at checked
+  simp only [Bool.and_eq_true] at checked
+  exact checked.2
 
 theorem Route.transfer_exists_for_incoming
     (context : OriginalDecodedStaticContext) (graph : CutpointGraph)

@@ -92,6 +92,10 @@ def main() -> None:
             "authorizing_term": report["authorizing_term"],
             "proved_by_generated_terms": report["proved_by_generated_terms"],
             "remaining_premises": report["remaining_premises"],
+            "route_authority": report["route_authority"],
+            "conditional_environment_parameters": report[
+                "conditional_environment_parameters"
+            ],
             "counts": {
                 **report["counts"],
                 "candidate_pe_byte_packs": len(candidate_inventory.packs),

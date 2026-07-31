@@ -35,6 +35,14 @@ DIRECT_CALL_AUTHORITY_FORMAT = (
 )
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _STABLE_ID = re.compile(r"[a-z0-9][a-z0-9_.:-]*\Z")
+_LEAN_MODULE = re.compile(
+    r"StageA\.[A-Za-z_][A-Za-z0-9_']*"
+    r"(?:\.[A-Za-z_][A-Za-z0-9_']*)*\Z"
+)
+_LEAN_NAMESPACE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*\Z"
+)
+_LEAN_SYMBOL = re.compile(r"[A-Za-z_][A-Za-z0-9_']*\Z")
 _U32_LIMIT = 1 << 32
 _REGISTERS = frozenset(
     ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
@@ -145,6 +153,24 @@ class RuntimeValueFact:
 
 
 @dataclass(frozen=True, order=True)
+class RuntimeValueLeanTerm:
+    module: str
+    namespace: str
+    symbol: str
+
+    @property
+    def qualified(self) -> str:
+        return f"{self.namespace}.{self.symbol}"
+
+    def to_json(self) -> dict[str, str]:
+        return {
+            "module": self.module,
+            "namespace": self.namespace,
+            "symbol": self.symbol,
+        }
+
+
+@dataclass(frozen=True, order=True)
 class RuntimeValueTransfer:
     transfer_id: int
     edge_index: int
@@ -157,10 +183,28 @@ class RuntimeValueTransfer:
     authority_contract_id: int | None
     source_semantic_contract_sha256: str
     source_instruction_bytes_sha256: str
+    authority_origin: str | None = None
+    authority_callee_target_id: int | None = None
+    authority_lean_term: RuntimeValueLeanTerm | None = None
+    authority_kernel_source_sha256: str | None = None
+    authority_kernel_olean_sha256: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
+            "authority_callee_target_id": self.authority_callee_target_id,
             "authority_contract_id": self.authority_contract_id,
+            "authority_kernel_olean_sha256": (
+                self.authority_kernel_olean_sha256
+            ),
+            "authority_kernel_source_sha256": (
+                self.authority_kernel_source_sha256
+            ),
+            "authority_lean_term": (
+                None
+                if self.authority_lean_term is None
+                else self.authority_lean_term.to_json()
+            ),
+            "authority_origin": self.authority_origin,
             "authority_status": self.authority_status,
             "edge_index": self.edge_index,
             "kind": self.kind,
@@ -307,12 +351,102 @@ def _direct_call_contracts(
     return result
 
 
+def _lean_term(value: Any, field: str) -> RuntimeValueLeanTerm:
+    row = _mapping(value, field)
+    module = row.get("module")
+    namespace = row.get("namespace")
+    symbol = row.get("symbol")
+    if not isinstance(module, str) or _LEAN_MODULE.fullmatch(module) is None:
+        raise RuntimeValueCarryIRError(f"{field} has an invalid Lean module")
+    if (
+        not isinstance(namespace, str)
+        or _LEAN_NAMESPACE.fullmatch(namespace) is None
+    ):
+        raise RuntimeValueCarryIRError(
+            f"{field} has an invalid Lean namespace"
+        )
+    if not isinstance(symbol, str) or _LEAN_SYMBOL.fullmatch(symbol) is None:
+        raise RuntimeValueCarryIRError(f"{field} has an invalid Lean symbol")
+    return RuntimeValueLeanTerm(module, namespace, symbol)
+
+
+def _checked_call_kernel_authority(
+    call: Mapping[str, Any],
+    *,
+    field: str,
+) -> tuple[RuntimeValueLeanTerm, str, str]:
+    term = _lean_term(call.get("authorizing_lean_term"), f"{field} term")
+    kernel = _mapping(call.get("kernel_check"), f"{field} kernel check")
+    if (
+        kernel.get("status") != "checked"
+        or kernel.get("term") != term.to_json()
+        or kernel.get("module") != term.module
+    ):
+        raise RuntimeValueCarryIRError(
+            f"{field} was not kernel-compiled for its exact named Lean term"
+        )
+    source_sha256 = _sha256(
+        kernel.get("source_sha256"), f"{field} kernel source SHA-256"
+    )
+    olean_sha256 = _sha256(
+        kernel.get("olean_sha256"), f"{field} kernel olean SHA-256"
+    )
+    return term, source_sha256, olean_sha256
+
+
+def _validate_exact_call_metadata(
+    transfer: RuntimeValueTransfer,
+    call: Mapping[str, Any],
+    *,
+    route: RuntimeValueCarryRoute,
+    graph: OriginalCutpointGraphIR,
+) -> None:
+    field = (
+        f"route {route.stable_id} transfer {transfer.transfer_id} "
+        "direct-call authority"
+    )
+    source = graph.regions[transfer.source_target_id]
+    continuation = graph.regions[transfer.target_target_id]
+    callee_target_id = _natural(
+        call.get("callee_target_id"), f"{field} callee target ID"
+    )
+    if callee_target_id >= len(graph.regions):
+        raise RuntimeValueCarryIRError(f"{field} callee is outside the graph")
+    callee = graph.regions[callee_target_id]
+    callsite_rva = _u32(call.get("callsite_rva"), f"{field} callsite RVA")
+    if (
+        call.get("edge_index") != transfer.edge_index
+        or call.get("source_rva") != source.rva
+        or call.get("continuation_rva") != continuation.rva
+        or call.get("callee_rva") != callee.rva
+        or not source.rva <= callsite_rva < source.rva + source.size
+    ):
+        raise RuntimeValueCarryIRError(
+            f"{field} does not match its exact edge/source/continuation/callee"
+        )
+    term, source_sha256, olean_sha256 = _checked_call_kernel_authority(
+        call, field=field
+    )
+    if (
+        transfer.authority_contract_id != call.get("contract_id")
+        or transfer.authority_origin != call.get("origin")
+        or transfer.authority_callee_target_id != callee_target_id
+        or transfer.authority_lean_term != term
+        or transfer.authority_kernel_source_sha256 != source_sha256
+        or transfer.authority_kernel_olean_sha256 != olean_sha256
+    ):
+        raise RuntimeValueCarryIRError(
+            f"{field} does not match the transfer's exact authority reference"
+        )
+
+
 def _validate_transfer_authority(
     transfer: RuntimeValueTransfer,
     *,
     route: RuntimeValueCarryRoute,
     locations: Mapping[int, RuntimeValueLocation],
     direct_calls: Mapping[tuple[int, int], Mapping[str, Any]],
+    graph: OriginalCutpointGraphIR,
 ) -> None:
     source_location = (
         None
@@ -325,7 +459,14 @@ def _validate_transfer_authority(
     )
 
     if transfer.authority_status == "required":
-        if transfer.authority_contract_id is not None:
+        if (
+            transfer.authority_contract_id is not None
+            or transfer.authority_origin is not None
+            or transfer.authority_callee_target_id is not None
+            or transfer.authority_lean_term is not None
+            or transfer.authority_kernel_source_sha256 is not None
+            or transfer.authority_kernel_olean_sha256 is not None
+        ):
             raise RuntimeValueCarryIRError(
                 f"route {route.stable_id} transfer {transfer.transfer_id} "
                 "cannot name a contract while its authority is required"
@@ -336,6 +477,19 @@ def _validate_transfer_authority(
                 "uses required status for a non-call-frame transfer"
             )
         return
+
+    if transfer.authority_contract_id is not None:
+        if call is None:
+            raise RuntimeValueCarryIRError(
+                f"route {route.stable_id} transfer {transfer.transfer_id} "
+                "names a direct-call contract outside an exact call edge"
+            )
+        _validate_exact_call_metadata(
+            transfer,
+            call,
+            route=route,
+            graph=graph,
+        )
 
     if transfer.kind == "finite_origin_call_result":
         if source_location is not None or target_location.kind != "register":
@@ -357,7 +511,7 @@ def _validate_transfer_authority(
             "finite-origin target-carried registers",
         )
         if (
-            route.origin.target_id not in finite_targets
+            finite_targets != [route.origin.target_id]
             or target_location.register not in carried
         ):
             raise RuntimeValueCarryIRError(
@@ -380,6 +534,16 @@ def _validate_transfer_authority(
         ):
             raise RuntimeValueCarryIRError(
                 "direct-call register preservation has no checked authority"
+            )
+        if (
+            call.get("origin") != "checked_direct_call_summary"
+            or _rows(
+                call.get("finite_target_ids"),
+                "direct-call finite target IDs",
+            )
+        ):
+            raise RuntimeValueCarryIRError(
+                "direct-call register preservation has the wrong exact origin"
             )
     elif transfer.kind == "call_frame_word_preserve":
         if (
@@ -406,9 +570,13 @@ def _validate_transfer_authority(
         dedicated_term = call.get(
             "caller_frame_word_authorizing_lean_term"
         )
+        origin = call.get("origin")
         if (
-            call.get("origin")
-            != "checked_direct_call_caller_frame_word_summary"
+            origin
+            not in {
+                "checked_direct_call_caller_frame_word_summary",
+                "checked_finite_origin_call_caller_frame_word_summary",
+            }
             or not isinstance(dedicated_term, Mapping)
             or dedicated_term != call.get("authorizing_lean_term")
         ):
@@ -416,8 +584,30 @@ def _validate_transfer_authority(
                 "direct-call frame preservation has no exact named "
                 "caller-frame authority"
             )
+        finite_targets = _rows(
+            call.get("finite_target_ids"),
+            "direct-call finite target IDs",
+        )
+        if origin == "checked_finite_origin_call_caller_frame_word_summary":
+            if finite_targets != [route.origin.target_id]:
+                raise RuntimeValueCarryIRError(
+                    "finite-origin frame preservation does not name the "
+                    "route's exact callee origin"
+                )
+        elif finite_targets:
+            raise RuntimeValueCarryIRError(
+                "exact direct-call frame preservation unexpectedly has "
+                "finite-origin targets"
+            )
     else:
-        if transfer.authority_contract_id is not None:
+        if (
+            transfer.authority_contract_id is not None
+            or transfer.authority_origin is not None
+            or transfer.authority_callee_target_id is not None
+            or transfer.authority_lean_term is not None
+            or transfer.authority_kernel_source_sha256 is not None
+            or transfer.authority_kernel_olean_sha256 is not None
+        ):
             raise RuntimeValueCarryIRError(
                 "decoded transfer unexpectedly names a call contract"
             )
@@ -644,6 +834,7 @@ def validate_runtime_value_carry_ir(
                 route=route,
                 locations=locations,
                 direct_calls=direct_calls,
+                graph=graph,
             )
             if transfer.edge_index in represented_incoming:
                 raise RuntimeValueCarryIRError(
@@ -708,6 +899,10 @@ def _parse_transfer(value: Any, field: str) -> RuntimeValueTransfer:
     row = _mapping(value, field)
     source_location = row.get("source_location_id")
     authority_contract = row.get("authority_contract_id")
+    authority_callee = row.get("authority_callee_target_id")
+    authority_term = row.get("authority_lean_term")
+    authority_kernel_source = row.get("authority_kernel_source_sha256")
+    authority_kernel_olean = row.get("authority_kernel_olean_sha256")
     return RuntimeValueTransfer(
         transfer_id=_natural(
             row.get("transfer_id"), f"{field} transfer ID"
@@ -742,6 +937,39 @@ def _parse_transfer(value: Any, field: str) -> RuntimeValueTransfer:
         source_instruction_bytes_sha256=_sha256(
             row.get("source_instruction_bytes_sha256"),
             f"{field} source instruction-bytes SHA-256",
+        ),
+        authority_origin=(
+            None
+            if row.get("authority_origin") is None
+            else str(row.get("authority_origin"))
+        ),
+        authority_callee_target_id=(
+            None
+            if authority_callee is None
+            else _natural(
+                authority_callee, f"{field} authority callee target ID"
+            )
+        ),
+        authority_lean_term=(
+            None
+            if authority_term is None
+            else _lean_term(authority_term, f"{field} authority Lean term")
+        ),
+        authority_kernel_source_sha256=(
+            None
+            if authority_kernel_source is None
+            else _sha256(
+                authority_kernel_source,
+                f"{field} authority kernel source SHA-256",
+            )
+        ),
+        authority_kernel_olean_sha256=(
+            None
+            if authority_kernel_olean is None
+            else _sha256(
+                authority_kernel_olean,
+                f"{field} authority kernel olean SHA-256",
+            )
         ),
     )
 
@@ -904,6 +1132,7 @@ __all__ = [
     "RuntimeValueCarryRoute",
     "RuntimeValueFact",
     "RuntimeValueLocation",
+    "RuntimeValueLeanTerm",
     "RuntimeValueOrigin",
     "RuntimeValueTransfer",
     "canonical_runtime_value_carry_ir_sha256",

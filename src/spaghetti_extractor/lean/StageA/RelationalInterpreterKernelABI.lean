@@ -1,6 +1,7 @@
 import StageA.RelationalCertificates
 import StageA.RelationalInterpreterKernel
 import StageA.RelationalInterpreterKernelData
+import StageA.RelationalInterpreterKernelLoadedImage
 
 namespace StageA.Relational.InterpreterKernelABI
 
@@ -15,65 +16,6 @@ its imports and relocations, decoded the engine-layout table, checked the
 kernel CFG, and decoded the semantic program table.  The predicates below are
 definitions over those witnesses; no operation-simulation proposition is an
 input to this module. -/
-
-def word32 (value : Nat) : Word := BitVec.ofNat 32 value
-
-def byte8 (value : Nat) : BitVec 8 := BitVec.ofNat 8 value
-
-def spanDisjoint (left right : Span) : Bool :=
-  left.stop <= right.start || right.stop <= left.start
-
-def spanContains (outer inner : Span) : Bool :=
-  outer.start <= inner.start && inner.stop <= outer.stop
-
-def addressInSpan (span : Span) (address : Word) : Prop :=
-  span.start <= address.toNat ∧ address.toNat < span.stop ∧ span.stop <= 2 ^ 32
-
-def addressRangeInSpan (span : Span) (address : Word) (size : Nat) : Prop :=
-  ∀ offset, offset < size ->
-    addressInSpan span (address + word32 offset)
-
-/-! Exact loaded-image bytes.  HIGHLOW relocation words are reconstructed
-from PE bytes before selecting a byte.  Static checking below rejects every
-other relocation kind, unaligned field, duplicate field, wrapped image, or
-non-preferred load address.  The last restriction matches the current native
-executor, whose absolute operands are interpreted at the PE preferred base. -/
-
-def relocationCoversByte (relocation : BaseRelocation) (offset : Nat) : Bool :=
-  relocation.rva <= offset && offset < relocation.rva + 4
-
-def loadedRelocationWord? (pe : PE32) (loadBase : Nat)
-    (relocation : BaseRelocation) : Option Nat := do
-  let preferred <- readRvaU32 pe relocation.rva
-  pure ((preferred + loadBase + 2 ^ 32 - pe.imageBase) % (2 ^ 32))
-
-def loadedImageByte? (pe : PE32) (relocations : List BaseRelocation)
-    (loadBase offset : Nat) : Option Nat :=
-  match relocations.find? fun relocation => relocationCoversByte relocation offset with
-  | none => rvaByte pe offset
-  | some relocation => do
-      let value <- loadedRelocationWord? pe loadBase relocation
-      pure ((value / 2 ^ (8 * (offset - relocation.rva))) % 256)
-
-def relocationLayoutChecked (pe : PE32)
-    (relocations : List BaseRelocation) : Bool :=
-  relocationInventoryUnique relocations &&
-    relocations.all fun relocation =>
-      relocation.kind == 3 && relocation.rva % 4 == 0 &&
-        relocation.rva + 4 <= pe.sizeOfImage
-
-def LoadedSpanHolds (pe : PE32) (relocations : List BaseRelocation)
-    (loadBase : Nat) (span : Span) (memory : Memory) : Prop :=
-  ∀ offset, offset < span.size -> ∀ expected,
-    loadedImageByte? pe relocations loadBase (span.start + offset) = some expected ->
-      memory (word32 (loadBase + span.start + offset)) = byte8 expected
-
-def LoadedCandidateImageMemory (pe : PE32) (imports : List PEImport)
-    (relocations : List BaseRelocation) (memory : Memory) : Prop :=
-  ∀ offset raw,
-    immutableRvaBytes pe imports offset 1 = some [raw] -> ∀ expected,
-      loadedImageByte? pe relocations pe.imageBase offset = some expected ->
-        memory (word32 (pe.imageBase + offset)) = byte8 expected
 
 /-! The engine layout is decoded again from exact immutable candidate bytes.
 The binary format has no alignment field, so byte alignment is the only fact
@@ -470,6 +412,9 @@ def preservedRegistersAreCanonical (state : MachineState) : Prop :=
   state.registers.ebx = word32 0 ∧ state.registers.esi = word32 0 ∧
     state.registers.edi = word32 0 ∧ state.registers.ebp = word32 0
 
+def DirectionFlagClear (state : MachineState) : Prop :=
+  state.eflags.extractLsb' 10 1 = BitVec.ofNat 1 0
+
 def CDeclEntryFrameHolds
     (abi : ConcreteKernelABI pe imports relocations tableOffset countOffset records)
     (request : AbstractKernelRequest) (state : MachineState) : Prop :=
@@ -516,6 +461,7 @@ structure ABIRequestFacts
     (abi : ConcreteKernelABI pe imports relocations tableOffset countOffset records)
     (request : AbstractKernelRequest) (state : MachineState) : Prop where
   cdecl : CDeclEntryFrameHolds abi request state
+  directionFlagClear : DirectionFlagClear state
   candidateImage : LoadedCandidateImageMemory pe imports relocations state.memory
   originalProgramTable : LoadedOriginalProgramTable abi state.memory
   payload : RequestPayloadHolds abi request state
@@ -626,6 +572,7 @@ structure ABIResponseFacts
     (request : AbstractKernelRequest) (response : AbstractKernelResponse)
     (state : MachineState) (events : List NativeExternalEvent) : Prop where
   cdecl : CDeclReturnFrameHolds abi request state
+  directionFlagClear : DirectionFlagClear state
   candidateImage : LoadedCandidateImageMemory pe imports relocations state.memory
   originalProgramTable : LoadedOriginalProgramTable abi state.memory
   payload : ResponsePayloadHolds abi request response state events

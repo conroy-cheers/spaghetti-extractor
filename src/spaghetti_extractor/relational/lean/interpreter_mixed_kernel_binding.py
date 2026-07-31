@@ -326,16 +326,17 @@ REQUIRED_INHABITANTS: tuple[RequiredInhabitant, ...] = (
     RequiredInhabitant(
         "dispatch_family",
         "compiled_kernel",
-        "KernelOperationDispatchFamily",
+        "RelationalWorld -> KernelOperationDispatchFamily",
         (),
-        "provide the exact operation-indexed native dispatch relations",
+        "provide exact native dispatch relations indexed by the current "
+        "candidate relational world",
     ),
     RequiredInhabitant(
         "program_lookup_refines",
         "operation_refinement_program_lookup",
         _type(
-            "KernelOperationRefinesUsing $compiled_program $concrete_abi.relation "
-            "($dispatch_family .programLookup) "
+            "forall world, KernelOperationRefinesUsing $compiled_program "
+            "$concrete_abi.relation ($dispatch_family world .programLookup) "
             ".programLookup"
         ),
         ("compiled_program", "concrete_abi", "dispatch_family"),
@@ -345,8 +346,8 @@ REQUIRED_INHABITANTS: tuple[RequiredInhabitant, ...] = (
         "interpreter_step_refines",
         "operation_refinement_interpreter_step",
         _type(
-            "KernelOperationRefinesUsing $compiled_program $concrete_abi.relation "
-            "($dispatch_family .interpreterStep) "
+            "forall world, KernelOperationRefinesUsing $compiled_program "
+            "$concrete_abi.relation ($dispatch_family world .interpreterStep) "
             ".interpreterStep"
         ),
         ("compiled_program", "concrete_abi", "dispatch_family"),
@@ -356,8 +357,8 @@ REQUIRED_INHABITANTS: tuple[RequiredInhabitant, ...] = (
         "run_function_refines",
         "operation_refinement_run_function",
         _type(
-            "KernelOperationRefinesUsing $compiled_program $concrete_abi.relation "
-            "($dispatch_family .runFunction) "
+            "forall world, KernelOperationRefinesUsing $compiled_program "
+            "$concrete_abi.relation ($dispatch_family world .runFunction) "
             ".runFunction"
         ),
         ("compiled_program", "concrete_abi", "dispatch_family"),
@@ -367,8 +368,8 @@ REQUIRED_INHABITANTS: tuple[RequiredInhabitant, ...] = (
         "invoke_call_refines",
         "operation_refinement_invoke_call",
         _type(
-            "KernelOperationRefinesUsing $compiled_program $concrete_abi.relation "
-            "($dispatch_family .invokeCall) "
+            "forall world, KernelOperationRefinesUsing $compiled_program "
+            "$concrete_abi.relation ($dispatch_family world .invokeCall) "
             ".invokeCall"
         ),
         ("compiled_program", "concrete_abi", "dispatch_family"),
@@ -385,11 +386,10 @@ REQUIRED_INHABITANTS: tuple[RequiredInhabitant, ...] = (
         "classify_source",
         "source_classifier",
         _type(
-            "forall originalBefore candidateBefore, $invariant.holds originalBefore "
-            "candidateBefore -> MixedKernelRelatedSourceCase $original_context "
+            "MixedKernelRuntimeSourceClassifier $original_context "
             "$original_authority $launch $original_root $reachability "
             "$candidate_program $candidate_authority $compiled_program "
-            "$candidate_root_rva originalBefore candidateBefore"
+            "$candidate_root_rva $invariant"
         ),
         (
             "original_context",
@@ -406,39 +406,33 @@ REQUIRED_INHABITANTS: tuple[RequiredInhabitant, ...] = (
         "classify every related state without blocked or unclassified fallback",
     ),
     RequiredInhabitant(
-        "launch_chunk",
-        "launch_component",
-        _type(
-            "forall originalBefore candidateBefore (source : "
-            "ExactOriginalSemanticSource $original_context $original_authority "
-            "$launch $original_root $reachability $candidate_program "
-            "$candidate_authority), source.targetId = $launch.rootTargetId -> "
-            "originalExecutionAtTargetId source.targetId originalBefore -> "
-            "nativeExecutionAtRva $candidate_root_rva candidateBefore -> "
-            "MixedKernelChunkPaths $original_program $candidate_program "
-            "$relation_core.contract "
-            "$invariant originalBefore candidateBefore"
-        ),
-        ("classify_source", "relation_core", "invariant"),
-        "prove the exact nonempty launch-wrapper paths",
-    ),
-    RequiredInhabitant(
         "semantic_chunk_factory",
         "semantic_component",
         _type(
             "forall originalBefore candidateBefore (source : "
             "ExactOriginalSemanticSource $original_context $original_authority "
             "$launch $original_root $reachability $candidate_program "
-            "$candidate_authority) (operation : KernelOperation) (entryRva : Nat), "
-            "originalExecutionAtTargetId source.targetId originalBefore -> "
-            "nativeExecutionAtRva entryRva candidateBefore -> "
-            "$compiled_program.functionEntry? operation.role = some entryRva -> "
+            "$candidate_authority) (operation : KernelOperation) (entryRva : Nat) "
+            "(beforeRelated : $invariant.holds originalBefore candidateBefore) "
+            "(originalAtSource : originalExecutionAtTargetId source.targetId "
+            "originalBefore) "
+            "(candidateAtEntry : nativeExecutionAtRva entryRva candidateBefore) "
+            "(candidateWorld : RelationalWorld) "
+            "(candidateWorldExact : nativeExecutionWorld? candidateBefore = "
+            "some candidateWorld) "
+            "(entryExact : $compiled_program.functionEntry? operation.role = "
+            "some entryRva) "
+            "(classified : $classify_source.classifier.classify originalBefore "
+            "candidateBefore beforeRelated = .semanticTransfer source operation "
+            "entryRva originalAtSource candidateAtEntry entryExact), "
             "KernelOperationRefinesUsing $compiled_program $concrete_abi.relation "
-            "(combinedKernelDispatchRelation $dispatch_family) operation -> "
+            "(combinedKernelDispatchRelation ($dispatch_family candidateWorld)) "
+            "operation -> "
             "MixedKernelOperationComponentCertificate $original_program "
             "$candidate_program $relation_core.contract $invariant $compiled_program "
             "$concrete_abi.relation "
-            "(combinedKernelDispatchRelation $dispatch_family) $candidate_authority "
+            "(combinedKernelDispatchRelation ($dispatch_family candidateWorld)) "
+            "$candidate_authority "
             "source.source.target.rva operation "
             "entryRva originalBefore candidateBefore"
         ),
@@ -457,16 +451,27 @@ REQUIRED_INHABITANTS: tuple[RequiredInhabitant, ...] = (
             "forall originalBefore candidateBefore (source : "
             "ExactOriginalSemanticSource $original_context $original_authority "
             "$launch $original_root $reachability $candidate_program "
-            "$candidate_authority) (operation : KernelOperation) (entryRva : Nat), "
-            "originalExecutionAtBoundarySource source.targetId originalBefore -> "
-            "nativeExecutionAtRva entryRva candidateBefore -> "
-            "$compiled_program.functionEntry? operation.role = some entryRva -> "
+            "$candidate_authority) (operation : KernelOperation) (entryRva : Nat) "
+            "(beforeRelated : $invariant.holds originalBefore candidateBefore) "
+            "(originalAtSource : originalExecutionAtBoundarySource source.targetId "
+            "originalBefore) "
+            "(candidateAtEntry : nativeExecutionAtRva entryRva candidateBefore) "
+            "(candidateWorld : RelationalWorld) "
+            "(candidateWorldExact : nativeExecutionWorld? candidateBefore = "
+            "some candidateWorld) "
+            "(entryExact : $compiled_program.functionEntry? operation.role = "
+            "some entryRva) "
+            "(classified : $classify_source.classifier.classify originalBefore "
+            "candidateBefore beforeRelated = .externalOperation source operation "
+            "entryRva originalAtSource candidateAtEntry entryExact), "
             "KernelOperationRefinesUsing $compiled_program $concrete_abi.relation "
-            "(combinedKernelDispatchRelation $dispatch_family) operation -> "
+            "(combinedKernelDispatchRelation ($dispatch_family candidateWorld)) "
+            "operation -> "
             "MixedKernelOperationComponentCertificate $original_program "
             "$candidate_program $relation_core.contract $invariant $compiled_program "
             "$concrete_abi.relation "
-            "(combinedKernelDispatchRelation $dispatch_family) $candidate_authority "
+            "(combinedKernelDispatchRelation ($dispatch_family candidateWorld)) "
+            "$candidate_authority "
             "source.source.target.rva operation "
             "entryRva originalBefore candidateBefore"
         ),
@@ -485,9 +490,16 @@ REQUIRED_INHABITANTS: tuple[RequiredInhabitant, ...] = (
             "forall originalBefore candidateBefore (source : "
             "ExactOriginalSemanticSource $original_context $original_authority "
             "$launch $original_root $reachability $candidate_program "
-            "$candidate_authority) (candidateRva : Nat), "
-            "originalExecutionAtBoundarySource source.targetId originalBefore -> "
-            "nativeExecutionAtRva candidateRva candidateBefore -> "
+            "$candidate_authority) (candidateRva : Nat) "
+            "(beforeRelated : $invariant.holds originalBefore candidateBefore) "
+            "(originalAtSource : originalExecutionAtBoundarySource "
+            "source.targetId originalBefore) "
+            "(candidateAtSource : nativeExecutionAtRva candidateRva "
+            "candidateBefore) (classified : "
+            "$classify_source.classifier.classify originalBefore "
+            "candidateBefore beforeRelated = "
+            ".externalBoundary source candidateRva originalAtSource "
+            "candidateAtSource), "
             "MixedKernelChunkPaths $original_program $candidate_program "
             "$relation_core.contract "
             "$invariant originalBefore candidateBefore"
@@ -512,22 +524,6 @@ REQUIRED_INHABITANTS: tuple[RequiredInhabitant, ...] = (
         ),
         ("candidate_program", "launch", "candidate_launch_calls"),
         "prove launch frames are exactly derived from candidate PE data",
-    ),
-    RequiredInhabitant(
-        "roots_related",
-        "launch_evidence",
-        _type(
-            "forall originalWorld candidateWorld originalState candidateState, "
-            "MixedLaunchStatesRelated $original_context $candidate_program "
-            "$relation_core.contract "
-            "originalWorld candidateWorld originalState candidateState -> "
-            "$invariant.holds (.running $launch.rootTargetId originalState "
-            "$launch.continuationTargetIds 0 originalWorld) "
-            "(.running $candidate_root_rva 0 candidateState "
-            "($candidate_launch_calls candidateState) 0 [] candidateWorld)"
-        ),
-        ("relation_core", "invariant", "candidate_launch_calls"),
-        "establish the mixed invariant at both exact launch roots",
     ),
     RequiredInhabitant(
         "environment_compositions",
@@ -570,6 +566,40 @@ REQUIRED_INHABITANTS: tuple[RequiredInhabitant, ...] = (
         "compose exact chunks for every original/candidate environment pair "
         "satisfying exact 1:1 machine-level refinement",
     ),
+    RequiredInhabitant(
+        "launch_prefix",
+        "launch_evidence",
+        _type(
+            "forall originalEnvironment candidateEnvironment "
+            "(environmentRefines : ExactOneToOneMixedExternalEnvironmentsRefine "
+            "(decodedWorldProgramWithProtocolEnvironment $original_program "
+            "originalEnvironment) (exactNativeWorldProgramWithEnvironment "
+            "$candidate_program candidateEnvironment) $relation_core.contract "
+            "$external_frames), MixedWorldLaunchPrefixCertificate "
+            "$original_context (decodedWorldProgramWithProtocolEnvironment "
+            "$original_program originalEnvironment) "
+            "(exactNativeWorldProgramWithEnvironment $candidate_program "
+            "candidateEnvironment) $relation_core.contract $launch "
+            "$candidate_root_rva "
+            "($environment_compositions originalEnvironment candidateEnvironment "
+            "environmentRefines).invariant"
+        ),
+        (
+            "original_context",
+            "original_program",
+            "candidate_program",
+            "relation_core",
+            "external_frames",
+            "launch",
+            "candidate_root_rva",
+            "candidate_launch_calls",
+            "candidate_launch_calls_exact",
+            "launch_wrapper_refinements",
+            "environment_compositions",
+        ),
+        "compose the unique zero-step original/nonempty silent candidate launch "
+        "prefix and establish the runtime-only invariant at its endpoint",
+    ),
 )
 
 
@@ -604,9 +634,6 @@ class InterpreterMixedKernelBindingPlan:
             "operation_refinements": "generatedKernelOperationRefinements",
             "component_cases": "generatedCheckedMixedKernelComponentCases",
             "composition": "generatedMixedWorldChunkComposition",
-            "selected_acceptance_certificate": (
-                "generatedSelectedMixedWorldAcceptanceCertificate"
-            ),
             "universal_acceptance_certificate": (
                 "generatedUniversalMixedWorldAcceptanceCertificate"
             ),
@@ -1035,33 +1062,37 @@ open StageA.Relational.InterpreterNativeWorld
 }}
 
 def generatedKernelOperationRefinements :
-    forall operation,
+    forall world operation,
       KernelOperationRefinesUsing {terms['compiled_program']}
         {terms['concrete_abi']}.relation
-        (combinedKernelDispatchRelation {terms['dispatch_family']}) operation := by
-  intro operation
+        (combinedKernelDispatchRelation ({terms['dispatch_family']} world))
+        operation := by
+  intro world operation
   cases operation with
   | programLookup =>
-      exact kernelOperationRefinesUsing_combined {terms['dispatch_family']}
-        {terms['program_lookup_refines']}
+      exact kernelOperationRefinesUsing_combined
+        ({terms['dispatch_family']} world)
+        ({terms['program_lookup_refines']} world)
   | interpreterStep =>
-      exact kernelOperationRefinesUsing_combined {terms['dispatch_family']}
-        {terms['interpreter_step_refines']}
+      exact kernelOperationRefinesUsing_combined
+        ({terms['dispatch_family']} world)
+        ({terms['interpreter_step_refines']} world)
   | runFunction =>
-      exact kernelOperationRefinesUsing_combined {terms['dispatch_family']}
-        {terms['run_function_refines']}
+      exact kernelOperationRefinesUsing_combined
+        ({terms['dispatch_family']} world)
+        ({terms['run_function_refines']} world)
   | invokeCall =>
-      exact kernelOperationRefinesUsing_combined {terms['dispatch_family']}
-        {terms['invoke_call_refines']}
+      exact kernelOperationRefinesUsing_combined
+        ({terms['dispatch_family']} world)
+        ({terms['invoke_call_refines']} world)
 
 def generatedMixedKernelSourceClassifier :
-    MixedKernelSourceClassifier {terms['original_context']}
+    MixedKernelRuntimeSourceClassifier {terms['original_context']}
       {terms['original_authority']} {terms['launch']} {terms['original_root']}
       {terms['reachability']} {terms['candidate_program']}
       {terms['candidate_authority']} {terms['compiled_program']}
-      {terms['candidate_root_rva']} {terms['invariant']} := {{
-  classify := {terms['classify_source']}
-}}
+      {terms['candidate_root_rva']} {terms['invariant']} :=
+  {terms['classify_source']}
 
 def generatedCheckedMixedKernelComponentCases :
     CheckedMixedKernelComponentCases {terms['original_context']}
@@ -1071,20 +1102,24 @@ def generatedCheckedMixedKernelComponentCases :
       {terms['launch']} {terms['original_root']} {terms['reachability']}
       {terms['candidate_root_rva']} {terms['compiled_program']}
       {terms['concrete_abi']}.relation
-      (combinedKernelDispatchRelation {terms['dispatch_family']})
+      (fun world =>
+        combinedKernelDispatchRelation ({terms['dispatch_family']} world))
       {terms['invariant']} := {{
   classifier := generatedMixedKernelSourceClassifier{argument}
-  launchChunk := {terms['launch_chunk']}
   semanticChunk := fun originalBefore candidateBefore source operation entryRva
-      originalAtSource candidateAtEntry entryExact =>
+      beforeRelated originalAtSource candidateAtEntry candidateWorld
+      candidateWorldExact entryExact classified =>
     {terms['semantic_chunk_factory']} originalBefore candidateBefore source operation
-      entryRva originalAtSource candidateAtEntry entryExact
-      (generatedKernelOperationRefinements{argument} operation)
+      entryRva beforeRelated originalAtSource candidateAtEntry candidateWorld
+      candidateWorldExact entryExact classified
+      (generatedKernelOperationRefinements{argument} candidateWorld operation)
   externalOperationChunk := fun originalBefore candidateBefore source operation
-      entryRva originalAtSource candidateAtEntry entryExact =>
+      entryRva beforeRelated originalAtSource candidateAtEntry candidateWorld
+      candidateWorldExact entryExact classified =>
     {terms['external_operation_chunk_factory']} originalBefore candidateBefore source
-      operation entryRva originalAtSource candidateAtEntry entryExact
-      (generatedKernelOperationRefinements{argument} operation)
+      operation entryRva beforeRelated originalAtSource candidateAtEntry
+      candidateWorld candidateWorldExact entryExact classified
+      (generatedKernelOperationRefinements{argument} candidateWorld operation)
   externalBoundaryChunk := {terms['external_boundary_chunk']}
 }}
 
@@ -1096,23 +1131,6 @@ def generatedMixedWorldChunkComposition :
       {terms['launch']} {terms['original_root']} {terms['reachability']}
       {terms['candidate_root_rva']} {terms['candidate_root']} :=
   (generatedCheckedMixedKernelComponentCases{argument}).toMixedWorldChunkComposition
-    {terms['candidate_launch_calls']} {terms['candidate_launch_calls_exact']}
-    {terms['roots_related']}
-
-def generatedSelectedMixedWorldAcceptanceCertificate :
-    MixedWorldAcceptanceCertificate {terms['original_context']}
-      {terms['original_program']} {terms['candidate_program']}
-      {terms['relation_core']}.contract {terms['launch']} := {{
-  originalAuthority := {terms['original_authority']}
-  candidateAuthority := {terms['candidate_authority']}
-  programBinding := {terms['program_binding']}
-  originalRoot := {terms['original_root']}
-  reachability := {terms['reachability']}
-  candidateRootRva := {terms['candidate_root_rva']}
-  candidateRoot := {terms['candidate_root']}
-  launchRealizable := {terms['launch_realizable']}
-  composition := generatedMixedWorldChunkComposition{argument}
-}}
 
 def generatedUniversalMixedWorldAcceptanceCertificate :
     CanonicalMixedWorldAcceptanceCertificate {terms['original_context']}
@@ -1135,6 +1153,8 @@ def generatedUniversalMixedWorldAcceptanceCertificate :
       {terms['launch_realizable']} candidateEnvironment
     composition := {terms['environment_compositions']} originalEnvironment
       candidateEnvironment environmentRefines
+    launchPrefix := {terms['launch_prefix']} originalEnvironment
+      candidateEnvironment environmentRefines
   }}
 }}
 
@@ -1151,7 +1171,6 @@ theorem generatedMixedWorldProgramsEquivalent :
 #print axioms generatedKernelOperationRefinements
 #print axioms generatedCheckedMixedKernelComponentCases
 #print axioms generatedMixedWorldChunkComposition
-#print axioms generatedSelectedMixedWorldAcceptanceCertificate
 #print axioms generatedUniversalMixedWorldAcceptanceCertificate
 #print axioms generatedMixedWorldProgramsEquivalent
 

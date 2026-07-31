@@ -43,9 +43,21 @@ class StageARelationalInterpreterSemanticRefinementGenerationTests(unittest.Test
         self.assertIn(
             "theorem exactNormalizedTransferSemanticRefinement0", first_source
         )
+        self.assertIn(
+            "theorem exactNormalizedTransferFusedMachineRefinement0", first_source
+        )
         self.assertIn("intro state environment", first_source)
         self.assertIn("exactRvaBytes originalPe 4096 1", first_source)
+        self.assertIn(
+            "executableSpanInstructionWindow originalPe 4096 4097", first_source
+        )
+        self.assertIn("ExactSemanticTransferFusedMachineRefinement", first_source)
+        self.assertIn("normalizeSymbolicBehavior_fields", first_source)
         self.assertIn("semanticTransferRefinesOfExactExecution", first_source)
+        self.assertIn(
+            "exactNormalizedTransferFusedMachineRefinementTheorems",
+            sources["GeneratedInterpreterSemanticRefinementBundle"],
+        )
         self.assertNotIn("pass-must-be-ignored", first_source)
         self.assertNotIn("\n+      ", "".join(sources.values()))
         for marker in ("sorry", "axiom", "unsafe", "native_decide"):
@@ -60,6 +72,7 @@ class StageARelationalInterpreterSemanticRefinementGenerationTests(unittest.Test
         self.assertEqual(inventory["status"], "lean_check_required")
         self.assertFalse(inventory["proof_authority"])
         self.assertEqual(inventory["theorem_count"], 2)
+        self.assertEqual(inventory["fused_theorem_count"], 2)
         self.assertEqual(inventory["shard_count"], 2)
 
     def test_rejects_invalid_sharding_and_unsupported_rows(self) -> None:
@@ -84,6 +97,22 @@ class StageARelationalInterpreterSemanticRefinementGenerationTests(unittest.Test
             "GeneratedInterpreterSemanticRefinementShard0000"
         ].replace("theorem exactNormalizedTransferSemanticRefinement0", "theorem missing")
         with self.assertRaisesRegex(StageAInputError, "changed cardinality"):
+            relational_interpreter_semantic_refinement_inventory(
+                sources, transfer_count=1
+            )
+
+        sources = relational_interpreter_semantic_refinement_bundle_sources(
+            [_ret_row()], pe_module="StageA.GeneratedGnuHelloOriginalPE"
+        )
+        sources["GeneratedInterpreterSemanticRefinementShard0000"] = sources[
+            "GeneratedInterpreterSemanticRefinementShard0000"
+        ].replace(
+            "theorem exactNormalizedTransferFusedMachineRefinement0",
+            "theorem missingFused",
+        )
+        with self.assertRaisesRegex(
+            StageAInputError, "fused semantic refinement.*cardinality"
+        ):
             relational_interpreter_semantic_refinement_inventory(
                 sources, transfer_count=1
             )

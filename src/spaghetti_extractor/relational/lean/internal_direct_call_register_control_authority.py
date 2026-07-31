@@ -634,13 +634,13 @@ theorem generatedIdentityChecked :
     generatedSummaryTree.certificate.identityRegisterChecked
       generatedContext.originalPe generatedContext.candidatePe
       generatedContext.originalImports generatedContext.candidateImports
-      .{register} = true := by
+      Reg.{register} = true := by
   unfold generatedSummaryTree
   rw [{bindings.summary_certificate_exact}]
   decide +kernel
 
 theorem generatedRequestedBySummary :
-    .{register} ∈
+    Reg.{register} ∈
       generatedSummaryTree.certificate.requestedRegisters := by
   unfold generatedSummaryTree
   rw [{bindings.summary_certificate_exact}]
@@ -867,10 +867,10 @@ def _returning_register_certificate_source(
     generatedSummaryTree.certificate.identityRegisterChecked
       generatedContext.originalPe generatedContext.candidatePe
       generatedContext.originalImports generatedContext.candidateImports
-      .{register} = true := {identity_proof}
+      Reg.{register} = true := {identity_proof}
 
 theorem generatedRequestedBySummary :
-    .{register} ∈ generatedSummaryTree.certificate.requestedRegisters :=
+    Reg.{register} ∈ generatedSummaryTree.certificate.requestedRegisters :=
   {requested_proof}
 
 def generatedReturningRegisterCertificate :
@@ -880,13 +880,13 @@ def generatedReturningRegisterCertificate :
     generatedSummaryTreeChecked (by decide) (by decide)
     (by
       intro selected member
-      have selectedExact : selected = .{register} := by
+      have selectedExact : selected = Reg.{register} := by
         simpa [generatedRequestedRegisters] using member
       subst selected
       exact generatedRequestedBySummary)
     (by
       intro selected member
-      have selectedExact : selected = .{register} := by
+      have selectedExact : selected = Reg.{register} := by
         simpa [generatedRequestedRegisters] using member
       subst selected
       exact generatedIdentityChecked)"""
@@ -923,7 +923,7 @@ theorem generatedStackWitnessChecked :
     {stack_witness_checked}
 
 theorem generatedStackWitnessRegister :
-    generatedStackWitness.register = .{register} := by
+    generatedStackWitness.register = Reg.{register} := by
   decide +kernel
 
 theorem generatedStackWitnessSingleFrame :
@@ -935,13 +935,13 @@ theorem generatedStackWitnessEntry :
       generatedStackWitness.saveRegionId := {stack_entry_proof}
 
 theorem generatedRequestedBySummary :
-    .{register} ∈ generatedSummaryTree.certificate.requestedRegisters :=
+    Reg.{register} ∈ generatedSummaryTree.certificate.requestedRegisters :=
   {requested_proof}
 
 def generatedReturningRegisterCertificate :
     CheckedReturningRegisterCertificate generatedContext generatedSummaryTree :=
   checkedReturningRegisterCertificate_of_rootStackWitness generatedContext
-    generatedSummaryTree .{register} generatedStackWitness
+    generatedSummaryTree Reg.{register} generatedStackWitness
     generatedSummaryTreeChecked generatedStackWitnessMember
     generatedStackWitnessRegister generatedStackWitnessSingleFrame
     generatedStackWitnessEntry (by decide) generatedRequestedBySummary
@@ -959,7 +959,7 @@ def direct_call_register_control_authority_source(
     bindings = bindings.checked()
     contract_id = _u32(contract_id, "contract_id")
     register = _register(crossing.register, "crossing.register")
-    pair = f"registerControlPair .{register}"
+    pair = f"registerControlPair Reg.{register}"
     preservation_evidence = _returning_register_certificate_source(
         register,
         summary_certificate_exact=bindings.summary_certificate_exact,
@@ -1016,7 +1016,7 @@ def generatedRegisterControlCallContract : CallContract := {{
   importResults := []
 }}
 
-def generatedRequestedRegisters : List Reg := [.{register}]
+def generatedRequestedRegisters : List Reg := [Reg.{register}]
 
 def generatedSourceInvariant : StateInvariant :=
   {bindings.source_invariant} {crossing.source_target_id}
@@ -1215,7 +1215,7 @@ def generatedReturningCallerFrameWordCertificate :
 
 theorem generatedStackEntryOffset :
     exists witness,
-      findStackEntryOffset?
+      StageA.Relational.InternalDirectCallRegisterSummary.findStackEntryOffset?
           generatedSummaryTree.certificate.stackEntryOffsets
           generatedSummaryTree.certificate.calleeEntry.id = some witness /\\
         witness.originalOffset = 0 /\\
@@ -1314,7 +1314,7 @@ def finite_origin_call_register_control_authority_source(
     bindings = bindings.checked()
     contract_id = _u32(contract_id, "contract_id")
     register = _register(crossing.register, "crossing.register")
-    pair = f"registerControlPair .{register}"
+    pair = f"registerControlPair Reg.{register}"
     preservation_evidence = _returning_register_certificate_source(
         register,
         summary_certificate_exact=bindings.summary_certificate_exact,
@@ -1370,7 +1370,7 @@ def generatedRegisterControlCallContract : CallContract := {{
   importResults := []
 }}
 
-def generatedRequestedRegisters : List Reg := [.{register}]
+def generatedRequestedRegisters : List Reg := [Reg.{register}]
 
 {preservation_evidence}
 
@@ -1390,7 +1390,7 @@ def generatedCheckedFiniteOriginCallRegisterControlContract :
   noImportResults := rfl
   preservedRegistersExact := rfl
   requestedRegistersExact := rfl
-  targetRegister := .{register}
+  targetRegister := Reg.{register}
   targetRegisterRequested := by decide +kernel
   targetRegisterOutputChecked := by decide +kernel
 }}
@@ -1513,6 +1513,7 @@ theorem generatedCallerFrameWordsRequested :
     forall word, word ∈ generatedCallerFrameWords ->
       word ∈ generatedSummaryTree.certificate.callerFrameWords := by
   unfold generatedCallerFrameWords generatedSummaryTree
+  unfold {bindings.entry_namespace}.generatedSummaryTree
   rw [{bindings.summary_certificate_exact}]
   decide +kernel
 
@@ -1550,12 +1551,13 @@ def generatedReturningCallerFrameWordCertificate :
 
 theorem generatedStackEntryOffset :
     exists witness,
-      findStackEntryOffset?
+      StageA.Relational.InternalDirectCallRegisterSummary.findStackEntryOffset?
           generatedSummaryTree.certificate.stackEntryOffsets
           generatedSummaryTree.certificate.calleeEntry.id = some witness /\\
         witness.originalOffset = 0 /\\
         witness.candidateOffset = 0 := by
   unfold generatedSummaryTree
+  unfold {bindings.entry_namespace}.generatedSummaryTree
   rw [{bindings.summary_certificate_exact}]
   decide +kernel
 
@@ -1593,25 +1595,25 @@ def generatedCheckedFiniteOriginCallCallerFrameWordControlContract :
 theorem generatedFrameWordAuthorityMatchesExactPERequest :
     generatedSummaryTree.checked generatedContext.originalPe
         generatedContext.candidatePe generatedContext.originalImports
-        generatedContext.candidateImports = true /\
+        generatedContext.candidateImports = true /\\
       generatedSummaryTree.certificate.callsite.original.start =
-        {crossing.source_rva} /\
+        {crossing.source_rva} /\\
       generatedSummaryTree.certificate.callsite.original.start +
           generatedSummaryTree.certificate.callsite.original.size =
-        {crossing.continuation_rva} /\
+        {crossing.continuation_rva} /\\
       generatedSummaryTree.certificate.calleeEntry.original.start =
-        {crossing.callee_rva} /\
+        {crossing.callee_rva} /\\
       generatedSummaryTree.certificate.continuation.original.start =
-        {crossing.continuation_rva} /\
+        {crossing.continuation_rva} /\\
       generatedFiniteOriginCallEntryAuthority.sourceTargetId =
-        {crossing.source_target_id} /\
+        {crossing.source_target_id} /\\
       generatedFiniteOriginCallEntryAuthority.calleeTargetId =
-        {crossing.callee_target_id} /\
+        {crossing.callee_target_id} /\\
       generatedFiniteOriginCallEntryAuthority.continuationTargetId =
-        {crossing.continuation_target_id} /\
+        {crossing.continuation_target_id} /\\
       generatedCheckedFiniteOriginCallCallerFrameWordControlContract.requestedWords =
-        generatedCallerFrameWords /\
-      generatedSummaryTree.certificate.graphClosed = true /\
+        generatedRequestedCallerFrameWords /\\
+      generatedSummaryTree.certificate.graphClosed = true /\\
       generatedSummaryTree.certificate.returns.isEmpty = false := by
   refine And.intro generatedSummaryTreeChecked ?_
   rcases {bindings.entry_namespace}.generatedEntryMetadataChecked with

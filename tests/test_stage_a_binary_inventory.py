@@ -10,7 +10,11 @@ from spaghetti_extractor.relational.binary_inventory import (
 from spaghetti_extractor.relational.extraction import (
     _raw_extraction_semantics_sha256,
 )
-from spaghetti_extractor.relational.lean.compiler import _lean_memory_arguments
+from spaghetti_extractor.relational.lean.compiler import (
+    _lean_memory_arguments,
+    _lean_runtime_arguments,
+    _lean_stack_arguments,
+)
 from spaghetti_extractor.relational.pair_normalization import (
     pair_normalization_semantics_sha256,
 )
@@ -136,6 +140,45 @@ class StageABinaryInventoryTests(StageARelationalTestBase):
                 with self.assertRaisesRegex(StageAInputError, "must be"):
                     _lean_memory_arguments()
 
+    def test_lean_thread_stack_is_large_and_fail_closed(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_lean_stack_arguments(), ["--tstack=65536"])
+        with patch.dict(
+            os.environ,
+            {"SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_THREAD_STACK_KB": "131072"},
+            clear=True,
+        ):
+            self.assertEqual(_lean_stack_arguments(), ["--tstack=131072"])
+        for malformed in ("0", "-1", "many"):
+            with patch.dict(
+                os.environ,
+                {
+                    "SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_THREAD_STACK_KB": malformed
+                },
+                clear=True,
+            ):
+                with self.assertRaisesRegex(StageAInputError, "must be"):
+                    _lean_stack_arguments()
+
+    def test_lean_runtime_arguments_cover_extraction_and_compilation_resources(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                _lean_runtime_arguments(),
+                ["--tstack=65536"],
+            )
+        with patch.dict(
+            os.environ,
+            {
+                "SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_THREAD_STACK_KB": "131072",
+                "SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_MEMORY_MB": "8192",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                _lean_runtime_arguments(),
+                ["--tstack=131072", "-M", "8192"],
+            )
+
     def test_pair_normalization_identity_covers_sources_kernel_and_toolchain(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -229,6 +272,32 @@ class StageABinaryInventoryTests(StageARelationalTestBase):
                 payload["regions"][0]["source"]["kind"],
                 "static_executable_section_block",
             )
+            parse_binary_cutpoint_inventory(payload)
+
+    def test_duplicate_executable_section_names_are_valid(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = self._write_pe(root / "hello.exe", b"\xeb\xfe")
+            payload = stage_a_inventory_binary(
+                binary=binary,
+                side="candidate",
+                out=root / "inventory.json",
+            )
+
+            section = copy.deepcopy(payload["executable_sections"][0])
+            section_size = section["rva_end"] - section["rva_start"]
+            section["rva_start"] += 0x1000
+            section["rva_end"] = section["rva_start"] + section_size
+            payload["executable_sections"].append(section)
+            for field in ("regions", "extraction_regions"):
+                region = copy.deepcopy(payload[field][0])
+                region["index"] = 1
+                region["numeric_id"] = 1
+                region["id"] += "-duplicate-section"
+                region["span"]["rva_start"] += 0x1000
+                payload[field].append(region)
+                payload["counts"][field] = 2
+
             parse_binary_cutpoint_inventory(payload)
 
     def test_tampering_fails_closed(self):

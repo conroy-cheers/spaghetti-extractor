@@ -5,14 +5,19 @@ import re
 import shutil
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
 from spaghetti_extractor.relational.lean.interpreter_kernel import (
+    INTERPRETER_KERNEL_FUNCTION_MODULE_PREFIX,
     INTERPRETER_KERNEL_LEAN_FILENAME,
     ExactRange,
     InterpreterKernelPlan,
+    KernelBlockPlan,
+    KernelFunctionPlan,
+    KernelInstructionPlan,
     RelationalInterpreterKernelGenerationError,
     relational_interpreter_kernel_source,
     write_relational_interpreter_kernel_bundle,
@@ -168,6 +173,62 @@ class StageARelationalInterpreterKernelExternalDataTests(unittest.TestCase):
         self.assertIs(returned, plan)
         self.assertIn("import StageA.ExternalKernelDataFixture", generated)
         self.assertNotIn("generatedKernelCandidateBytesChunk", generated)
+
+    def test_bundle_writer_splits_functions_into_stable_modules(self) -> None:
+        function = KernelFunctionPlan(
+            role="programLookup",
+            hint="stage_b_program_lookup",
+            start=0x2000,
+            data=b"\xc3",
+            blocks=(
+                KernelBlockPlan(
+                    entry_rva=0x2000,
+                    instructions=(
+                        KernelInstructionPlan(0x2000, b"\xc3", "ret"),
+                    ),
+                    successors=(),
+                ),
+            ),
+            x87_frames=(),
+            x87_commands=(),
+            padding=(),
+            loops=(),
+            frame_required=False,
+            frame_push_rva=0,
+            frame_setup_rva=0,
+            frame_teardown_rvas=(),
+            return_rvas=(0x2000,),
+        )
+        plan = replace(_plan(), functions=(function,))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            with patch(
+                "spaghetti_extractor.relational.lean.interpreter_kernel."
+                "build_relational_interpreter_kernel_plan",
+                return_value=plan,
+            ):
+                write_relational_interpreter_kernel_bundle(
+                    out=output,
+                    **_EXTERNAL_OPTIONS,
+                )
+            aggregate = (output / INTERPRETER_KERNEL_LEAN_FILENAME).read_text(
+                encoding="utf-8"
+            )
+            function_source = (
+                output
+                / f"{INTERPRETER_KERNEL_FUNCTION_MODULE_PREFIX}0000.lean"
+            ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            f"import StageA.{INTERPRETER_KERNEL_FUNCTION_MODULE_PREFIX}0000",
+            aggregate,
+        )
+        self.assertNotIn("def generatedKernelFunction0000Block0000", aggregate)
+        self.assertIn(
+            "def generatedKernelFunction0000Block0000", function_source
+        )
+        self.assertIn("def generatedKernelFunction0000", function_source)
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required")
     def test_external_mode_generated_module_elaborates(self) -> None:

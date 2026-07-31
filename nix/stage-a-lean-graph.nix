@@ -17,6 +17,7 @@
   targetAxiomAudit ? null,
   graphSmoke ? false,
   contentAddressed ? true,
+  bundleContentAddressed ? contentAddressed,
 }:
 
 if schedulingMode == "closure" then
@@ -235,10 +236,91 @@ else
     graphV2 = graph.format == "stage-a-lean-module-graph-v2";
     checkedArtifactManifest =
       if graphV2 then builtins.fromJSON (builtins.readFile effectiveArtifactManifest) else null;
+    sourcePackIds =
+      if standalone then
+        [ ]
+      else
+        lib.unique (
+          lib.filter (packId: packId != null) (
+            map (
+              metadata: metadata.source_pack or null
+            ) (builtins.attrValues graph.modules)
+          )
+        );
+    sourcePackDataPaths = builtins.listToAttrs (
+      map (
+        packId: {
+          name = packId;
+          value = builtins.toFile
+            (lib.strings.sanitizeDerivationName
+              "stage-a-source-pack-${packId}.json")
+            (
+              builtins.unsafeDiscardStringContext (
+                builtins.readFile (
+                  sourceRoot + "/source-pack-data/${packId}.json"
+                )
+              )
+            );
+        }
+      ) sourcePackIds
+    );
+    sourcePackPaths = builtins.listToAttrs (
+      map (
+        packId: {
+          name = packId;
+          value = pkgs.runCommand
+            (lib.strings.sanitizeDerivationName
+              "stage-a-source-pack-${packId}")
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+              # Source packs only materialize generated text. Keeping them
+              # local prevents remote Lean saturation from starving the graph
+              # scheduler without moving proof computation onto this host.
+              preferLocalBuild = true;
+              allowSubstitutes = true;
+            }
+            ''
+              ${pkgs.python3}/bin/python3 - \
+                "${sourcePackDataPaths.${packId}}" "$out" \
+                ${lib.escapeShellArg packId} <<'PY'
+              import json
+              import pathlib
+              import re
+              import sys
+
+              source = pathlib.Path(sys.argv[1])
+              out = pathlib.Path(sys.argv[2])
+              expected_id = sys.argv[3]
+              payload = json.loads(source.read_text(encoding="utf-8"))
+              if (
+                  payload.get("format") != "stage-a-lean-source-pack-v1"
+                  or payload.get("id") != expected_id
+                  or not isinstance(payload.get("modules"), dict)
+              ):
+                  raise SystemExit("invalid generated Lean source pack")
+              out.mkdir(parents=True)
+              for module, text in sorted(payload["modules"].items()):
+                  if (
+                      not isinstance(module, str)
+                      or re.fullmatch(r"[A-Za-z0-9_]+", module) is None
+                      or not isinstance(text, str)
+                  ):
+                      raise SystemExit("malformed generated Lean source module")
+                  (out / f"{module}.lean").write_text(
+                      text,
+                      encoding="utf-8",
+                  )
+              PY
+            '';
+        }
+      ) sourcePackIds
+    );
     moduleSources = lib.mapAttrs (
       module: metadata:
       if standalone then
         standaloneSource module
+      else if metadata ? source_pack then
+        sourcePackPaths.${metadata.source_pack} + "/${module}.lean"
       else
         builtins.path {
           path = sourceRoot + "/${metadata.source}";
@@ -407,7 +489,7 @@ else
               if builtins.hasAttr dependency prebuiltNodePaths then
                 prebuiltNodePaths.${dependency}
               else
-                self.${dependency}.out
+                self.${dependency}.stable
             ) node.dependencies;
             dependencyArgs = lib.escapeShellArgs (map toString dependencies);
             dependencySemanticIds =
@@ -439,10 +521,7 @@ else
               dependency_semantic_ids = dependencySemanticIds;
               semantic_recipe_version = semanticRecipeVersion;
             };
-          in
-          {
-            name = node.id;
-            value =
+            rawDrv =
               pkgs.runCommand (lib.strings.sanitizeDerivationName "stage-a-lean-${node.id}")
                 (
                   {
@@ -458,30 +537,35 @@ else
                     ];
                     preferLocalBuild = false;
                     allowSubstitutes = true;
+                    # Every Lean node is intentionally remote-only. Both proof
+                    # builders advertise large-memory; the workstation does
+                    # not, so local jobs remain limited to lightweight graph
+                    # materialization and bundling.
                     requiredSystemFeatures =
-                      if node.resource_class == "high-memory" then
-                        [
+                      [ "large-memory" ]
+                      ++ (
+                        if node.resource_class == "high-memory" then
+                          [
                           "big-parallel"
                           "benchmark"
-                        ]
-                      else
-                        lib.optionals (node.resource_class == "large-memory") [
-                          "big-parallel"
-                          "large-memory"
-                        ];
+                          ]
+                        else
+                          lib.optionals (node.resource_class == "large-memory") [
+                            "big-parallel"
+                            "large-memory"
+                          ]
+                      );
                   }
                   // lib.optionalAttrs contentAddressed { __contentAddressed = true; }
                 )
                 ''
-                  mkdir -p "$out/StageA" "$out/nix-support" \
+                  mkdir -p "$out/StageA" \
                     "$audit/StageA" "$audit/logs" source/StageA compiled/StageA
                   ulimit -s unlimited 2>/dev/null || true
                   cat > source-hashes <<'HASHES'
                   ${sourceChecks node}
                   HASHES
                   sha256sum --check --strict source-hashes
-                  printf '%s\n' ${dependencyArgs} \
-                    > "$out/nix-support/stage-a-direct-dependencies"
                   ${pkgs.python3}/bin/python3 - \
                     compiled/StageA ${dependencyArgs} <<'PY'
                   import hashlib
@@ -783,14 +867,63 @@ else
                   )
                   PY
                 '';
+            stableDrv =
+              pkgs.runCommand
+                (lib.strings.sanitizeDerivationName
+                  "stage-a-lean-${node.id}-stable")
+                {
+                  outputs = [
+                    "out"
+                    "audit"
+                  ];
+                  nativeBuildInputs = [ pkgs.coreutils ];
+                  preferLocalBuild = false;
+                  allowSubstitutes = true;
+                }
+                ''
+                  mkdir -p "$out/nix-support" "$audit"
+                  ln -s "${rawDrv.out}/StageA" "$out/StageA"
+                  ln -s "${rawDrv.out}/interface.json" "$out/interface.json"
+                  : > "$out/nix-support/stage-a-direct-dependencies"
+                  for dependency in ${dependencyArgs}; do
+                    printf '%s\n' "$dependency" \
+                      >> "$out/nix-support/stage-a-direct-dependencies"
+                  done
+                  ln -s "${rawDrv.audit}/StageA" "$audit/StageA"
+                  ln -s "${rawDrv.audit}/logs" "$audit/logs"
+                  ln -s "${rawDrv.audit}/module-result.json" \
+                    "$audit/module-result.json"
+                '';
+          in
+          {
+            name = node.id;
+            value = {
+              out = rawDrv.out;
+              audit = rawDrv.audit;
+              stable = stableDrv.out;
+              stableAudit = stableDrv.audit;
+            };
           }
         ) activeGraphNodes
       )
     );
 
     rootNode = nodeById.${graph.final_node};
-    rootSemantic = nodeDrvs.${graph.final_node}.out;
+    rootSemantic = nodeDrvs.${graph.final_node}.stable;
     selectedAuditTheorem = graph.expected_final_theorem;
+    linkedAcceptanceTheorem =
+      "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked";
+    mixedChunkedAcceptanceTheorem =
+      "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentMixedChunked";
+    linkedAcceptanceProfile = "linked-raw-pe32";
+    mixedChunkedAcceptanceProfile = "mixed-native-pe32-chunked-closed";
+    selectedAuthorityProfile =
+      graph.acceptance.authority_profile or (
+        if selectedAuditTheorem == linkedAcceptanceTheorem then
+          linkedAcceptanceProfile
+        else
+          null
+      );
     acceptanceNodeSteps = graph.acceptance.node_steps or null;
     acceptanceNodeStepsValid =
       builtins.isList acceptanceNodeSteps
@@ -841,21 +974,36 @@ else
         ''
       else
         linkedCanonicalResult "originalWorldProgram" "candidateWorldProgram";
+    mixedChunkedCanonicalType = ''
+      StageA.Relational.InterpreterMixedProfile.CanonicalMixedWorldProgramsChunkObservationallyEquivalentFamily
+        StageA.GeneratedRelational.candidatePE32CanonicalMixedRelationFamily
+    '';
     canonicalAuditType =
-      if selectedAuditTheorem == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" then
+      if
+        selectedAuditTheorem == linkedAcceptanceTheorem
+        && selectedAuthorityProfile == linkedAcceptanceProfile
+      then
         linkedCanonicalType
+      else if
+        selectedAuditTheorem == mixedChunkedAcceptanceTheorem
+        && selectedAuthorityProfile == mixedChunkedAcceptanceProfile
+      then
+        mixedChunkedCanonicalType
       else
-        throw "Stage A final audit requires the linked whole-program theorem";
+        throw "Stage A final audit requires an exact authoritative theorem profile";
     canonicalAuditProfile =
-      "linked-raw-pe32"
-      + (
-        if parameterizedProtocolEnvironment then
-          "-stateful-protocol"
-        else if parameterizedEnvironment then
-          "-external-environment"
-        else
-          "-closed"
-      );
+      if selectedAuditTheorem == linkedAcceptanceTheorem then
+        linkedAcceptanceProfile
+        + (
+          if parameterizedProtocolEnvironment then
+            "-stateful-protocol"
+          else if parameterizedEnvironment then
+            "-external-environment"
+          else
+            "-closed"
+        )
+      else
+        mixedChunkedAcceptanceProfile;
     auditSource = pkgs.writeText "StageARelationalAudit.lean" ''
       import StageA.${graph.root_module}
 
@@ -876,15 +1024,19 @@ else
       end StageA.FinalTheoremAudit
     '';
     approvedAxioms = builtins.toJSON graph.approved_axioms;
-    selectedTargetNodes = map (
-      requested:
-      if builtins.hasAttr requested nodeById then
-        requested
-      else if standalone && builtins.hasAttr requested standaloneModuleBuildPacks then
-        standaloneModuleBuildPacks.${requested}
-      else
-        requested
-    ) targetNodes;
+    selectedTargetNodes = lib.unique (
+      map (
+        requested:
+        if builtins.hasAttr requested nodeById then
+          requested
+        else if standalone && builtins.hasAttr requested standaloneModuleBuildPacks then
+          standaloneModuleBuildPacks.${requested}
+        else if builtins.hasAttr requested moduleOwners then
+          moduleOwners.${requested}
+        else
+          requested
+      ) targetNodes
+    );
     selectedTargetClosureNodes = lib.sort builtins.lessThan (
       map (entry: entry.key) (
         builtins.genericClosure {
@@ -915,6 +1067,8 @@ else
       );
     targetAxiomAuditJson = builtins.toJSON targetAxiomAudit;
     linkedAcceptance = graph.acceptance.linked_acceptance or null;
+    mixedChunkedAcceptance =
+      graph.acceptance.mixed_chunked_acceptance or null;
     linkedAcceptanceReady =
       acceptanceNodeStepsValid
       && graph.acceptance.status == "ready"
@@ -923,15 +1077,26 @@ else
       && linkedAcceptance != null
       && linkedAcceptance.status == "ready"
       && linkedAcceptance.theorem == selectedAuditTheorem
-      && selectedAuditTheorem == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked";
+      && selectedAuditTheorem == linkedAcceptanceTheorem
+      && selectedAuthorityProfile == linkedAcceptanceProfile;
+    mixedChunkedAcceptanceReady =
+      acceptanceNodeStepsValid
+      && graph.acceptance.status == "ready"
+      && graph.acceptance.required_theorem == selectedAuditTheorem
+      && graph.acceptance.theorem == selectedAuditTheorem
+      && mixedChunkedAcceptance != null
+      && mixedChunkedAcceptance.status == "ready"
+      && mixedChunkedAcceptance.theorem == selectedAuditTheorem
+      && mixedChunkedAcceptance.profile == mixedChunkedAcceptanceProfile
+      && selectedAuditTheorem == mixedChunkedAcceptanceTheorem
+      && selectedAuthorityProfile == mixedChunkedAcceptanceProfile;
     acceptanceReady =
-      selectedAuditTheorem == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
-      && linkedAcceptanceReady;
+      linkedAcceptanceReady || mixedChunkedAcceptanceReady;
     selectedNodeResults = map (
       node:
       let
-        semantic = nodeDrvs.${node}.out;
-        audit = nodeDrvs.${node}.audit;
+        semantic = nodeDrvs.${node}.stable;
+        audit = nodeDrvs.${node}.stableAudit;
       in
       pkgs.runCommand (lib.strings.sanitizeDerivationName "stage-a-lean-${node}-detached")
         (
@@ -966,7 +1131,7 @@ else
             preferLocalBuild = false;
             allowSubstitutes = true;
           }
-          // lib.optionalAttrs contentAddressed { __contentAddressed = true; }
+          // lib.optionalAttrs bundleContentAddressed { __contentAddressed = true; }
         )
         ''
           mkdir -p "$out/StageA" "$out/logs" "$out/node-results" \
@@ -976,31 +1141,18 @@ else
             let
               node = entry.value;
               index = entry.index;
-              semantic = nodeDrvs.${node}.out;
-              resultName = toString index;
+              semantic = nodeDrvs.${node}.stable;
             in
             ''
-              ln -s "${semantic}" "$out/proof-node-roots/${resultName}"
-              for source in "${semantic}"/StageA/*.olean; do
-                destination="$out/StageA/$(basename "$source")"
-                if [ -e "$destination" ] \
-                    && [ "$(readlink -f "$destination")" \
-                      != "$(readlink -f "$source")" ]; then
-                  echo "conflicting target-bundle module: $(basename "$source")" >&2
-                  exit 1
-                fi
-                if [ ! -e "$destination" ]; then
-                  ln -s "$source" "$destination"
-                fi
-              done
+              ln -s "${semantic}" "$out/proof-node-roots/${toString index}"
             ''
-          ) (lib.imap0 (index: value: { inherit index value; }) selectedTargetClosureNodes)}
+          ) (lib.imap0 (index: value: { inherit index value; }) selectedTargetNodes)}
           ${lib.concatMapStringsSep "\n" (
             entry:
             let
               node = entry.value;
               index = entry.index;
-              audit = nodeDrvs.${node}.audit;
+              audit = nodeDrvs.${node}.stableAudit;
               resultName = toString index;
             in
             ''
@@ -1034,15 +1186,98 @@ else
           ) (lib.imap0 (index: value: { inherit index value; }) selectedTargetNodes)}
           lean_version="$(${pkgs.lean4}/bin/lean --version | head -n 1)"
           ${pkgs.python3}/bin/python3 - \
+            "$out/proof-node-roots" "$out/StageA" \
             "$out/node-results" "$out/bundle.json" "$lean_version" \
             ${lib.escapeShellArg targetAxiomAuditJson} "$out/axiom-audit.json" \
-            ${lib.escapeShellArg (builtins.toJSON selectedTargetNodes)} \
-            ${lib.escapeShellArg (builtins.toJSON selectedTargetClosureNodes)} <<'PY'
+            ${lib.escapeShellArg (builtins.toJSON selectedTargetNodes)} <<'PY'
+          import hashlib
           import json
+          import os
           import pathlib
           import sys
 
-          source = pathlib.Path(sys.argv[1])
+          roots = pathlib.Path(sys.argv[1])
+          module_overlay = pathlib.Path(sys.argv[2])
+          source = pathlib.Path(sys.argv[3])
+          pending = sorted(roots.iterdir())
+          visited = set()
+          closure_ids = []
+          modules = {}
+          while pending:
+              dependency = pending.pop(0).resolve()
+              key = str(dependency)
+              if key in visited:
+                  continue
+              visited.add(key)
+              stage_a = dependency / "StageA"
+              interface_path = dependency / "interface.json"
+              if not stage_a.is_dir() or not interface_path.is_file():
+                  raise SystemExit(
+                      f"malformed semantic Lean dependency {dependency}"
+                  )
+              interface = json.loads(
+                  interface_path.read_text(encoding="utf-8")
+              )
+              if interface.get("format") != "stage-a-lean-semantic-interface-v1":
+                  raise SystemExit(
+                      f"unsupported semantic Lean interface {interface_path}"
+                  )
+              node_id = interface.get("id")
+              if not isinstance(node_id, str) or not node_id:
+                  raise SystemExit(
+                      f"semantic Lean interface omits its node id: {interface_path}"
+                  )
+              closure_ids.append(node_id)
+              outputs = interface.get("outputs")
+              if not isinstance(outputs, list):
+                  raise SystemExit(
+                      f"semantic Lean interface omits outputs: {interface_path}"
+                  )
+              for output in outputs:
+                  module = output.get("module")
+                  olean = stage_a / f"{module}.olean"
+                  if (
+                      not isinstance(module, str)
+                      or not module
+                      or not olean.is_file()
+                      or output.get("olean_bytes") != olean.stat().st_size
+                      or output.get("olean_sha256")
+                          != hashlib.sha256(olean.read_bytes()).hexdigest()
+                  ):
+                      raise SystemExit(
+                          f"semantic Lean interface output mismatch: {interface_path}"
+                      )
+                  prior = modules.get(module)
+                  resolved = olean.resolve()
+                  if prior is not None and prior != resolved:
+                      raise SystemExit(
+                          f"conflicting target-bundle module: {module}"
+                      )
+                  modules[module] = resolved
+              direct_path = (
+                  dependency
+                  / "nix-support"
+                  / "stage-a-direct-dependencies"
+              )
+              direct_dependencies = (
+                  direct_path.read_text(encoding="utf-8").splitlines()
+                  if direct_path.is_file()
+                  else []
+              )
+              if len(direct_dependencies) != len(set(direct_dependencies)):
+                  raise SystemExit(
+                      f"duplicate direct semantic dependencies: {dependency}"
+                  )
+              pending.extend(
+                  pathlib.Path(path)
+                  for path in direct_dependencies
+                  if path
+              )
+          if len(closure_ids) != len(set(closure_ids)):
+              raise SystemExit("target bundle closure has duplicate node identities")
+          for module, olean in sorted(modules.items()):
+              os.symlink(olean, module_overlay / f"{module}.olean")
+
           nodes = [
               json.loads(path.read_text(encoding="utf-8"))
               for path in sorted(source.glob("*.json"))
@@ -1050,7 +1285,12 @@ else
           node_ids = [node.get("id") for node in nodes]
           if len(node_ids) != len(set(node_ids)):
               raise SystemExit("target bundle contains duplicate node provenance")
-          audit_config = json.loads(sys.argv[4])
+          target_nodes = json.loads(sys.argv[8])
+          if set(node_ids) != set(target_nodes):
+              raise SystemExit("target bundle provenance does not match target nodes")
+          if not set(target_nodes).issubset(closure_ids):
+              raise SystemExit("target bundle roots are absent from semantic closure")
+          audit_config = json.loads(sys.argv[6])
           audit = None
           if audit_config is not None:
               matching_outputs = [
@@ -1065,7 +1305,22 @@ else
                   )
               declaration = audit_config["declaration"]
               inventory = matching_outputs[0].get("axiom_audit", {})
-              observed = inventory.get("inventories", {}).get(declaration)
+              inventories = inventory.get("inventories", {})
+              observed = inventories.get(declaration)
+              if observed is None:
+                  local_declaration = declaration.rsplit(".", 1)[-1]
+                  matching_declarations = [
+                      value
+                      for name, value in inventories.items()
+                      if name == local_declaration
+                      or name.endswith(f".{local_declaration}")
+                  ]
+                  if len(matching_declarations) > 1:
+                      raise SystemExit(
+                          "target axiom audit declaration is ambiguous"
+                      )
+                  if matching_declarations:
+                      observed = matching_declarations[0]
               if observed is None:
                   raise SystemExit(
                       "target axiom audit declaration was not emitted by Lean"
@@ -1082,20 +1337,20 @@ else
                   "observed_axioms": observed,
                   "unexpected_axioms": unexpected,
               }
-              pathlib.Path(sys.argv[5]).write_text(
+              pathlib.Path(sys.argv[7]).write_text(
                   json.dumps(audit, indent=2, sort_keys=True) + "\n",
                   encoding="utf-8",
               )
               if unexpected:
                   raise SystemExit("target theorem depends on unapproved axioms")
-          pathlib.Path(sys.argv[2]).write_text(
+          pathlib.Path(sys.argv[4]).write_text(
               json.dumps({
                   "format": "stage-a-lean-target-bundle-v2",
                   "lean_trust": 0,
-                  "lean_version": sys.argv[3],
+                  "lean_version": sys.argv[5],
                   "axiom_audit": audit,
-                  "target_nodes": json.loads(sys.argv[6]),
-                  "closure_nodes": json.loads(sys.argv[7]),
+                  "target_nodes": target_nodes,
+                  "closure_nodes": sorted(closure_ids),
                   "nodes": nodes,
               }, indent=2, sort_keys=True) + "\n",
               encoding="utf-8",
@@ -1108,6 +1363,7 @@ else
       lean_trust = graph.lean.trust;
       graph_sha256 = builtins.hashString "sha256" (builtins.toJSON graph);
       content_addressed = contentAddressed;
+      bundle_content_addressed = bundleContentAddressed;
       module_count = builtins.length (builtins.attrNames graph.modules);
       node_count = builtins.length graph.nodes;
       target_nodes = selectedTargetNodes;
@@ -1189,6 +1445,7 @@ else
           ];
           preferLocalBuild = false;
           allowSubstitutes = true;
+          requiredSystemFeatures = [ "large-memory" ];
         }
         // lib.optionalAttrs contentAddressed { __contentAddressed = true; }
       )

@@ -7,6 +7,8 @@ import unittest
 from spaghetti_extractor.isa_catalog import (
     DispositionReason,
     EffectClass,
+    ISA_FORM_CATALOG_ENTRY_FORMAT,
+    ISA_FORM_CATALOG_FORMAT,
     ISAFormCatalog,
     ProfileDisposition,
     XEDInstructionCatalog,
@@ -85,6 +87,37 @@ def catalog_payload() -> dict:
                 },
             )
         ],
+    }
+
+
+def v2_entry(
+    form_id: str,
+    effects: list[dict],
+    *,
+    instruction: list[int] | None = None,
+    outputs: dict | None = None,
+) -> dict:
+    return {
+        "format": ISA_FORM_CATALOG_ENTRY_FORMAT,
+        "form_id": form_id,
+        "encoding_id": "encoding-" + form_id,
+        "instruction_bytes": instruction or [0x90],
+        "required_features": [],
+        "effects": effects,
+        "defined_outputs": outputs or defined_outputs(),
+    }
+
+
+def v2_catalog_payload(*entries: dict) -> dict:
+    return {
+        "format": ISA_FORM_CATALOG_FORMAT,
+        "profile": "pe32-i686-v1",
+        "source": {
+            "extractor": "fixture-metadata",
+            "version": "2",
+            "input_sha256": "b" * 64,
+        },
+        "entries": list(entries),
     }
 
 
@@ -268,6 +301,210 @@ class StageAISAFormCatalogTests(unittest.TestCase):
         ]
 
         for malformed in (unknown, unordered, bad_width, memory_masks):
+            with self.subTest(malformed=malformed):
+                with self.assertRaises(ISAConformanceError):
+                    parse_isa_form_catalog(malformed)
+
+    def test_v2_generic_effects_round_trip_canonically(self):
+        payload = v2_catalog_payload(
+            v2_entry(
+                "form-divide-memory",
+                [
+                    {
+                        "class": "divide",
+                        "id": "divide-core",
+                        "width_bits": 32,
+                        "signed": True,
+                        "dividend_high": {"register": "edx", "lsb": 0},
+                        "dividend_low": {"register": "eax", "lsb": 0},
+                        "divisor": {
+                            "kind": "memory",
+                            "address": {
+                                "base": "esp",
+                                "index": None,
+                                "scale": 1,
+                                "displacement": 64,
+                                "segment": "flat",
+                            },
+                        },
+                    }
+                ],
+            ),
+            v2_entry(
+                "form-indirect-control",
+                [
+                    {
+                        "class": "branch",
+                        "id": "branch-control",
+                        "outcomes": [
+                            {
+                                "scenario": "taken",
+                                "eflags_mask": 0,
+                                "eflags_value": 0,
+                                "control": "indirect_call",
+                                "target": {
+                                    "kind": "memory",
+                                    "address": {
+                                        "base": None,
+                                        "index": None,
+                                        "scale": 1,
+                                        "displacement": 0x422000,
+                                        "segment": "flat",
+                                    },
+                                },
+                            }
+                        ],
+                    }
+                ],
+            ),
+            v2_entry(
+                "form-memory-conditional",
+                [
+                    {
+                        "class": "memory",
+                        "id": "memory-source",
+                        "width_bits": 256,
+                        "access": "read",
+                        "address": {
+                            "base": "esi",
+                            "index": None,
+                            "scale": 1,
+                            "displacement": 0,
+                            "segment": "flat",
+                        },
+                        "condition": {
+                            "kind": "register",
+                            "location": {"register": "ecx", "lsb": 0},
+                            "width_bits": 8,
+                            "mask": 31,
+                            "value": 1,
+                        },
+                    }
+                ],
+            ),
+            v2_entry(
+                "form-noop",
+                [{"class": "noop", "id": "noop-core"}],
+            ),
+            v2_entry(
+                "form-register-high",
+                [
+                    {
+                        "class": "register",
+                        "id": "register-high-byte",
+                        "width_bits": 8,
+                        "reads": [{"register": "eax", "lsb": 8}],
+                        "writes": [{"register": "eax", "lsb": 8}],
+                    }
+                ],
+            ),
+            v2_entry(
+                "form-state",
+                [
+                    {
+                        "class": "state",
+                        "id": "state-eflags",
+                        "state": "eflags",
+                        "access": "read_write",
+                    }
+                ],
+            ),
+        )
+
+        parsed = parse_isa_form_catalog(payload)
+
+        self.assertEqual(serialize_isa_form_catalog(parsed), payload)
+        self.assertEqual(
+            isa_form_catalog_sha256(parsed),
+            isa_form_catalog_sha256(
+                parse_isa_form_catalog(copy.deepcopy(payload))
+            ),
+        )
+
+    def test_v2_effect_constraints_fail_closed(self):
+        noop_with_state = v2_catalog_payload(
+            v2_entry(
+                "form-a",
+                [
+                    {"class": "noop", "id": "noop"},
+                    {
+                        "class": "state",
+                        "id": "state",
+                        "state": "eflags",
+                        "access": "read",
+                    },
+                ],
+            )
+        )
+        bad_slice = v2_catalog_payload(
+            v2_entry(
+                "form-a",
+                [
+                    {
+                        "class": "register",
+                        "id": "register",
+                        "width_bits": 16,
+                        "reads": [{"register": "eax", "lsb": 24}],
+                        "writes": [],
+                    }
+                ],
+            )
+        )
+        bad_predicate = v2_catalog_payload(
+            v2_entry(
+                "form-a",
+                [
+                    {
+                        "class": "memory",
+                        "id": "memory",
+                        "width_bits": 32,
+                        "access": "read",
+                        "address": {
+                            "base": "ebx",
+                            "index": None,
+                            "scale": 1,
+                            "displacement": 0,
+                            "segment": "flat",
+                        },
+                        "condition": {
+                            "kind": "eflags",
+                            "mask": 0x40,
+                            "value": 0x41,
+                        },
+                    }
+                ],
+            )
+        )
+        bad_target = v2_catalog_payload(
+            v2_entry(
+                "form-a",
+                [
+                    {
+                        "class": "branch",
+                        "id": "branch",
+                        "outcomes": [
+                            {
+                                "scenario": "taken",
+                                "eflags_mask": 0,
+                                "eflags_value": 0,
+                                "control": "direct_branch",
+                                "target": {
+                                    "kind": "register",
+                                    "location": {"register": "eax", "lsb": 0},
+                                },
+                            }
+                        ],
+                    }
+                ],
+            )
+        )
+
+        for malformed in (
+            noop_with_state,
+            bad_slice,
+            bad_predicate,
+            bad_target,
+        ):
             with self.subTest(malformed=malformed):
                 with self.assertRaises(ISAConformanceError):
                     parse_isa_form_catalog(malformed)

@@ -95,6 +95,43 @@ class StageARelationalInterpreterNormalizationGenerationTests(unittest.TestCase)
         ):
             self.assertNotIn(forbidden, source)
 
+    def test_rep_stosd_is_a_first_class_ordered_effect(self) -> None:
+        row = _ret_row()
+        encoded = bytes.fromhex("f3ab")
+        row["id"] = "semantic-transfer:rep-stosd"
+        row["original"] = {"rva_start": 0x1000, "rva_end": 0x1002, "size": 2}
+        row["instructions"] = [{
+            "rva": 0x1000,
+            "size": 2,
+            "bytes": encoded.hex(),
+            "mnemonic": "rep stosd",
+            "op_str": "dword ptr es:[edi], eax",
+        }]
+        row["instruction_bytes_sha256"] = sha256_bytes(encoded)
+        row["ordered_events"] = [{
+            "family": "external",
+            "kind": "rep_stosd",
+            "index": 0,
+            "instruction_rva": 0x1000,
+            "destination": {"op": "reg", "name": "edi", "width": 32},
+            "value": {"op": "reg", "name": "eax", "width": 32},
+            "count": {"op": "reg", "name": "ecx", "width": 32},
+            "direction_flag": {"op": "flag", "name": "df"},
+            "effect_model": "symbolic_string_fill_v1",
+        }]
+        row["register_writes"] = []
+        row["outcome"] = {"kind": "fallthrough", "target_rva": 0x1002}
+
+        source = relational_interpreter_normalization_source(
+            row,
+            source_module="StageA.GeneratedSemanticInterpreterProgram",
+            pe_name="StageA.OriginalPE.originalPe",
+            record_name="semanticInterpreterProgramRecord0",
+            transfer_name="semanticInterpreterTransfer0",
+        )
+
+        self.assertIn("orderedEffects := [.repStosd]", source)
+
     def test_rejects_tampered_partition_digest_and_names(self) -> None:
         cases: list[tuple[dict[str, object], str]] = []
         split = copy.deepcopy(_ret_row())

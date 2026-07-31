@@ -645,6 +645,53 @@ def _symbolic_execute(
             if mnemonic == "rep movsd":
                 registers["ecx"] = ("const", 0)
             continue
+        if mnemonic == "rep stosd":
+            ecx_value = _canonical_expr(registers["ecx"])
+            if (
+                isinstance(ecx_value, tuple)
+                and len(ecx_value) == 2
+                and ecx_value[0] == "const"
+                and 0 <= int(ecx_value[1]) <= 64
+            ):
+                count = int(ecx_value[1])
+                step = _expr_ite(
+                    flags.get("df", ("flag", "df")),
+                    ("const", 0xFFFFFFFC),
+                    ("const", 4),
+                )
+                dst_address = registers["edi"]
+                for _ in range(count):
+                    _memory_write_expr(
+                        dst_address,
+                        32,
+                        registers["eax"],
+                        memory_events,
+                        memory_writes,
+                    )
+                    dst_address = _expr_add(dst_address, step)
+                registers["edi"] = dst_address
+                registers["ecx"] = ("const", 0)
+                continue
+
+            event_index = external_call_index_base + len(external_events)
+            df = flags.get("df", ("flag", "df"))
+            external_events.append(
+                (
+                    "rep_stosd",
+                    event_index,
+                    registers["edi"],
+                    registers["eax"],
+                    registers["ecx"],
+                    df,
+                )
+            )
+            delta = _expr_mul(registers["ecx"], ("const", 4))
+            signed_delta = _expr_ite(df, _expr_neg(delta), delta)
+            registers["edi"] = _expr_add(registers["edi"], signed_delta)
+            registers["ecx"] = ("const", 0)
+            memory_writes.clear()
+            memory_epoch = event_index
+            continue
         if mnemonic in {"cmpxchg", "lock cmpxchg"}:
             if len(operands) != 2 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported cmpxchg operand shape")

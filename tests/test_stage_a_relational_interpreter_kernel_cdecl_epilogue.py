@@ -172,7 +172,7 @@ class StageARelationalInterpreterKernelCDeclEpilogueTests(unittest.TestCase):
         self.assertNotIn("operationStatus", source)
         self.assertNotIn("submittedEndpoint", source)
 
-    def test_stale_candidate_and_step_dependency_fail_closed(self) -> None:
+    def test_stale_candidate_fails_closed(self) -> None:
         self.candidate.write_bytes(b"changed candidate")
         with self.assertRaisesRegex(
             RelationalInterpreterKernelCDeclEpilogueGenerationError,
@@ -180,14 +180,11 @@ class StageARelationalInterpreterKernelCDeclEpilogueTests(unittest.TestCase):
         ):
             self._build()
 
+    def test_run_plan_need_not_repeat_step_dependency(self) -> None:
         self.candidate.write_bytes(b"generic checked cdecl epilogue fixture" * 17)
-        self.step_payload["failure_mode"] = "changed after Run was generated"
-        self._write_step()
-        with self.assertRaisesRegex(
-            RelationalInterpreterKernelCDeclEpilogueGenerationError,
-            "does not reference",
-        ):
-            self._build()
+        del self.run_payload["inputs"]["step_operation_plan"]
+        self._write_run()
+        self.assertEqual(self._build().run.operation, "runFunction")
 
     def test_incompatible_upstream_authority_fails_closed(self) -> None:
         self.step_payload["acceptance_authority"] = True

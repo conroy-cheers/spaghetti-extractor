@@ -261,6 +261,10 @@ class StageARelationalInterpreterNativeLaunchGraphTests(unittest.TestCase):
         self.assertFalse(payload["acceptance_authority"])
         self.assertEqual(payload["canonical_roots"]["entrypoint_rva"], 0x1000)
         self.assertEqual(payload["canonical_roots"]["tls_callback_rvas"], [])
+        self.assertEqual(
+            payload["lean_terms"]["checked_graph"],
+            "generatedCheckedNativeLaunchGraph",
+        )
 
         source = relational_interpreter_native_launch_graph_source(plan)
         node_count = sum(len(route.nodes) for route in plan.routes)
@@ -276,6 +280,8 @@ class StageARelationalInterpreterNativeLaunchGraphTests(unittest.TestCase):
             "parseImports generatedNativeLaunchGraphCandidatePe",
             "generatedNativeLaunchGraphCertificate",
             "generatedNativeLaunchGraphStaticChecked",
+            "generatedCheckedNativeLaunchGraph",
+            "CheckedExactNativeLaunchGraph",
             "generatedNativeLaunchGraphRoute0000ReplaySound",
             "successors := [4105, 4100]",
             "terminal := some .terminated",

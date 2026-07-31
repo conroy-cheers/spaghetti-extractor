@@ -20,6 +20,13 @@ class StageALeanGraphTypedAuditTests(unittest.TestCase):
 
         self.assertIn("theorem typedFinalTheorem", source)
         self.assertIn("PE32RawProgramsLinkedObservationallyEquivalent", source)
+        self.assertIn(
+            "CanonicalMixedWorldProgramsChunkObservationallyEquivalent", source
+        )
+        self.assertIn(
+            "candidatePE32ProgramsEquivalentMixedChunked", source
+        )
+        self.assertIn("mixedChunkedAcceptanceReady", source)
         self.assertNotIn("PE32RawProgramsObservationallyEquivalent", source)
         self.assertIn("#print axioms typedFinalTheorem", source)
         self.assertNotIn("#print axioms ${selectedAuditTheorem}", source)
@@ -42,6 +49,7 @@ class StageALeanGraphTypedAuditTests(unittest.TestCase):
                 "linked_closed": "linked-raw-pe32-closed",
                 "linked_environment": "linked-raw-pe32-external-environment",
                 "linked_protocol": "linked-raw-pe32-stateful-protocol",
+                "mixed_chunked": "mixed-native-pe32-chunked-closed",
             }
             for mode, expected_profile in profiles.items():
                 with self.subTest(mode=mode):
@@ -67,15 +75,51 @@ class StageALeanGraphTypedAuditTests(unittest.TestCase):
                     )
                     self.assertEqual(audit["unexpected_axioms"], [])
 
-            invalid = root / "invalid"
-            self._write_fixture(invalid, weakened=True, mode="linked_closed")
-            invalid_process = self._build_fixture(invalid, mode="linked_closed")
-            self.assertNotEqual(invalid_process.returncode, 0)
-            self.assertIn("stage-a-relational-proof-audit", invalid_process.stderr)
+            for mode in ("linked_closed", "mixed_chunked"):
+                with self.subTest(mode=mode, failure="wrong-type"):
+                    invalid = root / f"{mode}-wrong-type"
+                    self._write_fixture(invalid, weakened=True, mode=mode)
+                    invalid_process = self._build_fixture(invalid, mode=mode)
+                    self.assertNotEqual(invalid_process.returncode, 0)
+                    self.assertIn(
+                        "stage-a-relational-proof-audit",
+                        invalid_process.stderr,
+                    )
 
-    def _write_fixture(self, root: Path, *, weakened: bool, mode: str) -> None:
+            wrong_profile = root / "mixed-wrong-profile"
+            self._write_fixture(
+                wrong_profile,
+                weakened=False,
+                mode="mixed_chunked",
+                authority_profile="linked-raw-pe32",
+            )
+            wrong_profile_process = self._build_fixture(
+                wrong_profile, mode="mixed_chunked"
+            )
+            self.assertNotEqual(wrong_profile_process.returncode, 0)
+
+            wrong_theorem = root / "ordinary-wrong-theorem"
+            self._write_fixture(
+                wrong_theorem,
+                weakened=False,
+                mode="ordinary",
+            )
+            wrong_theorem_process = self._build_fixture(
+                wrong_theorem, mode="ordinary"
+            )
+            self.assertNotEqual(wrong_theorem_process.returncode, 0)
+
+    def _write_fixture(
+        self,
+        root: Path,
+        *,
+        weakened: bool,
+        mode: str,
+        authority_profile: str | None = None,
+    ) -> None:
         stage_a = root / "lean" / "StageA"
         stage_a.mkdir(parents=True)
+        mixed = mode == "mixed_chunked"
         linked = mode.startswith("linked_")
         protocol = mode == "linked_protocol"
         parameterized = mode.endswith("environment") or protocol
@@ -126,13 +170,29 @@ def candidateWorldProgram : DecodedWorldProgram := 0"""
             theorem_binders = ":"
             programs = "originalWorldProgram candidateWorldProgram"
         canonical_type = (
-            f"{result_name} staticProofContext relationalProductGraph "
-            "productInvariantTable relationalProductReachabilityEvidence "
-            f"{control_name} consoleLaunch {programs}"
+            "StageA.Relational.InterpreterMixedProfile."
+            "CanonicalMixedWorldProgramsChunkObservationallyEquivalentFamily "
+            "candidatePE32CanonicalMixedRelationFamily"
+            if mixed
+            else (
+                f"{result_name} staticProofContext relationalProductGraph "
+                "productInvariantTable relationalProductReachabilityEvidence "
+                f"{control_name} consoleLaunch {programs}"
+            )
         )
         theorem_type = "True" if weakened else canonical_type
-        theorem_proof = "trivial" if weakened else "exact .intro"
-        theorem_suffix = "Linked" if linked else ""
+        theorem_proof = (
+            "trivial"
+            if weakened
+            else "intro _parameters\n  exact .intro"
+            if mixed
+            else "exact .intro"
+        )
+        theorem_name = (
+            "candidatePE32ProgramsEquivalentMixedChunked"
+            if mixed
+            else "candidatePE32ProgramsEquivalent" + ("Linked" if linked else "")
+        )
         source = f"""namespace StageA
 namespace Formal
 def auditMarker := 0
@@ -196,6 +256,15 @@ inductive PE32RawProgramsLinkedObservationallyEquivalent
     (_control : LinkedControlAuthority) (_launch : PE32ConsoleLaunchV2)
     (_original _candidate : DecodedWorldProgram) : Prop where
   | intro
+
+namespace InterpreterMixedProfile
+inductive CanonicalMixedWorldProgramsChunkObservationallyEquivalent
+    (_profile : Nat) : Prop where
+  | intro
+def CanonicalMixedWorldProgramsChunkObservationallyEquivalentFamily
+    {{Parameters : Type}} (family : Parameters -> Prop) : Prop :=
+  forall parameters, family parameters
+end InterpreterMixedProfile
 end Relational
 
 namespace GeneratedRelational
@@ -211,9 +280,14 @@ def linkedProductControlProfile : LinkedControlAuthority := 0
 def consoleLaunch : PE32ConsoleLaunchV2 := 0
 def externalCallSites : List ExternalCallSiteContract := []
 def protocolCallbackTargets : ProtocolCallbackTargetProfile := 0
+def candidatePE32CanonicalMixedRelationProfile : Nat := 0
+def candidatePE32CanonicalMixedRelationFamily (_parameters : Unit) : Prop :=
+  StageA.Relational.InterpreterMixedProfile.
+    CanonicalMixedWorldProgramsChunkObservationallyEquivalent
+      candidatePE32CanonicalMixedRelationProfile
 {program_definitions}
 
-theorem candidatePE32ProgramsEquivalent{theorem_suffix}
+theorem {theorem_name}
 {theorem_binders}
     {theorem_type} := by
   {theorem_proof}
@@ -223,10 +297,37 @@ end StageA
         source_path = stage_a / "RelationalBundle.lean"
         source_path.write_text(source, encoding="utf-8")
         digest = sha256(source.encode()).hexdigest()
-        theorem = "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
-        selected_theorem = theorem + theorem_suffix
+        semantic_id = sha256(
+            json.dumps(
+                {
+                    "format": "stage-a-lean-semantic-node-id-v1",
+                    "recipe_version": "stage-a-lean-semantic-recipe-v1",
+                    "modules": ["RelationalBundle"],
+                    "source_sha256": digest,
+                    "dependencies": [],
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("ascii")
+        ).hexdigest()
+        selected_theorem = (
+            "StageA.GeneratedRelational."
+            "candidatePE32ProgramsEquivalentMixedChunked"
+            if mixed
+            else (
+                "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
+                + ("Linked" if linked else "")
+            )
+        )
         node_kind = (
             "external_protocol" if protocol else "external_call" if parameterized else None
+        )
+        selected_profile = authority_profile or (
+            "mixed-native-pe32-chunked-closed"
+            if mixed
+            else "linked-raw-pe32"
+            if linked
+            else "ordinary-raw-pe32"
         )
         graph = {
             "format": "stage-a-lean-module-graph-v1",
@@ -239,10 +340,16 @@ end StageA
                 "status": "ready",
                 "required_theorem": selected_theorem,
                 "theorem": selected_theorem,
+                "authority_profile": selected_profile,
                 "node_steps": [] if node_kind is None else [{"kind": node_kind}],
                 "linked_acceptance": {
                     "status": "ready" if linked else "incomplete",
                     "theorem": selected_theorem if linked else None,
+                },
+                "mixed_chunked_acceptance": {
+                    "status": "ready" if mixed else "incomplete",
+                    "theorem": selected_theorem if mixed else None,
+                    "profile": selected_profile if mixed else None,
                 },
             },
             "approved_axioms": [],
@@ -261,6 +368,11 @@ end StageA
                     "resource_class": "light",
                     "estimated_memory_mb": 512,
                     "source_sha256": digest,
+                    "semantic_id": semantic_id,
+                    "semantic_recipe_version": (
+                        "stage-a-lean-semantic-recipe-v1"
+                    ),
+                    "dependency_semantic_ids": [],
                 }
             ],
         }

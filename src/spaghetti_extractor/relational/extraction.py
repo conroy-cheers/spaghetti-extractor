@@ -24,7 +24,7 @@ from .lean.analysis_source import (
     _raw_side_extraction_driver_sha256,
 )
 from .lean.compiler import (
-    _lean_memory_arguments,
+    _lean_runtime_arguments,
     _lean_toolchain_identity,
     _relational_cache_dir,
     _run_lean_relational,
@@ -1171,7 +1171,8 @@ def _semantic_successors(outcome: dict[str, Any]) -> dict[str, Any]:
     elif operation == "call":
         direct = [outcome.get("target")]
     elif operation in {
-        "external_call", "bulk_copy", "checked_continue", "atomic_compare_exchange",
+        "external_call", "bulk_copy", "bulk_fill", "checked_continue",
+        "atomic_compare_exchange",
     }:
         direct = [outcome.get("continuation")]
     else:
@@ -1674,7 +1675,7 @@ def _run_lean_extractor(lean_dir: Path, *, bundle: str) -> dict[str, Any]:
         return {"status": "unchecked_marker", "returncode": 1, "stdout": "", "stderr": str(source), "elapsed_seconds": 0.0}
     command = [
         lean,
-        *_lean_memory_arguments(),
+        *_lean_runtime_arguments(),
         "--run",
         str(source.relative_to(lean_dir)),
     ]

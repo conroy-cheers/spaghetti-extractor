@@ -1,4 +1,5 @@
 import StageA.RelationalInterpreterKernelCdeclEpilogueExternalPayload
+import StageA.RelationalInterpreterKernelLookupNative
 import StageA.RelationalInterpreterKernelProgramLookupOperation
 import StageA.RelationalInterpreterKernelStepOperation
 import StageA.RelationalInterpreterKernelRunOperation

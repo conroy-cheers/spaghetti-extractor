@@ -87,10 +87,10 @@ def MixedWorldExecutionInvariantExtension.strengthen
       related originalWorldExact candidateWorldExact :=
     base.worldsRelated originalExecution candidateExecution originalWorld
       candidateWorld related.1 originalWorldExact candidateWorldExact
-  runtimeStatesRelated originalExecution candidateExecution originalWorld
+  machineStatesRelated originalExecution candidateExecution originalWorld
       candidateWorld originalState candidateState related originalWorldExact
       candidateWorldExact originalStateExact candidateStateExact :=
-    base.runtimeStatesRelated originalExecution candidateExecution originalWorld
+    base.machineStatesRelated originalExecution candidateExecution originalWorld
       candidateWorld originalState candidateState related.1 originalWorldExact
       candidateWorldExact originalStateExact candidateStateExact
 
@@ -101,8 +101,9 @@ theorem MixedWorldExecutionInvariantExtension.holds_of_strengthened
     extension.holds originalExecution candidateExecution :=
   related.2
 
-/-- Strengthen a complete mixed composition once with any finite collection of
-paired, chunk-inductive facts. -/
+/-- Strengthen a complete recurring mixed composition once with any finite
+collection of paired, chunk-inductive facts.  Launch is intentionally absent:
+its asymmetric one-time prefix is transported separately below. -/
 def MixedWorldChunkComposition.withInvariantExtension
     {originalContext : OriginalDecodedStaticContext}
     {originalAuthority : ExactOriginalDecodedAuthority originalContext}
@@ -122,26 +123,11 @@ def MixedWorldChunkComposition.withInvariantExtension
       original candidate candidateAuthority programBinding contract launch
       originalRoot reachability candidateRootRva candidateRoot)
     (extension : MixedWorldExecutionInvariantExtension original candidate
-      contract reachability.targetIds composition.invariant)
-    (rootHolds : forall originalWorld candidateWorld originalState candidateState,
-      MixedLaunchStatesRelated originalContext candidate contract
-          originalWorld candidateWorld originalState candidateState ->
-        extension.holds
-          (.running launch.rootTargetId originalState
-            launch.continuationTargetIds 0 originalWorld)
-          (.running candidateRootRva 0 candidateState
-            (composition.candidateLaunchCalls candidateState) 0 []
-            candidateWorld)) :
+      contract reachability.targetIds composition.invariant) :
     MixedWorldChunkComposition originalContext originalAuthority
       original candidate candidateAuthority programBinding contract launch
       originalRoot reachability candidateRootRva candidateRoot where
   invariant := extension.strengthen
-  candidateLaunchCalls := composition.candidateLaunchCalls
-  candidateLaunchCallsExact := composition.candidateLaunchCallsExact
-  rootsRelated originalWorld candidateWorld originalState candidateState launched :=
-    ⟨composition.rootsRelated originalWorld candidateWorld originalState
-        candidateState launched,
-      rootHolds originalWorld candidateWorld originalState candidateState launched⟩
   component originalBefore candidateBefore related := by
     let prior := composition.component originalBefore candidateBefore related.1
     exact {
@@ -157,8 +143,45 @@ def MixedWorldChunkComposition.withInvariantExtension
         extension.chunkClosed originalBefore candidateBefore related.2 prior⟩
     }
 
+/-- Transport the separately checked one-time launch prefix to a strengthened
+runtime invariant.  The caller proves the added fact exactly at the checked
+wrapper endpoint; no root relation or reusable zero-step chunk is introduced. -/
+def mixedWorldLaunchPrefixCertificateWithInvariantExtension
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {base : MixedExecutionInvariant reachabilityTargetIds contract}
+    (certificate : MixedWorldLaunchPrefixCertificate originalContext original candidate
+      contract launch candidateRootRva base)
+    (extension : MixedWorldExecutionInvariantExtension original candidate contract
+      reachabilityTargetIds base)
+    (prefixClosed : forall originalWorld candidateWorld originalState candidateState
+        (launchRelated : MixedLaunchStatesRelated originalContext candidate contract
+          originalWorld candidateWorld originalState candidateState),
+      extension.holds
+        (.running launch.rootTargetId originalState
+          launch.continuationTargetIds 0 originalWorld)
+        (certificate.launchPaths originalWorld candidateWorld originalState
+          candidateState launchRelated).candidateAfter) :
+    MixedWorldLaunchPrefixCertificate originalContext original candidate contract
+      launch candidateRootRva extension.strengthen where
+  candidateLaunchCalls := certificate.candidateLaunchCalls
+  candidateLaunchCallsExact := certificate.candidateLaunchCallsExact
+  launchPaths := by
+    intro originalWorld candidateWorld originalState candidateState launchRelated
+    let prior := certificate.launchPaths originalWorld candidateWorld originalState
+      candidateState launchRelated
+    exact {
+      candidateAfter := prior.candidateAfter
+      originalIdentity := prior.originalIdentity
+      candidatePath := prior.candidatePath
+      afterRelated := ⟨prior.afterRelated,
+        prefixClosed originalWorld candidateWorld originalState candidateState
+          launchRelated⟩
+    }
+
 #print axioms MixedWorldExecutionInvariantExtension.all_member
 #print axioms MixedWorldExecutionInvariantExtension.holds_of_strengthened
 #print axioms MixedWorldChunkComposition.withInvariantExtension
+#print axioms mixedWorldLaunchPrefixCertificateWithInvariantExtension
 
 end StageA.Relational.MixedExecutionInvariantExtension

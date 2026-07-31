@@ -60,10 +60,20 @@ class StageARelationalInterpreterKernelRunOperationResultBridgeKernelTests(
             self.assertLessEqual(axioms, _APPROVED_AXIOMS)
         for theorem in (
             "RunFunctionNativeResultIndexedCDeclSuffixEvidence.environmentClosed",
-            "RunFunctionNativeResultIndexedOperationCertificate.semantics",
-            "RunFunctionNativeResultIndexedOperationCertificate.refines",
+            "RunFunctionNativeCheckedResultIndexedCutpointCluster.completePath",
+            "RunFunctionNativeCheckedResultIndexedOperationCertificate.execute",
+            "RunFunctionNativeCheckedResultIndexedOperationCertificate.refines",
         ):
             self.assertIn(theorem, output)
+        source = (
+            Path(__file__).parents[1]
+            / "src/spaghetti_extractor/lean/StageA"
+            / "RelationalInterpreterKernelRunOperationResultBridge.lean"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "RunFunctionNativeCheckedResultIndexedOperationCertificate", source
+        )
+        self.assertNotIn("stepOperation :", source)
 
 
 if __name__ == "__main__":

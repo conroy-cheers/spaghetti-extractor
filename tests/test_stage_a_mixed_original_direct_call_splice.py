@@ -30,7 +30,9 @@ from spaghetti_extractor.relational.lean.interpreter_mixed_original import (
     derive_direct_call_summary_requests_from_register_authority,
     derive_mixed_original_direct_call_summary_requests,
     load_checked_direct_call_summary_contract_proposals,
+    load_checked_stack_finite_origin_call_entry_authorities,
     plan_interpreter_mixed_original,
+    stage_finite_origin_entry_requests,
     write_relational_interpreter_mixed_original_base,
     write_relational_interpreter_mixed_original_final,
 )
@@ -248,6 +250,52 @@ def _authority_report(
 
 
 class StageAMixedOriginalDirectCallSpliceTests(unittest.TestCase):
+    def test_finite_origin_requests_are_stratified_by_checked_entries(
+        self,
+    ) -> None:
+        plan = MixedOriginalDirectCallSummaryRequestPlan(
+            state_machine_sha256="2" * 64,
+            requests=(
+                DirectCallSummaryRequest(
+                    callsite_rva=0x1010,
+                    caller_rva=0x1000,
+                    registers=("ebx",),
+                ),
+            ),
+            chains=(),
+            frontiers=(),
+            finite_origin_entry_requests=(
+                DirectCallSummaryRequest(
+                    callsite_rva=0x1020,
+                    caller_rva=0x1018,
+                    registers=("ebx",),
+                ),
+                DirectCallSummaryRequest(
+                    callsite_rva=0x1040,
+                    caller_rva=0x1038,
+                    registers=("esi",),
+                ),
+            ),
+        )
+
+        staged = stage_finite_origin_entry_requests(
+            plan,
+            available_instruction_rvas=(0x1020,),
+        )
+
+        self.assertEqual(staged.requests, plan.requests)
+        self.assertEqual(
+            [request.callsite_rva
+             for request in staged.finite_origin_entry_requests],
+            [0x1020],
+        )
+        self.assertEqual(len(staged.frontiers), 1)
+        self.assertEqual(
+            staged.frontiers[0]["reason_code"],
+            "finite_origin_entry_deferred_until_checked",
+        )
+        self.assertEqual(staged.frontiers[0]["callsite_rva"], 0x1040)
+
     def test_runtime_value_carry_hints_merge_frame_words_and_keep_indirect_frontier(
         self,
     ) -> None:
@@ -347,6 +395,244 @@ class StageAMixedOriginalDirectCallSpliceTests(unittest.TestCase):
             "caller_frame_word_requires_finite_origin_entry_authority",
         )
         self.assertEqual(augmented.frontiers[0]["instruction_rva"], 0x1038)
+
+    def test_checked_stack_entry_emits_exact_finite_origin_frame_request(
+        self,
+    ) -> None:
+        original_sha256 = "1" * 64
+        state_machine_sha256 = "2" * 64
+        plan = MixedOriginalDirectCallSummaryRequestPlan(
+            state_machine_sha256=state_machine_sha256,
+            requests=(),
+            chains=(),
+            frontiers=(),
+        )
+        proposal_ir = SimpleNamespace(
+            target_ids_by_rva={
+                8243: 292,
+                8256: 293,
+                82848: 5621,
+            },
+            direct_call_sites=(),
+            stack_dynamic_control=SimpleNamespace(
+                indirect_sites=(
+                    SimpleNamespace(
+                        source_rva=8243,
+                        instruction_rva=8252,
+                        is_call=True,
+                        continuation_rva=8256,
+                    ),
+                ),
+            ),
+        )
+        location = {
+            "kind": "frame_word",
+            "register": "esp",
+            "offset": 32,
+        }
+        hints = {
+            "format": "stage-a-stack-dynamic-closure-hints-v2",
+            "original_sha256": original_sha256,
+            "runtime_value_carry_routes": [{
+                "stable_id": "gnu.original.callback-stack-slot",
+                "facts": [
+                    {"target_rva": 8243, "location": location},
+                    {"target_rva": 8256, "location": location},
+                ],
+                "transfers": [{
+                    "kind": "call_frame_word_preserve",
+                    "source_rva": 8243,
+                    "target_rva": 8256,
+                }],
+            }],
+        }
+        term = {
+            "module": "StageA.GeneratedStackAuthority",
+            "namespace": "StageA.Generated.StackAuthority",
+            "symbol": "checkedStackEntry",
+        }
+        entry_term = {
+            "module": "StageA.GeneratedStackCallEntry",
+            "namespace": "StageA.Generated.StackCallEntry",
+            "symbol": "checkedIndirectExit",
+        }
+        stack_authority = {
+            "format": (
+                "stage-a-checked-stack-finite-origin-call-entry-authorities-v1"
+            ),
+            "inputs": {
+                "original_sha256": original_sha256,
+                "state_machine_sha256": state_machine_sha256,
+            },
+            "entries": [{
+                "source_rva": 8243,
+                "instruction_rva": 8252,
+                "continuation_rva": 8256,
+                "source_target_id": 292,
+                "continuation_target_id": 293,
+                "callee_target_id": 5621,
+                "callee_rva": 82848,
+                "caller_frame_word_offset": 32,
+                "static_stack_authority_term": term,
+                "static_stack_authority_kernel_check": {
+                    "status": "checked",
+                    "module": term["module"],
+                    "source_sha256": "3" * 64,
+                    "olean_sha256": "4" * 64,
+                    "term": term,
+                },
+                "indirect_exit_authority_module": entry_term["module"],
+                "indirect_exit_authority_term": entry_term,
+                "indirect_exit_authority_kernel_check": {
+                    "status": "checked",
+                    "module": entry_term["module"],
+                    "source_sha256": "5" * 64,
+                    "olean_sha256": "6" * 64,
+                    "term": entry_term,
+                },
+                "indirect_exit_certificate_exact_term": (
+                    "StageA.Generated.StackCallEntry."
+                    "checkedIndirectExitExact"
+                ),
+                "certificate_constructor": (
+                    "StageA.Relational.IndirectExitAdapters."
+                    "checkedStackFixedIndirectCertificate"
+                ),
+            }],
+        }
+
+        augmented = (
+            augment_direct_call_summary_requests_from_runtime_value_carry_hints(
+                plan,
+                hints,
+                proposal_ir,
+                original_sha256=original_sha256,
+                checked_stack_entry_authority=stack_authority,
+            )
+        )
+        authorities = load_checked_stack_finite_origin_call_entry_authorities(
+            stack_authority,
+            original_sha256=original_sha256,
+            state_machine_sha256=state_machine_sha256,
+        )
+
+        self.assertEqual(augmented.frontiers, ())
+        self.assertEqual(len(augmented.finite_origin_entry_requests), 1)
+        request = augmented.finite_origin_entry_requests[0]
+        self.assertEqual(request.callsite_rva, 8252)
+        self.assertEqual(request.caller_rva, 8243)
+        self.assertEqual(request.registers, ())
+        self.assertEqual(request.caller_frame_word_offsets, (32,))
+        call = augmented.chains[0]["required_finite_origin_calls"][0]
+        self.assertEqual(call["source_target_id"], 292)
+        self.assertEqual(call["continuation_target_id"], 293)
+        self.assertEqual(call["callee_target_id"], 5621)
+        self.assertEqual(
+            call["certificate_constructor"],
+            "StageA.Relational.IndirectExitAdapters."
+            "checkedStackFixedIndirectCertificate",
+        )
+        self.assertEqual(len(authorities), 1)
+        self.assertEqual(authorities[0].target_ids, (5621,))
+        self.assertEqual(
+            authorities[0].indirect_exit_authority_term,
+            "StageA.Generated.StackCallEntry.checkedIndirectExit",
+        )
+
+    def test_uncompiled_stack_entry_does_not_create_finite_origin_request(
+        self,
+    ) -> None:
+        original_sha256 = "1" * 64
+        state_machine_sha256 = "2" * 64
+        plan = MixedOriginalDirectCallSummaryRequestPlan(
+            state_machine_sha256=state_machine_sha256,
+            requests=(),
+            chains=(),
+            frontiers=(),
+        )
+        proposal_ir = SimpleNamespace(
+            target_ids_by_rva={8243: 292, 8256: 293, 82848: 5621},
+            direct_call_sites=(),
+            stack_dynamic_control=SimpleNamespace(
+                indirect_sites=(
+                    SimpleNamespace(
+                        source_rva=8243,
+                        instruction_rva=8252,
+                        is_call=True,
+                        continuation_rva=8256,
+                    ),
+                ),
+            ),
+        )
+        location = {
+            "kind": "frame_word",
+            "register": "esp",
+            "offset": 32,
+        }
+        hints = {
+            "format": "stage-a-stack-dynamic-closure-hints-v2",
+            "original_sha256": original_sha256,
+            "runtime_value_carry_routes": [{
+                "stable_id": "gnu.original.callback-stack-slot",
+                "facts": [
+                    {"target_rva": 8243, "location": location},
+                    {"target_rva": 8256, "location": location},
+                ],
+                "transfers": [{
+                    "kind": "call_frame_word_preserve",
+                    "source_rva": 8243,
+                    "target_rva": 8256,
+                }],
+            }],
+        }
+        term = {
+            "module": "StageA.GeneratedStackAuthority",
+            "namespace": "StageA.Generated.StackAuthority",
+            "symbol": "checkedStackEntry",
+        }
+        stack_authority = {
+            "format": (
+                "stage-a-checked-stack-finite-origin-call-entry-authorities-v1"
+            ),
+            "inputs": {
+                "original_sha256": original_sha256,
+                "state_machine_sha256": state_machine_sha256,
+            },
+            "entries": [{
+                "source_rva": 8243,
+                "instruction_rva": 8252,
+                "continuation_rva": 8256,
+                "source_target_id": 292,
+                "continuation_target_id": 293,
+                "callee_target_id": 5621,
+                "callee_rva": 82848,
+                "caller_frame_word_offset": 32,
+                "static_stack_authority_term": term,
+                "static_stack_authority_kernel_check": {
+                    "status": "generated",
+                    "module": term["module"],
+                    "source_sha256": "3" * 64,
+                    "olean_sha256": "4" * 64,
+                    "term": term,
+                },
+                "certificate_constructor": (
+                    "StageA.Relational.IndirectExitAdapters."
+                    "checkedStackFixedIndirectCertificate"
+                ),
+            }],
+        }
+
+        with self.assertRaisesRegex(
+            InterpreterMixedOriginalGenerationError,
+            "was not kernel-compiled",
+        ):
+            augment_direct_call_summary_requests_from_runtime_value_carry_hints(
+                plan,
+                hints,
+                proposal_ir,
+                original_sha256=original_sha256,
+                checked_stack_entry_authority=stack_authority,
+            )
 
     def test_exact_register_authority_inventory_drives_deduplicated_requests(
         self,

@@ -13,6 +13,7 @@ from typing import Any, Mapping
 PROPOSAL_FORMAT = "stage-a-mixed-original-direct-call-proposals-v1"
 AUTHORITY_FORMAT = "stage-a-mixed-original-direct-call-authority-bindings-v2"
 OUTPUT_FORMAT = "stage-a-direct-call-closure-fixed-point-v2"
+STACK_DYNAMIC_FORMAT = "stage-a-stack-dynamic-control-ir-v1"
 
 
 class FixedPointError(ValueError):
@@ -42,22 +43,33 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _request_key(value: Any, context: str) -> tuple[int, int, tuple[str, ...]]:
+def _request_key(
+    value: Any, context: str
+) -> tuple[int, int, tuple[str, ...], tuple[int, ...]]:
     row = _mapping(value, context)
     callsite = row.get("callsite_rva")
     caller = row.get("caller_rva")
     registers = row.get("registers")
+    frame_words = row.get("caller_frame_word_offsets", [])
     if (
         not isinstance(callsite, int)
         or isinstance(callsite, bool)
         or not isinstance(caller, int)
         or isinstance(caller, bool)
         or not isinstance(registers, list)
-        or not registers
         or any(not isinstance(register, str) for register in registers)
+        or not isinstance(frame_words, list)
+        or any(
+            not isinstance(offset, int)
+            or isinstance(offset, bool)
+            or not 0 <= offset < 2**32
+            or offset % 4 != 0
+            for offset in frame_words
+        )
+        or (not registers and not frame_words)
     ):
         raise FixedPointError(f"{context} is malformed")
-    key = (callsite, caller, tuple(registers))
+    key = (callsite, caller, tuple(registers), tuple(frame_words))
     if not 0 <= callsite < 2**32 or not 0 <= caller < 2**32:
         raise FixedPointError(f"{context} is outside PE32")
     return key
@@ -71,6 +83,7 @@ def _contract_key(
     tuple[str, ...],
     tuple[str, ...],
     tuple[str, ...],
+    tuple[int, ...],
 ]:
     row = _mapping(value, context)
     callsite = row.get("callsite_rva")
@@ -84,6 +97,7 @@ def _contract_key(
             "target_carried_registers",
         )
     )
+    frame_words = row.get("preserved_caller_frame_word_offsets")
     if (
         not isinstance(callsite, int)
         or isinstance(callsite, bool)
@@ -95,6 +109,14 @@ def _contract_key(
             for registers in register_fields
             for register in registers
         )
+        or not isinstance(frame_words, list)
+        or any(
+            not isinstance(offset, int)
+            or isinstance(offset, bool)
+            or not 0 <= offset < 2**32
+            or offset % 4 != 0
+            for offset in frame_words
+        )
         or premises != []
     ):
         raise FixedPointError(f"{context} is malformed or remains conditional")
@@ -105,11 +127,14 @@ def _contract_key(
         tuple(source_preserved),
         tuple(callee_preserved),
         tuple(target_carried),
+        tuple(frame_words),
     )
 
 
 def check_fixed_point(
-    proposal_path: Path, authority_path: Path
+    proposal_path: Path,
+    authority_path: Path,
+    stack_dynamic_input_path: Path,
 ) -> dict[str, Any]:
     proposal = _load(proposal_path, "direct-call proposal report")
     authority = _load(authority_path, "direct-call authority report")
@@ -135,8 +160,88 @@ def check_fixed_point(
     request_plan = _mapping(
         proposal.get("request_plan"), "direct-call request plan"
     )
-    if request_plan.get("frontiers") != []:
-        raise FixedPointError("direct-call request inventory has frontiers")
+    proposal_inputs = _mapping(
+        proposal.get("inputs"), "direct-call proposal inputs"
+    )
+    stack_dynamic_input = _load(
+        stack_dynamic_input_path, "stack/dynamic control input"
+    )
+    if stack_dynamic_input.get("format") != STACK_DYNAMIC_FORMAT:
+        raise FixedPointError("stack/dynamic control input has the wrong format")
+    stack_inputs = _mapping(
+        stack_dynamic_input.get("inputs"), "stack/dynamic control inputs"
+    )
+    if (
+        stack_inputs.get("original_pe_sha256")
+        != proposal_inputs.get("original_sha256")
+        or stack_inputs.get("state_machine_sha256")
+        != proposal_inputs.get("state_machine_sha256")
+    ):
+        raise FixedPointError(
+            "stack/dynamic control input does not match the proposal"
+        )
+    stack_sites = {
+        (
+            row.get("source_rva"),
+            row.get("instruction_rva"),
+            row.get("continuation_rva"),
+        )
+        for row in (
+            _mapping(value, f"stack/dynamic site {index}")
+            for index, value in enumerate(_rows(
+                stack_dynamic_input.get("indirect_sites"),
+                "stack/dynamic indirect sites",
+            ))
+        )
+        if row.get("is_call") is True
+    }
+    delegated_frontiers = tuple(
+        _mapping(value, f"direct-call frontier {index}")
+        for index, value in enumerate(
+            _rows(request_plan.get("frontiers"), "direct-call frontiers")
+        )
+    )
+    for index, frontier in enumerate(delegated_frontiers):
+        reason = frontier.get("reason_code")
+        if reason == "caller_frame_word_requires_finite_origin_entry_authority":
+            delegated_site = (
+                frontier.get("source_rva"),
+                frontier.get("instruction_rva"),
+                frontier.get("target_rva"),
+            )
+        elif reason == "finite_origin_entry_deferred_until_checked":
+            frame_words = frontier.get("caller_frame_word_offsets")
+            if (
+                not isinstance(frame_words, list)
+                or not frame_words
+                or any(
+                    not isinstance(offset, int)
+                    or isinstance(offset, bool)
+                    or not 0 <= offset < 2**32
+                    or offset % 4 != 0
+                    for offset in frame_words
+                )
+            ):
+                raise FixedPointError(
+                    f"direct-call frontier {index} has no checked caller "
+                    "frame-word delegation"
+                )
+            delegated_site = next(
+                (
+                    site
+                    for site in stack_sites
+                    if site[0] == frontier.get("caller_rva")
+                    and site[1] == frontier.get("callsite_rva")
+                ),
+                None,
+            )
+        else:
+            delegated_site = None
+        if delegated_site not in stack_sites:
+            raise FixedPointError(
+                f"direct-call frontier {index} is not delegated to the "
+                "stack/dynamic control phase"
+            )
     ordinary = tuple(
         _request_key(row, f"ordinary request {index}")
         for index, row in enumerate(
@@ -244,9 +349,6 @@ def check_fixed_point(
         raise FixedPointError(
             "direct-call authority report is not bound to the proposal report"
         )
-    proposal_inputs = _mapping(
-        proposal.get("inputs"), "direct-call proposal inputs"
-    )
     for proposal_name, authority_name in (
         ("original_sha256", "original_sha256"),
         ("state_machine_sha256", "state_machine_sha256"),
@@ -273,6 +375,7 @@ def check_fixed_point(
             source_preserved,
             callee_preserved,
             target_carried,
+            preserved_frame_words,
         ) = _contract_key(
             contract, f"contract {index}"
         )
@@ -286,6 +389,7 @@ def check_fixed_point(
                 f"contract {index} does not match its exact request"
             )
         requested_registers = set(request[2])
+        requested_frame_words = set(request[3])
         if request in finite:
             if not requested_registers.issubset(target_carried):
                 raise FixedPointError(
@@ -296,10 +400,22 @@ def check_fixed_point(
                     f"contract {index} does not preserve requested registers "
                     "inside the callee"
                 )
-        elif not requested_registers.issubset(source_preserved):
-            raise FixedPointError(
-                f"contract {index} does not preserve requested source registers"
-            )
+            if not requested_frame_words.issubset(preserved_frame_words):
+                raise FixedPointError(
+                    f"contract {index} does not preserve requested caller "
+                    "frame words"
+                )
+        else:
+            if not requested_registers.issubset(source_preserved):
+                raise FixedPointError(
+                    f"contract {index} does not preserve requested source "
+                    "registers"
+                )
+            if not requested_frame_words.issubset(preserved_frame_words):
+                raise FixedPointError(
+                    f"contract {index} does not preserve requested caller "
+                    "frame words"
+                )
         module = module_by_callsite[callsite]
         for field in (
             "continuation_rva",
@@ -314,9 +430,17 @@ def check_fixed_point(
                     f"contract {index} {field} disagrees with its proposal"
                 )
         expected_origin = (
-            "checked_finite_origin_call_summary"
+            (
+                "checked_finite_origin_call_caller_frame_word_summary"
+                if requested_frame_words
+                else "checked_finite_origin_call_summary"
+            )
             if request in finite
-            else "checked_direct_call_summary"
+            else (
+                "checked_direct_call_caller_frame_word_summary"
+                if requested_frame_words
+                else "checked_direct_call_summary"
+            )
         )
         if contract.get("origin") != expected_origin:
             raise FixedPointError(
@@ -356,17 +480,21 @@ def check_fixed_point(
         "acceptance_authority": False,
         "closure_basis": (
             "finite exact register-carry request inventory with one "
-            "Lean-authorized semantic contract per request"
+            "Lean-authorized semantic contract per request; exact unresolved "
+            "stack/dynamic target frontiers are delegated to their checked "
+            "downstream phase"
         ),
         "inputs": {
             "authority_report_sha256": _sha256(authority_path),
             "proposal_report_sha256": _sha256(proposal_path),
+            "stack_dynamic_input_sha256": _sha256(stack_dynamic_input_path),
         },
         "counts": {
             "ordinary_requests": len(ordinary),
             "finite_origin_requests": len(finite),
             "proposal_modules": len(modules),
             "semantic_contracts": len(contracts),
+            "delegated_stack_dynamic_frontiers": len(delegated_frontiers),
             "remaining_frontiers": 0,
         },
     }
@@ -376,12 +504,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--proposal-report", required=True)
     parser.add_argument("--authority-report", required=True)
+    parser.add_argument("--stack-dynamic-input", required=True)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     result = check_fixed_point(
-        Path(args.proposal_report), Path(args.authority_report)
+        Path(args.proposal_report),
+        Path(args.authority_report),
+        Path(args.stack_dynamic_input),
     )
     (out / "direct-call-fixed-point.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n",

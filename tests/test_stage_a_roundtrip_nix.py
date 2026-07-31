@@ -164,11 +164,11 @@ class StageARoundtripNixTests(unittest.TestCase):
                 "mkPhaseWithSource\n"
                 "    directCallSemanticsPythonSource\n"
             ),
-            2,
+            4,
         )
         self.assertEqual(
             lane.count("${python} ${directCallSemanticsDriver}"),
-            2,
+            4,
         )
         proposal_start = lane.index(
             "mixedOriginalDirectCallProposalsLean ="
@@ -420,6 +420,142 @@ class StageARoundtripNixTests(unittest.TestCase):
             r"(?m)^\s*(wine|wineserver|qemu)(\s|$)",
         )
 
+    def test_gnu_hello_proof_python_source_keeps_cli_import_closure(
+        self,
+    ) -> None:
+        lane = self.gnu_hello_nix.read_text(encoding="utf-8")
+        start = lane.index("proofPythonFiles = lib.fileset.difference")
+        end = lane.index("proofPythonSource =", start)
+        proof_files = lane[start:end]
+
+        self.assertNotIn(
+            "../src/spaghetti_extractor/relational/build.py",
+            proof_files,
+        )
+        self.assertIn(
+            "fileset = proofPythonFiles;",
+            lane[lane.index("proofPythonSource ="):],
+        )
+        self.assertIn(
+            'engineSegments = mkPhase "stage-a-gnu-hello-roundtrip-engine-segments"',
+            lane,
+        )
+        self.assertIn("${python} -m spaghetti_extractor", lane)
+
+    def test_gnu_hello_acceptance_interface_nix_wiring_is_current(
+        self,
+    ) -> None:
+        lane = self.gnu_hello_nix.read_text(encoding="utf-8")
+
+        requirements_start = lane.index("acceptanceRequirementsLean =")
+        requirements_end = lane.index(
+            "acceptanceRequirementsProofSources =", requirements_start
+        )
+        requirements = lane[requirements_start:requirements_end]
+        self.assertIn(
+            "(.dynamic_evidence_fields | length) == 13",
+            requirements,
+        )
+
+        launch_source_start = lane.index("launchBindingPythonSource =")
+        launch_source_end = lane.index(
+            "externalComponentPythonSource =", launch_source_start
+        )
+        launch_source = lane[launch_source_start:launch_source_end]
+        self.assertIn("gnu_hello_acceptance_requirements.py", launch_source)
+        self.assertIn("gnu_hello_launch_binding.py", launch_source)
+        self.assertIn("interpreter_mixed_kernel_binding.py", launch_source)
+
+        external_start = lane.index("externalComponentLean =")
+        external_end = lane.index(
+            "mixedSemanticOperationComponentLean =", external_start
+        )
+        external = lane[external_start:external_end]
+        self.assertIn("stage-a-gnu-hello-external-component-v3", external)
+        self.assertIn("(.remaining_premises | length) == 1", external)
+        self.assertIn("(.blocking_obligations | length) == 1", external)
+        self.assertIn(
+            "generatedExternalBoundaryChunkFactoryOfOperationBridge",
+            external,
+        )
+        self.assertNotIn(
+            "generatedCanonicalExternalBoundaryChunkFactory",
+            external,
+        )
+
+        mixed_start = lane.index("mixedSemanticOperationComponentLean =")
+        mixed_end = lane.index(
+            "runtimeIndirectCompositionLean =", mixed_start
+        )
+        mixed = lane[mixed_start:mixed_end]
+        self.assertIn("__contentAddressed = true;", mixed)
+        self.assertIn('.status == "incomplete"', mixed)
+        self.assertIn("(.acceptance_authority | not)", mixed)
+        self.assertIn("(.proof_authority | not)", mixed)
+        self.assertIn(
+            "mixedSemanticOperationComponentInterfaceProof =",
+            mixed,
+        )
+        self.assertIn("mkGeneratedClosureProof", mixed)
+        self.assertIn("leanSourceRoot", mixed)
+        self.assertIn(
+            "generatedSemanticChunkFactory",
+            mixed,
+        )
+        self.assertIn("candidateRootRva : Nat", mixed)
+        self.assertIn(
+            "candidateAuthority program candidateRootRva invariant",
+            mixed,
+        )
+        self.assertNotIn("candidateAuthority program 0 invariant", mixed)
+
+        proof_start = lane.index(
+            'proofSources = mkPhase "stage-a-gnu-hello-roundtrip-proof-sources"'
+        )
+        proof_end = lane.index(
+            "# The generated module inventory", proof_start
+        )
+        proof_sources = lane[proof_start:proof_end]
+        for phase, module in (
+            (
+                "kernelStepOperationLean",
+                "GeneratedRelationalInterpreterKernelStepOperation.lean",
+            ),
+            (
+                "kernelRunOperationLean",
+                "GeneratedRelationalInterpreterKernelRunOperation.lean",
+            ),
+            (
+                "kernelInvokeOperationLean",
+                "GeneratedRelationalInterpreterKernelInvokeOperation.lean",
+            ),
+        ):
+            self.assertIn(f"--source ${{{phase}}}", proof_sources)
+            phase_start = lane.index(f"{phase} =")
+            phase_end = lane.index("\n  '';", phase_start)
+            self.assertIn(
+                f'test -s \\\n      "$out/StageA/{module}"',
+                lane[phase_start:phase_end],
+            )
+
+        invoke_start = lane.index("kernelInvokeOperationLean =")
+        invoke_end = lane.index(
+            "mixedCandidateAuthorityLean =", invoke_start
+        )
+        invoke = lane[invoke_start:invoke_end]
+        self.assertIn(
+            "stage-a-relational-interpreter-kernel-invoke-operation-plan-v4",
+            invoke,
+        )
+        self.assertIn(
+            "external_arm_exact_route_and_result_closure",
+            invoke,
+        )
+        self.assertNotIn(
+            "checked_run_native_evidence_at_exact_nested_frames",
+            invoke,
+        )
+
     def test_gnu_hello_kernel_abi_is_a_narrow_deterministic_phase(self) -> None:
         lane = self.gnu_hello_nix.read_text(encoding="utf-8")
         driver = self.gnu_hello_driver.read_text(encoding="utf-8")
@@ -453,6 +589,277 @@ class StageARoundtripNixTests(unittest.TestCase):
         self.assertIn("roundTripPythonSource", lane)
         self.assertIn("lib.fileset.difference", lane)
         self.assertNotIn("export PYTHONPATH=${sourceRoot}/src", lane)
+
+    def test_gnu_hello_exact_isa_phases_export_form_summaries(self) -> None:
+        lane = self.gnu_hello_nix.read_text(encoding="utf-8")
+        flake = self.flake_nix.read_text(encoding="utf-8")
+        phase_start = lane.index("mkExactLeanIsa =")
+        phase_end = lane.index(
+            'smoke = mkPhase "stage-a-gnu-hello-roundtrip-smoke"',
+            phase_start,
+        )
+        phase = lane[phase_start:phase_end]
+
+        self.assertIn(
+            'format: "stage-a-relational-side-isa-summary-v1"',
+            phase,
+        )
+        self.assertIn('status: "lean-decoder-inventory-complete"', phase)
+        self.assertIn(
+            "unique_forms: ([.regions[].occurrences[].form] | unique | length)",
+            phase,
+        )
+        self.assertIn(
+            "forms: ([.regions[].occurrences[].form] | unique | sort)",
+            phase,
+        )
+        self.assertIn('> "$out/summary.json"', phase)
+        self.assertIn(
+            ".counts.unique_forms == (.forms | length)",
+            phase,
+        )
+        for output in (
+            "stage-a-gnu-hello-roundtrip-original-isa",
+            "stage-a-gnu-hello-roundtrip-candidate-isa",
+            "stage-a-gnu-hello-roundtrip-original-isa-summary",
+            "stage-a-gnu-hello-roundtrip-candidate-isa-summary",
+            "stage-a-gnu-hello-roundtrip-isa-coverage",
+            "stage-a-gnu-hello-roundtrip-semantic-coverage",
+        ):
+            self.assertIn(output, flake)
+        self.assertIn(
+            'format: "stage-a-gnu-hello-roundtrip-isa-coverage-v1"',
+            lane,
+        )
+        self.assertIn(
+            'status: "lean-decoder-coverage-inventory-complete"',
+            lane,
+        )
+        self.assertIn(
+            "acceptance_exact_pe_decode_replay_required: true",
+            lane,
+        )
+        self.assertIn(
+            "semantic_conformance_authority: false",
+            lane,
+        )
+        self.assertIn(
+            "whole_program_acceptance_authority: false",
+            lane,
+        )
+        self.assertIn(
+            'ln -s ${isaCoverage} "$out/isa-coverage"',
+            lane,
+        )
+        self.assertIn(
+            '"stage-a-gnu-hello-roundtrip-semantic-coverage"',
+            lane,
+        )
+        self.assertIn(
+            "--original-isa ${originalIsa}/isa.json",
+            lane,
+        )
+        self.assertIn(
+            "--candidate-isa ${candidateIsa}/isa.json",
+            lane,
+        )
+        self.assertIn(
+            'ln -s ${semanticCoverage} "$out/semantic-coverage"',
+            lane,
+        )
+
+    def test_gnu_hello_side_isa_and_typed_access_fault_are_fail_closed(
+        self,
+    ) -> None:
+        lane = self.gnu_hello_nix.read_text(encoding="utf-8")
+        flake = self.flake_nix.read_text(encoding="utf-8")
+        closure_start = lane.index(
+            "isaSideAdapterPythonSource = lib.fileset.toSource"
+        )
+        closure_end = lane.index(
+            "semanticCoveragePythonSource = lib.fileset.toSource",
+            closure_start,
+        )
+        closure = lane[closure_start:closure_end]
+        adapter_start = lane.index(
+            "sideIsaQualificationAdapter = mkPhaseWithSource"
+        )
+        adapter_end = lane.index("isaCoverage = mkAnalysisPhase", adapter_start)
+        adapter = lane[adapter_start:adapter_end]
+        enrichment_source_start = lane.index(
+            "isaCatalogEnrichmentPythonSource = lib.fileset.toSource"
+        )
+        enrichment_source_end = lane.index(
+            "semanticCoveragePythonSource = lib.fileset.toSource",
+            enrichment_source_start,
+        )
+        enrichment_source = lane[
+            enrichment_source_start:enrichment_source_end
+        ]
+        enrichment_start = lane.index(
+            "sideIsaCatalogEnrichment = mkAnalysisPhase"
+        )
+        enrichment_end = lane.index(
+            "isaCoverage = mkAnalysisPhase", enrichment_start
+        )
+        enrichment = lane[enrichment_start:enrichment_end]
+        semantic_start = lane.index(
+            "semanticCoverage = mkPhaseWithSource"
+        )
+        semantic_end = lane.index(
+            "nativeLaunchRequest = mkPhase", semantic_start
+        )
+        semantic = lane[semantic_start:semantic_end]
+
+        for source in (
+            "isa_side_adapter.py",
+            "isa_catalog.py",
+            "isa_conformance.py",
+            "isa_semantic_forms.py",
+            "isa_requirements.py",
+            "preflight.py",
+            "side_extraction_artifact.py",
+            "side_isa_artifact.py",
+            "Formal.lean",
+            "ISAQualification.lean",
+            "X87.lean",
+        ):
+            self.assertIn(source, closure)
+        self.assertNotIn("proofPythonFiles", closure)
+        self.assertNotIn("../src/spaghetti_extractor/cli.py", closure)
+        self.assertIn(
+            "from spaghetti_extractor.isa_side_adapter import",
+            adapter,
+        )
+        self.assertIn("${originalIsa}/isa.json ${originalPe}", adapter)
+        self.assertIn(
+            "${candidateIsa}/isa.json ${candidate}/candidate.exe",
+            adapter,
+        )
+        self.assertIn('requirements_out=output / "requirements.json"', adapter)
+        self.assertIn(
+            'catalog_out=output / "catalog-proposal.json"',
+            adapter,
+        )
+        for schema in (
+            "stage-a-isa-requirement-inventory-v1",
+            "stage-a-side-isa-executable-catalog-proposal-v1",
+            "stage-a-side-isa-qualification-adapter-result-v1",
+        ):
+            self.assertIn(schema, adapter)
+        self.assertIn(
+            ".counts.canonical_occurrences == $expected_occurrences",
+            adapter,
+        )
+        self.assertIn(
+            ".status == \"incomplete_missing_effect_enrichment\"",
+            adapter,
+        )
+        self.assertIn("(.trust.proof_authority | not)", adapter)
+        self.assertIn(
+            "stage-a-gnu-hello-roundtrip-side-isa-adapter", flake
+        )
+        for source in (
+            "isa_catalog_enrichment.py",
+            "relational/lean/compiler.py",
+            "Formal.lean",
+            "ISAQualification.lean",
+            "X87.lean",
+        ):
+            self.assertIn(source, enrichment_source)
+        self.assertNotIn("proofPythonFiles", enrichment_source)
+        self.assertIn(
+            "write_enriched_side_isa_catalog",
+            enrichment,
+        )
+        self.assertIn(
+            "stage-a-side-isa-executable-catalog-enrichment-v1",
+            enrichment,
+        )
+        self.assertIn(
+            "spaghetti-extractor stage-a-generate-isa-corpus",
+            enrichment,
+        )
+        self.assertIn(
+            "import ./stage-a-isa-qualification-graph.nix",
+            enrichment,
+        )
+        self.assertIn(
+            "sideIsaQualificationEvidence = "
+            "sideIsaQualification.qualification",
+            enrichment,
+        )
+        self.assertIn(
+            "sideIsaQualificationBundle = sideIsaQualification.bundle",
+            enrichment,
+        )
+        for package in (
+            "stage-a-gnu-hello-roundtrip-side-isa-enrichment",
+            "stage-a-gnu-hello-roundtrip-side-isa-corpus",
+            "stage-a-gnu-hello-roundtrip-side-isa-evidence",
+            "stage-a-gnu-hello-roundtrip-side-isa-qualification",
+        ):
+            self.assertIn(package, flake)
+        self.assertIn(
+            'ln -s ${sideIsaQualificationAdapter} \\',
+            lane,
+        )
+        self.assertIn('"side_isa_qualification_adapter": {', lane)
+
+        self.assertNotIn("accessDomainReceipts ? null", lane)
+        self.assertNotIn("accessDomainReceiptProposals ? null", lane)
+        self.assertIn(
+            "../src/spaghetti_extractor/relational/access_domain_receipts.py",
+            lane,
+        )
+        self.assertNotIn("--access-domain-receipts", semantic)
+        self.assertNotIn("--access-domain-receipt-proposals", semantic)
+        self.assertIn(
+            ".access_domain_receipts.accepted_receipts == []",
+            semantic,
+        )
+        self.assertIn("accepted: 0", semantic)
+        self.assertIn(
+            '.counts.by_access_fault_domain["requires-proof"] > 0',
+            semantic,
+        )
+        self.assertNotIn("access-domain-receipts.json", adapter)
+        access_source_start = lane.index(
+            "accessFaultQualificationPythonSource = lib.fileset.toSource"
+        )
+        access_source_end = lane.index(
+            "kernelDataPythonSource = lib.fileset.toSource",
+            access_source_start,
+        )
+        access_source = lane[access_source_start:access_source_end]
+        self.assertIn("access_domain_receipts.py", access_source)
+        self.assertNotIn("proofPythonFiles", access_source)
+        access_phase_start = lane.index(
+            "accessFaultQualificationLean ="
+        )
+        access_phase_end = lane.index(
+            "kernelAbiLean = mkPhase", access_phase_start
+        )
+        access_phase = lane[access_phase_start:access_phase_end]
+        for required in (
+            "--original-isa ${originalIsa}/isa.json",
+            "--state-machine ${staticExport}/state-machine.jsonl",
+            "${mixedOriginalBaseLean}/interpreter-mixed-original-base-plan.json",
+            "--kernel-data-inventory ${kernelDataLean}/module-inventory.json",
+            "stage-a-typed-access-fault-qualification-v1",
+            ".counts.by_qualification_kind.x87 > 0",
+            ".counts.blocked_regions == 0",
+            ".counts.by_blocker_reason == {}",
+            "--explicit-targets-only",
+            "--target-closure-only",
+            "contentAddressed = true",
+            "targetNodes = accessFaultQualificationTargets",
+        ):
+            self.assertIn(required, access_phase)
+        self.assertIn(
+            "accessFaultQualificationProof",
+            lane[lane.index("in\n{"):],
+        )
 
     def test_gnu_hello_rooted_import_and_mixed_original_phases_are_narrow(
         self,
@@ -867,7 +1274,7 @@ class StageARoundtripNixTests(unittest.TestCase):
             self.assertEqual(build_packs["modules"][shape], pack_id)
             self.assertEqual(build_packs["packs"][pack_id], [decode, shape])
 
-    def test_gnu_hello_aggregate_shards_large_direct_call_families_by_layer(
+    def test_gnu_hello_aggregate_keeps_a_direct_call_family_in_one_pack(
         self,
     ) -> None:
         node = (
@@ -930,24 +1337,159 @@ class StageARoundtripNixTests(unittest.TestCase):
             replay_pack_ids = {
                 build_packs["modules"][module] for module in replay_modules
             }
-            self.assertEqual(len(replay_pack_ids), 3)
-            self.assertTrue(
-                all(
-                    len(build_packs["packs"][pack_id]) <= 4
-                    for pack_id in replay_pack_ids
+            self.assertEqual(len(replay_pack_ids), 1)
+            pack_id = replay_pack_ids.pop()
+            self.assertEqual(build_packs["modules"][data], pack_id)
+            self.assertEqual(build_packs["modules"][control], pack_id)
+            self.assertEqual(build_packs["modules"][node], pack_id)
+            self.assertEqual(
+                set(build_packs["packs"][pack_id]),
+                {data, control, node, *replay_modules},
+            )
+
+    def test_gnu_hello_aggregate_coarsens_independent_proof_families(
+        self,
+    ) -> None:
+        families = [
+            "GeneratedRelationalInternalDirectCallSummaryNode" + f"{index:064x}"
+            for index in range(8)
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source" / "StageA"
+            source.mkdir(parents=True)
+            for module in families:
+                (source / f"{module}.lean").write_text(
+                    f"def {module.lower()} := true\n",
+                    encoding="ascii",
+                )
+            output = root / "aggregate"
+            process = subprocess.run(
+                [
+                    sys.executable,
+                    str(self.proof_source_aggregate_driver),
+                    "--source",
+                    str(source.parent),
+                    "--coarse-build-packs",
+                    "--emit-module-graph",
+                    "--out",
+                    str(output),
+                ],
+                cwd=self.repo,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+            self.assertEqual(process.returncode, 0, process.stderr)
+            build_packs = json.loads(
+                (output / "module-build-packs.json").read_text(
+                    encoding="utf-8"
                 )
             )
-            self.assertNotIn(
-                build_packs["modules"][data],
-                replay_pack_ids,
+            manifest = json.loads(
+                (output / "phase-manifest.json").read_text(encoding="utf-8")
             )
-            self.assertNotIn(
-                build_packs["modules"][control],
-                replay_pack_ids,
+            graph = json.loads(
+                (output / "module-graph.json").read_text(encoding="utf-8")
             )
-            self.assertNotEqual(
-                build_packs["modules"][node],
-                build_packs["modules"][control],
+            self.assertLessEqual(len(build_packs["packs"]), 8)
+            self.assertEqual(
+                set(build_packs["modules"]),
+                set(families),
+            )
+            self.assertTrue(manifest["coarse_build_packs"])
+            self.assertTrue(manifest["precomputed_module_graph"])
+            self.assertEqual(len(graph["modules"]), len(families))
+            self.assertEqual(len(graph["nodes"]), len(build_packs["packs"]))
+            for module, metadata in graph["modules"].items():
+                self.assertEqual(
+                    (
+                        output
+                        / metadata["source"]
+                    ).read_bytes(),
+                    (source / f"{module}.lean").read_bytes(),
+                )
+                pack = json.loads(
+                    (
+                        output
+                        / "source-pack-data"
+                        / f"{metadata['source_pack']}.json"
+                    ).read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    pack["modules"][module],
+                    (source / f"{module}.lean").read_text(encoding="ascii"),
+                )
+
+    def test_gnu_hello_aggregate_bounds_coarse_pack_resource_work(
+        self,
+    ) -> None:
+        modules: list[str] = []
+        candidate = 0
+        while len(modules) < 10:
+            module = f"GeneratedMediumCertificate{candidate:04d}"
+            bucket = int(sha256(module.encode("ascii")).hexdigest()[:8], 16) % 8
+            if bucket == 0:
+                modules.append(module)
+            candidate += 1
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "source"
+            source = source_root / "StageA"
+            source.mkdir(parents=True)
+            for module in modules:
+                (source / f"{module}.lean").write_text(
+                    f"def {module.lower()} := true\n",
+                    encoding="ascii",
+                )
+            (source_root / "module-resources.json").write_text(
+                json.dumps(
+                    {
+                        module: {
+                            "resource_class": "medium",
+                            "estimated_memory_mb": 4096,
+                        }
+                        for module in modules
+                    }
+                ),
+                encoding="ascii",
+            )
+            output = root / "aggregate"
+            process = subprocess.run(
+                [
+                    sys.executable,
+                    str(self.proof_source_aggregate_driver),
+                    "--source",
+                    str(source_root),
+                    "--coarse-build-packs",
+                    "--emit-module-graph",
+                    "--out",
+                    str(output),
+                ],
+                cwd=self.repo,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+            self.assertEqual(process.returncode, 0, process.stderr)
+            build_packs = json.loads(
+                (output / "module-build-packs.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            selected_packs = {
+                build_packs["modules"][module] for module in modules
+            }
+            self.assertEqual(
+                sorted(
+                    len(build_packs["packs"][pack_id])
+                    for pack_id in selected_packs
+                ),
+                [2, 4, 4],
             )
 
     def test_gnu_hello_aggregate_rejects_a_cycle_inside_one_build_pack(
@@ -1033,204 +1575,6 @@ class StageARoundtripNixTests(unittest.TestCase):
                 "estimated_memory_mb": memory_mb,
             })
 
-    def test_gnu_hello_acceptance_driver_emits_typed_uninhabited_frontier(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            block_manifest = root / "block-manifest.json"
-            block_manifest.write_text(
-                json.dumps({"targets": []}),
-                encoding="utf-8",
-            )
-            mixed_original_manifest = root / "mixed-original-manifest.json"
-            mixed_original_manifest.write_text(
-                json.dumps(
-                    {
-                        "phase": "mixed-original-final-lean",
-                        "proof_authority": False,
-                        "remaining_frontiers": [{"reason_code": "test_frontier"}],
-                        "authorizing_lean_terms": [],
-                        "counts": {"blockers": 1},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            native_launch_request = root / "native-launch-request.json"
-            native_launch_request.write_text(
-                json.dumps(
-                    {
-                        "format": "stage-a-native-launch-route-request-v1",
-                        "status": "incomplete",
-                        "acceptance_authority": False,
-                        "candidate_sha256": "00" * 32,
-                        "canonical_sources": [],
-                        "required_path_shapes": [],
-                        "forbidden_authority": [],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            original_carrier_manifest = root / "original-carrier-manifest.json"
-            original_carrier_manifest.write_text(
-                json.dumps(
-                    {
-                        "phase": "mixed-original-carrier-binding-lean",
-                        "status": "source-ready",
-                        "proof_authority": False,
-                        "targets": [
-                            "GeneratedRelationalInterpreterOriginalCarrierBinding"
-                        ],
-                        "exact_mixed_binding": (
-                            "StageA.GeneratedRelational."
-                            "InterpreterOriginalCarrierBinding."
-                            "generatedOriginalExactMixedProgramBinding"
-                        ),
-                    }
-                ),
-                encoding="utf-8",
-            )
-            x87_kernel_execution_manifest = (
-                root / "x87-kernel-execution-manifest.json"
-            )
-            x87_kernel_execution_manifest.write_text(
-                json.dumps(
-                    {
-                        "phase": "x87-kernel-execution-lean",
-                        "status": "source-ready",
-                        "diagnostic_status": "semantic_premises_required",
-                        "proof_authority": False,
-                        "failure_mode": "incomplete",
-                        "candidate_sha256": "11" * 32,
-                        "runtime_targets": 1,
-                        "theorem": (
-                            "StageA.GeneratedRelational."
-                            "InterpreterKernelX87Execution."
-                            "generatedX87ReplayBridgeKernelExecution"
-                        ),
-                        "remaining_authority": {
-                            "lean_type": (
-                                "ExactNativeX87ReplayKernelEndpointAuthority "
-                                "inventory program handler sourceInvariant"
-                            )
-                        },
-                        "remaining_proof_premises": [
-                            "program_binding.peExact",
-                            "program_binding.importsExact",
-                            "program_binding.targetInventory",
-                            "endpoint_certificate.handlerResult",
-                            "endpoint_certificate.callTarget",
-                            "endpoint_certificate.callRun",
-                            "endpoint_certificate.entryRun",
-                            "endpoint_certificate.instructionRun",
-                            "endpoint_certificate.captureRun",
-                            "endpoint_certificate.returnRun",
-                            "endpoint_certificate.frameEffect",
-                        ],
-                        "targets": [
-                            "GeneratedRelationalInterpreterKernelX87Execution"
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            output = root / "acceptance"
-            process = subprocess.run(
-                [
-                    sys.executable,
-                    str(self.gnu_hello_driver),
-                    "acceptance-sources",
-                    "--kernel-block-manifest",
-                    str(block_manifest),
-                    "--mixed-original-manifest",
-                    str(mixed_original_manifest),
-                    "--original-carrier-manifest",
-                    str(original_carrier_manifest),
-                    "--native-launch-request",
-                    str(native_launch_request),
-                    "--x87-kernel-execution-manifest",
-                    str(x87_kernel_execution_manifest),
-                    "--out",
-                    str(output),
-                ],
-                cwd=self.repo,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            self.assertEqual(process.returncode, 0, process.stderr)
-            manifest = json.loads(
-                (output / "phase-manifest.json").read_text(encoding="utf-8")
-            )
-            inventory = json.loads(
-                (output / "acceptance-obligations.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-            requirements = (
-                output / "StageA/GeneratedGnuHelloRoundTripRequirements.lean"
-            ).read_text(encoding="utf-8")
-            acceptance = (
-                output
-                / "StageA/GeneratedRelationalInterpreterMixedKernelBinding.lean"
-            ).read_text(encoding="utf-8")
-
-        self.assertIsNone(manifest["acceptance_theorem"])
-        self.assertEqual(
-            manifest["acceptance_blocker"]["id"],
-            "gnu_hello_round_trip_required_terms_uninhabited",
-        )
-        self.assertFalse(inventory["closed_acceptance"])
-        self.assertIn(
-            "import StageA.GeneratedRelationalInterpreterMixedOriginal",
-            requirements,
-        )
-        self.assertIn(
-            "import StageA.GeneratedRelationalInterpreterMixedAuthority",
-            requirements,
-        )
-        self.assertIn(
-            "import StageA.GeneratedCallableExternalProgram",
-            requirements,
-        )
-        self.assertIn("originalCallableEnvironment", requirements)
-        self.assertIn("decodedWorldProgramWithCallable", requirements)
-        self.assertIn("originalCallableBinding", requirements)
-        self.assertEqual(
-            inventory["required_parameter"]["lean_type"],
-            "StageA.GeneratedGnuHelloRoundTripRequirements."
-            "GnuHelloRoundTripRequiredTerms",
-        )
-        for exact_binding in (
-            "originalContextExact",
-            "originalAuthorityExact",
-            "originalProgramExact",
-            "originalProgramBindingExact",
-            "candidateProgramExact",
-            "candidateAuthorityExact",
-            "kernelABIExact : HEq core.concrete_abi",
-        ):
-            self.assertIn(exact_binding, requirements)
-        self.assertIn(
-            "candidateNativeLaunchCertificate : ExactNativeLaunchGraphCertificate",
-            requirements,
-        )
-        self.assertNotIn("ExactNativeLaunchWrapperCertificate", requirements)
-        for required_surface in (
-            "original_context : OriginalDecodedStaticContext",
-            "candidate_program : ExactNativeWorldProgram",
-            "candidate_root : DirectExactCandidateNativeLaunchRoot",
-            "external_boundary_chunk :",
-        ):
-            self.assertIn(required_surface, requirements)
-        self.assertIn(
-            "(requirements : StageA.GeneratedGnuHelloRoundTripRequirements."
-            "GnuHelloRoundTripRequiredTerms)",
-            acceptance,
-        )
-        self.assertIn("canonicalMixedWorldProgramsEquivalent", acceptance)
-
     def test_gnu_hello_carrier_binding_is_a_separate_checked_phase(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1305,6 +1649,59 @@ class StageARoundtripNixTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, smoke)
 
+    def test_candidate_kernel_closures_do_not_depend_on_global_proof_sources(
+        self,
+    ) -> None:
+        lane = self.gnu_hello_nix.read_text(encoding="utf-8")
+        helper_start = lane.index("mkGeneratedClosureProof =")
+        helper_end = lane.index("mkLeanTermReceipts =", helper_start)
+        helper = lane[helper_start:helper_end]
+        self.assertIn("--coarse-build-packs", helper)
+        self.assertIn("--emit-module-graph", helper)
+        self.assertIn(
+            'graphFile = proofSources + "/module-graph.json"', helper
+        )
+        self.assertIn("bundleContentAddressed = true", helper)
+        self.assertNotIn("standaloneSourceRoot", helper)
+
+        boundary_start = lane.index("candidateKernelProofSourceInputs = [")
+        boundary_end = lane.index(
+            "interpreterStepProgramLookupProjectionClosure =", boundary_start
+        )
+        boundary = lane[boundary_start:boundary_end]
+
+        self.assertIn("leanSourceRoot", boundary)
+        self.assertIn("kernelOperationInstantiationLean", boundary)
+        for forbidden in (
+            "proofSources",
+            "originalPeLean",
+            "mixedOriginalLean",
+            "mixedOriginalStaticReachabilityLean",
+            "canonicalRelationCoreLean",
+            "kernelCdeclEpilogueLean",
+            "kernelFrameExecutorLean",
+        ):
+            self.assertNotIn(forbidden, boundary)
+
+        for name, end_marker in (
+            (
+                "programLookupNativeWorldBridgeClosure =",
+                "programLookupNativeWorldBridgeProofSources =",
+            ),
+            (
+                "interpreterStepWorldProgramLookupClosure =",
+                "interpreterStepWorldProgramLookupProofSources =",
+            ),
+            (
+                "kernelOperationInstantiationClosure =",
+                "kernelOperationInstantiationProofSources =",
+            ),
+        ):
+            start = lane.index(name)
+            closure = lane[start : lane.index(end_marker, start)]
+            self.assertIn("candidateKernel", closure)
+            self.assertNotIn("proofSources", closure)
+
     def test_gnu_hello_phases_use_reproducible_timestamps(self) -> None:
         lane = self.gnu_hello_nix.read_text(encoding="utf-8")
 
@@ -1344,6 +1741,39 @@ class StageARoundtripNixTests(unittest.TestCase):
             0,
         )
         self.assertNotIn("diff -qr", fixed_point)
+
+    def test_gnu_hello_kernel_receipt_bundles_have_stable_nix_paths(
+        self,
+    ) -> None:
+        lane = self.gnu_hello_nix.read_text(encoding="utf-8")
+        receipt_start = lane.index("mkLeanTermReceipts =")
+        receipt_end = lane.index("mkStaticBinaryInventory =", receipt_start)
+        receipt_helper = lane[receipt_start:receipt_end]
+
+        self.assertIn("pkgs.runCommand name", receipt_helper)
+        self.assertNotIn("mkAnalysisPhase name", receipt_helper)
+        self.assertNotIn("__contentAddressed", receipt_helper)
+
+        for proof_name in (
+            "mixedOriginalDirectCallSemanticsProof",
+            "mixedOriginalStaticStackAuthorityProof",
+            "mixedOriginalStackDynamicAuthorityProof",
+        ):
+            start = lane.index(f"{proof_name} = mkLeanGraph")
+            end = lane.index("};", start)
+            proof = lane[start:end]
+            self.assertIn("contentAddressed = true;", proof)
+            self.assertIn("bundleContentAddressed = false;", proof)
+            self.assertIn("targetBundle = true;", proof)
+
+        start = lane.index(
+            "mixedOriginalDirectCallClosureSemanticsProof = mkLeanGraph"
+        )
+        end = lane.index("};", start)
+        closure_proof = lane[start:end]
+        self.assertIn("contentAddressed = false;", closure_proof)
+        self.assertIn("bundleContentAddressed = true;", closure_proof)
+        self.assertIn("targetBundle = true;", closure_proof)
 
     def test_gnu_hello_direct_call_fixed_point_fails_closed(self) -> None:
         specification = importlib.util.spec_from_file_location(
@@ -1429,6 +1859,7 @@ class StageARoundtripNixTests(unittest.TestCase):
                     if origin == "checked_finite_origin_call_summary"
                     else []
                 ),
+                "preserved_caller_frame_word_offsets": [],
                 "remaining_semantic_premises": [],
                 "origin": origin,
                 "authorizing_lean_term": {
@@ -1461,8 +1892,25 @@ class StageARoundtripNixTests(unittest.TestCase):
                 root = Path(temporary)
                 proposal_path = root / "proposal.json"
                 authority_path = root / "authority.json"
+                stack_dynamic_path = root / "stack-dynamic.json"
                 proposal_path.write_text(
                     json.dumps(proposal_payload, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                stack_dynamic_path.write_text(
+                    json.dumps({
+                        "format": "stage-a-stack-dynamic-control-ir-v1",
+                        "inputs": {
+                            "original_pe_sha256": "original",
+                            "state_machine_sha256": "state-machine",
+                        },
+                        "indirect_sites": [{
+                            "source_rva": 0x3000,
+                            "instruction_rva": 0x3010,
+                            "continuation_rva": 0x3015,
+                            "is_call": True,
+                        }],
+                    }, sort_keys=True) + "\n",
                     encoding="utf-8",
                 )
                 authority = {
@@ -1488,12 +1936,69 @@ class StageARoundtripNixTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 return driver.check_fixed_point(
-                    proposal_path, authority_path
+                    proposal_path, authority_path, stack_dynamic_path
                 )
 
         self.assertEqual(
             check(proposal, contracts)["counts"]["semantic_contracts"],
             2,
+        )
+        finite_frame_proposal = json.loads(json.dumps(proposal))
+        finite_frame_proposal["request_plan"][
+            "finite_origin_entry_requests"
+        ][0]["caller_frame_word_offsets"] = [32]
+        finite_frame_proposal["planner"]["proposals"][1]["request"][
+            "caller_frame_word_offsets"
+        ] = [32]
+        finite_frame_contracts = json.loads(json.dumps(contracts))
+        finite_frame_contracts[1]["origin"] = (
+            "checked_finite_origin_call_caller_frame_word_summary"
+        )
+        finite_frame_contracts[1][
+            "preserved_caller_frame_word_offsets"
+        ] = [32]
+        self.assertEqual(
+            check(finite_frame_proposal, finite_frame_contracts)["counts"][
+                "semantic_contracts"
+            ],
+            2,
+        )
+        finite_frame_contracts[1][
+            "preserved_caller_frame_word_offsets"
+        ] = []
+        with self.assertRaisesRegex(
+            driver.FixedPointError,
+            "does not preserve requested caller frame words",
+        ):
+            check(finite_frame_proposal, finite_frame_contracts)
+        delegated = json.loads(json.dumps(proposal))
+        delegated["request_plan"]["frontiers"] = [{
+            "reason_code": (
+                "caller_frame_word_requires_finite_origin_entry_authority"
+            ),
+            "source_rva": 0x3000,
+            "instruction_rva": 0x3010,
+            "target_rva": 0x3015,
+        }]
+        self.assertEqual(
+            check(delegated, contracts)["counts"][
+                "delegated_stack_dynamic_frontiers"
+            ],
+            1,
+        )
+        deferred = json.loads(json.dumps(proposal))
+        deferred["request_plan"]["frontiers"] = [{
+            "reason_code": "finite_origin_entry_deferred_until_checked",
+            "caller_rva": 0x3000,
+            "callsite_rva": 0x3010,
+            "registers": [],
+            "caller_frame_word_offsets": [32],
+        }]
+        self.assertEqual(
+            check(deferred, contracts)["counts"][
+                "delegated_stack_dynamic_frontiers"
+            ],
+            1,
         )
 
         corruptions = []
@@ -1576,11 +2081,16 @@ class StageARoundtripNixTests(unittest.TestCase):
         self.assertIn(".runtime_closure_required", phase)
         self.assertIn(".counts.runtime_premises_required == .counts.sites", phase)
         self.assertIn(
-            ".counts.runtime_value_carry_required_transfers == 1",
+            ".counts.runtime_value_carry_required_transfers == 0",
             phase,
         )
+        self.assertIn(".proof_ready", phase)
         self.assertIn("runtime-value-carry-ir.json", phase)
-        self.assertIn("contentAddressed = true", phase)
+        self.assertIn(
+            "mixedOriginalStackDynamicAuthorityProof = mkLeanGraph",
+            lane,
+        )
+        self.assertIn("contentAddressed = true", lane)
         final = lane[end:lane.index(
             "mixedOriginalStaticReachabilityLean =", end
         )]
@@ -1791,14 +2301,25 @@ class StageARoundtripNixTests(unittest.TestCase):
         self.assertIn('"RelationalPEWorldExecution"', profiles)
         self.assertIn('"RelationalStaticTree"', profiles)
         self.assertIn('"RelationalInterpreterWholeProgramAcceptance"', profiles)
-        self.assertIn('"RelationalInterpreterKernelLookupNative"', profiles)
+        self.assertIn(
+            '"RelationalInterpreterKernelProgramLookupFrameExecutor"', profiles
+        )
         self.assertIn('"RelationalInterpreterKernelProgramLookupOperation"', profiles)
         self.assertNotIn("hasPrefix", profiles)
         self.assertNotIn("builtins.filter", profiles)
         self.assertIn("selectedTargetClosureNodes", graph)
         self.assertIn('"stage-a-lean-target-bundle-v2"', graph)
-        self.assertIn('"target_nodes": json.loads(sys.argv[6])', graph)
-        self.assertIn('"closure_nodes": json.loads(sys.argv[7])', graph)
+        self.assertIn("target_nodes = json.loads(sys.argv[8])", graph)
+        self.assertIn('"closure_nodes": sorted(closure_ids)', graph)
+        self.assertIn(
+            '"stage-a-direct-dependencies"',
+            graph,
+        )
+        self.assertNotIn(
+            ") (lib.imap0 (index: value: { inherit index value; }) "
+            "selectedTargetClosureNodes)}",
+            graph,
+        )
         for executor in (graph, compact):
             self.assertIn(
                 "LinkedWorldExternalProtocolEnvironmentsRefine",
@@ -1895,9 +2416,12 @@ class StageARoundtripNixTests(unittest.TestCase):
             graph,
         )
         self.assertIn(
-            'ln -s "${semantic}" "$out/proof-node-roots/${resultName}"',
+            'ln -s "${semantic}" "$out/proof-node-roots/${toString index}"',
             graph,
         )
+        self.assertIn("pending = sorted(roots.iterdir())", graph)
+        self.assertIn("pending.extend(", graph)
+        self.assertIn("semantic Lean interface output mismatch", graph)
         self.assertIn(
             'os.symlink(dependency, roots / f"{index:06d}")',
             graph,
@@ -1910,20 +2434,36 @@ class StageARoundtripNixTests(unittest.TestCase):
         self.assertIn('cp "$out/audit.json" "$verdict/audit.json"', graph)
         self.assertNotIn("dependency-pack", graph)
         self.assertIn('contentAddressed ? true', graph)
+        self.assertIn(
+            'bundleContentAddressed ? contentAddressed',
+            graph,
+        )
+        self.assertIn(
+            'lib.optionalAttrs bundleContentAddressed '
+            '{ __contentAddressed = true; }',
+            graph,
+        )
+        self.assertIn("self.${dependency}.stable", graph)
+        self.assertIn('"stage-a-lean-${node.id}-stable"', graph)
+        self.assertIn("stable = stableDrv.out;", graph)
+        self.assertIn("stableAudit = stableDrv.audit;", graph)
         self.assertIn("module-build-packs.json", graph)
         self.assertIn("stage-a-lean-build-packs-v1", graph)
         self.assertRegex(graph, r"standaloneSource\s*=\s*module:")
         self.assertIn("builtins.toFile", graph)
         self.assertIn("builtins.unsafeDiscardStringContext", graph)
         self.assertNotIn("passAsFile = sourceNames", graph)
-        self.assertNotIn('"stage-a-source-pack-${packId}")', graph)
+        self.assertIn('"stage-a-source-pack-${packId}")', graph)
+        self.assertIn('sourceRoot + "/source-pack-data/${packId}.json"', graph)
+        self.assertIn('"stage-a-lean-source-pack-v1"', graph)
         self.assertNotIn(
             '"${standaloneRoot}/source-packs/${packId}/." "$out/"',
             graph,
         )
         self.assertRegex(
             graph,
-            r"if standalone then\s+standaloneSource module\s+else",
+            r"if standalone then\s+standaloneSource module\s+"
+            r"else if metadata \? source_pack then",
         )
         self.assertIn(
             'lib.optionalAttrs contentAddressed { __contentAddressed = true; }',
@@ -2061,9 +2601,39 @@ class StageARoundtripNixTests(unittest.TestCase):
                 if "inputDrvs" in detached_payload
                 else detached_payload["inputs"]["drvs"]
             )
-            target_node_drvs = [
+            stable_target_drvs = [
                 path if path.startswith("/") else f"/nix/store/{path}"
                 for path in detached_input_drvs
+                if path.endswith("-stage-a-lean-target-pack-stable.drv")
+            ]
+            self.assertEqual(len(stable_target_drvs), 1)
+            stable_target = subprocess.run(
+                ["nix", "derivation", "show", stable_target_drvs[0]],
+                cwd=self.repo,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(
+                stable_target.returncode,
+                0,
+                stable_target.stderr,
+            )
+            stable_document = json.loads(stable_target.stdout)
+            stable_derivations = stable_document.get(
+                "derivations",
+                stable_document,
+            )
+            stable_payload = next(iter(stable_derivations.values()))
+            stable_input_drvs = (
+                stable_payload["inputDrvs"]
+                if "inputDrvs" in stable_payload
+                else stable_payload["inputs"]["drvs"]
+            )
+            target_node_drvs = [
+                path if path.startswith("/") else f"/nix/store/{path}"
+                for path in stable_input_drvs
                 if path.endswith("-stage-a-lean-target-pack.drv")
             ]
             self.assertEqual(len(target_node_drvs), 1)

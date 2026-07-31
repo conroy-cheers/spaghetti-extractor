@@ -118,6 +118,7 @@ structure ExactDecodedCDeclSymbolicExecution
       epilogueBefore eventIndex events world)
     (entryBefore : MachineState) where
   behavior : SymbolicBehavior
+  flagsBasePreserved : behavior.flagsBase = none
   returnedStateExact :
     execution.returnedState =
       concreteBehaviorNextMachineState (behavior.eval entryBefore) entryBefore
@@ -325,6 +326,17 @@ theorem ExactDecodedCDeclSymbolicExecution.stackPopped
   rw [shape.esp]
   exact facts.stackAfter
 
+theorem ExactDecodedCDeclSymbolicExecution.directionFlagPreserved
+    (symbolic : ExactDecodedCDeclSymbolicExecution execution entryBefore) :
+    execution.returnedState.eflags.extractLsb' 10 1 =
+      entryBefore.eflags.extractLsb' 10 1 := by
+  rw [symbolic.returnedStateExact]
+  change
+    (symbolic.behavior.eval entryBefore).eflags.extractLsb' 10 1 =
+      entryBefore.eflags.extractLsb' 10 1
+  cases flags : symbolic.behavior.flags <;>
+    simp [SymbolicBehavior.eval, symbolic.flagsBasePreserved, flags]
+
 theorem ExactDecodedCDeclSymbolicExecution.exactWriteFootprint
     (symbolic : ExactDecodedCDeclSymbolicExecution execution entryBefore) :
     MemoryAgreesOutside
@@ -381,6 +393,7 @@ def SymbolicallyClosedCDeclEpilogueCertificate.toChecked
   preservedRegisters := certificate.symbolic.preservedRegisters
     certificate.frameFacts
   stackPopped := certificate.symbolic.stackPopped certificate.frameFacts
+  directionFlagPreserved := certificate.symbolic.directionFlagPreserved
   footprint := symbolicWriteFootprint certificate.symbolic.behavior entryBefore
   footprintChecked := certificate.frameFacts.footprintChecked
   exactWriteFootprint := certificate.symbolic.exactWriteFootprint
@@ -419,6 +432,7 @@ theorem SymbolicallyClosedCDeclEpilogueCertificate.path
 #print axioms ExactDecodedCDeclSymbolicExecution.stackReturnWord
 #print axioms ExactDecodedCDeclSymbolicExecution.preservedRegisters
 #print axioms ExactDecodedCDeclSymbolicExecution.stackPopped
+#print axioms ExactDecodedCDeclSymbolicExecution.directionFlagPreserved
 #print axioms ExactDecodedCDeclSymbolicExecution.exactWriteFootprint
 #print axioms SymbolicallyClosedCDeclEpilogueCertificate.toChecked
 #print axioms SymbolicallyClosedCDeclEpilogueCertificate.responseRelated

@@ -17,11 +17,14 @@ required simulation explicit:
 
 * `NativeWorldFrameContext.embed` appends the caller frame tail and shifts the
   event context without changing machine state;
-* external actions must be stable at the shifted event index, including their
-  successor worlds;
-* every pre-terminal standalone state must refine one exact contextual step;
-* a top-level machine return must agree with the supplied logical frame; and
-* the standalone path must not contain terminal stuttering before its endpoint.
+* standalone imported actions are selected from an environment reindexed by
+  the caller event index;
+* the operation producer selects one explicit fuel whose strict prefixes are
+  running, event-index exact, and compatible with the caller return address;
+* every selected pre-terminal standalone state refines one exact contextual
+  step; and
+* padded terminal paths and paths for incompatible caller frames cannot inhabit
+  the selected-path interface.
 
 None of these properties is assumed for every environment or program.  They
 are fields of a certificate for the exact candidate operation.
@@ -33,6 +36,14 @@ structure NativeWorldFrameContext where
   tail : List NativeCallFrame
   eventIndex : Nat
   eventPrefix : List NativeExternalEvent
+
+/-- The logical caller frame must agree with the concrete hardware return word
+already present at the callee entry stack pointer.  This is a call-site fact,
+not a property of an arbitrary frame context. -/
+def NativeWorldFrameContext.entryCompatible
+    (context : NativeWorldFrameContext) (before : MachineState) : Prop :=
+  Memory.read32 before.memory before.registers.esp =
+    context.frame.returnAddress
 
 /-- Embed one standalone execution under an existing frame and event context.
 The returned case is the expected nested-call endpoint. -/
@@ -64,16 +75,31 @@ def nativeWorldExecutionEventIndexExact : NativeWorldExecution -> Prop
   | .running _ _ _ _ eventIndex events _ => eventIndex = events.length
   | .returned .. | .terminated .. | .fault .. | .blocked .. => True
 
-/-- Exact stability required when a standalone event at local index `i` is
-replayed at caller index `context.eventIndex + i`.  Equality includes the
-returned machine state and successor world.  Callable external results use
-the same condition when that optional executor is enabled. -/
+/-- Present a caller-indexed imported environment as a standalone local-index
+environment.  This is the source of truth for imported action selection; no
+global shift-invariance property is assumed. -/
+def reindexNativeWorldEnvironment
+    (environment : NativeWorldEnvironment) (offset : Nat) :
+    NativeWorldEnvironment := {
+  action := fun localIndex event world =>
+    environment.action (offset + localIndex) event world
+}
+
+/-- Keep the exact candidate static semantics while reindexing imported
+actions for one caller context. -/
+def reindexExactNativeWorldProgram
+    (candidate : ExactNativeWorldProgram) (offset : Nat) :
+    ExactNativeWorldProgram := {
+  candidate with
+  environment := reindexNativeWorldEnvironment candidate.environment offset
+}
+
+/-- Callable external results still need explicit index stability because only
+the imported `NativeWorldEnvironment` is reindexed.  Candidates with the
+optional callable executor disabled discharge this condition vacuously. -/
 structure NativeWorldFrameEnvironmentStable
     (candidate : ExactNativeWorldProgram)
     (context : NativeWorldFrameContext) : Prop where
-  importedAction : forall localIndex event world,
-    candidate.environment.action (context.eventIndex + localIndex) event world =
-      candidate.environment.action localIndex event world
   callableResult : forall config,
     candidate.callableExternal = some config ->
       forall localIndex event,
@@ -109,17 +135,17 @@ def NativeWorldFrameCallableTailCompatibleAt
       match stepKernelPE32Instruction candidate.pe candidate.imports
           (.running rva undefinedSlot state) with
       | .stopped (.indirectJump target) _ =>
-          if candidate.indirectTargets.allows candidate.pe world rva .jump
-              target != true then
-            True
-          else
-            match candidate.callableExternal with
-            | none => True
-            | some config =>
-                match resolveNativeCallableIndirect candidate.pe config world
-                    target .jump with
-                | .callable .. => False
-                | _ => True
+          match candidate.indirectTargets.resolve? candidate.pe world rva .jump
+              target with
+          | some (.callableResource resourceId) =>
+              match candidate.callableExternal with
+              | none => True
+              | some config =>
+                  match resolveNativeCallableResource config world resourceId
+                      target .jump with
+                  | .callable .. => False
+                  | _ => True
+          | _ => True
       | _ => True
   | _ => True
 
@@ -131,7 +157,10 @@ def NativeWorldFrameStepRefinesAt
     (context : NativeWorldFrameContext)
     (execution : NativeWorldExecution) : Prop :=
   (candidate.transitionSystem.step (context.embed execution)).next =
-    context.embed (candidate.transitionSystem.step execution).next
+    context.embed
+      ((reindexExactNativeWorldProgram candidate
+        context.eventIndex).transitionSystem.step
+        execution).next
 
 /-- Exposed witness for one standalone dispatch path.  Unlike the ordinary
 existential path interface, its fuel is available to a frame-refinement
@@ -146,46 +175,88 @@ structure StandaloneNativeWorldPath
     runRelatedSteps candidate.transitionSystem fuel before =
       (after, observations)
 
+/-- The exact standalone path selected by the operation producer for one caller
+context.  Fuel is data carried by this witness rather than a universally
+quantified path parameter.  `prefixesRunning` rejects terminal padding;
+`returnCompatible` rejects paths selected for a different concrete caller;
+and `eventIndexExact` ties imported action selection to the exact event prefix.
+-/
+structure ProducerSelectedStandaloneNativeWorldPath
+    (candidate : ExactNativeWorldProgram)
+    (context : NativeWorldFrameContext)
+    (before after : NativeWorldExecution)
+    (observations : List WorldRelationalObservable) where
+  fuel : Nat
+  path : StandaloneNativeWorldPath
+    (reindexExactNativeWorldProgram candidate context.eventIndex)
+    before after observations fuel
+  prefixesRunning : forall consumed, consumed < fuel ->
+    nativeWorldExecutionIsRunning
+      (runRelatedSteps
+        (reindexExactNativeWorldProgram candidate
+          context.eventIndex).transitionSystem
+        consumed before).1
+  eventIndexExact : forall consumed, consumed < fuel ->
+    nativeWorldExecutionEventIndexExact
+      (runRelatedSteps
+        (reindexExactNativeWorldProgram candidate
+          context.eventIndex).transitionSystem
+        consumed before).1
+  returnCompatible : forall consumed, consumed < fuel ->
+    NativeWorldFrameReturnCompatibleAt candidate context
+      (runRelatedSteps
+        (reindexExactNativeWorldProgram candidate
+          context.eventIndex).transitionSystem
+        consumed before).1
+
 /-- Path-local hypotheses needed by the generic lifting theorem.  They are
-required only at states reached before this exact endpoint.
+required only for the producer-selected canonical path.
 
 `stepRefines` is deliberately conditional on the explicit environment and
-return hypotheses.  A future generic executor theorem can discharge it once
-for the supported native semantics; generated operation proofs cannot bypass
-either condition. -/
+callable-tail hypotheses.  The selected path itself supplies running,
+event-index, and caller-return compatibility. -/
 structure NativeWorldFramePathRefinement
     (candidate : ExactNativeWorldProgram)
     (context : NativeWorldFrameContext)
     {before after : NativeWorldExecution}
     {observations : List WorldRelationalObservable}
-    {fuel : Nat}
-    (path : StandaloneNativeWorldPath candidate before after observations fuel) :
+    (selected : ProducerSelectedStandaloneNativeWorldPath candidate context
+      before after observations) :
     Prop where
   environmentStable : NativeWorldFrameEnvironmentStable candidate context
-  prefixesRunning : forall consumed, consumed < fuel ->
-    nativeWorldExecutionIsRunning
-      (runRelatedSteps candidate.transitionSystem consumed before).1
-  eventIndexExact : forall consumed, consumed < fuel ->
-    nativeWorldExecutionEventIndexExact
-      (runRelatedSteps candidate.transitionSystem consumed before).1
-  returnCompatible : forall consumed, consumed < fuel ->
-    NativeWorldFrameReturnCompatibleAt candidate context
-      (runRelatedSteps candidate.transitionSystem consumed before).1
-  callableTailCompatible : forall consumed, consumed < fuel ->
+  callableTailCompatible : forall consumed, consumed < selected.fuel ->
     NativeWorldFrameCallableTailCompatibleAt candidate
-      (runRelatedSteps candidate.transitionSystem consumed before).1
-  stepRefines : forall consumed (beforeEnd : consumed < fuel),
+      (runRelatedSteps
+        (reindexExactNativeWorldProgram candidate
+          context.eventIndex).transitionSystem
+        consumed before).1
+  stepRefines : forall consumed (_beforeEnd : consumed < selected.fuel),
     nativeWorldExecutionIsRunning
-      (runRelatedSteps candidate.transitionSystem consumed before).1 ->
+      (runRelatedSteps
+        (reindexExactNativeWorldProgram candidate
+          context.eventIndex).transitionSystem
+        consumed before).1 ->
     nativeWorldExecutionEventIndexExact
-      (runRelatedSteps candidate.transitionSystem consumed before).1 ->
+      (runRelatedSteps
+        (reindexExactNativeWorldProgram candidate
+          context.eventIndex).transitionSystem
+        consumed before).1 ->
     NativeWorldFrameEnvironmentStable candidate context ->
     NativeWorldFrameReturnCompatibleAt candidate context
-      (runRelatedSteps candidate.transitionSystem consumed before).1 ->
+      (runRelatedSteps
+        (reindexExactNativeWorldProgram candidate
+          context.eventIndex).transitionSystem
+        consumed before).1 ->
     NativeWorldFrameCallableTailCompatibleAt candidate
-      (runRelatedSteps candidate.transitionSystem consumed before).1 ->
+      (runRelatedSteps
+        (reindexExactNativeWorldProgram candidate
+          context.eventIndex).transitionSystem
+        consumed before).1 ->
     NativeWorldFrameStepRefinesAt candidate context
-      (runRelatedSteps candidate.transitionSystem consumed before).1
+      (runRelatedSteps
+        (reindexExactNativeWorldProgram candidate
+          context.eventIndex).transitionSystem
+        consumed before).1
 
 /-- State projection of a finite run is preserved by the context embedding
 when every reached step refines. -/
@@ -196,11 +267,17 @@ theorem runRelatedSteps_frameContext_fst
     (fuel : Nat)
     (stepRefines : forall consumed, consumed < fuel ->
       NativeWorldFrameStepRefinesAt candidate context
-        (runRelatedSteps candidate.transitionSystem consumed before).1) :
+        (runRelatedSteps
+          (reindexExactNativeWorldProgram candidate
+            context.eventIndex).transitionSystem
+          consumed before).1) :
     (runRelatedSteps candidate.transitionSystem fuel
       (context.embed before)).1 =
       context.embed
-        (runRelatedSteps candidate.transitionSystem fuel before).1 := by
+        (runRelatedSteps
+          (reindexExactNativeWorldProgram candidate
+            context.eventIndex).transitionSystem
+          fuel before).1 := by
   induction fuel generalizing before with
   | zero => rfl
   | succ fuel induction =>
@@ -216,35 +293,38 @@ theorem runRelatedSteps_frameContext_fst
 /-- Lift an exact standalone path into its caller context.  The contextual
 observation list is computed from the exact transition system and is not
 submitted by the certificate. -/
-theorem StandaloneNativeWorldPath.liftFrameContext
+theorem ProducerSelectedStandaloneNativeWorldPath.liftFrameContext
     {candidate : ExactNativeWorldProgram}
     {context : NativeWorldFrameContext}
     {before after : NativeWorldExecution}
     {standaloneObservations : List WorldRelationalObservable}
-    {fuel : Nat}
-    (path : StandaloneNativeWorldPath candidate before after
-      standaloneObservations fuel)
-    (refinement : NativeWorldFramePathRefinement candidate context path) :
+    (selected : ProducerSelectedStandaloneNativeWorldPath candidate context
+      before after standaloneObservations)
+    (refinement : NativeWorldFramePathRefinement candidate context selected) :
     exists observations,
       NonemptyRelatedPath candidate.transitionSystem
         (context.embed before) observations (context.embed after) := by
-  have stepRefines : forall consumed, consumed < fuel ->
+  have stepRefines : forall consumed, consumed < selected.fuel ->
       NativeWorldFrameStepRefinesAt candidate context
-        (runRelatedSteps candidate.transitionSystem consumed before).1 := by
+        (runRelatedSteps
+          (reindexExactNativeWorldProgram candidate
+            context.eventIndex).transitionSystem
+          consumed before).1 := by
     intro consumed beforeEnd
     exact refinement.stepRefines consumed beforeEnd
-      (refinement.prefixesRunning consumed beforeEnd)
-      (refinement.eventIndexExact consumed beforeEnd)
+      (selected.prefixesRunning consumed beforeEnd)
+      (selected.eventIndexExact consumed beforeEnd)
       refinement.environmentStable
-      (refinement.returnCompatible consumed beforeEnd)
+      (selected.returnCompatible consumed beforeEnd)
       (refinement.callableTailCompatible consumed beforeEnd)
   have endpoint :=
-    runRelatedSteps_frameContext_fst candidate context before fuel stepRefines
-  rw [path.exact] at endpoint
+    runRelatedSteps_frameContext_fst candidate context before selected.fuel
+      stepRefines
+  rw [selected.path.exact] at endpoint
   let contextual :=
-    runRelatedSteps candidate.transitionSystem fuel
+    runRelatedSteps candidate.transitionSystem selected.fuel
       (context.embed before)
-  refine ⟨contextual.2, fuel, path.positive, ?_⟩
+  refine ⟨contextual.2, selected.fuel, selected.path.positive, ?_⟩
   have firstExact : contextual.1 = context.embed after := by
     simpa [contextual] using endpoint
   exact Prod.ext firstExact rfl
@@ -257,6 +337,29 @@ def StandaloneNativeWorldDispatches
     exists afterWorld observations,
       NativeWorldDispatches candidate entryRva before world after events
         afterWorld observations
+
+/-- The standalone result selected by the operation producer for this exact
+caller context.  The selected path runs under the caller-indexed imported
+environment and carries its canonical-fuel evidence. -/
+structure ProducerSelectedStandaloneNativeWorldResult
+    (candidate : ExactNativeWorldProgram)
+    (context : NativeWorldFrameContext)
+    (world : RelationalWorld)
+    (entryRva : Nat) (before after : MachineState)
+    (events : List NativeExternalEvent) where
+  afterWorld : RelationalWorld
+  observations : List WorldRelationalObservable
+  selected : ProducerSelectedStandaloneNativeWorldPath candidate context
+    (.running entryRva 0 before [] 0 [] world)
+    (.returned after events afterWorld) observations
+
+def ProducerSelectedStandaloneNativeWorldDispatches
+    (candidate : ExactNativeWorldProgram)
+    (context : NativeWorldFrameContext)
+    (world : RelationalWorld) : KernelDispatchRelation :=
+  fun entryRva before after events =>
+    Nonempty (ProducerSelectedStandaloneNativeWorldResult candidate context
+      world entryRva before after events)
 
 /-- Detailed endpoint obtained by the generic frame lifting theorem. -/
 structure FrameParametricNativeWorldResult
@@ -280,57 +383,87 @@ def FrameParametricNativeWorldDispatches
     Nonempty (FrameParametricNativeWorldResult candidate context world entryRva
       before after events)
 
-/-- Operation-level certificate.  `standalone` retains the existing operation
-proof.  `contextRefinement` is the exact smaller upstream hypothesis: qualify
-the concrete standalone path at every requested caller context. -/
+/-- Operation refinement with one additional checked predicate on the concrete
+entry state.  It is used for caller-frame facts that cannot soundly be
+quantified over every possible frame independently of the request. -/
+def KernelOperationRefinesUsingWhen
+    (program : CompiledKernelProgram) (abi : KernelABIRelation)
+    (dispatches : KernelDispatchRelation) (operation : KernelOperation)
+    (EntryCompatible : MachineState -> Prop) : Prop :=
+  ∀ request before,
+    request.operation = operation ->
+    abi.requestRelated request before ->
+    EntryCompatible before ->
+    ∀ response,
+      AbstractKernelTransition request response ->
+      ∃ entryRva after nativeEvents,
+        program.functionEntry? operation.role = some entryRva ∧
+        dispatches entryRva before after nativeEvents ∧
+        abi.responseRelated request response after nativeEvents ∧
+        MemoryAgreesOutside (abi.scratchFootprint request)
+          after.memory before.memory
+
+/-- A call site discharges the concrete frame-entry condition for every
+operation request it admits. -/
+def KernelOperationFrameEntryAuthority
+    (abi : KernelABIRelation) (operation : KernelOperation)
+    (context : NativeWorldFrameContext) : Prop :=
+  ∀ request before,
+    request.operation = operation ->
+    abi.requestRelated request before ->
+    context.entryCompatible before
+
+/-- Operation-level certificate.  `producer` selects a canonical standalone
+path for the exact caller context used by the operation proof.
+`selectedPathRefinement` qualifies only that producer-selected path; it does
+not quantify over padded terminal paths or paths for incompatible callers. -/
 structure KernelOperationFrameParametricCertificate
     (program : CompiledKernelProgram) (abi : KernelABIRelation)
     (candidate : ExactNativeWorldProgram)
     (operation : KernelOperation) : Prop where
-  standalone : forall world,
-    KernelOperationRefinesUsing program abi
-      (StandaloneNativeWorldDispatches candidate world) operation
-  contextRefinement : forall context world entryRva before after events
-      afterWorld observations fuel
-      (path : StandaloneNativeWorldPath candidate
-        (.running entryRva 0 before [] 0 [] world)
-        (.returned after events afterWorld) observations fuel),
-    NativeWorldFramePathRefinement candidate context path
+  producer : forall context world,
+    KernelOperationRefinesUsingWhen program abi
+      (ProducerSelectedStandaloneNativeWorldDispatches candidate context world)
+      operation context.entryCompatible
+  selectedPathRefinement : forall context world entryRva before after events
+      afterWorld observations
+    (selected : ProducerSelectedStandaloneNativeWorldPath candidate context
+      (.running entryRva 0 before [] 0 [] world)
+      (.returned after events afterWorld) observations),
+    NativeWorldFramePathRefinement candidate context selected
 
 theorem KernelOperationFrameParametricCertificate.refinesInContext
     {program : CompiledKernelProgram} {abi : KernelABIRelation}
     {candidate : ExactNativeWorldProgram} {operation : KernelOperation}
     (certificate : KernelOperationFrameParametricCertificate program abi
       candidate operation)
-    (context : NativeWorldFrameContext) (world : RelationalWorld) :
+    (context : NativeWorldFrameContext) (world : RelationalWorld)
+    (entry : KernelOperationFrameEntryAuthority abi operation context) :
     KernelOperationRefinesUsing program abi
       (FrameParametricNativeWorldDispatches candidate context world)
       operation := by
   intro request before operationMatches requestRelated response transition
+  have entryCompatible :=
+    entry request before operationMatches requestRelated
   obtain ⟨entryRva, after, events, entryExact, dispatch, responseRelated,
       memoryFrame⟩ :=
-    certificate.standalone world request before operationMatches requestRelated
-      response transition
-  obtain ⟨afterWorld, observations, standalonePath⟩ := dispatch
-  obtain ⟨fuel, positive, exact⟩ := standalonePath
-  have path : StandaloneNativeWorldPath candidate
-      (.running entryRva 0 before [] 0 [] world)
-      (.returned after events afterWorld) observations fuel := {
-    positive
-    exact
-  }
-  have refinement := certificate.contextRefinement context world entryRva before
-    after events afterWorld observations fuel path
+    certificate.producer context world request before operationMatches
+      requestRelated entryCompatible response transition
+  obtain ⟨result⟩ := dispatch
+  have refinement := certificate.selectedPathRefinement context world entryRva
+    before after events result.afterWorld result.observations result.selected
   obtain ⟨contextualObservations, contextualPath⟩ :=
-    path.liftFrameContext refinement
+    result.selected.liftFrameContext refinement
   exact ⟨entryRva, after, events, entryExact, ⟨{
-    afterWorld
+    afterWorld := result.afterWorld
     observations := contextualObservations
     path := contextualPath
   }⟩, responseRelated, memoryFrame⟩
 
 #print axioms runRelatedSteps_frameContext_fst
-#print axioms StandaloneNativeWorldPath.liftFrameContext
+#print axioms ProducerSelectedStandaloneNativeWorldPath.liftFrameContext
+#print axioms KernelOperationRefinesUsingWhen
+#print axioms KernelOperationFrameEntryAuthority
 #print axioms KernelOperationFrameParametricCertificate.refinesInContext
 
 end StageA.Relational.InterpreterKernelOperationFrameParametric

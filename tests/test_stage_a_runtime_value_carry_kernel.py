@@ -44,12 +44,14 @@ class StageARuntimeValueCarryKernelTests(unittest.TestCase):
             stage_a = lean_dir / "StageA"
             stage_a.mkdir(parents=True)
             _copy_module_closure(
-                source_root, stage_a, "RelationalRuntimeValueCarry"
+                source_root, stage_a, "RelationalRuntimeValueCarrySemantics"
             )
             (stage_a / "RuntimeValueCarryKernel.lean").write_text(
-                """import StageA.RelationalRuntimeValueCarry
+                """import StageA.RelationalRuntimeValueCarrySemantics
 
 namespace StageA.Relational.RuntimeValueCarry
+
+open StageA.Relational.RuntimeValueCarrySemantics
 
 def exampleGraph : CutpointGraph := {
   targetIds := [0, 1, 2, 3]
@@ -118,6 +120,9 @@ example
   exact exampleRoute.transfer_exists_for_incoming context exampleGraph checked
     { edgeId := 12, sourceTargetId := 2, targetTargetId := 3 }
     (by simp [exampleGraph]) (by native_decide)
+
+#print axioms CheckedFiniteOriginCallCallerFrameWordRouteTransfer.preservesOriginal
+#print axioms CheckedDirectCallCallerFrameWordRouteTransfer.preservesOriginal
 
 end StageA.Relational.RuntimeValueCarry
 """,

@@ -5,5 +5,7 @@ __pycache__/
 *.pyc
 target/
 .tmp-*
+.tmp/
+scratch/
 result
 result-*

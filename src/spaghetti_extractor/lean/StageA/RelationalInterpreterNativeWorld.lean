@@ -135,6 +135,44 @@ def NativeIndirectTargetInventory.allows
       (targetSet.targets.filter fun descriptor =>
         descriptor.resolve pe world == some target).length == 1
 
+/-- Resolve an indirect target through the unique descriptor submitted for the
+exact source/transfer pair.  The descriptor is the provenance authority:
+internal code, import bindings, and opaque resources are not reclassified by a
+second global lookup after this check succeeds. -/
+def NativeIndirectTargetInventory.resolve?
+    (inventory : NativeIndirectTargetInventory) (pe : PE32)
+    (world : RelationalWorld) (sourceRva : Nat)
+    (transfer : ResolvedExternalTransfer) (target : Word) :
+    Option NativeIndirectTargetDescriptor :=
+  match inventory.targetSet? sourceRva transfer with
+  | none => none
+  | some targetSet =>
+      match targetSet.targets.filter fun descriptor =>
+          descriptor.resolve pe world == some target with
+      | [descriptor] => some descriptor
+      | _ => none
+
+theorem NativeIndirectTargetInventory.allows_iff_resolve_isSome
+    (inventory : NativeIndirectTargetInventory) (pe : PE32)
+    (world : RelationalWorld) (sourceRva : Nat)
+    (transfer : ResolvedExternalTransfer) (target : Word) :
+    inventory.allows pe world sourceRva transfer target =
+      (inventory.resolve? pe world sourceRva transfer target).isSome := by
+  unfold NativeIndirectTargetInventory.allows
+    NativeIndirectTargetInventory.resolve?
+  split
+  · rfl
+  · rename_i targetSet targetSetExact
+    generalize filteredExact :
+        targetSet.targets.filter (fun descriptor =>
+          descriptor.resolve pe world == some target) = filtered
+    cases filtered with
+    | nil => rfl
+    | cons descriptor tail =>
+        cases tail with
+        | nil => rfl
+        | cons other rest => rfl
+
 structure NativeWorldEnvironment where
   action : Nat -> NativeExternalEvent -> RelationalWorld ->
     NativeWorldExternalAction
@@ -240,6 +278,52 @@ def nativePEImportForBinding (binding : ImportAddressPair) : PEImport := {
   name := binding.imported.name
   iatRva := binding.candidateIatRva
 }
+
+/-- Resolve an import descriptor by its canonical world binding ID.  The
+indirect-target inventory has already selected the storage class, so this
+checker validates the world and the unique binding without reclassifying the
+concrete address across unrelated target categories. -/
+def resolveNativeImportBindingCall?
+    (config : NativeCallableExternalConfig) (world : RelationalWorld)
+    (bindingId : Nat) (target : Word) (state : MachineState) :
+    Option (ImportAddressPair × List Word) := do
+  if callableExternalWorldValid config.context world != true then none
+  let binding <- match world.importAddresses.filter fun candidate =>
+      candidate.id == bindingId with
+    | [binding] => some binding
+    | _ => none
+  if binding.candidateAddress != target then none
+  let contract <- config.context.machineImportCallContracts.find? fun candidate =>
+    candidate.imported == binding.imported
+  let arguments <- machineImportThunkArgumentsAtState? contract state
+  pure (binding, arguments)
+
+/-- Resolve a callable-resource descriptor by its canonical resource ID.
+Configuration and world inventories are checked for singleton routes at the
+point of use; missing or duplicate capability/ABI rows fail closed. -/
+def resolveNativeCallableResource
+    (config : NativeCallableExternalConfig) (world : RelationalWorld)
+    (resourceId : Nat) (target : Word)
+    (transfer : ResolvedExternalTransfer) : OriginalIndirectResolution :=
+  if callableExternalWorldValid config.context world != true then
+    .invalidWorld
+  else
+    match world.opaqueResources.filter fun resource =>
+        resource.id == resourceId with
+    | [resource] =>
+        if resource.candidate != target then
+          .unmapped
+        else
+          match config.capabilities.filter fun capability =>
+              capability.resourceId == resourceId with
+          | [capability] =>
+              match config.resolvedABIContracts.filter fun abi =>
+                  abi.capabilityId == capability.id &&
+                    abi.transfer == transfer with
+              | [abi] => .callable capability abi resource
+              | _ => .invalidCallable
+          | _ => .invalidCallable
+    | _ => .invalidCallable
 
 def applyNativeWorldResolvedCallableCall
     (config : NativeCallableExternalConfig)
@@ -363,6 +447,12 @@ def transitionFromNativeWorldOutcome (pe : PE32)
       { next := .running continuation 0 { state with memory } calls eventIndex
           events world,
         observation := none }
+  | .bulkFill destination value count direction continuation =>
+      let memory := Memory.bulkFillDwords state.memory destination value direction
+        count.toNat
+      { next := .running continuation 0 { state with memory } calls eventIndex
+          events world,
+        observation := none }
   | .checkedContinue valid continuation =>
       if valid then
         { next := .running continuation 0 state calls eventIndex events world,
@@ -377,73 +467,86 @@ def transitionFromNativeWorldOutcome (pe : PE32)
           events world,
         observation := none }
   | .indirectCall target continuation returnAddress =>
-      if indirectTargets.allows pe world sourceRva .call target != true then
-        blockedNativeWorldTransition
+      match indirectTargets.resolve? pe world sourceRva .call target with
+      | none => blockedNativeWorldTransition
           (.missingNativeIndirectTargetSet sourceRva target)
-      else match callableExternal with
-      | none =>
-          match exactNativeIndirectTargetRva? pe target with
-          | none => blockedNativeWorldTransition (.unmappedIndirectControl target)
-          | some targetRva =>
-              { next := .running targetRva 0 state
-                  ({ continuationRva := continuation,
-                     returnAddress := BitVec.ofNat 32 returnAddress } :: calls)
-                  eventIndex events world,
-                observation := none }
-      | some config =>
-          match resolveNativeCallableIndirect pe config world target .call with
-          | .internal targetRva =>
-              { next := .running targetRva 0 state
-                  ({ continuationRva := continuation,
-                     returnAddress := BitVec.ofNat 32 returnAddress } :: calls)
-                  eventIndex events world,
-                observation := none }
-          | .imported binding =>
-              match resolveWorldImportCall true config.context world target state with
+      | some (.internalRva targetRva) =>
+          { next := .running targetRva 0 state
+              ({ continuationRva := continuation,
+                 returnAddress := BitVec.ofNat 32 returnAddress } :: calls)
+              eventIndex events world,
+            observation := none }
+      | some (.importBinding bindingId) =>
+          match callableExternal with
+          | none =>
+              blockedNativeWorldTransition
+                (.callableExternalUnavailable sourceRva target)
+          | some config =>
+              match resolveNativeImportBindingCall? config world bindingId target
+                  state with
               | none => blockedNativeWorldTransition
                   (.callableExternalUnavailable sourceRva target)
-              | some (_imported, arguments) =>
+              | some (binding, arguments) =>
                   let imported := nativePEImportForBinding binding
                   let event : NativeExternalEvent := { imported, arguments, state }
                   applyNativeWorldExternalAction continuation calls eventIndex events
                     event world (environment.action eventIndex event world)
-          | .callable capability abi _resource =>
-              applyNativeWorldResolvedCallableCall config capability abi target
-                continuation state calls eventIndex events world
-          | .invalidWorld | .unmapped | .invalidCallable | .ambiguous =>
+      | some (.callableResource resourceId) =>
+          match callableExternal with
+          | none =>
               blockedNativeWorldTransition
                 (.callableExternalUnavailable sourceRva target)
+          | some config =>
+              match resolveNativeCallableResource config world resourceId target
+                  .call with
+              | .callable capability abi _resource =>
+                  applyNativeWorldResolvedCallableCall config capability abi target
+                    continuation state calls eventIndex events world
+              | .invalidWorld | .unmapped | .invalidCallable | .ambiguous =>
+                  blockedNativeWorldTransition
+                    (.callableExternalUnavailable sourceRva target)
+              | .internal _ | .imported _ =>
+                  blockedNativeWorldTransition
+                    (.callableExternalUnavailable sourceRva target)
   | .indirectJump target =>
-      if indirectTargets.allows pe world sourceRva .jump target != true then
-        blockedNativeWorldTransition
+      match indirectTargets.resolve? pe world sourceRva .jump target with
+      | none => blockedNativeWorldTransition
           (.missingNativeIndirectTargetSet sourceRva target)
-      else match callableExternal with
-      | none =>
-          match exactNativeIndirectTargetRva? pe target with
-          | none => blockedNativeWorldTransition (.unmappedIndirectControl target)
-          | some targetRva =>
-              { next := .running targetRva 0 state calls eventIndex events world,
-                observation := none }
-      | some config =>
-          match resolveNativeCallableIndirect pe config world target .jump with
-          | .internal targetRva =>
-              { next := .running targetRva 0 state calls eventIndex events world,
-                observation := none }
-          | .imported binding =>
-              match resolveWorldImportCall true config.context world target state with
+      | some (.internalRva targetRva) =>
+          { next := .running targetRva 0 state calls eventIndex events world,
+            observation := none }
+      | some (.importBinding bindingId) =>
+          match callableExternal with
+          | none =>
+              blockedNativeWorldTransition
+                (.callableExternalUnavailable sourceRva target)
+          | some config =>
+              match resolveNativeImportBindingCall? config world bindingId target
+                  state with
               | none => blockedNativeWorldTransition
                   (.callableExternalUnavailable sourceRva target)
-              | some (_imported, arguments) =>
+              | some (binding, arguments) =>
                   let imported := nativePEImportForBinding binding
                   let event : NativeExternalEvent := { imported, arguments, state }
                   applyNativeWorldExternalTailAction calls eventIndex events event world
                     (environment.action eventIndex event world)
-          | .callable capability abi _resource =>
-              applyNativeWorldResolvedCallableTail config capability abi target state
-                calls eventIndex events world
-          | .invalidWorld | .unmapped | .invalidCallable | .ambiguous =>
+      | some (.callableResource resourceId) =>
+          match callableExternal with
+          | none =>
               blockedNativeWorldTransition
                 (.callableExternalUnavailable sourceRva target)
+          | some config =>
+              match resolveNativeCallableResource config world resourceId target
+                  .jump with
+              | .callable capability abi _resource =>
+                  applyNativeWorldResolvedCallableTail config capability abi target
+                    state calls eventIndex events world
+              | .invalidWorld | .unmapped | .invalidCallable | .ambiguous =>
+                  blockedNativeWorldTransition
+                    (.callableExternalUnavailable sourceRva target)
+              | .internal _ | .imported _ =>
+                  blockedNativeWorldTransition
+                    (.callableExternalUnavailable sourceRva target)
 
 /-- One exact candidate instruction step.  A decoder/executor fault without a
 reviewed architectural fault class is a proof frontier, not a modeled fault. -/
@@ -773,6 +876,12 @@ def transitionFromNestedNativeWorldOutcome
       { next := .running continuation 0 { state with memory } calls eventIndex
           events world externalFrames,
         observation := none }
+  | .bulkFill destination value count direction continuation =>
+      let memory := Memory.bulkFillDwords state.memory destination value direction
+        count.toNat
+      { next := .running continuation 0 { state with memory } calls eventIndex
+          events world externalFrames,
+        observation := none }
   | .checkedContinue valid continuation =>
       if valid then
         { next := .running continuation 0 state calls eventIndex events world
@@ -788,35 +897,27 @@ def transitionFromNestedNativeWorldOutcome
           events world externalFrames,
         observation := none }
   | .indirectCall target continuation returnAddress =>
-      if program.indirectTargets.allows program.pe world sourceRva .call
-          target != true then
-        blockedNestedNativeWorldTransition
+      match program.indirectTargets.resolve? program.pe world sourceRva .call
+          target with
+      | none => blockedNestedNativeWorldTransition
           (.missingNativeIndirectTargetSet sourceRva target)
-      else match program.callableExternal with
-      | none =>
-          match exactNativeIndirectTargetRva? program.pe target with
-          | none => blockedNestedNativeWorldTransition
-              (.unmappedIndirectControl target)
-          | some targetRva =>
-              { next := .running targetRva 0 state
-                  ({ continuationRva := continuation,
-                     returnAddress := BitVec.ofNat 32 returnAddress } :: calls)
-                  eventIndex events world externalFrames,
-                observation := none }
-      | some config =>
-          match resolveNativeCallableIndirect program.pe config world target
-              .call with
-          | .internal targetRva =>
-              { next := .running targetRva 0 state
-                  ({ continuationRva := continuation,
-                     returnAddress := BitVec.ofNat 32 returnAddress } :: calls)
-                  eventIndex events world externalFrames,
-                observation := none }
-          | .imported binding =>
-              match resolveWorldImportCall true config.context world target state with
+      | some (.internalRva targetRva) =>
+          { next := .running targetRva 0 state
+              ({ continuationRva := continuation,
+                 returnAddress := BitVec.ofNat 32 returnAddress } :: calls)
+              eventIndex events world externalFrames,
+            observation := none }
+      | some (.importBinding bindingId) =>
+          match program.callableExternal with
+          | none =>
+              blockedNestedNativeWorldTransition
+                (.callableExternalUnavailable sourceRva target)
+          | some config =>
+              match resolveNativeImportBindingCall? config world bindingId target
+                  state with
               | none => blockedNestedNativeWorldTransition
                   (.callableExternalUnavailable sourceRva target)
-              | some (_imported, arguments) =>
+              | some (binding, arguments) =>
                   let nativeImport := nativePEImportForBinding binding
                   let event : NativeExternalEvent := {
                     imported := nativeImport
@@ -825,38 +926,43 @@ def transitionFromNestedNativeWorldOutcome
                   }
                   suspendNestedNativeWorldExternalCall continuation calls eventIndex
                     events event world externalFrames
-          | .callable capability abi _resource =>
-              applyNestedNativeResolvedCallableCall config capability abi target
-                continuation state calls eventIndex events world externalFrames
-          | .invalidWorld | .unmapped | .invalidCallable | .ambiguous =>
+      | some (.callableResource resourceId) =>
+          match program.callableExternal with
+          | none =>
               blockedNestedNativeWorldTransition
                 (.callableExternalUnavailable sourceRva target)
+          | some config =>
+              match resolveNativeCallableResource config world resourceId target
+                  .call with
+              | .callable capability abi _resource =>
+                  applyNestedNativeResolvedCallableCall config capability abi target
+                    continuation state calls eventIndex events world externalFrames
+              | .invalidWorld | .unmapped | .invalidCallable | .ambiguous =>
+                  blockedNestedNativeWorldTransition
+                    (.callableExternalUnavailable sourceRva target)
+              | .internal _ | .imported _ =>
+                  blockedNestedNativeWorldTransition
+                    (.callableExternalUnavailable sourceRva target)
   | .indirectJump target =>
-      if program.indirectTargets.allows program.pe world sourceRva .jump
-          target != true then
-        blockedNestedNativeWorldTransition
+      match program.indirectTargets.resolve? program.pe world sourceRva .jump
+          target with
+      | none => blockedNestedNativeWorldTransition
           (.missingNativeIndirectTargetSet sourceRva target)
-      else match program.callableExternal with
-      | none =>
-          match exactNativeIndirectTargetRva? program.pe target with
-          | none => blockedNestedNativeWorldTransition
-              (.unmappedIndirectControl target)
-          | some targetRva =>
-              { next := .running targetRva 0 state calls eventIndex events world
-                  externalFrames,
-                observation := none }
-      | some config =>
-          match resolveNativeCallableIndirect program.pe config world target
-              .jump with
-          | .internal targetRva =>
-              { next := .running targetRva 0 state calls eventIndex events world
-                  externalFrames,
-                observation := none }
-          | .imported binding =>
-              match resolveWorldImportCall true config.context world target state with
+      | some (.internalRva targetRva) =>
+          { next := .running targetRva 0 state calls eventIndex events world
+              externalFrames,
+            observation := none }
+      | some (.importBinding bindingId) =>
+          match program.callableExternal with
+          | none =>
+              blockedNestedNativeWorldTransition
+                (.callableExternalUnavailable sourceRva target)
+          | some config =>
+              match resolveNativeImportBindingCall? config world bindingId target
+                  state with
               | none => blockedNestedNativeWorldTransition
                   (.callableExternalUnavailable sourceRva target)
-              | some (_imported, arguments) =>
+              | some (binding, arguments) =>
                   let nativeImport := nativePEImportForBinding binding
                   let event : NativeExternalEvent := {
                     imported := nativeImport
@@ -865,12 +971,23 @@ def transitionFromNestedNativeWorldOutcome
                   }
                   suspendNestedNativeWorldExternalTailCall calls eventIndex events
                     event world externalFrames
-          | .callable capability abi _resource =>
-              applyNestedNativeResolvedCallableTail config capability abi target
-                state calls eventIndex events world externalFrames
-          | .invalidWorld | .unmapped | .invalidCallable | .ambiguous =>
+      | some (.callableResource resourceId) =>
+          match program.callableExternal with
+          | none =>
               blockedNestedNativeWorldTransition
                 (.callableExternalUnavailable sourceRva target)
+          | some config =>
+              match resolveNativeCallableResource config world resourceId target
+                  .jump with
+              | .callable capability abi _resource =>
+                  applyNestedNativeResolvedCallableTail config capability abi target
+                    state calls eventIndex events world externalFrames
+              | .invalidWorld | .unmapped | .invalidCallable | .ambiguous =>
+                  blockedNestedNativeWorldTransition
+                    (.callableExternalUnavailable sourceRva target)
+              | .internal _ | .imported _ =>
+                  blockedNestedNativeWorldTransition
+                    (.callableExternalUnavailable sourceRva target)
 
 def stepPE32NestedNativeWorldExecution
     (program : ExactNestedNativeWorldProgram) : NestedNativeWorldExecution ->

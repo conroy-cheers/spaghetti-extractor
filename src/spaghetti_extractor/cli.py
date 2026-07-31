@@ -27,6 +27,8 @@ from .isa_cli import (
     select_isa_kernel_qualification as write_isa_kernel_selection,
     write_isa_qualification_campaign,
 )
+from .isa_side_adapter import write_side_isa_qualification_inputs
+from .isa_catalog_enrichment import write_enriched_side_isa_catalog
 from .relational.mapping import stage_a_generate_map
 from .relational.contract import stage_a_generate_relation_contract
 from .relational.build import (
@@ -352,6 +354,68 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
             relation_contract=args.relation_contract,
             product_graph=args.product_graph,
             out=args.out,
+        )
+    )
+
+    isa_side_adapter = subcommands.add_parser(
+        "stage-a-adapt-side-isa-qualification",
+        help=(
+            "adapt one or two exact side-ISA artifacts into untrusted "
+            "qualification requirements and an effect-incomplete catalog proposal"
+        ),
+    )
+    isa_side_adapter.add_argument(
+        "--side-isa",
+        type=Path,
+        action="append",
+        required=True,
+        help="side-ISA artifact; repeat once per original/candidate side",
+    )
+    isa_side_adapter.add_argument(
+        "--binary",
+        type=Path,
+        action="append",
+        required=True,
+        help="exact binary corresponding positionally to each --side-isa",
+    )
+    isa_side_adapter.add_argument(
+        "--requirements-out", type=Path, required=True
+    )
+    isa_side_adapter.add_argument("--catalog-out", type=Path, required=True)
+    isa_side_adapter.set_defaults(
+        func=lambda args: write_side_isa_qualification_inputs(
+            side_isa_artifacts=args.side_isa,
+            binaries=args.binary,
+            requirements_out=args.requirements_out,
+            catalog_out=args.catalog_out,
+        )
+    )
+
+    isa_catalog_enrichment = subcommands.add_parser(
+        "stage-a-enrich-side-isa-catalog",
+        help=(
+            "derive fail-closed corpus effects and masks from exact Lean-decoded "
+            "side-ISA catalog encodings"
+        ),
+    )
+    isa_catalog_enrichment.add_argument(
+        "--proposal",
+        type=Path,
+        required=True,
+        help="stage-a-side-isa-executable-catalog-proposal-v1 artifact",
+    )
+    isa_catalog_enrichment.add_argument("--out", type=Path, required=True)
+    isa_catalog_enrichment.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=300,
+        help="maximum Lean metadata-export runtime",
+    )
+    isa_catalog_enrichment.set_defaults(
+        func=lambda args: write_enriched_side_isa_catalog(
+            proposal=args.proposal,
+            out=args.out,
+            timeout_seconds=args.timeout_seconds,
         )
     )
 
@@ -1170,9 +1234,29 @@ def _cmd_stage_a_check_isa_conformance_worker(
             report = run_lean_isa_conformance(corpus)
         else:
             report, semantic_forms = run_lean_isa_conformance_with_forms(corpus)
-            if set(semantic_forms) != {case.id for case in corpus.cases}:
+            expected_case_ids = {case.id for case in corpus.cases}
+            missing_case_ids = sorted(expected_case_ids - set(semantic_forms))
+            unexpected_case_ids = sorted(set(semantic_forms) - expected_case_ids)
+            if missing_case_ids or unexpected_case_ids:
+                observations_by_id = {
+                    observation.case_id: observation
+                    for observation in report.observations
+                }
+                missing_details = sorted(
+                    {
+                        observations_by_id[case_id].detail
+                        for case_id in missing_case_ids
+                        if case_id in observations_by_id
+                        and observations_by_id[case_id].detail
+                    }
+                )
                 raise StageAInputError(
-                    "Lean did not classify every conformance case into a semantic form"
+                    "Lean semantic-form classification was incomplete: "
+                    f"missing={len(missing_case_ids)} "
+                    f"{missing_case_ids[:8]!r}; "
+                    f"unexpected={len(unexpected_case_ids)} "
+                    f"{unexpected_case_ids[:8]!r}; "
+                    f"details={missing_details[:4]!r}"
                 )
             write_json(
                 args.forms_out,

@@ -1,10 +1,9 @@
-"""Emit the exact-candidate ``invokeCall`` operation composition surface.
+"""Emit checked-call-tree ``invokeCall`` operation composition.
 
-The planner binds the candidate PE, kernel/data/ABI artifacts, callback
-inventory, and invoke-native reflection.  Generated Lean closes exact static
-reflection and concrete ABI record identity, then exposes two exact nested
-``runFunction`` certificates and typed premises for the three native arms.
-No Python status or submitted whole-arm path can inhabit those premises.
+Generated Lean consumes the canonical finite semantic closure, checked native
+Run certificates at the two exact nested frames, and explicit evidence for
+the external, internal, and indirect wrapper arms.  No independent universal
+runFunction theorem or submitted whole-arm path is accepted.
 """
 
 from __future__ import annotations
@@ -24,10 +23,15 @@ from .interpreter_kernel_data import INTERPRETER_KERNEL_DATA_FORMAT
 from .interpreter_kernel_invoke_native import (
     INTERPRETER_KERNEL_INVOKE_NATIVE_FORMAT,
 )
+from .interpreter_kernel_run_operation import (
+    INTERPRETER_KERNEL_RUN_OPERATION_FORMAT,
+    INTERPRETER_KERNEL_RUN_OPERATION_REMAINING_PREMISES,
+    INTERPRETER_KERNEL_RUN_OPERATION_THEOREM,
+)
 
 
 INTERPRETER_KERNEL_INVOKE_OPERATION_FORMAT = (
-    "stage-a-relational-interpreter-kernel-invoke-operation-plan-v1"
+    "stage-a-relational-interpreter-kernel-invoke-operation-plan-v4"
 )
 INTERPRETER_KERNEL_INVOKE_OPERATION_PLAN_FILENAME = (
     "interpreter-kernel-invoke-operation-plan.json"
@@ -41,11 +45,10 @@ INTERPRETER_KERNEL_INVOKE_OPERATION_THEOREM = (
 )
 
 INTERPRETER_KERNEL_INVOKE_OPERATION_REMAINING_PREMISES = (
-    "run_function_internal_and_indirect_frame_certificates",
-    "external_helper_path_certificate_and_wrapper_completion",
-    "external_environment_abi_frame_refinement",
-    "internal_run_function_arm_composition",
-    "indirect_callback_run_function_arm_composition",
+    "finite_checked_semantic_call_tree",
+    "external_arm_exact_route_and_result_closure",
+    "internal_arm_exact_route_run_and_result_closure",
+    "indirect_arm_exact_resolver_callback_run_and_result_closure",
 )
 
 _LEAN_MODULE = re.compile(
@@ -76,10 +79,13 @@ class InterpreterKernelInvokeOperationPlan:
     callback_plan_sha256: str
     invoke_native_plan_path: Path
     invoke_native_plan_sha256: str
+    run_operation_plan_path: Path
+    run_operation_plan_sha256: str
     function_index: int
     function_symbol: str
     function_entry_rva: int
     function_end_rva: int
+    function_return_rva: int
     function_blocks: int
     function_instructions: int
     run_function_rva: int
@@ -117,6 +123,11 @@ class InterpreterKernelInvokeOperationPlan:
                 self.invoke_native_plan_path,
                 self.invoke_native_plan_sha256,
             ),
+            (
+                "run_operation_plan",
+                self.run_operation_plan_path,
+                self.run_operation_plan_sha256,
+            ),
         )
 
     def payload(self) -> dict[str, Any]:
@@ -137,6 +148,7 @@ class InterpreterKernelInvokeOperationPlan:
                 "function_symbol": self.function_symbol,
                 "entry_rva": self.function_entry_rva,
                 "end_rva": self.function_end_rva,
+                "return_rva": self.function_return_rva,
                 "blocks": self.function_blocks,
                 "instructions": self.function_instructions,
                 "run_function_rva": self.run_function_rva,
@@ -168,6 +180,12 @@ class InterpreterKernelInvokeOperationPlan:
                 "concrete_abi_program_table_and_record_identity",
                 "direct_run_function_and_external_helper_targets",
                 "unique_exact_external_helper_bytes_and_decodes",
+                "finite_checked_semantic_call_tree_interface",
+                "request_local_checked_run_certificates",
+                "exact_checked_invoke_cdecl_epilogue",
+                "derived_external_execution_and_environment_authority",
+                "derived_internal_arm_authority",
+                "derived_indirect_arm_authority",
             ],
             "remaining_proof_premises": list(
                 INTERPRETER_KERNEL_INVOKE_OPERATION_REMAINING_PREMISES
@@ -183,59 +201,47 @@ class InterpreterKernelInvokeOperationPlan:
     def _proof_frontiers(self) -> list[dict[str, Any]]:
         return [
             {
-                "id": "invoke-call:run-function-subroutine",
-                "premise": (
-                    "run_function_internal_and_indirect_frame_certificates"
-                ),
+                "id": "invoke-call:finite-call-tree",
+                "premise": "finite_checked_semantic_call_tree",
                 "target_rva": self.run_function_rva,
-                "continuation_rvas": [
-                    self.internal_continuation_rva,
-                    self.indirect_continuation_rva,
-                ],
                 "next_action": (
-                    "instantiate the generic runFunction operation certificate "
-                    "at the two exact invokeCall nested frames"
+                    "supply the canonical finite checked Step, Invoke, and "
+                    "nested Run semantic closure"
                 ),
             },
             {
-                "id": "invoke-call:external-helper-execution",
-                "premise": (
-                    "external_helper_path_certificate_and_wrapper_completion"
-                ),
+                "id": "invoke-call:external-arm-closure",
+                "premise": "external_arm_exact_route_and_result_closure",
                 "rva": self.external_helper_call_rva,
                 "target_rva": self.external_helper_rva,
                 "next_action": (
-                    "instantiate the generic universal helper-path certificate "
-                    "and compose its exact endpoint with the wrapper and epilogue"
+                    "supply the checked helper route and environment-closed "
+                    "epilogue; Lean derives both exact execution and the "
+                    "external ABI/environment refinement"
                 ),
             },
             {
-                "id": "invoke-call:external-environment-result",
-                "premise": "external_environment_abi_frame_refinement",
-                "rva": self.external_helper_rva,
-                "next_action": (
-                    "relate the exact imported event and returned native world "
-                    "state to the semantic CallResult and declared ABI footprint"
-                ),
-            },
-            {
-                "id": "invoke-call:internal-arm",
-                "premise": "internal_run_function_arm_composition",
+                "id": "invoke-call:internal-arm-closure",
+                "premise": "internal_arm_exact_route_run_and_result_closure",
                 "rva": self.internal_call_rva,
                 "target_rva": self.run_function_rva,
+                "continuation_rva": self.internal_continuation_rva,
                 "next_action": (
-                    "assemble the exact internal wrapper around the nested "
-                    "runFunction result and close its ABI response and frame"
+                    "supply the exact wrapper route, request-local checked Run "
+                    "certificate, and environment-closed result epilogue"
                 ),
             },
             {
-                "id": "invoke-call:indirect-arm",
-                "premise": "indirect_callback_run_function_arm_composition",
+                "id": "invoke-call:indirect-arm-closure",
+                "premise": (
+                    "indirect_arm_exact_resolver_callback_run_and_result_closure"
+                ),
                 "rva": self.resolver_site_rva,
                 "target_rvas": list(self.callback_target_rvas),
+                "continuation_rva": self.indirect_continuation_rva,
                 "next_action": (
-                    "execute the checked resolver target and continuation, "
-                    "then assemble the nested runFunction result and ABI frame"
+                    "supply the exact resolver/callback route, request-local "
+                    "checked Run certificate, and environment-closed epilogue"
                 ),
             },
         ]
@@ -341,6 +347,7 @@ def build_relational_interpreter_kernel_invoke_operation_plan(
     abi_plan: Path | str,
     callback_plan: Path | str,
     invoke_native_plan: Path | str,
+    run_operation_plan: Path | str,
 ) -> InterpreterKernelInvokeOperationPlan:
     candidate_path = Path(candidate_pe)
     kernel_path = Path(kernel_plan)
@@ -348,6 +355,7 @@ def build_relational_interpreter_kernel_invoke_operation_plan(
     abi_path = Path(abi_plan)
     callback_path = Path(callback_plan)
     invoke_path = Path(invoke_native_plan)
+    run_operation_path = Path(run_operation_plan)
     try:
         candidate_size = candidate_path.stat().st_size
         candidate_sha256 = sha256_file(candidate_path)
@@ -361,6 +369,7 @@ def build_relational_interpreter_kernel_invoke_operation_plan(
     abi = _read_json(abi_path, "ABI plan")
     callback = _read_json(callback_path, "callback plan")
     invoke = _read_json(invoke_path, "invoke-native plan")
+    run_operation = _read_json(run_operation_path, "runFunction operation plan")
     _require_format(kernel, INTERPRETER_KERNEL_PLAN_FORMAT, "kernel plan")
     _require_format(data, _DATA_INVENTORY_FORMATS, "data inventory")
     _require_format(abi, INTERPRETER_KERNEL_ABI_FORMAT, "ABI plan")
@@ -369,6 +378,11 @@ def build_relational_interpreter_kernel_invoke_operation_plan(
     )
     _require_format(
         invoke, INTERPRETER_KERNEL_INVOKE_NATIVE_FORMAT, "invoke-native plan"
+    )
+    _require_format(
+        run_operation,
+        INTERPRETER_KERNEL_RUN_OPERATION_FORMAT,
+        "runFunction operation plan",
     )
 
     kernel_candidate = _object(kernel.get("candidate"), "kernel candidate")
@@ -396,6 +410,26 @@ def build_relational_interpreter_kernel_invoke_operation_plan(
     _require_candidate(
         invoke, "invoke-native plan", candidate_sha256, candidate_size
     )
+    _require_candidate(
+        run_operation,
+        "runFunction operation plan",
+        candidate_sha256,
+        candidate_size,
+    )
+
+    run_result = _object(
+        run_operation.get("result"), "runFunction operation result"
+    )
+    if (
+        run_operation.get("operation") != "runFunction"
+        or run_operation.get("remaining_proof_premises")
+        != list(INTERPRETER_KERNEL_RUN_OPERATION_REMAINING_PREMISES)
+        or run_result.get("theorem") != INTERPRETER_KERNEL_RUN_OPERATION_THEOREM
+        or run_operation.get("failure_mode") != "incomplete"
+    ):
+        raise RelationalInterpreterKernelInvokeOperationGenerationError(
+            "runFunction operation plan is stale or incompatible"
+        )
 
     kernel_hash = sha256_file(kernel_path)
     data_hash = sha256_file(data_path)
@@ -440,11 +474,37 @@ def build_relational_interpreter_kernel_invoke_operation_plan(
     function_end = _nat(function.get("rva_end"), "invokeCall end RVA")
     function_blocks = len(_array(function.get("blocks"), "invokeCall blocks"))
     function_instructions = _function_instruction_count(function, "invokeCall")
+    function_return_rva = function_end - 1
+    return_instructions = [
+        _object(instruction, "invokeCall return instruction")
+        for block in _array(function.get("blocks"), "invokeCall blocks")
+        for instruction in _array(
+            _object(block, "invokeCall block").get("instructions"),
+            "invokeCall block instructions",
+        )
+        if isinstance(instruction, Mapping)
+        and instruction.get("rva") == function_return_rva
+    ]
+    if (
+        len(return_instructions) != 1
+        or return_instructions[0].get("bytes") != "c3"
+    ):
+        raise RelationalInterpreterKernelInvokeOperationGenerationError(
+            "invokeCall does not end in one exact plain cdecl return"
+        )
 
     invoke_static = _object(invoke.get("invoke"), "invoke-native function")
     run_function_rva = _nat(
         invoke_static.get("run_function_rva"), "runFunction RVA"
     )
+    run_static = _object(
+        run_operation.get("checked_static_authority"),
+        "runFunction operation static authority",
+    )
+    if run_static.get("entry_rva") != run_function_rva:
+        raise RelationalInterpreterKernelInvokeOperationGenerationError(
+            "runFunction operation entry disagrees with invoke-native reflection"
+        )
     external_helper_rva = _nat(
         invoke_static.get("external_dispatch_rva"), "external helper RVA"
     )
@@ -590,10 +650,13 @@ def build_relational_interpreter_kernel_invoke_operation_plan(
         callback_plan_sha256=callback_hash,
         invoke_native_plan_path=invoke_path,
         invoke_native_plan_sha256=sha256_file(invoke_path),
+        run_operation_plan_path=run_operation_path,
+        run_operation_plan_sha256=sha256_file(run_operation_path),
         function_index=function_index,
         function_symbol=f"generatedKernelFunction{function_index:04d}",
         function_entry_rva=function_entry,
         function_end_rva=function_end,
+        function_return_rva=function_return_rva,
         function_blocks=function_blocks,
         function_instructions=function_instructions,
         run_function_rva=run_function_rva,
@@ -638,6 +701,9 @@ def relational_interpreter_kernel_invoke_operation_source(
     invoke_native_module: str = (
         "StageA.GeneratedRelationalInterpreterKernelInvokeNative"
     ),
+    run_operation_module: str = (
+        "StageA.GeneratedRelationalInterpreterKernelRunOperation"
+    ),
 ) -> str:
     modules = (
         ("ABI module", abi_module),
@@ -646,18 +712,20 @@ def relational_interpreter_kernel_invoke_operation_source(
         ("callback module", callback_module),
         ("invoke module", invoke_module),
         ("invoke-native module", invoke_native_module),
+        ("runFunction operation module", run_operation_module),
     )
     for context, module in modules:
         _validate_module(module, context)
     function = plan.function_symbol
     helper = plan.external_helper_symbol
-    return f"""import StageA.RelationalInterpreterKernelInvokeOperation
+    return f"""import StageA.RelationalInterpreterKernelInvokeOperationClosure
 import {abi_module}
 import {kernel_module}
 import {data_module}
 import {callback_module}
 import {invoke_module}
 import {invoke_native_module}
+import {run_operation_module}
 
 namespace StageA.GeneratedRelational.InterpreterKernelInvokeOperation
 
@@ -666,11 +734,12 @@ open StageA.Relational.Interpreter
 open StageA.Relational.InterpreterKernel
 open StageA.Relational.InterpreterKernelABI
 open StageA.Relational.InterpreterKernelCallback
+open StageA.Relational.InterpreterKernelCdeclEpilogue
 open StageA.Relational.InterpreterKernelInvoke
 open StageA.Relational.InterpreterKernelInvokeNative
 open StageA.Relational.InterpreterKernelInvokeOperation
+open StageA.Relational.InterpreterKernelInvokeOperationClosure
 open StageA.Relational.InterpreterKernelProgramLookupOperation
-open StageA.Relational.InterpreterKernelRunOperation
 open StageA.Relational.InterpreterNativeWorld
 open StageA.Relational.SymbolicSoundness
 open StageA.GeneratedRelational.InterpreterKernel
@@ -679,6 +748,7 @@ open StageA.GeneratedRelational.InterpreterKernelCallback
 open StageA.GeneratedRelational.InterpreterKernelData
 open StageA.GeneratedRelational.InterpreterKernelInvoke
 open StageA.GeneratedRelational.InterpreterKernelInvokeNative
+open StageA.GeneratedRelational.InterpreterKernelRunOperation
 
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -750,30 +820,27 @@ def generatedInvokeCallOperationABIEntry :
   simpa [generatedInterpreterKernelABIRelation] using
     concreteInvokeCallABIEntryAuthority generatedConcreteInterpreterKernelABI
 
-structure GeneratedInvokeCallRunFunctionCertificates
-    (environment : NativeWorldEnvironment) (world : RelationalWorld) where
-  internal : RunFunctionNativeOperationCertificate
-    generatedCompiledKernelProgram generatedInterpreterKernelABIRelation
-    semanticInterpreterProgramRecords
-    (generatedInvokeCallNativeProgram environment) world
-    (generatedInvokeCallOperationStatic environment).internalContinuationRva
-    (generatedInvokeCallOperationStatic environment).internalReturnAddress
-  indirect : RunFunctionNativeOperationCertificate
-    generatedCompiledKernelProgram generatedInterpreterKernelABIRelation
-    semanticInterpreterProgramRecords
-    (generatedInvokeCallNativeProgram environment) world
-    (generatedInvokeCallOperationStatic environment).indirectContinuationRva
-    (generatedInvokeCallOperationStatic environment).indirectReturnAddress
+def generatedInvokeCallCDeclEpilogueInventory :
+    KernelCDeclEpilogueInventory := {{
+  operation := .invokeCall
+  epilogueRva := {plan.external_continuation_rva}
+  returnRva := {plan.function_return_rva}
+}}
 
-def GeneratedInvokeCallRunFunctionCertificates.toAuthority
-    {{environment : NativeWorldEnvironment}} {{world : RelationalWorld}}
-    (certificates : GeneratedInvokeCallRunFunctionCertificates environment world) :
-    InvokeCallNativeRunFunctionCertificates generatedCompiledKernelProgram
-      generatedInterpreterKernelABIRelation semanticInterpreterProgramRecords
-      (generatedInvokeCallNativeProgram environment) world
-      (generatedInvokeCallOperationStatic environment) := {{
-  internal := certificates.internal
-  indirect := certificates.indirect
+theorem generatedInvokeCallCDeclEpilogueChecked
+    (environment : NativeWorldEnvironment) :
+    generatedInvokeCallCDeclEpilogueInventory.checked
+      generatedCompiledKernelProgram
+      (generatedInvokeCallNativeProgram environment)
+      {function} = true := by
+  decide +kernel
+
+def generatedInvokeCallCDeclEpilogueStatic
+    (environment : NativeWorldEnvironment) :
+    CheckedKernelCDeclEpilogue generatedCompiledKernelProgram
+      (generatedInvokeCallNativeProgram environment) {function} := {{
+  inventory := generatedInvokeCallCDeclEpilogueInventory
+  checked := generatedInvokeCallCDeclEpilogueChecked environment
 }}
 
 abbrev GeneratedInvokeCallExternalHelperExecution
@@ -810,42 +877,88 @@ def generatedInvokeCallExternalArm
 
 abbrev GeneratedInvokeCallInternalArm
     (environment : NativeWorldEnvironment) (world : RelationalWorld) :=
-  InvokeCallNativeInternalBranchAuthority generatedCompiledKernelProgram
+  InvokeCallNativeCheckedInternalBranchAuthority generatedCompiledKernelProgram
     generatedInterpreterKernelABIRelation semanticInterpreterProgramRecords
     (generatedInvokeCallNativeProgram environment) world
     (generatedInvokeCallOperationStatic environment)
 
 abbrev GeneratedInvokeCallIndirectArm
     (environment : NativeWorldEnvironment) (world : RelationalWorld) :=
-  InvokeCallNativeIndirectBranchAuthority generatedCompiledKernelProgram
+  InvokeCallNativeCheckedIndirectBranchAuthority generatedCompiledKernelProgram
     generatedInterpreterKernelABIRelation semanticInterpreterProgramRecords
     (generatedInvokeCallNativeProgram environment) world
     (generatedInvokeCallOperationStatic environment)
 
-/-- Exact-candidate operation theorem.  Every argument is a semantic proof
-object at a named native frontier; none is a submitted path or status. -/
+abbrev GeneratedInvokeCallCheckedArmClosures
+    (environment : NativeWorldEnvironment) (world : RelationalWorld) :=
+  InvokeCallNativeCheckedArmClosures generatedConcreteInterpreterKernelABI
+    generatedCompiledKernelProgram
+    (generatedInvokeCallNativeProgram environment) world
+    (generatedInvokeCallOperationStatic environment)
+    (generatedInvokeCallExternalHelperBinding environment)
+    (generatedInvokeCallCDeclEpilogueStatic environment)
+
+/-- Exact native Invoke evidence.  The proof-bearing arm closures retain exact
+route, cdecl-result, environment, callback, and nested Run evidence.  The four
+broad consumer authorities are derived and cannot be submitted independently. -/
+structure GeneratedInvokeCallCheckedNativeEvidence
+    (environment : NativeWorldEnvironment) (world : RelationalWorld)
+    where
+  closures : GeneratedInvokeCallCheckedArmClosures environment world
+
+def GeneratedInvokeCallCheckedNativeEvidence.externalExecution
+    (native : GeneratedInvokeCallCheckedNativeEvidence environment world) :
+    GeneratedInvokeCallExternalHelperExecution environment world :=
+  native.closures.external.execution
+
+def GeneratedInvokeCallCheckedNativeEvidence.externalEnvironment
+    (native : GeneratedInvokeCallCheckedNativeEvidence environment world) :
+    GeneratedInvokeCallExternalEnvironmentRefinement
+      native.externalExecution :=
+  native.closures.external.environmentRefinement
+
+def GeneratedInvokeCallCheckedNativeEvidence.internal
+    (native : GeneratedInvokeCallCheckedNativeEvidence environment world) :
+    GeneratedInvokeCallInternalArm environment world :=
+  native.closures.internalAuthority
+
+def GeneratedInvokeCallCheckedNativeEvidence.indirect
+    (native : GeneratedInvokeCallCheckedNativeEvidence environment world) :
+    GeneratedInvokeCallIndirectArm environment world :=
+  native.closures.indirectAuthority
+
+def generatedInvokeCallCheckedCertificate
+    (environment : NativeWorldEnvironment) (world : RelationalWorld)
+    (callTree : GeneratedRunFunctionCallTree)
+    (native : GeneratedInvokeCallCheckedNativeEvidence environment world) :
+    InvokeCallNativeCheckedOperationCertificate generatedCompiledKernelProgram
+      generatedInterpreterKernelABIRelation semanticInterpreterProgramRecords
+      (generatedInvokeCallNativeProgram environment) world := {{
+  static := generatedInvokeCallOperationStatic environment
+  abiEntry := generatedInvokeCallOperationABIEntry
+  closedTree := InvokeCallClosedCallTreeAuthority.ofClosure callTree.toClosure
+  external := native.closures.externalAuthority
+  internal := native.internal
+  indirect := native.indirect
+}}
+
+/-- Exact-candidate operation theorem.  The semantic input is one finite
+checked call tree.  Native evidence remains explicit for each wrapper arm and
+the exact nested Run frames. -/
 theorem generatedInvokeCallOperationRefinesUsing
     (environment : NativeWorldEnvironment) (world : RelationalWorld)
-    (runFunction :
-      GeneratedInvokeCallRunFunctionCertificates environment world)
-    (externalExecution :
-      GeneratedInvokeCallExternalHelperExecution environment world)
-    (externalEnvironment :
-      GeneratedInvokeCallExternalEnvironmentRefinement environment world)
-    (internal : GeneratedInvokeCallInternalArm environment world)
-    (indirect : GeneratedInvokeCallIndirectArm environment world) :
+    (callTree : GeneratedRunFunctionCallTree)
+    (native : GeneratedInvokeCallCheckedNativeEvidence environment world) :
     KernelOperationRefinesUsing generatedCompiledKernelProgram
       generatedInterpreterKernelABIRelation
       (NativeWorldKernelDispatches
         (generatedInvokeCallNativeProgram environment) world) .invokeCall := by
-  exact (InvokeCallNativeOperationCertificate.mk
-    (generatedInvokeCallOperationStatic environment)
-    generatedInvokeCallOperationABIEntry
-    (generatedInvokeCallExternalArm externalExecution externalEnvironment)
-    internal
-    indirect
-    runFunction.toAuthority).refines
+  exact (generatedInvokeCallCheckedCertificate environment world callTree
+    native).refines
 
+#print axioms generatedInvokeCallCheckedCertificate
+#print axioms generatedInvokeCallCDeclEpilogueChecked
+#print axioms generatedInvokeCallCDeclEpilogueStatic
 #print axioms generatedInvokeCallOperationRefinesUsing
 
 end StageA.GeneratedRelational.InterpreterKernelInvokeOperation

@@ -124,8 +124,11 @@ _KERNEL_FIXTURE = r"""import StageA.RelationalNullableCodePointerDispatch
 namespace StageA.NullableCodePointerDispatchKernel
 
 open StageA.Formal StageA.Relational
+open StageA.Relational.InterpreterMixedContext
 open StageA.Relational.NullableCodePointerTable
 open StageA.Relational.NullableCodePointerDispatch
+
+set_option maxRecDepth 1000000
 
 def pe : PE32 := {
   bytes := .empty
@@ -297,6 +300,89 @@ def binding : Claim := {
   dispatchIndexOffset := 0
 }
 
+__EXACT_DECODE_FIXTURE__
+
+def originalPe : PE32 := (parsePE32 exactGoodBytes).getD pe
+
+def originalCodeMap : OriginalCodeMap := {
+  entries := .leaf [
+    { id := 0, regionIndex := 0, rva := 4096 },
+    { id := 1, regionIndex := 1, rva := 4112 },
+    { id := 2, regionIndex := 2, rva := 4128 },
+    { id := 3, regionIndex := 3, rva := 4144 },
+    { id := 4, regionIndex := 4, rva := 4160 },
+    { id := 5, regionIndex := 5, rva := 4176 },
+    { id := 6, regionIndex := 6, rva := 4192 }
+  ]
+  addresses := .leaf [
+    { targetId := 0, kind := .canonical },
+    { targetId := 1, kind := .canonical },
+    { targetId := 2, kind := .canonical },
+    { targetId := 3, kind := .canonical },
+    { targetId := 4, kind := .canonical },
+    { targetId := 5, kind := .canonical },
+    { targetId := 6, kind := .canonical }
+  ]
+}
+
+def originalRegions : FiniteIndex OriginalDecodedRegion := .leaf [
+  { id := 0, span := { start := 4096, size := 4 }, root := true,
+    targets := [1] },
+  { id := 1, span := { start := 4112, size := 4 }, root := false,
+    targets := [0, 2] },
+  { id := 2, span := { start := 4128, size := 4 }, root := false,
+    targets := [3] },
+  { id := 3, span := { start := 4144, size := 4 }, root := false,
+    targets := [4, 6] },
+  { id := 4, span := { start := 4160, size := 4 }, root := false,
+    targets := [5] },
+  { id := 5, span := { start := 4176, size := 4 }, root := false,
+    targets := [4] },
+  { id := 6, span := { start := 4192, size := 4 }, root := false,
+    targets := [] }
+]
+
+def originalContext : OriginalDecodedStaticContext := {
+  pe := originalPe
+  importCertificate := { descriptors := [] }
+  relocations := []
+  codeMap := originalCodeMap
+  regions := originalRegions
+}
+
+def originalRegionsExtraIncoming : FiniteIndex OriginalDecodedRegion := .leaf [
+  { id := 0, span := { start := 4096, size := 4 }, root := true,
+    targets := [1] },
+  { id := 1, span := { start := 4112, size := 4 }, root := false,
+    targets := [0, 2] },
+  { id := 2, span := { start := 4128, size := 4 }, root := false,
+    targets := [3] },
+  { id := 3, span := { start := 4144, size := 4 }, root := false,
+    targets := [4, 6] },
+  { id := 4, span := { start := 4160, size := 4 }, root := false,
+    targets := [5] },
+  { id := 5, span := { start := 4176, size := 4 }, root := false,
+    targets := [4] },
+  { id := 6, span := { start := 4192, size := 4 }, root := false,
+    targets := [4] }
+]
+
+def originalContextExtraIncoming : OriginalDecodedStaticContext := {
+  originalContext with regions := originalRegionsExtraIncoming
+}
+
+def rootedCertificate : RootedSccCertificate := {
+  rootTargetIds := [0]
+  rootPathTargetIds := [0, 1, 2, 3, 4]
+  forwardTargetIds := [4, 5]
+  sccTargetIds := [4, 5]
+  incomingEdges := [
+    { sourceTargetId := 3, targetTargetId := 4 },
+    { sourceTargetId := 5, targetTargetId := 4 },
+    { sourceTargetId := 4, targetTargetId := 5 }
+  ]
+}
+
 example : binding.bindingShapeChecked context = true := by decide +kernel
 example : ({ binding with dispatchScale := 8 }).bindingShapeChecked context = false := by
   decide +kernel
@@ -309,6 +395,39 @@ example : ({ binding with dispatchPredecessorIds := [3, 2] }).bindingShapeChecke
 example : ({ binding with tableCertificate := ({ certificate with contextId := 5 }) }).bindingShapeChecked context = false := by
   decide +kernel
 example : ({ binding with dispatchRegion := region 5 4176 4 }).bindingShapeChecked context = false := by
+  decide +kernel
+example : originalRootPathChecked originalContext 4
+    rootedCertificate.rootPathTargetIds = true := by
+  decide +kernel
+example :
+    rootedCertificate.rootTargetIds ==
+      originalRootTargetIds originalContext := by
+  decide +kernel
+example :
+    [0, 6] != originalRootTargetIds originalContext := by
+  decide +kernel
+example : originalRootPathChecked originalContext 4
+    [0, 1, 3, 4] = false := by
+  decide +kernel
+example : originalSccChecked originalContext 4 [4, 5] = true := by
+  decide +kernel
+example : originalSccChecked originalContext 4 [4] = false := by
+  decide +kernel
+example : originalSccBoundaryChecked originalContext 4
+    rootedCertificate.forwardTargetIds rootedCertificate.sccTargetIds
+      rootedCertificate.incomingEdges = true := by
+  decide +kernel
+example : originalSccBoundaryChecked originalContextExtraIncoming 4
+    rootedCertificate.forwardTargetIds rootedCertificate.sccTargetIds
+      rootedCertificate.incomingEdges = false := by
+  decide +kernel
+example : rootedCertificate.incomingEdges =
+    originalIncomingEdgesForTargets originalContext rootedCertificate.sccTargetIds := by
+  decide +kernel
+example :
+    rootedCertificate.incomingEdges !=
+      originalIncomingEdgesForTargets originalContextExtraIncoming
+        rootedCertificate.sccTargetIds := by
   decide +kernel
 
 def registers : Registers Expr := initialSymbolic.registers
@@ -361,8 +480,17 @@ def guardBadExpression : DecodedRegionBehavior := {
     outcome := .branch (.equal (.inputReg .ebx) (.constant 0)) 4 6 })
 }
 
+def guardBadBypass : DecodedRegionBehavior := {
+  guardGood with candidate := ({ guardGood.candidate with
+    outcome := .branch (registerNonzeroGuard .ebx) 4 5 })
+}
+
 example : dispatchGuardBehaviorChecked scanner 4 guardGood = true := by decide +kernel
 example : dispatchGuardBehaviorChecked scanner 4 guardBadExpression = false := by
+  decide +kernel
+example : dispatchGateBehaviorChecked scanner 4 6 guardGood = true := by
+  decide +kernel
+example : dispatchGateBehaviorChecked scanner 4 6 guardBadBypass = false := by
   decide +kernel
 example : NormalizedOutcomeExpr.guardForTarget
     (.branch (registerNonzeroGuard .ebx) 4 4) 4 = none := by decide +kernel
@@ -455,8 +583,8 @@ example (context : StaticProofContext) (claim : Claim)
 #print axioms emptyLocalDispatchClosed_of_semantic_checked
 #print axioms actualDispatchSourceUninhabited_of_complete_predecessors
 #print axioms actualDecodedMixedDispatchClosure_of_checked
-
-__EXACT_DECODE_FIXTURE__
+#print axioms sourceUninhabited_of_checkedRootedScc
+#print axioms originalIndirectControlClosure_of_checkedRootedScc
 
 end StageA.NullableCodePointerDispatchKernel
 """

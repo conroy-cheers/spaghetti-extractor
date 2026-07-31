@@ -18,16 +18,26 @@ from typing import Any
 from . import isa_conformance as conformance
 from .isa_catalog import (
     AccessMode,
+    AddressExpression,
     AddressSegment,
     BranchEffect,
     BranchOutcome,
     DivideEffect,
     EffectClass,
+    FixedControlTarget,
+    InputPredicate,
     ISA_PROFILE_ID,
     ISAFormCatalog,
     ISAFormCatalogEntry,
+    MemoryControlTarget,
     MemoryEffect,
+    NoOpEffect,
+    PredicateKind,
+    RegisterControlTarget,
     RegisterEffect,
+    RegisterLocation,
+    StateComponent,
+    StateEffect,
     X87Effect,
     XEDInstructionCatalog,
     isa_form_catalog_sha256,
@@ -65,8 +75,16 @@ GENERATED_ISA_CORPUS_FORMAT = "stage-a-generated-isa-corpus-v1"
 IMAGE_BASE = 0x00400000
 TEST_EIP = 0x00401000
 DATA_BASE = 0x00600000
-FS_BASE = 0x7FFDF000
+# Keep the synthetic FS window inside the shared 16 MiB executor address
+# space. The profile validates segmented addressing, not a particular Windows
+# TEB address.
+FS_BASE = 0x00800000
 STACK_POINTER = 0x70001000
+DYNAMIC_TARGET_EIP = TEST_EIP + 0x100
+SHARED_MEMORY_MIN = 0x00010000
+SHARED_MEMORY_END = 0x01000000
+MAX_SHARED_MEMORY_REGIONS = 32
+MAX_SHARED_MEMORY_BYTES = 65536
 
 
 class ISACorpusGenerationError(ISAConformanceError):
@@ -74,6 +92,7 @@ class ISACorpusGenerationError(ISAConformanceError):
 
 
 class CoverageScenario(str, Enum):
+    NOOP_BASELINE = "noop_baseline"
     REGISTER_ZERO = "register_zero"
     REGISTER_ONE = "register_one"
     REGISTER_MAX_UNSIGNED = "register_max_unsigned"
@@ -82,6 +101,8 @@ class CoverageScenario(str, Enum):
     MEMORY_ALIGNED_ZERO = "memory_aligned_zero"
     MEMORY_ALIGNED_MAX = "memory_aligned_max"
     MEMORY_PAGE_EDGE = "memory_page_edge"
+    MEMORY_CONDITION_FALSE = "memory_condition_false"
+    STATE_BASELINE = "state_baseline"
     BRANCH_TAKEN = "branch_taken"
     BRANCH_NOT_TAKEN = "branch_not_taken"
     DIVIDE_SUCCESS = "divide_success"
@@ -291,12 +312,17 @@ def parse_structural_coverage_cell(value: Any) -> StructuralCoverageCell:
     width = (
         None
         if raw_width is None
-        else _uint(raw_width, 8, "structural coverage cell.width_bits")
+        else _uint(raw_width, 16, "structural coverage cell.width_bits")
     )
-    if effect_class in {EffectClass.REGISTER, EffectClass.MEMORY, EffectClass.DIVIDE}:
+    if effect_class in {EffectClass.REGISTER, EffectClass.DIVIDE}:
         if width not in {8, 16, 32}:
             raise ISAConformanceError(
                 "structural coverage cell requires an 8, 16, or 32-bit width"
+            )
+    elif effect_class is EffectClass.MEMORY:
+        if width is None or width < 8 or width % 8:
+            raise ISAConformanceError(
+                "memory structural coverage cells require a byte-aligned width"
             )
     elif effect_class is EffectClass.X87:
         if width != 80:
@@ -305,7 +331,7 @@ def parse_structural_coverage_cell(value: Any) -> StructuralCoverageCell:
             )
     elif width is not None:
         raise ISAConformanceError(
-            "branch structural coverage cells require width_bits=null"
+            "non-data structural coverage cells require width_bits=null"
         )
     raw_features = payload.get("required_features")
     if not isinstance(raw_features, list):
@@ -389,8 +415,15 @@ def _base_state(entry: ISAFormCatalogEntry, seed: int) -> MachineState:
     values["esp"] = STACK_POINTER
     values["ebp"] = STACK_POINTER + 0x1000
     uses_fs = any(
-        isinstance(effect, MemoryEffect)
-        and effect.address.segment is AddressSegment.FS
+        (
+            isinstance(effect, MemoryEffect)
+            and effect.address.segment is AddressSegment.FS
+        )
+        or (
+            isinstance(effect, StateEffect)
+            and effect.state is StateComponent.FS
+            and effect.access in {AccessMode.READ, AccessMode.READ_WRITE}
+        )
         for effect in entry.effects
     )
     return MachineState(
@@ -410,54 +443,112 @@ def _low_mask(width_bits: int) -> int:
     return (1 << width_bits) - 1
 
 
-def _with_low(original: int, value: int, width_bits: int) -> int:
-    mask = _low_mask(width_bits)
-    return (original & ~mask) | (value & mask)
-
-
 class _RegisterAssignments:
     def __init__(self, initial: GPRState):
         self.initial = {
             register: getattr(initial, register) for register in GPR_NAMES
         }
-        self.constraints: dict[tuple[str, int], tuple[int, str]] = {}
+        self.constraints: dict[str, tuple[int, int, tuple[str, ...]]] = {}
 
     def constrain(
-        self, register: str, width_bits: int, value: int, reason: str
+        self,
+        location: RegisterLocation,
+        width_bits: int,
+        value: int,
+        reason: str,
     ) -> None:
-        key = (register, width_bits)
-        normalized = value & _low_mask(width_bits)
-        prior = self.constraints.get(key)
-        if prior is not None and prior[0] != normalized:
+        mask = _low_mask(width_bits) << location.lsb
+        shifted_value = (value & _low_mask(width_bits)) << location.lsb
+        self.constrain_mask(location.register, mask, shifted_value, reason)
+
+    def constrain_mask(
+        self, register: str, mask: int, value: int, reason: str
+    ) -> None:
+        mask &= 0xFFFFFFFF
+        value &= mask
+        if mask == 0:
             raise ISACorpusGenerationError(
-                f"conflicting state constraints for {register}/{width_bits}: "
-                f"{prior[1]} versus {reason}"
+                f"empty state constraint for {register}: {reason}"
             )
-        for (other_register, other_width), (other_value, other_reason) in self.constraints.items():
-            if other_register != register or other_width == width_bits:
-                continue
-            overlap = _low_mask(min(width_bits, other_width))
-            if (other_value ^ normalized) & overlap:
-                raise ISACorpusGenerationError(
-                    f"overlapping state constraints for {register}: "
-                    f"{other_reason} versus {reason}"
-                )
-        self.constraints[key] = (normalized, reason)
+        prior_mask, prior_value, prior_reasons = self.constraints.get(
+            register, (0, 0, ())
+        )
+        overlap = prior_mask & mask
+        if (prior_value ^ value) & overlap:
+            raise ISACorpusGenerationError(
+                f"conflicting state constraints for {register}: "
+                f"{prior_reasons[-1]} versus {reason}"
+            )
+        self.constraints[register] = (
+            prior_mask | mask,
+            (prior_value & ~mask) | value,
+            prior_reasons + (reason,),
+        )
 
     def set_default(
-        self, register: str, width_bits: int, value: int, reason: str
+        self,
+        location: RegisterLocation,
+        width_bits: int,
+        value: int,
+        reason: str,
     ) -> None:
-        if any(key[0] == register for key in self.constraints):
+        mask = _low_mask(width_bits) << location.lsb
+        prior_mask, _, _ = self.constraints.get(location.register, (0, 0, ()))
+        if prior_mask & mask:
             return
-        self.constrain(register, width_bits, value, reason)
+        self.constrain(location, width_bits, value, reason)
+
+    def constrained_mask(self, register: str) -> int:
+        return self.constraints.get(register, (0, 0, ()))[0]
+
+    def reasons(self, register: str) -> tuple[str, ...]:
+        return self.constraints.get(register, (0, 0, ()))[2]
+
+    def value(self, register: str) -> int:
+        mask, value, _ = self.constraints.get(register, (0, 0, ()))
+        return (self.initial[register] & ~mask) | value
+
+    def constrain_full_compatible(
+        self, register: str, preferred: int, reason: str
+    ) -> int:
+        mask, value, _ = self.constraints.get(register, (0, 0, ()))
+        compatible = ((preferred & ~mask) | value) & 0xFFFFFFFF
+        self.constrain_mask(register, 0xFFFFFFFF, compatible, reason)
+        return compatible
 
     def finish(self) -> GPRState:
         values = dict(self.initial)
-        for (register, width), (value, _) in sorted(
-            self.constraints.items(), key=lambda item: (item[0][0], -item[0][1])
-        ):
-            values[register] = _with_low(values[register], value, width)
+        for register, (mask, value, _) in sorted(self.constraints.items()):
+            values[register] = (values[register] & ~mask) | value
         return GPRState(**values)
+
+
+class _WordAssignments:
+    def __init__(self, initial: int, name: str):
+        self.initial = initial & 0xFFFFFFFF
+        self.name = name
+        self.mask = 0
+        self.value = 0
+        self.reasons: tuple[str, ...] = ()
+
+    def constrain(self, mask: int, value: int, reason: str) -> None:
+        mask &= 0xFFFFFFFF
+        value &= mask
+        if mask == 0:
+            raise ISACorpusGenerationError(
+                f"empty state constraint for {self.name}: {reason}"
+            )
+        if (self.value ^ value) & (self.mask & mask):
+            raise ISACorpusGenerationError(
+                f"conflicting state constraints for {self.name}: "
+                f"{self.reasons[-1]} versus {reason}"
+            )
+        self.value = (self.value & ~mask) | value
+        self.mask |= mask
+        self.reasons += (reason,)
+
+    def finish(self) -> int:
+        return (self.initial & ~self.mask) | self.value
 
 
 def _register_scenarios() -> tuple[CoverageScenario, ...]:
@@ -484,12 +575,68 @@ def _scenario_value(scenario: CoverageScenario, width_bits: int) -> int:
     raise AssertionError("not a register scenario")
 
 
-def _memory_scenarios() -> tuple[CoverageScenario, ...]:
+def _register_locations_overlap(
+    left: RegisterLocation,
+    left_width: int,
+    right: RegisterLocation,
+    right_width: int,
+) -> bool:
     return (
+        left.register == right.register
+        and left.lsb < right.lsb + right_width
+        and right.lsb < left.lsb + left_width
+    )
+
+
+def _coupled_register_inputs(
+    entry: ISAFormCatalogEntry,
+) -> tuple[tuple[RegisterLocation, int], ...]:
+    coupled: list[tuple[RegisterLocation, int]] = []
+    for effect in entry.effects:
+        if (
+            isinstance(effect, MemoryEffect)
+            and effect.condition is not None
+            and effect.condition.kind is PredicateKind.REGISTER
+        ):
+            assert effect.condition.location is not None
+            coupled.append(
+                (effect.condition.location, effect.condition.width_bits)
+            )
+        elif isinstance(effect, BranchEffect):
+            coupled.extend(
+                (outcome.target.location, 32)
+                for outcome in effect.outcomes
+                if isinstance(outcome.target, RegisterControlTarget)
+            )
+        elif isinstance(effect, DivideEffect):
+            coupled.extend(
+                (
+                    (effect.dividend_high, effect.width_bits),
+                    (effect.dividend_low, effect.width_bits),
+                )
+            )
+            if isinstance(effect.divisor, RegisterLocation):
+                coupled.append((effect.divisor, effect.width_bits))
+    return tuple(coupled)
+
+
+def _memory_scenarios(
+    effect: MemoryEffect | None = None,
+) -> tuple[CoverageScenario, ...]:
+    scenarios: tuple[CoverageScenario, ...] = (
         CoverageScenario.MEMORY_ALIGNED_ZERO,
         CoverageScenario.MEMORY_ALIGNED_MAX,
         CoverageScenario.MEMORY_PAGE_EDGE,
     )
+    if (
+        effect is not None
+        and effect.address.base is None
+        and effect.address.index is None
+    ):
+        scenarios = scenarios[:2]
+    if effect is not None and effect.condition is not None:
+        scenarios += (CoverageScenario.MEMORY_CONDITION_FALSE,)
+    return scenarios
 
 
 def _divide_scenarios() -> tuple[CoverageScenario, ...]:
@@ -515,15 +662,21 @@ def _branch_scenario(outcome: BranchOutcome) -> CoverageScenario:
 def _cells(entry: ISAFormCatalogEntry) -> tuple[StructuralCoverageCell, ...]:
     result: list[StructuralCoverageCell] = []
     for effect in entry.effects:
-        if isinstance(effect, RegisterEffect):
+        if isinstance(effect, NoOpEffect):
+            scenarios = (CoverageScenario.NOOP_BASELINE,)
+            width = None
+        elif isinstance(effect, RegisterEffect):
             scenarios = (
                 _register_scenarios()
                 if effect.reads
                 else (CoverageScenario.REGISTER_ZERO,)
             )
             width: int | None = effect.width_bits
+        elif isinstance(effect, StateEffect):
+            scenarios = (CoverageScenario.STATE_BASELINE,)
+            width = None
         elif isinstance(effect, MemoryEffect):
-            scenarios = _memory_scenarios()
+            scenarios = _memory_scenarios(effect)
             width = effect.width_bits
         elif isinstance(effect, BranchEffect):
             scenarios = tuple(_branch_scenario(outcome) for outcome in effect.outcomes)
@@ -559,45 +712,128 @@ def _target_memory_address(effect_index: int, scenario: CoverageScenario, size: 
     return region_base + 0x40
 
 
+def _address_value(
+    assignments: _RegisterAssignments,
+    address: AddressExpression,
+) -> int:
+    segment_base = FS_BASE if address.segment is AddressSegment.FS else 0
+    base = 0 if address.base is None else assignments.value(address.base)
+    index = 0 if address.index is None else assignments.value(address.index)
+    return (
+        segment_base
+        + base
+        + index * address.scale
+        + address.displacement
+    ) & 0xFFFFFFFF
+
+
 def _apply_address_constraints(
     assignments: _RegisterAssignments,
-    effect: MemoryEffect,
-    target: int,
+    address: AddressExpression,
+    preferred: int,
+    reason: str,
 ) -> int:
-    address = effect.address
     segment_base = FS_BASE if address.segment is AddressSegment.FS else 0
-    delta = (target - segment_base - address.displacement) & 0xFFFFFFFF
-    if address.base is not None:
+    fixed = (segment_base + address.displacement) & 0xFFFFFFFF
+    base_full = (
+        address.base is not None
+        and assignments.constrained_mask(address.base) == 0xFFFFFFFF
+    )
+    index_full = (
+        address.index is not None
+        and assignments.constrained_mask(address.index) == 0xFFFFFFFF
+    )
+
+    if address.base is not None and not base_full:
+        index_value = 0
         if address.index is not None:
-            assignments.constrain(
-                address.index, 32, 0, f"{effect.id} address index"
-            )
-        assignments.constrain(address.base, 32, delta, f"{effect.id} address base")
-    elif address.index is not None:
-        if delta % address.scale:
-            delta = (delta + address.scale - (delta % address.scale)) & 0xFFFFFFFF
-            target = (
-                segment_base + address.displacement + delta
-            ) & 0xFFFFFFFF
-        assignments.constrain(
-            address.index,
-            32,
-            delta // address.scale,
-            f"{effect.id} address index",
+            if index_full:
+                index_value = assignments.value(address.index)
+            else:
+                index_value = assignments.constrain_full_compatible(
+                    address.index, 0, f"{reason} address index"
+                )
+        desired_base = (
+            preferred - fixed - index_value * address.scale
+        ) & 0xFFFFFFFF
+        assignments.constrain_full_compatible(
+            address.base, desired_base, f"{reason} address base"
         )
-    else:
-        target = (segment_base + address.displacement) & 0xFFFFFFFF
-    return target
+    elif address.index is not None and not index_full:
+        base_value = (
+            0 if address.base is None else assignments.value(address.base)
+        )
+        delta = (preferred - fixed - base_value) & 0xFFFFFFFF
+        if delta % address.scale:
+            delta = (delta + address.scale - delta % address.scale) & 0xFFFFFFFF
+        assignments.constrain_full_compatible(
+            address.index,
+            delta // address.scale,
+            f"{reason} address index",
+        )
+
+    actual = _address_value(assignments, address)
+    if actual != preferred:
+        semantic_full_registers = [
+            register
+            for register in (address.base, address.index)
+            if register is not None
+            and assignments.constrained_mask(register) == 0xFFFFFFFF
+            and not any(
+                "address" in constraint_reason
+                for constraint_reason in assignments.reasons(register)
+            )
+        ]
+        if semantic_full_registers:
+            raise ISACorpusGenerationError(
+                "conflicting state constraints for memory address "
+                + ", ".join(sorted(semantic_full_registers))
+            )
+    return actual
+
+
+def _apply_predicate(
+    assignments: _RegisterAssignments,
+    eflags: _WordAssignments,
+    predicate: InputPredicate,
+    *,
+    satisfied: bool,
+    reason: str,
+) -> None:
+    value = (
+        predicate.value
+        if satisfied
+        else predicate.value ^ (predicate.mask & -predicate.mask)
+    )
+    if predicate.kind is PredicateKind.EFLAGS:
+        eflags.constrain(predicate.mask, value, reason)
+        return
+    if predicate.location is None:
+        raise ISACorpusGenerationError(
+            f"{reason} register predicate has no location"
+        )
+    shifted_mask = predicate.mask << predicate.location.lsb
+    shifted_value = value << predicate.location.lsb
+    assignments.constrain_mask(
+        predicate.location.register,
+        shifted_mask,
+        shifted_value,
+        reason,
+    )
 
 
 def _apply_divide_constraints(
     assignments: _RegisterAssignments,
     effect: DivideEffect,
     scenario: CoverageScenario,
-) -> ExpectedOutcome:
+) -> tuple[ExpectedOutcome, int]:
     width = effect.width_bits
     if scenario is CoverageScenario.DIVIDE_SUCCESS:
-        high, low, divisor = (0, 9, 3)
+        high, low, divisor = (
+            (0, 9, _low_mask(width) - 2)
+            if effect.signed
+            else (0, 9, 3)
+        )
         outcome = ExpectedOutcome(ControlClass.FALLTHROUGH, FaultClass.NONE)
     elif scenario is CoverageScenario.DIVIDE_BY_ZERO:
         high, low, divisor = (0, 9, 0)
@@ -616,8 +852,11 @@ def _apply_divide_constraints(
     assignments.constrain(
         effect.dividend_low, width, low, f"{effect.id} dividend low"
     )
-    assignments.constrain(effect.divisor, width, divisor, f"{effect.id} divisor")
-    return outcome
+    if isinstance(effect.divisor, RegisterLocation):
+        assignments.constrain(
+            effect.divisor, width, divisor, f"{effect.id} divisor"
+        )
+    return outcome, divisor
 
 
 def _defined_outputs(
@@ -646,6 +885,17 @@ def _defined_outputs(
     return replace(entry.defined_outputs, memory=memory_masks)
 
 
+@dataclass(frozen=True)
+class _MemoryRequest:
+    id: str
+    width_bits: int
+    access: AccessMode
+    address: AddressExpression
+    scenario: CoverageScenario
+    data: bytes | None
+    structural_target: bool
+
+
 def _build_case(
     entry: ISAFormCatalogEntry,
     cell: StructuralCoverageCell,
@@ -654,57 +904,32 @@ def _build_case(
 ) -> BoundaryMachineStateCase:
     state = _base_state(entry, seed)
     assignments = _RegisterAssignments(state.gprs)
+    eflags_assignments = _WordAssignments(state.eflags, "eflags")
     target_effect = next(effect for effect in entry.effects if effect.id == cell.effect_id)
 
     if isinstance(target_effect, RegisterEffect):
         value = _scenario_value(cell.scenario, target_effect.width_bits)
-        for register in target_effect.reads:
+        coupled_inputs = _coupled_register_inputs(entry)
+        for location in target_effect.reads:
+            if any(
+                _register_locations_overlap(
+                    location,
+                    target_effect.width_bits,
+                    coupled,
+                    coupled_width,
+                )
+                for coupled, coupled_width in coupled_inputs
+            ):
+                continue
             assignments.constrain(
-                register,
+                location,
                 target_effect.width_bits,
                 value,
                 f"{target_effect.id} {cell.scenario.value}",
             )
 
-    memory_rows: list[MappedMemoryRegion] = []
-    memory_masks: list[MemoryMask] = []
-    memory_ranges: list[tuple[int, int, str]] = []
-    for effect_index, effect in enumerate(entry.effects):
-        if not isinstance(effect, MemoryEffect):
-            continue
-        scenario = (
-            cell.scenario
-            if effect is target_effect
-            else CoverageScenario.MEMORY_ALIGNED_ZERO
-        )
-        size = effect.width_bits // 8
-        address = _target_memory_address(effect_index, scenario, size)
-        address = _apply_address_constraints(assignments, effect, address)
-        end = address + size
-        if end > 2**32:
-            raise ISACorpusGenerationError(
-                f"{effect.id} generated memory range wraps the PE32 address space"
-            )
-        for prior_start, prior_end, prior_id in memory_ranges:
-            if address < prior_end and prior_start < end:
-                raise ISACorpusGenerationError(
-                    f"generated memory effects {prior_id} and {effect.id} overlap"
-                )
-        memory_ranges.append((address, end, effect.id))
-        fill = (
-            0xFF
-            if scenario is CoverageScenario.MEMORY_ALIGNED_MAX
-            else (effect_index * 37 + seed) & 0xFF
-            if scenario is CoverageScenario.MEMORY_PAGE_EDGE
-            else 0
-        )
-        data = bytes([fill]) * size
-        permissions = "r" if effect.access is AccessMode.READ else "rw"
-        memory_rows.append(MappedMemoryRegion(address, data, permissions))
-        if effect.access in {AccessMode.WRITE, AccessMode.READ_WRITE}:
-            memory_masks.append(MemoryMask(address, bytes([0xFF]) * size))
-
     divide_outcome: ExpectedOutcome | None = None
+    divide_memory: list[tuple[DivideEffect, int]] = []
     for effect in entry.effects:
         if not isinstance(effect, DivideEffect):
             continue
@@ -713,19 +938,14 @@ def _build_case(
             if effect is target_effect
             else CoverageScenario.DIVIDE_SUCCESS
         )
-        divide_outcome = _apply_divide_constraints(assignments, effect, scenario)
-
-    for effect in entry.effects:
-        if not isinstance(effect, RegisterEffect) or effect is target_effect:
-            continue
-        for register in effect.reads:
-            assignments.set_default(
-                register, effect.width_bits, 1, f"{effect.id} baseline"
-            )
+        divide_outcome, divisor = _apply_divide_constraints(
+            assignments, effect, scenario
+        )
+        if isinstance(effect.divisor, AddressExpression):
+            divide_memory.append((effect, divisor))
 
     branch_outcome: ExpectedOutcome | None = None
-    branch_target: int | None = None
-    eflags = state.eflags
+    branch_memory: list[tuple[BranchEffect, MemoryControlTarget]] = []
     for effect in entry.effects:
         if not isinstance(effect, BranchEffect):
             continue
@@ -737,9 +957,173 @@ def _build_case(
         outcome = next(
             row for row in effect.outcomes if _branch_scenario(row) is desired
         )
-        eflags = (eflags & ~outcome.eflags_mask) | outcome.eflags_value
+        if outcome.eflags_mask:
+            eflags_assignments.constrain(
+                outcome.eflags_mask,
+                outcome.eflags_value,
+                f"{effect.id} {desired.value}",
+            )
         branch_outcome = ExpectedOutcome(outcome.control, FaultClass.NONE)
-        branch_target = outcome.target_eip
+        if isinstance(outcome.target, RegisterControlTarget):
+            assignments.constrain(
+                outcome.target.location,
+                32,
+                DYNAMIC_TARGET_EIP,
+                f"{effect.id} dynamic control target",
+            )
+        elif isinstance(outcome.target, MemoryControlTarget):
+            branch_memory.append((effect, outcome.target))
+
+    memory_requests: list[_MemoryRequest] = []
+    inactive_predicate = (
+        target_effect.condition
+        if (
+            isinstance(target_effect, MemoryEffect)
+            and target_effect.condition is not None
+            and cell.scenario is CoverageScenario.MEMORY_CONDITION_FALSE
+        )
+        else None
+    )
+    for effect in entry.effects:
+        if not isinstance(effect, MemoryEffect):
+            continue
+        scenario = (
+            cell.scenario
+            if effect is target_effect
+            else CoverageScenario.MEMORY_ALIGNED_ZERO
+        )
+        active = not (
+            effect.condition is not None
+            and effect.condition == inactive_predicate
+        )
+        if effect.condition is not None:
+            _apply_predicate(
+                assignments,
+                eflags_assignments,
+                effect.condition,
+                satisfied=active,
+                reason=f"{effect.id} memory condition",
+            )
+        memory_requests.append(
+            _MemoryRequest(
+                id=effect.id,
+                width_bits=effect.width_bits,
+                # A false semantic effect can still cause a speculative or
+                # architecturally unconditional source read (notably CMOVcc).
+                # Provision readable backing without claiming a write.
+                access=(effect.access if active else AccessMode.READ),
+                address=effect.address,
+                scenario=scenario,
+                data=None,
+                structural_target=effect is target_effect,
+            )
+        )
+    for effect, divisor in divide_memory:
+        memory_requests.append(
+            _MemoryRequest(
+                id=f"{effect.id}/divisor",
+                width_bits=effect.width_bits,
+                access=AccessMode.READ,
+                address=effect.divisor,
+                scenario=CoverageScenario.MEMORY_ALIGNED_ZERO,
+                data=divisor.to_bytes(effect.width_bits // 8, "little"),
+                structural_target=False,
+            )
+        )
+    for effect, target in branch_memory:
+        memory_requests.append(
+            _MemoryRequest(
+                id=f"{effect.id}/target",
+                width_bits=32,
+                access=AccessMode.READ,
+                address=target.address,
+                scenario=CoverageScenario.MEMORY_ALIGNED_ZERO,
+                data=DYNAMIC_TARGET_EIP.to_bytes(4, "little"),
+                structural_target=False,
+            )
+        )
+
+    memory_rows: list[MappedMemoryRegion] = []
+    memory_masks: list[MemoryMask] = []
+    memory_ranges: list[tuple[int, int, str]] = []
+    request_ids = [request.id for request in memory_requests]
+    if len(request_ids) != len(set(request_ids)):
+        raise ISACorpusGenerationError(
+            "generated memory footprint contains duplicate request IDs"
+        )
+    if len(memory_requests) > MAX_SHARED_MEMORY_REGIONS:
+        raise ISACorpusGenerationError(
+            "generated memory footprint exceeds the shared executor region limit"
+        )
+    if sum(request.width_bits // 8 for request in memory_requests) > (
+        MAX_SHARED_MEMORY_BYTES
+    ):
+        raise ISACorpusGenerationError(
+            "generated memory footprint exceeds the shared executor byte limit"
+        )
+    ordered_requests = sorted(
+        memory_requests, key=lambda request: (not request.structural_target, request.id)
+    )
+    for request_index, request in enumerate(ordered_requests):
+        size = request.width_bits // 8
+        preferred = _target_memory_address(
+            request_index, request.scenario, size
+        )
+        address = _apply_address_constraints(
+            assignments, request.address, preferred, request.id
+        )
+        if (
+            request.scenario is CoverageScenario.MEMORY_PAGE_EDGE
+            and address % 0x1000 != 0
+            and (address + size) % 0x1000 != 0
+        ):
+            raise ISACorpusGenerationError(
+                f"{request.id} page-edge constraint conflicts with shared state"
+            )
+        end = address + size
+        if end > 2**32:
+            raise ISACorpusGenerationError(
+                f"{request.id} generated memory range wraps the PE32 address space"
+            )
+        if address < SHARED_MEMORY_MIN or end > SHARED_MEMORY_END:
+            raise ISACorpusGenerationError(
+                f"{request.id} generated memory range is outside the shared "
+                "executor address window"
+            )
+        instruction_end = TEST_EIP + len(entry.instruction_bytes)
+        if address < instruction_end and TEST_EIP < end:
+            raise ISACorpusGenerationError(
+                f"{request.id} generated memory overlaps the instruction"
+            )
+        for prior_start, prior_end, prior_id in memory_ranges:
+            if address < prior_end and prior_start < end:
+                raise ISACorpusGenerationError(
+                    f"generated memory effects {prior_id} and {request.id} overlap"
+                )
+        memory_ranges.append((address, end, request.id))
+        if request.data is not None:
+            data = request.data
+        else:
+            fill = (
+                0xFF
+                if request.scenario is CoverageScenario.MEMORY_ALIGNED_MAX
+                else (request_index * 37 + seed) & 0xFF
+                if request.scenario is CoverageScenario.MEMORY_PAGE_EDGE
+                else 0
+            )
+            data = bytes([fill]) * size
+        permissions = "r" if request.access is AccessMode.READ else "rw"
+        memory_rows.append(MappedMemoryRegion(address, data, permissions))
+        if request.access in {AccessMode.WRITE, AccessMode.READ_WRITE}:
+            memory_masks.append(MemoryMask(address, bytes([0xFF]) * size))
+
+    for effect in entry.effects:
+        if not isinstance(effect, RegisterEffect) or effect is target_effect:
+            continue
+        for location in effect.reads:
+            assignments.set_default(
+                location, effect.width_bits, 1, f"{effect.id} baseline"
+            )
 
     x87 = state.x87
     for effect in entry.effects:
@@ -753,7 +1137,7 @@ def _build_case(
     state = replace(
         state,
         gprs=assignments.finish(),
-        eflags=eflags,
+        eflags=eflags_assignments.finish(),
         x87=x87,
     )
     expected = (
@@ -763,13 +1147,6 @@ def _build_case(
         or divide_outcome
         or ExpectedOutcome(ControlClass.FALLTHROUGH, FaultClass.NONE)
     )
-    if branch_target is not None and expected.fault is FaultClass.NONE:
-        # The target is part of the generated structural state even though the
-        # final EIP remains an oracle observation.
-        state = replace(
-            state,
-            gprs=state.gprs,
-        )
     provisional = BoundaryMachineStateCase(
         id="pending",
         form_id=entry.form_id,

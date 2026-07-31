@@ -93,6 +93,7 @@ inductive OrderedEffectKind where
   | call (kind : CallKind)
   | divideGuard
   | repMovsd
+  | repStosd
 deriving Repr, DecidableEq
 
 private def operand32ReadEffect : Operand32 -> List OrderedEffectKind
@@ -137,9 +138,12 @@ def decodedOrderedEffects? (pe : PE32) (imports : List PEImport)
       .lea .. | .zeroReg .. | .leaAddress .. | .branchCondition .. |
       .convertWordToDword | .convertDwordToQuad | .bitTestRegister .. =>
       some []
-  | .ret | .retPop _ | .popReg _ | .leave =>
+  | .ret | .retPop _ | .popReg _ | .popFlags | .leave =>
       some [.read .dword]
-  | .pushReg _ => some [.write .dword]
+  | .popAll => some (List.replicate 8 (.read .dword))
+  | .pushReg _ | .pushFlags => some [.write .dword]
+  | .pushAll => some (List.replicate 8 (.write .dword))
+  | .clearDirection => some []
   | .load32 .. | .movFs32 .. => some [.read .dword]
   | .store32 .. => some [.write .dword]
   | .callRel32 _ => some [.write .dword, .call .internal]
@@ -163,6 +167,9 @@ def decodedOrderedEffects? (pe : PE32) (imports : List PEImport)
       some (reads ++ writes)
   | .shift _ destination _ | .unary _ destination =>
       some (operand32ReadEffect destination ++ operand32WriteEffect destination)
+  | .shiftWidth width _ destination _ =>
+      some (operandWidthReadEffect width destination ++
+        operandWidthWriteEffect width destination)
   | .shift8 _ destination _ =>
       some (operand8ReadEffect destination ++ operand8WriteEffect destination)
   | .movZeroExtend _ source _ | .movSignExtend _ source _ =>
@@ -202,6 +209,7 @@ def decodedOrderedEffects? (pe : PE32) (imports : List PEImport)
       some (operand32ReadEffect destination ++ operand32WriteEffect destination)
   | .bitScan _ _ source => some (operand32ReadEffect source)
   | .moveDwords _ => some [.repMovsd]
+  | .storeDwords _ => some [.repStosd]
   | .callIndirect target =>
       some (operand32ReadEffect target ++ [.write .dword, .call .indirect])
   | .jumpIndirect target => some (operand32ReadEffect target)
@@ -215,14 +223,16 @@ def decodedOrderedEffects? (pe : PE32) (imports : List PEImport)
       .x87StoreStack .. | .x87Unary .. | .x87BinaryStack .. |
       .x87CompareStack .. | .x87LoadMemory .. | .x87StoreMemory .. |
       .x87BinaryMemory .. | .x87LoadControl .. | .x87StoreControl .. |
-      .x87Wait | .x87Initialize | .x87StoreStatusAx | .x87Examine => none
+      .x87SaveState .. | .x87RestoreState .. | .x87Wait | .x87Initialize |
+      .x87StoreStatusAx | .x87Examine => none
 
 private def pureTerminal : OutcomeExpr -> TransferTerminal
   | .returned _ => .returned
   | .jump target => .jump target
   | .branch _ taken fallthrough => .branch taken fallthrough
   | .call _ continuation _ | .externalCall _ _ continuation |
-      .bulkCopy _ continuation | .indirectCall _ continuation _ |
+      .bulkCopy _ continuation | .bulkFill _ continuation |
+      .indirectCall _ continuation _ |
       .checkedContinue _ continuation |
       .atomicCompareExchange _ _ _ continuation => .fallthrough continuation
   | .externalJump _ _ => .externalJump
@@ -268,6 +278,7 @@ def semanticTransferOrderedEffectKinds
         | none => []
     | .divideIf _ => [.divideGuard]
     | .repMovsd .. => [.repMovsd]
+    | .repStosd .. => [.repStosd]
     | .setRegister .. | .setFlag .. | .syncEflags => []
 
 def semanticTransferCallActionIndices
@@ -461,12 +472,22 @@ def exactInstructionMemoryEvents? (pe : PE32) (imports : List PEImport)
       .cmpImm .. | .branchEqual .. | .jumpRel8 .. | .jumpRel32 .. |
       .lea .. | .zeroReg .. | .leaAddress .. | .branchCondition .. |
       .convertWordToDword | .convertDwordToQuad | .bitTestRegister .. |
-      .moveDwords _ => some []
+      .clearDirection | .moveDwords _ | .storeDwords _ => some []
   | .ret | .retPop _ =>
       some [readEvent before before.registers.esp .dword]
   | .popReg _ => some [readEvent before before.registers.esp .dword]
+  | .popFlags => some [readEvent before before.registers.esp .dword]
+  | .popAll =>
+      some ((List.range 8).map fun index =>
+        readEvent before
+          (before.registers.esp + BitVec.ofNat 32 (index * 4)) .dword)
   | .leave => some [readEvent before before.registers.ebp .dword]
   | .pushReg _ => some [writeEvent after after.registers.esp .dword]
+  | .pushFlags => some [writeEvent after after.registers.esp .dword]
+  | .pushAll =>
+      some ((List.range 8).map fun index =>
+        writeEvent after
+          (before.registers.esp - BitVec.ofNat 32 ((index + 1) * 4)) .dword)
   | .load32 _ base offset =>
       some [readEvent before (before.registers.get base + BitVec.ofNat 32 offset) .dword]
   | .store32 base offset _ =>
@@ -494,6 +515,9 @@ def exactInstructionMemoryEvents? (pe : PE32) (imports : List PEImport)
   | .shift _ destination _ | .unary _ destination =>
       some (operand32ReadEvents before destination ++
         operand32WriteEvents after destination)
+  | .shiftWidth width _ destination _ =>
+      some (operandWidthReadEvents before width destination ++
+        operandWidthWriteEvents after width destination)
   | .shift8 _ destination _ =>
       some (operand8ReadEvents before destination ++ operand8WriteEvents after destination)
   | .movZeroExtend _ source _ | .movSignExtend _ source _ =>
@@ -553,7 +577,8 @@ def exactInstructionMemoryEvents? (pe : PE32) (imports : List PEImport)
       .x87StoreStack .. | .x87Unary .. | .x87BinaryStack .. |
       .x87CompareStack .. | .x87LoadMemory .. | .x87StoreMemory .. |
       .x87BinaryMemory .. | .x87LoadControl .. | .x87StoreControl .. |
-      .x87Wait | .x87Initialize | .x87StoreStatusAx | .x87Examine => none
+      .x87SaveState .. | .x87RestoreState .. | .x87Wait | .x87Initialize |
+      .x87StoreStatusAx | .x87Examine => none
 
 private def bytesString (bytes : Bytes) : String :=
   String.ofList (bytes.map Char.ofNat)
@@ -767,6 +792,23 @@ def runExactDecodedInstructions (pe : PE32) (imports : List PEImport)
                   if next.rva != continuation then none else
                   runExactDecodedInstructions pe imports path environment 0 tail
                     (formalFromInterpreter nextState copied) events
+          | .bulkFill destination value count direction continuation =>
+              let input :=
+                StageA.Relational.InterpreterTransfer.machineFromFormal nextState
+              let filled := repStosd input destination value direction count.toNat
+              let events :=
+                events ++ [.repStosd destination value count direction]
+              match tail with
+              | [] =>
+                  some {
+                    state := filled
+                    events
+                    completion := .fallthrough continuation
+                  }
+              | next :: _ =>
+                  if next.rva != continuation then none else
+                  runExactDecodedInstructions pe imports path environment 0 tail
+                    (formalFromInterpreter nextState filled) events
           | .checkedContinue valid continuation =>
               if !valid then some (exactResult nextState events .divideError) else
               match tail with

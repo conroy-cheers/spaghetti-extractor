@@ -167,7 +167,6 @@ class InterpreterKernelRunPlan:
             ],
             "lean_goals": [
                 "GeneratedRunFunctionTemplateGoal",
-                "GeneratedRunFunctionMachineCertificateGoal",
             ],
             "status": "incomplete" if x87_incomplete else "semantic_proof_required",
         }
@@ -689,26 +688,7 @@ def GeneratedRunFunctionTemplateGoal : Prop :=
   ExactDecodeInventory generatedInterpreterKernelCandidatePe
     {function_name}.instructions
 
-def GeneratedRunFunctionMachineCertificateGoal
-    (abi : KernelABIRelation) (semanticRecords : List ProgramRecord)
-    (steps : NativeExecution -> NativeExecution -> Prop)
-    (dispatches : KernelDispatchRelation) : Prop :=
-  Nonempty (RunFunctionMachineCertificate generatedCompiledKernelProgram
-    generatedInterpreterKernelCandidatePe generatedInterpreterKernelImports abi
-    semanticRecords steps dispatches)
-
-theorem GeneratedRunFunctionRefines
-    {{abi : KernelABIRelation}} {{semanticRecords : List ProgramRecord}}
-    {{steps : NativeExecution -> NativeExecution -> Prop}}
-    {{dispatches : KernelDispatchRelation}}
-    (certificate : RunFunctionMachineCertificate generatedCompiledKernelProgram
-      generatedInterpreterKernelCandidatePe generatedInterpreterKernelImports abi
-      semanticRecords steps dispatches) :
-    KernelOperationRefinesUsing generatedCompiledKernelProgram abi dispatches
-      .runFunction :=
-  certificate.refines
-
-#print axioms GeneratedRunFunctionRefines
+#print axioms generatedRunFunctionTemplate
 
 end StageA.GeneratedRelational.InterpreterKernelRun
 """

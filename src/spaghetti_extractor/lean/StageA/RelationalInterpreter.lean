@@ -281,6 +281,7 @@ inductive SemanticAction where
   | divideIf (condition : Nat)
   | call (call : Nat)
   | repMovsd (source destination count directionFlag : Nat)
+  | repStosd (destination value count directionFlag : Nat)
   | setRegister (register : Register) (value : Nat)
   | setFlag (flag : Flag) (value : Nat)
   | syncEflags
@@ -307,6 +308,8 @@ def RawAction.decodeBody (action : RawAction) : Option SemanticAction :=
   | 4, [call] => if action.aux == 0 then some (.call call) else none
   | 5, [source, destination, count, direction] =>
       if action.aux == 0 then some (.repMovsd source destination count direction) else none
+  | 26, [destination, value, count, direction] =>
+      if action.aux == 0 then some (.repStosd destination value count direction) else none
   | 6, [value] => do
       let register <- Register.ofIndex? action.aux
       some (.setRegister register value)
@@ -417,6 +420,8 @@ def SemanticTransfer.checkAction (transfer : SemanticTransfer)
       if state.referencesReady [address, value] then some state else none
   | .repMovsd source destination count direction =>
       if state.referencesReady [source, destination, count, direction] then some state else none
+  | .repStosd destination value count direction =>
+      if state.referencesReady [destination, value, count, direction] then some state else none
   | .divideIf condition | .setRegister _ condition | .setFlag _ condition =>
       if state.referencesReady [condition] then some state else none
   | .call callIndex => do
@@ -649,6 +654,7 @@ inductive InterpreterEvent where
   | memoryWrite (address : Word) (width : MemoryWidth) (value : Word)
   | call (event : CallEvent)
   | repMovsd (source destination count : Word) (direction : Bool)
+  | repStosd (destination value count : Word) (direction : Bool)
 deriving Repr, DecidableEq
 
 inductive CallStatus where
@@ -749,6 +755,17 @@ def repMovsd (state : InterpreterMachine) (source destination : Word)
       let step := if direction then BitVec.ofNat 32 0xfffffffc else BitVec.ofNat 32 4
       repMovsd next (source + step) (destination + step) direction count
 
+def repStosd (state : InterpreterMachine) (destination value : Word)
+    (direction : Bool) : Nat -> InterpreterMachine
+  | 0 => state
+  | count + 1 =>
+      let next := {
+        state with memory := writeMemory state.memory destination value .dword
+      }
+      let step :=
+        if direction then BitVec.ofNat 32 0xfffffffc else BitVec.ofNat 32 4
+      repStosd next (destination + step) value direction count
+
 def InterpreterMachine.syncEflags (state : InterpreterMachine) : InterpreterMachine :=
   let represented := BitVec.ofNat 32
     ((1 <<< 0) + (1 <<< 2) + (1 <<< 6) + (1 <<< 7) + (1 <<< 10) + (1 <<< 11))
@@ -816,6 +833,17 @@ def SemanticTransfer.executeAction (transfer : SemanticTransfer)
       some (.inr { runtime with
         current := current
         events := runtime.events ++ [.repMovsd source destination count direction]
+      })
+  | .repStosd destination value count directionFlag => do
+      let destination <- runtime.words destination
+      let value <- runtime.words value
+      let count <- runtime.words count
+      let directionFlag <- runtime.words directionFlag
+      let direction := wordTruth directionFlag
+      let current := repStosd runtime.current destination value direction count.toNat
+      some (.inr { runtime with
+        current := current
+        events := runtime.events ++ [.repStosd destination value count direction]
       })
   | .setRegister register value => do
       let value <- runtime.words value

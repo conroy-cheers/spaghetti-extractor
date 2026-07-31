@@ -8,7 +8,6 @@ participate in the whole-program acceptance theorem.
 from __future__ import annotations
 
 import json
-import hashlib
 import os
 import shutil
 import subprocess
@@ -41,6 +40,7 @@ from .isa_conformance import (
     serialize_isa_conformance_report,
 )
 from .relational.lean.compiler import _run_lean_relational
+from .isa_semantic_forms import lean_semantic_form_classifier_sha256
 
 
 LEAN_ISA_BACKEND_ID = "stage-a-lean-machine-semantics"
@@ -64,17 +64,6 @@ _PREFIXES = {
     0xF2,
     0xF3,
 }
-
-
-def lean_semantic_form_classifier_sha256() -> str:
-    source = Path(__file__).parent / "lean" / "StageA"
-    hashes = {
-        name: hashlib.sha256((source / name).read_bytes()).hexdigest()
-        for name in ("X87.lean", "Formal.lean", "ISAQualification.lean")
-    }
-    return hashlib.sha256(
-        json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode("ascii")
-    ).hexdigest()
 
 
 def _lean_nat(value: int) -> str:
@@ -101,12 +90,15 @@ def _unsupported_reason(case: Any) -> str | None:
         return f"unsupported Lean CPU profile {case.profile.cpu!r}"
     if case.defined_outputs.fs.selector != 0:
         return "Lean MachineState does not represent the FS selector"
+    opcode = _instruction_opcode(case.instruction_bytes)
+    if opcode == 0x9B or 0xD8 <= opcode <= 0xDF:
+        return (
+            "x87 execution is relationally parametric and is not yet "
+            "concretely hardware-qualified"
+        )
     for field in _ABSENT_LEAN_X87_FIELDS:
         if getattr(case.defined_outputs.x87, field) != 0:
             return f"Lean MachineState does not represent x87 {field}"
-    opcode = _instruction_opcode(case.instruction_bytes)
-    if opcode == 0x9B or 0xD8 <= opcode <= 0xDF:
-        return "formal-default-v1 x87 semantics are not hardware-qualified"
     if case.expected.fault not in {FaultClass.NONE, FaultClass.DIVIDE_ERROR}:
         return f"Lean semantics do not model fault {case.expected.fault.value!r}"
     return None
@@ -136,6 +128,14 @@ def _lean_instruction_bytes(case: Any) -> str:
     return _lean_list([_lean_nat(value) for value in case.instruction_bytes])
 
 
+def _lean_cpu_profile(cpu: str) -> str:
+    if cpu == "haswell":
+        return ".haswell"
+    if cpu in {"i386", "i486", "i686"}:
+        return ".i686"
+    raise ISAConformanceError(f"unsupported Lean CPU profile {cpu!r}")
+
+
 def _lean_input(case: Any) -> str:
     registers = case.initial_state.gprs
     memory = _lean_list(
@@ -158,6 +158,7 @@ def _lean_input(case: Any) -> str:
   bytes := %s
   pc := %s
   imageBase := %s
+  cpuProfile := %s
   registers := {
     eax := %s
     ebx := %s
@@ -183,6 +184,7 @@ def _lean_input(case: Any) -> str:
         _lean_instruction_bytes(case),
         _lean_nat(case.initial_state.eip - case.image_base),
         _lean_nat(case.image_base),
+        _lean_cpu_profile(case.profile.cpu),
         _lean_nat(registers.eax),
         _lean_nat(registers.ebx),
         _lean_nat(registers.ecx),
@@ -214,11 +216,11 @@ def _generated_module(
         "set_option maxHeartbeats 0",
         "",
         "def emitISAConformanceClassification (caseId : String)",
-        "    (bytes : Bytes) : IO Unit :=",
+        "    (profile : X86CPUProfile) (bytes : Bytes) : IO Unit :=",
         "  IO.println <| Json.compress <| Json.mkObj [",
         '    ("case_id", toJson caseId),',
         '    ("authority", toJson "veto_only"),',
-        '    ("semantic_form", match decodeInstructionExact bytes with',
+        '    ("semantic_form", match decodeInstructionExactForProfile profile bytes with',
         "      | some decoded => toJson (reprStr decoded.instruction.semanticForm)",
         "      | none => Json.null),",
         '    ("result", Json.mkObj [("status", toJson "classification_only")])',
@@ -248,6 +250,8 @@ def _generated_module(
                 "  emitISAConformanceClassification "
                 + _lean_string(case.id)
                 + " "
+                + _lean_cpu_profile(case.profile.cpu)
+                + " "
                 + _lean_instruction_bytes(case)
             )
     definitions.append("")
@@ -268,29 +272,41 @@ def _copy_lean_sources(destination: Path) -> None:
         shutil.copyfile(source / f"{module}.lean", stage_a / f"{module}.lean")
 
 
+def _generated_runner_module() -> str:
+    return "import StageA.GeneratedISAConformance\n"
+
+
 def _control_outcome(control: dict[str, Any], image_base: int) -> tuple[ControlClass, int]:
+    def absolute_rva(field: str) -> int:
+        return (image_base + int(control[field])) & 0xFFFFFFFF
+
     kind = control.get("kind")
     if kind == "next":
-        return ControlClass.FALLTHROUGH, image_base + int(control["rva"])
+        return ControlClass.FALLTHROUGH, absolute_rva("rva")
     if kind == "returned":
         return ControlClass.RETURN, int(control["target"])
     if kind == "jump":
-        return ControlClass.DIRECT_BRANCH, image_base + int(control["target_rva"])
+        return ControlClass.DIRECT_BRANCH, absolute_rva("target_rva")
     if kind == "branch":
         target = "true_target_rva" if control.get("condition") else "false_target_rva"
-        return ControlClass.DIRECT_BRANCH, image_base + int(control[target])
+        return ControlClass.DIRECT_BRANCH, absolute_rva(target)
     if kind == "call":
-        return ControlClass.DIRECT_CALL, image_base + int(control["target_rva"])
+        return ControlClass.DIRECT_CALL, absolute_rva("target_rva")
     if kind == "indirect_call":
         return ControlClass.INDIRECT_CALL, int(control["target"])
     if kind == "indirect_jump":
         return ControlClass.INDIRECT_BRANCH, int(control["target"])
     if kind == "external_call":
-        return ControlClass.INDIRECT_CALL, image_base + int(control["return_rva"])
+        return ControlClass.INDIRECT_CALL, absolute_rva("return_rva")
     if kind == "external_jump":
         return ControlClass.INDIRECT_BRANCH, 0
-    if kind in {"bulk_copy", "checked_continue", "atomic_compare_exchange"}:
-        return ControlClass.FALLTHROUGH, image_base + int(control["continuation_rva"])
+    if kind in {
+        "bulk_copy",
+        "bulk_fill",
+        "checked_continue",
+        "atomic_compare_exchange",
+    }:
+        return ControlClass.FALLTHROUGH, absolute_rva("continuation_rva")
     raise ISAConformanceError(f"unsupported Lean control observation {kind!r}")
 
 
@@ -458,7 +474,9 @@ def _run_lean_isa_conformance(
                     encoding="utf-8",
                 )
                 compiled = _run_lean_relational(
-                    lean_dir, bundle="GeneratedISAConformance"
+                    lean_dir,
+                    bundle="GeneratedISAConformance",
+                    command_timeout_seconds=900,
                 )
                 if compiled.get("status") != "checked":
                     detail = str(compiled.get("stderr") or compiled.get("stdout"))
@@ -474,8 +492,13 @@ def _run_lean_isa_conformance(
                 else:
                     lean = shutil.which("lean")
                     assert lean is not None
+                    runner = lean_dir / "RunGeneratedISAConformance.lean"
+                    runner.write_text(
+                        _generated_runner_module(),
+                        encoding="utf-8",
+                    )
                     completed = subprocess.run(
-                        [lean, "--trust=0", "--run", "StageA/GeneratedISAConformance.lean"],
+                        [lean, "--trust=0", "--run", runner.name],
                         cwd=lean_dir,
                         env={**os.environ, "LEAN_PATH": "."},
                         text=True,

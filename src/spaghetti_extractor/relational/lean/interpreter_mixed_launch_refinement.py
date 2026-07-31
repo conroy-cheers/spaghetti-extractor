@@ -83,14 +83,26 @@ class RelationalInterpreterMixedLaunchRefinementPlan:
         payload["status"] = "incomplete"
         payload["proof_obligations"] = [
             "static_graph_checked",
-            "replay_total_for_all_matching_states",
+            "replay_total_for_all_ready_states",
             "roots_establish_runtime_state_relation",
             "return_wrapper_frame_valid",
             "termination_wrapper_environment_refined",
         ]
         payload["lean_terms"] = {
             "static_graph": "generatedMixedLaunchGraphStaticChecked",
+            "checked_graph": "generatedCheckedMixedLaunchGraph",
+            "runtime_type": "GeneratedMixedLaunchGraphRuntime",
+            "runtime_constructor": (
+                "generatedExactReplayMixedLaunchGraphRuntime"
+            ),
+            "root_frame_facts_type": "GeneratedMixedLaunchRootFrameFacts",
             "required_refinement_type": "GeneratedLaunchWrapperRefinements",
+            "refinement_constructor": (
+                "generatedCanonicalMixedLaunchWrapperRefinement"
+            ),
+            "exact_binding_constructor": (
+                "generatedExactCanonicalMixedLaunchWrapperRefinementBinding"
+            ),
             "launch_wrapper_refinements": None,
         }
         return payload
@@ -237,6 +249,13 @@ theorem generatedMixedLaunchGraphStaticChecked :
       generatedMixedLaunchCandidatePe generatedMixedLaunchImports = true := by
   decide +kernel
 
+def generatedCheckedMixedLaunchGraph : CheckedExactNativeLaunchGraph := {{
+  candidatePe := generatedMixedLaunchCandidatePe
+  candidateImports := generatedMixedLaunchImports
+  certificate := generatedMixedLaunchGraphCertificate
+  staticChecked := generatedMixedLaunchGraphStaticChecked
+}}
+
 /-- This is the exact proof object the mixed binding must provide.  The alias
 prevents downstream code from silently substituting the legacy one-linear-path
 certificate. -/
@@ -246,6 +265,53 @@ abbrev GeneratedLaunchWrapperRefinements
     (contract : MixedRelationContract)
     (launch : PE32ConsoleLaunchV2) : Type :=
   CanonicalMixedLaunchWrapperRefinement original candidate contract launch
+
+abbrev GeneratedMixedLaunchGraphRuntime
+    (candidate : ExactNativeWorldProgram) : Type :=
+  ExactNativeLaunchGraphRuntime generatedCheckedMixedLaunchGraph candidate
+
+def generatedExactReplayMixedLaunchGraphRuntime
+    (candidate : ExactNativeWorldProgram)
+    (candidatePeExact : generatedMixedLaunchCandidatePe = candidate.pe)
+    (candidateImportsExact : generatedMixedLaunchImports = candidate.imports)
+    (canonicalRootRoute : forall
+      (root : CanonicalNativeLaunchRoot) (rootRva : Nat),
+      root.rva? candidate.pe = some rootRva ->
+        exists route : ReflectedNativeLaunchGraphRoute,
+          route ∈ generatedMixedLaunchGraphCertificate.routes /\\
+            route.source = .canonicalRoot root) :
+    GeneratedMixedLaunchGraphRuntime candidate :=
+  ExactNativeLaunchGraphRuntime.ofExactReplay candidatePeExact
+    candidateImportsExact canonicalRootRoute
+
+abbrev GeneratedMixedLaunchRootFrameFacts
+    (original : OriginalDecodedStaticContext)
+    (candidate : ExactNativeWorldProgram)
+    (contract : MixedRelationContract)
+    (launch : PE32ConsoleLaunchV2)
+    (runtime : GeneratedMixedLaunchGraphRuntime candidate) : Prop :=
+  CanonicalMixedLaunchRootFrameFacts generatedCheckedMixedLaunchGraph runtime
+    original candidate contract launch
+
+/-- The generated binary-specific constructor.  Its two arguments are proof
+objects over the exact replay computation and launch-frame postcondition; no
+manifest status or unchecked result enters the refinement. -/
+def generatedCanonicalMixedLaunchWrapperRefinement
+    (runtime : GeneratedMixedLaunchGraphRuntime candidate)
+    (frames : GeneratedMixedLaunchRootFrameFacts original candidate contract
+      launch runtime) :
+    GeneratedLaunchWrapperRefinements original candidate contract launch :=
+  CanonicalMixedLaunchWrapperRefinement.ofCheckedRuntime runtime frames
+
+def generatedExactCanonicalMixedLaunchWrapperRefinementBinding
+    (runtime : GeneratedMixedLaunchGraphRuntime candidate)
+    (frames : GeneratedMixedLaunchRootFrameFacts original candidate contract
+      launch runtime) :
+    ExactCanonicalMixedLaunchWrapperRefinementBinding
+      generatedCheckedMixedLaunchGraph original candidate contract launch
+      (generatedCanonicalMixedLaunchWrapperRefinement runtime frames) :=
+  ExactCanonicalMixedLaunchWrapperRefinementBinding.ofCheckedRuntime runtime
+    frames
 
 #print axioms generatedMixedLaunchGraphStaticChecked
 

@@ -10,9 +10,13 @@ from spaghetti_extractor.relational.schema import (
     RELATIONAL_ACCEPTANCE_THEOREM,
     RELATIONAL_FINAL_ACCEPTANCE_THEOREM,
     RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+    RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_PROFILE,
+    RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_THEOREM,
+    RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_TYPE,
     SchemaError,
     StageAInterfaceManifest,
     choose_relational_acceptance_theorem,
+    selected_relational_acceptance_theorem,
 )
 from spaghetti_extractor.relational.interfaces import stage_a_interface_manifest
 
@@ -37,6 +41,48 @@ class RelationalSchemaTests(unittest.TestCase):
         self.assertIsNone(choose_relational_acceptance_theorem(
             ordinary_ready=False, linked_ready=False
         ))
+        self.assertEqual(
+            choose_relational_acceptance_theorem(
+                ordinary_ready=False,
+                linked_ready=False,
+                mixed_chunked_ready=True,
+            ),
+            RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_THEOREM,
+        )
+
+    def test_mixed_chunked_acceptance_requires_exact_theorem_and_profile(self):
+        acceptance = {
+            "status": "ready",
+            "required_theorem": RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_THEOREM,
+            "theorem": RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_THEOREM,
+            "authority_profile": RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_PROFILE,
+            "mixed_chunked_acceptance": {
+                "status": "ready",
+                "theorem": RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_THEOREM,
+                "profile": RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_PROFILE,
+            },
+        }
+        self.assertEqual(
+            selected_relational_acceptance_theorem(acceptance),
+            RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_THEOREM,
+        )
+
+        wrong_profile = deepcopy(acceptance)
+        wrong_profile["authority_profile"] = "linked-raw-pe32"
+        with self.assertRaisesRegex(SchemaError, "profile"):
+            selected_relational_acceptance_theorem(wrong_profile)
+
+        wrong_nested_profile = deepcopy(acceptance)
+        wrong_nested_profile["mixed_chunked_acceptance"]["profile"] = (
+            "mixed-native-pe32-chunked-open"
+        )
+        with self.assertRaisesRegex(SchemaError, "mixed authority"):
+            selected_relational_acceptance_theorem(wrong_nested_profile)
+
+        wrong_theorem = deepcopy(acceptance)
+        wrong_theorem["theorem"] = RELATIONAL_LINKED_ACCEPTANCE_THEOREM
+        with self.assertRaisesRegex(SchemaError, "does not match"):
+            selected_relational_acceptance_theorem(wrong_theorem)
 
     def test_module_graph_parser_returns_immutable_nodes(self):
         graph = ModuleGraph.parse({
@@ -109,7 +155,17 @@ class RelationalSchemaTests(unittest.TestCase):
             {
                 RELATIONAL_ACCEPTANCE_THEOREM,
                 RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+                RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_THEOREM,
             },
+        )
+        mixed = next(
+            row
+            for row in manifest["acceptance"]["supported_theorems"]
+            if row["theorem"] == RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_THEOREM
+        )
+        self.assertEqual(mixed["canonical_type"], RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_TYPE)
+        self.assertEqual(
+            mixed["profile"], RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_PROFILE
         )
         self.assertIn("external-protocol", parsed.workstream_ids)
         self.assertIn("acceptance-integration", parsed.workstream_ids)

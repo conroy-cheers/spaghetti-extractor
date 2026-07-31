@@ -98,6 +98,37 @@ theorem ExactComputedInterpreterStepPath.toNativePath
   | trans left right leftClosed rightClosed =>
       exact .trans leftClosed rightClosed
 
+/-- A caller prefix may be empty when the operation entry block itself ends
+at the nested call.  This type cannot authorize an empty whole Step path:
+`append` must consume a checked nonempty call chunk before the result enters
+`InterpreterStepNativePath`. -/
+inductive ExactComputedInterpreterStepPrefix
+    (template : InterpreterStepNativeTemplate)
+    (candidate : ExactNativeWorldProgram) :
+    NativeWorldExecution -> List WorldRelationalObservable ->
+      NativeWorldExecution -> Prop
+  | empty (execution : NativeWorldExecution) :
+      ExactComputedInterpreterStepPrefix template candidate execution []
+        execution
+  | path {before after observations}
+      (execution : ExactComputedInterpreterStepPath template candidate before
+        observations after) :
+      ExactComputedInterpreterStepPrefix template candidate before observations
+        after
+
+def ExactComputedInterpreterStepPrefix.append
+    (prior : ExactComputedInterpreterStepPrefix template candidate before
+      prefixObservations middle)
+    (suffix : ExactComputedInterpreterStepPath template candidate middle
+      suffixObservations after) :
+    ExactComputedInterpreterStepPath template candidate before
+      (prefixObservations ++ suffixObservations) after := by
+  cases prior with
+  | empty =>
+      simpa using suffix
+  | path execution =>
+      exact .trans execution suffix
+
 /-- The exact checked call block and the nested native frame it computes. The
 machine state and endpoint are outputs of the exact fixed-fuel chunk. -/
 structure ExactComputedInterpreterStepProgramLookupCallChunk
@@ -162,6 +193,7 @@ structure ConcreteProgramLookupNestedRequestFacts
     LoadedCandidateImageMemory pe imports relocations lookupBefore.memory
   originalProgramTable : LoadedOriginalProgramTable abi lookupBefore.memory
   sourceFits : sourceRva < 2 ^ 32
+  directionFlagClear : DirectionFlagClear lookupBefore
 
 def ConcreteProgramLookupNestedRequestFacts.toRequestRelated
     (facts : ConcreteProgramLookupNestedRequestFacts records abi sourceRva
@@ -169,6 +201,7 @@ def ConcreteProgramLookupNestedRequestFacts.toRequestRelated
     abi.relation.requestRelated (.programLookup records sourceRva)
       lookupBefore := {
   cdecl := facts.cdecl
+  directionFlagClear := facts.directionFlagClear
   candidateImage := facts.candidateImage
   originalProgramTable := facts.originalProgramTable
   payload := ⟨rfl, facts.sourceFits⟩
@@ -283,6 +316,7 @@ def SymbolicallyClosedInterpreterStepProgramLookupCallComposition.toComposition
 }
 
 #print axioms ExactComputedInterpreterStepPath.toNativePath
+#print axioms ExactComputedInterpreterStepPrefix.append
 #print axioms ConcreteProgramLookupNestedRequestFacts.toRequestRelated
 #print axioms ExactComputedInterpreterStepProgramLookupReturn.toReturnPath
 #print axioms SymbolicallyClosedInterpreterStepProgramLookupCallerFrame.toCallerFrame

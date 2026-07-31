@@ -59,6 +59,11 @@ inductive InstructionSemanticForm where
   | jumpRel32
   | pushReg
   | popReg
+  | pushFlags
+  | pushAll
+  | popAll
+  | popFlags
+  | clearDirection
   | leave
   | lea (hasOffset : Bool)
   | load32 (hasOffset : Bool)
@@ -75,6 +80,8 @@ inductive InstructionSemanticForm where
       (destination source : Operand32SemanticForm)
   | shift (operation : ShiftOperation) (destination : Operand32SemanticForm)
       (count : ShiftCount)
+  | shiftWidth (width : OperandWidth) (operation : ShiftOperation)
+      (destination : Operand32SemanticForm) (count : ShiftCount)
   | shift8 (operation : ShiftOperation) (destination : Operand8SemanticForm)
       (count : ShiftCount)
   | unary (operation : UnaryOperation) (destination : Operand32SemanticForm)
@@ -105,7 +112,7 @@ inductive InstructionSemanticForm where
   | multiplyLow (source : Operand32SemanticForm) (hasImmediate : Bool)
   | doubleShift (left : Bool) (destination : Operand32SemanticForm)
       (count : ShiftCount)
-  | bitScan (reverse : Bool) (source : Operand32SemanticForm)
+  | bitScan (operation : BitScanOperation) (source : Operand32SemanticForm)
   | bitTestRegister
   | x87LoadStack
   | x87LoadConstant (value : Nat)
@@ -122,11 +129,14 @@ inductive InstructionSemanticForm where
       (source : AddressingSemanticForm)
   | x87LoadControl (source : AddressingSemanticForm)
   | x87StoreControl (destination : AddressingSemanticForm)
+  | x87SaveState (destination : AddressingSemanticForm)
+  | x87RestoreState (source : AddressingSemanticForm)
   | x87Wait
   | x87Initialize
   | x87StoreStatusAx
   | x87Examine
   | moveDwords (repeated : Bool)
+  | storeDwords (repeated : Bool)
   | callIndirect (target : Operand32SemanticForm)
   | jumpIndirect (target : Operand32SemanticForm)
   | pushOperand (source : Operand32SemanticForm)
@@ -150,6 +160,11 @@ def Instruction.semanticForm : Instruction -> InstructionSemanticForm
   | .jumpRel32 _ => .jumpRel32
   | .pushReg _ => .pushReg
   | .popReg _ => .popReg
+  | .pushFlags => .pushFlags
+  | .pushAll => .pushAll
+  | .popAll => .popAll
+  | .popFlags => .popFlags
+  | .clearDirection => .clearDirection
   | .leave => .leave
   | .lea _ _ offset => .lea (offset != 0)
   | .load32 _ _ offset => .load32 (offset != 0)
@@ -166,6 +181,8 @@ def Instruction.semanticForm : Instruction -> InstructionSemanticForm
       .binary operation destination.semanticForm source.semanticForm
   | .shift operation destination count =>
       .shift operation destination.semanticForm count
+  | .shiftWidth width operation destination count =>
+      .shiftWidth width operation destination.semanticForm count
   | .shift8 operation destination count =>
       .shift8 operation destination.semanticForm count
   | .unary operation destination => .unary operation destination.semanticForm
@@ -201,7 +218,7 @@ def Instruction.semanticForm : Instruction -> InstructionSemanticForm
       .multiplyLow source.semanticForm immediate.isSome
   | .doubleShift left destination _ count =>
       .doubleShift left destination.semanticForm count
-  | .bitScan reverse _ source => .bitScan reverse source.semanticForm
+  | .bitScan operation _ source => .bitScan operation source.semanticForm
   | .bitTestRegister _ _ => .bitTestRegister
   | .x87LoadStack _ => .x87LoadStack
   | .x87LoadConstant value => .x87LoadConstant value
@@ -218,11 +235,14 @@ def Instruction.semanticForm : Instruction -> InstructionSemanticForm
       .x87BinaryMemory operation format source.semanticForm
   | .x87LoadControl source => .x87LoadControl source.semanticForm
   | .x87StoreControl destination => .x87StoreControl destination.semanticForm
+  | .x87SaveState destination => .x87SaveState destination.semanticForm
+  | .x87RestoreState source => .x87RestoreState source.semanticForm
   | .x87Wait => .x87Wait
   | .x87Initialize => .x87Initialize
   | .x87StoreStatusAx => .x87StoreStatusAx
   | .x87Examine => .x87Examine
   | .moveDwords repeated => .moveDwords repeated
+  | .storeDwords repeated => .storeDwords repeated
   | .callIndirect target => .callIndirect target.semanticForm
   | .jumpIndirect target => .jumpIndirect target.semanticForm
   | .pushOperand source => .pushOperand source.semanticForm

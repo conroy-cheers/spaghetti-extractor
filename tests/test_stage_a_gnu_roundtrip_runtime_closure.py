@@ -10,11 +10,13 @@ class StageAGnuRoundtripRuntimeClosureTests(unittest.TestCase):
             Path(__file__).resolve().parents[1] / "nix" / "gnu-hello-roundtrip.nix"
         ).read_text(encoding="utf-8")
         runtime_start = lane.index("runtimePythonSource =")
-        runtime_end = lane.index("proofPythonSource =", runtime_start)
+        runtime_end = lane.index("stackDynamicProofPythonFiles =", runtime_start)
         runtime = lane[runtime_start:runtime_end]
 
         self.assertIn("stage_b_interpreter_native_build.py", runtime)
+        self.assertIn("artifact_formats.py", runtime)
         self.assertIn("relational/definedness.py", runtime)
+        self.assertIn("spaghetti_extractor/_contract_tools", runtime)
         self.assertNotIn("relational/lean", runtime)
         self.assertNotIn("spaghetti_extractor/lean", runtime)
         self.assertNotIn("relational/engine_segments.py", runtime)

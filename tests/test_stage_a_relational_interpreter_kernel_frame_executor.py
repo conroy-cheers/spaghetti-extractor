@@ -74,13 +74,17 @@ class StageARelationalInterpreterKernelFrameExecutorTests(unittest.TestCase):
     def test_plan_reports_exact_executor_frontiers_without_status(self) -> None:
         payload = self._build().payload()
 
+        self.assertEqual(
+            INTERPRETER_KERNEL_FRAME_EXECUTOR_FORMAT,
+            "stage-a-relational-interpreter-kernel-frame-executor-plan-v2",
+        )
         self.assertEqual(payload["format"], INTERPRETER_KERNEL_FRAME_EXECUTOR_FORMAT)
         self.assertFalse(payload["acceptance_authority"])
         self.assertEqual(
             payload["remaining_proof_premises"],
             list(INTERPRETER_KERNEL_FRAME_EXECUTOR_REMAINING_PREMISES),
         )
-        self.assertEqual(len(payload["proof_frontiers"]), 4)
+        self.assertEqual(len(payload["proof_frontiers"]), 3)
         self.assertEqual(
             payload["result"]["theorem"],
             INTERPRETER_KERNEL_FRAME_EXECUTOR_THEOREM,
@@ -92,6 +96,8 @@ class StageARelationalInterpreterKernelFrameExecutorTests(unittest.TestCase):
 
         for required in (
             "GeneratedInterpreterStepFrameExecutorPathEvidence",
+            "ProducerSelectedStandaloneNativeWorldPath",
+            "GeneratedInterpreterStepSelectedPathProducer",
             "ImportedFrameEnvironmentContract",
             "NativeWorldFrameExecutorEnvironmentContract.ofDisabled",
             "NativeWorldFrameExecutorPathContract",
@@ -100,6 +106,19 @@ class StageARelationalInterpreterKernelFrameExecutorTests(unittest.TestCase):
             "generatedInterpreterStepFrameExecutorCertificate",
         ):
             self.assertIn(required, source)
+        self.assertIn(
+            "import StageA.GeneratedRelationalInterpreterKernelOperationFrame"
+            "Parametric",
+            source,
+        )
+        self.assertIn(
+            "import StageA.GeneratedRelationalInterpreterKernelStepNative",
+            source,
+        )
+        self.assertNotIn("shiftedAction", source)
+        self.assertIsNone(
+            re.search(r"\bStandaloneNativeWorldPath\b", source)
+        )
         for marker in ("sorry", "axiom", "unsafe", "native_decide"):
             self.assertIsNone(re.search(rf"\b{marker}\b", source), marker)
 
@@ -131,6 +150,20 @@ class StageARelationalInterpreterKernelFrameExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(
             RelationalInterpreterKernelFrameExecutorGenerationError,
             "stale or incompatible",
+        ):
+            self._build()
+
+    def test_v1_frame_plan_fails_closed(self) -> None:
+        payload = json.loads(self.frame.read_text(encoding="utf-8"))
+        payload["format"] = (
+            "stage-a-relational-interpreter-kernel-operation-frame-parametric-"
+            "plan-v1"
+        )
+        self.frame.write_text(json.dumps(payload), encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            RelationalInterpreterKernelFrameExecutorGenerationError,
+            "unsupported format",
         ):
             self._build()
 

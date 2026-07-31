@@ -1181,6 +1181,7 @@ def regionControlChecked (pe : PE32) (imports : List PEImport) (candidate : Bool
     operational composition must still prove the checked/faulting alternatives
     correspond before using the returning summary. -/
     | some (.bulkCopy _ continuation)
+    | some (.bulkFill _ continuation)
     | some (.checkedContinue _ continuation)
     | some (.atomicCompareExchange _ _ _ continuation) =>
         returns.isEmpty &&
@@ -1975,7 +1976,8 @@ their dependency contracts and are intentionally not classified here. -/
 def behaviorHasInternalMemoryWrite (behavior : SymbolicBehavior) : Bool :=
   !behavior.writes.isEmpty ||
     match behavior.outcome with
-    | some (.bulkCopy ..) | some (.atomicCompareExchange ..) => true
+    | some (.bulkCopy ..) | some (.bulkFill ..) |
+        some (.atomicCompareExchange ..) => true
     | _ => false
 
 def protectedWriteRegionsSideChecked (certificate : Certificate)

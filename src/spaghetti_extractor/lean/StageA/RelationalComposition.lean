@@ -12,6 +12,7 @@ inductive RelationalProductEdgeKind where
   | call
   | callReturn
   | bulkCopy
+  | bulkFill
   | externalCall
   | checkedContinue
   | atomicCompareExchange
@@ -9944,6 +9945,9 @@ def NormalizedOutcomeExpr.controlEdges? : NormalizedOutcomeExpr ->
         unconditionalProductGuard]
   | .bulkCopy _ _ _ _ continuation =>
       some [RelationalDecodedControlEdge.mk .bulkCopy continuation
+        unconditionalProductGuard]
+  | .bulkFill _ _ _ _ continuation =>
+      some [RelationalDecodedControlEdge.mk .bulkFill continuation
         unconditionalProductGuard]
   | .atomicCompareExchange _ _ _ continuation =>
       some [RelationalDecodedControlEdge.mk .atomicCompareExchange continuation

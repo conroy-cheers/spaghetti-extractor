@@ -7,6 +7,7 @@ open StageA.Formal StageA.Relational
 open StageA.Relational.Interpreter
 open StageA.Relational.InterpreterKernel
 open StageA.Relational.InterpreterKernelABI
+open StageA.Relational.InterpreterKernelOperationABIFrame
 open StageA.Relational.InterpreterKernelRun
 open StageA.Relational.InterpreterKernelRunOperation
 open StageA.Relational.InterpreterKernelStepNative
@@ -278,6 +279,16 @@ def cdeclCallerFrameBytes
     (abi.parameters.entryEsp abi.engineLayout request.operation)
     (cdeclCallerWords abi request)
 
+def framedCDeclCallerWords
+    (frame : KernelOperationABIFrame)
+    (request : AbstractKernelRequest) : List Word :=
+  frame.returnAddress :: frame.requestArguments request
+
+def framedCDeclCallerFrameBytes
+    (frame : KernelOperationABIFrame)
+    (request : AbstractKernelRequest) : List Word :=
+  wordsByteAddresses frame.entryEsp (framedCDeclCallerWords frame request)
+
 structure CheckedCDeclWriteFootprint where
   bytes : List Word
 deriving Repr, DecidableEq
@@ -301,6 +312,19 @@ def CheckedCDeclWriteFootprint.checked
     footprint.bytes.all fun address =>
       addressInSpanChecked abi.parameters.writableWorkspace address &&
         !(cdeclCallerFrameBytes abi request).contains address
+
+/-- Per-call variant of `checked`.  The writable workspace remains the
+statically checked concrete ABI span, while the protected caller words are
+selected by the explicit runtime frame. -/
+def CheckedCDeclWriteFootprint.checkedFrame
+    (footprint : CheckedCDeclWriteFootprint)
+    (frame : KernelOperationABIFrame)
+    (abi : ConcreteKernelABI pe imports relocations tableOffset countOffset
+      records) (request : AbstractKernelRequest) : Bool :=
+  decide footprint.bytes.Nodup &&
+    footprint.bytes.all fun address =>
+      addressInSpanChecked abi.parameters.writableWorkspace address &&
+        !(framedCDeclCallerFrameBytes frame request).contains address
 
 theorem CheckedCDeclWriteFootprint.insideScratch
     (footprint : CheckedCDeclWriteFootprint)
@@ -332,6 +356,44 @@ theorem CheckedCDeclWriteFootprint.disjointCallerFrame
   have absent : (cdeclCallerFrameBytes abi request).contains address = false := by
     simpa using row.2
   have present : (cdeclCallerFrameBytes abi request).contains address = true := by
+    simpa using callerByte
+  rw [absent] at present
+  contradiction
+
+theorem CheckedCDeclWriteFootprint.insideFrameScratch
+    (footprint : CheckedCDeclWriteFootprint)
+    (frame : KernelOperationABIFrame)
+    (abi : ConcreteKernelABI pe imports relocations tableOffset countOffset
+      records) (request : AbstractKernelRequest)
+    (checked : footprint.checkedFrame frame abi request = true) :
+    ∀ address, footprint.contains address ->
+      (frame.relation abi).scratchFootprint request address := by
+  intro address member
+  simp only [CheckedCDeclWriteFootprint.checkedFrame, Bool.and_eq_true] at checked
+  have row := List.all_eq_true.mp checked.2 address member
+  simp only [Bool.and_eq_true] at row
+  change addressInSpan abi.parameters.writableWorkspace address
+  have spanFacts := row.1
+  simp only [addressInSpanChecked, Bool.and_eq_true, decide_eq_true_eq] at spanFacts
+  exact ⟨spanFacts.1.1, spanFacts.1.2, spanFacts.2⟩
+
+theorem CheckedCDeclWriteFootprint.disjointFramedCallerWords
+    (footprint : CheckedCDeclWriteFootprint)
+    (frame : KernelOperationABIFrame)
+    (abi : ConcreteKernelABI pe imports relocations tableOffset countOffset
+      records) (request : AbstractKernelRequest)
+    (checked : footprint.checkedFrame frame abi request = true) :
+    ∀ address, address ∈ framedCDeclCallerFrameBytes frame request ->
+      ¬ footprint.contains address := by
+  intro address callerByte footprintByte
+  simp only [CheckedCDeclWriteFootprint.checkedFrame, Bool.and_eq_true] at checked
+  have row := List.all_eq_true.mp checked.2 address footprintByte
+  simp only [Bool.and_eq_true] at row
+  have absent :
+      (framedCDeclCallerFrameBytes frame request).contains address = false := by
+    simpa using row.2
+  have present :
+      (framedCDeclCallerFrameBytes frame request).contains address = true := by
     simpa using callerByte
   rw [absent] at present
   contradiction
@@ -430,6 +492,9 @@ structure CheckedCDeclEpilogueCertificate
   stackPopped :
     execution.returnedState.registers.esp =
       entryBefore.registers.esp + word32 4
+  directionFlagPreserved :
+    execution.returnedState.eflags.extractLsb' 10 1 =
+      entryBefore.eflags.extractLsb' 10 1
   footprint : CheckedCDeclWriteFootprint
   footprintChecked : footprint.checked abi request = true
   exactWriteFootprint :
@@ -466,6 +531,8 @@ theorem CheckedCDeclEpilogueCertificate.responseRelated
     certificate.execution.returnedState events
   refine {
     cdecl := ?_
+    directionFlagClear := certificate.directionFlagPreserved.trans
+      certificate.entry.directionFlagClear
     candidateImage := certificate.candidateImagePreserved
     originalProgramTable := certificate.originalProgramTablePreserved
     payload := certificate.payload
@@ -483,6 +550,108 @@ theorem CheckedCDeclEpilogueCertificate.memoryFrame
       certificate.execution.returnedState.memory entryBefore.memory := by
   exact MemoryAgreesOutside.widen certificate.exactWriteFootprint
     (certificate.footprint.insideScratch abi request
+      certificate.footprintChecked)
+
+/-! ## Per-call frame response certificate -/
+
+/-- The frame-relative counterpart of `CheckedCDeclEpilogueCertificate`.
+Static image/table facts still come from the concrete ABI, but the caller
+words, preserved registers, payload addresses, and response relation are
+selected by one explicit checked runtime frame. -/
+structure CheckedFramedCDeclEpilogueCertificate
+    (frame : KernelOperationABIFrame)
+    (abi : ConcreteKernelABI pe imports relocations tableOffset countOffset
+      records)
+    (candidate : ExactNativeWorldProgram)
+    (static : CheckedKernelCDeclEpilogue program candidate function)
+    (disposition : CDeclReturnDisposition)
+    (request : AbstractKernelRequest) (response : AbstractKernelResponse)
+    (entryBefore epilogueBefore : MachineState) (eventIndex : Nat)
+    (events : List NativeExternalEvent) (world : RelationalWorld) where
+  operationExact : request.operation = static.inventory.operation
+  entry : frame.RequestFacts abi request entryBefore
+  execution : ExactComputedCDeclEpilogue candidate static disposition
+    epilogueBefore eventIndex events world
+  stackReturnWord :
+    Memory.read32 execution.returnBefore.memory
+        execution.returnBefore.registers.esp =
+      frame.returnAddress
+  returnAccepted : disposition.accepts frame.returnAddress
+  preservedRegisters :
+    CDeclPreservedRegisters entryBefore execution.returnedState
+  stackPopped :
+    execution.returnedState.registers.esp =
+      entryBefore.registers.esp + word32 4
+  directionFlagPreserved :
+    execution.returnedState.eflags.extractLsb' 10 1 =
+      entryBefore.eflags.extractLsb' 10 1
+  footprint : CheckedCDeclWriteFootprint
+  footprintChecked : footprint.checkedFrame frame abi request = true
+  exactWriteFootprint :
+    MemoryAgreesOutside footprint.contains execution.returnedState.memory
+      entryBefore.memory
+  candidateImagePreserved :
+    LoadedCandidateImageMemory pe imports relocations
+      execution.returnedState.memory
+  originalProgramTablePreserved :
+    LoadedOriginalProgramTable abi execution.returnedState.memory
+  payload :
+    frame.ResponsePayloadHolds abi request response execution.returnedState
+      events
+
+theorem CheckedFramedCDeclEpilogueCertificate.callerWordsPreserved
+    (certificate : CheckedFramedCDeclEpilogueCertificate frame abi candidate
+      static disposition request response entryBefore epilogueBefore eventIndex
+      events world) :
+    WordsAt certificate.execution.returnedState.memory frame.entryEsp
+      (framedCDeclCallerWords frame request) := by
+  have entryWords := certificate.entry.cdecl
+  rcases entryWords with
+    ⟨operationExact, espExact, ebxExact, esiExact, ediExact, ebpExact, words,
+      stackRange⟩
+  apply WordsAt.preserve_of_memoryFrame certificate.exactWriteFootprint
+  · intro byte member
+    exact certificate.footprint.disjointFramedCallerWords frame abi request
+      certificate.footprintChecked byte member
+  · exact words
+
+theorem CheckedFramedCDeclEpilogueCertificate.responseRelated
+    (certificate : CheckedFramedCDeclEpilogueCertificate frame abi candidate
+      static disposition request response entryBefore epilogueBefore eventIndex
+      events world) :
+    (frame.relation abi).responseRelated request response
+      certificate.execution.returnedState events := by
+  change frame.ResponseFacts abi request response
+    certificate.execution.returnedState events
+  have entryCDecl := certificate.entry.cdecl
+  rcases entryCDecl with
+    ⟨operationExact, espExact, ebxExact, esiExact, ediExact, ebpExact, words,
+      stackRange⟩
+  rcases certificate.preservedRegisters with
+    ⟨ebxPreserved, esiPreserved, ediPreserved, ebpPreserved⟩
+  refine {
+    frameValid := certificate.entry.frameValid
+    cdecl := ?_
+    directionFlagClear := certificate.directionFlagPreserved.trans
+      certificate.entry.directionFlagClear
+    candidateImage := certificate.candidateImagePreserved
+    originalProgramTable := certificate.originalProgramTablePreserved
+    payload := certificate.payload
+  }
+  unfold KernelOperationABIFrame.CDeclReturnHolds
+  refine ⟨operationExact, ?_, ebxPreserved.trans ebxExact,
+    esiPreserved.trans esiExact, ediPreserved.trans ediExact,
+    ebpPreserved.trans ebpExact, certificate.callerWordsPreserved⟩
+  rw [certificate.stackPopped, espExact]
+
+theorem CheckedFramedCDeclEpilogueCertificate.memoryFrame
+    (certificate : CheckedFramedCDeclEpilogueCertificate frame abi candidate
+      static disposition request response entryBefore epilogueBefore eventIndex
+      events world) :
+    MemoryAgreesOutside ((frame.relation abi).scratchFootprint request)
+      certificate.execution.returnedState.memory entryBefore.memory := by
+  exact MemoryAgreesOutside.widen certificate.exactWriteFootprint
+    (certificate.footprint.insideFrameScratch frame abi request
       certificate.footprintChecked)
 
 theorem CheckedCDeclEpilogueCertificate.path
@@ -508,6 +677,80 @@ structure InterpreterStepCDeclEpilogueAdapter
   cutpointEntry : cutpoint.entryRva = checked.inventory.epilogueRva
   cutpointEffect : cutpoint.effect = .return
 
+def InterpreterStepCDeclEpilogueAdapter.phaseUsing
+    (adapter : InterpreterStepCDeclEpilogueAdapter abi program candidate static
+      checked)
+    (operationABI : KernelABIRelation)
+    {environment : StageA.Relational.Interpreter.Environment}
+    {sourceRva : Nat} {logical : InterpreterMachine} {before : MachineState}
+    {world : RelationalWorld}
+    {lookup : InterpreterStepNativeLookupPhase static.reflected.template candidate
+      records sourceRva before world}
+    (actions : InterpreterStepNativeActionPhase static.reflected.template
+      candidate environment logical lookup)
+    (eventIndex : Nat) (events : List NativeExternalEvent)
+    (epilogueBefore : MachineState)
+    (startExact : actions.afterActions =
+      .running checked.inventory.epilogueRva 0 epilogueBefore
+        CDeclReturnDisposition.topLevel.calls eventIndex events world)
+    (execution : ExactComputedCDeclEpilogue candidate checked .topLevel
+      epilogueBefore eventIndex events world)
+    (stackReturnWord :
+      Memory.read32 execution.returnBefore.memory
+          execution.returnBefore.registers.esp = returnAddress)
+    (returnAccepted :
+      CDeclReturnDisposition.topLevel.accepts returnAddress)
+    (responseRelated : operationABI.responseRelated
+      (.interpreterStep records environment sourceRva logical)
+      (.interpreterStep actions.result) execution.returnedState events)
+    (memoryFrame : MemoryAgreesOutside
+      (operationABI.scratchFootprint
+        (.interpreterStep records environment sourceRva logical))
+      execution.returnedState.memory before.memory)
+    (fuelExact : adapter.cutpoint.instructionCount =
+      execution.prefixFuel + 1) :
+    InterpreterStepNativeEpiloguePhase static.reflected.template candidate
+      operationABI records environment sourceRva logical before actions := by
+  let chunk : InterpreterStepNativeChunk static.reflected.template candidate
+      actions.afterActions := {
+    cutpoint := adapter.cutpoint
+    cutpointMember := adapter.cutpointMember
+    startsAt := by
+      rw [startExact, adapter.cutpointEntry]
+      rfl
+    positive := by omega
+  }
+  have resultExact :
+      chunk.result =
+        (execution.after, execution.observations) := by
+    unfold InterpreterStepNativeChunk.result
+    rw [fuelExact, startExact]
+    exact execution.runExact stackReturnWord returnAccepted
+  have afterExact : chunk.after = execution.after :=
+    congrArg Prod.fst resultExact
+  have observationsExact :
+      chunk.observations = execution.observations :=
+    congrArg Prod.snd resultExact
+  have destination : chunk.destinationChecked := by
+    unfold InterpreterStepNativeChunk.destinationChecked
+    rw [afterExact]
+    simp only [ExactComputedCDeclEpilogue.after,
+      CDeclReturnDisposition.endpoint, NativeWorldExecution.rva?]
+    exact adapter.cutpointEffect
+  refine {
+    after := execution.returnedState
+    nativeEvents := events
+    afterWorld := world
+    observations := execution.observations
+    path := ?_
+    responseRelated
+    memoryFrame
+  }
+  have chunkPath := InterpreterStepNativePath.chunk chunk destination
+  rw [observationsExact, afterExact] at chunkPath
+  simpa [ExactComputedCDeclEpilogue.after,
+    CDeclReturnDisposition.endpoint] using chunkPath
+
 def InterpreterStepCDeclEpilogueAdapter.phase
     (adapter : InterpreterStepCDeclEpilogueAdapter abi program candidate static
       checked)
@@ -531,47 +774,41 @@ def InterpreterStepCDeclEpilogueAdapter.phase
     (fuelExact : adapter.cutpoint.instructionCount =
       certificate.execution.prefixFuel + 1) :
     InterpreterStepNativeEpiloguePhase static.reflected.template candidate
-      abi.relation records environment sourceRva logical before actions := by
-  let chunk : InterpreterStepNativeChunk static.reflected.template candidate
-      actions.afterActions := {
-    cutpoint := adapter.cutpoint
-    cutpointMember := adapter.cutpointMember
-    startsAt := by
-      rw [startExact, adapter.cutpointEntry]
-      rfl
-    positive := by omega
-  }
-  have resultExact :
-      chunk.result =
-        (certificate.execution.after, certificate.execution.observations) := by
-    unfold InterpreterStepNativeChunk.result
-    rw [fuelExact, startExact]
-    exact certificate.execution.runExact certificate.stackReturnWord
-      certificate.returnAccepted
-  have afterExact : chunk.after = certificate.execution.after :=
-    congrArg Prod.fst resultExact
-  have observationsExact :
-      chunk.observations = certificate.execution.observations :=
-    congrArg Prod.snd resultExact
-  have destination : chunk.destinationChecked := by
-    unfold InterpreterStepNativeChunk.destinationChecked
-    rw [afterExact]
-    simp only [ExactComputedCDeclEpilogue.after,
-      CDeclReturnDisposition.endpoint, NativeWorldExecution.rva?]
-    exact adapter.cutpointEffect
-  refine {
-    after := certificate.execution.returnedState
-    nativeEvents := events
-    afterWorld := world
-    observations := certificate.execution.observations
-    path := ?_
-    responseRelated := certificate.responseRelated
-    memoryFrame := certificate.memoryFrame
-  }
-  have chunkPath := InterpreterStepNativePath.chunk chunk destination
-  rw [observationsExact, afterExact] at chunkPath
-  simpa [ExactComputedCDeclEpilogue.after,
-    CDeclReturnDisposition.endpoint] using chunkPath
+      abi.relation records environment sourceRva logical before actions :=
+  adapter.phaseUsing abi.relation actions eventIndex events epilogueBefore
+    startExact certificate.execution certificate.stackReturnWord
+    certificate.returnAccepted certificate.responseRelated
+    certificate.memoryFrame fuelExact
+
+def InterpreterStepCDeclEpilogueAdapter.phaseFrame
+    (adapter : InterpreterStepCDeclEpilogueAdapter abi program candidate static
+      checked)
+    (frame : KernelOperationABIFrame)
+    {environment : StageA.Relational.Interpreter.Environment}
+    {sourceRva : Nat} {logical : InterpreterMachine} {before : MachineState}
+    {world : RelationalWorld}
+    {lookup : InterpreterStepNativeLookupPhase static.reflected.template candidate
+      records sourceRva before world}
+    (actions : InterpreterStepNativeActionPhase static.reflected.template
+      candidate environment logical lookup)
+    (eventIndex : Nat) (events : List NativeExternalEvent)
+    (epilogueBefore : MachineState)
+    (startExact : actions.afterActions =
+      .running checked.inventory.epilogueRva 0 epilogueBefore
+        CDeclReturnDisposition.topLevel.calls eventIndex events world)
+    (certificate : CheckedFramedCDeclEpilogueCertificate frame abi candidate
+      checked .topLevel
+      (.interpreterStep records environment sourceRva logical)
+      (.interpreterStep actions.result) before epilogueBefore eventIndex events
+      world)
+    (fuelExact : adapter.cutpoint.instructionCount =
+      certificate.execution.prefixFuel + 1) :
+    InterpreterStepNativeEpiloguePhase static.reflected.template candidate
+      (frame.relation abi) records environment sourceRva logical before actions :=
+  adapter.phaseUsing (frame.relation abi) actions eventIndex events
+    epilogueBefore startExact certificate.execution
+    certificate.stackReturnWord certificate.returnAccepted
+    certificate.responseRelated certificate.memoryFrame fuelExact
 
 structure RunFunctionCDeclEpilogueAdapter
     (abi : ConcreteKernelABI pe imports relocations tableOffset countOffset
@@ -624,6 +861,7 @@ def RunFunctionCDeclEpilogueAdapter.phase
       chunk.observations = certificate.execution.observations :=
     congrArg Prod.snd resultExact
   refine {
+    fuel := 8
     chunk
     after := certificate.execution.returnedState
     nativeEvents := events

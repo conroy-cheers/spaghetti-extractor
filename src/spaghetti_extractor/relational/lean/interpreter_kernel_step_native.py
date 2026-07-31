@@ -173,8 +173,7 @@ class InterpreterKernelStepNativePlan:
             "remaining_inhabitants": [
                 "abi_entry_and_record_identity",
                 "exact_program_lookup_call_and_continuation",
-                "per_action_loop_invariants_and_native_chunks",
-                "direct_helper_subroutine_refinements",
+                "per_action_loop_invariants_native_chunks_and_exact_helpers",
                 "invoke_call_operation_refinement",
                 "x87_replay_callback_refinement",
                 "abi_epilogue_response_and_memory_frame",
@@ -714,6 +713,7 @@ def generatedInterpreterStepNativeProgram
   pe := generatedInterpreterKernelCandidatePe
   imports := generatedInterpreterKernelImports
   environment := environment
+  indirectTargets := generatedNativeIndirectTargetInventory
 }}
 
 def GeneratedInterpreterStepNativeStaticGoal : Prop :=
@@ -724,39 +724,6 @@ def GeneratedInterpreterStepNativeStaticGoal : Prop :=
       generatedKernelCallbackInventory {function_name} = true /\\
     ExactDecodeInventory generatedInterpreterKernelCandidatePe
       {function_name}.instructions
-
-def GeneratedInterpreterStepNativeCertificateGoal
-    (environment : NativeWorldEnvironment) (world : RelationalWorld)
-    (abi : KernelABIRelation) (semanticRecords : List ProgramRecord) : Prop :=
-  Nonempty (InterpreterStepNativeMachineCertificate
-    generatedCompiledKernelProgram abi semanticRecords
-    (generatedInterpreterStepNativeProgram environment) world)
-
-def GeneratedInterpreterStepNativeConcreteCertificateGoal
-    (environment : NativeWorldEnvironment) (world : RelationalWorld)
-    (semanticRecords : List ProgramRecord)
-    (abi : ConcreteKernelABI generatedInterpreterKernelCandidatePe
-      generatedInterpreterKernelImports generatedInterpreterKernelRelocations
-      generatedInterpreterKernelTableRva generatedInterpreterKernelCountRva
-      semanticRecords) : Prop :=
-  abi.program = generatedCompiledKernelProgram /\\
-    Nonempty (InterpreterStepNativeMachineCertificate
-      generatedCompiledKernelProgram abi.relation semanticRecords
-      (generatedInterpreterStepNativeProgram environment) world)
-
-theorem GeneratedInterpreterStepNativeRefines
-    {{environment : NativeWorldEnvironment}} {{world : RelationalWorld}}
-    {{abi : KernelABIRelation}} {{semanticRecords : List ProgramRecord}}
-    (certificate : InterpreterStepNativeMachineCertificate
-      generatedCompiledKernelProgram abi semanticRecords
-      (generatedInterpreterStepNativeProgram environment) world) :
-    KernelOperationRefinesUsing generatedCompiledKernelProgram abi
-      (InterpreterStepNativeDispatches
-        (generatedInterpreterStepNativeProgram environment) world)
-      .interpreterStep :=
-  certificate.refines
-
-#print axioms GeneratedInterpreterStepNativeRefines
 
 end StageA.GeneratedRelational.InterpreterKernelStepNative
 """

@@ -1,5 +1,6 @@
 
 import StageA.RelationalMachine
+import StageA.RelationalMemory
 import StageA.RelationalX87
 import Std.Tactic.BVDecide
 
@@ -36,6 +37,9 @@ def NormalizedOutcomeExpr.eval (state : MachineState) : NormalizedOutcomeExpr ->
   | .externalJump imported arguments => .externalJump imported (arguments.map (Expr.eval state))
   | .bulkCopy destination source count direction continuation =>
       .bulkCopy (destination.eval state) (source.eval state) (count.eval state)
+        (direction.eval state) continuation
+  | .bulkFill destination value count direction continuation =>
+      .bulkFill (destination.eval state) (value.eval state) (count.eval state)
         (direction.eval state) continuation
   | .indirectCall target continuation => .indirectCall (target.eval state) continuation
   | .indirectJump target => .indirectJump (target.eval state)
@@ -399,106 +403,6 @@ theorem dataTargetIdAddresses_wordRelated
         by_cases zero : target.mappedSize = 0 <;>
           simp [zero, matchEvidence.1, matchEvidence.2]
       simp [wordRelated, zeroesAgree, mapped]
-
-def Memory.read32 (memory : Memory) (address : Word) : Word :=
-  let b0 := BitVec.zeroExtend 32 (memory address)
-  let b1 := (BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 1))).shiftLeft 8
-  let b2 := (BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 2))).shiftLeft 16
-  let b3 := (BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 3))).shiftLeft 24
-  b0 ||| b1 ||| b2 ||| b3
-
-theorem fourBytesAssembleLittleEndian (byte0 byte1 byte2 byte3 : Nat)
-    (byte0Bound : byte0 < 256) (byte1Bound : byte1 < 256)
-    (byte2Bound : byte2 < 256) (byte3Bound : byte3 < 256) :
-    BitVec.setWidth 32 (BitVec.ofNat 8 byte0) |||
-          (BitVec.setWidth 32 (BitVec.ofNat 8 byte1)).shiftLeft 8 |||
-        (BitVec.setWidth 32 (BitVec.ofNat 8 byte2)).shiftLeft 16 |||
-      (BitVec.setWidth 32 (BitVec.ofNat 8 byte3)).shiftLeft 24 =
-        BitVec.ofNat 32
-          (byte0 + byte1 * 256 + byte2 * 65536 + byte3 * 16777216) := by
-  apply BitVec.eq_of_toNat_eq
-  simp only [BitVec.toNat_or, BitVec.shiftLeft, BitVec.toNat_setWidth,
-    BitVec.toNat_ofNat, Nat.shiftLeft_eq]
-  have pow8 : 2 ^ 8 = 256 := by decide
-  have pow16 : 2 ^ 16 = 65536 := by decide
-  have pow24 : 2 ^ 24 = 16777216 := by decide
-  have pow32 : 2 ^ 32 = 4294967296 := by decide
-  rw [pow8, pow16, pow24, pow32]
-  have byte0Large : byte0 < 4294967296 := Nat.lt_trans byte0Bound (by decide)
-  have byte1Large : byte1 < 4294967296 := Nat.lt_trans byte1Bound (by decide)
-  have byte2Large : byte2 < 4294967296 := Nat.lt_trans byte2Bound (by decide)
-  have byte3Large : byte3 < 4294967296 := Nat.lt_trans byte3Bound (by decide)
-  have byte1Shift : byte1 * 256 < 4294967296 := by
-    have scaled := Nat.mul_lt_mul_of_pos_right byte1Bound (by decide : 0 < 256)
-    exact Nat.lt_trans scaled (by decide)
-  have byte2Shift : byte2 * 65536 < 4294967296 := by
-    have scaled := Nat.mul_lt_mul_of_pos_right byte2Bound (by decide : 0 < 65536)
-    have product : 256 * 65536 = 16777216 := by decide
-    rw [product] at scaled
-    exact Nat.lt_trans scaled (by decide)
-  have byte3Shift : byte3 * 16777216 < 4294967296 := by
-    have scaled := Nat.mul_lt_mul_of_pos_right byte3Bound
-      (by decide : 0 < 16777216)
-    have product : 256 * 16777216 = 4294967296 := by decide
-    rw [product] at scaled
-    exact scaled
-  have low16Bound : byte0 + byte1 * 256 < 65536 := by
-    have byte1Next : byte1 + 1 <= 256 := by omega
-    calc
-      byte0 + byte1 * 256 < 256 + byte1 * 256 :=
-        Nat.add_lt_add_right byte0Bound _
-      _ = (byte1 + 1) * 256 := by simp [Nat.add_mul, Nat.add_comm]
-      _ <= 256 * 256 := Nat.mul_le_mul_right 256 byte1Next
-      _ = 65536 := by decide
-  have low24Bound : byte0 + byte1 * 256 + byte2 * 65536 < 16777216 := by
-    have byte2Next : byte2 + 1 <= 256 := by omega
-    calc
-      byte0 + byte1 * 256 + byte2 * 65536 < 65536 + byte2 * 65536 :=
-        Nat.add_lt_add_right low16Bound _
-      _ = (byte2 + 1) * 65536 := by simp [Nat.add_mul, Nat.add_comm]
-      _ <= 256 * 65536 := Nat.mul_le_mul_right 65536 byte2Next
-      _ = 16777216 := by decide
-  have totalBound :
-      byte0 + byte1 * 256 + byte2 * 65536 + byte3 * 16777216 < 4294967296 := by
-    have byte3Next : byte3 + 1 <= 256 := by omega
-    calc
-      byte0 + byte1 * 256 + byte2 * 65536 + byte3 * 16777216 <
-          16777216 + byte3 * 16777216 := Nat.add_lt_add_right low24Bound _
-      _ = (byte3 + 1) * 16777216 := by simp [Nat.add_mul, Nat.add_comm]
-      _ <= 256 * 16777216 := Nat.mul_le_mul_right 16777216 byte3Next
-      _ = 4294967296 := by decide
-  rw [Nat.mod_eq_of_lt byte0Bound, Nat.mod_eq_of_lt byte0Large,
-    Nat.mod_eq_of_lt byte1Bound, Nat.mod_eq_of_lt byte1Large,
-    Nat.mod_eq_of_lt byte1Shift, Nat.mod_eq_of_lt byte2Bound,
-    Nat.mod_eq_of_lt byte2Large, Nat.mod_eq_of_lt byte2Shift,
-    Nat.mod_eq_of_lt byte3Bound, Nat.mod_eq_of_lt byte3Large,
-    Nat.mod_eq_of_lt byte3Shift, Nat.mod_eq_of_lt totalBound]
-  have low16 : byte0 ||| byte1 * 256 = byte0 + byte1 * 256 := by
-    calc
-      byte0 ||| byte1 * 256 = byte1 * 256 ||| byte0 := Nat.or_comm _ _
-      _ = byte1 * 256 + byte0 := by
-        simpa [pow8, Nat.mul_comm] using
-          (Nat.two_pow_add_eq_or_of_lt (i := 8) byte0Bound byte1).symm
-      _ = byte0 + byte1 * 256 := Nat.add_comm _ _
-  rw [low16]
-  have low24 : (byte0 + byte1 * 256) ||| byte2 * 65536 =
-      byte0 + byte1 * 256 + byte2 * 65536 := by
-    calc
-      (byte0 + byte1 * 256) ||| byte2 * 65536 =
-          byte2 * 65536 ||| (byte0 + byte1 * 256) := Nat.or_comm _ _
-      _ = byte2 * 65536 + (byte0 + byte1 * 256) := by
-        simpa [pow16, Nat.mul_comm] using
-          (Nat.two_pow_add_eq_or_of_lt (i := 16) low16Bound byte2).symm
-      _ = byte0 + byte1 * 256 + byte2 * 65536 := by omega
-  rw [low24]
-  calc
-    (byte0 + byte1 * 256 + byte2 * 65536) ||| byte3 * 16777216 =
-        byte3 * 16777216 ||| (byte0 + byte1 * 256 + byte2 * 65536) :=
-      Nat.or_comm _ _
-    _ = byte3 * 16777216 + (byte0 + byte1 * 256 + byte2 * 65536) := by
-      simpa [pow24, Nat.mul_comm] using
-        (Nat.two_pow_add_eq_or_of_lt (i := 24) low24Bound byte3).symm
-    _ = byte0 + byte1 * 256 + byte2 * 65536 + byte3 * 16777216 := by omega
 
 @[simp] theorem Memory.read32_extractLsb8 (memory : Memory) (address : Word) :
     (Memory.read32 memory address).extractLsb' 0 8 = memory address := by
@@ -4797,6 +4701,14 @@ def outcomesRelated (originalImageBase candidateImageBase : Nat)
         wordRelated originalImageBase candidateImageBase targets values originalSource candidateSource &&
         originalCount == candidateCount && originalDirection == candidateDirection &&
         originalContinuation == candidateContinuation
+  | .bulkFill originalDestination originalValue originalCount originalDirection originalContinuation,
+      .bulkFill candidateDestination candidateValue candidateCount candidateDirection candidateContinuation =>
+      wordRelated originalImageBase candidateImageBase targets values
+          originalDestination candidateDestination &&
+        wordRelated originalImageBase candidateImageBase targets values
+          originalValue candidateValue &&
+        originalCount == candidateCount && originalDirection == candidateDirection &&
+        originalContinuation == candidateContinuation
   | .indirectCall originalTarget originalContinuation,
       .indirectCall candidateTarget candidateContinuation =>
       wordRelated originalImageBase candidateImageBase targets values originalTarget candidateTarget &&
@@ -4885,6 +4797,11 @@ def evalOutcomePure (candidate : Bool) (targets : List CodeTargetPair)
       return .bulkCopy (← evalExprPure state copy.destination) (← evalExprPure state copy.source)
         (← evalExprPure state copy.count) (← evalBoolExprPure state copy.direction)
         (← normalizeCodeTarget candidate targets continuationRva)
+  | .bulkFill fill continuationRva =>
+      return .bulkFill (← evalExprPure state fill.destination)
+        (← evalExprPure state fill.value) (← evalExprPure state fill.count)
+        (← evalBoolExprPure state fill.direction)
+        (← normalizeCodeTarget candidate targets continuationRva)
   | .indirectCall target continuationRva _ =>
       return .indirectCall (← evalExprPure state target)
         (← normalizeCodeTarget candidate targets continuationRva)
@@ -4936,6 +4853,10 @@ def evalOutcome (candidate : Bool) (targets : List CodeTargetPair)
   | .bulkCopy copy continuationRva =>
       return .bulkCopy (copy.destination.eval state) (copy.source.eval state) (copy.count.eval state)
         (copy.direction.eval state) (← normalizeCodeTarget candidate targets continuationRva)
+  | .bulkFill fill continuationRva =>
+      return .bulkFill (fill.destination.eval state) (fill.value.eval state)
+        (fill.count.eval state) (fill.direction.eval state)
+        (← normalizeCodeTarget candidate targets continuationRva)
   | .indirectCall target continuationRva _ =>
       return .indirectCall (target.eval state) (← normalizeCodeTarget candidate targets continuationRva)
   | .indirectJump target => return .indirectJump (target.eval state)

@@ -30,6 +30,7 @@ def PureOutcome.nextLogicalTarget : PureOutcome -> Option Nat
   | .callUnmappedReturn target => some target
   | .externalCall _ _ continuation => some continuation
   | .bulkCopy _ _ _ _ continuation => some continuation
+  | .bulkFill _ _ _ _ continuation => some continuation
   | .checkedContinue true continuation => some continuation
   | .atomicCompareExchange _ _ _ continuation => some continuation
   | _ => none
@@ -66,6 +67,7 @@ def NormalizedOutcomeExpr.staticTargets : NormalizedOutcomeExpr → List Nat
   | .branch _ taken fallthrough =>
       if taken == fallthrough then [taken] else [taken, fallthrough]
   | .externalCall _ _ continuation | .bulkCopy _ _ _ _ continuation |
+      .bulkFill _ _ _ _ continuation |
       .checkedContinue _ continuation | .atomicCompareExchange _ _ _ continuation =>
       [continuation]
   | .returned _ | .externalJump _ _ | .indirectCall _ _ | .indirectJump _ => []
@@ -2143,6 +2145,7 @@ def _root_.StageA.Relational.NormalizedOutcomeExpr.registerRelationDirectTargets
   | .callUnmappedReturn target => [target]
   | .externalCall _ _ continuation => [continuation]
   | .bulkCopy _ _ _ _ continuation => [continuation]
+  | .bulkFill _ _ _ _ continuation => [continuation]
   | .indirectCall _ continuation => [continuation]
   | .checkedContinue _ continuation => [continuation]
   | .atomicCompareExchange _ _ _ continuation => [continuation]
@@ -3104,6 +3107,9 @@ def _root_.StageA.Relational.NormalizedOutcomeExpr.memoryReadObservations :
   | .bulkCopy destination source count direction _ =>
       destination.memoryReadObservations ++ source.memoryReadObservations ++
         count.memoryReadObservations ++ direction.memoryReadObservations
+  | .bulkFill destination value count direction _ =>
+      destination.memoryReadObservations ++ value.memoryReadObservations ++
+        count.memoryReadObservations ++ direction.memoryReadObservations
   | .indirectCall target _ => target.memoryReadObservations
   | .checkedContinue valid _ => valid.memoryReadObservations
   | .atomicCompareExchange address expected replacement _ =>
@@ -3116,6 +3122,7 @@ def _root_.StageA.Relational.NormalizedOutcomeExpr.directTargets :
   | .branch _ taken fallthrough => [taken, fallthrough]
   | .call target _ | .callUnmappedReturn target => [target]
   | .externalCall _ _ continuation | .bulkCopy _ _ _ _ continuation |
+      .bulkFill _ _ _ _ continuation |
       .checkedContinue _ continuation | .atomicCompareExchange _ _ _ continuation =>
       [continuation]
   | _ => []
@@ -3214,6 +3221,9 @@ def _root_.StageA.Relational.NormalizedOutcomeExpr.x87LoadObservations :
       arguments.flatMap Expr.x87LoadObservations
   | .bulkCopy destination source count direction _ =>
       destination.x87LoadObservations ++ source.x87LoadObservations ++
+        count.x87LoadObservations ++ direction.x87LoadObservations
+  | .bulkFill destination value count direction _ =>
+      destination.x87LoadObservations ++ value.x87LoadObservations ++
         count.x87LoadObservations ++ direction.x87LoadObservations
   | .indirectCall target _ => target.x87LoadObservations
   | .checkedContinue valid _ => valid.x87LoadObservations
@@ -3656,7 +3666,8 @@ def _root_.StageA.Relational.NormalizedOutcomeExpr.edgeGuard
       else if taken == target then some condition
       else if fallthrough == target then some condition.negateNormalized
       else none
-  | .bulkCopy _ _ _ _ continuation | .atomicCompareExchange _ _ _ continuation =>
+  | .bulkCopy _ _ _ _ continuation | .bulkFill _ _ _ _ continuation |
+      .atomicCompareExchange _ _ _ continuation =>
       if continuation == target then some trueExpr else none
   | .checkedContinue valid continuation =>
       if continuation == target then some valid else none
@@ -3718,6 +3729,10 @@ theorem edgeGuard_eval_of_selected (outcome : NormalizedOutcomeExpr)
       rcases found with ⟨_, rfl⟩
       simp [trueExpr, BoolExpr.eval]
   | bulkCopy destination source count direction continuation =>
+      simp [NormalizedOutcomeExpr.edgeGuard] at found
+      rcases found with ⟨_, rfl⟩
+      simp [trueExpr, BoolExpr.eval]
+  | bulkFill destination value count direction continuation =>
       simp [NormalizedOutcomeExpr.edgeGuard] at found
       rcases found with ⟨_, rfl⟩
       simp [trueExpr, BoolExpr.eval]

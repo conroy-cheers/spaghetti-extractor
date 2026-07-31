@@ -17,8 +17,11 @@ from spaghetti_extractor.isa_kernel_qualification import (
     CorpusBinding,
     GeneratorBinding,
     ISA_FORM_QUALIFICATION_FORMAT,
+    ISA_FORM_QUALIFICATION_FORMAT_V1,
     ISA_KERNEL_QUALIFICATION_FORMAT,
+    ISA_KERNEL_QUALIFICATION_FORMAT_V1,
     ISA_KERNEL_SELECTION_FORMAT,
+    ISA_KERNEL_SELECTION_FORMAT_V1,
     ISA_ORACLE_CONSENSUS_FORMAT,
     ISA_ORACLE_OBSERVATION_FORMAT,
     ISAKernelQualificationError,
@@ -28,6 +31,7 @@ from spaghetti_extractor.isa_kernel_qualification import (
     QualificationStatus,
     SemanticKernelBinding,
     SourceLocation,
+    StructuralCoverageStatus,
     artifact_sha256,
     build_form_qualification,
     build_isa_kernel_qualification,
@@ -320,6 +324,91 @@ def _legacy_report(backend, *, eax: int = 2, ecx: int = 3):
     }
 
 
+def _fault_corpus(instruction_bytes: list[int]):
+    payload = _legacy_corpus()
+    case = payload["cases"][0]
+    case["instruction_bytes"] = instruction_bytes
+    case["defined_outputs"] = {
+        "gprs": {register: 0 for register in _machine_state()["gprs"]},
+        "eip": 0,
+        "eflags": 0,
+        "fs": {"selector": 0, "base": 0},
+        "x87": {
+            "control_word": 0,
+            "status_word": 0,
+            "tag_word": 0,
+            "last_opcode": 0,
+            "instruction_pointer": 0,
+            "data_pointer": 0,
+            "registers": [[0] * 10 for _ in range(8)],
+        },
+        "memory": [],
+    }
+    case["expected"] = {
+        "final_state": None,
+        "memory": None,
+        "control": "fault",
+        "fault": "divide_error",
+    }
+    return parse_isa_conformance_corpus(payload)
+
+
+def _report_backend(role: BackendRole) -> dict[str, str]:
+    backend = next(row for row in _suite().backends if row.role is role)
+    return {
+        "id": backend.id,
+        "kind": (
+            "semantic_model"
+            if role is BackendRole.LEAN
+            else "emulator"
+        ),
+        "version": backend.version,
+    }
+
+
+def _fault_report(
+    corpus,
+    role: BackendRole,
+    *,
+    fault: str = "divide_error",
+    capture_state: bool = False,
+):
+    status = (
+        "match"
+        if fault == "divide_error" and not capture_state
+        else "mismatch"
+    )
+    return {
+        "format": ISA_CONFORMANCE_REPORT_FORMAT,
+        "corpus_id": corpus.id,
+        "input_sha256": isa_conformance_corpus_sha256(corpus),
+        "backend": _report_backend(role),
+        "qualification": "qualified" if status == "match" else "vetoed",
+        "observations": [
+            {
+                "case_id": "case:add-eax",
+                "status": status,
+                "final_state": _machine_state() if capture_state else None,
+                "memory": [] if capture_state else None,
+                "actual": {"control": "fault", "fault": fault},
+                "detail": "",
+            }
+        ],
+        "counts": {
+            "cases": 1,
+            "matched": int(status == "match"),
+            "mismatched": int(status == "mismatch"),
+            "unsupported": 0,
+            "errors": 0,
+        },
+        "trust": {
+            "role": "isa_conformance_evidence_only",
+            "proof_authority": False,
+            "closes_stage_a_proof": False,
+        },
+    }
+
+
 class StageAISAKernelQualificationTests(unittest.TestCase):
     def test_all_agreement_qualifies_and_round_trips_deterministically(self):
         consensus = _consensus()
@@ -399,6 +488,157 @@ class StageAISAKernelQualificationTests(unittest.TestCase):
         self.assertEqual(missing.diagnostics[0].code, "missing_backend")
         self.assertEqual(unsupported.status, QualificationStatus.INCOMPLETE)
         self.assertEqual(unsupported.diagnostics[0].code, "backend_unsupported")
+
+    def test_unsupported_oracle_preserves_complete_structural_coverage(self):
+        observations = [
+            _observation(BackendRole.BOCHS),
+            _observation(BackendRole.UNICORN),
+            _observation(
+                BackendRole.LEAN,
+                result=None,
+                availability=ObservationAvailability.UNSUPPORTED,
+            ),
+        ]
+        form = _form(
+            (
+                build_oracle_consensus(
+                    form_id=FORM_ID,
+                    case_id="case:add-eax",
+                    profile=_profile(),
+                    semantic_kernel=_kernel(),
+                    corpus=_corpus_binding(),
+                    generator=_generator(),
+                    oracle_suite=_suite(),
+                    observations=observations,
+                ),
+            )
+        )
+        qualification = _qualification((form,))
+        payload = qualification.to_payload()
+        selection = select_isa_kernel_qualification(
+            binary_id="hello.exe",
+            binary_sha256=SHA3,
+            requirements=(
+                BinaryFormRequirement(
+                    FORM_ID, SEMANTIC_FORM, (_location(),)
+                ),
+            ),
+            qualification=qualification,
+        )
+        selection_payload = selection.to_payload()
+
+        self.assertEqual(
+            form.structural_status, StructuralCoverageStatus.COMPLETE
+        )
+        self.assertEqual(
+            form.concrete_oracle_status, QualificationStatus.INCOMPLETE
+        )
+        self.assertEqual(
+            qualification.structural_status,
+            StructuralCoverageStatus.COMPLETE,
+        )
+        self.assertEqual(
+            qualification.concrete_oracle_status,
+            QualificationStatus.INCOMPLETE,
+        )
+        self.assertEqual(qualification.status, QualificationStatus.INCOMPLETE)
+        self.assertEqual(
+            payload["qualification_layers"]["structural"],
+            {
+                "status": "complete",
+                "counts": {
+                    "required_forms": 1,
+                    "complete": 1,
+                    "incomplete": 0,
+                },
+                "diagnostics": [],
+            },
+        )
+        oracle_layer = payload["qualification_layers"]["concrete_oracle"]
+        self.assertEqual(oracle_layer["status"], "incomplete")
+        self.assertEqual(oracle_layer["counts"]["incomplete"], 1)
+        self.assertEqual(
+            {row["code"] for row in oracle_layer["diagnostics"]},
+            {"backend_unsupported"},
+        )
+        self.assertEqual(
+            selection_payload["qualification_layers"]["structural"]["status"],
+            "complete",
+        )
+        selection_oracle = selection_payload["qualification_layers"][
+            "concrete_oracle"
+        ]
+        self.assertEqual(selection_oracle["status"], "incomplete")
+        self.assertEqual(
+            selection_oracle["diagnostics"][0]["source_locations"][0]["rva"],
+            0x1000,
+        )
+
+    def test_oracle_mismatch_still_vetoes_a_structurally_complete_form(self):
+        form = _form(
+            (_consensus(lean={"state": {"eax": 3, "eflags": 0x202}}),)
+        )
+        qualification = _qualification((form,))
+
+        self.assertEqual(
+            qualification.structural_status,
+            StructuralCoverageStatus.COMPLETE,
+        )
+        self.assertEqual(
+            qualification.concrete_oracle_status,
+            QualificationStatus.VETOED,
+        )
+        self.assertEqual(qualification.status, QualificationStatus.VETOED)
+        self.assertEqual(
+            qualification.to_payload()["qualification_layers"]
+            ["concrete_oracle"]["diagnostics"][0]["code"],
+            "lean_semantics_mismatch",
+        )
+
+    def test_layer_metadata_tampering_fails_closed(self):
+        payload = _qualification((_form((_consensus(),)),)).to_payload()
+        payload["qualification_layers"]["structural"]["status"] = "incomplete"
+
+        with self.assertRaisesRegex(
+            ISAKernelQualificationError, "qualification_layers"
+        ):
+            parse_kernel_qualification(payload)
+
+    def test_v1_form_kernel_and_selection_artifacts_remain_parseable(self):
+        form = _form((_consensus(),))
+        qualification = _qualification((form,))
+        selection = select_isa_kernel_qualification(
+            binary_id="hello.exe",
+            binary_sha256=SHA3,
+            requirements=(
+                BinaryFormRequirement(
+                    FORM_ID, SEMANTIC_FORM, (_location(),)
+                ),
+            ),
+            qualification=qualification,
+        )
+
+        form_v1 = form.to_payload()
+        form_v1["format"] = ISA_FORM_QUALIFICATION_FORMAT_V1
+        form_v1.pop("qualification_layers")
+        parsed_form = parse_form_qualification(form_v1)
+        self.assertEqual(parsed_form.to_payload(), form_v1)
+
+        kernel_v1 = qualification.to_payload()
+        kernel_v1["format"] = ISA_KERNEL_QUALIFICATION_FORMAT_V1
+        kernel_v1.pop("qualification_layers")
+        kernel_v1["forms"] = [form_v1]
+        kernel_v1["form_sha256s"] = [artifact_sha256(form_v1)]
+        parsed_kernel = parse_kernel_qualification(kernel_v1)
+        self.assertEqual(parsed_kernel.to_payload(), kernel_v1)
+
+        selection_v1 = selection.to_payload()
+        selection_v1["format"] = ISA_KERNEL_SELECTION_FORMAT_V1
+        selection_v1.pop("qualification_layers")
+        for selected_form in selection_v1["selected_forms"]:
+            selected_form.pop("qualification_layers")
+        parsed_selection = parse_kernel_selection(selection_v1)
+        self.assertEqual(parsed_selection.to_payload(), selection_v1)
 
     def test_form_and_kernel_statuses_preserve_strongest_failure(self):
         qualified = _form((_consensus(),))
@@ -672,81 +912,127 @@ class StageAISAKernelQualificationTests(unittest.TestCase):
                 oracle_suite=generic_suite,
             )
 
-    def test_missing_actual_state_from_report_is_incomplete(self):
-        corpus_payload = _legacy_corpus()
-        case = corpus_payload["cases"][0]
-        case["instruction_bytes"] = [0xCC]
-        case["defined_outputs"] = {
-            "gprs": {register: 0 for register in _machine_state()["gprs"]},
-            "eip": 0,
-            "eflags": 0,
-            "fs": {"selector": 0, "base": 0},
-            "x87": {
-                "control_word": 0,
-                "status_word": 0,
-                "tag_word": 0,
-                "last_opcode": 0,
-                "instruction_pointer": 0,
-                "data_pointer": 0,
-                "registers": [[0] * 10 for _ in range(8)],
-            },
-            "memory": [],
-        }
-        case["expected"] = {
-            "final_state": None,
-            "memory": None,
-            "control": "fault",
-            "fault": "breakpoint",
-        }
-        corpus = parse_isa_conformance_corpus(corpus_payload)
-        report = {
-            "format": ISA_CONFORMANCE_REPORT_FORMAT,
-            "corpus_id": corpus.id,
-            "input_sha256": isa_conformance_corpus_sha256(corpus),
-            "backend": {
-                "id": "bochs-x86-32-batch-v1",
-                "kind": "emulator",
-                "version": "3.0",
-            },
-            "qualification": "qualified",
-            "observations": [
-                {
-                    "case_id": "case:add-eax",
-                    "status": "match",
-                    "final_state": None,
-                    "memory": None,
-                    "actual": {"control": "fault", "fault": "breakpoint"},
-                    "detail": "",
-                }
-            ],
-            "counts": {
-                "cases": 1,
-                "matched": 1,
-                "mismatched": 0,
-                "unsupported": 0,
-                "errors": 0,
-            },
-            "trust": {
-                "role": "isa_conformance_evidence_only",
-                "proof_authority": False,
-                "closes_stage_a_proof": False,
-            },
-        }
+    def test_div_and_idiv_faults_without_machine_state_qualify(self):
+        for mnemonic, instruction_bytes in (
+            ("div", [0xF7, 0xF1]),
+            ("idiv", [0xF7, 0xF9]),
+        ):
+            with self.subTest(mnemonic=mnemonic):
+                corpus = _fault_corpus(instruction_bytes)
+                qualification = build_isa_kernel_qualification_from_reports(
+                    corpus=corpus,
+                    reports=tuple(
+                        _fault_report(corpus, role) for role in BackendRole
+                    ),
+                    form_ids_by_case={"case:add-eax": FORM_ID},
+                    semantic_forms_by_id={FORM_ID: SEMANTIC_FORM},
+                    profile=_profile(),
+                    semantic_kernel=_kernel(),
+                    generator=_generator(),
+                    oracle_suite=_suite(),
+                )
+                consensus = qualification.forms[0].consensuses[0]
 
-        observations = observations_from_conformance_report(
+                self.assertEqual(
+                    qualification.status, QualificationStatus.QUALIFIED
+                )
+                self.assertEqual(
+                    qualification.structural_status,
+                    StructuralCoverageStatus.COMPLETE,
+                )
+                self.assertEqual(
+                    qualification.concrete_oracle_status,
+                    QualificationStatus.QUALIFIED,
+                )
+                for observation in consensus.observations:
+                    self.assertEqual(
+                        observation.availability,
+                        ObservationAvailability.COMPLETE,
+                    )
+                    self.assertEqual(
+                        observation.result,
+                        {
+                            "control": "fault",
+                            "fault": "divide_error",
+                            "final_state": None,
+                            "memory": None,
+                        },
+                    )
+
+    def test_undefined_fault_state_capture_does_not_create_a_dispute(self):
+        corpus = _fault_corpus([0xF7, 0xF1])
+        reports = tuple(
+            _fault_report(
+                corpus,
+                role,
+                capture_state=role is BackendRole.BOCHS,
+            )
+            for role in BackendRole
+        )
+
+        qualification = build_isa_kernel_qualification_from_reports(
             corpus=corpus,
-            report=report,
+            reports=reports,
             form_ids_by_case={"case:add-eax": FORM_ID},
+            semantic_forms_by_id={FORM_ID: SEMANTIC_FORM},
             profile=_profile(),
             semantic_kernel=_kernel(),
             generator=_generator(),
             oracle_suite=_suite(),
         )
-        self.assertEqual(
-            observations[0].availability,
-            ObservationAvailability.INCOMPLETE,
+        consensus = qualification.forms[0].consensuses[0]
+
+        self.assertEqual(qualification.status, QualificationStatus.QUALIFIED)
+        self.assertTrue(
+            all(
+                row.result
+                == {
+                    "control": "fault",
+                    "fault": "divide_error",
+                    "final_state": None,
+                    "memory": None,
+                }
+                for row in consensus.observations
+            )
         )
-        self.assertIsNone(observations[0].result)
+
+    def test_divide_fault_disagreement_remains_a_veto(self):
+        corpus = _fault_corpus([0xF7, 0xF9])
+        reports = (
+            _fault_report(corpus, BackendRole.BOCHS),
+            _fault_report(corpus, BackendRole.UNICORN),
+            _fault_report(corpus, BackendRole.LEAN, fault="breakpoint"),
+        )
+
+        qualification = build_isa_kernel_qualification_from_reports(
+            corpus=corpus,
+            reports=reports,
+            form_ids_by_case={"case:add-eax": FORM_ID},
+            semantic_forms_by_id={FORM_ID: SEMANTIC_FORM},
+            profile=_profile(),
+            semantic_kernel=_kernel(),
+            generator=_generator(),
+            oracle_suite=_suite(),
+        )
+        consensus = qualification.forms[0].consensuses[0]
+
+        self.assertEqual(qualification.status, QualificationStatus.VETOED)
+        self.assertEqual(
+            qualification.structural_status,
+            StructuralCoverageStatus.COMPLETE,
+        )
+        self.assertEqual(
+            qualification.concrete_oracle_status,
+            QualificationStatus.VETOED,
+        )
+        self.assertTrue(
+            all(
+                row.availability is ObservationAvailability.COMPLETE
+                for row in consensus.observations
+            )
+        )
+        self.assertEqual(consensus.diagnostics[0].code, "lean_semantics_mismatch")
+        self.assertEqual(consensus.diagnostics[0].json_path, "$.fault")
 
     def test_versioned_requirements_adapter_selects_qualification(self):
         qualification = _qualification((_form((_consensus(),)),))

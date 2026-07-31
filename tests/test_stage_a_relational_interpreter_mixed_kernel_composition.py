@@ -52,6 +52,8 @@ class StageARelationalInterpreterMixedKernelCompositionTests(unittest.TestCase):
             "NonemptyRelatedPath candidate.transitionSystem",
             "CheckedMixedKernelObservations",
             "MixedKernelOperationComponentCertificate.operationApplied",
+            "ExactNativeRunningWorldAtRva",
+            "exactNativeRunningWorldAtRva",
             "CheckedMixedKernelComponentCases.component",
             "toMixedWorldChunkComposition",
         ):
@@ -62,6 +64,49 @@ class StageARelationalInterpreterMixedKernelCompositionTests(unittest.TestCase):
         )[1].split("structure MixedKernelSourceClassifier", 1)[0]
         self.assertNotRegex(source_case, r"\|\s+blocked\b")
         self.assertNotRegex(source_case, r"\|\s+unclassified\b")
+
+        component_cases = source.split(
+            "structure CheckedMixedKernelComponentCases", 1
+        )[1].split("private def terminalReturnedComponent", 1)[0]
+        self.assertIn(
+            "dispatches : RelationalWorld -> KernelDispatchRelation",
+            component_cases,
+        )
+        self.assertEqual(component_cases.count("candidateWorldExact"), 2)
+        self.assertEqual(
+            component_cases.count("(dispatches candidateWorld)"), 2
+        )
+
+        component = source.split(
+            "def CheckedMixedKernelComponentCases.component", 1
+        )[1].split(
+            "def CheckedMixedKernelComponentCases.toMixedWorldChunkComposition",
+            1,
+        )[0]
+        self.assertEqual(
+            component.count(
+                "exactNativeRunningWorldAtRva candidateAtEntry"
+            ),
+            2,
+        )
+        self.assertEqual(component.count("candidateRunning.worldExact"), 2)
+        self.assertNotIn("generatedLaunchWorld", component)
+
+        external_boundary_chunk = source.split(
+            "externalBoundaryChunk :", 1
+        )[1].split("private def terminalReturnedComponent", 1)[0]
+        self.assertIn(
+            "beforeRelated : invariant.holds originalBefore candidateBefore",
+            external_boundary_chunk,
+        )
+        self.assertIn(
+            "classifier.classifier.classify originalBefore candidateBefore",
+            external_boundary_chunk,
+        )
+        self.assertIn(
+            ".externalBoundary source candidateRva originalAtSource",
+            external_boundary_chunk,
+        )
 
         for forbidden in (
             r"\bverdict\b",
@@ -126,6 +171,8 @@ open StageA.Relational.InterpreterMixedKernelComposition
 #check ExactOriginalSemanticSource
 #check MixedKernelRelatedSourceCase
 #check MixedKernelSourceClassifier
+#check ExactNativeRunningWorldAtRva
+#check exactNativeRunningWorldAtRva
 #check MixedKernelOperationComponentCertificate
 #check CheckedMixedKernelComponentCases
 #check CheckedMixedKernelComponentCases.component

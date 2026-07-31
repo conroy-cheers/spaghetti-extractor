@@ -94,6 +94,14 @@ private def controlJson : ISAConformanceControl -> Json
       ("direction", toJson direction),
       ("continuation_rva", toJson continuationRva)
     ]
+  | .bulkFill destination value count direction continuationRva => Json.mkObj [
+      ("kind", toJson "bulk_fill"),
+      ("destination", toJson destination),
+      ("value", toJson value),
+      ("count", toJson count),
+      ("direction", toJson direction),
+      ("continuation_rva", toJson continuationRva)
+    ]
   | .indirectCall target continuationRva returnAddress => Json.mkObj [
       ("kind", toJson "indirect_call"),
       ("target", toJson target),
@@ -163,7 +171,8 @@ def emitISAConformanceCase (caseId : String)
   IO.println <| Json.compress <| Json.mkObj [
     ("case_id", toJson caseId),
     ("authority", toJson "veto_only"),
-    ("semantic_form", match decodeInstructionExact input.bytes with
+    ("semantic_form", match
+        decodeInstructionExactForProfile input.cpuProfile input.bytes with
       | some decoded => toJson (reprStr decoded.instruction.semanticForm)
       | none => Json.null),
     ("result", resultJson input.run)

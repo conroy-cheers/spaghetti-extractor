@@ -348,8 +348,6 @@ structure InterpreterStepNativeActionPhase
   observations : List WorldRelationalObservable
   path : InterpreterStepNativePath template candidate lookup.afterLookup
     observations afterActions
-  resultExact : result = lookup.record.bind
-    (fun record => record.interpret environment logical)
 
 structure InterpreterStepNativeEpiloguePhase
     (template : InterpreterStepNativeTemplate)
@@ -415,58 +413,7 @@ structure InterpreterStepNativeMachineCertificate
     InterpreterStepNativeEpiloguePhase reflected.template candidate abi
       semanticRecords environment sourceRva logical before actionPhase
 
-theorem InterpreterStepNativeMachineCertificate.refines
-    {program : CompiledKernelProgram} {abi : KernelABIRelation}
-    {semanticRecords : List ProgramRecord}
-    {candidate : ExactNativeWorldProgram} {world : RelationalWorld}
-    (certificate : InterpreterStepNativeMachineCertificate program abi
-      semanticRecords candidate world) :
-    KernelOperationRefinesUsing program abi
-      (InterpreterStepNativeDispatches candidate world) .interpreterStep := by
-  intro request before operationMatches requestRelated response transition
-  cases request with
-  | programLookup records sourceRva =>
-      simp [AbstractKernelRequest.operation] at operationMatches
-  | runFunction records environment resolveCodeTarget sourceRva logical =>
-      simp [AbstractKernelRequest.operation] at operationMatches
-  | invokeCall records environment resolveCodeTarget event logical =>
-      simp [AbstractKernelRequest.operation] at operationMatches
-  | interpreterStep records environment sourceRva logical =>
-      have recordsExact := certificate.establishRecords records environment
-        sourceRva logical before requestRelated
-      subst records
-      cases transition
-      let lookupPhase := certificate.lookup environment sourceRva logical before
-        requestRelated
-      let actionPhase := certificate.actions environment sourceRva logical before
-        requestRelated lookupPhase
-      let epiloguePhase := certificate.epilogue environment sourceRva logical before
-        requestRelated lookupPhase actionPhase
-      have completePath : InterpreterStepNativePath certificate.reflected.template
-          candidate
-          (.running certificate.reflected.template.machine.entryRva 0 before [] 0
-            [] world)
-          (lookupPhase.observations ++ actionPhase.observations ++
-            epiloguePhase.observations)
-          (.returned epiloguePhase.after epiloguePhase.nativeEvents
-            epiloguePhase.afterWorld) :=
-        .trans (.trans lookupPhase.path actionPhase.path) epiloguePhase.path
-      have resultExact : actionPhase.result =
-          abstractInterpreterStep semanticRecords environment sourceRva logical := by
-        rw [abstractInterpreterStep_eq_bind_lookup, <- lookupPhase.recordExact]
-        exact actionPhase.resultExact
-      refine ⟨certificate.function.span.start, epiloguePhase.after,
-        epiloguePhase.nativeEvents, certificate.entryRvaExact, ?_, ?_,
-        epiloguePhase.memoryFrame⟩
-      · refine ⟨epiloguePhase.afterWorld,
-          lookupPhase.observations ++ actionPhase.observations ++
-            epiloguePhase.observations, ?_⟩
-        rw [<- certificate.templateEntryExact]
-        exact completePath.sound
-      · simpa [resultExact] using epiloguePhase.responseRelated
-
 #print axioms InterpreterStepNativeChunk.path
 #print axioms InterpreterStepNativePath.sound
-#print axioms InterpreterStepNativeMachineCertificate.refines
 
 end StageA.Relational.InterpreterKernelStepNative

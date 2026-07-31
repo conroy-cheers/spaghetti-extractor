@@ -1,8 +1,9 @@
-"""Generate the exact native ``runFunction`` proof bridge.
+"""Generate exact native ``runFunction`` template and local replay evidence.
 
 The planner performs only fail-fast proposal checks.  The emitted Lean module
 rechecks the canonical O0 template against the exact candidate PE and exposes
-the local semantic premises consumed by the inductive native operation theorem.
+the local semantic premises consumed by the checked-call-tree operation proof.
+It does not expose a parallel whole-operation refinement theorem.
 """
 
 from __future__ import annotations
@@ -314,10 +315,10 @@ _OUTPUT_STATE_O0_PROFILE = _RunNativeTemplateProfile(
     indirect_call_offset=186,
     return_offset=397,
     frame_teardown_offset=392,
-    entry_fuel=22,
+    entry_fuel=20,
     step_prelude_fuel=9,
     direct_completion_fuel=7,
-    resolver_prelude_fuel=20,
+    resolver_prelude_fuel=21,
     resolver_suffix_fuel=5,
     terminal_fuels=(
         ("ok_returned", 22),
@@ -398,12 +399,12 @@ class InterpreterKernelRunNativePlan:
             ],
             "constructed_lean_evidence": [
                 "RunFunctionNativeTemplateCertificate",
-                "RunFunctionNativeStepPrelude.execute",
-                "RunFunctionNativeLocalSemantics.execute",
-                "RunFunctionNativeMachineCertificate.refines",
+                "RunFunctionNativeChunk.path",
+                "RunFunctionNativeResolverExecution.path",
+                "RunFunctionNativeContinuationLocal.path",
             ],
             "remaining_semantic_premises": [
-                "RunFunctionNativeStepOperation.refines for arbitrary nested runtime contexts",
+                "request-local checked Step refinement for every retained derivation",
                 "entry chunk establishes the copied-state loop invariant",
                 "step response establishes completion-tag and state-copy cutpoints",
                 "checked resolver callback target preserves the nested runtime",
@@ -566,30 +567,7 @@ def GeneratedRunFunctionNativeLocalSemanticsGoal
   RunFunctionNativeLocalSemantics generatedCompiledKernelProgram abi candidate
     generatedRunFunctionTemplate records stepEntryRva certificate.resolverTargets
 
-def GeneratedRunFunctionNativeMachineCertificateGoal
-    (abi : KernelABIRelation) (records : List ProgramRecord)
-    (candidate : ExactNativeWorldProgram) (world : RelationalWorld)
-    (outerContinuationRva : Nat) (outerReturnAddress : Word) : Prop :=
-  Nonempty (RunFunctionNativeMachineCertificate generatedCompiledKernelProgram abi
-    records candidate world outerContinuationRva outerReturnAddress)
-
-/-- Public conditional operation theorem.  Static data can construct only the
-template certificate; all runtime endpoints come from fixed exact chunks and
-the local semantic premises in the machine certificate. -/
-theorem GeneratedRunFunctionNativeRefinesUsing
-    {{abi : KernelABIRelation}} {{records : List ProgramRecord}}
-    {{candidate : ExactNativeWorldProgram}} {{world : RelationalWorld}}
-    {{outerContinuationRva : Nat}} {{outerReturnAddress : Word}}
-    (certificate : RunFunctionNativeMachineCertificate
-      generatedCompiledKernelProgram abi records candidate world
-      outerContinuationRva outerReturnAddress) :
-    KernelOperationRefinesUsing generatedCompiledKernelProgram abi
-      (NativeWorldSubroutineDispatches candidate world outerContinuationRva
-        outerReturnAddress) .runFunction :=
-  certificate.refines
-
 #print axioms generatedRunFunctionNativeTemplateCertificate
-#print axioms GeneratedRunFunctionNativeRefinesUsing
 
 end StageA.GeneratedRelational.InterpreterKernelRunNative
 """

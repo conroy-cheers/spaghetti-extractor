@@ -155,10 +155,92 @@ def decodeCommandExact (bytes : Bytes) : Option DecodedCommand := do
     size := decoded.size
   }
 
+/-- Exact decoding cannot admit a command under the wrong x87 wait mode. -/
+theorem decodeCommandExact_waitModeValid
+    (bytes : Bytes) (descriptor : DecodedCommand)
+    (decoded : decodeCommandExact bytes = some descriptor) :
+    descriptor.command.waitModeValid descriptor.waitMode := by
+  unfold decodeCommandExact at decoded
+  rw [Option.bind_eq_bind] at decoded
+  rw [Option.bind_eq_some_iff] at decoded
+  obtain ⟨instruction, instructionExact, decoded⟩ := decoded
+  rw [Option.bind_eq_bind] at decoded
+  rw [Option.bind_eq_some_iff] at decoded
+  obtain ⟨instructionDescriptor, descriptorExact, decoded⟩ := decoded
+  rw [Option.bind_eq_bind] at decoded
+  rw [Option.bind_eq_some_iff] at decoded
+  obtain ⟨_opcode, _opcodeExact, decoded⟩ := decoded
+  cases decoded
+  exact instructionDescriptor_waitModeValid instruction.instruction
+    instructionDescriptor descriptorExact
+
 def decodeSingletonCommand (pe : PE32) (span : Span) : Option DecodedCommand := do
   let bytes <- spanBytes pe span
   let decoded <- decodeCommandExact bytes
   if decoded.size == span.size then some decoded else none
+
+/-- The span wrapper preserves the wait-mode fact checked by exact decoding. -/
+theorem decodeSingletonCommand_waitModeValid
+    (pe : PE32) (span : Span) (descriptor : DecodedCommand)
+    (decoded : decodeSingletonCommand pe span = some descriptor) :
+    descriptor.command.waitModeValid descriptor.waitMode := by
+  unfold decodeSingletonCommand at decoded
+  rw [Option.bind_eq_bind] at decoded
+  rw [Option.bind_eq_some_iff] at decoded
+  obtain ⟨bytes, _bytesExact, decoded⟩ := decoded
+  rw [Option.bind_eq_bind] at decoded
+  rw [Option.bind_eq_some_iff] at decoded
+  obtain ⟨decodedDescriptor, descriptorExact, decoded⟩ := decoded
+  split at decoded <;> try contradiction
+  simp only [Option.some.injEq] at decoded
+  subst descriptor
+  exact decodeCommandExact_waitModeValid bytes decodedDescriptor descriptorExact
+
+/-- Exact decoding preserves whether the x87 command has an addressed memory
+operand. -/
+theorem instructionDescriptor_memoryOperand
+    (instruction : Instruction)
+    (descriptor : InstructionDescriptor)
+    (decoded : instructionDescriptor? instruction = some descriptor) :
+    descriptor.command.usesMemoryOperand = descriptor.memoryOperand.isSome := by
+  cases instruction <;> simp [instructionDescriptor?] at decoded
+  all_goals
+    subst descriptor
+    simp [StageA.X87.Command.usesMemoryOperand]
+
+theorem decodeCommandExact_memoryOperand
+    (bytes : Bytes) (descriptor : DecodedCommand)
+    (decoded : decodeCommandExact bytes = some descriptor) :
+    descriptor.command.usesMemoryOperand = descriptor.memoryOperand.isSome := by
+  unfold decodeCommandExact at decoded
+  rw [Option.bind_eq_bind] at decoded
+  rw [Option.bind_eq_some_iff] at decoded
+  obtain ⟨instruction, instructionExact, decoded⟩ := decoded
+  rw [Option.bind_eq_bind] at decoded
+  rw [Option.bind_eq_some_iff] at decoded
+  obtain ⟨instructionDescriptor, descriptorExact, decoded⟩ := decoded
+  rw [Option.bind_eq_bind] at decoded
+  rw [Option.bind_eq_some_iff] at decoded
+  obtain ⟨_opcode, _opcodeExact, decoded⟩ := decoded
+  cases decoded
+  exact instructionDescriptor_memoryOperand instruction.instruction
+    instructionDescriptor descriptorExact
+
+theorem decodeSingletonCommand_memoryOperand
+    (pe : PE32) (span : Span) (descriptor : DecodedCommand)
+    (decoded : decodeSingletonCommand pe span = some descriptor) :
+    descriptor.command.usesMemoryOperand = descriptor.memoryOperand.isSome := by
+  unfold decodeSingletonCommand at decoded
+  rw [Option.bind_eq_bind] at decoded
+  rw [Option.bind_eq_some_iff] at decoded
+  obtain ⟨bytes, _bytesExact, decoded⟩ := decoded
+  rw [Option.bind_eq_bind] at decoded
+  rw [Option.bind_eq_some_iff] at decoded
+  obtain ⟨decodedDescriptor, descriptorExact, decoded⟩ := decoded
+  split at decoded <;> try contradiction
+  simp only [Option.some.injEq] at decoded
+  subst descriptor
+  exact decodeCommandExact_memoryOperand bytes decodedDescriptor descriptorExact
 
 def stateOnlySingletonCommandChecked (pe : PE32) (span : Span) : Bool :=
   match decodeSingletonCommand pe span with

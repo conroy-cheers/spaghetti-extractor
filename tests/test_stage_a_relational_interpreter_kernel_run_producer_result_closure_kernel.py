@@ -59,7 +59,6 @@ class StageARelationalInterpreterKernelRunProducerResultClosureKernelTests(
             axioms = {item.strip() for item in match.split(",") if item.strip()}
             self.assertLessEqual(axioms, _APPROVED_AXIOMS)
         for theorem in (
-            "RunFunctionNativeResultIndexedLocalSemantics.execute",
             "ExactRunFunctionCDeclSuffixResultPreservation.eaxPreserved",
             "ExactRunFunctionCDeclSuffixResultPreservation.memoryPreserved",
             "EngineStateHolds.preserveMachineBacking",

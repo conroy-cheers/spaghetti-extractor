@@ -25,15 +25,20 @@ from .isa_conformance import (
 )
 
 
-ISA_FORM_CATALOG_FORMAT = "stage-a-isa-form-catalog-v1"
-ISA_FORM_CATALOG_ENTRY_FORMAT = "pe32-i686-form-v1"
+ISA_FORM_CATALOG_FORMAT = "stage-a-isa-form-catalog-v2"
+ISA_FORM_CATALOG_ENTRY_FORMAT = "pe32-i686-form-v2"
+LEGACY_ISA_FORM_CATALOG_FORMAT = "stage-a-isa-form-catalog-v1"
+LEGACY_ISA_FORM_CATALOG_ENTRY_FORMAT = "pe32-i686-form-v1"
 XED_INSTRUCTION_CATALOG_FORMAT = "spaghetti-extractor-xed-inst-catalog-v1"
 ISA_PROFILE_ID = "pe32-i686-v1"
 SUPPORTED_WIDTHS = frozenset({8, 16, 32})
+MAX_MEMORY_EFFECT_WIDTH_BITS = 4096
 
 
 class EffectClass(str, Enum):
+    NOOP = "noop"
     REGISTER = "register"
+    STATE = "state"
     MEMORY = "memory"
     BRANCH = "branch"
     DIVIDE = "divide"
@@ -49,6 +54,22 @@ class AccessMode(str, Enum):
 class AddressSegment(str, Enum):
     FLAT = "flat"
     FS = "fs"
+
+
+class StateComponent(str, Enum):
+    EFLAGS = "eflags"
+    FS = "fs"
+
+
+class PredicateKind(str, Enum):
+    EFLAGS = "eflags"
+    REGISTER = "register"
+
+
+class ControlTargetKind(str, Enum):
+    FIXED = "fixed"
+    REGISTER = "register"
+    MEMORY = "memory"
 
 
 class BranchScenario(str, Enum):
@@ -91,21 +112,73 @@ class AddressExpression:
 
 
 @dataclass(frozen=True)
+class RegisterLocation:
+    register: str
+    lsb: int
+
+
+@dataclass(frozen=True)
+class InputPredicate:
+    kind: PredicateKind
+    mask: int
+    value: int
+    width_bits: int
+    location: RegisterLocation | None
+
+
+@dataclass(frozen=True)
+class FixedControlTarget:
+    target_eip: int
+    kind: ControlTargetKind = ControlTargetKind.FIXED
+
+
+@dataclass(frozen=True)
+class RegisterControlTarget:
+    location: RegisterLocation
+    kind: ControlTargetKind = ControlTargetKind.REGISTER
+
+
+@dataclass(frozen=True)
+class MemoryControlTarget:
+    address: AddressExpression
+    kind: ControlTargetKind = ControlTargetKind.MEMORY
+
+
+ControlTarget: TypeAlias = (
+    FixedControlTarget | RegisterControlTarget | MemoryControlTarget
+)
+
+
+@dataclass(frozen=True)
 class BranchOutcome:
     scenario: BranchScenario
     eflags_mask: int
     eflags_value: int
     control: ControlClass
-    target_eip: int | None
+    target: ControlTarget | None
+
+
+@dataclass(frozen=True)
+class NoOpEffect:
+    id: str
+    effect_class: EffectClass = EffectClass.NOOP
 
 
 @dataclass(frozen=True)
 class RegisterEffect:
     id: str
     width_bits: int
-    reads: tuple[str, ...]
-    writes: tuple[str, ...]
+    reads: tuple[RegisterLocation, ...]
+    writes: tuple[RegisterLocation, ...]
     effect_class: EffectClass = EffectClass.REGISTER
+
+
+@dataclass(frozen=True)
+class StateEffect:
+    id: str
+    state: StateComponent
+    access: AccessMode
+    effect_class: EffectClass = EffectClass.STATE
 
 
 @dataclass(frozen=True)
@@ -114,6 +187,7 @@ class MemoryEffect:
     width_bits: int
     access: AccessMode
     address: AddressExpression
+    condition: InputPredicate | None
     effect_class: EffectClass = EffectClass.MEMORY
 
 
@@ -129,9 +203,9 @@ class DivideEffect:
     id: str
     width_bits: int
     signed: bool
-    dividend_high: str
-    dividend_low: str
-    divisor: str
+    dividend_high: RegisterLocation
+    dividend_low: RegisterLocation
+    divisor: RegisterLocation | AddressExpression
     effect_class: EffectClass = EffectClass.DIVIDE
 
 
@@ -144,7 +218,13 @@ class X87Effect:
 
 
 InstructionEffect: TypeAlias = (
-    RegisterEffect | MemoryEffect | BranchEffect | DivideEffect | X87Effect
+    NoOpEffect
+    | RegisterEffect
+    | StateEffect
+    | MemoryEffect
+    | BranchEffect
+    | DivideEffect
+    | X87Effect
 )
 
 
@@ -344,6 +424,20 @@ def _width(value: Any, context: str) -> int:
     return width
 
 
+def _memory_width(value: Any, context: str) -> int:
+    width = _uint(value, 16, context)
+    if (
+        width < 8
+        or width > MAX_MEMORY_EFFECT_WIDTH_BITS
+        or width % 8
+    ):
+        raise ISAConformanceError(
+            f"{context} must be a byte-aligned width from 8 through "
+            f"{MAX_MEMORY_EFFECT_WIDTH_BITS}"
+        )
+    return width
+
+
 def _register(value: Any, context: str) -> str:
     register = _string(value, context)
     if register not in GPR_NAMES:
@@ -353,21 +447,95 @@ def _register(value: Any, context: str) -> str:
     return register
 
 
-def _registers(
-    value: Any, context: str, *, allow_empty: bool
-) -> tuple[str, ...]:
+def _parse_register_location(
+    value: Any,
+    context: str,
+    *,
+    width_bits: int,
+    allow_legacy_name: bool,
+) -> RegisterLocation:
+    if isinstance(value, str):
+        if not allow_legacy_name:
+            raise ISAConformanceError(f"{context} must be a register location object")
+        return RegisterLocation(register=_register(value, context), lsb=0)
+    payload = _object(value, context)
+    _exact_fields(payload, {"register", "lsb"}, context)
+    lsb = _uint(payload.get("lsb"), 5, f"{context}.lsb")
+    if lsb % 8:
+        raise ISAConformanceError(f"{context}.lsb must be byte-aligned")
+    if lsb + width_bits > 32:
+        raise ISAConformanceError(
+            f"{context} extends beyond its canonical 32-bit register"
+        )
+    return RegisterLocation(
+        register=_register(payload.get("register"), f"{context}.register"),
+        lsb=lsb,
+    )
+
+
+def _register_locations(
+    value: Any,
+    context: str,
+    *,
+    width_bits: int,
+    allow_empty: bool,
+    allow_legacy_names: bool,
+) -> tuple[RegisterLocation, ...]:
     if not isinstance(value, list):
         raise ISAConformanceError(f"{context} must be a list")
     result = tuple(
-        _register(item, f"{context}[{index}]") for index, item in enumerate(value)
+        _parse_register_location(
+            item,
+            f"{context}[{index}]",
+            width_bits=width_bits,
+            allow_legacy_name=allow_legacy_names,
+        )
+        for index, item in enumerate(value)
     )
     if not allow_empty and not result:
         raise ISAConformanceError(f"{context} must not be empty")
-    if list(result) != sorted(set(result)):
+    if list(result) != sorted(
+        set(result), key=lambda location: (location.register, location.lsb)
+    ):
         raise ISAConformanceError(
             f"{context} must be unique and canonically ordered"
         )
     return result
+
+
+def _parse_predicate(value: Any, context: str) -> InputPredicate:
+    payload = _object(value, context)
+    kind = _enum(PredicateKind, payload.get("kind"), f"{context}.kind")
+    if kind is PredicateKind.EFLAGS:
+        _exact_fields(payload, {"kind", "mask", "value"}, context)
+        width = 32
+        location = None
+    else:
+        _exact_fields(
+            payload,
+            {"kind", "location", "width_bits", "mask", "value"},
+            context,
+        )
+        width = _width(payload.get("width_bits"), f"{context}.width_bits")
+        location = _parse_register_location(
+            payload.get("location"),
+            f"{context}.location",
+            width_bits=width,
+            allow_legacy_name=False,
+        )
+    mask = _uint(payload.get("mask"), width, f"{context}.mask")
+    predicate_value = _uint(payload.get("value"), width, f"{context}.value")
+    if mask == 0:
+        raise ISAConformanceError(f"{context}.mask must not be zero")
+    if predicate_value & ~mask:
+        raise ISAConformanceError(f"{context}.value sets bits outside mask")
+    return InputPredicate(
+        kind=kind,
+        mask=mask,
+        value=predicate_value,
+        width_bits=width,
+        location=location,
+    )
 
 
 def _parse_source(value: Any, context: str) -> CatalogSource:
@@ -396,8 +564,6 @@ def _parse_address(value: Any, context: str) -> AddressExpression:
         raise ISAConformanceError(f"{context}.scale must be one of [1, 2, 4, 8]")
     if index is None and scale != 1:
         raise ISAConformanceError(f"{context}.scale must be 1 without an index")
-    if base is not None and base == index:
-        raise ISAConformanceError(f"{context} base and index must be distinct")
     return AddressExpression(
         base=base,
         index=index,
@@ -411,17 +577,50 @@ def _parse_address(value: Any, context: str) -> AddressExpression:
     )
 
 
-def _parse_branch_outcome(value: Any, context: str) -> BranchOutcome:
+def _parse_control_target(value: Any, context: str) -> ControlTarget:
     payload = _object(value, context)
+    kind = _enum(ControlTargetKind, payload.get("kind"), f"{context}.kind")
+    if kind is ControlTargetKind.FIXED:
+        _exact_fields(payload, {"kind", "target_eip"}, context)
+        return FixedControlTarget(
+            target_eip=_uint(payload.get("target_eip"), 32, f"{context}.target_eip")
+        )
+    if kind is ControlTargetKind.REGISTER:
+        _exact_fields(payload, {"kind", "location"}, context)
+        return RegisterControlTarget(
+            location=_parse_register_location(
+                payload.get("location"),
+                f"{context}.location",
+                width_bits=32,
+                allow_legacy_name=False,
+            )
+        )
+    _exact_fields(payload, {"kind", "address"}, context)
+    return MemoryControlTarget(
+        address=_parse_address(payload.get("address"), f"{context}.address")
+    )
+
+
+def _parse_branch_outcome(
+    value: Any,
+    context: str,
+    *,
+    legacy: bool,
+    allow_legacy_v2: bool,
+) -> BranchOutcome:
+    payload = _object(value, context)
+    common_fields = {
+        "scenario",
+        "eflags_mask",
+        "eflags_value",
+        "control",
+    }
+    uses_legacy_target = legacy or (
+        allow_legacy_v2 and "target_eip" in payload and "target" not in payload
+    )
     _exact_fields(
         payload,
-        {
-            "scenario",
-            "eflags_mask",
-            "eflags_value",
-            "control",
-            "target_eip",
-        },
+        common_fields | ({"target_eip"} if uses_legacy_target else {"target"}),
         context,
     )
     scenario = _enum(
@@ -436,12 +635,15 @@ def _parse_branch_outcome(value: Any, context: str) -> BranchOutcome:
             f"{context}.eflags_value sets bits outside eflags_mask"
         )
     control = _enum(ControlClass, payload.get("control"), f"{context}.control")
-    raw_target = payload.get("target_eip")
-    target = (
-        None
-        if raw_target is None
-        else _uint(raw_target, 32, f"{context}.target_eip")
-    )
+    raw_target = payload.get("target_eip" if uses_legacy_target else "target")
+    if raw_target is None:
+        target: ControlTarget | None = None
+    elif uses_legacy_target:
+        target = FixedControlTarget(
+            _uint(raw_target, 32, f"{context}.target_eip")
+        )
+    else:
+        target = _parse_control_target(raw_target, f"{context}.target")
     if scenario is BranchScenario.NOT_TAKEN:
         if control is not ControlClass.FALLTHROUGH or target is not None:
             raise ISAConformanceError(
@@ -451,24 +653,107 @@ def _parse_branch_outcome(value: Any, context: str) -> BranchOutcome:
         raise ISAConformanceError(
             f"{context} taken must use a non-fault control transfer"
         )
-    elif control is not ControlClass.RETURN and target is None:
+    elif control is ControlClass.RETURN:
+        if target is not None:
+            raise ISAConformanceError(
+                f"{context} return control must not declare a target"
+            )
+    elif control in {ControlClass.DIRECT_BRANCH, ControlClass.DIRECT_CALL}:
+        if not isinstance(target, FixedControlTarget):
+            raise ISAConformanceError(
+                f"{context} direct control requires a fixed target"
+            )
+    elif control in {ControlClass.INDIRECT_BRANCH, ControlClass.INDIRECT_CALL}:
+        if not isinstance(target, (RegisterControlTarget, MemoryControlTarget)):
+            raise ISAConformanceError(
+                f"{context} indirect control requires a register or memory target"
+            )
+    elif target is None:
         raise ISAConformanceError(
             f"{context} taken control transfer requires target_eip"
         )
     return BranchOutcome(scenario, mask, flag_value, control, target)
 
 
-def _parse_effect(value: Any, context: str) -> InstructionEffect:
+def _locations_overlap(
+    left: RegisterLocation,
+    left_width: int,
+    right: RegisterLocation,
+    right_width: int,
+) -> bool:
+    return (
+        left.register == right.register
+        and left.lsb < right.lsb + right_width
+        and right.lsb < left.lsb + left_width
+    )
+
+
+def _parse_divisor(
+    value: Any,
+    context: str,
+    *,
+    width_bits: int,
+    allow_legacy_name: bool,
+) -> RegisterLocation | AddressExpression:
+    if isinstance(value, str):
+        if not allow_legacy_name:
+            raise ISAConformanceError(f"{context} must be a divisor source object")
+        return _parse_register_location(
+            value,
+            context,
+            width_bits=width_bits,
+            allow_legacy_name=True,
+        )
+    payload = _object(value, context)
+    raw_kind = payload.get("kind")
+    if raw_kind == "register":
+        _exact_fields(payload, {"kind", "location"}, context)
+        return _parse_register_location(
+            payload.get("location"),
+            f"{context}.location",
+            width_bits=width_bits,
+            allow_legacy_name=False,
+        )
+    if raw_kind == "memory":
+        _exact_fields(payload, {"kind", "address"}, context)
+        return _parse_address(payload.get("address"), f"{context}.address")
+    raise ISAConformanceError(f"{context}.kind is unsupported")
+
+
+def _parse_effect(
+    value: Any,
+    context: str,
+    *,
+    legacy: bool,
+    allow_legacy_v2: bool,
+) -> InstructionEffect:
     payload = _object(value, context)
     effect_class = _enum(EffectClass, payload.get("class"), f"{context}.class")
     effect_id = _string(payload.get("id"), f"{context}.id")
+    if effect_class is EffectClass.NOOP:
+        if legacy:
+            raise ISAConformanceError(f"{context}.class is unsupported by catalog v1")
+        _exact_fields(payload, {"class", "id"}, context)
+        return NoOpEffect(id=effect_id)
     if effect_class is EffectClass.REGISTER:
         _exact_fields(
             payload, {"class", "id", "width_bits", "reads", "writes"}, context
         )
-        reads = _registers(payload.get("reads"), f"{context}.reads", allow_empty=True)
-        writes = _registers(
-            payload.get("writes"), f"{context}.writes", allow_empty=True
+        width = _width(payload.get("width_bits"), f"{context}.width_bits")
+        allow_legacy_names = legacy or allow_legacy_v2
+        reads = _register_locations(
+            payload.get("reads"),
+            f"{context}.reads",
+            width_bits=width,
+            allow_empty=True,
+            allow_legacy_names=allow_legacy_names,
+        )
+        writes = _register_locations(
+            payload.get("writes"),
+            f"{context}.writes",
+            width_bits=width,
+            allow_empty=True,
+            allow_legacy_names=allow_legacy_names,
         )
         if not reads and not writes:
             raise ISAConformanceError(
@@ -476,24 +761,65 @@ def _parse_effect(value: Any, context: str) -> InstructionEffect:
             )
         return RegisterEffect(
             id=effect_id,
-            width_bits=_width(payload.get("width_bits"), f"{context}.width_bits"),
+            width_bits=width,
             reads=reads,
             writes=writes,
         )
+    if effect_class is EffectClass.STATE:
+        if legacy:
+            raise ISAConformanceError(f"{context}.class is unsupported by catalog v1")
+        _exact_fields(payload, {"class", "id", "state", "access"}, context)
+        return StateEffect(
+            id=effect_id,
+            state=_enum(
+                StateComponent, payload.get("state"), f"{context}.state"
+            ),
+            access=_enum(AccessMode, payload.get("access"), f"{context}.access"),
+        )
     if effect_class is EffectClass.MEMORY:
+        has_condition = "condition" in payload
+        if legacy or (allow_legacy_v2 and not has_condition):
+            expected_fields = {"class", "id", "width_bits", "access", "address"}
+        else:
+            expected_fields = {
+                "class",
+                "id",
+                "width_bits",
+                "access",
+                "address",
+                "condition",
+            }
         _exact_fields(
-            payload, {"class", "id", "width_bits", "access", "address"}, context
+            payload, expected_fields, context
         )
         return MemoryEffect(
             id=effect_id,
-            width_bits=_width(payload.get("width_bits"), f"{context}.width_bits"),
+            width_bits=(
+                _width(payload.get("width_bits"), f"{context}.width_bits")
+                if legacy
+                else _memory_width(
+                    payload.get("width_bits"), f"{context}.width_bits"
+                )
+            ),
             access=_enum(AccessMode, payload.get("access"), f"{context}.access"),
             address=_parse_address(payload.get("address"), f"{context}.address"),
+            condition=(
+                None
+                if not has_condition or payload.get("condition") is None
+                else _parse_predicate(
+                    payload.get("condition"), f"{context}.condition"
+                )
+            ),
         )
     if effect_class is EffectClass.BRANCH:
         _exact_fields(payload, {"class", "id", "outcomes"}, context)
         outcomes = tuple(
-            _parse_branch_outcome(row, f"{context}.outcomes[{index}]")
+            _parse_branch_outcome(
+                row,
+                f"{context}.outcomes[{index}]",
+                legacy=legacy,
+                allow_legacy_v2=allow_legacy_v2,
+            )
             for index, row in enumerate(
                 _objects(payload.get("outcomes"), f"{context}.outcomes")
             )
@@ -523,18 +849,41 @@ def _parse_effect(value: Any, context: str) -> InstructionEffect:
         signed = payload.get("signed")
         if not isinstance(signed, bool):
             raise ISAConformanceError(f"{context}.signed must be a boolean")
-        high = _register(payload.get("dividend_high"), f"{context}.dividend_high")
-        low = _register(payload.get("dividend_low"), f"{context}.dividend_low")
-        divisor = _register(payload.get("divisor"), f"{context}.divisor")
-        if len({high, low, divisor}) != 3:
-            raise ISAConformanceError(
-                f"{context} divide registers must be distinct"
-            )
         width = _width(payload.get("width_bits"), f"{context}.width_bits")
-        if width == 8:
+        if legacy and width == 8:
             raise ISAConformanceError(
                 f"{context}.width_bits=8 requires subregister dividend locations "
                 "not represented by this catalog version"
+            )
+        allow_legacy_names = legacy or allow_legacy_v2
+        high = _parse_register_location(
+            payload.get("dividend_high"),
+            f"{context}.dividend_high",
+            width_bits=width,
+            allow_legacy_name=allow_legacy_names,
+        )
+        low = _parse_register_location(
+            payload.get("dividend_low"),
+            f"{context}.dividend_low",
+            width_bits=width,
+            allow_legacy_name=allow_legacy_names,
+        )
+        divisor = _parse_divisor(
+            payload.get("divisor"),
+            f"{context}.divisor",
+            width_bits=width,
+            allow_legacy_name=allow_legacy_names,
+        )
+        if _locations_overlap(high, width, low, width):
+            raise ISAConformanceError(
+                f"{context} dividend locations must not overlap"
+            )
+        if isinstance(divisor, RegisterLocation) and (
+            _locations_overlap(divisor, width, high, width)
+            or _locations_overlap(divisor, width, low, width)
+        ):
+            raise ISAConformanceError(
+                f"{context} register divisor must not overlap the dividend"
             )
         return DivideEffect(
             id=effect_id,
@@ -575,8 +924,13 @@ def _parse_entry(value: Any, context: str) -> ISAFormCatalogEntry:
         },
         context,
     )
-    if payload.get("format") != ISA_FORM_CATALOG_ENTRY_FORMAT:
+    entry_format = payload.get("format")
+    if entry_format not in {
+        ISA_FORM_CATALOG_ENTRY_FORMAT,
+        LEGACY_ISA_FORM_CATALOG_ENTRY_FORMAT,
+    }:
         raise ISAConformanceError(f"{context}.format is unsupported")
+    legacy = entry_format == LEGACY_ISA_FORM_CATALOG_ENTRY_FORMAT
     raw_bytes = payload.get("instruction_bytes")
     if not isinstance(raw_bytes, list) or not raw_bytes:
         raise ISAConformanceError(f"{context}.instruction_bytes must not be empty")
@@ -600,7 +954,14 @@ def _parse_entry(value: Any, context: str) -> ISAFormCatalogEntry:
             f"{context}.required_features must be unique and canonically ordered"
         )
     effects = tuple(
-        _parse_effect(row, f"{context}.effects[{index}]")
+        _parse_effect(
+            row,
+            f"{context}.effects[{index}]",
+            legacy=legacy,
+            # The in-tree enrichment producer is independently owned and may
+            # transition to canonical v2 locations in a separate change.
+            allow_legacy_v2=not legacy,
+        )
         for index, row in enumerate(
             _objects(payload.get("effects"), f"{context}.effects")
         )
@@ -611,6 +972,11 @@ def _parse_entry(value: Any, context: str) -> ISAFormCatalogEntry:
     if effect_ids != sorted(set(effect_ids)):
         raise ISAConformanceError(
             f"{context}.effects must have unique, canonically ordered IDs"
+        )
+    noop_count = sum(isinstance(effect, NoOpEffect) for effect in effects)
+    if noop_count and (noop_count != 1 or len(effects) != 1):
+        raise ISAConformanceError(
+            f"{context} no-op must be the entry's sole effect"
         )
     if sum(isinstance(effect, BranchEffect) for effect in effects) > 1:
         raise ISAConformanceError(f"{context} supports at most one branch effect")
@@ -633,6 +999,7 @@ def _parse_entry(value: Any, context: str) -> ISAFormCatalogEntry:
         required_features=features,
         effects=effects,
         defined_outputs=defined_outputs,
+        format=entry_format,
     )
 
 
@@ -642,7 +1009,11 @@ def parse_isa_form_catalog(value: Any) -> ISAFormCatalog:
     _exact_fields(
         payload, {"format", "profile", "source", "entries"}, "ISA form catalog"
     )
-    if payload.get("format") != ISA_FORM_CATALOG_FORMAT:
+    catalog_format = payload.get("format")
+    if catalog_format not in {
+        ISA_FORM_CATALOG_FORMAT,
+        LEGACY_ISA_FORM_CATALOG_FORMAT,
+    }:
         raise ISAConformanceError("unsupported ISA form catalog format")
     if payload.get("profile") != ISA_PROFILE_ID:
         raise ISAConformanceError(
@@ -656,6 +1027,15 @@ def parse_isa_form_catalog(value: Any) -> ISAFormCatalog:
     )
     if not entries:
         raise ISAConformanceError("ISA form catalog.entries must not be empty")
+    expected_entry_format = (
+        LEGACY_ISA_FORM_CATALOG_ENTRY_FORMAT
+        if catalog_format == LEGACY_ISA_FORM_CATALOG_FORMAT
+        else ISA_FORM_CATALOG_ENTRY_FORMAT
+    )
+    if any(entry.format != expected_entry_format for entry in entries):
+        raise ISAConformanceError(
+            "ISA form catalog entries do not match the catalog schema version"
+        )
     form_ids = [entry.form_id for entry in entries]
     if form_ids != sorted(set(form_ids)):
         raise ISAConformanceError(
@@ -669,6 +1049,7 @@ def parse_isa_form_catalog(value: Any) -> ISAFormCatalog:
     return ISAFormCatalog(
         source=_parse_source(payload.get("source"), "ISA form catalog.source"),
         entries=entries,
+        format=catalog_format,
     )
 
 
@@ -1141,48 +1522,191 @@ def _address_payload(address: AddressExpression) -> dict[str, Any]:
     }
 
 
-def _outcome_payload(outcome: BranchOutcome) -> dict[str, Any]:
-    return {
+def _register_location_payload(location: RegisterLocation) -> dict[str, Any]:
+    return {"register": location.register, "lsb": location.lsb}
+
+
+def _predicate_payload(predicate: InputPredicate) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "kind": predicate.kind.value,
+        "mask": predicate.mask,
+        "value": predicate.value,
+    }
+    if predicate.kind is PredicateKind.REGISTER:
+        if predicate.location is None:
+            raise ISAConformanceError("register predicate has no location")
+        payload = {
+            "kind": predicate.kind.value,
+            "location": _register_location_payload(predicate.location),
+            "width_bits": predicate.width_bits,
+            "mask": predicate.mask,
+            "value": predicate.value,
+        }
+    return payload
+
+
+def _control_target_payload(target: ControlTarget) -> dict[str, Any]:
+    if isinstance(target, FixedControlTarget):
+        return {"kind": target.kind.value, "target_eip": target.target_eip}
+    if isinstance(target, RegisterControlTarget):
+        return {
+            "kind": target.kind.value,
+            "location": _register_location_payload(target.location),
+        }
+    if isinstance(target, MemoryControlTarget):
+        return {
+            "kind": target.kind.value,
+            "address": _address_payload(target.address),
+        }
+    raise ISAConformanceError("unsupported typed control target")
+
+
+def _outcome_payload(
+    outcome: BranchOutcome, *, legacy: bool
+) -> dict[str, Any]:
+    payload = {
         "scenario": outcome.scenario.value,
         "eflags_mask": outcome.eflags_mask,
         "eflags_value": outcome.eflags_value,
         "control": outcome.control.value,
-        "target_eip": outcome.target_eip,
     }
+    if legacy:
+        if outcome.target is not None and not isinstance(
+            outcome.target, FixedControlTarget
+        ):
+            raise ISAConformanceError(
+                "catalog v1 cannot serialize a dynamic control target"
+            )
+        payload["target_eip"] = (
+            None
+            if outcome.target is None
+            else outcome.target.target_eip
+        )
+    else:
+        payload["target"] = (
+            None
+            if outcome.target is None
+            else _control_target_payload(outcome.target)
+        )
+    return payload
 
 
-def _effect_payload(effect: InstructionEffect) -> dict[str, Any]:
+def _effect_payload(
+    effect: InstructionEffect, *, legacy: bool
+) -> dict[str, Any]:
+    if isinstance(effect, NoOpEffect):
+        if legacy:
+            raise ISAConformanceError("catalog v1 cannot serialize a no-op effect")
+        return {"class": effect.effect_class.value, "id": effect.id}
     if isinstance(effect, RegisterEffect):
+        if legacy and any(
+            location.lsb != 0 for location in (*effect.reads, *effect.writes)
+        ):
+            raise ISAConformanceError(
+                "catalog v1 cannot serialize subregister locations"
+            )
         return {
             "class": effect.effect_class.value,
             "id": effect.id,
             "width_bits": effect.width_bits,
-            "reads": list(effect.reads),
-            "writes": list(effect.writes),
+            "reads": (
+                [location.register for location in effect.reads]
+                if legacy
+                else [
+                    _register_location_payload(location)
+                    for location in effect.reads
+                ]
+            ),
+            "writes": (
+                [location.register for location in effect.writes]
+                if legacy
+                else [
+                    _register_location_payload(location)
+                    for location in effect.writes
+                ]
+            ),
+        }
+    if isinstance(effect, StateEffect):
+        if legacy:
+            raise ISAConformanceError("catalog v1 cannot serialize a state effect")
+        return {
+            "class": effect.effect_class.value,
+            "id": effect.id,
+            "state": effect.state.value,
+            "access": effect.access.value,
         }
     if isinstance(effect, MemoryEffect):
-        return {
+        if legacy and (
+            effect.condition is not None
+            or effect.width_bits not in SUPPORTED_WIDTHS
+        ):
+            raise ISAConformanceError(
+                "catalog v1 cannot serialize this memory effect"
+            )
+        payload = {
             "class": effect.effect_class.value,
             "id": effect.id,
             "width_bits": effect.width_bits,
             "access": effect.access.value,
             "address": _address_payload(effect.address),
         }
+        if not legacy:
+            payload["condition"] = (
+                None
+                if effect.condition is None
+                else _predicate_payload(effect.condition)
+            )
+        return payload
     if isinstance(effect, BranchEffect):
         return {
             "class": effect.effect_class.value,
             "id": effect.id,
-            "outcomes": [_outcome_payload(outcome) for outcome in effect.outcomes],
+            "outcomes": [
+                _outcome_payload(outcome, legacy=legacy)
+                for outcome in effect.outcomes
+            ],
         }
     if isinstance(effect, DivideEffect):
+        if legacy and (
+            effect.width_bits == 8
+            or effect.dividend_high.lsb != 0
+            or effect.dividend_low.lsb != 0
+            or not isinstance(effect.divisor, RegisterLocation)
+            or effect.divisor.lsb != 0
+        ):
+            raise ISAConformanceError(
+                "catalog v1 cannot serialize this divide effect"
+            )
+        if isinstance(effect.divisor, RegisterLocation):
+            divisor: Any = (
+                effect.divisor.register
+                if legacy
+                else {
+                    "kind": "register",
+                    "location": _register_location_payload(effect.divisor),
+                }
+            )
+        else:
+            divisor = {
+                "kind": "memory",
+                "address": _address_payload(effect.divisor),
+            }
         return {
             "class": effect.effect_class.value,
             "id": effect.id,
             "width_bits": effect.width_bits,
             "signed": effect.signed,
-            "dividend_high": effect.dividend_high,
-            "dividend_low": effect.dividend_low,
-            "divisor": effect.divisor,
+            "dividend_high": (
+                effect.dividend_high.register
+                if legacy
+                else _register_location_payload(effect.dividend_high)
+            ),
+            "dividend_low": (
+                effect.dividend_low.register
+                if legacy
+                else _register_location_payload(effect.dividend_low)
+            ),
+            "divisor": divisor,
         }
     if isinstance(effect, X87Effect):
         return {
@@ -1195,13 +1719,16 @@ def _effect_payload(effect: InstructionEffect) -> dict[str, Any]:
 
 
 def _entry_payload(entry: ISAFormCatalogEntry) -> dict[str, Any]:
+    legacy = entry.format == LEGACY_ISA_FORM_CATALOG_ENTRY_FORMAT
     return {
         "format": entry.format,
         "form_id": entry.form_id,
         "encoding_id": entry.encoding_id,
         "instruction_bytes": list(entry.instruction_bytes),
         "required_features": list(entry.required_features),
-        "effects": [_effect_payload(effect) for effect in entry.effects],
+        "effects": [
+            _effect_payload(effect, legacy=legacy) for effect in entry.effects
+        ],
         "defined_outputs": conformance._defined_outputs_payload(
             entry.defined_outputs
         ),
@@ -1248,18 +1775,32 @@ __all__ = [
     "BranchOutcome",
     "BranchScenario",
     "CatalogSource",
+    "ControlTarget",
+    "ControlTargetKind",
     "DispositionReason",
     "DivideEffect",
     "EffectClass",
+    "FixedControlTarget",
+    "InputPredicate",
     "ISA_FORM_CATALOG_ENTRY_FORMAT",
     "ISA_FORM_CATALOG_FORMAT",
     "ISA_PROFILE_ID",
     "ISAFormCatalog",
     "ISAFormCatalogEntry",
     "InstructionEffect",
+    "LEGACY_ISA_FORM_CATALOG_ENTRY_FORMAT",
+    "LEGACY_ISA_FORM_CATALOG_FORMAT",
+    "MAX_MEMORY_EFFECT_WIDTH_BITS",
+    "MemoryControlTarget",
     "MemoryEffect",
+    "NoOpEffect",
+    "PredicateKind",
     "ProfileDisposition",
+    "RegisterControlTarget",
     "RegisterEffect",
+    "RegisterLocation",
+    "StateComponent",
+    "StateEffect",
     "XEDCatalogGenerator",
     "XEDCatalogProfile",
     "XEDInstructionCatalog",

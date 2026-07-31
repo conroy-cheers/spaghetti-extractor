@@ -968,6 +968,41 @@ class _TransferCompiler:
                 self.word(event.get("count")), self.word(event.get("direction_flag")),
             )))
             return
+        if kind == "rep_stosd":
+            _u32(event.get("instruction_rva"), "rep_stosd instruction_rva")
+            if event.get("effect_model") != "symbolic_string_fill_v1":
+                raise StageBInterpreterError(
+                    f"{self.identity}: rep_stosd requires symbolic_string_fill_v1",
+                    code="malformed_rep_stosd_event",
+                    next_action=(
+                        "regenerate the ordered REP STOSD event from exact symbolic "
+                        "instruction semantics"
+                    ),
+                )
+            if _nonnegative(event.get("index"), "rep_stosd event index") != event_index:
+                raise StageBInterpreterError(
+                    f"{self.identity}: rep_stosd event index does not match its "
+                    "ordered external-event position",
+                    code="malformed_rep_stosd_event",
+                    next_action=(
+                        "regenerate one canonical ordered external-event inventory"
+                    ),
+                )
+            if "source" in event:
+                raise StageBInterpreterError(
+                    f"{self.identity}: rep_stosd must not carry a source address",
+                    code="malformed_rep_stosd_event",
+                    next_action=(
+                        "use the repeated EAX value field for REP STOSD"
+                    ),
+                )
+            self.actions.append(_Action("rep_stosd", (
+                self.word(event.get("destination")),
+                self.word(event.get("value")),
+                self.word(event.get("count")),
+                self.word(event.get("direction_flag")),
+            )))
+            return
         if kind not in {"external_call", "internal_call", "indirect_call"}:
             raise StageBInterpreterError(f"{self.identity}: unsupported external event {kind!r}")
         registers = _object(event.get("register_inputs"), "call register_inputs")
@@ -1119,6 +1154,23 @@ def write_stage_b_interpreter_package(*, state_machine: Path, out: Path) -> dict
     out.mkdir(parents=True, exist_ok=True)
     rows = _read_jsonl(state_machine)
     transfers, blockers = _compile_interpreter_rows(rows, collect_blockers=True)
+    max_word_nodes = max((len(transfer.nodes) for transfer in transfers), default=0)
+    if max_word_nodes > 1024:
+        blockers.append({
+            "transfer_index": 0,
+            "transfer_id": None,
+            "rva_start": None,
+            "code": "word_node_capacity_exceeded",
+            "message": (
+                f"interpreter requires {max_word_nodes} word nodes; "
+                "the supported maximum is 1024"
+            ),
+            "next_action": (
+                "split the oversized transfer or raise the checked interpreter "
+                "profile limit"
+            ),
+        })
+        blockers.sort(key=_package_blocker_sort_key)
     files = {
         "runtime_header": out / "state-machine-runtime.h",
         "interpreter_header": out / "state-machine-interpreter.h",
@@ -1132,7 +1184,10 @@ def write_stage_b_interpreter_package(*, state_machine: Path, out: Path) -> dict
     files["interpreter_internal_header"].write_text(
         _INTERPRETER_INTERNAL_HEADER, encoding="ascii"
     )
-    files["interpreter_source"].write_text(_interpreter_source(), encoding="ascii")
+    files["interpreter_source"].write_text(
+        _interpreter_source(max_word_nodes=max(1, max_word_nodes)),
+        encoding="ascii",
+    )
     files["program_source"].write_text(_program_source(transfers), encoding="ascii")
     program_payload = _program_payload(
         transfers,
@@ -1470,7 +1525,7 @@ _ACTIONS = (
     "set_x87_status", "set_x87_pending", "set_x87_opcode", "set_x87_ip",
     "set_x87_cs", "set_x87_dp", "set_x87_ds", "sync_eflags", "outcome_fallthrough",
     "outcome_jump", "outcome_branch", "outcome_return", "outcome_indirect",
-    "outcome_external", "replay_x87",
+    "outcome_external", "replay_x87", "rep_stosd",
 )
 
 
@@ -1593,9 +1648,19 @@ def _c_action(action: _Action) -> str:
     )
 
 
-def _interpreter_source() -> str:
+def _interpreter_source(*, max_word_nodes: int) -> str:
+    if not 1 <= max_word_nodes <= 1024:
+        raise StageBInterpreterError(
+            f"interpreter word-node capacity {max_word_nodes} is outside 1..1024",
+            code="word_node_capacity_exceeded",
+            next_action=(
+                "split the oversized transfer or raise the checked interpreter "
+                "profile limit"
+            ),
+        )
     return (
         '#include "state-machine-interpreter-internal.h"\n\n'
+        + f"#define STAGE_B_MAX_WORD_NODES {max_word_nodes}U\n"
         + _interpreter_runtime_helpers()
         + "\n"
         + _INTERPRETER_KERNEL
@@ -1656,7 +1721,6 @@ extern const uint32_t stage_b_program_transfer_count;
 # transition crosses the exact checked replay boundary; legacy x87-node opcodes
 # remain reserved in the stable data ABI and fail closed if encountered.
 _INTERPRETER_KERNEL = r'''
-#define STAGE_B_MAX_WORD_NODES 1024U
 #define STAGE_B_MAX_CALL_ARGUMENTS 64U
 #define W(i) words[node->args[(i)]]
 
@@ -1808,6 +1872,17 @@ stage_b_step_result stage_b_interpreter_step(
       replay_output=*state;s=rt->replay_checked_x87_command(rt,p,state,&replay_output);
       if(s!=STAGE_B_CALL_OK)return(stage_b_step_result){s==STAGE_B_CALL_DIVIDE_ERROR?STAGE_B_DIVIDE_ERROR:s==STAGE_B_CALL_MEMORY_FAULT?STAGE_B_MEMORY_FAULT:s==STAGE_B_CALL_EXTERNAL_FAULT?STAGE_B_EXTERNAL_FAULT:STAGE_B_UNIMPLEMENTED,source_rva,0U};
       *state=replay_output;
+    } else if(a->op==26U){
+      uint32_t d=words[a->args[0]],v=words[a->args[1]];
+      uint32_t n=words[a->args[2]],step=words[a->args[3]]?0xfffffffcU:4U;
+      while(n!=0U){
+        stage_b_write(rt,d,4U,v,&memory_fault);
+        if(memory_fault)break;
+        d+=step;
+        --n;
+      }
+      stage_b_set_reg(state,5U,d);
+      stage_b_set_reg(state,2U,n);
     } else return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
     if(memory_fault)return(stage_b_step_result){STAGE_B_MEMORY_FAULT,0U,0U};
     if(semantic_fault)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};

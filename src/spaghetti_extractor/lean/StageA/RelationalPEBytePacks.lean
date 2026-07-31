@@ -91,6 +91,40 @@ theorem ByteTreePackAt.readBytes_eq {tree pack : ByteTree} {rawOffset : Nat}
       rw [show rawOffset + offset + 1 = rawOffset + (offset + 1) by omega]
       rw [tail]
 
+private theorem List.drop_at_eq_cons
+    {alpha : Type} (values : List alpha) (offset : Nat)
+    (inside : offset < values.length) :
+    values.drop offset =
+      values[offset] :: values.drop (offset + 1) := by
+  induction values generalizing offset with
+  | nil => simp at inside
+  | cons head tail induction =>
+      cases offset with
+      | zero => simp
+      | succ offset =>
+          simp only [List.drop_succ_cons, List.length_cons, Nat.succ_lt_succ_iff]
+            at inside ⊢
+          exact induction offset inside
+
+/-- A bounded leaf read is the corresponding direct list slice. Generated
+exact-byte certificates use this theorem after locating one deterministic
+leaf, so the kernel does not repeatedly reduce a full byte-tree traversal. -/
+theorem ByteTree.readBytes_leaf_eq_drop_take
+    (bytes : Bytes) (offset size : Nat)
+    (bounded : offset + size <= bytes.length) :
+    (ByteTree.leaf bytes).readBytes offset size =
+      some ((bytes.drop offset).take size) := by
+  induction size generalizing offset with
+  | zero => simp [ByteTree.readBytes]
+  | succ size induction =>
+      have offsetInside : offset < bytes.length := by omega
+      have tailBounded : offset + 1 + size <= bytes.length := by omega
+      rw [List.drop_at_eq_cons bytes offset offsetInside]
+      simp only [List.take_succ_cons, ByteTree.readBytes, ByteTree.readByte]
+      rw [List.getElem?_eq_getElem offsetInside]
+      rw [induction (offset + 1) tailBounded]
+      rfl
+
 /-- One independently cacheable exact subtree of an authoritative PE byte
 tree. Consumers trust only the kernel-checked structural path. -/
 structure PEBytePackCertificate (pe : PE32) where

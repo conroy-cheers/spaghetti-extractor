@@ -13,6 +13,8 @@ open StageA.Relational.InterpreterKernelCallback
 open StageA.Relational.InterpreterKernelInvoke
 open StageA.Relational.InterpreterKernelInvokeNative
 open StageA.Relational.InterpreterKernelHelperPath
+open StageA.Relational.InterpreterKernelClosedCallTree
+open StageA.Relational.InterpreterKernelRun
 open StageA.Relational.InterpreterKernelRunOperation
 open StageA.Relational.InterpreterNativeWorld
 open StageA.Relational.SymbolicSoundness
@@ -71,19 +73,20 @@ def InvokeCallNativeStaticBinding.indirectReturnAddress
     (static : InvokeCallNativeStaticBinding program candidate) : Word :=
   BitVec.ofNat 32 (candidate.pe.imageBase + static.indirectContinuationRva)
 
-/-- Exact `runFunction` certificates for only the two native call frames that
-the reflected `invokeCall` wrapper can reach.  This replaces the stronger and
-unnecessary premise that `runFunction` refine every possible continuation and
-return word. -/
-structure InvokeCallNativeRunFunctionCertificates
+/-- Minimal `runFunction` theorem surface for only the two native call frames
+that the reflected `invokeCall` wrapper can reach.  Invoke composition does not
+depend on the implementation-specific certificate records used to prove these
+theorems. -/
+structure InvokeCallNativeRunFunctionRefinements
     (program : CompiledKernelProgram) (abi : KernelABIRelation)
-    (semanticRecords : List ProgramRecord)
     (candidate : ExactNativeWorldProgram) (world : RelationalWorld)
     (static : InvokeCallNativeStaticBinding program candidate) where
-  internal : RunFunctionNativeOperationCertificate program abi semanticRecords
-    candidate world static.internalContinuationRva static.internalReturnAddress
-  indirect : RunFunctionNativeOperationCertificate program abi semanticRecords
-    candidate world static.indirectContinuationRva static.indirectReturnAddress
+  internal : KernelOperationRefinesUsing program abi
+    (NativeWorldSubroutineDispatches candidate world
+      static.internalContinuationRva static.internalReturnAddress) .runFunction
+  indirect : KernelOperationRefinesUsing program abi
+    (NativeWorldSubroutineDispatches candidate world
+      static.indirectContinuationRva static.indirectReturnAddress) .runFunction
 
 /-- The wrapper's direct helper call returns to the checked cdecl epilogue. -/
 def InvokeCallNativeStaticBinding.externalContinuationRva
@@ -363,7 +366,8 @@ def InvokeCallNativeInternalCompletion.toBranchResult
 
 /-- An internal semantic arm prepared at the exact nested call boundary. -/
 structure InvokeCallNativeInternalPrepared
-    (program : CompiledKernelProgram) (abi : KernelABIRelation)
+    (program : CompiledKernelProgram)
+    (operationABI runABI : KernelABIRelation)
     (semanticRecords : List ProgramRecord)
     (candidate : ExactNativeWorldProgram) (world : RelationalWorld)
     (invokeEntryRva continuationRva : Nat) (returnAddress : Word)
@@ -373,14 +377,14 @@ structure InvokeCallNativeInternalPrepared
     (invokeBefore : MachineState)
     (request : AbstractKernelRequest) (response : AbstractKernelResponse) where
   runFunctionBefore : MachineState
-  requestRelated : abi.requestRelated
+  requestRelated : runABI.requestRelated
     (.runFunction semanticRecords environment resolveCodeTarget sourceRva logical)
     runFunctionBefore
   assemble : forall entryRva runFunctionAfter events,
     program.functionEntry? .runFunction = some entryRva ->
     (subroutine : NativeWorldSubroutineResult candidate world continuationRva
       returnAddress entryRva runFunctionBefore runFunctionAfter events) ->
-    Nonempty (InvokeCallNativeInternalCompletion abi candidate world
+    Nonempty (InvokeCallNativeInternalCompletion operationABI candidate world
       invokeEntryRva entryRva continuationRva returnAddress request response
       invokeBefore runFunctionBefore runFunctionAfter events subroutine)
 
@@ -406,7 +410,7 @@ structure InvokeCallNativeInternalBranchAuthority
     event.kind = .internal ->
     AbstractRunFunction semanticRecords environment resolveCodeTarget
       event.targetRva.toNat logical result ->
-    Nonempty (InvokeCallNativeInternalPrepared program abi semanticRecords
+    Nonempty (InvokeCallNativeInternalPrepared program abi abi semanticRecords
       candidate world static.function.span.start continuationRva returnAddress
       environment resolveCodeTarget event.targetRva.toNat logical result before
       (.invokeCall semanticRecords environment resolveCodeTarget event logical)
@@ -454,7 +458,8 @@ def InvokeCallNativeIndirectCompletion.toBranchResult
 
 structure InvokeCallNativeIndirectPrepared
     (program : CompiledKernelProgram) (inventory : KernelCallbackInventory)
-    (abi : KernelABIRelation) (semanticRecords : List ProgramRecord)
+    (operationABI runABI : KernelABIRelation)
+    (semanticRecords : List ProgramRecord)
     (candidate : ExactNativeWorldProgram) (world : RelationalWorld)
     (invokeEntryRva continuationRva targetRva : Nat)
     (environment : StageA.Relational.Interpreter.Environment)
@@ -462,7 +467,7 @@ structure InvokeCallNativeIndirectPrepared
     (result : CallResult) (invokeBefore : MachineState)
     (request : AbstractKernelRequest) (response : AbstractKernelResponse) where
   runFunctionBefore : MachineState
-  requestRelated : abi.requestRelated
+  requestRelated : runABI.requestRelated
     (.runFunction semanticRecords environment resolveCodeTarget targetRva logical)
     runFunctionBefore
   assemble : forall entryRva runFunctionAfter events,
@@ -470,7 +475,8 @@ structure InvokeCallNativeIndirectPrepared
     (subroutine : NativeWorldSubroutineResult candidate world continuationRva
       (BitVec.ofNat 32 (candidate.pe.imageBase + continuationRva)) entryRva
       runFunctionBefore runFunctionAfter events) ->
-    Nonempty (InvokeCallNativeIndirectCompletion program inventory abi candidate
+    Nonempty (InvokeCallNativeIndirectCompletion program inventory operationABI
+      candidate
       world invokeEntryRva entryRva continuationRva request response invokeBefore
       runFunctionBefore runFunctionAfter events subroutine)
 
@@ -491,7 +497,7 @@ structure InvokeCallNativeIndirectBranchAuthority
     AbstractRunFunction semanticRecords environment resolveCodeTarget target logical
       result ->
     Nonempty (InvokeCallNativeIndirectPrepared program
-      static.reflected.callbacks abi semanticRecords candidate world
+      static.reflected.callbacks abi abi semanticRecords candidate world
       static.function.span.start continuationRva target environment
       resolveCodeTarget logical result before
       (.invokeCall semanticRecords environment resolveCodeTarget event logical)
@@ -535,9 +541,9 @@ theorem InvokeCallNativeExternalBranchAuthority.execute
     memoryFrame := frame
   }⟩
 
-theorem InvokeCallNativeRunFunctionCertificates.internalRefines
-    (certificates : InvokeCallNativeRunFunctionCertificates program abi
-      semanticRecords candidate world static)
+theorem InvokeCallNativeRunFunctionRefinements.internalForAuthority
+    (refinements : InvokeCallNativeRunFunctionRefinements program abi
+      candidate world static)
     (authority : InvokeCallNativeInternalBranchAuthority program abi
       semanticRecords candidate world static) :
     KernelOperationRefinesUsing program abi
@@ -546,11 +552,11 @@ theorem InvokeCallNativeRunFunctionCertificates.internalRefines
   simpa [InvokeCallNativeStaticBinding.internalContinuationRva,
     InvokeCallNativeStaticBinding.internalReturnAddress,
     authority.continuationExact, authority.returnAddressExact] using
-    certificates.internal.refines
+    refinements.internal
 
-theorem InvokeCallNativeRunFunctionCertificates.indirectRefines
-    (certificates : InvokeCallNativeRunFunctionCertificates program abi
-      semanticRecords candidate world static)
+theorem InvokeCallNativeRunFunctionRefinements.indirectForAuthority
+    (refinements : InvokeCallNativeRunFunctionRefinements program abi
+      candidate world static)
     (authority : InvokeCallNativeIndirectBranchAuthority program abi
       semanticRecords candidate world static) :
     KernelOperationRefinesUsing program abi
@@ -559,7 +565,7 @@ theorem InvokeCallNativeRunFunctionCertificates.indirectRefines
           (candidate.pe.imageBase + authority.continuationRva))) .runFunction := by
   simpa [InvokeCallNativeStaticBinding.indirectContinuationRva,
     InvokeCallNativeStaticBinding.indirectReturnAddress,
-    authority.continuationExact] using certificates.indirect.refines
+    authority.continuationExact] using refinements.indirect
 
 /-- Exact-candidate invoke operation assembled from static evidence, concrete
 ABI identity, one nested operation theorem, and the three typed arm
@@ -576,8 +582,8 @@ structure InvokeCallNativeOperationCertificate
     candidate world static
   indirect : InvokeCallNativeIndirectBranchAuthority program abi semanticRecords
     candidate world static
-  runFunction : InvokeCallNativeRunFunctionCertificates program abi
-    semanticRecords candidate world static
+  runFunction : InvokeCallNativeRunFunctionRefinements program abi
+    candidate world static
 
 def InvokeCallNativeOperationCertificate.branches
     (certificate : InvokeCallNativeOperationCertificate program abi
@@ -597,7 +603,7 @@ def InvokeCallNativeOperationCertificate.branches
         before result related kind run
     obtain ⟨entryRva, after, events, entryExact, ⟨subroutine⟩, _, _⟩ :=
       runFunctionSubroutine_of_operation_refinement
-        (certificate.runFunction.internalRefines certificate.internal)
+        (certificate.runFunction.internalForAuthority certificate.internal)
         prepared.requestRelated run
     obtain ⟨completion⟩ :=
       prepared.assemble entryRva after events entryExact subroutine
@@ -610,7 +616,7 @@ def InvokeCallNativeOperationCertificate.branches
         before target result related kind resolved run
     obtain ⟨entryRva, after, events, entryExact, ⟨subroutine⟩, _, _⟩ :=
       runFunctionSubroutine_of_operation_refinement
-        (certificate.runFunction.indirectRefines certificate.indirect)
+        (certificate.runFunction.indirectForAuthority certificate.indirect)
         prepared.requestRelated run
     obtain ⟨completion⟩ :=
       prepared.assemble entryRva after events entryExact subroutine
@@ -636,13 +642,330 @@ theorem InvokeCallNativeOperationCertificate.refines
       (NativeWorldKernelDispatches candidate world) .invokeCall :=
   certificate.toMachineCertificate.refines
 
+/-! ## Request-local closed-call-tree adapter
+
+The compatibility certificate above accepts two universally quantified Run
+theorems.  New proofs instead retain the exact checked Invoke derivation and
+the checked Run tree nested in each internal or indirect constructor.
+-/
+
+/-- Structural completeness for Invoke transitions.  This authority may only
+turn an authoritative abstract transition into a finite checked call tree.  In
+particular, the checked tree retains the exact environment result, indirect
+target lookup, and nested Run derivation; it contains no native execution or
+status assertion. -/
+structure InvokeCallClosedCallTreeAuthority
+    (records : List ProgramRecord) : Prop where
+  close : ∀ environment resolveCodeTarget event logical response,
+    AbstractKernelTransition
+        (.invokeCall records environment resolveCodeTarget event logical)
+        response ->
+      ∃ result,
+        response = .call result ∧
+          CheckedInvokeCallDerivation records environment resolveCodeTarget
+            event logical result
+
+def InvokeCallClosedCallTreeAuthority.ofClosure
+    (closure : CheckedSemanticCallTreeClosure records) :
+    InvokeCallClosedCallTreeAuthority records := {
+  close := closure.invoke
+}
+
+/-- Extract the exact native subroutine produced for one retained checked Run
+tree.  This is the request-local counterpart of
+`runFunctionSubroutine_of_operation_refinement`: it executes the supplied tree
+directly and never appeals to a universal Run theorem. -/
+theorem runFunctionSubroutine_of_checked_derivation
+    {program : CompiledKernelProgram} {abi : KernelABIRelation}
+    {semanticRecords : List ProgramRecord}
+    {candidate : ExactNativeWorldProgram} {world : RelationalWorld}
+    {continuationRva : Nat} {returnAddress : Word}
+    {environment : StageA.Relational.Interpreter.Environment}
+    {resolveCodeTarget : Word -> Option Nat} {sourceRva : Nat}
+    {logical : InterpreterMachine} {before : MachineState}
+    {result : CallResult}
+    (certificate : RunFunctionNativeCheckedOperationCertificate program abi
+      semanticRecords candidate world continuationRva returnAddress)
+    (derivation : CheckedRunFunctionDerivation semanticRecords environment
+      resolveCodeTarget sourceRva logical result)
+    (related : abi.requestRelated
+      (.runFunction semanticRecords environment resolveCodeTarget sourceRva
+        logical) before) :
+    ∃ entryRva after nativeEvents,
+      program.functionEntry? .runFunction = some entryRva ∧
+      NativeWorldSubroutineDispatches candidate world continuationRva
+        returnAddress entryRva before after nativeEvents ∧
+      abi.responseRelated
+        (.runFunction semanticRecords environment resolveCodeTarget sourceRva
+          logical)
+        (.call result) after nativeEvents ∧
+      MemoryAgreesOutside
+        (abi.scratchFootprint
+          (.runFunction semanticRecords environment resolveCodeTarget sourceRva
+            logical))
+        after.memory before.memory := by
+  let entryPhase := certificate.entry.entry environment resolveCodeTarget
+    sourceRva logical before related
+  let initialRuntime : RunFunctionNativeRuntime := {
+    calls := [runFunctionNativeOuterFrame continuationRva returnAddress]
+    eventIndex := 0
+    events := []
+    world := world
+  }
+  have entryInvariant : certificate.semantics.invariant sourceRva logical
+      (initialRuntime.running
+        certificate.static.reflected.reflected.template.loopHeaderRva
+        entryPhase.loopState) := by
+    have invariant := entryPhase.invariantHolds
+    rw [entryPhase.atLoop] at invariant
+    simpa [initialRuntime, RunFunctionNativeRuntime.running] using invariant
+  obtain ⟨loopResult⟩ := certificate.semantics.execute
+    certificate.static.stepEntryExact derivation entryInvariant
+  let epilogue := certificate.epilogue.epilogue environment resolveCodeTarget
+    sourceRva logical result before related derivation entryPhase
+    loopResult
+  have entryPath := entryPhase.chunk.path
+  rw [entryPhase.atLoop, entryPhase.silent] at entryPath
+  have loopPath := loopResult.path
+  change NonemptyRelatedPath candidate.transitionSystem
+    (.running
+      certificate.static.reflected.reflected.template.loopHeaderRva
+      0 entryPhase.loopState
+      [runFunctionNativeOuterFrame continuationRva returnAddress]
+      0 [] world) loopResult.observations loopResult.afterLoop at loopPath
+  have epiloguePath := epilogue.chunk.path
+  rw [epilogue.atCaller, epilogue.silent] at epiloguePath
+  have completePath := (entryPath.trans loopPath).trans epiloguePath
+  refine ⟨certificate.static.function.span.start, epilogue.after,
+    epilogue.nativeEvents, certificate.static.entryRvaExact, ?_,
+    epilogue.responseRelated, epilogue.memoryFrame⟩
+  refine ⟨{
+    afterWorld := epilogue.afterWorld
+    observations := loopResult.observations
+    path := ?_
+  }⟩
+  rw [← certificate.static.templateEntryExact]
+  simpa only [List.nil_append, List.append_nil] using completePath
+
+/-- Exact checked Run certificates at the two native continuation frames
+encoded by the reflected Invoke wrapper. -/
+structure InvokeCallNativeCheckedRunFunctionRefinements
+    (program : CompiledKernelProgram) (abi : KernelABIRelation)
+    (semanticRecords : List ProgramRecord)
+    (candidate : ExactNativeWorldProgram) (world : RelationalWorld)
+    (static : InvokeCallNativeStaticBinding program candidate)
+    (internal : InvokeCallNativeInternalBranchAuthority program abi
+      semanticRecords candidate world static)
+    (indirect : InvokeCallNativeIndirectBranchAuthority program abi
+      semanticRecords candidate world static) where
+  internalRun : RunFunctionNativeCheckedOperationCertificate program abi
+    semanticRecords candidate world internal.continuationRva
+    internal.returnAddress
+  indirectRun : RunFunctionNativeCheckedOperationCertificate program abi
+    semanticRecords candidate world indirect.continuationRva
+    (BitVec.ofNat 32
+      (candidate.pe.imageBase + indirect.continuationRva))
+
+/-- One exact internal Invoke arm and the nested Run certificate selected for
+its computed call frame. -/
+structure InvokeCallNativeCheckedInternalFrame
+    (program : CompiledKernelProgram) (operationABI : KernelABIRelation)
+    (semanticRecords : List ProgramRecord)
+    (candidate : ExactNativeWorldProgram) (world : RelationalWorld)
+    (invokeEntryRva continuationRva : Nat) (returnAddress : Word)
+    (environment : StageA.Relational.Interpreter.Environment)
+    (resolveCodeTarget : Word -> Option Nat) (sourceRva : Nat)
+    (logical : InterpreterMachine) (result : CallResult)
+    (invokeBefore : MachineState)
+    (request : AbstractKernelRequest) (response : AbstractKernelResponse) where
+  runABI : KernelABIRelation
+  prepared : InvokeCallNativeInternalPrepared program operationABI runABI
+    semanticRecords candidate world invokeEntryRva continuationRva returnAddress
+    environment resolveCodeTarget sourceRva logical result invokeBefore request
+    response
+  runCertificate : RunFunctionNativeCheckedOperationCertificate program runABI
+    semanticRecords candidate world continuationRva returnAddress
+
+structure InvokeCallNativeCheckedInternalBranchAuthority
+    (program : CompiledKernelProgram) (operationABI : KernelABIRelation)
+    (semanticRecords : List ProgramRecord)
+    (candidate : ExactNativeWorldProgram) (world : RelationalWorld)
+    (static : InvokeCallNativeStaticBinding program candidate) where
+  continuationRva : Nat
+  continuationExact :
+    continuationRva = static.reflected.template.entryRva + 67
+  returnAddress : Word
+  returnAddressExact :
+    returnAddress =
+      BitVec.ofNat 32 (candidate.pe.imageBase + continuationRva)
+  prepare : forall environment resolveCodeTarget event logical before result
+      (run : CheckedRunFunctionDerivation semanticRecords environment
+        resolveCodeTarget event.targetRva.toNat logical result),
+    operationABI.requestRelated
+        (.invokeCall semanticRecords environment resolveCodeTarget event logical)
+        before ->
+    event.kind = .internal ->
+    Nonempty (InvokeCallNativeCheckedInternalFrame program operationABI
+      semanticRecords candidate world static.function.span.start continuationRva
+      returnAddress environment resolveCodeTarget event.targetRva.toNat logical
+      result before
+      (.invokeCall semanticRecords environment resolveCodeTarget event logical)
+      (.call result))
+
+/-- One exact indirect Invoke arm, including callback preparation and the
+nested Run certificate at the resolved target. -/
+structure InvokeCallNativeCheckedIndirectFrame
+    (program : CompiledKernelProgram) (operationABI : KernelABIRelation)
+    (semanticRecords : List ProgramRecord)
+    (candidate : ExactNativeWorldProgram) (world : RelationalWorld)
+    (static : InvokeCallNativeStaticBinding program candidate)
+    (continuationRva targetRva : Nat)
+    (environment : StageA.Relational.Interpreter.Environment)
+    (resolveCodeTarget : Word -> Option Nat) (logical : InterpreterMachine)
+    (result : CallResult) (invokeBefore : MachineState)
+    (request : AbstractKernelRequest) (response : AbstractKernelResponse) where
+  runABI : KernelABIRelation
+  prepared : InvokeCallNativeIndirectPrepared program
+    static.reflected.callbacks operationABI runABI semanticRecords candidate
+    world static.function.span.start continuationRva targetRva environment
+    resolveCodeTarget logical result invokeBefore request response
+  runCertificate : RunFunctionNativeCheckedOperationCertificate program runABI
+    semanticRecords candidate world continuationRva
+    (BitVec.ofNat 32 (candidate.pe.imageBase + continuationRva))
+
+structure InvokeCallNativeCheckedIndirectBranchAuthority
+    (program : CompiledKernelProgram) (operationABI : KernelABIRelation)
+    (semanticRecords : List ProgramRecord)
+    (candidate : ExactNativeWorldProgram) (world : RelationalWorld)
+    (static : InvokeCallNativeStaticBinding program candidate) where
+  continuationRva : Nat
+  continuationExact :
+    continuationRva = static.reflected.template.entryRva + 162
+  prepare : forall environment resolveCodeTarget event logical before target
+      result
+      (run : CheckedRunFunctionDerivation semanticRecords environment
+        resolveCodeTarget target logical result),
+    operationABI.requestRelated
+        (.invokeCall semanticRecords environment resolveCodeTarget event logical)
+        before ->
+    event.kind = .indirect ->
+    resolveCodeTarget event.targetRva = some target ->
+    Nonempty (InvokeCallNativeCheckedIndirectFrame program operationABI
+      semanticRecords candidate world static continuationRva target environment
+      resolveCodeTarget logical result before
+      (.invokeCall semanticRecords environment resolveCodeTarget event logical)
+      (.call result))
+
+/-- Invoke operation assembled from one finite checked Invoke tree.  Internal
+and indirect arms execute the exact nested Run derivation stored in that tree;
+the external constructor's result remains definitionally
+`environment.invokeCall event logical`. -/
+structure InvokeCallNativeCheckedOperationCertificate
+    (program : CompiledKernelProgram) (abi : KernelABIRelation)
+    (semanticRecords : List ProgramRecord)
+    (candidate : ExactNativeWorldProgram) (world : RelationalWorld) where
+  static : InvokeCallNativeStaticBinding program candidate
+  abiEntry : InvokeCallNativeABIEntryAuthority abi semanticRecords
+  closedTree : InvokeCallClosedCallTreeAuthority semanticRecords
+  external : InvokeCallNativeExternalBranchAuthority program abi semanticRecords
+    candidate world static
+  internal : InvokeCallNativeCheckedInternalBranchAuthority program abi
+    semanticRecords candidate world static
+  indirect : InvokeCallNativeCheckedIndirectBranchAuthority program abi
+    semanticRecords candidate world static
+
+/-- Request-local native refinement for one retained checked Invoke tree. -/
+theorem InvokeCallNativeCheckedOperationCertificate.refinesDerivation
+    (certificate : InvokeCallNativeCheckedOperationCertificate program abi
+      semanticRecords candidate world)
+    (derivation : CheckedInvokeCallDerivation semanticRecords environment
+      resolveCodeTarget event logical result) :
+    ∀ before,
+      abi.requestRelated
+        (.invokeCall semanticRecords environment resolveCodeTarget event logical)
+        before ->
+      ∃ entryRva after nativeEvents,
+        program.functionEntry? .invokeCall = some entryRva ∧
+        NativeWorldKernelDispatches candidate world entryRva before after
+          nativeEvents ∧
+        abi.responseRelated
+          (.invokeCall semanticRecords environment resolveCodeTarget event logical)
+          (.call result) after nativeEvents ∧
+        MemoryAgreesOutside
+          (abi.scratchFootprint
+            (.invokeCall semanticRecords environment resolveCodeTarget event
+              logical))
+          after.memory before.memory := by
+  intro before related
+  cases derivation with
+  | external event logical kindExact =>
+      obtain ⟨branch⟩ := certificate.external.execute environment
+        resolveCodeTarget event logical before related kindExact
+      exact ⟨certificate.static.function.span.start, branch.after,
+        branch.nativeEvents, certificate.static.entryRvaExact, branch.path,
+        branch.responseRelated, branch.memoryFrame⟩
+  | internal event logical result kindExact run =>
+      obtain ⟨frame⟩ := certificate.internal.prepare environment
+        resolveCodeTarget event logical before result run related kindExact
+      obtain ⟨entryRva, after, events, entryExact, ⟨subroutine⟩, _, _⟩ :=
+        runFunctionSubroutine_of_checked_derivation
+          frame.runCertificate run frame.prepared.requestRelated
+      obtain ⟨completion⟩ :=
+        frame.prepared.assemble entryRva after events entryExact subroutine
+      exact ⟨certificate.static.function.span.start, completion.after, events,
+        certificate.static.entryRvaExact, completion.execution.kernelDispatches,
+        completion.responseRelated, completion.memoryFrame⟩
+  | indirect event logical target result kindExact targetExact run =>
+      obtain ⟨frame⟩ := certificate.indirect.prepare environment
+        resolveCodeTarget event logical before target result run related kindExact
+        targetExact
+      obtain ⟨entryRva, after, events, entryExact, ⟨subroutine⟩, _, _⟩ :=
+        runFunctionSubroutine_of_checked_derivation
+          frame.runCertificate run frame.prepared.requestRelated
+      obtain ⟨completion⟩ :=
+        frame.prepared.assemble entryRva after events entryExact subroutine
+      exact ⟨certificate.static.function.span.start, completion.after, events,
+        certificate.static.entryRvaExact, completion.execution.kernelDispatches,
+        completion.responseRelated, completion.memoryFrame⟩
+
+/-- Compatibility with the existing whole-operation interface.  The only
+universal premise is structural closure into checked Invoke trees; native Run
+execution is selected request by request from each tree. -/
+theorem InvokeCallNativeCheckedOperationCertificate.refines
+    (certificate : InvokeCallNativeCheckedOperationCertificate program abi
+      semanticRecords candidate world) :
+    KernelOperationRefinesUsing program abi
+      (NativeWorldKernelDispatches candidate world) .invokeCall := by
+  intro request before operationMatches related response transition
+  cases request with
+  | programLookup records sourceRva =>
+      simp [AbstractKernelRequest.operation] at operationMatches
+  | interpreterStep records environment sourceRva logical =>
+      simp [AbstractKernelRequest.operation] at operationMatches
+  | runFunction records environment resolveCodeTarget sourceRva logical =>
+      simp [AbstractKernelRequest.operation] at operationMatches
+  | invokeCall records environment resolveCodeTarget event logical =>
+      have recordsExact := certificate.abiEntry.recordsExact records environment
+        resolveCodeTarget event logical before related
+      subst records
+      obtain ⟨result, responseExact, checked⟩ :=
+        certificate.closedTree.close environment resolveCodeTarget event logical
+          response transition
+      subst response
+      exact certificate.refinesDerivation checked before related
+
 #print axioms concreteInvokeCallABIEntryAuthority
 #print axioms InvokeCallNativeExternalHelperArmExecution.nativeWorldDispatches
 #print axioms InvokeCallNativeExternalHelperArmExecution.kernelDispatches
 #print axioms InvokeCallNativeExternalBranchAuthority.execute
 #print axioms InvokeCallNativeInternalCompletion.toBranchResult
 #print axioms InvokeCallNativeIndirectCompletion.toBranchResult
+#print axioms InvokeCallNativeRunFunctionRefinements.internalForAuthority
+#print axioms InvokeCallNativeRunFunctionRefinements.indirectForAuthority
 #print axioms InvokeCallNativeOperationCertificate.branches
 #print axioms InvokeCallNativeOperationCertificate.refines
+#print axioms runFunctionSubroutine_of_checked_derivation
+#print axioms InvokeCallNativeCheckedOperationCertificate.refinesDerivation
+#print axioms InvokeCallNativeCheckedOperationCertificate.refines
 
 end StageA.Relational.InterpreterKernelInvokeOperation

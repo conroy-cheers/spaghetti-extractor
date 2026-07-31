@@ -409,6 +409,7 @@ theorem {prefix}Closed (reachable : ActualSourceReachability)
 #print axioms {claim_name}Checked
 #print axioms {prefix}TargetInventoryChecked
 #print axioms {prefix}TargetAddressChecked
+#print axioms {authority_name}
 #print axioms {prefix}Closed""")
         elif authority_site.closure_mode == "empty_indexed_source":
             table = finding.indexed_empty_table

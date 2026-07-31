@@ -1,6 +1,8 @@
 import json
 import os
 from pathlib import Path
+import runpy
+import shutil
 import stat
 import sys
 import tempfile
@@ -38,8 +40,11 @@ _SOURCE_BOCHS_RUNNER = (
     _REPO_ROOT / "tools/bochs-conformance/spaghetti-bochs-conformance-runner"
 )
 _CONFIGURED_BOCHS_RUNNER = os.environ.get("SPAGHETTI_BOCHS_INTEGRATION_RUNNER")
+_NIX_BOCHS_RUNNER = shutil.which("spaghetti-bochs-conformance-runner")
 if _CONFIGURED_BOCHS_RUNNER:
     _REAL_BOCHS_RUNNER = Path(_CONFIGURED_BOCHS_RUNNER)
+elif _NIX_BOCHS_RUNNER:
+    _REAL_BOCHS_RUNNER = Path(_NIX_BOCHS_RUNNER)
 elif (
     (_REPO_ROOT / "tools/bochs-conformance/build/source/bochs").is_file()
     and (_REPO_ROOT / "tools/bochs-conformance/build/guest/guest.img").is_file()
@@ -143,7 +148,15 @@ def _bochs_case(
     expected_memory=None,
     defined_memory=None,
     expected_control="fallthrough",
+    expected_fault="none",
     expected_eip=None,
+    initial_fs=None,
+    expected_fs=None,
+    defined_fs=False,
+    initial_x87=None,
+    expected_x87=None,
+    defined_x87=None,
+    profile_features=(),
 ):
     initial = {
         "gprs": {
@@ -158,18 +171,26 @@ def _bochs_case(
         },
         "eip": 0x00401000,
         "eflags": initial_eflags,
-        "fs": {"selector": 0, "base": 0},
-        "x87": _x87(),
+        "fs": json.loads(
+            json.dumps(initial_fs or {"selector": 0, "base": 0})
+        ),
+        "x87": json.loads(json.dumps(initial_x87 or _x87())),
     }
     initial["gprs"].update(initial_gprs or {})
     final = json.loads(json.dumps(initial))
     final["eip"] = (
-        initial["eip"] + len(instruction_bytes)
+        (
+            initial["eip"]
+            if expected_fault != "none"
+            else initial["eip"] + len(instruction_bytes)
+        )
         if expected_eip is None
         else expected_eip
     )
     final["eflags"] = expected_eflags
     final["gprs"].update(expected_gprs or {})
+    final["fs"] = json.loads(json.dumps(expected_fs or initial["fs"]))
+    final["x87"] = json.loads(json.dumps(expected_x87 or initial["x87"]))
     return {
         "id": case_id,
         "instruction_bytes": instruction_bytes,
@@ -178,7 +199,7 @@ def _bochs_case(
             "cpu": "haswell",
             "execution_mode": "protected-32",
             "environment": "pe32",
-            "features": [],
+            "features": list(profile_features),
         },
         "image_base": 0x00400000,
         "initial_state": initial,
@@ -190,17 +211,34 @@ def _bochs_case(
             },
             "eip": 0xFFFFFFFF,
             "eflags": defined_eflags,
-            "fs": {"selector": 0, "base": 0},
-            "x87": _zero_x87_mask(),
+            "fs": {
+                "selector": 0xFFFF if defined_fs else 0,
+                "base": 0xFFFFFFFF if defined_fs else 0,
+            },
+            "x87": json.loads(json.dumps(defined_x87 or _zero_x87_mask())),
             "memory": defined_memory or [],
         },
         "expected": {
             "final_state": final,
             "memory": expected_memory or [],
-            "control": expected_control,
-            "fault": "none",
+            "control": "fault" if expected_fault != "none" else expected_control,
+            "fault": expected_fault,
         },
     }
+
+
+def _private_x87_text(x87):
+    return ":".join(
+        [
+            f"{x87['control_word']:04x}",
+            f"{x87['status_word']:04x}",
+            f"{x87['tag_word']:04x}",
+            f"{x87['last_opcode']:04x}",
+            f"{x87['instruction_pointer']:08x}",
+            f"{x87['data_pointer']:08x}",
+            *(bytes(register).hex() for register in x87["registers"]),
+        ]
+    )
 
 
 def _write_runner(directory: Path, body: str) -> Path:
@@ -256,6 +294,9 @@ class StageAISAConformanceBochsTests(unittest.TestCase):
         self.assertNotIn("mnemonic_is", source)
         self.assertIn("BX_DISASM_SRC_ORIGIN", source)
         self.assertIn("BX_INSTR_IS_CALL_INDIRECT", source)
+        self.assertIn("set_x87_state", source)
+        self.assertIn("get_x87_state", source)
+        self.assertNotIn('return "x87_not_implemented"', source)
 
     def test_batch_is_canonical_and_match_status_is_computed_locally(self):
         corpus = _corpus("match-case", "mismatch-case")
@@ -309,6 +350,174 @@ terminal(statuses)
         self.assertEqual(first.qualification, ReportQualification.VETOED)
         self.assertFalse(first.trust.proof_authority)
         self.assertFalse(first.trust.closes_stage_a_proof)
+
+    @unittest.skipUnless(
+        _SOURCE_BOCHS_RUNNER.is_file(),
+        "requires the source-tree private protocol runner",
+    )
+    def test_private_protocol_accepts_only_consistent_divide_error_faults(self):
+        namespace = runpy.run_path(
+            str(_SOURCE_BOCHS_RUNNER), run_name="bochs_runner_protocol_test"
+        )
+        parse_private_output = namespace["parse_private_output"]
+        words = "\t".join(f"{word:08x}" for word in range(10))
+        x87 = _private_x87_text(_x87())
+        valid = (
+            f"OBS\t00000000\tcomplete\t{words}"
+            f"\tfault\tdivide_error\t00060000:00000000\t{x87}\n"
+            "DONE\t00000001\n"
+        )
+
+        [record] = parse_private_output(valid, 1)
+
+        self.assertEqual(record["status"], "complete")
+        self.assertEqual(record["control"], "fault")
+        self.assertEqual(record["fault"], "divide_error")
+        self.assertEqual(
+            record["memory"],
+            [{"address": 0x00060000, "bytes": [0, 0, 0, 0]}],
+        )
+        for label, control, fault in (
+            ("fault without fault control", "fallthrough", "divide_error"),
+            ("fault control without fault", "fault", "none"),
+            ("unsupported fault class", "fault", "invalid_opcode"),
+        ):
+            with self.subTest(label=label), self.assertRaises(
+                namespace["RunnerError"]
+            ):
+                parse_private_output(
+                    (
+                        f"OBS\t00000000\tcomplete\t{words}"
+                        f"\t{control}\t{fault}\t-\t{x87}\n"
+                        "DONE\t00000001\n"
+                    ),
+                    1,
+                )
+
+    @unittest.skipUnless(
+        _SOURCE_BOCHS_RUNNER.is_file(),
+        "requires the source-tree private protocol runner",
+    )
+    def test_private_protocol_round_trips_complete_x87_state(self):
+        namespace = runpy.run_path(
+            str(_SOURCE_BOCHS_RUNNER), run_name="bochs_runner_x87_protocol_test"
+        )
+        x87 = {
+            "control_word": 0x027F,
+            "status_word": 0x6100,
+            "tag_word": 0xA55A,
+            "last_opcode": 0x345,
+            "instruction_pointer": 0x12345678,
+            "data_pointer": 0x89ABCDEF,
+            "registers": [
+                list(bytes(((index * 17 + byte) & 0xFF for byte in range(10))))
+                for index in range(8)
+            ],
+        }
+        case = _bochs_case(
+            "x87-private-roundtrip",
+            [0xDF, 0xE0],
+            initial_x87=x87,
+            profile_features=("x87",),
+        )
+        line = namespace["private_case_line"](0, case)
+        fields = line.split("\t")
+
+        self.assertEqual(fields[:3], ["CASE", "5", "00000000"])
+        self.assertEqual(len(fields), 19)
+        self.assertEqual(fields[15], "0000")
+        self.assertEqual(fields[16], "00000000")
+        self.assertEqual(fields[18], _private_x87_text(x87))
+
+        words = "\t".join(f"{word:08x}" for word in range(10))
+        [record] = namespace["parse_private_output"](
+            (
+                f"OBS\t00000000\tcomplete\t{words}"
+                f"\tfallthrough\tnone\t-\t{fields[18]}\n"
+                "DONE\t00000001\n"
+            ),
+            1,
+        )
+        self.assertEqual(record["x87"], x87)
+
+    @unittest.skipUnless(
+        _SOURCE_BOCHS_RUNNER.is_file(),
+        "requires the source-tree private protocol runner",
+    )
+    def test_x87_protocol_rejects_malformed_or_unrepresentable_state(self):
+        namespace = runpy.run_path(
+            str(_SOURCE_BOCHS_RUNNER), run_name="bochs_runner_x87_negative_test"
+        )
+        invalid_opcode = _x87()
+        invalid_opcode["last_opcode"] = 0x800
+        with self.assertRaisesRegex(
+            namespace["RunnerError"], "architectural 11 bits"
+        ):
+            namespace["validate_x87"](invalid_opcode, "x87")
+
+        malformed_registers = _x87()
+        malformed_registers["registers"][3] = [0] * 9
+        with self.assertRaisesRegex(
+            namespace["RunnerError"], "exactly 10 bytes"
+        ):
+            namespace["validate_x87"](malformed_registers, "x87")
+
+        words = "\t".join(f"{word:08x}" for word in range(10))
+        malformed_observations = (
+            _private_x87_text(_x87()).replace("00000000000000000000", "00", 1),
+            _private_x87_text(_x87()).replace("037f", "zzzz", 1),
+            _private_x87_text(_x87()).replace(":0000:00000000", ":0800:00000000", 1),
+        )
+        for x87_field in malformed_observations:
+            with self.subTest(x87=x87_field), self.assertRaises(
+                namespace["RunnerError"]
+            ):
+                namespace["parse_private_output"](
+                    (
+                        f"OBS\t00000000\tcomplete\t{words}"
+                        f"\tfallthrough\tnone\t-\t{x87_field}\n"
+                        "DONE\t00000001\n"
+                    ),
+                    1,
+                )
+
+    def test_complete_divide_error_is_matched_locally_and_remains_untrusted(self):
+        case = _case("divide-error")
+        case["expected"]["final_state"]["eip"] = case["initial_state"]["eip"]
+        case["expected"].update(control="fault", fault="divide_error")
+        corpus = parse_isa_conformance_corpus(
+            {
+                "format": "stage-a-isa-conformance-corpus-v1",
+                "id": "bochs-divide-error-protocol-v1",
+                "cases": [case],
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            runner = _write_runner(
+                Path(temporary),
+                _RUNNER_PREAMBLE
+                + """
+case = corpus["cases"][0]
+emit({
+    "format": MACHINE_FORMAT,
+    "sequence": 0,
+    "case_id": case["id"],
+    "status": "complete",
+    "final_state": case["expected"]["final_state"],
+    "memory": case["expected"]["memory"],
+    "actual": {"control": "fault", "fault": "divide_error"},
+    "detail": "",
+})
+terminal(["complete"])
+""",
+            )
+
+            report = run_bochs_corpus(corpus, runner=runner)
+
+        self.assertEqual(report.observations[0].status, ObservationStatus.MATCH)
+        self.assertEqual(report.observations[0].actual.fault.value, "divide_error")
+        self.assertFalse(report.trust.proof_authority)
+        self.assertFalse(report.trust.closes_stage_a_proof)
 
     def test_unsupported_observation_is_preserved_and_unqualifies_report(self):
         corpus = _corpus("unsupported-case")
@@ -460,6 +669,334 @@ class StageAISAConformanceBochsIntegrationTests(unittest.TestCase):
             ObservationStatus.MATCH,
             report.observations[0].detail,
         )
+
+    def test_x87_state_is_injected_observed_and_reset_between_cases(self):
+        injected = {
+            "control_word": 0x027F,
+            "status_word": 0x6100,
+            "tag_word": 0xA55A,
+            "last_opcode": 0x345,
+            "instruction_pointer": 0x00123456,
+            "data_pointer": 0x00654321,
+            "registers": [
+                list(bytes(((index * 17 + byte) & 0xFF for byte in range(10))))
+                for index in range(8)
+            ],
+        }
+        full_x87_mask = _x87(mask=True)
+        one = list(bytes.fromhex("0000000000000080ff3f"))
+        fld1_result = _x87()
+        fld1_result.update(
+            status_word=0x3800,
+            tag_word=0x3FFF,
+            registers=[one] + [[0] * 10 for _ in range(7)],
+        )
+        fld1_mask = _x87(mask=True)
+        fld1_mask.update(
+            last_opcode=0,
+            instruction_pointer=0,
+            data_pointer=0,
+        )
+        cases = [
+            _bochs_case(
+                "x87-injected-fnstsw",
+                [0xDF, 0xE0],
+                initial_gprs={"eax": 0xA5A50000},
+                expected_gprs={"eax": 0xA5A56100},
+                defined_gprs={"eax"},
+                initial_x87=injected,
+                expected_x87=injected,
+                defined_x87=full_x87_mask,
+                profile_features=("x87",),
+            ),
+            _bochs_case(
+                "x87-fld1-after-reset",
+                [0xD9, 0xE8],
+                expected_x87=fld1_result,
+                defined_x87=fld1_mask,
+                profile_features=("x87",),
+            ),
+            _bochs_case(
+                "x87-fld-double-memory",
+                [0xDD, 0x00],
+                initial_gprs={"eax": 0x00060000},
+                memory=[
+                    {
+                        "address": 0x00060000,
+                        "bytes": list(bytes.fromhex("000000000000f03f")),
+                        "permissions": "r",
+                    }
+                ],
+                expected_x87=fld1_result,
+                defined_x87=fld1_mask,
+                profile_features=("x87",),
+            ),
+            _bochs_case(
+                "x87-fnsave-memory",
+                [0xDD, 0x30],
+                initial_gprs={"eax": 0x00060000},
+                memory=[
+                    {
+                        "address": 0x00060000,
+                        "bytes": [0] * 256,
+                        "permissions": "rw",
+                    }
+                ],
+                profile_features=("x87",),
+            ),
+        ]
+        for case in cases:
+            case["profile"]["cpu"] = "i686"
+        corpus = parse_isa_conformance_corpus(
+            {
+                "format": "stage-a-isa-conformance-corpus-v1",
+                "id": "bochs-x87-state-integration-v1",
+                "cases": cases,
+            }
+        )
+
+        report = run_bochs_corpus(
+            corpus,
+            runner=_REAL_BOCHS_RUNNER,
+            timeout_seconds=120,
+        )
+
+        self.assertEqual(
+            [observation.status for observation in report.observations],
+            [ObservationStatus.MATCH] * len(cases),
+            {
+                row.case_id: (row.status.value, row.detail)
+                for row in report.observations
+            },
+        )
+        self.assertEqual(
+            report.observations[0].final_state.x87.registers[5],
+            bytes(injected["registers"][5]),
+        )
+        self.assertEqual(
+            report.observations[1].final_state.x87.registers[0],
+            bytes(one),
+        )
+        self.assertEqual(
+            report.observations[2].final_state.x87.registers[0],
+            bytes(one),
+        )
+        self.assertFalse(report.trust.proof_authority)
+        self.assertFalse(report.trust.closes_stage_a_proof)
+
+    def test_divide_success_and_faults_recover_in_one_batch(self):
+        divisor_memory = [
+            {
+                "address": 0x00060000,
+                "bytes": [0, 0, 0, 0],
+                "permissions": "r",
+            }
+        ]
+        observed_divisor_memory = [
+            {"address": 0x00060000, "bytes": [0, 0, 0, 0]}
+        ]
+        cases = [
+            _bochs_case(
+                "div-memory-zero",
+                [0xF7, 0x31],
+                initial_gprs={"eax": 10, "ecx": 0x00060000, "edx": 0},
+                defined_gprs=set(GPRS),
+                memory=divisor_memory,
+                expected_memory=observed_divisor_memory,
+                defined_memory=[
+                    {"address": 0x00060000, "mask": [0xFF, 0xFF, 0xFF, 0xFF]}
+                ],
+                expected_fault="divide_error",
+            ),
+            _bochs_case(
+                "div-register-success",
+                [0xF7, 0xF1],
+                initial_gprs={"eax": 10, "ecx": 3, "edx": 0},
+                expected_gprs={"eax": 3, "edx": 1},
+                defined_gprs={"eax", "edx"},
+            ),
+            _bochs_case(
+                "idiv-register-overflow",
+                [0xF7, 0xF9],
+                initial_gprs={"eax": 0, "ecx": 1, "edx": 1},
+                defined_gprs=set(GPRS),
+                expected_fault="divide_error",
+            ),
+            _bochs_case(
+                "idiv-register-success",
+                [0xF7, 0xF9],
+                initial_gprs={
+                    "eax": 0xFFFFFFF6,
+                    "ecx": 3,
+                    "edx": 0xFFFFFFFF,
+                },
+                expected_gprs={"eax": 0xFFFFFFFD, "edx": 0xFFFFFFFF},
+                defined_gprs={"eax", "edx"},
+            ),
+        ]
+        corpus = parse_isa_conformance_corpus(
+            {
+                "format": "stage-a-isa-conformance-corpus-v1",
+                "id": "bochs-divide-error-integration-v1",
+                "cases": cases,
+            }
+        )
+
+        report = run_bochs_corpus(
+            corpus,
+            runner=_REAL_BOCHS_RUNNER,
+            timeout_seconds=120,
+        )
+
+        self.assertEqual(
+            [observation.status for observation in report.observations],
+            [ObservationStatus.MATCH] * len(cases),
+            {
+                row.case_id: (row.status.value, row.detail)
+                for row in report.observations
+            },
+        )
+        self.assertEqual(
+            [
+                observation.actual.fault.value
+                for observation in report.observations
+            ],
+            ["divide_error", "none", "divide_error", "none"],
+        )
+        self.assertFalse(report.trust.proof_authority)
+        self.assertFalse(report.trust.closes_stage_a_proof)
+
+    def test_cpl3_fs_and_repeat_execution_are_observed_without_special_cases(self):
+        fs = {"selector": 0x3B, "base": 0x00080000}
+        cases = [
+            _bochs_case(
+                "popfd-cpl3",
+                [0x9D],
+                initial_gprs={"esp": 0x00060000},
+                expected_gprs={"esp": 0x00060004},
+                defined_gprs={"esp"},
+                initial_eflags=0x202,
+                expected_eflags=0x202,
+                defined_eflags=0xFFFFFFFF,
+                memory=[
+                    {
+                        "address": 0x00060000,
+                        # CPL3 may not raise IOPL or clear IF while IOPL is zero.
+                        "bytes": [0x02, 0x30, 0x00, 0x00],
+                        "permissions": "r",
+                    }
+                ],
+            ),
+            _bochs_case(
+                "fs-relative-load",
+                [0x64, 0xA1, 0x18, 0, 0, 0],
+                initial_fs=fs,
+                expected_fs=fs,
+                defined_fs=True,
+                expected_gprs={"eax": 0x44332211},
+                defined_gprs={"eax"},
+                memory=[
+                    {
+                        "address": 0x00080018,
+                        "bytes": [0x11, 0x22, 0x33, 0x44],
+                        "permissions": "r",
+                    }
+                ],
+            ),
+            _bochs_case(
+                "rep-movsd-single-iteration",
+                [0xF3, 0xA5],
+                initial_gprs={
+                    "ecx": 1,
+                    "esi": 0x00060000,
+                    "edi": 0x00061000,
+                },
+                expected_gprs={
+                    "ecx": 0,
+                    "esi": 0x00060004,
+                    "edi": 0x00061004,
+                },
+                defined_gprs={"ecx", "esi", "edi"},
+                memory=[
+                    {
+                        "address": 0x00060000,
+                        "bytes": [0x11, 0x22, 0x33, 0x44],
+                        "permissions": "r",
+                    },
+                    {
+                        "address": 0x00061000,
+                        "bytes": [0, 0, 0, 0],
+                        "permissions": "rw",
+                    },
+                ],
+                expected_memory=[
+                    {
+                        "address": 0x00061000,
+                        "bytes": [0x11, 0x22, 0x33, 0x44],
+                    }
+                ],
+                defined_memory=[
+                    {
+                        "address": 0x00061000,
+                        "mask": [0xFF, 0xFF, 0xFF, 0xFF],
+                    }
+                ],
+            ),
+            _bochs_case(
+                "rep-stosd-single-iteration",
+                [0xF3, 0xAB],
+                initial_gprs={
+                    "eax": 0x44332211,
+                    "ecx": 1,
+                    "edi": 0x00061000,
+                },
+                expected_gprs={"ecx": 0, "edi": 0x00061004},
+                defined_gprs={"ecx", "edi"},
+                memory=[
+                    {
+                        "address": 0x00061000,
+                        "bytes": [0, 0, 0, 0],
+                        "permissions": "rw",
+                    }
+                ],
+                expected_memory=[
+                    {
+                        "address": 0x00061000,
+                        "bytes": [0x11, 0x22, 0x33, 0x44],
+                    }
+                ],
+                defined_memory=[
+                    {
+                        "address": 0x00061000,
+                        "mask": [0xFF, 0xFF, 0xFF, 0xFF],
+                    }
+                ],
+            ),
+        ]
+        corpus = parse_isa_conformance_corpus(
+            {
+                "format": "stage-a-isa-conformance-corpus-v1",
+                "id": "bochs-cpl3-fs-repeat-integration-v1",
+                "cases": cases,
+            }
+        )
+
+        report = run_bochs_corpus(
+            corpus,
+            runner=_REAL_BOCHS_RUNNER,
+            timeout_seconds=120,
+        )
+
+        self.assertEqual(
+            [observation.status for observation in report.observations],
+            [ObservationStatus.MATCH] * len(cases),
+            {
+                row.case_id: (row.status.value, row.detail)
+                for row in report.observations
+            },
+        )
+        self.assertFalse(report.trust.proof_authority)
+        self.assertFalse(report.trust.closes_stage_a_proof)
 
     def test_generic_register_memory_and_branch_cases_execute_fail_closed(self):
         memory_read = [
@@ -684,7 +1221,7 @@ class StageAISAConformanceBochsIntegrationTests(unittest.TestCase):
             "indirect-branch",
             "direct-call-with-stack-write",
             "test-reg-reg",
-            "system-cli",
+            "x87-register",
             "xor-reg-reg",
             "add-reg-reg-16",
         ):
@@ -701,9 +1238,9 @@ class StageAISAConformanceBochsIntegrationTests(unittest.TestCase):
             "write-read-only-memory",
             "memory-outside-controlled-guest",
             "two-instruction-stream",
+            "system-cli",
             "io-in",
             "segment-load",
-            "x87-register",
             "faulting-ud2",
         ):
             self.assertEqual(

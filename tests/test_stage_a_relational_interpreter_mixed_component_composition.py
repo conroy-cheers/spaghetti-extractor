@@ -46,22 +46,24 @@ class StageARelationalInterpreterMixedComponentCompositionTests(
             "invokeCallRefines",
             "dispatchFamily",
             "combinedRefines",
+            "CheckedWorldKernelOperationRefinementFamily",
             "EnvironmentParametricMixedComponentPremises",
             "MixedEnvironmentPairRefines",
-            "CanonicalMixedLaunchChunkRemainingPremises",
-            "CanonicalMixedLaunchComponentPremises",
+            "CanonicalMixedLaunchPrefixEndpoint",
             "CanonicalOriginalMixedLaunchExecution",
             "CanonicalCandidateMixedLaunchExecution",
+            "canonicalMixedLaunchPrefixPaths_nonempty",
+            "canonicalMixedLaunchPrefixCertificate",
             "classifier",
             "launchWrapperRefines",
-            "launchChunk",
+            "launchPrefixEndpoint",
             "semanticChunkFactory",
             "externalOperationChunkFactory",
             "externalBoundaryChunk",
             "candidateLaunchCallsExact",
-            "rootsRelated",
             "componentCases",
             "environmentComposition",
+            "environmentLaunchPrefix",
             "environmentCompositions",
         ):
             self.assertIn(required, source)
@@ -86,34 +88,65 @@ class StageARelationalInterpreterMixedComponentCompositionTests(
         )
         self.assertGreaterEqual(universal.count("environmentsRefine"), 7)
 
-        remaining = source.split(
-            "structure CanonicalMixedLaunchChunkRemainingPremises", 1
+        endpoint = source.split(
+            "structure CanonicalMixedLaunchPrefixEndpoint", 1
         )[1].split(
-            "structure CanonicalMixedLaunchComponentPremises", 1
+            "theorem canonicalMixedLaunchPrefixPaths_nonempty", 1
         )[0]
         for required in (
-            "originalAfter : WorldExecution",
-            "originalPath : NonemptyRelatedPath",
-            "afterRelated : invariant.holds",
+            "afterRelated : forall",
+            "invariant.holds",
+            "MixedLaunchStatesRelated",
+            "contract.runtimeStatesRelated",
+            "result.observations = []",
         ):
-            self.assertIn(required, remaining)
+            self.assertIn(required, endpoint)
         for redundant in (
-            "candidatePath",
-            "candidateObservations",
+            "originalPath",
             "MixedKernelChunkPaths",
             "status",
         ):
-            self.assertNotIn(redundant, remaining)
+            self.assertNotIn(redundant, endpoint)
 
-        launch_chunk = universal.split("launchChunk :", 1)[1].split(
+        launch_prefix = universal.split("launchPrefixEndpoint :", 1)[1].split(
             "semanticChunkFactory :", 1
         )[0]
         self.assertIn(
-            "beforeRelated : invariant.holds originalBefore candidateBefore",
-            launch_chunk,
+            "CanonicalMixedLaunchPrefixEndpoint",
+            launch_prefix,
         )
-        self.assertIn("CanonicalMixedLaunchComponentPremises", launch_chunk)
-        self.assertNotIn("MixedKernelChunkPaths", launch_chunk)
+        self.assertIn("launchWrapperRefines", launch_prefix)
+        self.assertNotIn("MixedKernelChunkPaths", launch_prefix)
+        self.assertNotIn("rootsRelated", universal)
+        self.assertNotIn("launchChunk", universal)
+        self.assertIn(
+            "operations : CheckedWorldKernelOperationRefinementFamily",
+            universal,
+        )
+        self.assertEqual(universal.count("candidateWorldExact"), 2)
+        self.assertEqual(
+            universal.count("operations.dispatchFamily candidateWorld"), 4
+        )
+
+        component = universal.split(
+            "EnvironmentParametricMixedComponentPremises.componentCases", 1
+        )[1].split(
+            "EnvironmentParametricMixedComponentPremises.environmentComposition",
+            1,
+        )[0]
+        self.assertEqual(
+            component.count(
+                "exactNativeRunningWorldAtRva candidateAtEntry"
+            ),
+            2,
+        )
+        self.assertEqual(
+            component.count(
+                "operations.combinedRefines candidateRunning.world operation"
+            ),
+            2,
+        )
+        self.assertNotIn("generatedLaunchWorld", component)
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required")
     def test_layer_compiles_and_has_only_approved_axioms(self) -> None:
@@ -145,8 +178,10 @@ class StageARelationalInterpreterMixedComponentCompositionTests(
         for theorem in (
             "CheckedKernelOperationRefinementFamily.refines",
             "CheckedKernelOperationRefinementFamily.combinedRefines",
+            "CheckedWorldKernelOperationRefinementFamily.combinedRefines",
             "EnvironmentParametricMixedComponentPremises.componentCases",
             "EnvironmentParametricMixedComponentPremises.environmentComposition",
+            "EnvironmentParametricMixedComponentPremises.environmentLaunchPrefix",
             "EnvironmentParametricMixedComponentPremises.environmentCompositions",
         ):
             self.assertIn(theorem, output)
@@ -170,21 +205,27 @@ open StageA.Relational.InterpreterMixedComponentComposition
 #check CheckedKernelOperationRefinementFamily.dispatchFamily
 #check CheckedKernelOperationRefinementFamily.refines
 #check CheckedKernelOperationRefinementFamily.combinedRefines
-#check CanonicalMixedLaunchChunkRemainingPremises
-#check CanonicalMixedLaunchComponentPremises
-#check CanonicalMixedLaunchWrapperRefinement.launchChunk_nonempty
-#check CanonicalMixedLaunchWrapperRefinement.launchChunk
+#check CheckedWorldKernelOperationRefinementFamily
+#check CheckedWorldKernelOperationRefinementFamily.dispatchFamily
+#check CheckedWorldKernelOperationRefinementFamily.refines
+#check CheckedWorldKernelOperationRefinementFamily.combinedRefines
+#check CanonicalMixedLaunchPrefixEndpoint
+#check canonicalMixedLaunchPrefixPaths_nonempty
+#check canonicalMixedLaunchPrefixCertificate
 #check EnvironmentParametricMixedComponentPremises
 #check EnvironmentParametricMixedComponentPremises.componentCases
 #check EnvironmentParametricMixedComponentPremises.environmentComposition
+#check EnvironmentParametricMixedComponentPremises.environmentLaunchPrefix
 #check EnvironmentParametricMixedComponentPremises.environmentCompositions
 
 #print axioms CheckedKernelOperationRefinementFamily.refines
 #print axioms CheckedKernelOperationRefinementFamily.combinedRefines
-#print axioms CanonicalMixedLaunchWrapperRefinement.launchChunk_nonempty
-#print axioms CanonicalMixedLaunchWrapperRefinement.launchChunk
+#print axioms CheckedWorldKernelOperationRefinementFamily.combinedRefines
+#print axioms canonicalMixedLaunchPrefixPaths_nonempty
+#print axioms canonicalMixedLaunchPrefixCertificate
 #print axioms EnvironmentParametricMixedComponentPremises.componentCases
 #print axioms EnvironmentParametricMixedComponentPremises.environmentComposition
+#print axioms EnvironmentParametricMixedComponentPremises.environmentLaunchPrefix
 #print axioms EnvironmentParametricMixedComponentPremises.environmentCompositions
 
 end StageA.Relational.InterpreterMixedComponentCompositionAudit

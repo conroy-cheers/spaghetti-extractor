@@ -280,6 +280,13 @@ def Command.usesMemoryOperand : Command -> Bool
       .loadControl | .storeControl => true
   | _ => false
 
+theorem Command.usesMemoryOperand_of_expectedStoreKind
+    (command : Command) (kind : StoreKind)
+    (expected : command.expectedStoreKind = some kind) :
+    command.usesMemoryOperand = true := by
+  cases command <;>
+    simp [Command.expectedStoreKind, Command.usesMemoryOperand] at expected ⊢
+
 def Command.expectedWaitMode : Command -> WaitMode
   | .initialize | .storeControl | .storeStatusAx => .noWait
   | _ => .waiting

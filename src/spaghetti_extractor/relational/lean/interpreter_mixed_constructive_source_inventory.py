@@ -199,6 +199,8 @@ class ConstructiveSourceInventoryPlan:
             "typed_residuals": [
                 "ConstructiveMixedKernelStateFacts reachability.targetIds "
                 "relationContract originalBefore candidateBefore",
+                "ConstructiveMixedKernelPhaseStateFacts relationContract "
+                "evidence",
                 "constructiveMixedKernelSourceEvidence? generatedRules "
                 "originalBefore candidateBefore = some evidence",
                 "GeneratedConstructiveRuleSemanticResidual evidence",
@@ -448,7 +450,7 @@ theorem generatedActualRuleMatchKeysUnique
 def generatedConstructiveMixedKernelInvariant :
     MixedExecutionInvariant {terms.reachability}.targetIds
       {terms.relation_contract} :=
-  constructiveMixedKernelInvariant {type_arguments}
+  constructiveMixedKernelRuntimeInvariant {type_arguments}
     {terms.relation_contract} (generatedConstructiveSourceRules {parameter})
 
 /-- The local semantic proof is indexed by the exact classifier witness.
@@ -459,20 +461,6 @@ inductive GeneratedConstructiveRuleSemanticResidual
     {{candidateBefore : NativeWorldExecution}} ->
     GeneratedConstructiveSourceEvidence {parameter}
       originalBefore candidateBefore -> Type where
-  | launch
-      (source : ExactOriginalSemanticSource
-        {_source_type_arguments(terms)})
-      (sourceIsRoot : source.targetId = {terms.launch_profile}.rootTargetId)
-      (originalAtSource :
-        originalExecutionAtTargetId source.targetId originalBefore)
-      (candidateAtRoot :
-        nativeExecutionAtRva {terms.candidate_root_rva} candidateBefore)
-      (paths : MixedKernelChunkPaths {terms.original_program} {terms.candidate}
-        {terms.relation_contract}
-        (generatedConstructiveMixedKernelInvariant {parameter})
-        originalBefore candidateBefore) :
-      GeneratedConstructiveRuleSemanticResidual {parameter}
-        (.launch source sourceIsRoot originalAtSource candidateAtRoot)
   | semanticTransfer
       (source : ExactOriginalSemanticSource
         {_source_type_arguments(terms)})
@@ -537,9 +525,9 @@ inductive GeneratedConstructiveRuleSemanticResidual
         (.matchingFault cause)
 
 def generatedConstructiveMixedKernelSourceClassifier :
-    MixedKernelSourceClassifier {type_arguments}
+    MixedKernelRuntimeSourceClassifier {type_arguments}
       (generatedConstructiveMixedKernelInvariant {parameter}) :=
-  constructiveMixedKernelSourceClassifier {type_arguments}
+  constructiveMixedKernelRuntimeSourceClassifier {type_arguments}
     {terms.relation_contract} (generatedConstructiveSourceRules {parameter})
 
 /-- State facts, exact-one classification, and the witness-indexed local
@@ -552,10 +540,13 @@ structure GeneratedConstructiveSourceResidual
   stateFacts :
     ConstructiveMixedKernelStateFacts {terms.reachability}.targetIds
       {terms.relation_contract} originalBefore candidateBefore
+  phaseStateFacts :
+    ConstructiveMixedKernelPhaseStateFacts {terms.relation_contract} evidence
   classificationExact :
     constructiveMixedKernelSourceEvidence?
       (generatedConstructiveSourceRules {parameter})
       originalBefore candidateBefore = some evidence
+  runtimeEvidence : evidence.phase = .runtime
   semantic :
     GeneratedConstructiveRuleSemanticResidual {parameter} evidence
 
@@ -564,8 +555,9 @@ theorem GeneratedConstructiveSourceResidual.invariantHolds
       originalBefore candidateBefore) :
     (generatedConstructiveMixedKernelInvariant {parameter}).holds
       originalBefore candidateBefore :=
-  constructiveMixedKernelInvariant_holds residual.stateFacts
-    residual.classificationExact
+  constructiveMixedKernelRuntimeInvariant_holds residual.stateFacts
+    residual.phaseStateFacts
+    residual.classificationExact residual.runtimeEvidence
 
 #print axioms generatedCandidateRecordSourceRvasUnique
 #print axioms generatedSourceTargetIdsUnique

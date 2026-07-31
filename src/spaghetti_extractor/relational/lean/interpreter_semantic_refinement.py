@@ -14,15 +14,15 @@ from .interpreter_normalization import (
 
 
 RELATIONAL_INTERPRETER_SEMANTIC_REFINEMENT_FORMAT = (
-    "stage-a-relational-interpreter-semantic-refinement-v1"
+    "stage-a-relational-interpreter-semantic-refinement-v2"
 )
 
 
 _SIMPLIFIER_DEFINITIONS = """ExactNormalizedTransferPath.instructions,
-      ExactDecodedInstruction.decode?, decodeInstructionExact,
-      DecodedInstruction.consumesExactly, decodeInstruction,
+      ExactDecodedInstruction.decode?,
       runExactDecodedInstructions, executeExactDecodedInstruction?,
       exactInstructionMemoryEvents?, executeInstruction,
+      executeInstructionWithContext, originalImports,
       SemanticTransfer.execute, SemanticTransfer.executeBody,
       SemanticTransfer.executeAction, SemanticWordNode.evaluate,
       SemanticOutcome.complete, halted, evalPrimitive,
@@ -35,18 +35,83 @@ _SIMPLIFIER_DEFINITIONS = """ExactNormalizedTransferPath.instructions,
       StageA.Formal.FlagsExpr.eval, StageA.Formal.applyWrites,
       readMemory, InterpreterMachine.setRegister, reconstructedInputFlags"""
 
+_FUSED_SYMBOLIC_SIMPLIFIER_DEFINITIONS = """executePE32SymbolicSpan,
+      runPE32SymbolicSpanFuel, Span.stop,
+      executeInstruction, executeInstructionWithContext, originalImports,
+      initialSymbolic,
+      initialSymbolicX87, Addressing.expression, Registers.set, Registers.get,
+      Expr.addNormalized, signExtendImmediate8"""
+
+_FUSED_TRANSFER_SIMPLIFIER_DEFINITIONS = """SemanticTransfer.execute,
+      SemanticTransfer.executeBody, SemanticTransfer.executeAction,
+      SemanticWordNode.evaluate, SemanticOutcome.complete, halted,
+      evalPrimitive, RuntimeState.setWord, Register.ofIndex?, formalRegister,
+      machineFromFormal, InterpreterMachine.setRegister"""
+
+_FUSED_MACHINE_SIMPLIFIER_DEFINITIONS = """NormalizedSymbolicBehavior.eval,
+      RelationalBehavior.nextMachineState, machineFromFormal,
+      evalNormalizedRegisters, evalNormalizedX87, evalNormalizedWrites,
+      evalNormalizedFlags, applyConcreteWrites, StageA.Formal.applyWrites,
+      InterpreterTransfer.applyWrites, StageA.Formal.Expr.eval,
+      StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval,
+      StageA.Formal.FlagsExpr.eval, Expr.addNormalized, signExtendImmediate8,
+      reconstructedInputFlags"""
+
+_REGISTER_FUNCTION_SIMPLIFIER_DEFINITIONS = """Registers.get, formalRegister,
+      Expr.addNormalized, signExtendImmediate8, StageA.Formal.Expr.eval"""
+
 
 def _exact_byte_facts(item: Mapping[str, Any]) -> tuple[str, list[str]]:
     definitions: list[str] = []
     names: list[str] = []
     for instruction_index, (rva, encoded) in enumerate(item["instructions"]):
         name = f"exactBytes{instruction_index}"
-        names.append(name)
+        decoded = f"exactDecoded{instruction_index}"
+        decoded_fact = f"exactDecodedFact{instruction_index}"
+        names.extend((name, decoded, decoded_fact))
         definitions.append(
             f"""    have {name} :
       exactRvaBytes originalPe {rva} {len(encoded)} =
         some {_bytes_literal(encoded)} := by
       decide +kernel"""
+        )
+        definitions.append(
+            f"""    let {decoded} : DecodedInstruction :=
+      exactDecodedInstruction% {_bytes_literal(encoded)}
+    have {decoded_fact} :
+      decodeInstructionExact {_bytes_literal(encoded)} =
+        some {decoded} := by
+      rfl"""
+        )
+    return "\n".join(definitions), names
+
+
+def _exact_window_facts(
+    item: Mapping[str, Any], *, indent: str = "  "
+) -> tuple[str, list[str]]:
+    definitions: list[str] = []
+    names: list[str] = []
+    encoded_span = b"".join(encoded for _, encoded in item["instructions"])
+    for instruction_index, (rva, _) in enumerate(item["instructions"]):
+        offset = rva - item["start"]
+        window = encoded_span[offset : offset + min(15, item["stop"] - rva)]
+        name = f"exactWindow{instruction_index}"
+        decoded = f"exactWindowDecoded{instruction_index}"
+        decoded_fact = f"exactWindowDecodedFact{instruction_index}"
+        names.extend((name, decoded, decoded_fact))
+        definitions.append(
+            f"""{indent}have {name} :
+{indent}    executableSpanInstructionWindow originalPe {rva} {item['stop']} =
+{indent}      some {_bytes_literal(window)} := by
+{indent}    decide +kernel"""
+        )
+        definitions.append(
+            f"""{indent}let {decoded} : DecodedInstruction :=
+{indent}  exactDecodedInstruction% {_bytes_literal(window)}
+{indent}have {decoded_fact} :
+{indent}    decodeInstructionExact {_bytes_literal(window)} =
+{indent}      some {decoded} := by
+{indent}  rfl"""
         )
     return "\n".join(definitions), names
 
@@ -58,15 +123,59 @@ def _theorem(source_index: int, item: Mapping[str, Any]) -> str:
     simplifier_inputs = ",\n      ".join(
         [path, transfer, *exact_names, _SIMPLIFIER_DEFINITIONS]
     )
-    return f"""theorem exactNormalizedTransferSemanticRefinement{source_index} :
+    exact_windows, exact_window_names = _exact_window_facts(item)
+    fused_symbolic_inputs = ",\n      ".join(
+        [*exact_window_names, _FUSED_SYMBOLIC_SIMPLIFIER_DEFINITIONS]
+    )
+    return f"""set_option maxHeartbeats 0 in
+theorem exactNormalizedTransferSemanticRefinement{source_index} :
     SemanticTransferRefinesExactPath originalPe {path} {transfer} := by
   apply semanticTransferRefinesOfExactExecution originalPe originalImports
   · decide +kernel
   · decide +kernel
   · intro state environment
 {exact_facts}
+    set_option maxHeartbeats 0 in
+      simp (config := {{ maxSteps := 4000000 }})
+        [{simplifier_inputs}]
+    all_goals
+      funext register
+      cases register <;>
+        simp [{_REGISTER_FUNCTION_SIMPLIFIER_DEFINITIONS}]
+
+set_option maxHeartbeats 0 in
+theorem exactNormalizedTransferFusedMachineRefinement{source_index} :
+    ExactSemanticTransferFusedMachineRefinement originalPe originalImports
+      {{ start := {item['start']}, size := {item['stop'] - item['start']} }}
+      {transfer} := by
+  intro targets state environment symbolic behavior result symbolicExact
+    evaluated transferExact
+{exact_windows}
+  set_option maxHeartbeats 0 in
     simp (config := {{ maxSteps := 4000000 }})
-      [{simplifier_inputs}]
+      [{fused_symbolic_inputs}] at symbolicExact
+  subst symbolic
+  unfold evalBehavior at evaluated
+  generalize normalizedExact :
+      normalizeSymbolicBehavior false targets _ = normalized at evaluated
+  cases normalized with
+  | none => simp at evaluated
+  | some normalized =>
+      injection evaluated with evaluated
+      subst behavior
+      set_option maxHeartbeats 0 in
+        simp (config := {{ maxSteps := 4000000 }})
+          [{transfer}, {_FUSED_TRANSFER_SIMPLIFIER_DEFINITIONS}] at transferExact
+      subst result
+      obtain ⟨registersExact, x87Exact, writesExact, flagsExact⟩ :=
+        normalizeSymbolicBehavior_fields false targets _ normalized
+          normalizedExact
+      simp [registersExact, x87Exact, writesExact, flagsExact,
+        {_FUSED_MACHINE_SIMPLIFIER_DEFINITIONS}]
+      all_goals
+        funext register
+        cases register <;>
+          simp [{_REGISTER_FUNCTION_SIMPLIFIER_DEFINITIONS}]
 """
 
 
@@ -82,8 +191,10 @@ def relational_interpreter_semantic_refinement_bundle_sources(
 
     Python only validates and renders immutable terms.  Every emitted theorem
     universally quantifies over machine state and external environment; Lean
-    re-reads the PE bytes and checks the reduction.  A semantic form that does
-    not reduce through the reviewed exact runner leaves its shard unbuildable.
+    re-reads the PE bytes and checks both the exact-path and fused-span
+    reductions. A semantic form that does not reduce through the reviewed
+    runners leaves its shard unbuildable. X87 schedule rows remain owned by the
+    separate exact X87 replay pipeline.
     """
 
     pe_module, _ = _stage_a_module(pe_module, "pe_module")
@@ -95,6 +206,7 @@ def relational_interpreter_semantic_refinement_bundle_sources(
     sources: dict[str, str] = {}
     shard_modules: list[str] = []
     theorem_names: list[str] = []
+    fused_theorem_names: list[str] = []
     for shard_start in range(0, len(selected), shard_size):
         shard = selected[shard_start : shard_start + shard_size]
         shard_index = shard_start // shard_size
@@ -105,6 +217,10 @@ def relational_interpreter_semantic_refinement_bundle_sources(
             f"exactNormalizedTransferSemanticRefinement{source_index}"
             for source_index, _ in shard
         )
+        fused_theorem_names.extend(
+            f"exactNormalizedTransferFusedMachineRefinement{source_index}"
+            for source_index, _ in shard
+        )
         theorems = "\n".join(
             _theorem(source_index, item) for source_index, item in shard
         )
@@ -112,9 +228,10 @@ def relational_interpreter_semantic_refinement_bundle_sources(
 import {pe_module}
 import StageA.{path_module}
 
-namespace StageA.GeneratedRelational
-
 set_option linter.unusedSimpArgs false
+set_option maxHeartbeats 0
+
+namespace StageA.GeneratedRelational
 
 open StageA.Formal StageA.Relational
 open StageA.Relational.Interpreter
@@ -129,6 +246,9 @@ end StageA.GeneratedRelational
     bundle = f"{module_prefix}Bundle"
     imports = "\n".join(f"import StageA.{module}" for module in shard_modules)
     theorem_inventory = ",\n  ".join(f'"{name}"' for name in theorem_names)
+    fused_theorem_inventory = ",\n  ".join(
+        f'"{name}"' for name in fused_theorem_names
+    )
     sources[bundle] = f"""{imports}
 
 namespace StageA.GeneratedRelational
@@ -140,6 +260,14 @@ def exactNormalizedTransferSemanticRefinementTheorems : List String := [
 theorem exactNormalizedTransferSemanticRefinementTheoremCount :
     exactNormalizedTransferSemanticRefinementTheorems.length =
       {len(theorem_names)} := by decide +kernel
+
+def exactNormalizedTransferFusedMachineRefinementTheorems : List String := [
+  {fused_theorem_inventory}
+]
+
+theorem exactNormalizedTransferFusedMachineRefinementTheoremCount :
+    exactNormalizedTransferFusedMachineRefinementTheorems.length =
+      {len(fused_theorem_names)} := by decide +kernel
 
 end StageA.GeneratedRelational
 """
@@ -163,9 +291,24 @@ def relational_interpreter_semantic_refinement_inventory(
         )
         for source in sources.values()
     )
+    fused_theorem_count = sum(
+        len(
+            re.findall(
+                r"^theorem "
+                r"exactNormalizedTransferFusedMachineRefinement[0-9]+\s*:",
+                source,
+                re.MULTILINE,
+            )
+        )
+        for source in sources.values()
+    )
     if theorem_count != transfer_count:
         raise StageAInputError(
             "semantic refinement theorem inventory changed cardinality"
+        )
+    if fused_theorem_count != transfer_count:
+        raise StageAInputError(
+            "fused semantic refinement theorem inventory changed cardinality"
         )
     return {
         "format": RELATIONAL_INTERPRETER_SEMANTIC_REFINEMENT_FORMAT,
@@ -173,6 +316,7 @@ def relational_interpreter_semantic_refinement_inventory(
         "proof_authority": False,
         "transfer_count": transfer_count,
         "theorem_count": theorem_count,
+        "fused_theorem_count": fused_theorem_count,
         "shard_count": len(shards),
         "modules": modules,
         "target": "GeneratedInterpreterSemanticRefinementBundle",

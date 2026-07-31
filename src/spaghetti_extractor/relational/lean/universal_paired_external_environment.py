@@ -1,9 +1,15 @@
-"""Emit exact-PE bindings for universal paired external environments.
+"""Emit exact PE/import evidence for universal paired external environments.
 
-The emitted Lean source proves static import/profile facts only.  It never
-constructs a favorable external environment.  Concrete acceptance consumers
-must still provide a universally sound response relation and prove that the
-selected environment pair implements it.
+The emitted Lean source can prove exact import/profile facts and, when concrete
+route/context/site bindings are supplied, all non-behavioral certificate
+premises.  It never constructs a favorable external environment.  Concrete
+acceptance consumers must still provide a universally sound response relation
+and prove that the selected environment pair implements it.
+
+For native-interpreter candidates, route and call-site closure belongs to the
+mixed component proof: those candidates intentionally do not have a synthetic
+paired ``StaticProofContext``.  The optional static-authority adapter remains
+available for structurally paired binary-to-binary proofs.
 """
 
 from __future__ import annotations
@@ -21,6 +27,9 @@ from ...util import sha256_file, write_json
 
 UNIVERSAL_PAIRED_EXTERNAL_ENVIRONMENT_FORMAT = (
     "stage-a-universal-paired-external-environment-v1"
+)
+UNIVERSAL_PAIRED_EXTERNAL_ENVIRONMENT_STATIC_AUTHORITY_MODULE = (
+    "StageA.RelationalUniversalPairedExternalEnvironmentStaticAuthority"
 )
 _LEAN_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -65,6 +74,43 @@ class UniversalPairedExternalEnvironmentBindings:
 
     def static(self, name: str) -> str:
         return f"{self.static_import_namespace}.{name}"
+
+
+@dataclass(frozen=True)
+class UniversalPairedExternalEnvironmentStaticAuthorityBindings:
+    """Concrete generated terms used to compute all non-behavioral authority."""
+
+    dependency_modules: tuple[str, ...]
+    context: str
+    sites: str
+    candidate_regions: str
+    candidate_boundaries: str
+
+    def __post_init__(self) -> None:
+        if not self.dependency_modules:
+            raise StageAInputError(
+                "universal paired external environment static authority "
+                "requires dependency modules"
+            )
+        values = {
+            "context": self.context,
+            "sites": self.sites,
+            "candidate_regions": self.candidate_regions,
+            "candidate_boundaries": self.candidate_boundaries,
+        }
+        for index, module in enumerate(self.dependency_modules):
+            values[f"dependency_modules[{index}]"] = module
+        for field, value in values.items():
+            if not isinstance(value, str) or not _LEAN_NAME.fullmatch(value):
+                raise StageAInputError(
+                    "universal paired external environment static authority "
+                    f"binding {field} must be a Lean name"
+                )
+        if len(set(self.dependency_modules)) != len(self.dependency_modules):
+            raise StageAInputError(
+                "universal paired external environment static authority "
+                "dependency modules must be unique"
+            )
 
 
 def _mapping(value: object, context: str) -> Mapping[str, Any]:
@@ -122,6 +168,9 @@ def universal_paired_external_environment_source(
     candidate_sha256: str,
     machine_import_report_sha256: str,
     bindings: UniversalPairedExternalEnvironmentBindings,
+    static_authority: (
+        UniversalPairedExternalEnvironmentStaticAuthorityBindings | None
+    ) = None,
     namespace: str = "StageA.GeneratedRelational.UniversalPairedExternal",
 ) -> str:
     for field, value in (
@@ -144,16 +193,101 @@ def universal_paired_external_environment_source(
     signatures = bindings.static(bindings.signatures)
     contracts = bindings.static(bindings.contracts)
     original_profile = bindings.static(bindings.original_profile_certificate)
+    static_authority_imports = ""
+    static_authority_open = ""
+    static_authority_source = ""
+    if static_authority is not None:
+        dependency_modules = tuple(
+            dict.fromkeys(
+                (
+                    UNIVERSAL_PAIRED_EXTERNAL_ENVIRONMENT_STATIC_AUTHORITY_MODULE,
+                    *static_authority.dependency_modules,
+                )
+            )
+        )
+        static_authority_imports = "".join(
+            f"import {module}\n" for module in dependency_modules
+        )
+        static_authority_open = (
+            "open StageA.Relational."
+            "UniversalPairedExternalEnvironmentStaticAuthority\n"
+        )
+        context = static_authority.context
+        sites = static_authority.sites
+        candidate_regions = static_authority.candidate_regions
+        candidate_boundaries = static_authority.candidate_boundaries
+        static_authority_source = f"""
+theorem exactCandidateMachineImportCallRoutesPinned :
+    candidateStaticMachineImportCallRoutesPinned {context}
+      {candidate_regions} {signatures} {candidate_boundaries}
+      {sites} = true := by
+  decide
+
+theorem exactPinnedStaticMachineImportPairBoundToContext :
+    exactPinnedStaticMachineImportPair.BoundToContext {context} := {{
+  originalPeExact := by decide
+  candidatePeExact := by decide
+  originalImportsExact := by decide
+  candidateImportsExact := by decide
+  machineContractsExact := by decide
+}}
+
+theorem exactExternalCallSiteIdsUnique :
+    externalCallSiteIdsUnique {sites} = true := by
+  decide
+
+theorem exactExternalCallSitesStaticValid :
+    {sites}.all
+      (ExternalCallSiteContract.staticValid {context}) = true := by
+  decide
+
+def exactUniversalPairedExternalEnvironmentStaticAuthority :
+    UniversalPairedExternalEnvironmentStaticAuthority
+      exactPinnedStaticMachineImportPair {context} {candidate_regions}
+      {candidate_boundaries} {sites} := {{
+  candidateRoutesPinned := exactCandidateMachineImportCallRoutesPinned
+  contextBound := exactPinnedStaticMachineImportPairBoundToContext
+  siteIdsUnique := exactExternalCallSiteIdsUnique
+  sitesStaticValid := exactExternalCallSitesStaticValid
+}}
+
+/-- All static premises are computed above.  The selected environments and
+their universally sound returning-response evidence remain explicit inputs. -/
+def exactPinnedUniversalPairedExternalEnvironmentCertificateOfResponses
+    (original candidate : WorldExternalEnvironment)
+    (returningResponses : forall site contract,
+      site ∈ {sites} ->
+      machineImportCallContractById? {context} site.machineContractId =
+        some contract ->
+      contract.disposition = .returns ->
+      CheckedUniversalPairedMachineResponse {context} site contract
+        original candidate) :
+    UniversalPairedExternalEnvironmentCertificate
+      exactPinnedStaticMachineImportPair {context} {sites}
+      original candidate :=
+  UniversalPairedExternalEnvironmentStaticAuthority.certificate
+    exactPinnedStaticMachineImportPair {context} {candidate_regions}
+    {candidate_boundaries} {sites} original candidate
+    exactUniversalPairedExternalEnvironmentStaticAuthority returningResponses
+
+#print axioms exactCandidateMachineImportCallRoutesPinned
+#print axioms exactPinnedStaticMachineImportPairBoundToContext
+#print axioms exactExternalCallSiteIdsUnique
+#print axioms exactExternalCallSitesStaticValid
+#print axioms exactPinnedUniversalPairedExternalEnvironmentCertificateOfResponses
+"""
     return f"""import StageA.RelationalUniversalPairedExternalEnvironment
 import {bindings.original_module}
 import {bindings.candidate_module}
 import {bindings.static_import_module}
+{static_authority_imports}
 
 namespace {namespace}
 
 open StageA.Formal StageA.Relational
 open StageA.Relational.StaticMachineImportContracts
 open StageA.Relational.UniversalPairedExternalEnvironment
+{static_authority_open}
 
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -210,6 +344,7 @@ abbrev ExactPinnedUniversalPairedExternalEnvironmentCertificate
   UniversalPairedExternalEnvironmentCertificate
     exactPinnedStaticMachineImportPair context sites original candidate
 
+{static_authority_source}
 #print axioms exactNormalizedImportInventoryChecked
 #print axioms candidateStaticMachineImportProfileChecked
 #print axioms sharedBoundaryMachineContractsChecked
@@ -225,6 +360,9 @@ def write_universal_paired_external_environment_source(
     machine_import_report: Path,
     out_dir: Path,
     bindings: UniversalPairedExternalEnvironmentBindings,
+    static_authority: (
+        UniversalPairedExternalEnvironmentStaticAuthorityBindings | None
+    ) = None,
     module: str = "GeneratedUniversalPairedExternalEnvironment",
     namespace: str = "StageA.GeneratedRelational.UniversalPairedExternal",
 ) -> tuple[Path, Path]:
@@ -245,6 +383,7 @@ def write_universal_paired_external_environment_source(
             candidate_sha256=candidate_sha256,
             machine_import_report_sha256=report_sha256,
             bindings=bindings,
+            static_authority=static_authority,
             namespace=namespace,
         ),
         encoding="utf-8",
@@ -274,11 +413,32 @@ def write_universal_paired_external_environment_source(
                 "normalized_import_inventories_equal",
                 "shared_static_machine_import_profiles_valid",
                 "shared_boundary_machine_contracts_shape_valid",
+                *(
+                    [
+                        (
+                            "candidate_exact_call_routes_pinned_to_checked_"
+                            "sites_and_contracts"
+                        ),
+                        "static_proof_context_bound_to_the_exact_pe_pair",
+                        "external_call_site_ids_unique",
+                        "external_call_sites_static_valid",
+                        "external_call_site_contracts_resolved",
+                    ]
+                    if static_authority is not None
+                    else []
+                ),
             ],
-            "remaining_premises": [
-                "candidate_exact_call_routes_use_the_pinned_contract_inventory",
-                "static_proof_context_is_bound_to_the_exact_pe_pair",
-                "external_call_sites_resolve_uniquely_in_that_context",
+            # This phase attests only the exact PE/import/profile pair.
+            # Structurally paired call routes can be checked by the optional
+            # adapter above.  Native-interpreter route closure is checked by
+            # mixed component composition and is not a premise of this phase.
+            "remaining_premises": [],
+            "route_authority": (
+                "paired_static_context"
+                if static_authority is not None
+                else "mixed_component_composition"
+            ),
+            "conditional_environment_parameters": [
                 "each_returning_site_has_a_universally_sound_response_relation",
                 "both_selected_environments_implement_each_response_relation",
                 "protocol_and_callback_actions_have_separate_nested_frame_refinement",
@@ -286,7 +446,13 @@ def write_universal_paired_external_environment_source(
             "lean_module": f"StageA/{lean_path.name}",
             "authorizing_term": (
                 f"{namespace}."
-                "ExactPinnedUniversalPairedExternalEnvironmentCertificate"
+                + (
+                    "exactUniversalPairedExternalEnvironmentStaticAuthority"
+                    if static_authority is not None
+                    else (
+                        "ExactPinnedUniversalPairedExternalEnvironmentCertificate"
+                    )
+                )
             ),
         },
     )
@@ -295,7 +461,9 @@ def write_universal_paired_external_environment_source(
 
 __all__ = [
     "UNIVERSAL_PAIRED_EXTERNAL_ENVIRONMENT_FORMAT",
+    "UNIVERSAL_PAIRED_EXTERNAL_ENVIRONMENT_STATIC_AUTHORITY_MODULE",
     "UniversalPairedExternalEnvironmentBindings",
+    "UniversalPairedExternalEnvironmentStaticAuthorityBindings",
     "universal_paired_external_environment_source",
     "write_universal_paired_external_environment_source",
 ]

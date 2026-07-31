@@ -1,6 +1,7 @@
 import StageA.RelationalInterpreterKernelData
 import StageA.RelationalInterpreterKernelABI
 import StageA.RelationalInterpreterKernelLoop
+import StageA.RelationalInterpreterKernelProgramIndex
 import StageA.RelationalSymbolicSoundness
 
 namespace StageA.Relational.InterpreterKernelSummary
@@ -11,7 +12,29 @@ open StageA.Relational.InterpreterKernel
 open StageA.Relational.InterpreterKernelABI
 open StageA.Relational.InterpreterKernelData
 open StageA.Relational.InterpreterKernelLoop
+open StageA.Relational.InterpreterKernelProgramIndex
 open StageA.Relational.SymbolicSoundness
+
+export StageA.Relational.InterpreterKernelProgramIndex (
+  sourceRvasStrictlySorted
+  lookupProgramRecordWithIndexAux
+  lookupProgramRecordWithIndex?
+  lookupProgramRecordIndex?
+  lookupProgramRecordWithIndexAux_recordExact
+)
+
+/-- Compatibility projection for the executable-kernel lookup.  The data and
+execution kernels intentionally keep separate definitions of the same `find?`
+operation; their equality is definitional and proved once here. -/
+theorem lookupProgramRecordWithIndex?_recordExact
+    (records : List ProgramRecord) (sourceRva : Nat) :
+    (lookupProgramRecordWithIndex? records sourceRva).map Prod.snd =
+      StageA.Relational.InterpreterKernel.lookupProgramRecord records
+        sourceRva := by
+  simpa [StageA.Relational.InterpreterKernelData.lookupProgramRecord,
+    StageA.Relational.InterpreterKernel.lookupProgramRecord] using
+    StageA.Relational.InterpreterKernelProgramIndex.lookupProgramRecordWithIndex?_recordExact
+      records sourceRva
 
 /-!
 Generic function-summary contract for the compiled `programLookup` operation.
@@ -273,42 +296,6 @@ theorem ProgramLookupLoopTrace.toExactCFGPath
   | iterate before next after invariantBefore iteration invariantAfter
       rankDecreases rest induction =>
       exact iteration.trans induction
-
-def sourceRvasStrictlySorted (records : List ProgramRecord) : Prop :=
-  records.Pairwise fun left right => left.sourceRva < right.sourceRva
-
-def lookupProgramRecordWithIndexAux :
-    List ProgramRecord -> Nat -> Nat -> Option (Nat × ProgramRecord)
-  | [], _, _ => none
-  | record :: tail, sourceRva, index =>
-      if record.sourceRva == sourceRva then some (index, record)
-      else lookupProgramRecordWithIndexAux tail sourceRva (index + 1)
-
-def lookupProgramRecordWithIndex? (records : List ProgramRecord)
-    (sourceRva : Nat) : Option (Nat × ProgramRecord) :=
-  lookupProgramRecordWithIndexAux records sourceRva 0
-
-def lookupProgramRecordIndex? (records : List ProgramRecord)
-    (sourceRva : Nat) : Option Nat :=
-  (lookupProgramRecordWithIndex? records sourceRva).map Prod.fst
-
-theorem lookupProgramRecordWithIndexAux_recordExact
-    (records : List ProgramRecord) (sourceRva index : Nat) :
-    (lookupProgramRecordWithIndexAux records sourceRva index).map Prod.snd =
-      records.find? (fun record => record.sourceRva == sourceRva) := by
-  induction records generalizing index with
-  | nil => rfl
-  | cons record tail induction =>
-      simp only [lookupProgramRecordWithIndexAux, List.find?_cons]
-      by_cases same : (record.sourceRva == sourceRva) = true
-      · simp [same]
-      · simp [same, induction (index := index + 1)]
-
-theorem lookupProgramRecordWithIndex?_recordExact
-    (records : List ProgramRecord) (sourceRva : Nat) :
-    (lookupProgramRecordWithIndex? records sourceRva).map Prod.snd =
-      StageA.Relational.InterpreterKernel.lookupProgramRecord records sourceRva := by
-  exact lookupProgramRecordWithIndexAux_recordExact records sourceRva 0
 
 /-- Exact C ABI return value: null on a miss, otherwise the address of the
 matching fixed-size record in the PE-backed table. -/

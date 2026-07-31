@@ -32,6 +32,8 @@ from tests.test_stage_a_isa_catalog import (
     catalog_payload,
     defined_outputs,
     entry,
+    v2_catalog_payload,
+    v2_entry,
     xed_payload,
     xed_template,
 )
@@ -295,6 +297,368 @@ class StageAISACorpusGeneratorTests(unittest.TestCase):
         )
         self.assertNotEqual(x87_nan.initial_state.x87.tag_word, 0xFFFF)
 
+    def test_v2_noop_subregister_and_state_effects_generate_canonical_cases(self):
+        high_outputs = defined_outputs()
+        high_outputs["gprs"]["eax"] = 0x0000FF00
+        payload = v2_catalog_payload(
+            v2_entry(
+                "form-high-byte",
+                [
+                    {
+                        "class": "register",
+                        "id": "register-high-byte",
+                        "width_bits": 8,
+                        "reads": [{"register": "eax", "lsb": 8}],
+                        "writes": [{"register": "eax", "lsb": 8}],
+                    }
+                ],
+                instruction=[0x80, 0xE4, 0xF7],
+                outputs=high_outputs,
+            ),
+            v2_entry(
+                "form-noop",
+                [{"class": "noop", "id": "noop-core"}],
+                instruction=[0x90],
+            ),
+            v2_entry(
+                "form-state-eflags",
+                [
+                    {
+                        "class": "state",
+                        "id": "state-eflags",
+                        "state": "eflags",
+                        "access": "read_write",
+                    }
+                ],
+                instruction=[0x9D],
+            ),
+            v2_entry(
+                "form-state-fs",
+                [
+                    {
+                        "class": "state",
+                        "id": "state-fs",
+                        "state": "fs",
+                        "access": "read",
+                    }
+                ],
+                instruction=[0x64, 0x8B, 0x00],
+            ),
+        )
+
+        first = generate_boundary_isa_corpus(
+            parse_isa_form_catalog(payload), seed=41
+        )
+        second = generate_boundary_isa_corpus(
+            parse_isa_form_catalog(copy.deepcopy(payload)), seed=41
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(
+            parse_generated_isa_corpus(serialize_generated_isa_corpus(first)),
+            first,
+        )
+        high_cases = [
+            case
+            for case in first.cases
+            if case.form_id == "form-high-byte"
+        ]
+        by_scenario = {
+            case.coverage_cell.scenario: case for case in high_cases
+        }
+        self.assertEqual(
+            (by_scenario[CoverageScenario.REGISTER_ZERO].initial_state.gprs.eax >> 8)
+            & 0xFF,
+            0,
+        )
+        self.assertEqual(
+            (
+                by_scenario[
+                    CoverageScenario.REGISTER_MAX_UNSIGNED
+                ].initial_state.gprs.eax
+                >> 8
+            )
+            & 0xFF,
+            0xFF,
+        )
+        self.assertTrue(
+            all(case.defined_outputs.gprs.eax == 0x0000FF00 for case in high_cases)
+        )
+        noop = next(case for case in first.cases if case.form_id == "form-noop")
+        self.assertEqual(
+            noop.coverage_cell.scenario, CoverageScenario.NOOP_BASELINE
+        )
+        eflags = next(
+            case for case in first.cases if case.form_id == "form-state-eflags"
+        )
+        self.assertEqual(
+            eflags.coverage_cell.scenario, CoverageScenario.STATE_BASELINE
+        )
+        self.assertEqual(eflags.initial_state.eflags, 0x202)
+        fs = next(case for case in first.cases if case.form_id == "form-state-fs")
+        self.assertEqual(fs.coverage_cell.scenario, CoverageScenario.STATE_BASELINE)
+        self.assertEqual(fs.initial_state.fs.selector, 0x3B)
+        self.assertEqual(fs.initial_state.fs.base, FS_BASE)
+
+    def test_v2_coupled_conditional_divide_and_indirect_memory_are_materialized(self):
+        payload = v2_catalog_payload(
+            v2_entry(
+                "form-conditional-memory",
+                [
+                    {
+                        "class": "memory",
+                        "id": "memory-conditional",
+                        "width_bits": 32,
+                        "access": "read_write",
+                        "address": {
+                            "base": "esi",
+                            "index": None,
+                            "scale": 1,
+                            "displacement": 0,
+                            "segment": "flat",
+                        },
+                        "condition": {
+                            "kind": "register",
+                            "location": {"register": "ecx", "lsb": 0},
+                            "width_bits": 8,
+                            "mask": 31,
+                            "value": 1,
+                        },
+                    }
+                ],
+                instruction=[0xD3, 0x2E],
+            ),
+            v2_entry(
+                "form-divide-memory",
+                [
+                    {
+                        "class": "divide",
+                        "id": "divide-core",
+                        "width_bits": 32,
+                        "signed": True,
+                        "dividend_high": {"register": "edx", "lsb": 0},
+                        "dividend_low": {"register": "eax", "lsb": 0},
+                        "divisor": {
+                            "kind": "memory",
+                            "address": {
+                                "base": "esp",
+                                "index": None,
+                                "scale": 1,
+                                "displacement": 64,
+                                "segment": "flat",
+                            },
+                        },
+                    }
+                ],
+                instruction=[0xF7, 0x7C, 0x24, 0x40],
+            ),
+            v2_entry(
+                "form-indirect-memory",
+                [
+                    {
+                        "class": "branch",
+                        "id": "branch-control",
+                        "outcomes": [
+                            {
+                                "scenario": "taken",
+                                "eflags_mask": 0,
+                                "eflags_value": 0,
+                                "control": "indirect_branch",
+                                "target": {
+                                    "kind": "memory",
+                                    "address": {
+                                        "base": None,
+                                        "index": None,
+                                        "scale": 1,
+                                        "displacement": 0x422000,
+                                        "segment": "flat",
+                                    },
+                                },
+                            }
+                        ],
+                    }
+                ],
+                instruction=[0xFF, 0x25, 0x00, 0x20, 0x42, 0x00],
+            ),
+            v2_entry(
+                "form-indirect-register",
+                [
+                    {
+                        "class": "branch",
+                        "id": "branch-control",
+                        "outcomes": [
+                            {
+                                "scenario": "taken",
+                                "eflags_mask": 0,
+                                "eflags_value": 0,
+                                "control": "indirect_branch",
+                                "target": {
+                                    "kind": "register",
+                                    "location": {"register": "eax", "lsb": 0},
+                                },
+                            }
+                        ],
+                    }
+                ],
+                instruction=[0xFF, 0xE0],
+            ),
+            v2_entry(
+                "form-push-memory",
+                [
+                    {
+                        "class": "memory",
+                        "id": "memory-source",
+                        "width_bits": 32,
+                        "access": "read",
+                        "address": {
+                            "base": "esp",
+                            "index": None,
+                            "scale": 1,
+                            "displacement": 64,
+                            "segment": "flat",
+                        },
+                        "condition": None,
+                    },
+                    {
+                        "class": "memory",
+                        "id": "memory-stack",
+                        "width_bits": 32,
+                        "access": "write",
+                        "address": {
+                            "base": "esp",
+                            "index": None,
+                            "scale": 1,
+                            "displacement": -4,
+                            "segment": "flat",
+                        },
+                        "condition": None,
+                    },
+                    {
+                        "class": "register",
+                        "id": "register-stack",
+                        "width_bits": 32,
+                        "reads": [],
+                        "writes": [{"register": "esp", "lsb": 0}],
+                    },
+                ],
+                instruction=[0xFF, 0x74, 0x24, 0x40],
+            ),
+            v2_entry(
+                "form-pushall",
+                [
+                    {
+                        "class": "memory",
+                        "id": "memory-stack",
+                        "width_bits": 256,
+                        "access": "write",
+                        "address": {
+                            "base": "esp",
+                            "index": None,
+                            "scale": 1,
+                            "displacement": -32,
+                            "segment": "flat",
+                        },
+                        "condition": None,
+                    },
+                    {
+                        "class": "register",
+                        "id": "register-stack",
+                        "width_bits": 32,
+                        "reads": [],
+                        "writes": [{"register": "esp", "lsb": 0}],
+                    },
+                ],
+                instruction=[0x60],
+            ),
+        )
+
+        corpus = generate_boundary_isa_corpus(
+            parse_isa_form_catalog(payload), seed=23
+        )
+
+        conditional = {
+            case.coverage_cell.scenario: case
+            for case in corpus.cases
+            if case.form_id == "form-conditional-memory"
+        }
+        inactive = conditional[CoverageScenario.MEMORY_CONDITION_FALSE]
+        self.assertEqual(len(inactive.memory), 1)
+        self.assertEqual(inactive.memory[0].permissions, "r")
+        self.assertEqual(inactive.defined_outputs.memory, ())
+        self.assertEqual(inactive.initial_state.gprs.ecx & 31, 0)
+        active = conditional[CoverageScenario.MEMORY_ALIGNED_ZERO]
+        self.assertEqual(active.initial_state.gprs.ecx & 31, 1)
+        self.assertEqual(len(active.memory), 1)
+
+        divide = {
+            case.coverage_cell.scenario: case
+            for case in corpus.cases
+            if case.form_id == "form-divide-memory"
+        }
+        self.assertEqual(
+            int.from_bytes(
+                divide[CoverageScenario.DIVIDE_SUCCESS].memory[0].data,
+                "little",
+            ),
+            0xFFFFFFFD,
+        )
+        self.assertEqual(
+            int.from_bytes(
+                divide[CoverageScenario.DIVIDE_BY_ZERO].memory[0].data,
+                "little",
+            ),
+            0,
+        )
+
+        indirect_memory = next(
+            case
+            for case in corpus.cases
+            if case.form_id == "form-indirect-memory"
+        )
+        self.assertEqual(indirect_memory.memory[0].address, 0x422000)
+        self.assertEqual(
+            int.from_bytes(indirect_memory.memory[0].data, "little"),
+            generator_module.DYNAMIC_TARGET_EIP,
+        )
+        indirect_register = next(
+            case
+            for case in corpus.cases
+            if case.form_id == "form-indirect-register"
+        )
+        self.assertEqual(
+            indirect_register.initial_state.gprs.eax,
+            generator_module.DYNAMIC_TARGET_EIP,
+        )
+
+        push = [
+            case
+            for case in corpus.cases
+            if case.form_id == "form-push-memory"
+        ]
+        self.assertTrue(all(len(case.memory) == 2 for case in push))
+        self.assertTrue(
+            all(
+                abs(case.memory[1].address - case.memory[0].address) == 68
+                for case in push
+            )
+        )
+        pushall = [
+            case for case in corpus.cases if case.form_id == "form-pushall"
+        ]
+        self.assertTrue(all(len(case.memory[0].data) == 32 for case in pushall))
+        self.assertTrue(
+            all(
+                len(case.defined_outputs.memory[0].mask) == 32
+                for case in pushall
+                if case.coverage_cell.effect_id == "memory-stack"
+            )
+        )
+
+        executor = generated_corpus_executor_input(corpus)
+        self.assertIsInstance(executor.corpus, ISAConformanceCorpus)
+        self.assertEqual(len(executor.corpus.cases), len(corpus.cases))
+        conformance.serialize_isa_conformance_corpus(executor.corpus)
+
     def test_generator_dispatches_on_effect_classes_not_instruction_names(self):
         source = inspect.getsource(generator_module)
         self.assertNotIn("iform", source.lower())
@@ -343,6 +707,57 @@ class StageAISACorpusGeneratorTests(unittest.TestCase):
         ]
         with self.assertRaisesRegex(
             ISACorpusGenerationError, "conflicting state constraints"
+        ):
+            generate_boundary_isa_corpus(parse_isa_form_catalog(payload))
+
+    def test_v2_coupled_predicate_constraints_fail_closed(self):
+        payload = v2_catalog_payload(
+            v2_entry(
+                "form-conflict",
+                [
+                    {
+                        "class": "memory",
+                        "id": "memory-clear",
+                        "width_bits": 32,
+                        "access": "read",
+                        "address": {
+                            "base": "ebx",
+                            "index": None,
+                            "scale": 1,
+                            "displacement": 0,
+                            "segment": "flat",
+                        },
+                        "condition": {
+                            "kind": "eflags",
+                            "mask": 0x40,
+                            "value": 0,
+                        },
+                    },
+                    {
+                        "class": "memory",
+                        "id": "memory-set",
+                        "width_bits": 32,
+                        "access": "read",
+                        "address": {
+                            "base": "esi",
+                            "index": None,
+                            "scale": 1,
+                            "displacement": 0,
+                            "segment": "flat",
+                        },
+                        "condition": {
+                            "kind": "eflags",
+                            "mask": 0x40,
+                            "value": 0x40,
+                        },
+                    },
+                ],
+            )
+        )
+
+        with self.assertRaisesRegex(
+            ISACorpusGenerationError,
+            "conflicting state constraints for eflags",
         ):
             generate_boundary_isa_corpus(parse_isa_form_catalog(payload))
 

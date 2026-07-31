@@ -60,11 +60,12 @@ def _copy_module_closure(source_root: Path, destination: Path, module: str) -> N
         pending.extend(_IMPORT.findall(text))
 
 
-_KERNEL = r"""import StageA.RelationalOriginalStackDynamicControlClosure
+_KERNEL = r"""import StageA.RelationalRuntimeValueCarrySemantics
 
 namespace StageA.OriginalStackDynamicControlClosureKernel
 
 open StageA.Relational.OriginalStackDynamicControlClosure
+open StageA.Relational.RuntimeValueCarrySemantics
 
 #print axioms originalResolvedCodeTarget_of_checked
 #print axioms stackCarryClosure_of_complete
@@ -73,6 +74,9 @@ open StageA.Relational.OriginalStackDynamicControlClosure
 #print axioms emptyIndexedSourceClosure_of_complete
 #print axioms dynamicCallbackClosure_of_complete
 #print axioms dynamicSourceClosure_of_uninhabited
+#print axioms checkedStackFiniteOriginCallEntryCertificate
+#print axioms completeStackCarryPremise_of_checkedRoute
+#check CompleteStackCarryRangeSlotPremise
 
 end StageA.OriginalStackDynamicControlClosureKernel
 """
@@ -186,7 +190,7 @@ class StageAOriginalStackDynamicControlClosureKernelTests(unittest.TestCase):
             _copy_module_closure(
                 source_root,
                 stage_a,
-                "RelationalOriginalStackDynamicControlClosure",
+                "RelationalRuntimeValueCarrySemantics",
             )
             (stage_a / "OriginalStackDynamicControlClosureKernel.lean").write_text(
                 _KERNEL, encoding="utf-8"

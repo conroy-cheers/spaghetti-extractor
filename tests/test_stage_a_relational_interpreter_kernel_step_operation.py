@@ -33,6 +33,8 @@ from spaghetti_extractor.relational.lean.interpreter_kernel_step_native import (
 )
 from spaghetti_extractor.relational.lean.interpreter_kernel_step_operation import (
     INTERPRETER_KERNEL_STEP_OPERATION_FORMAT,
+    INTERPRETER_KERNEL_STEP_OPERATION_INTERFACE_LEAN_FILENAME,
+    INTERPRETER_KERNEL_STEP_OPERATION_LEAN_FILENAME,
     INTERPRETER_KERNEL_STEP_OPERATION_REMAINING_PREMISES,
     RelationalInterpreterKernelStepOperationGenerationError,
     build_relational_interpreter_kernel_step_operation_plan,
@@ -342,12 +344,28 @@ class StageARelationalInterpreterKernelStepOperationTests(unittest.TestCase):
         )
         self.assertEqual(payload["result"]["status"], "typed-interface-ready")
         self.assertEqual(len(payload["inputs"]), 10)
+        self.assertEqual(
+            [
+                row["field"]
+                for row in payload["checked_native_closure_interfaces"]
+            ],
+            [
+                "programLookupCall",
+                "invokeCallRefines",
+                "actionLoops",
+                "epilogue",
+            ],
+        )
         self.assertIn(
             "program_lookup_operation_result_extraction",
             payload["closed_components"],
         )
+        self.assertIn(
+            "exact_native_step_closure_adapters",
+            payload["closed_components"],
+        )
 
-    def test_source_exposes_universal_operation_theorem_with_six_typed_inputs(
+    def test_source_exposes_checked_request_local_operation_certificate(
         self,
     ) -> None:
         source = relational_interpreter_kernel_step_operation_source(self._build())
@@ -356,14 +374,23 @@ class StageARelationalInterpreterKernelStepOperationTests(unittest.TestCase):
             "generatedInterpreterStepOperationABIEntry",
             "generatedInterpreterStepProgramLookupOperation",
             "GeneratedInterpreterStepProgramLookupWorldCall",
-            "InterpreterStepNativeProgramLookupPrepared",
-            "GeneratedInterpreterStepInvokeCallSubroutine",
-            "GeneratedInterpreterStepX87ReplayNestedCallback",
+            "InterpreterStepNativeCheckedProgramLookupFrame",
+            "generatedInterpreterStepInvokeCallStatic",
+            "generatedInterpreterStepX87ReplayAuthority",
             "GeneratedInterpreterStepActionLoops",
             "GeneratedInterpreterStepEpilogue",
+            "GeneratedInterpreterStepCheckedNativeEvidence",
+            "GeneratedInterpreterStepExactProgramLookupClosure",
+            "GeneratedInterpreterStepExactHelperClosure",
+            "GeneratedInterpreterStepCheckedInvokeClosure",
+            "GeneratedInterpreterStepExactActionClosure",
+            "GeneratedInterpreterStepExactEpilogueClosure",
+            "generatedInterpreterStepCheckedNativeEvidenceOfExact",
+            "generatedInterpreterStepCheckedCertificate",
             "theorem generatedInterpreterStepOperationRefinesUsing",
             "(environment : NativeWorldEnvironment) (world : RelationalWorld)",
-            "InterpreterStepNativeOperationCertificate.mk",
+            "InterpreterStepNativeCheckedOperationCertificate",
+            "InterpreterStepClosedCallTreeAuthority.ofClosure",
         ):
             self.assertIn(required, source)
         lookup_adapter = source.split(
@@ -377,15 +404,31 @@ class StageARelationalInterpreterKernelStepOperationTests(unittest.TestCase):
         theorem = source.split(
             "theorem generatedInterpreterStepOperationRefinesUsing", 1
         )[1].split("#print axioms", 1)[0]
-        for premise in (
-            "programLookupCall",
-            "helpers",
-            "invokeCall",
-            "x87Replay",
-            "actionLoops",
-            "epilogue",
-        ):
+        for premise in ("callTree", "native"):
             self.assertIn(f"({premise} :", theorem)
+        self.assertIn("invokeCallRefines : forall", source)
+        self.assertIn(
+            "InterpreterStepNativeFramedRequestLocalInvokeEvidence", source
+        )
+        self.assertIn(
+            "import StageA.RelationalInterpreterKernelStepOperationClosure",
+            source,
+        )
+        self.assertIn("invokeCall.requestLocal derivation", source)
+        self.assertNotIn("helpers.toAuthority", source)
+        self.assertIn("actionLoops.toAuthority", source)
+        self.assertIn("epilogue.toAuthority", source)
+        self.assertLess(
+            source.index(
+                "structure GeneratedInterpreterStepCheckedNativeEvidence"
+            ),
+            source.index(
+                "def generatedInterpreterStepCheckedNativeEvidenceOfExact"
+            ),
+        )
+        self.assertNotIn("GeneratedInterpreterStepInvokeCallSubroutine", source)
+        self.assertNotIn("InterpreterStepNativeOperationCertificate.mk", source)
+        self.assertEqual(source.count("KernelOperationRefinesUsing"), 1)
         for marker in ("sorry", "axiom", "unsafe", "native_decide"):
             self.assertIsNone(re.search(rf"\b{marker}\b", source), marker)
 
@@ -413,7 +456,11 @@ class StageARelationalInterpreterKernelStepOperationTests(unittest.TestCase):
         )[0]
         self.assertIn("helpers.execute", action)
         self.assertIn("invokeCall.refines", action)
-        self.assertIn("x87Replay.execute", action)
+        self.assertNotIn("x87Replay.execute", action)
+        static_x87 = core.split(
+            "structure InterpreterStepNativeX87ReplayAuthority", 1
+        )[1].split("structure InterpreterStepNativeActionLoopAuthority", 1)[0]
+        self.assertNotIn("execute :", static_x87)
 
     def test_rejects_stale_or_nonclosed_inputs(self) -> None:
         payload = json.loads(self.x87.read_text(encoding="utf-8"))
@@ -463,6 +510,22 @@ class StageARelationalInterpreterKernelStepOperationTests(unittest.TestCase):
         )
         for path in first.iterdir():
             self.assertEqual(path.read_bytes(), (second / path.name).read_bytes())
+        interface = (
+            first / INTERPRETER_KERNEL_STEP_OPERATION_INTERFACE_LEAN_FILENAME
+        ).read_text(encoding="ascii")
+        certificate = (
+            first / INTERPRETER_KERNEL_STEP_OPERATION_LEAN_FILENAME
+        ).read_text(encoding="ascii")
+        self.assertNotIn(
+            "GeneratedRelationalInterpreterKernelClosedCallTree", interface
+        )
+        self.assertIn(
+            "GeneratedRelationalInterpreterKernelStepOperationInterface",
+            certificate,
+        )
+        self.assertIn(
+            "def generatedInterpreterStepCheckedCertificate", certificate
+        )
         with self.assertRaisesRegex(
             RelationalInterpreterKernelStepOperationGenerationError,
             "ABI module",

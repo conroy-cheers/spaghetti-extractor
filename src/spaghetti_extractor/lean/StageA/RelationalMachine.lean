@@ -796,6 +796,246 @@ structure StaticProofContext where
   terminalReturnAddresses : List TerminalReturnAddressPair := []
 deriving Repr, DecidableEq
 
+/-! These predicates classify accesses inside the flat PE32 address-space model.
+They do not claim that a real processor access cannot fault: that conclusion
+requires the explicit launch mapping and flat-segment assumptions below. -/
+
+inductive ModeledAccessMode where
+  | read
+  | write
+deriving Repr, DecidableEq
+
+inductive RelationalSide where
+  | original
+  | candidate
+deriving Repr, DecidableEq
+
+def wholeSpanContainedChecked (containerStart containerSize accessStart accessSize : Nat) :
+    Bool :=
+  accessSize > 0 &&
+    pe32SpanBounded containerStart containerSize &&
+    pe32SpanBounded accessStart accessSize &&
+    containerStart <= accessStart &&
+    accessStart + accessSize <= containerStart + containerSize
+
+def AccessSpanContained
+    (containerStart containerSize accessStart accessSize : Nat) : Prop :=
+  accessSize > 0 ∧
+    containerStart + containerSize <= pe32AddressSpaceSize ∧
+    accessStart + accessSize <= pe32AddressSpaceSize ∧
+    containerStart <= accessStart ∧
+    accessStart + accessSize <= containerStart + containerSize
+
+def pe32WritableNonExecutableSpanValid (pe : PE32) (rva size : Nat) : Bool :=
+  pe32MappedSpanValid pe rva size &&
+    (pe.sections.filter fun sec =>
+      pe32SpanBounded sec.virtualAddress sec.mappedSize &&
+        sec.writable && !sec.executable &&
+        wholeSpanContainedChecked sec.virtualAddress sec.mappedSize rva size).length == 1
+
+def pe32AccessSpanChecked (pe : PE32) (mode : ModeledAccessMode)
+    (absolute size : Nat) : Bool :=
+  size > 0 &&
+    pe32SpanBounded pe.imageBase pe.sizeOfImage &&
+    pe32SpanBounded absolute size &&
+    pe.imageBase <= absolute &&
+    let rva := absolute - pe.imageBase
+    match mode with
+    | .read => pe32MappedSpanValid pe rva size
+    | .write => pe32WritableNonExecutableSpanValid pe rva size
+
+def DynamicAddressRangePair.baseOn
+    (side : RelationalSide) (range : DynamicAddressRangePair) : Nat :=
+  match side with
+  | .original => range.originalBase.toNat
+  | .candidate => range.candidateBase.toNat
+
+def dynamicAddressRangeAccessSpanChecked (side : RelationalSide)
+    (range : DynamicAddressRangePair) (absolute size : Nat) : Bool :=
+  wholeSpanContainedChecked (range.baseOn side) range.size absolute size
+
+def RelationalWorld.accessSpanChecked (side : RelationalSide)
+    (world : RelationalWorld) (absolute size : Nat) : Bool :=
+  (world.stackRanges ++ world.dynamicRanges).any fun range =>
+    dynamicAddressRangeAccessSpanChecked side range absolute size
+
+def StaticProofContext.peOn (side : RelationalSide)
+    (context : StaticProofContext) : PE32 :=
+  match side with
+  | .original => context.originalPe
+  | .candidate => context.candidatePe
+
+def relationalAccessSpanChecked (side : RelationalSide)
+    (context : StaticProofContext) (world : RelationalWorld)
+    (mode : ModeledAccessMode) (absolute size : Nat) : Bool :=
+  pe32AccessSpanChecked (context.peOn side) mode absolute size ||
+    world.accessSpanChecked side absolute size
+
+def ModeledAccessSpan (side : RelationalSide)
+    (context : StaticProofContext) (world : RelationalWorld)
+    (mode : ModeledAccessMode) (absolute size : Nat) : Prop :=
+  relationalAccessSpanChecked side context world mode absolute size = true
+
+def PEReadAccessSpanWitness (pe : PE32) (absolute size : Nat) : Prop :=
+  ∃ rva,
+    absolute = pe.imageBase + rva ∧
+      absolute + size <= pe32AddressSpaceSize ∧
+      pe32MappedSpanValid pe rva size = true
+
+def PEWriteAccessSpanWitness (pe : PE32) (absolute size : Nat) : Prop :=
+  ∃ rva sec,
+    absolute = pe.imageBase + rva ∧
+      absolute + size <= pe32AddressSpaceSize ∧
+      sec ∈ pe.sections ∧
+      sec.writable = true ∧
+      sec.executable = false ∧
+      AccessSpanContained sec.virtualAddress sec.mappedSize rva size
+
+def WorldAccessSpanWitness (side : RelationalSide) (world : RelationalWorld)
+    (absolute size : Nat) : Prop :=
+  ∃ range,
+    range ∈ world.stackRanges ++ world.dynamicRanges ∧
+      AccessSpanContained (range.baseOn side) range.size absolute size
+
+def RelationalAccessSpanWitness (side : RelationalSide)
+    (context : StaticProofContext) (world : RelationalWorld)
+    (mode : ModeledAccessMode) (absolute size : Nat) : Prop :=
+  (match mode with
+    | .read => PEReadAccessSpanWitness (context.peOn side) absolute size
+    | .write => PEWriteAccessSpanWitness (context.peOn side) absolute size) ∨
+    WorldAccessSpanWitness side world absolute size
+
+theorem wholeSpanContainedChecked_sound
+    (containerStart containerSize accessStart accessSize : Nat)
+    (checked :
+      wholeSpanContainedChecked containerStart containerSize accessStart accessSize = true) :
+    AccessSpanContained containerStart containerSize accessStart accessSize := by
+  simp only [wholeSpanContainedChecked, pe32SpanBounded, Bool.and_eq_true,
+    decide_eq_true_eq] at checked
+  rcases checked with ⟨⟨⟨⟨positive, containerBounded⟩, accessBounded⟩, startsAfter⟩,
+    endsBefore⟩
+  rcases containerBounded with ⟨containerStartBound, containerSizeBound⟩
+  rcases accessBounded with ⟨accessStartBound, accessSizeBound⟩
+  refine ⟨positive, ?_, ?_, startsAfter, endsBefore⟩ <;> omega
+
+theorem dynamicAddressRangeAccessSpanChecked_sound
+    (side : RelationalSide) (range : DynamicAddressRangePair)
+    (absolute size : Nat)
+    (checked :
+      dynamicAddressRangeAccessSpanChecked side range absolute size = true) :
+    AccessSpanContained (range.baseOn side) range.size absolute size :=
+  wholeSpanContainedChecked_sound _ _ _ _ checked
+
+theorem pe32AccessSpanChecked_read_sound
+    (pe : PE32) (absolute size : Nat)
+    (checked : pe32AccessSpanChecked pe .read absolute size = true) :
+    PEReadAccessSpanWitness pe absolute size := by
+  simp only [pe32AccessSpanChecked, pe32SpanBounded, Bool.and_eq_true,
+    decide_eq_true_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨positive, imageBounded⟩, absoluteBounded⟩, afterBase⟩, mapped⟩
+  rcases absoluteBounded with ⟨absoluteStartBound, absoluteSizeBound⟩
+  refine ⟨absolute - pe.imageBase, ?_, ?_, mapped⟩ <;> omega
+
+theorem pe32WritableNonExecutableSpanValid_sound
+    (pe : PE32) (rva size : Nat)
+    (checked : pe32WritableNonExecutableSpanValid pe rva size = true) :
+    ∃ sec,
+      sec ∈ pe.sections ∧
+      sec.writable = true ∧
+      sec.executable = false ∧
+      AccessSpanContained sec.virtualAddress sec.mappedSize rva size := by
+  simp only [pe32WritableNonExecutableSpanValid, Bool.and_eq_true, beq_iff_eq] at checked
+  rcases checked with ⟨mapped, singleton⟩
+  rcases List.length_eq_one_iff.mp singleton with ⟨sec, filtered⟩
+  have member :
+      sec ∈ pe.sections.filter (fun candidate =>
+        pe32SpanBounded candidate.virtualAddress candidate.mappedSize &&
+          candidate.writable && !candidate.executable &&
+          wholeSpanContainedChecked candidate.virtualAddress candidate.mappedSize rva size) := by
+    rw [filtered]
+    simp
+  simp only [List.mem_filter] at member
+  rcases member with ⟨sectionMember, checks⟩
+  simp only [Bool.and_eq_true] at checks
+  rcases checks with
+    ⟨⟨⟨sectionBounded, writable⟩, nonExecutableChecked⟩, contained⟩
+  have nonExecutable : sec.executable = false := by
+    cases executable : sec.executable <;> simp_all
+  exact ⟨sec, sectionMember, writable, nonExecutable,
+    wholeSpanContainedChecked_sound _ _ _ _ contained⟩
+
+theorem pe32AccessSpanChecked_write_sound
+    (pe : PE32) (absolute size : Nat)
+    (checked : pe32AccessSpanChecked pe .write absolute size = true) :
+    PEWriteAccessSpanWitness pe absolute size := by
+  simp only [pe32AccessSpanChecked, pe32SpanBounded, Bool.and_eq_true,
+    decide_eq_true_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨positive, imageBounded⟩, absoluteBounded⟩, afterBase⟩, writable⟩
+  rcases absoluteBounded with ⟨absoluteStartBound, absoluteSizeBound⟩
+  rcases pe32WritableNonExecutableSpanValid_sound pe
+      (absolute - pe.imageBase) size writable with
+    ⟨sec, member, sectionWritable, nonExecutable, contained⟩
+  refine ⟨absolute - pe.imageBase, sec, ?_, ?_, member, sectionWritable,
+    nonExecutable, contained⟩ <;> omega
+
+theorem RelationalWorld.accessSpanChecked_sound
+    (side : RelationalSide) (world : RelationalWorld)
+    (absolute size : Nat)
+    (checked : world.accessSpanChecked side absolute size = true) :
+    WorldAccessSpanWitness side world absolute size := by
+  simp only [RelationalWorld.accessSpanChecked, List.any_eq_true] at checked
+  rcases checked with ⟨range, member, rangeChecked⟩
+  exact ⟨range, member,
+    dynamicAddressRangeAccessSpanChecked_sound side range absolute size rangeChecked⟩
+
+theorem relationalAccessSpanChecked_sound
+    (side : RelationalSide) (context : StaticProofContext)
+    (world : RelationalWorld) (mode : ModeledAccessMode)
+    (absolute size : Nat)
+    (checked :
+      relationalAccessSpanChecked side context world mode absolute size = true) :
+    RelationalAccessSpanWitness side context world mode absolute size := by
+  simp only [relationalAccessSpanChecked, Bool.or_eq_true] at checked
+  rcases checked with peChecked | worldChecked
+  · left
+    cases mode with
+    | read =>
+        exact pe32AccessSpanChecked_read_sound (context.peOn side) absolute size peChecked
+    | write =>
+        exact pe32AccessSpanChecked_write_sound (context.peOn side) absolute size peChecked
+  · right
+    exact world.accessSpanChecked_sound side absolute size worldChecked
+
+/-! A launch profile can connect modeled-domain membership to the concrete
+mapping and segment facts of a particular execution environment.  The generic
+access certificate never constructs this assumption and never turns it into a
+hardware fault-freedom claim. -/
+structure FlatMappedAccessLaunchAssumption
+    (context : StaticProofContext) (world : RelationalWorld)
+    (dataAndStackSegmentsFlat : RelationalSide -> Prop)
+    (architecturallyMapped :
+      RelationalSide -> ModeledAccessMode -> Nat -> Nat -> Prop) : Prop where
+  segmentsFlat : ∀ side, dataAndStackSegmentsFlat side
+  modeledSpansMapped :
+    ∀ side mode absolute size,
+      ModeledAccessSpan side context world mode absolute size ->
+        architecturallyMapped side mode absolute size
+
+theorem FlatMappedAccessLaunchAssumption.architecturallyMapped_of_modeled
+    {context : StaticProofContext} {world : RelationalWorld}
+    {dataAndStackSegmentsFlat : RelationalSide -> Prop}
+    {architecturallyMapped :
+      RelationalSide -> ModeledAccessMode -> Nat -> Nat -> Prop}
+    (assumption : FlatMappedAccessLaunchAssumption context world
+      dataAndStackSegmentsFlat architecturallyMapped)
+    (side : RelationalSide) (mode : ModeledAccessMode)
+    (absolute size : Nat)
+    (modeled : ModeledAccessSpan side context world mode absolute size) :
+    architecturallyMapped side mode absolute size :=
+  assumption.modeledSpansMapped side mode absolute size modeled
+
 def machineImportCallContractIdsUnique
     (contracts : List MachineImportCallContract) : Bool :=
   contracts.all fun contract =>

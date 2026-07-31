@@ -101,6 +101,13 @@ class StageACheckedArtifactTests(unittest.TestCase):
                 "theorem candidatePE32ProgramsEquivalentLinked : True := by trivial\n"
             ),
         )
+        mixed = _separate_axiom_audit_declaration(
+            bundle="RelationalAcceptance",
+            bundle_source=(
+                "theorem candidatePE32ProgramsEquivalentMixedChunked : "
+                "True := by trivial\n"
+            ),
+        )
         both = _separate_axiom_audit_declaration(
             bundle="RelationalAcceptance",
             bundle_source=(
@@ -116,6 +123,11 @@ class StageACheckedArtifactTests(unittest.TestCase):
         self.assertEqual(
             linked,
             "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked",
+        )
+        self.assertEqual(
+            mixed,
+            "StageA.GeneratedRelational."
+            "candidatePE32ProgramsEquivalentMixedChunked",
         )
         self.assertEqual(both, linked)
 

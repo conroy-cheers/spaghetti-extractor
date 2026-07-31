@@ -29,6 +29,7 @@ structure ISAConformanceInput where
   bytes : Bytes
   pc : Nat
   imageBase : Nat := 0x400000
+  cpuProfile : X86CPUProfile := .i686
   registers : Registers Nat
   eflags : Nat
   fsBase : Nat := 0
@@ -52,6 +53,8 @@ inductive ISAConformanceControl where
   | externalCall (imported : PEImport) (arguments : List Nat) (returnRva : Nat)
   | externalJump (imported : PEImport) (arguments : List Nat)
   | bulkCopy (destination source count : Nat) (direction : Bool)
+      (continuationRva : Nat)
+  | bulkFill (destination value count : Nat) (direction : Bool)
       (continuationRva : Nat)
   | indirectCall (target : Nat) (continuationRva returnAddress : Nat)
   | indirectJump (target : Nat)
@@ -282,6 +285,9 @@ def concreteOutcomeToISAConformanceControl :
       .externalJump imported (arguments.map BitVec.toNat)
   | .bulkCopy destination source count direction continuationRva =>
       .bulkCopy destination.toNat source.toNat count.toNat direction continuationRva
+  | .bulkFill destination value count direction continuationRva =>
+      .bulkFill destination.toNat value.toNat count.toNat direction
+        continuationRva
   | .indirectCall target continuationRva returnAddress =>
       .indirectCall target.toNat continuationRva returnAddress
   | .indirectJump target => .indirectJump target.toNat
@@ -291,11 +297,52 @@ def concreteOutcomeToISAConformanceControl :
       .atomicCompareExchange address.toNat expected.toNat replacement.toNat
         continuationRva
 
+def isaConformanceRead32 (memory : Memory) (address : Word) : Word :=
+  let state : MachineState := {
+    registers := {
+      eax := 0
+      ebx := 0
+      ecx := 0
+      edx := 0
+      esi := 0
+      edi := 0
+      ebp := 0
+      esp := 0
+    }
+    memory
+  }
+  state.read32 address
+
+def isaConformanceBulkCopyDwords (memory : Memory)
+    (destination source : Word) (direction : Bool) : Nat -> Memory
+  | 0 => memory
+  | count + 1 =>
+      let nextMemory := memory.write32 destination
+        (isaConformanceRead32 memory source)
+      let distance := BitVec.ofNat 32 4
+      let nextDestination :=
+        if direction then destination - distance else destination + distance
+      let nextSource :=
+        if direction then source - distance else source + distance
+      isaConformanceBulkCopyDwords nextMemory nextDestination nextSource
+        direction count
+
+def ConcreteBehavior.materializedMemory
+    (behavior : ConcreteBehavior) : Memory :=
+  match behavior.outcome with
+  | some (.bulkCopy destination source count direction _) =>
+      isaConformanceBulkCopyDwords behavior.memory destination source direction
+        count.toNat
+  | some (.bulkFill destination value count direction _) =>
+      Memory.bulkFillDwords behavior.memory destination value direction
+        count.toNat
+  | _ => behavior.memory
+
 def ISAConformanceInput.run
     (input : ISAConformanceInput) : ISAConformanceRunResult :=
   if !input.checked then
     .unsupported "input" "input failed finite-state validation"
-  else match decodeInstructionExact input.bytes with
+  else match decodeInstructionExactForProfile input.cpuProfile input.bytes with
   | none => .unsupported "decode" "decodeInstructionExact rejected the bytes"
   | some decoded =>
     match executeInstruction input.syntheticPE [] input.pc
@@ -337,7 +384,8 @@ def ISAConformanceInput.run
         x87Status := concrete.x87.status.toNat
         memory := input.observeMemory.map fun address => {
           address
-          value := (concrete.memory (BitVec.ofNat 32 address)).toNat
+          value := (concrete.materializedMemory
+            (BitVec.ofNat 32 address)).toNat
         }
         writes := behavior.writes.map fun write => {
           address := (write.1.eval input.machineState).toNat

@@ -188,8 +188,6 @@ def RunFunctionNativeResultIndexedLoopResult.operationResultEvidence
         resolveCodeTarget logical
 
 #print axioms
-  RunFunctionNativeResultIndexedLocalSemantics.execute
-#print axioms
   ExactRunFunctionCDeclSuffixResultPreservation.eaxPreserved
 #print axioms
   ExactRunFunctionCDeclSuffixResultPreservation.memoryPreserved

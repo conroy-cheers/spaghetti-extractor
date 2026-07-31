@@ -187,6 +187,37 @@ def MixedLaunchRealizable
     MixedLaunchStatesRelated originalContext candidate contract
       originalWorld candidateWorld originalState candidateState
 
+/-- The machine-state relation carried by the compositional invariant is
+phase-aware.  Before the launch wrapper has initialized the candidate engine
+workspace, the bounded launch relation is authoritative.  Every ordinary
+runtime segment establishes and preserves the stronger runtime relation.
+
+Keeping the disjunction explicit prevents launch realizability from
+pre-populating Stage B's private engine state while still requiring every
+post-wrapper component to select the runtime branch. -/
+def MixedExecutionMachineStatesRelated
+    (contract : MixedRelationContract)
+    (originalWorld candidateWorld : RelationalWorld)
+    (originalState candidateState : MachineState) : Prop :=
+  contract.launchStatesRelated originalWorld candidateWorld
+      originalState candidateState \/
+    contract.runtimeStatesRelated originalWorld candidateWorld
+      originalState candidateState
+
+theorem MixedExecutionMachineStatesRelated.ofLaunch
+    (related : contract.launchStatesRelated originalWorld candidateWorld
+      originalState candidateState) :
+    MixedExecutionMachineStatesRelated contract originalWorld candidateWorld
+      originalState candidateState :=
+  Or.inl related
+
+theorem MixedExecutionMachineStatesRelated.ofRuntime
+    (related : contract.runtimeStatesRelated originalWorld candidateWorld
+      originalState candidateState) :
+    MixedExecutionMachineStatesRelated contract originalWorld candidateWorld
+      originalState candidateState :=
+  Or.inr related
+
 def originalCallbackTargetsReachable (targetIds : List Nat) :
     List WorldExternalCallbackRuntime -> Prop
   | [] => True
@@ -250,14 +281,14 @@ structure MixedExecutionInvariant
       originalExecutionWorld? original = some originalWorld ->
       nativeExecutionWorld? candidate = some candidateWorld ->
       contract.worldsRelated originalWorld candidateWorld
-  runtimeStatesRelated : forall original candidate originalWorld candidateWorld
+  machineStatesRelated : forall original candidate originalWorld candidateWorld
       originalState candidateState,
     holds original candidate ->
       originalExecutionWorld? original = some originalWorld ->
       nativeExecutionWorld? candidate = some candidateWorld ->
       originalExecutionMachine? original = some originalState ->
       candidate.machine? = some candidateState ->
-      contract.runtimeStatesRelated originalWorld candidateWorld
+      MixedExecutionMachineStatesRelated contract originalWorld candidateWorld
         originalState candidateState
 
 /-- One checked pair of nonempty operational paths.  Observations are related
@@ -283,9 +314,73 @@ structure MixedWorldComponentChunkRefinement
     contract.eventObservationsRelated originalObservations candidateObservations
   afterRelated : invariant.holds originalAfter candidateAfter
 
-/-- Complete local composition, indexed by both exact authorities and both
-direct launch-root proofs.  The only submitted semantic objects are nonempty
-path refinements and their inductive invariant. -/
+/-- The one permitted asymmetric execution prefix.
+
+The decoded original takes exactly zero transitions and therefore remains at
+its canonical launch state with no observations.  The native candidate takes
+one checked nonempty silent wrapper path.  The endpoint must establish the
+runtime invariant consumed by every subsequent chunk.  This object is not a
+chunk and cannot be iterated. -/
+structure MixedWorldLaunchPrefixPaths
+    (original : DecodedWorldProgram)
+    (candidate : ExactNativeWorldProgram)
+    (contract : MixedRelationContract)
+    (invariant : MixedExecutionInvariant reachabilityTargetIds contract)
+    (originalBefore : WorldExecution)
+    (candidateBefore : NativeWorldExecution) where
+  candidateAfter : NativeWorldExecution
+  originalIdentity :
+    runRelatedSteps original.pe32TransitionSystem 0 originalBefore =
+      (originalBefore, [])
+  candidatePath : NonemptyRelatedPath candidate.transitionSystem
+    candidateBefore [] candidateAfter
+  afterRelated : invariant.holds originalBefore candidateAfter
+
+/-- Exact root-parametric producer for the unique launch prefix.  Launch-state
+relatedness is consumed here and is not part of the recurring runtime
+invariant. -/
+structure MixedWorldLaunchPrefixCertificate
+    (originalContext : OriginalDecodedStaticContext)
+    (original : DecodedWorldProgram)
+    (candidate : ExactNativeWorldProgram)
+    (contract : MixedRelationContract)
+    (launch : PE32ConsoleLaunchV2)
+    (candidateRootRva : Nat)
+    (invariant : MixedExecutionInvariant reachabilityTargetIds contract) where
+  candidateLaunchCalls : MachineState -> List NativeCallFrame
+  candidateLaunchCallsExact : forall candidateState,
+    candidateNativeLaunchCallFrames? candidate launch candidateState =
+      some (candidateLaunchCalls candidateState)
+  launchPaths : forall originalWorld candidateWorld originalState candidateState,
+    MixedLaunchStatesRelated originalContext candidate contract
+        originalWorld candidateWorld originalState candidateState ->
+      MixedWorldLaunchPrefixPaths original candidate contract invariant
+        (.running launch.rootTargetId originalState
+          launch.continuationTargetIds 0 originalWorld)
+        (.running candidateRootRva 0 candidateState
+          (candidateLaunchCalls candidateState) 0 [] candidateWorld)
+
+/-- A finite trace with one launch prefix followed by ordinary runtime chunks.
+The prefix is existential proof data, so the zero-step original side cannot be
+reused as an unbounded stuttering rule. -/
+def MixedWorldPrefixedChunkedTrace
+    (original : DecodedWorldProgram)
+    (candidate : ExactNativeWorldProgram)
+    (contract : MixedRelationContract)
+    (invariant : MixedExecutionInvariant reachabilityTargetIds contract)
+    (fuel : Nat)
+    (originalBefore : WorldExecution)
+    (candidateBefore : NativeWorldExecution) : Prop :=
+  exists launchPaths : MixedWorldLaunchPrefixPaths original candidate contract
+      invariant originalBefore candidateBefore,
+    ChunkedRelatedTrace original.pe32TransitionSystem candidate.transitionSystem
+      invariant.holds contract.eventObservationsRelated fuel originalBefore
+        launchPaths.candidateAfter
+
+/-- Complete runtime composition, indexed by both exact authorities and both
+direct launch-root proofs.  Every submitted semantic object is a nonempty path
+refinement under the runtime invariant; launch is handled separately by
+`MixedWorldLaunchPrefixCertificate`. -/
 structure MixedWorldChunkComposition
     (originalContext : OriginalDecodedStaticContext)
     (originalAuthority : ExactOriginalDecodedAuthority originalContext)
@@ -302,18 +397,6 @@ structure MixedWorldChunkComposition
     (candidateRoot : DirectExactCandidateNativeLaunchRoot candidate launch
       candidateRootRva) where
   invariant : MixedExecutionInvariant reachability.targetIds contract
-  candidateLaunchCalls : MachineState -> List NativeCallFrame
-  candidateLaunchCallsExact : forall candidateState,
-    candidateNativeLaunchCallFrames? candidate launch candidateState =
-      some (candidateLaunchCalls candidateState)
-  rootsRelated : forall originalWorld candidateWorld originalState candidateState,
-    MixedLaunchStatesRelated originalContext candidate contract
-        originalWorld candidateWorld originalState candidateState ->
-      invariant.holds
-        (.running launch.rootTargetId originalState
-          launch.continuationTargetIds 0 originalWorld)
-        (.running candidateRootRva 0 candidateState
-          (candidateLaunchCalls candidateState) 0 [] candidateWorld)
   component : forall originalBefore candidateBefore,
     invariant.holds originalBefore candidateBefore ->
       MixedWorldComponentChunkRefinement original candidate contract invariant
@@ -367,6 +450,8 @@ structure MixedWorldAcceptanceCertificate
   composition : MixedWorldChunkComposition originalContext originalAuthority
     original candidate candidateAuthority programBinding contract launch originalRoot
     reachability candidateRootRva candidateRoot
+  launchPrefix : MixedWorldLaunchPrefixCertificate originalContext original
+    candidate contract launch candidateRootRva composition.invariant
 
 /-- The structural acceptance result exposed to downstream theorem bundles. -/
 def ExactMixedWorldProgramsChunkObservationallyEquivalent
@@ -385,24 +470,14 @@ def ExactMixedWorldProgramsChunkObservationallyEquivalent
             exists candidateRootRva,
               DirectExactCandidateNativeLaunchRoot candidate launch
                   candidateRootRva /\
-                exists candidateLaunchCalls : MachineState -> List NativeCallFrame,
-                  (forall candidateState,
-                    candidateNativeLaunchCallFrames? candidate launch candidateState =
-                      some (candidateLaunchCalls candidateState)) /\
-                  exists invariant : MixedExecutionInvariant
-                      reachability.targetIds contract,
-                    (forall originalWorld candidateWorld originalState candidateState,
-                      MixedLaunchStatesRelated originalContext candidate contract
-                          originalWorld candidateWorld originalState candidateState ->
-                        invariant.holds
-                          (.running launch.rootTargetId originalState
-                            launch.continuationTargetIds 0 originalWorld)
-                          (.running candidateRootRva 0 candidateState
-                            (candidateLaunchCalls candidateState) 0 []
-                            candidateWorld)) /\
-                      ChunkedRelationalBisimulation original.pe32TransitionSystem
-                        candidate.transitionSystem invariant.holds
-                        contract.eventObservationsRelated
+                exists invariant : MixedExecutionInvariant
+                    reachability.targetIds contract,
+                  Nonempty (MixedWorldLaunchPrefixCertificate originalContext
+                    original candidate contract launch candidateRootRva
+                    invariant) /\
+                    ChunkedRelationalBisimulation original.pe32TransitionSystem
+                      candidate.transitionSystem invariant.holds
+                      contract.eventObservationsRelated
 
 theorem mixedWorldProgramsEquivalent
     {originalContext : OriginalDecodedStaticContext}
@@ -418,10 +493,8 @@ theorem mixedWorldProgramsEquivalent
     certificate.originalRoot, certificate.originalAuthority,
     certificate.reachability, ⟨certificate.candidateAuthority⟩,
     certificate.candidateRootRva, certificate.candidateRoot,
-    certificate.composition.candidateLaunchCalls,
-    certificate.composition.candidateLaunchCallsExact,
     certificate.composition.invariant,
-    certificate.composition.rootsRelated,
+    ⟨certificate.launchPrefix⟩,
     certificate.composition.chunksRefine⟩
 
 /-- Operational finite-trace consequence of the mixed acceptance certificate.
@@ -440,21 +513,24 @@ theorem mixedWorldProgramsEquivalent_trace
     (originalState candidateState : MachineState)
     (initial : MixedLaunchStatesRelated originalContext candidate contract
       originalWorld candidateWorld originalState candidateState) :
-    ChunkedRelatedTrace original.pe32TransitionSystem candidate.transitionSystem
-      certificate.composition.invariant.holds
-      contract.eventObservationsRelated fuel
+    MixedWorldPrefixedChunkedTrace original candidate contract
+      certificate.composition.invariant fuel
       (.running launch.rootTargetId originalState
         launch.continuationTargetIds 0 originalWorld)
       (.running certificate.candidateRootRva 0 candidateState
-        (certificate.composition.candidateLaunchCalls candidateState) 0 []
+        (certificate.launchPrefix.candidateLaunchCalls candidateState) 0 []
         candidateWorld) := by
-  apply chunkedRelationalBisimulation_trace original.pe32TransitionSystem
-    candidate.transitionSystem certificate.composition.invariant.holds
-    contract.eventObservationsRelated
-    certificate.composition.chunksRefine fuel
-  exact certificate.composition.rootsRelated originalWorld candidateWorld
+  let launchPaths := certificate.launchPrefix.launchPaths originalWorld candidateWorld
     originalState candidateState initial
+  exact ⟨launchPaths,
+    chunkedRelationalBisimulation_trace
+      original.pe32TransitionSystem candidate.transitionSystem
+      certificate.composition.invariant.holds
+      contract.eventObservationsRelated certificate.composition.chunksRefine fuel
+      _ _ launchPaths.afterRelated
+  ⟩
 
+#print axioms MixedWorldLaunchPrefixPaths
 #print axioms MixedWorldChunkComposition.chunksRefine
 #print axioms mixedWorldProgramsEquivalent
 #print axioms mixedWorldProgramsEquivalent_trace

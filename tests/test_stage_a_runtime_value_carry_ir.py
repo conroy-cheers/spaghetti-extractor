@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from spaghetti_extractor.relational.original_cutpoint_graph_ir import (
     OriginalCutpointEdge,
@@ -15,13 +19,24 @@ from spaghetti_extractor.relational.runtime_value_carry_ir import (
     RuntimeValueCarryRoute,
     RuntimeValueFact,
     RuntimeValueLocation,
+    RuntimeValueLeanTerm,
     RuntimeValueOrigin,
     RuntimeValueTransfer,
     validate_runtime_value_carry_ir,
 )
+from spaghetti_extractor.relational.lean.runtime_value_carry import (
+    SEMANTICS_MODULE,
+    write_runtime_value_carry_lean,
+)
 
 
 class StageARuntimeValueCarryIRTests(unittest.TestCase):
+    _TERM = RuntimeValueLeanTerm(
+        "StageA.GeneratedSeed",
+        "StageA.Generated.Seed",
+        "checkedSeed",
+    )
+
     def _graph(self) -> OriginalCutpointGraphIR:
         regions = tuple(
             OriginalCutpointRegion(
@@ -65,10 +80,17 @@ class StageARuntimeValueCarryIRTests(unittest.TestCase):
         )
 
     def _finite_call_contract(self) -> dict:
+        term = self._TERM.to_json()
         return {
             "contract_id": 7,
             "source_target_id": 0,
             "continuation_target_id": 1,
+            "edge_index": 10,
+            "source_rva": 0x1000,
+            "callsite_rva": 0x1008,
+            "continuation_rva": 0x1010,
+            "callee_target_id": 5,
+            "callee_rva": 0x1050,
             "origin": "checked_finite_origin_call_summary",
             "finite_target_ids": [5],
             "preserved_registers": [],
@@ -76,10 +98,13 @@ class StageARuntimeValueCarryIRTests(unittest.TestCase):
             "target_carried_registers": ["ebx"],
             "preserved_caller_frame_word_offsets": [],
             "remaining_semantic_premises": [],
-            "authorizing_lean_term": {
-                "module": "StageA.GeneratedSeed",
-                "namespace": "StageA",
-                "symbol": "checkedSeed",
+            "authorizing_lean_term": term,
+            "kernel_check": {
+                "status": "checked",
+                "module": term["module"],
+                "term": term,
+                "source_sha256": "a" * 64,
+                "olean_sha256": "b" * 64,
             },
         }
 
@@ -115,6 +140,11 @@ class StageARuntimeValueCarryIRTests(unittest.TestCase):
                     None, 0, "checked_dependency", 7,
                     graph.regions[0].semantic_contract_sha256,
                     graph.regions[0].instruction_bytes_sha256,
+                    "checked_finite_origin_call_summary",
+                    5,
+                    self._TERM,
+                    "a" * 64,
+                    "b" * 64,
                 ),
                 RuntimeValueTransfer(
                     1, 11, 1, 2, "decoded_preserve",
@@ -202,10 +232,17 @@ class StageARuntimeValueCarryIRTests(unittest.TestCase):
             )
 
     def test_checked_frame_word_requires_exact_offset_authority(self) -> None:
+        term = self._TERM.to_json()
         frame_contract = {
             "contract_id": 8,
             "source_target_id": 3,
             "continuation_target_id": 4,
+            "edge_index": 13,
+            "source_rva": 0x1030,
+            "callsite_rva": 0x1038,
+            "continuation_rva": 0x1040,
+            "callee_target_id": 5,
+            "callee_rva": 0x1050,
             "origin": "checked_direct_call_caller_frame_word_summary",
             "finite_target_ids": [],
             "preserved_registers": [],
@@ -213,10 +250,13 @@ class StageARuntimeValueCarryIRTests(unittest.TestCase):
             "target_carried_registers": [],
             "preserved_caller_frame_word_offsets": [],
             "remaining_semantic_premises": [],
-            "authorizing_lean_term": {
-                "module": "StageA.GeneratedFrame",
-                "namespace": "StageA",
-                "symbol": "checkedFrame",
+            "authorizing_lean_term": term,
+            "kernel_check": {
+                "status": "checked",
+                "module": term["module"],
+                "term": term,
+                "source_sha256": "a" * 64,
+                "olean_sha256": "b" * 64,
             },
         }
         value = self._value()
@@ -225,6 +265,11 @@ class StageARuntimeValueCarryIRTests(unittest.TestCase):
             transfers[-1],
             authority_status="checked_dependency",
             authority_contract_id=8,
+            authority_origin=frame_contract["origin"],
+            authority_callee_target_id=5,
+            authority_lean_term=self._TERM,
+            authority_kernel_source_sha256="a" * 64,
+            authority_kernel_olean_sha256="b" * 64,
         )
         route = dataclasses.replace(
             value.routes[0],
@@ -241,10 +286,17 @@ class StageARuntimeValueCarryIRTests(unittest.TestCase):
             )
 
     def test_closed_frame_word_authority_makes_route_proof_ready(self) -> None:
+        term = self._TERM.to_json()
         frame_contract = {
             "contract_id": 8,
             "source_target_id": 3,
             "continuation_target_id": 4,
+            "edge_index": 13,
+            "source_rva": 0x1030,
+            "callsite_rva": 0x1038,
+            "continuation_rva": 0x1040,
+            "callee_target_id": 5,
+            "callee_rva": 0x1050,
             "origin": "checked_direct_call_caller_frame_word_summary",
             "finite_target_ids": [],
             "preserved_registers": [],
@@ -252,15 +304,14 @@ class StageARuntimeValueCarryIRTests(unittest.TestCase):
             "target_carried_registers": [],
             "preserved_caller_frame_word_offsets": [32],
             "remaining_semantic_premises": [],
-            "caller_frame_word_authorizing_lean_term": {
-                "module": "StageA.GeneratedFrame",
-                "namespace": "StageA",
-                "symbol": "checkedFrame",
-            },
-            "authorizing_lean_term": {
-                "module": "StageA.GeneratedFrame",
-                "namespace": "StageA",
-                "symbol": "checkedFrame",
+            "caller_frame_word_authorizing_lean_term": term,
+            "authorizing_lean_term": term,
+            "kernel_check": {
+                "status": "checked",
+                "module": term["module"],
+                "term": term,
+                "source_sha256": "a" * 64,
+                "olean_sha256": "b" * 64,
             },
         }
         value = self._value()
@@ -269,6 +320,11 @@ class StageARuntimeValueCarryIRTests(unittest.TestCase):
             transfers[-1],
             authority_status="checked_dependency",
             authority_contract_id=8,
+            authority_origin=frame_contract["origin"],
+            authority_callee_target_id=5,
+            authority_lean_term=self._TERM,
+            authority_kernel_source_sha256="a" * 64,
+            authority_kernel_olean_sha256="b" * 64,
         )
         route = dataclasses.replace(
             value.routes[0],
@@ -281,6 +337,291 @@ class StageARuntimeValueCarryIRTests(unittest.TestCase):
         )
 
         self.assertTrue(checked.proof_ready)
+
+    def test_finite_origin_frame_word_authority_is_exactly_bound(self) -> None:
+        term = self._TERM.to_json()
+        frame_contract = {
+            "contract_id": 8,
+            "source_target_id": 3,
+            "continuation_target_id": 4,
+            "edge_index": 13,
+            "source_rva": 0x1030,
+            "callsite_rva": 0x1038,
+            "continuation_rva": 0x1040,
+            "callee_target_id": 5,
+            "callee_rva": 0x1050,
+            "origin": (
+                "checked_finite_origin_call_caller_frame_word_summary"
+            ),
+            "finite_target_ids": [5],
+            "preserved_registers": [],
+            "callee_preserved_registers": [],
+            "target_carried_registers": [],
+            "preserved_caller_frame_word_offsets": [32],
+            "remaining_semantic_premises": [],
+            "caller_frame_word_authorizing_lean_term": term,
+            "authorizing_lean_term": term,
+            "kernel_check": {
+                "status": "checked",
+                "module": term["module"],
+                "term": term,
+                "source_sha256": "a" * 64,
+                "olean_sha256": "b" * 64,
+            },
+        }
+        value = self._value()
+        transfers = list(value.routes[0].transfers)
+        transfers[-1] = dataclasses.replace(
+            transfers[-1],
+            authority_status="checked_dependency",
+            authority_contract_id=8,
+            authority_origin=frame_contract["origin"],
+            authority_callee_target_id=5,
+            authority_lean_term=self._TERM,
+            authority_kernel_source_sha256="a" * 64,
+            authority_kernel_olean_sha256="b" * 64,
+        )
+        route = dataclasses.replace(
+            value.routes[0],
+            transfers=tuple(transfers),
+        )
+
+        checked = validate_runtime_value_carry_ir(
+            dataclasses.replace(value, routes=(route,)),
+            graph=self._graph(),
+            direct_call_authority=self._authority(frame_contract),
+        )
+
+        self.assertTrue(checked.proof_ready)
+
+        stale_contract = dict(frame_contract)
+        stale_contract["callee_target_id"] = 4
+        with self.assertRaisesRegex(
+            RuntimeValueCarryIRError,
+            "exact edge/source/continuation/callee",
+        ):
+            validate_runtime_value_carry_ir(
+                dataclasses.replace(value, routes=(route,)),
+                graph=self._graph(),
+                direct_call_authority=self._authority(stale_contract),
+            )
+
+        stale_transfers = list(route.transfers)
+        stale_transfers[-1] = dataclasses.replace(
+            stale_transfers[-1],
+            authority_lean_term=RuntimeValueLeanTerm(
+                self._TERM.module,
+                self._TERM.namespace,
+                "wrongCheckedSeed",
+            ),
+        )
+        with self.assertRaisesRegex(
+            RuntimeValueCarryIRError,
+            "exact authority reference",
+        ):
+            validate_runtime_value_carry_ir(
+                dataclasses.replace(
+                    value,
+                    routes=(
+                        dataclasses.replace(
+                            route,
+                            transfers=tuple(stale_transfers),
+                        ),
+                    ),
+                ),
+                graph=self._graph(),
+                direct_call_authority=self._authority(frame_contract),
+            )
+
+        stale_contract_id = list(route.transfers)
+        stale_contract_id[-1] = dataclasses.replace(
+            stale_contract_id[-1],
+            authority_contract_id=9,
+        )
+        with self.assertRaisesRegex(
+            RuntimeValueCarryIRError,
+            "exact authority reference",
+        ):
+            validate_runtime_value_carry_ir(
+                dataclasses.replace(
+                    value,
+                    routes=(
+                        dataclasses.replace(
+                            route,
+                            transfers=tuple(stale_contract_id),
+                        ),
+                    ),
+                ),
+                graph=self._graph(),
+                direct_call_authority=self._authority(frame_contract),
+            )
+
+        uncompiled_contract = dict(frame_contract)
+        uncompiled_contract["kernel_check"] = {
+            **frame_contract["kernel_check"],
+            "status": "pending",
+        }
+        with self.assertRaisesRegex(
+            RuntimeValueCarryIRError,
+            "was not kernel-compiled",
+        ):
+            validate_runtime_value_carry_ir(
+                dataclasses.replace(value, routes=(route,)),
+                graph=self._graph(),
+                direct_call_authority=self._authority(uncompiled_contract),
+            )
+
+    def test_generated_finite_origin_semantics_closes_only_after_kernel_check(
+        self,
+    ) -> None:
+        term = self._TERM.to_json()
+        frame_contract = {
+            "contract_id": 8,
+            "source_target_id": 3,
+            "continuation_target_id": 4,
+            "edge_index": 13,
+            "source_rva": 0x1030,
+            "callsite_rva": 0x1038,
+            "continuation_rva": 0x1040,
+            "callee_target_id": 5,
+            "callee_rva": 0x1050,
+            "origin": (
+                "checked_finite_origin_call_caller_frame_word_summary"
+            ),
+            "finite_target_ids": [5],
+            "preserved_registers": [],
+            "callee_preserved_registers": [],
+            "target_carried_registers": [],
+            "preserved_caller_frame_word_offsets": [32],
+            "remaining_semantic_premises": [],
+            "caller_frame_word_authorizing_lean_term": term,
+            "authorizing_lean_term": term,
+            "kernel_check": {
+                "status": "checked",
+                "module": term["module"],
+                "term": term,
+                "source_sha256": "a" * 64,
+                "olean_sha256": "b" * 64,
+            },
+        }
+        value = self._value()
+        transfers = list(value.routes[0].transfers)
+        transfers[-1] = dataclasses.replace(
+            transfers[-1],
+            authority_status="checked_dependency",
+            authority_contract_id=8,
+            authority_origin=frame_contract["origin"],
+            authority_callee_target_id=5,
+            authority_lean_term=self._TERM,
+            authority_kernel_source_sha256="a" * 64,
+            authority_kernel_olean_sha256="b" * 64,
+        )
+        route = dataclasses.replace(
+            value.routes[0],
+            transfers=tuple(transfers),
+        )
+        checked = validate_runtime_value_carry_ir(
+            dataclasses.replace(value, routes=(route,)),
+            graph=self._graph(),
+            direct_call_authority=self._authority(frame_contract),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            out = Path(temporary)
+            write_runtime_value_carry_lean(
+                out, checked, graph=self._graph()
+            )
+            pending = json.loads(
+                (out / "runtime-value-carry-lean.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            semantics = out / "StageA" / f"{SEMANTICS_MODULE}.lean"
+            source = semantics.read_text(encoding="utf-8")
+            binding_source = (
+                out
+                / "StageA"
+                / "GeneratedRelationalRuntimeValueCarryBinding.lean"
+            ).read_text(encoding="utf-8")
+            structure_source = (
+                out
+                / "StageA"
+                / "GeneratedRelationalRuntimeValueCarryStructure.lean"
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                "CheckedFiniteOriginCallCallerFrameWordRouteTransfer",
+                source,
+            )
+            self.assertIn("CheckedRouteExecutionInvariant", source)
+            self.assertIn("ExecutionInvariant", source)
+            self.assertIn("ExactIncomingChecked", binding_source)
+            self.assertIn("CheckedRoute", binding_source)
+            self.assertIn("decodedIncoming := true", structure_source)
+            self.assertIn(
+                "ExecutionInvariant",
+                pending["routes"][0]["aggregate_invariant_constructor"],
+            )
+            self.assertIn(self._TERM.qualified, source)
+            self.assertEqual(
+                pending["routes"][0]["semantic_authority_status"],
+                "kernel_compile_required",
+            )
+            self.assertFalse(pending["semantic_authority_complete"])
+
+            source_sha256 = hashlib.sha256(
+                semantics.read_bytes()
+            ).hexdigest()
+            write_runtime_value_carry_lean(
+                out,
+                checked,
+                graph=self._graph(),
+                kernel_checks={
+                    f"StageA.{SEMANTICS_MODULE}": {
+                        "status": "checked",
+                        "source_sha256": "d" * 64,
+                        "olean_sha256": "c" * 64,
+                    }
+                },
+            )
+            stale = json.loads(
+                (out / "runtime-value-carry-lean.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                stale["routes"][0]["semantic_authority_status"],
+                "kernel_compile_required",
+            )
+            write_runtime_value_carry_lean(
+                out,
+                checked,
+                graph=self._graph(),
+                kernel_checks={
+                    f"StageA.{SEMANTICS_MODULE}": {
+                        "status": "checked",
+                        "source_sha256": source_sha256,
+                        "olean_sha256": "c" * 64,
+                    }
+                },
+            )
+            closed = json.loads(
+                (out / "runtime-value-carry-lean.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                closed["routes"][0]["semantic_authority"][0]["status"],
+                "closed",
+            )
+            self.assertEqual(
+                len(closed["routes"][0]["semantic_authority"]),
+                len(checked.routes[0].transfers),
+            )
+            self.assertEqual(
+                closed["routes"][0]["semantic_authority_status"],
+                "closed",
+            )
+            self.assertTrue(closed["semantic_authority_complete"])
 
     def test_unclosed_named_dependency_fails_closed(self) -> None:
         authority = self._authority()

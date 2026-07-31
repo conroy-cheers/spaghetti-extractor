@@ -45,6 +45,7 @@ class StageARelationalInterpreterKernelRunTests(unittest.TestCase):
             "callbackSitesContainRva",
             "template.x87FrameOffsets.isEmpty",
             "structure RunFunctionStepPhase",
+            "RunFunctionNativeEntryPhase.ofExactPath",
             "inductive RunFunctionContinuationKind",
             "structure RunFunctionLoopPhases",
             "theorem RunFunctionLoopPhases.execute",
@@ -80,8 +81,10 @@ class StageARelationalInterpreterKernelRunTests(unittest.TestCase):
         self.assertEqual(result["status"], "checked", result)
         self.assertNotIn("sorryAx", result["stdout"])
         self.assertNotIn("declaration uses 'sorry'", result["stderr"])
-        self.assertIn("RunFunctionLoopPhases.execute", result["stdout"])
-        self.assertIn("RunFunctionMachineCertificate.refines", result["stdout"])
+        self.assertIn("RunFunctionNativeChunk.path", result["stdout"])
+        self.assertIn(
+            "RunFunctionNativeContinuationLocal.path", result["stdout"]
+        )
         observed: set[str] = set()
         for match in _AXIOM_LINE.finditer(result["stdout"]):
             observed.update(

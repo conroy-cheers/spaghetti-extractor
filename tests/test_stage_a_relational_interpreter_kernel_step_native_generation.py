@@ -189,7 +189,7 @@ class StageARelationalInterpreterKernelStepNativeGenerationTests(unittest.TestCa
         self.assertEqual(payload["status"], "local_semantics_required")
         self.assertFalse(payload["acceptance_authority"])
 
-    def test_generated_source_contains_only_static_data_and_derived_theorem(self) -> None:
+    def test_generated_source_contains_only_static_data(self) -> None:
         source = relational_interpreter_kernel_step_native_source(self._build())
 
         for required in (
@@ -197,13 +197,11 @@ class StageARelationalInterpreterKernelStepNativeGenerationTests(unittest.TestCa
             "generatedInterpreterStepNativeTemplate",
             "generatedInterpreterKernelCandidateBytes",
             "GeneratedInterpreterStepNativeStaticGoal",
-            "GeneratedInterpreterStepNativeCertificateGoal",
-            "GeneratedInterpreterStepNativeConcreteCertificateGoal",
-            "ConcreteKernelABI",
-            "GeneratedInterpreterStepNativeRefines",
-            "certificate.refines",
+            "generatedInterpreterStepNativeProgram",
+            "indirectTargets := generatedNativeIndirectTargetInventory",
         ):
             self.assertIn(required, source)
+        self.assertNotIn("GeneratedInterpreterStepNativeRefines", source)
         for forbidden in (
             r"\bstatus\b",
             r"\bsimulate\s*:",
@@ -396,9 +394,14 @@ end StageA.GeneratedRelational.InterpreterKernelStep
 """
 
 _LEAN_CALLBACK_FIXTURE = r"""import StageA.RelationalInterpreterKernelCallback
+import StageA.RelationalInterpreterNativeWorld
 namespace StageA.GeneratedRelational.InterpreterKernelCallback
 open StageA.Relational.InterpreterKernelCallback
+open StageA.Relational.InterpreterNativeWorld
 def generatedKernelCallbackInventory : KernelCallbackInventory := { sites := [] }
+def generatedNativeIndirectTargetInventory : NativeIndirectTargetInventory := {
+  targetSets := []
+}
 end StageA.GeneratedRelational.InterpreterKernelCallback
 """
 

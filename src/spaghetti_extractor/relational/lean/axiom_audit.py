@@ -15,6 +15,7 @@ _SEPARATE_AXIOM_AUDIT_DECLARATIONS = {
         "StageA.GeneratedRelational.candidateRelationalEvidenceBundle",
     ),
     "RelationalAcceptance": (
+        "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentMixedChunked",
         "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked",
         "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent",
     ),

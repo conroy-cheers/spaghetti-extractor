@@ -31,7 +31,12 @@ factories are used for every original/candidate environment pair.
 /-- Four operation-specific native dispatch relations and their local
 refinement theorems.  Keeping the relations separate lets each operation proof
 retain its natural execution predicate; `dispatchFamily` below assembles the
-single indexed family required by whole-program composition. -/
+single indexed family required by intermediate, single-world consumers.
+
+This compatibility structure is not accepted by environment-parametric mixed
+composition.  In particular, it cannot promote a dispatch relation closed over
+one launch world into the world-indexed family used by recurring runtime
+composition. -/
 structure CheckedKernelOperationRefinementFamily
     (program : CompiledKernelProgram) (abi : KernelABIRelation) where
   programLookupDispatch : KernelDispatchRelation
@@ -73,6 +78,24 @@ theorem CheckedKernelOperationRefinementFamily.combinedRefines
       (combinedKernelDispatchRelation checked.dispatchFamily) operation :=
   kernelOperationRefinesUsing_combined checked.dispatchFamily
     (checked.refines operation)
+
+/-- Acceptance-facing operation authority.  Both dispatch and refinement are
+indexed by the relational world extracted from the exact running
+`candidateBefore`; no favored launch world is retained in this interface. -/
+structure CheckedWorldKernelOperationRefinementFamily
+    (program : CompiledKernelProgram) (abi : KernelABIRelation) where
+  dispatchFamily : RelationalWorld -> KernelOperationDispatchFamily
+  refines : forall world operation,
+    KernelOperationRefinesUsing program abi
+      (dispatchFamily world operation) operation
+
+theorem CheckedWorldKernelOperationRefinementFamily.combinedRefines
+    (checked : CheckedWorldKernelOperationRefinementFamily program abi)
+    (world : RelationalWorld) (operation : KernelOperation) :
+    KernelOperationRefinesUsing program abi
+      (combinedKernelDispatchRelation (checked.dispatchFamily world)) operation :=
+  kernelOperationRefinesUsing_combined (checked.dispatchFamily world)
+    (checked.refines world operation)
 
 abbrev OriginalProgramWithEnvironment
     (original : DecodedWorldProgram)
@@ -122,60 +145,41 @@ abbrev CanonicalCandidateMixedLaunchExecution
     NativeWorldExecution :=
   .running candidateRootRva 0 state calls 0 [] world
 
-/-- The two cross-system launch facts not established by canonical native
-wrapper replay: a silent decoded-original path and closure of the caller's
-actual invariant at the two selected endpoints. -/
-structure CanonicalMixedLaunchChunkRemainingPremises
-    (original : DecodedWorldProgram)
-    (invariant : MixedExecutionInvariant reachabilityTargetIds contract)
-    (originalBefore : WorldExecution)
-    (candidateAfter : NativeWorldExecution) where
-  originalAfter : WorldExecution
-  originalPath : NonemptyRelatedPath original.pe32TransitionSystem
-    originalBefore [] originalAfter
-  afterRelated : invariant.holds originalAfter candidateAfter
-
-/-- Canonical launch shapes and the exact residual mixed premises.
-
-The type is indexed by `beforeRelated`, rather than accepting a path object
-that duplicates the invariant selected by component composition.  The
-remaining factory is indexed by the concrete endpoint and runtime relation
-established by `CanonicalMixedLaunchWrapperRefinement`.
--/
-structure CanonicalMixedLaunchComponentPremises
+/-- The sole semantic fact not supplied by exact wrapper replay: the checked
+runtime invariant at the replay endpoint.  The original remains at its
+canonical root, so this premise cannot hide an original execution path. -/
+structure CanonicalMixedLaunchPrefixEndpoint
     (originalContext : OriginalDecodedStaticContext)
-    (original : DecodedWorldProgram)
     (candidate : ExactNativeWorldProgram)
     (contract : MixedRelationContract)
     (launch : PE32ConsoleLaunchV2)
-    (candidateRootRva : Nat)
-    (invariant : MixedExecutionInvariant reachabilityTargetIds contract)
-    (candidateLaunchCalls : MachineState -> List NativeCallFrame)
-    (originalBefore : WorldExecution)
-    (candidateBefore : NativeWorldExecution)
-    (_beforeRelated : invariant.holds originalBefore candidateBefore) where
-  originalWorld : RelationalWorld
-  candidateWorld : RelationalWorld
-  originalState : MachineState
-  candidateState : MachineState
-  originalBeforeExact : originalBefore =
-    CanonicalOriginalMixedLaunchExecution launch originalState originalWorld
-  candidateBeforeExact : candidateBefore =
-    CanonicalCandidateMixedLaunchExecution candidateRootRva candidateState
-      (candidateLaunchCalls candidateState) candidateWorld
-  launchStatesRelated : MixedLaunchStatesRelated originalContext candidate
-    contract originalWorld candidateWorld originalState candidateState
-  remaining : forall candidateAfter candidateAfterState,
-    candidateAfter.machine? = some candidateAfterState ->
+    (reflected : ExactNativeLaunchGraphCertificate)
+    (root : CanonicalNativeLaunchRoot)
+    (rootRva : Nat)
+    (invariant : MixedExecutionInvariant reachabilityTargetIds contract) where
+  afterRelated : forall originalWorld candidateWorld originalState
+      candidateState calls route result candidateAfterState,
+    root.rva? candidate.pe = some rootRva ->
+    MixedLaunchStatesRelated originalContext candidate contract
+        originalWorld candidateWorld originalState candidateState ->
+    candidateNativeLaunchCallFrames? candidate launch candidateState = some calls ->
+    route ∈ reflected.routes ->
+    route.source = .canonicalRoot root ->
+    route.replay? candidate reflected.cutpoints
+        (CanonicalCandidateMixedLaunchExecution rootRva candidateState calls
+          candidateWorld) = some result ->
+    result.observations = [] ->
+    result.after.machine? = some candidateAfterState ->
     contract.runtimeStatesRelated originalWorld candidateWorld originalState
         candidateAfterState ->
-      CanonicalMixedLaunchChunkRemainingPremises original invariant
-        originalBefore candidateAfter
+      invariant.holds
+        (CanonicalOriginalMixedLaunchExecution launch originalState originalWorld)
+        result.after
 
-/-- Canonical wrapper refinement supplies the complete native side of a mixed
-launch chunk.  Only the decoded silent path and endpoint invariant are selected
-from `premises.remaining`. -/
-theorem CanonicalMixedLaunchWrapperRefinement.launchChunk_nonempty
+/-- Exact native replay inhabits the unique asymmetric launch path.  This
+theorem stays in `Prop`, so it may eliminate the existential replay theorem
+without enlarging Lean's trusted elimination rules. -/
+theorem canonicalMixedLaunchPrefixPaths_nonempty
     (refinement : CanonicalMixedLaunchWrapperRefinement originalContext
       candidate contract launch)
     (root : CanonicalNativeLaunchRoot)
@@ -184,43 +188,46 @@ theorem CanonicalMixedLaunchWrapperRefinement.launchChunk_nonempty
     (candidateLaunchCallsExact : forall candidateState,
       candidateNativeLaunchCallFrames? candidate launch candidateState =
         some (candidateLaunchCalls candidateState))
-    (beforeRelated : invariant.holds originalBefore candidateBefore)
-    (premises : CanonicalMixedLaunchComponentPremises originalContext original
-      candidate contract launch candidateRootRva invariant candidateLaunchCalls
-      originalBefore candidateBefore beforeRelated) :
-    Nonempty (MixedKernelChunkPaths original candidate contract invariant
-      originalBefore candidateBefore) := by
-  rcases premises with
-    ⟨originalWorld, candidateWorld, originalState, candidateState,
-      originalBeforeExact, candidateBeforeExact, launchStatesRelated, remaining⟩
-  subst originalBefore
-  subst candidateBefore
+    (endpoint : CanonicalMixedLaunchPrefixEndpoint originalContext candidate
+      contract launch refinement.reflected root candidateRootRva invariant) :
+    forall originalWorld candidateWorld originalState candidateState,
+      MixedLaunchStatesRelated originalContext candidate contract
+          originalWorld candidateWorld originalState candidateState ->
+        Nonempty (MixedWorldLaunchPrefixPaths original candidate contract invariant
+          (CanonicalOriginalMixedLaunchExecution launch originalState originalWorld)
+          (CanonicalCandidateMixedLaunchExecution candidateRootRva candidateState
+            (candidateLaunchCalls candidateState) candidateWorld)) := by
+  intro originalWorld candidateWorld originalState candidateState launchRelated
   rcases refinement.rootsEstablishRuntime root candidateRootRva originalWorld
       candidateWorld originalState candidateState
-      (candidateLaunchCalls candidateState) rootExact launchStatesRelated
+      (candidateLaunchCalls candidateState) rootExact launchRelated
       (candidateLaunchCallsExact candidateState) with
-    ⟨route, result, candidateAfterState, _, _, replayed, observationsExact,
+    ⟨route, result, candidateAfterState, routeMember, routeSource, replayed,
+      observationsExact,
       candidateAfterMachine, runtimeStatesRelated⟩
   have candidatePath :=
     (route.replay?_sound candidate refinement.reflected.cutpoints
       (CanonicalCandidateMixedLaunchExecution candidateRootRva candidateState
         (candidateLaunchCalls candidateState) candidateWorld)
       result replayed).2.2
-  let residual := remaining result.after candidateAfterState
-    candidateAfterMachine runtimeStatesRelated
   refine ⟨{
-    originalObservations := []
-    candidateObservations := []
-    originalAfter := residual.originalAfter
     candidateAfter := result.after
-    originalPath := residual.originalPath
+    originalIdentity := rfl
     candidatePath := ?_
-    observationsChecked := ⟨by trivial⟩
-    afterRelated := residual.afterRelated
+    afterRelated := endpoint.afterRelated originalWorld candidateWorld
+      originalState candidateState
+      (candidateLaunchCalls candidateState) route result candidateAfterState
+      rootExact launchRelated
+      (candidateLaunchCallsExact candidateState) routeMember routeSource replayed
+      observationsExact candidateAfterMachine runtimeStatesRelated
   }⟩
   simpa [observationsExact] using candidatePath
 
-noncomputable def CanonicalMixedLaunchWrapperRefinement.launchChunk
+/-- Build the unique asymmetric launch prefix from exact native wrapper replay.
+The decoded original is definitionally unchanged for zero steps; the candidate
+path is nonempty and silent; the endpoint is admitted only through the runtime
+invariant. -/
+noncomputable def canonicalMixedLaunchPrefixCertificate
     (refinement : CanonicalMixedLaunchWrapperRefinement originalContext
       candidate contract launch)
     (root : CanonicalNativeLaunchRoot)
@@ -229,16 +236,19 @@ noncomputable def CanonicalMixedLaunchWrapperRefinement.launchChunk
     (candidateLaunchCallsExact : forall candidateState,
       candidateNativeLaunchCallFrames? candidate launch candidateState =
         some (candidateLaunchCalls candidateState))
-    (beforeRelated : invariant.holds originalBefore candidateBefore)
-    (premises : CanonicalMixedLaunchComponentPremises originalContext original
-      candidate contract launch candidateRootRva invariant candidateLaunchCalls
-      originalBefore candidateBefore beforeRelated) :
-    MixedKernelChunkPaths original candidate contract invariant
-      originalBefore candidateBefore :=
-  Classical.choice
-    (CanonicalMixedLaunchWrapperRefinement.launchChunk_nonempty refinement root
-      rootExact candidateLaunchCalls candidateLaunchCallsExact beforeRelated
-      premises)
+    (endpoint : CanonicalMixedLaunchPrefixEndpoint originalContext candidate
+      contract launch refinement.reflected root candidateRootRva invariant) :
+    MixedWorldLaunchPrefixCertificate originalContext original candidate contract
+      launch candidateRootRva invariant where
+  candidateLaunchCalls := candidateLaunchCalls
+  candidateLaunchCallsExact := candidateLaunchCallsExact
+  launchPaths := by
+    intro originalWorld candidateWorld originalState candidateState launchRelated
+    exact Classical.choice
+      (canonicalMixedLaunchPrefixPaths_nonempty refinement root rootExact
+        candidateLaunchCalls
+        candidateLaunchCallsExact endpoint originalWorld candidateWorld
+        originalState candidateState launchRelated)
 
 structure EnvironmentParametricMixedComponentPremises
     (originalContext : OriginalDecodedStaticContext)
@@ -255,10 +265,10 @@ structure EnvironmentParametricMixedComponentPremises
     (candidateRootRva : Nat)
     (program : CompiledKernelProgram)
     (abi : KernelABIRelation)
-    (operations : CheckedKernelOperationRefinementFamily program abi)
+    (operations : CheckedWorldKernelOperationRefinementFamily program abi)
     (invariant : MixedExecutionInvariant reachability.targetIds contract) where
   classifier : forall candidateEnvironment,
-    MixedKernelSourceClassifier originalContext originalAuthority launch
+    MixedKernelRuntimeSourceClassifier originalContext originalAuthority launch
       originalRoot reachability
       (CandidateProgramWithEnvironment candidate candidateEnvironment)
       (CandidateAuthorityWithEnvironment candidateAuthority candidateEnvironment)
@@ -276,25 +286,18 @@ structure EnvironmentParametricMixedComponentPremises
       CanonicalMixedLaunchWrapperRefinement originalContext
         (CandidateProgramWithEnvironment candidate candidateEnvironment)
         contract launch
-  launchChunk : forall originalEnvironment candidateEnvironment,
-    MixedEnvironmentPairRefines original candidate contract externalFrames
-        originalEnvironment candidateEnvironment ->
-      forall originalBefore candidateBefore
-        (source : ExactOriginalSemanticSource originalContext originalAuthority
-          launch originalRoot reachability
-          (CandidateProgramWithEnvironment candidate candidateEnvironment)
-          (CandidateAuthorityWithEnvironment candidateAuthority
-            candidateEnvironment)),
-        (beforeRelated : invariant.holds originalBefore candidateBefore) ->
-        source.targetId = launch.rootTargetId ->
-        originalExecutionAtTargetId source.targetId originalBefore ->
-        nativeExecutionAtRva candidateRootRva candidateBefore ->
-        CanonicalMixedLaunchComponentPremises originalContext
-          (OriginalProgramWithEnvironment original originalEnvironment)
-          (CandidateProgramWithEnvironment candidate candidateEnvironment)
-          contract launch candidateRootRva invariant
-          (candidateLaunchCalls candidateEnvironment)
-          originalBefore candidateBefore beforeRelated
+  launchPrefixEndpoint : forall originalEnvironment candidateEnvironment,
+    (environmentRefines :
+      MixedEnvironmentPairRefines original candidate contract externalFrames
+        originalEnvironment candidateEnvironment) ->
+      CanonicalMixedLaunchPrefixEndpoint originalContext
+        (CandidateProgramWithEnvironment candidate candidateEnvironment)
+        contract launch
+        (launchWrapperRefines originalEnvironment candidateEnvironment
+          environmentRefines).reflected
+        (canonicalNativeInitialLaunchRoot
+          (CandidateProgramWithEnvironment candidate candidateEnvironment))
+        candidateRootRva invariant
   semanticChunkFactory : forall originalEnvironment candidateEnvironment,
     MixedEnvironmentPairRefines original candidate contract externalFrames
         originalEnvironment candidateEnvironment ->
@@ -304,17 +307,30 @@ structure EnvironmentParametricMixedComponentPremises
           (CandidateProgramWithEnvironment candidate candidateEnvironment)
           (CandidateAuthorityWithEnvironment candidateAuthority
             candidateEnvironment))
-        (operation : KernelOperation) (entryRva : Nat),
-        originalExecutionAtTargetId source.targetId originalBefore ->
-        nativeExecutionAtRva entryRva candidateBefore ->
-        program.functionEntry? operation.role = some entryRva ->
+        (operation : KernelOperation) (entryRva : Nat)
+        (beforeRelated : invariant.holds originalBefore candidateBefore)
+        (originalAtSource :
+          originalExecutionAtTargetId source.targetId originalBefore)
+        (candidateAtEntry : nativeExecutionAtRva entryRva candidateBefore)
+        (candidateWorld : RelationalWorld)
+        (candidateWorldExact :
+          nativeExecutionWorld? candidateBefore = some candidateWorld)
+        (entryExact :
+          program.functionEntry? operation.role = some entryRva)
+        (classified :
+          (classifier candidateEnvironment).classifier.classify
+              originalBefore candidateBefore beforeRelated =
+            .semanticTransfer source operation entryRva originalAtSource
+              candidateAtEntry entryExact),
         KernelOperationRefinesUsing program abi
-          (combinedKernelDispatchRelation operations.dispatchFamily) operation ->
+          (combinedKernelDispatchRelation
+            (operations.dispatchFamily candidateWorld)) operation ->
         MixedKernelOperationComponentCertificate
           (OriginalProgramWithEnvironment original originalEnvironment)
           (CandidateProgramWithEnvironment candidate candidateEnvironment)
           contract invariant program abi
-          (combinedKernelDispatchRelation operations.dispatchFamily)
+          (combinedKernelDispatchRelation
+            (operations.dispatchFamily candidateWorld))
           (CandidateAuthorityWithEnvironment candidateAuthority
             candidateEnvironment)
           source.source.target.rva operation entryRva originalBefore candidateBefore
@@ -328,17 +344,30 @@ structure EnvironmentParametricMixedComponentPremises
           (CandidateProgramWithEnvironment candidate candidateEnvironment)
           (CandidateAuthorityWithEnvironment candidateAuthority
             candidateEnvironment))
-        (operation : KernelOperation) (entryRva : Nat),
-        originalExecutionAtBoundarySource source.targetId originalBefore ->
-        nativeExecutionAtRva entryRva candidateBefore ->
-        program.functionEntry? operation.role = some entryRva ->
+        (operation : KernelOperation) (entryRva : Nat)
+        (beforeRelated : invariant.holds originalBefore candidateBefore)
+        (originalAtSource :
+          originalExecutionAtBoundarySource source.targetId originalBefore)
+        (candidateAtEntry : nativeExecutionAtRva entryRva candidateBefore)
+        (candidateWorld : RelationalWorld)
+        (candidateWorldExact :
+          nativeExecutionWorld? candidateBefore = some candidateWorld)
+        (entryExact :
+          program.functionEntry? operation.role = some entryRva)
+        (classified :
+          (classifier candidateEnvironment).classifier.classify
+              originalBefore candidateBefore beforeRelated =
+            .externalOperation source operation entryRva originalAtSource
+              candidateAtEntry entryExact),
         KernelOperationRefinesUsing program abi
-          (combinedKernelDispatchRelation operations.dispatchFamily) operation ->
+          (combinedKernelDispatchRelation
+            (operations.dispatchFamily candidateWorld)) operation ->
         MixedKernelOperationComponentCertificate
           (OriginalProgramWithEnvironment original originalEnvironment)
           (CandidateProgramWithEnvironment candidate candidateEnvironment)
           contract invariant program abi
-          (combinedKernelDispatchRelation operations.dispatchFamily)
+          (combinedKernelDispatchRelation
+            (operations.dispatchFamily candidateWorld))
           (CandidateAuthorityWithEnvironment candidateAuthority
             candidateEnvironment)
           source.source.target.rva operation entryRva originalBefore candidateBefore
@@ -351,24 +380,21 @@ structure EnvironmentParametricMixedComponentPremises
           (CandidateProgramWithEnvironment candidate candidateEnvironment)
           (CandidateAuthorityWithEnvironment candidateAuthority
             candidateEnvironment))
-        (candidateRva : Nat),
-        originalExecutionAtBoundarySource source.targetId originalBefore ->
-        nativeExecutionAtRva candidateRva candidateBefore ->
+        (candidateRva : Nat)
+        (beforeRelated : invariant.holds originalBefore candidateBefore)
+        (originalAtSource :
+          originalExecutionAtBoundarySource source.targetId originalBefore)
+        (candidateAtSource :
+          nativeExecutionAtRva candidateRva candidateBefore)
+        (classified :
+          (classifier candidateEnvironment).classifier.classify
+              originalBefore candidateBefore beforeRelated =
+            .externalBoundary source candidateRva originalAtSource
+              candidateAtSource),
         MixedKernelChunkPaths
           (OriginalProgramWithEnvironment original originalEnvironment)
           (CandidateProgramWithEnvironment candidate candidateEnvironment)
           contract invariant originalBefore candidateBefore
-  rootsRelated : forall candidateEnvironment originalWorld candidateWorld
-      originalState candidateState,
-    MixedLaunchStatesRelated originalContext
-        (CandidateProgramWithEnvironment candidate candidateEnvironment)
-        contract originalWorld candidateWorld originalState candidateState ->
-      invariant.holds
-        (.running launch.rootTargetId originalState
-          launch.continuationTargetIds 0 originalWorld)
-        (.running candidateRootRva 0 candidateState
-          (candidateLaunchCalls candidateEnvironment candidateState)
-          0 [] candidateWorld)
 
 private def terminalReturnedComponent
     (beforeRelated : invariant.holds
@@ -464,44 +490,40 @@ noncomputable def EnvironmentParametricMixedComponentPremises.componentCases
       (OriginalProgramWithEnvironment original originalEnvironment)
       (CandidateProgramWithEnvironment candidate candidateEnvironment)
       contract invariant originalBefore candidateBefore := by
-  cases (premises.classifier candidateEnvironment).classify originalBefore
-      candidateBefore beforeRelated with
+  have runtimeOnly :=
+    (premises.classifier candidateEnvironment).runtimeOnly originalBefore
+      candidateBefore beforeRelated
+  cases classified :
+      (premises.classifier candidateEnvironment).classifier.classify
+        originalBefore candidateBefore beforeRelated with
   | launchDispatch source sourceIsRoot originalAtSource candidateAtRoot =>
-      let candidateRootWithEnvironment :=
-        directExactCandidateNativeLaunchRootWithEnvironment candidateRoot
-          candidateEnvironment
-      let canonicalRoot := canonicalNativeInitialLaunchRoot
-        (CandidateProgramWithEnvironment candidate candidateEnvironment)
-      have canonicalRootExact :=
-        directExactCandidateNativeLaunchRoot_canonicalRootExact
-          candidateRootWithEnvironment
-      let launchPremises :=
-        premises.launchChunk originalEnvironment candidateEnvironment
-          environmentsRefine originalBefore candidateBefore source beforeRelated
-          sourceIsRoot originalAtSource candidateAtRoot
-      exact (CanonicalMixedLaunchWrapperRefinement.launchChunk
-        (premises.launchWrapperRefines originalEnvironment candidateEnvironment
-          environmentsRefine) canonicalRoot canonicalRootExact
-        (premises.candidateLaunchCalls candidateEnvironment)
-        (premises.candidateLaunchCallsExact candidateEnvironment) beforeRelated
-        launchPremises).toComponent beforeRelated
+      rw [classified] at runtimeOnly
+      exact False.elim runtimeOnly
   | semanticTransfer source operation entryRva originalAtSource candidateAtEntry
       entryExact =>
+      let candidateRunning := exactNativeRunningWorldAtRva candidateAtEntry
       exact (premises.semanticChunkFactory originalEnvironment
         candidateEnvironment environmentsRefine originalBefore candidateBefore
-        source operation entryRva originalAtSource candidateAtEntry entryExact
-        (operations.combinedRefines operation)).toComponent beforeRelated
+        source operation entryRva beforeRelated originalAtSource
+        candidateAtEntry candidateRunning.world candidateRunning.worldExact
+        entryExact classified
+        (operations.combinedRefines candidateRunning.world operation)).toComponent
+          beforeRelated
   | externalOperation source operation entryRva originalAtSource candidateAtEntry
       entryExact =>
+      let candidateRunning := exactNativeRunningWorldAtRva candidateAtEntry
       exact (premises.externalOperationChunkFactory originalEnvironment
         candidateEnvironment environmentsRefine originalBefore candidateBefore
-        source operation entryRva originalAtSource candidateAtEntry entryExact
-        (operations.combinedRefines operation)).toComponent beforeRelated
+        source operation entryRva beforeRelated originalAtSource
+        candidateAtEntry candidateRunning.world candidateRunning.worldExact
+        entryExact classified
+        (operations.combinedRefines candidateRunning.world operation)).toComponent
+          beforeRelated
   | externalBoundary source candidateRva originalAtSource candidateAtSource =>
       exact (premises.externalBoundaryChunk originalEnvironment
         candidateEnvironment environmentsRefine originalBefore candidateBefore
-        source candidateRva originalAtSource candidateAtSource).toComponent
-        beforeRelated
+        source candidateRva beforeRelated originalAtSource candidateAtSource
+        classified).toComponent beforeRelated
   | returned originalState candidateState originalWorld candidateWorld
       candidateEvents =>
       exact terminalReturnedComponent beforeRelated
@@ -533,13 +555,40 @@ noncomputable def EnvironmentParametricMixedComponentPremises.environmentComposi
       (directExactCandidateNativeLaunchRootWithEnvironment candidateRoot
     candidateEnvironment) := {
   invariant
-  candidateLaunchCalls := premises.candidateLaunchCalls candidateEnvironment
-  candidateLaunchCallsExact :=
-    premises.candidateLaunchCallsExact candidateEnvironment
-  rootsRelated := premises.rootsRelated candidateEnvironment
   component := premises.componentCases candidateRoot originalEnvironment
     candidateEnvironment environmentsRefine
 }
+
+noncomputable def EnvironmentParametricMixedComponentPremises.environmentLaunchPrefix
+    (premises : EnvironmentParametricMixedComponentPremises originalContext
+      originalAuthority original candidate candidateAuthority contract externalFrames
+      launch originalRoot reachability candidateRootRva program abi operations invariant)
+    (candidateRoot : DirectExactCandidateNativeLaunchRoot candidate launch
+      candidateRootRva)
+    (originalEnvironment : WorldExternalProtocolEnvironment)
+    (candidateEnvironment : NativeWorldEnvironment)
+    (environmentsRefine : MixedEnvironmentPairRefines original candidate contract
+      externalFrames originalEnvironment candidateEnvironment) :
+    MixedWorldLaunchPrefixCertificate originalContext
+      (OriginalProgramWithEnvironment original originalEnvironment)
+      (CandidateProgramWithEnvironment candidate candidateEnvironment)
+      contract launch candidateRootRva invariant := by
+  let candidateRootWithEnvironment :=
+    directExactCandidateNativeLaunchRootWithEnvironment candidateRoot
+      candidateEnvironment
+  let root := canonicalNativeInitialLaunchRoot
+    (CandidateProgramWithEnvironment candidate candidateEnvironment)
+  have rootExact :=
+    directExactCandidateNativeLaunchRoot_canonicalRootExact
+      candidateRootWithEnvironment
+  exact
+    canonicalMixedLaunchPrefixCertificate
+      (premises.launchWrapperRefines originalEnvironment candidateEnvironment
+        environmentsRefine) root rootExact
+        (premises.candidateLaunchCalls candidateEnvironment)
+        (premises.candidateLaunchCallsExact candidateEnvironment)
+        (premises.launchPrefixEndpoint originalEnvironment candidateEnvironment
+          environmentsRefine)
 
 noncomputable def EnvironmentParametricMixedComponentPremises.environmentCompositions
     (premises : EnvironmentParametricMixedComponentPremises originalContext
@@ -564,10 +613,12 @@ noncomputable def EnvironmentParametricMixedComponentPremises.environmentComposi
 
 #print axioms CheckedKernelOperationRefinementFamily.refines
 #print axioms CheckedKernelOperationRefinementFamily.combinedRefines
-#print axioms CanonicalMixedLaunchWrapperRefinement.launchChunk_nonempty
-#print axioms CanonicalMixedLaunchWrapperRefinement.launchChunk
+#print axioms CheckedWorldKernelOperationRefinementFamily.combinedRefines
+#print axioms canonicalMixedLaunchPrefixPaths_nonempty
+#print axioms canonicalMixedLaunchPrefixCertificate
 #print axioms EnvironmentParametricMixedComponentPremises.componentCases
 #print axioms EnvironmentParametricMixedComponentPremises.environmentComposition
+#print axioms EnvironmentParametricMixedComponentPremises.environmentLaunchPrefix
 #print axioms EnvironmentParametricMixedComponentPremises.environmentCompositions
 
 end StageA.Relational.InterpreterMixedComponentComposition

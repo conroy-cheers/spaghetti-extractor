@@ -1,14 +1,13 @@
 """Emit the generic frame/event/world-parametric operation interface.
 
 The artifact binds an exact candidate and an existing ``interpreterStep``
-operation plan.  It does not claim that the standalone operation is
+operation plan.  It does not claim that an arbitrary standalone path is
 frame-parametric.  Instead, the generated Lean module exposes the two precise
 proof objects needed to construct that certificate:
 
-* standalone operation refinement for every initial relational world; and
-* path-local context refinement, including environment index/world stability,
-  no early terminal stuttering, return-word compatibility, and exact
-  contextual one-step refinement.
+* a context-indexed producer that selects one explicit canonical fuel with
+  running prefixes, exact event indices, and a compatible caller return; and
+* contextual refinement for that producer-selected path.
 
 No Python field can inhabit either proposition.
 """
@@ -31,7 +30,7 @@ from .interpreter_kernel_step_operation import (
 
 
 INTERPRETER_KERNEL_OPERATION_FRAME_PARAMETRIC_FORMAT = (
-    "stage-a-relational-interpreter-kernel-operation-frame-parametric-plan-v1"
+    "stage-a-relational-interpreter-kernel-operation-frame-parametric-plan-v2"
 )
 INTERPRETER_KERNEL_OPERATION_FRAME_PARAMETRIC_PLAN_FILENAME = (
     "interpreter-kernel-operation-frame-parametric-plan.json"
@@ -44,8 +43,8 @@ INTERPRETER_KERNEL_OPERATION_FRAME_PARAMETRIC_THEOREM = (
     "generatedInterpreterStepFrameParametricCertificate"
 )
 INTERPRETER_KERNEL_OPERATION_FRAME_PARAMETRIC_REMAINING_PREMISES = (
-    "standalone_interpreter_step_operation_for_every_world",
-    "frame_event_world_context_path_refinement",
+    "producer_coupled_canonical_interpreter_step_path_for_compatible_contexts",
+    "producer_selected_path_context_refinement",
 )
 
 _LEAN_MODULE = re.compile(
@@ -94,7 +93,8 @@ class InterpreterKernelOperationFrameParametricPlan:
             },
             "closed_components": [
                 "exact_candidate_identity",
-                "compatible_standalone_interpreter_step_interface",
+                "caller_event_indexed_native_world_environment",
+                "producer_selected_canonical_fuel_interface",
                 "generic_finite_path_context_lifting_theorem",
             ],
             "remaining_proof_premises": list(
@@ -102,25 +102,26 @@ class InterpreterKernelOperationFrameParametricPlan:
             ),
             "proof_frontiers": [
                 {
-                    "id": "interpreter-step:standalone-world-family",
+                    "id": "interpreter-step:producer-selected-path-family",
                     "premise": (
-                        "standalone_interpreter_step_operation_for_every_world"
+                        "producer_coupled_canonical_interpreter_step_path_for_"
+                        "compatible_contexts"
                     ),
                     "rva": self.step_entry_rva,
                     "next_action": (
-                        "instantiate the standalone interpreterStep operation "
-                        "certificate for each initial relational world"
+                        "select the exact interpreterStep fuel for each "
+                        "return-slot-compatible caller context and prove every "
+                        "strict prefix is running, event-index exact, and "
+                        "return-compatible"
                     ),
                 },
                 {
-                    "id": "interpreter-step:frame-context-refinement",
-                    "premise": "frame_event_world_context_path_refinement",
+                    "id": "interpreter-step:selected-path-refinement",
+                    "premise": "producer_selected_path_context_refinement",
                     "rva": self.step_entry_rva,
                     "next_action": (
-                        "prove environment index/world stability, no early "
-                        "terminal stuttering, concrete return-word agreement, "
-                        "and contextual one-step refinement along each exact "
-                        "standalone path"
+                        "prove exact contextual one-step refinement along the "
+                        "producer-selected caller-indexed path"
                     ),
                 },
             ],
@@ -249,38 +250,60 @@ def generatedInterpreterStepFrameParametricCandidateSize : Nat :=
 def generatedInterpreterStepFrameParametricEntryRva : Nat :=
   {plan.step_entry_rva}
 
-abbrev GeneratedStandaloneInterpreterStepOperation
+abbrev GeneratedInterpreterStepSelectedPathProducerFor
+    (operationABI : KernelABIRelation)
     (environment : NativeWorldEnvironment) :=
-  forall world,
-    KernelOperationRefinesUsing generatedCompiledKernelProgram
-      generatedInterpreterKernelABIRelation
-      (StandaloneNativeWorldDispatches
-        (generatedInterpreterStepNativeProgram environment) world)
-      .interpreterStep
+  forall context world,
+    KernelOperationRefinesUsingWhen generatedCompiledKernelProgram
+      operationABI
+      (ProducerSelectedStandaloneNativeWorldDispatches
+        (generatedInterpreterStepNativeProgram environment) context world)
+      .interpreterStep context.entryCompatible
 
-abbrev GeneratedInterpreterStepContextRefinement
+abbrev GeneratedInterpreterStepSelectedPathProducer
+    (environment : NativeWorldEnvironment) :=
+  GeneratedInterpreterStepSelectedPathProducerFor
+    generatedInterpreterKernelABIRelation environment
+
+abbrev GeneratedInterpreterStepSelectedPathRefinement
     (environment : NativeWorldEnvironment) :=
   forall context world entryRva before after events afterWorld observations
-      fuel (path : StandaloneNativeWorldPath
-        (generatedInterpreterStepNativeProgram environment)
+      (selected : ProducerSelectedStandaloneNativeWorldPath
+        (generatedInterpreterStepNativeProgram environment) context
         (.running entryRva 0 before [] 0 [] world)
-        (.returned after events afterWorld) observations fuel),
+        (.returned after events afterWorld) observations),
     NativeWorldFramePathRefinement
-      (generatedInterpreterStepNativeProgram environment) context path
+      (generatedInterpreterStepNativeProgram environment) context selected
+
+def generatedInterpreterStepFrameParametricCertificateFor
+    (operationABI : KernelABIRelation)
+    (environment : NativeWorldEnvironment)
+    (producer :
+      GeneratedInterpreterStepSelectedPathProducerFor operationABI environment)
+    (selectedPathRefinement :
+      GeneratedInterpreterStepSelectedPathRefinement environment) :
+    KernelOperationFrameParametricCertificate generatedCompiledKernelProgram
+      operationABI
+      (generatedInterpreterStepNativeProgram environment)
+      .interpreterStep := {{
+  producer
+  selectedPathRefinement
+}}
 
 def generatedInterpreterStepFrameParametricCertificate
     (environment : NativeWorldEnvironment)
-    (standalone : GeneratedStandaloneInterpreterStepOperation environment)
-    (contextRefinement :
-      GeneratedInterpreterStepContextRefinement environment) :
+    (producer : GeneratedInterpreterStepSelectedPathProducer environment)
+    (selectedPathRefinement :
+      GeneratedInterpreterStepSelectedPathRefinement environment) :
     KernelOperationFrameParametricCertificate generatedCompiledKernelProgram
       generatedInterpreterKernelABIRelation
       (generatedInterpreterStepNativeProgram environment)
-      .interpreterStep := {{
-  standalone
-  contextRefinement
-}}
+      .interpreterStep :=
+  generatedInterpreterStepFrameParametricCertificateFor
+    generatedInterpreterKernelABIRelation environment producer
+    selectedPathRefinement
 
+#print axioms generatedInterpreterStepFrameParametricCertificateFor
 #print axioms generatedInterpreterStepFrameParametricCertificate
 
 end StageA.GeneratedRelational.InterpreterKernelOperationFrameParametric

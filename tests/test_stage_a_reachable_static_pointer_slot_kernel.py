@@ -426,6 +426,69 @@ class StageAReachableStaticPointerSlotKernelTests(unittest.TestCase):
             )
         )
 
+    def test_exact_narrow_write_widths_are_redecoded(self) -> None:
+        slot_va = 0x18000000 + DATA_RVA + 0x20
+        disjoint_va = slot_va + 8
+        cases = (
+            (
+                "byte",
+                b"\xc6\x05" + disjoint_va.to_bytes(4, "little") + b"\x00\xc3",
+                1,
+            ),
+            (
+                "word",
+                b"\x66\xc7\x05"
+                + disjoint_va.to_bytes(4, "little")
+                + b"\x00\x00\xc3",
+                2,
+            ),
+        )
+        for label, code, width in cases:
+            with self.subTest(label=label):
+                accepted = dataclasses.replace(
+                    minimal_spec(),
+                    definition_name=f"{label}WidthCertificate",
+                    regions=(
+                        RegionBindingProposal(
+                            0,
+                            (
+                                WriteClassificationProposal(
+                                    "absolute_disjoint", width=width
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+                self._assert_kernel_checked(
+                    self._compile(
+                        accepted,
+                        pe_bytes=_fixture_pe(code=code),
+                        code_size=len(code),
+                        expectation="accepted",
+                    )
+                )
+                self._assert_kernel_checked(
+                    self._compile(
+                        dataclasses.replace(
+                            accepted,
+                            definition_name=f"{label}WidthMismatchCertificate",
+                            regions=(
+                                RegionBindingProposal(
+                                    0,
+                                    (
+                                        WriteClassificationProposal(
+                                            "absolute_disjoint", width=4
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                        pe_bytes=_fixture_pe(code=code),
+                        code_size=len(code),
+                        expectation="rejected",
+                    )
+                )
+
     def test_zero_slot_closes_exact_nonzero_guard_edge(self) -> None:
         slot_va = 0x18000000 + DATA_RVA + 0x20
         code = (

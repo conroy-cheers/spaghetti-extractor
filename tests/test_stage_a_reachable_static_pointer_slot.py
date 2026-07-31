@@ -69,8 +69,12 @@ class StageAReachableStaticPointerSlotTests(unittest.TestCase):
                     RegionBindingProposal(
                         target_id=0,
                         writes=(
-                            WriteClassificationProposal("absolute_disjoint"),
-                            WriteClassificationProposal("runtime_separated"),
+                            WriteClassificationProposal(
+                                "absolute_disjoint", width=1
+                            ),
+                            WriteClassificationProposal(
+                                "runtime_separated", width=2
+                            ),
                             WriteClassificationProposal(
                                 "slot_code_target", target_id=7
                             ),
@@ -83,8 +87,8 @@ class StageAReachableStaticPointerSlotTests(unittest.TestCase):
                 indirect_slot_sites=(IndirectSlotSiteProposal(1),),
             )
         )
-        self.assertIn(".absoluteDisjoint", source)
-        self.assertIn(".runtimeSeparated", source)
+        self.assertIn(".absoluteDisjoint .byte", source)
+        self.assertIn(".runtimeSeparated .word", source)
         self.assertIn(".slotCodeTarget 7", source)
         self.assertIn("nonzeroTargetId := 1", source)
         self.assertIn("indirectSlotSites := .exact", source)
@@ -93,6 +97,19 @@ class StageAReachableStaticPointerSlotTests(unittest.TestCase):
         cases = (
             dataclasses.replace(minimal_spec(), definition_name="bad-name"),
             dataclasses.replace(minimal_spec(), slot_rva=1 << 32),
+            dataclasses.replace(
+                minimal_spec(),
+                regions=(
+                    RegionBindingProposal(
+                        target_id=0,
+                        writes=(
+                            WriteClassificationProposal(
+                                "absolute_disjoint", width=3
+                            ),
+                        ),
+                    ),
+                ),
+            ),
             dataclasses.replace(
                 minimal_spec(),
                 regions=(

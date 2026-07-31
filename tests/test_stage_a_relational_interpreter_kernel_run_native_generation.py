@@ -206,7 +206,7 @@ set_option maxRecDepth 100000 in
 example : GeneratedRunFunctionNativeO0TemplateGoal := by
   change runFunctionNativeO0TemplateChecked generatedRunFunctionTemplate = true
   decide
-#print axioms GeneratedRunFunctionNativeRefinesUsing
+#print axioms generatedRunFunctionNativeTemplateCertificate
 """,
             encoding="utf-8",
         )
@@ -227,7 +227,7 @@ example : GeneratedRunFunctionNativeO0TemplateGoal := by
         self.assertEqual(payload["template"]["masked_rel32_bytes"], [92, 93, 94, 95])
         self.assertEqual(payload["fixed_native_chunks"][0], {"id": "entry", "fuel": 18})
         self.assertIn(
-            "RunFunctionNativeMachineCertificate.refines",
+            "RunFunctionNativeChunk.path",
             payload["constructed_lean_evidence"],
         )
 
@@ -294,11 +294,10 @@ example : GeneratedRunFunctionNativeO0TemplateGoal := by
             "GeneratedRunFunctionNativeO0TemplateGoal",
             "generatedRunFunctionNativeTemplateCertificate",
             "GeneratedRunFunctionNativeLocalSemanticsGoal",
-            "GeneratedRunFunctionNativeMachineCertificateGoal",
-            "GeneratedRunFunctionNativeRefinesUsing",
-            "certificate.refines",
         ):
             self.assertIn(required, source)
+        self.assertNotIn("GeneratedRunFunctionNativeMachineCertificateGoal", source)
+        self.assertNotIn("GeneratedRunFunctionNativeRefinesUsing", source)
         for forbidden in (
             "whole_native_path",
             "caller_selected_final_state",
@@ -361,7 +360,11 @@ example : GeneratedRunFunctionNativeO0TemplateGoal := by
         self.assertEqual(plan.run.indirect_call_offsets, (186,))
         self.assertEqual(plan.run.backedge_latch_offsets, (238, 378))
         self.assertEqual(payload["template"]["masked_rel32_bytes"], [98, 99, 100, 101])
-        self.assertEqual(payload["fixed_native_chunks"][0], {"id": "entry", "fuel": 22})
+        self.assertEqual(payload["fixed_native_chunks"][0], {"id": "entry", "fuel": 20})
+        self.assertEqual(
+            payload["fixed_native_chunks"][3],
+            {"id": "resolver_prelude", "fuel": 21},
+        )
         self.assertEqual(
             payload["fixed_native_chunks"][5]["fuel_by_status"],
             {
@@ -392,7 +395,7 @@ example : GeneratedRunFunctionNativeO0TemplateGoal := by
         self.assertEqual(result["status"], "checked", result)
         self.assertNotIn("sorryAx", result["stdout"])
         self.assertNotIn("declaration uses 'sorry'", result["stderr"])
-        self.assertIn("RunFunctionNativeMachineCertificate.refines", result["stdout"])
+        self.assertIn("RunFunctionNativeChunk.path", result["stdout"])
         observed: set[str] = set()
         for match in _AXIOM_LINE.finditer(result["stdout"]):
             observed.update(

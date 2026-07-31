@@ -9,6 +9,7 @@ import capstone
 from spaghetti_extractor.relational.isa_requirements import (
     ISARequirementInventory,
     _lean_form_extraction_source,
+    _lean_side_form_extraction_source,
     build_isa_requirement_inventory,
     extract_lean_instruction_forms,
     isa_requirement_replay_projection,
@@ -229,6 +230,23 @@ class StageAISARequirementTests(unittest.TestCase):
         self.assertIn("    for request in chunk do", source)
         self.assertNotIn("def requests : List Request", source)
         self.assertEqual(source.count("{ candidate :="), 600)
+
+    def test_side_inventory_classifies_region_slices_without_reparsing_pe(self):
+        source = _lean_side_form_extraction_source(
+            "candidate",
+            [
+                {"span": {"rva_start": 0x1000, "size": 2}},
+                {"span": {"rva_start": 0x2000, "size": 3}},
+            ],
+        )
+
+        self.assertIn('readBinFile "artifacts/regions.bin"', source)
+        self.assertIn("dataOffset := 0", source)
+        self.assertIn("dataOffset := 2", source)
+        self.assertIn("decodeInstructionFormsBytes request.span.start", source)
+        self.assertNotIn("parsePE32", source)
+        self.assertNotIn('readBinFile "artifacts/input.pe"', source)
+        self.assertEqual(source.count("dataOffset :="), 2)
 
 
 if __name__ == "__main__":

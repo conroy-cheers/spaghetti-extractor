@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from ...stage_binary import StageAInputError
@@ -53,6 +54,7 @@ _TABLE_NAT_FIELDS = (
     "upper_exclusive",
     "continuation_target_id",
 )
+_U32_LIMIT = 1 << 32
 
 
 def _object(value: Any, context: str) -> Mapping[str, Any]:
@@ -85,6 +87,13 @@ def _natural(value: Any, context: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise StageAInputError(f"{context} must be a nonnegative integer")
     return value
+
+
+def _u32(value: Any, context: str) -> int:
+    natural = _natural(value, context)
+    if natural >= _U32_LIMIT:
+        raise StageAInputError(f"{context} must fit in an unsigned PE32 word")
+    return natural
 
 
 def _register(value: Any, context: str) -> str:
@@ -190,3 +199,87 @@ def _lean_reverse_sentinel_scanner_claim(claim: Mapping[str, Any]) -> str:
         + ", zeroFlagBit := " + str(zero_flag_bit)
         + " }"
     )
+
+
+@dataclass(frozen=True)
+class OriginalDecodedScannerRegionProposal:
+    target_id: int
+    rva: int
+    size: int
+
+    def validate(self, context: str) -> None:
+        _natural(self.target_id, f"{context} target id")
+        rva = _u32(self.rva, f"{context} RVA")
+        size = _u32(self.size, f"{context} size")
+        if size == 0:
+            raise StageAInputError(f"{context} size must be nonzero")
+        if rva + size > _U32_LIMIT:
+            raise StageAInputError(f"{context} span exceeds the PE32 address space")
+
+    def lean(self, context: str) -> str:
+        self.validate(context)
+        return (
+            "{ targetId := "
+            f"{self.target_id}, span := {{ start := {self.rva}, "
+            f"size := {self.size} }} }}"
+        )
+
+
+@dataclass(frozen=True)
+class OriginalScannerExecutionProposal:
+    table_base: int
+    scanner_register: str
+    count_register: str
+    loaded_register: str
+    selector_region: OriginalDecodedScannerRegionProposal
+    zero_region: OriginalDecodedScannerRegionProposal
+    scanner_region: OriginalDecodedScannerRegionProposal
+    bridge_region: OriginalDecodedScannerRegionProposal
+    gate_region: OriginalDecodedScannerRegionProposal
+    dispatch_source_target_id: int
+    dispatch_bypass_target_id: int
+
+    def validate(self) -> None:
+        _u32(self.table_base, "original scanner table base")
+        for field, value in (
+            ("scanner register", self.scanner_register),
+            ("count register", self.count_register),
+            ("loaded register", self.loaded_register),
+        ):
+            _register(value, f"original scanner {field}")
+        for field, region in (
+            ("selector region", self.selector_region),
+            ("zero region", self.zero_region),
+            ("scanner region", self.scanner_region),
+            ("bridge region", self.bridge_region),
+            ("gate region", self.gate_region),
+        ):
+            if not isinstance(region, OriginalDecodedScannerRegionProposal):
+                raise StageAInputError(
+                    f"original scanner {field} has the wrong proposal type"
+                )
+            region.validate(f"original scanner {field}")
+        _natural(
+            self.dispatch_source_target_id,
+            "original scanner dispatch source target id",
+        )
+        _natural(
+            self.dispatch_bypass_target_id,
+            "original scanner dispatch bypass target id",
+        )
+
+    def lean(self) -> str:
+        self.validate()
+        return f"""{{
+  tableBase := {self.table_base}
+  scannerRegister := .{self.scanner_register}
+  countRegister := .{self.count_register}
+  loadedRegister := .{self.loaded_register}
+  selectorRegion := {self.selector_region.lean("original scanner selector region")}
+  zeroRegion := {self.zero_region.lean("original scanner zero region")}
+  scannerRegion := {self.scanner_region.lean("original scanner scanner region")}
+  bridgeRegion := {self.bridge_region.lean("original scanner bridge region")}
+  gateRegion := {self.gate_region.lean("original scanner gate region")}
+  dispatchSourceTargetId := {self.dispatch_source_target_id}
+  dispatchBypassTargetId := {self.dispatch_bypass_target_id}
+}}"""

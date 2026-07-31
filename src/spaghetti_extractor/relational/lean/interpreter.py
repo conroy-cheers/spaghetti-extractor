@@ -129,6 +129,7 @@ _SUPPORTED_BODY_ACTIONS = frozenset(
         "divide_if",
         "call",
         "rep_movsd",
+        "rep_stosd",
         "set_reg",
         "set_flag",
         "sync_eflags",
@@ -218,6 +219,7 @@ def _validate_action_shape(action: Any, context: str, index: int) -> None:
         "divide_if": 1,
         "call": 1,
         "rep_movsd": 4,
+        "rep_stosd": 4,
         "set_reg": 1,
         "set_flag": 1,
         "sync_eflags": 0,
@@ -271,6 +273,7 @@ def _check_backend_opcode_tables() -> None:
         22: "outcome_return",
         23: "outcome_indirect",
         24: "outcome_external",
+        26: "rep_stosd",
     }
     if any(
         index >= len(_ACTIONS) or _ACTIONS[index] != name
@@ -444,6 +447,7 @@ def _validate_transfer(transfer: Any) -> None:
                 "memory_write": args,
                 "divide_if": args,
                 "rep_movsd": args,
+                "rep_stosd": args,
                 "set_reg": args,
                 "set_flag": args,
                 "sync_eflags": (),
@@ -591,6 +595,8 @@ def _semantic_action(action: Any) -> str:
         return f".call {args[0]}"
     if action.op == "rep_movsd":
         return f".repMovsd {args[0]} {args[1]} {args[2]} {args[3]}"
+    if action.op == "rep_stosd":
+        return f".repStosd {args[0]} {args[1]} {args[2]} {args[3]}"
     if action.op == "set_reg":
         return f".setRegister .{_LEAN_REGISTERS[action.aux]} {args[0]}"
     if action.op == "set_flag":

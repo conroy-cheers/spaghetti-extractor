@@ -16,6 +16,7 @@ from spaghetti_extractor.relational.lean.interpreter import (
     relational_interpreter_source,
 )
 from spaghetti_extractor.stage_b_interpreter_backend import (
+    _ACTIONS,
     _Action,
     _Node,
     compile_stage_b_interpreter_program,
@@ -157,6 +158,33 @@ class StageARelationalInterpreterGenerationTests(unittest.TestCase):
         for marker in ("sorry", "axiom", "unsafe"):
             self.assertIsNone(re.search(rf"\b{marker}\b", source), marker)
         self.assertNotIn("Acceptance", source)
+
+    def test_emits_rep_stosd_as_action_26_without_renumbering_existing_actions(self) -> None:
+        row = _row()
+        row["ordered_events"][3] = {
+            "family": "external",
+            "kind": "rep_stosd",
+            "index": 0,
+            "instruction_rva": 0x1000,
+            "destination": {"op": "reg", "name": "edi", "width": 32},
+            "value": {"op": "reg", "name": "eax", "width": 32},
+            "count": {"op": "reg", "name": "ecx", "width": 32},
+            "direction_flag": {"op": "flag", "name": "df"},
+            "effect_model": "symbolic_string_fill_v1",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            machine = Path(temporary) / "state-machine.jsonl"
+            _write_machine(machine, [row])
+            transfer = compile_stage_b_interpreter_program(machine)[0]
+            source = relational_interpreter_source(machine)
+
+        action = next(item for item in transfer.actions if item.op == "rep_stosd")
+        self.assertEqual(len(action.args), 4)
+        self.assertIn(".repStosd", source)
+        self.assertIn("op := 26", source)
+        self.assertEqual(_ACTIONS.index("rep_movsd"), 5)
+        self.assertEqual(_ACTIONS.index("replay_x87"), 25)
+        self.assertEqual(_ACTIONS.index("rep_stosd"), 26)
 
     def test_generation_rejects_unsupported_or_malformed_programs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -583,6 +583,267 @@ def CanonicalMixedLaunchStatesRelated
   Nonempty (CanonicalMixedPE32ConsoleLaunchStatePair original candidate anchors
     profile originalWorld candidateWorld originalState candidateState)
 
+/-! ## Constructive launch-state witnesses
+
+The following compact checkers support generated non-vacuity witnesses.  They
+check finite concrete memories and then export the quantified fields required
+by `CanonicalMixedPE32ConsoleLaunchStatePair`.  They do not infer a loader
+state, and a successful Boolean check has no authority until these soundness
+theorems are applied. -/
+
+def canonicalMixedExactRangeMemoryChecked
+    (world : RelationalWorld) (originalMemory candidateMemory : Memory) : Bool :=
+  (world.dynamicRanges ++ world.stackRanges).all fun range =>
+    (List.range range.size).all fun offset =>
+      if decide (offset + 4 <= range.size) && decide (offset % 4 = 0) then
+        Memory.read32 originalMemory
+            (range.originalBase + BitVec.ofNat 32 offset) ==
+          Memory.read32 candidateMemory
+            (range.candidateBase + BitVec.ofNat 32 offset)
+      else true
+
+theorem canonicalMixedRangeMemoryRelated_of_exact_checked
+    (checked : canonicalMixedExactRangeMemoryChecked world originalMemory
+      candidateMemory = true) :
+    forall range,
+      range ∈ world.dynamicRanges ++ world.stackRanges ->
+        CanonicalMixedRangeMemoryRelated original candidate anchors world range
+          originalMemory candidateMemory := by
+  intro range rangeMember offset inside aligned
+  simp only [canonicalMixedExactRangeMemoryChecked, List.all_eq_true] at checked
+  have offsetBefore : offset < range.size := by omega
+  have rangeChecked := checked range rangeMember
+  have row := rangeChecked offset (List.mem_range.mpr offsetBefore)
+  simp [inside, aligned] at row
+  have exactReads :
+      Memory.read32 originalMemory (range.originalBase + BitVec.ofNat 32 offset) =
+        Memory.read32 candidateMemory
+          (range.candidateBase + BitVec.ofNat 32 offset) :=
+    row
+  apply Or.inl
+  rw [exactReads]
+  exact wordRelated_self _ _ _ _ _
+
+def canonicalMixedImportAddressesMemoryChecked
+    (original : OriginalDecodedStaticContext)
+    (candidate : ExactNativeWorldProgram)
+    (world : RelationalWorld)
+    (originalMemory candidateMemory : Memory) : Bool :=
+  world.importAddresses.all fun binding =>
+    Memory.read32 originalMemory
+          (BitVec.ofNat 32 (original.pe.imageBase + binding.originalIatRva)) ==
+        binding.originalAddress &&
+      Memory.read32 candidateMemory
+          (BitVec.ofNat 32 (candidate.pe.imageBase + binding.candidateIatRva)) ==
+        binding.candidateAddress
+
+theorem canonicalMixedImportAddressesMemoryHold_of_checked
+    (checked : canonicalMixedImportAddressesMemoryChecked original candidate
+      world originalMemory candidateMemory = true) :
+    CanonicalMixedImportAddressesMemoryHold original candidate world
+      originalMemory candidateMemory := by
+  intro binding member
+  simp only [canonicalMixedImportAddressesMemoryChecked, List.all_eq_true]
+    at checked
+  have row := checked binding member
+  simpa only [Bool.and_eq_true, beq_iff_eq] using row
+
+def mixedPreferredBaseImportWrites (candidateSide : Bool)
+    (original : OriginalDecodedStaticContext)
+    (candidate : ExactNativeWorldProgram)
+    (world : RelationalWorld) : List (Word × Word) :=
+  world.importAddresses.map fun binding =>
+    if candidateSide then
+      (BitVec.ofNat 32
+          (candidate.pe.imageBase + binding.candidateIatRva),
+        binding.candidateAddress)
+    else
+      (BitVec.ofNat 32
+          (original.pe.imageBase + binding.originalIatRva),
+        binding.originalAddress)
+
+def mixedLoaderPopulatedPreferredBaseMemory (candidateSide : Bool)
+    (original : OriginalDecodedStaticContext)
+    (candidate : ExactNativeWorldProgram)
+    (world : RelationalWorld) : Memory :=
+  applyConcreteWrites
+    (preferredBaseImageMemory (if candidateSide then candidate.pe else original.pe))
+    (mixedPreferredBaseImportWrites candidateSide original candidate world)
+
+theorem mixedImportAddressValid_originalWitness
+    (valid : mixedImportAddressValid original candidate binding = true) :
+    exists imported,
+      imported ∈ original.imports /\
+        imported.iatRva = binding.originalIatRva := by
+  unfold mixedImportAddressValid at valid
+  split at valid <;> simp_all
+  rename_i originalImport candidateImport originalExact candidateExact
+  have originalFind :
+      List.find? (fun imported => imported.iatRva == binding.originalIatRva)
+          original.imports =
+        some originalImport := by
+    simpa [importAtIatRva] using originalExact
+  refine ⟨originalImport, List.mem_of_find?_eq_some originalFind, ?_⟩
+  exact beq_iff_eq.mp (List.find?_some
+    (p := fun imported : PEImport =>
+      imported.iatRva == binding.originalIatRva)
+    (a := originalImport) originalFind)
+
+theorem mixedImportAddressValid_candidateWitness
+    (valid : mixedImportAddressValid original candidate binding = true) :
+    exists imported,
+      imported ∈ candidate.imports /\
+        imported.iatRva = binding.candidateIatRva := by
+  unfold mixedImportAddressValid at valid
+  split at valid <;> simp_all
+  rename_i originalImport candidateImport originalExact candidateExact
+  have candidateFind :
+      List.find? (fun imported => imported.iatRva == binding.candidateIatRva)
+          candidate.imports =
+        some candidateImport := by
+    simpa [importAtIatRva] using candidateExact
+  refine ⟨candidateImport, List.mem_of_find?_eq_some candidateFind, ?_⟩
+  exact beq_iff_eq.mp (List.find?_some
+    (p := fun imported : PEImport =>
+      imported.iatRva == binding.candidateIatRva)
+    (a := candidateImport) candidateFind)
+
+theorem preferredBaseImageMemory_after_mixed_original_import_writes
+    (bindingsValid :
+      world.importAddresses.all (mixedImportAddressValid original candidate) =
+        true)
+    (importsBounded :
+      original.imports.all (fun imported =>
+        imported.iatRva + 4 <= original.pe.sizeOfImage) = true)
+    (imageBounded : original.pe.imageBase + original.pe.sizeOfImage <= 2 ^ 32)
+    (mapped : PreferredBaseImageMemory original.pe original.imports memory) :
+    PreferredBaseImageMemory original.pe original.imports
+      (applyConcreteWrites memory
+        (mixedPreferredBaseImportWrites false original candidate world)) := by
+  unfold mixedPreferredBaseImportWrites
+  generalize world.importAddresses = bindings at bindingsValid ⊢
+  induction bindings generalizing memory with
+  | nil => simpa [applyConcreteWrites] using mapped
+  | cons binding rest induction =>
+      simp only [List.map_cons]
+      have bindingsValidParts :
+          mixedImportAddressValid original candidate binding = true ∧
+            rest.all (mixedImportAddressValid original candidate) = true :=
+        by
+          simpa only [List.all_cons, Bool.and_eq_true] using bindingsValid
+      obtain ⟨imported, member, iatExact⟩ :=
+        mixedImportAddressValid_originalWitness bindingsValidParts.1
+      simp only [List.all_eq_true] at importsBounded
+      have iatBounded := importsBounded imported member
+      have afterHead := PreferredBaseImageMemory.afterIatWordWrite original.pe
+        original.imports memory imported member binding.originalAddress
+        imageBounded (by simpa [iatExact] using iatBounded) mapped
+      apply induction ?_ bindingsValidParts.2
+      simpa [iatExact] using afterHead
+
+theorem preferredBaseImageMemory_after_mixed_candidate_import_writes
+    (bindingsValid :
+      world.importAddresses.all (mixedImportAddressValid original candidate) =
+        true)
+    (importsBounded :
+      candidate.imports.all (fun imported =>
+        imported.iatRva + 4 <= candidate.pe.sizeOfImage) = true)
+    (imageBounded : candidate.pe.imageBase + candidate.pe.sizeOfImage <= 2 ^ 32)
+    (mapped : PreferredBaseImageMemory candidate.pe candidate.imports memory) :
+    PreferredBaseImageMemory candidate.pe candidate.imports
+      (applyConcreteWrites memory
+        (mixedPreferredBaseImportWrites true original candidate world)) := by
+  unfold mixedPreferredBaseImportWrites
+  generalize world.importAddresses = bindings at bindingsValid ⊢
+  induction bindings generalizing memory with
+  | nil => simpa [applyConcreteWrites] using mapped
+  | cons binding rest induction =>
+      simp only [List.map_cons]
+      have bindingsValidParts :
+          mixedImportAddressValid original candidate binding = true ∧
+            rest.all (mixedImportAddressValid original candidate) = true :=
+        by
+          simpa only [List.all_cons, Bool.and_eq_true] using bindingsValid
+      obtain ⟨imported, member, iatExact⟩ :=
+        mixedImportAddressValid_candidateWitness bindingsValidParts.1
+      simp only [List.all_eq_true] at importsBounded
+      have iatBounded := importsBounded imported member
+      have afterHead := PreferredBaseImageMemory.afterIatWordWrite candidate.pe
+        candidate.imports memory imported member binding.candidateAddress
+        imageBounded (by simpa [iatExact] using iatBounded) mapped
+      apply induction ?_ bindingsValidParts.2
+      simpa [iatExact] using afterHead
+
+theorem mixedLoaderPopulatedPreferredBaseMemory_maps_original
+    (bindingsValid :
+      world.importAddresses.all (mixedImportAddressValid original candidate) =
+        true)
+    (importsBounded :
+      original.imports.all (fun imported =>
+        imported.iatRva + 4 <= original.pe.sizeOfImage) = true)
+    (imageBounded : original.pe.imageBase + original.pe.sizeOfImage <= 2 ^ 32) :
+    PreferredBaseImageMemory original.pe original.imports
+      (mixedLoaderPopulatedPreferredBaseMemory false original candidate world) := by
+  exact preferredBaseImageMemory_after_mixed_original_import_writes bindingsValid
+    importsBounded imageBounded
+    (preferredBaseImageMemory_maps_image original.pe original.imports imageBounded)
+
+theorem mixedLoaderPopulatedPreferredBaseMemory_maps_candidate
+    (bindingsValid :
+      world.importAddresses.all (mixedImportAddressValid original candidate) =
+        true)
+    (importsBounded :
+      candidate.imports.all (fun imported =>
+        imported.iatRva + 4 <= candidate.pe.sizeOfImage) = true)
+    (imageBounded : candidate.pe.imageBase + candidate.pe.sizeOfImage <= 2 ^ 32) :
+    PreferredBaseImageMemory candidate.pe candidate.imports
+      (mixedLoaderPopulatedPreferredBaseMemory true original candidate world) := by
+  exact preferredBaseImageMemory_after_mixed_candidate_import_writes bindingsValid
+    importsBounded imageBounded
+    (preferredBaseImageMemory_maps_image candidate.pe candidate.imports imageBounded)
+
+structure MixedLaunchRangeWrite where
+  rangeBase : Word
+  rangeSize : Nat
+  offset : Nat
+  value : Word
+deriving Repr, DecidableEq
+
+def applyMixedLaunchRangeWrites (memory : Memory)
+    (writes : List MixedLaunchRangeWrite) : Memory :=
+  writes.foldl (fun current write =>
+    current.write32 (write.rangeBase + BitVec.ofNat 32 write.offset) write.value)
+    memory
+
+def mixedLaunchRangeWritesPreserveImageChecked (pe : PE32)
+    (writes : List MixedLaunchRangeWrite) : Bool :=
+  writes.all fun write =>
+    write.rangeBase.toNat + write.rangeSize < 2 ^ 32 &&
+      (write.rangeBase.toNat + write.rangeSize <= pe.imageBase ||
+        pe.imageBase + pe.sizeOfImage <= write.rangeBase.toNat) &&
+      write.offset + 4 <= write.rangeSize
+
+theorem PreferredBaseImageMemory.afterMixedLaunchRangeWrites
+    (imageBounded : pe.imageBase + pe.sizeOfImage <= 2 ^ 32)
+    (checked : mixedLaunchRangeWritesPreserveImageChecked pe writes = true)
+    (mapped : PreferredBaseImageMemory pe imports memory) :
+    PreferredBaseImageMemory pe imports
+      (applyMixedLaunchRangeWrites memory writes) := by
+  induction writes generalizing memory with
+  | nil => simpa [applyMixedLaunchRangeWrites] using mapped
+  | cons write rest induction =>
+      simp only [mixedLaunchRangeWritesPreserveImageChecked, List.all_cons,
+        Bool.and_eq_true, decide_eq_true_eq] at checked
+      simp only [applyMixedLaunchRangeWrites, List.foldl_cons]
+      have disjoint :
+          write.rangeBase.toNat + write.rangeSize <= pe.imageBase ∨
+            pe.imageBase + pe.sizeOfImage <= write.rangeBase.toNat := by
+        simpa only [Bool.or_eq_true, decide_eq_true_eq] using checked.1.1.2
+      have afterHead := mapped.afterStackWordWrite pe imports memory
+        write.rangeBase write.rangeSize write.offset write.value imageBounded
+        checked.1.1.1 disjoint checked.1.2
+      exact induction checked.2 afterHead
+
 theorem CanonicalMixedPE32ConsoleLaunchStatePair.candidateLoaderByte
     (pair : CanonicalMixedPE32ConsoleLaunchStatePair original candidate anchors
       profile originalWorld candidateWorld originalState candidateState)
@@ -641,7 +902,9 @@ structure LegacyCanonicalMixedLaunchWrapperRefinement
 /-- Guard-complete wrapper authority used by the canonical mixed profile.
 Unlike the legacy linear inventory, concrete replay chooses the checked arm of
 each wrapper branch.  Establishing the runtime relation remains a separate
-semantic obligation over every launch state. -/
+semantic obligation over every launch state.  `routeReady` records the
+machine-level frame/environment preconditions under which replay is total;
+root frame facts must establish it from the canonical launch premises. -/
 structure CanonicalMixedLaunchWrapperRefinement
     (original : OriginalDecodedStaticContext)
     (candidate : ExactNativeWorldProgram)
@@ -649,8 +912,9 @@ structure CanonicalMixedLaunchWrapperRefinement
     (launch : PE32ConsoleLaunchV2) where
   reflected : ExactNativeLaunchGraphCertificate
   staticChecked : reflected.staticChecked candidate.pe candidate.imports = true
+  routeReady : ReflectedNativeLaunchGraphRoute -> NativeWorldExecution -> Prop
   replayTotal : forall route, route ∈ reflected.routes -> forall before,
-    route.source.matches candidate.pe reflected.cutpoints before = true ->
+    routeReady route before ->
       exists result,
         route.replay? candidate reflected.cutpoints before = some result
   rootsEstablishRuntime : forall root rootRva originalWorld candidateWorld
@@ -669,6 +933,169 @@ structure CanonicalMixedLaunchWrapperRefinement
           result.after.machine? = some candidateAfter /\
           contract.runtimeStatesRelated originalWorld candidateWorld originalState
             candidateAfter
+
+/-- Semantic launch-frame facts for the result computed by the exact native
+route executor.  Route existence and execution totality are deliberately not
+fields here: they come from `ExactNativeLaunchGraphRuntime`.  This object only
+proves that an exact root replay, starting from related launch states and the
+loader-derived native call frames, emits no event and establishes the runtime
+state relation. -/
+structure CanonicalMixedLaunchRootFrameFacts
+    (checked : CheckedExactNativeLaunchGraph)
+    (runtime : ExactNativeLaunchGraphRuntime checked candidate)
+    (original : OriginalDecodedStaticContext)
+    (candidate : ExactNativeWorldProgram)
+    (contract : MixedRelationContract)
+    (launch : PE32ConsoleLaunchV2) : Prop where
+  rootReady : forall root rootRva originalWorld candidateWorld originalState
+      candidateState calls route,
+    root.rva? candidate.pe = some rootRva ->
+      MixedLaunchStatesRelated original candidate contract originalWorld
+        candidateWorld originalState candidateState ->
+      candidateNativeLaunchCallFrames? candidate launch candidateState =
+        some calls ->
+      route ∈ checked.certificate.routes ->
+      route.source = .canonicalRoot root ->
+      runtime.routeReady route
+        (.running rootRva 0 candidateState calls 0 [] candidateWorld)
+  replayEstablishesRuntime : forall root rootRva originalWorld candidateWorld
+      originalState candidateState calls route result,
+    root.rva? candidate.pe = some rootRva ->
+      MixedLaunchStatesRelated original candidate contract originalWorld
+        candidateWorld originalState candidateState ->
+      candidateNativeLaunchCallFrames? candidate launch candidateState =
+        some calls ->
+      route ∈ checked.certificate.routes ->
+      route.source = .canonicalRoot root ->
+      route.replay? candidate checked.certificate.cutpoints
+          (.running rootRva 0 candidateState calls 0 [] candidateWorld) =
+        some result ->
+      result.observations = [] /\
+        exists candidateAfter,
+          result.after.machine? = some candidateAfter /\
+            contract.runtimeStatesRelated originalWorld candidateWorld
+              originalState candidateAfter
+
+theorem exactNativeLaunchGraphRuntime_rootsEstablishRuntime
+    (runtime : ExactNativeLaunchGraphRuntime checked candidate)
+    (frames : CanonicalMixedLaunchRootFrameFacts checked runtime original
+      candidate contract launch) :
+    forall root rootRva originalWorld candidateWorld originalState candidateState
+      calls,
+      root.rva? candidate.pe = some rootRva ->
+      MixedLaunchStatesRelated original candidate contract originalWorld
+        candidateWorld originalState candidateState ->
+      candidateNativeLaunchCallFrames? candidate launch candidateState =
+        some calls ->
+      exists route result candidateAfter,
+        route ∈ checked.certificate.routes /\
+          route.source = .canonicalRoot root /\
+          route.replay? candidate checked.certificate.cutpoints
+              (.running rootRva 0 candidateState calls 0 [] candidateWorld) =
+            some result /\
+          result.observations = [] /\
+          result.after.machine? = some candidateAfter /\
+          contract.runtimeStatesRelated originalWorld candidateWorld originalState
+            candidateAfter := by
+  intro root rootRva originalWorld candidateWorld originalState candidateState
+    calls rootExact launchRelated callsExact
+  obtain ⟨route, routeMember, routeSource⟩ :=
+    runtime.canonicalRootRoute root rootRva rootExact
+  have ready := frames.rootReady root rootRva originalWorld candidateWorld
+    originalState candidateState calls route rootExact launchRelated callsExact
+    routeMember routeSource
+  obtain ⟨result, replayed⟩ :=
+    runtime.replayTotal route routeMember
+      (.running rootRva 0 candidateState calls 0 [] candidateWorld)
+      ready
+  obtain ⟨observationsExact, candidateAfter, afterMachine, runtimeRelated⟩ :=
+    frames.replayEstablishesRuntime root rootRva originalWorld candidateWorld
+      originalState candidateState calls route result rootExact launchRelated
+      callsExact routeMember routeSource replayed
+  exact ⟨route, result, candidateAfter, routeMember, routeSource, replayed,
+    observationsExact, afterMachine, runtimeRelated⟩
+
+/-- Build the canonical launch refinement from the two independently checkable
+pieces: exact finite native execution and the launch-frame postcondition. -/
+def CanonicalMixedLaunchWrapperRefinement.ofCheckedRuntime
+    (runtime : ExactNativeLaunchGraphRuntime checked candidate)
+    (frames : CanonicalMixedLaunchRootFrameFacts checked runtime original
+      candidate contract launch) :
+    CanonicalMixedLaunchWrapperRefinement original candidate contract launch := {
+  reflected := checked.certificate
+  staticChecked := runtime.staticChecked
+  routeReady := runtime.routeReady
+  replayTotal := runtime.replayTotal
+  rootsEstablishRuntime :=
+    exactNativeLaunchGraphRuntime_rootsEstablishRuntime runtime frames
+}
+
+/-- Exact identity between one independently checked generated launch graph and
+the graph used by a canonical runtime refinement. -/
+structure ExactCanonicalMixedLaunchWrapperRefinementBinding
+    (checked : CheckedExactNativeLaunchGraph)
+    (original : OriginalDecodedStaticContext)
+    (candidate : ExactNativeWorldProgram)
+    (contract : MixedRelationContract)
+    (launch : PE32ConsoleLaunchV2)
+    (refinement :
+      CanonicalMixedLaunchWrapperRefinement original candidate contract launch) where
+  candidatePeExact : checked.candidatePe = candidate.pe
+  candidateImportsExact : checked.candidateImports = candidate.imports
+  reflectedExact : refinement.reflected = checked.certificate
+
+/-- Construct the exact binding directly from checked replay and frame
+evidence.  Generated binaries need not manufacture a separate refinement and
+then prove that it happened to use the same reflected graph. -/
+def ExactCanonicalMixedLaunchWrapperRefinementBinding.ofCheckedRuntime
+    (runtime : ExactNativeLaunchGraphRuntime checked candidate)
+    (frames : CanonicalMixedLaunchRootFrameFacts checked runtime original
+      candidate contract launch) :
+    ExactCanonicalMixedLaunchWrapperRefinementBinding checked original candidate
+      contract launch
+      (CanonicalMixedLaunchWrapperRefinement.ofCheckedRuntime runtime frames) := {
+  candidatePeExact := runtime.candidatePeExact
+  candidateImportsExact := runtime.candidateImportsExact
+  reflectedExact := rfl
+}
+
+theorem ExactCanonicalMixedLaunchWrapperRefinementBinding.staticChecked
+    (binding : ExactCanonicalMixedLaunchWrapperRefinementBinding checked original
+      candidate contract launch refinement) :
+    checked.certificate.staticChecked candidate.pe candidate.imports = true := by
+  rw [← binding.candidatePeExact, ← binding.candidateImportsExact]
+  exact checked.staticChecked
+
+theorem ExactCanonicalMixedLaunchWrapperRefinementBinding.replayTotal
+    (binding : ExactCanonicalMixedLaunchWrapperRefinementBinding checked original
+      candidate contract launch refinement) :
+    forall route, route ∈ checked.certificate.routes -> forall before,
+      refinement.routeReady route before ->
+        exists result,
+          route.replay? candidate checked.certificate.cutpoints before = some result := by
+  rw [← binding.reflectedExact]
+  exact refinement.replayTotal
+
+theorem ExactCanonicalMixedLaunchWrapperRefinementBinding.rootsEstablishRuntime
+    (binding : ExactCanonicalMixedLaunchWrapperRefinementBinding checked original
+      candidate contract launch refinement) :
+    forall root rootRva originalWorld candidateWorld originalState candidateState calls,
+      root.rva? candidate.pe = some rootRva ->
+      MixedLaunchStatesRelated original candidate contract originalWorld
+        candidateWorld originalState candidateState ->
+      candidateNativeLaunchCallFrames? candidate launch candidateState = some calls ->
+      exists route result candidateAfter,
+        route ∈ checked.certificate.routes /\
+          route.source = .canonicalRoot root /\
+          route.replay? candidate checked.certificate.cutpoints
+              (.running rootRva 0 candidateState calls 0 [] candidateWorld) =
+            some result /\
+          result.observations = [] /\
+          result.after.machine? = some candidateAfter /\
+          contract.runtimeStatesRelated originalWorld candidateWorld originalState
+            candidateAfter := by
+  rw [← binding.reflectedExact]
+  exact refinement.rootsEstablishRuntime
 
 def decodedWorldProgramWithProtocolEnvironment
     (program : DecodedWorldProgram)
@@ -756,6 +1183,23 @@ def CanonicalMixedRuntimeStatesRelated
             (abi.parameters.outputAddress abi.engineLayout)
             source.target.rva originalState candidateState)
 
+/-- Construct the canonical runtime relation from an exact input-buffer
+capture.  Generated launch proofs use this theorem after exact route replay has
+established `OriginalEngineStateHolds`; static reachability and source lookup
+remain explicit, independently checked inputs. -/
+theorem canonicalMixedRuntimeStatesRelated_of_inputEngine
+    (worlds : CanonicalMixedWorldsRelated original candidate anchors
+      originalWorld candidateWorld)
+    (targetMember : targetId ∈ reachableTargetIds)
+    (sourceExact : original.source? targetId = some source)
+    (captured : OriginalEngineStateHolds abi.engineLayout
+      abi.parameters.inputAddress source.target.rva originalState
+      candidateState) :
+    CanonicalMixedRuntimeStatesRelated original candidate abi
+      reachableTargetIds anchors originalWorld candidateWorld originalState
+      candidateState :=
+  ⟨worlds, targetId, source, targetMember, sourceExact, Or.inl captured⟩
+
 def CanonicalMixedValuesRelated
     (original : OriginalDecodedStaticContext)
     (candidate : ExactNativeWorldProgram)
@@ -799,6 +1243,53 @@ def CanonicalMixedRelationCore.contract
   callbackTargetsRelated := CheckedMixedCallbackTargetsRelated original candidate
     core.anchors
 }
+
+/-- Reindex a checked relation core over the callable-wrapped original carrier.
+The relation data itself depends only on the immutable original/candidate
+authorities, concrete ABI, reachable targets, anchors, and launch profile. -/
+def CanonicalMixedRelationCore.withCallable
+    (core : CanonicalMixedRelationCore original originalAuthority originalProgram
+      candidate candidateAuthority programBinding abi reachabilityTargetIds)
+    (program :
+      StageA.Relational.CallableExternalExecution.OriginalCallableProgram)
+    (environment :
+      StageA.Relational.CallableExternalExecution.OriginalCallableExternalEnvironment) :
+    CanonicalMixedRelationCore original originalAuthority
+      (decodedWorldProgramWithCallable originalProgram program environment)
+      candidate candidateAuthority
+      (programBinding.withCallable program environment) abi reachabilityTargetIds := {
+  anchors := core.anchors
+  anchorsValid := core.anchorsValid
+  launchMemoryProfile := core.launchMemoryProfile
+}
+
+@[simp] theorem CanonicalMixedRelationCore.withCallable_anchors
+    (core : CanonicalMixedRelationCore original originalAuthority originalProgram
+      candidate candidateAuthority programBinding abi reachabilityTargetIds)
+    (program :
+      StageA.Relational.CallableExternalExecution.OriginalCallableProgram)
+    (environment :
+      StageA.Relational.CallableExternalExecution.OriginalCallableExternalEnvironment) :
+    (core.withCallable program environment).anchors = core.anchors := rfl
+
+@[simp] theorem CanonicalMixedRelationCore.withCallable_launchMemoryProfile
+    (core : CanonicalMixedRelationCore original originalAuthority originalProgram
+      candidate candidateAuthority programBinding abi reachabilityTargetIds)
+    (program :
+      StageA.Relational.CallableExternalExecution.OriginalCallableProgram)
+    (environment :
+      StageA.Relational.CallableExternalExecution.OriginalCallableExternalEnvironment) :
+    (core.withCallable program environment).launchMemoryProfile =
+      core.launchMemoryProfile := rfl
+
+@[simp] theorem CanonicalMixedRelationCore.withCallable_contract
+    (core : CanonicalMixedRelationCore original originalAuthority originalProgram
+      candidate candidateAuthority programBinding abi reachabilityTargetIds)
+    (program :
+      StageA.Relational.CallableExternalExecution.OriginalCallableProgram)
+    (environment :
+      StageA.Relational.CallableExternalExecution.OriginalCallableExternalEnvironment) :
+    (core.withCallable program environment).contract = core.contract := rfl
 
 /-- Final relation policy.  Launch is explicitly inhabited, while environment
 refinement remains a premise of the exported theorem rather than a selected
@@ -985,6 +1476,13 @@ def CanonicalMixedWorldProgramsChunkObservationallyEquivalent
         (exactNativeWorldProgramWithEnvironment candidate candidateEnvironment)
         profile.contract launch
 
+/-- A closed acceptance theorem may range over proof-free carrier choices
+without fixing an inert external environment.  The family itself supplies the
+program-specific indexed profile proposition for each carrier. -/
+def CanonicalMixedWorldProgramsChunkObservationallyEquivalentFamily
+    {Parameters : Type} (family : Parameters -> Prop) : Prop :=
+  forall parameters, family parameters
+
 theorem canonicalMixedWorldProgramsEquivalent
     (profile : CanonicalMixedRelationProfile original originalAuthority
       originalProgram candidate candidateAuthority programBinding abi launch
@@ -1025,17 +1523,15 @@ theorem canonicalMixedWorldProgramsEquivalent_trace
       originalWorld candidateWorld originalState candidateState) :
     let selected := certificate.certificates originalEnvironment
       candidateEnvironment environmentRefines
-    ChunkedRelatedTrace
+    MixedWorldPrefixedChunkedTrace
       (decodedWorldProgramWithProtocolEnvironment originalProgram
-        originalEnvironment).pe32TransitionSystem
-      (exactNativeWorldProgramWithEnvironment candidate
-        candidateEnvironment).transitionSystem
-      selected.composition.invariant.holds
-      profile.contract.eventObservationsRelated fuel
+        originalEnvironment)
+      (exactNativeWorldProgramWithEnvironment candidate candidateEnvironment)
+      profile.contract selected.composition.invariant fuel
       (.running launch.rootTargetId originalState
         launch.continuationTargetIds 0 originalWorld)
       (.running selected.candidateRootRva 0 candidateState
-        (selected.composition.candidateLaunchCalls candidateState) 0 []
+        (selected.launchPrefix.candidateLaunchCalls candidateState) 0 []
         candidateWorld) := by
   exact mixedWorldProgramsEquivalent_trace
     (certificate.certificates originalEnvironment candidateEnvironment

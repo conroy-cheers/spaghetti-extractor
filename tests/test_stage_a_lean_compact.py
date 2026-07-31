@@ -20,6 +20,13 @@ class StageALeanCompactTests(unittest.TestCase):
 
         self.assertIn("theorem typedFinalTheorem", source)
         self.assertIn("PE32RawProgramsLinkedObservationallyEquivalent", source)
+        self.assertIn(
+            "CanonicalMixedWorldProgramsChunkObservationallyEquivalent", source
+        )
+        self.assertIn(
+            "candidatePE32ProgramsEquivalentMixedChunked", source
+        )
+        self.assertIn("mixedChunkedAcceptanceReady", source)
         self.assertNotIn("PE32RawProgramsObservationallyEquivalent", source)
         self.assertIn("#print axioms typedFinalTheorem", source)
         self.assertIn('lean -j 1 --trust=0', source)
@@ -176,6 +183,83 @@ class StageALeanCompactTests(unittest.TestCase):
             self.assertNotEqual(process.returncode, 0)
             self.assertIn("final theorem depends on unapproved axioms", process.stderr)
 
+    @unittest.skipUnless(
+        shutil.which("nix")
+        and os.environ.get("SPAGHETTI_EXTRACTOR_RUN_NIX_INTEGRATION") == "1",
+        "set SPAGHETTI_EXTRACTOR_RUN_NIX_INTEGRATION=1 for compact Nix fixtures",
+    )
+    def test_compact_mixed_profile_is_typed_and_profile_checked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_fixture(root)
+            self._select_mixed_profile(root)
+
+            process = self._build_fixture(root)
+
+            self.assertEqual(process.returncode, 0, process.stderr[-8000:])
+            outputs = [
+                Path(item["outputs"]["out"])
+                for item in json.loads(process.stdout)
+            ]
+            audits = [
+                json.loads((path / "audit.json").read_text(encoding="utf-8"))
+                for path in outputs
+                if (path / "audit.json").is_file()
+            ]
+            self.assertEqual(len(audits), 2)
+            self.assertTrue(all(
+                audit["canonical_proposition_profile"]
+                == "mixed-native-pe32-chunked-closed"
+                for audit in audits
+            ))
+            self.assertTrue(all(
+                audit["theorem"]
+                == (
+                    "StageA.GeneratedRelational."
+                    "candidatePE32ProgramsEquivalentMixedChunked"
+                )
+                for audit in audits
+            ))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            wrong_profile = Path(temporary)
+            self._write_fixture(wrong_profile)
+            self._select_mixed_profile(
+                wrong_profile,
+                authority_profile="linked-raw-pe32",
+            )
+
+            process = self._build_fixture(wrong_profile)
+
+            self.assertNotEqual(process.returncode, 0)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            wrong_type = Path(temporary)
+            self._write_fixture(wrong_type)
+            bundle = (
+                wrong_type / "lean" / "StageA" / "RelationalBundle.lean"
+            )
+            source = bundle.read_text(encoding="utf-8")
+            declaration = source.index(
+                "theorem candidatePE32ProgramsEquivalentMixedChunked"
+            )
+            namespace_end = source.index("end StageA.GeneratedRelational")
+            weakened = (
+                source[:declaration]
+                + (
+                    "theorem candidatePE32ProgramsEquivalentMixedChunked : "
+                    "True := by\n  trivial\n"
+                )
+                + source[namespace_end:]
+            )
+            self._replace_bundle_source(wrong_type, weakened)
+            self._select_mixed_profile(wrong_type)
+
+            process = self._build_fixture(wrong_type)
+
+            self.assertNotEqual(process.returncode, 0)
+            self.assertIn("Type mismatch", process.stderr)
+
     def _write_fixture(self, root: Path) -> None:
         stage_a = root / "lean" / "StageA"
         stage_a.mkdir(parents=True)
@@ -228,6 +312,15 @@ inductive PE32RawProgramsLinkedObservationallyEquivalent
     (_control : LinkedControlAuthority) (_launch : PE32ConsoleLaunchV2)
     (_original _candidate : DecodedWorldProgram) : Prop where
   | intro
+
+namespace InterpreterMixedProfile
+inductive CanonicalMixedWorldProgramsChunkObservationallyEquivalent
+    (_profile : Nat) : Prop where
+  | intro
+def CanonicalMixedWorldProgramsChunkObservationallyEquivalentFamily
+    {Parameters : Type} (family : Parameters -> Prop) : Prop :=
+  forall parameters, family parameters
+end InterpreterMixedProfile
 end Relational
 end StageA
 """
@@ -248,12 +341,23 @@ def externalCallSites : List ExternalCallSiteContract := []
 def protocolCallbackTargets : ProtocolCallbackTargetProfile := 0
 def originalWorldProgram : DecodedWorldProgram := 0
 def candidateWorldProgram : DecodedWorldProgram := 0
+def candidatePE32CanonicalMixedRelationProfile : Nat := 0
+def candidatePE32CanonicalMixedRelationFamily (_parameters : Unit) : Prop :=
+  StageA.Relational.InterpreterMixedProfile.
+    CanonicalMixedWorldProgramsChunkObservationallyEquivalent
+      candidatePE32CanonicalMixedRelationProfile
 
 theorem candidatePE32ProgramsEquivalentLinked :
     PE32RawProgramsLinkedObservationallyEquivalent staticProofContext
       relationalProductGraph productInvariantTable
       relationalProductReachabilityEvidence linkedProductControlProfile consoleLaunch
       originalWorldProgram candidateWorldProgram := by
+  exact .intro
+
+theorem candidatePE32ProgramsEquivalentMixedChunked :
+    StageA.Relational.InterpreterMixedProfile.CanonicalMixedWorldProgramsChunkObservationallyEquivalentFamily
+      candidatePE32CanonicalMixedRelationFamily := by
+  intro _parameters
   exact .intro
 end StageA.GeneratedRelational
 """
@@ -356,6 +460,38 @@ end StageA.GeneratedRelationalCounterexample
         bundle_node["source_sha256"] = digest
         graph_path.write_text(
             json.dumps(graph, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+    def _select_mixed_profile(
+        self,
+        root: Path,
+        *,
+        authority_profile: str = "mixed-native-pe32-chunked-closed",
+    ) -> None:
+        theorem = (
+            "StageA.GeneratedRelational."
+            "candidatePE32ProgramsEquivalentMixedChunked"
+        )
+        graph_path = root / "module-graph.json"
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph["expected_final_theorem"] = theorem
+        graph["acceptance"] = {
+            "format": "stage-a-whole-program-acceptance-v1",
+            "status": "ready",
+            "required_theorem": theorem,
+            "theorem": theorem,
+            "authority_profile": authority_profile,
+            "node_steps": [],
+            "linked_acceptance": {"status": "incomplete", "theorem": None},
+            "mixed_chunked_acceptance": {
+                "status": "ready",
+                "theorem": theorem,
+                "profile": "mixed-native-pe32-chunked-closed",
+            },
+        }
+        graph_path.write_text(
+            json.dumps(graph, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
         )
 
     def _build_fixture(self, root: Path) -> subprocess.CompletedProcess[str]:

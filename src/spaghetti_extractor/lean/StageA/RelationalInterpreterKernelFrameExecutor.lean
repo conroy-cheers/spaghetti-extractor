@@ -12,18 +12,19 @@ open StageA.Relational.InterpreterNativeWorld
 Executor-level evidence for frame-parametric native operations.
 
 The generic path lifting theorem intentionally leaves contextual one-step
-refinement abstract.  This module derives that refinement from the exact native
-transition function.  External effects are not assumed pure:
+refinement abstract.  This module derives that refinement for the exact path
+selected by the operation producer.  External effects are not assumed pure:
 
-* imported calls have an explicit shifted-action equality, memory footprint,
-  and world-update contract;
+* imported calls run through the caller-indexed standalone environment and
+  retain an explicit memory footprint and world-update contract;
 * resolved callable calls have a separate shifted-result equality, footprint,
   and world-update contract; and
 * the caller return slot is outside every admitted external footprint.
 
-Exact equality is needed for contextual execution of the same candidate.
-Footprint and world-update facts are retained independently because equality
-alone would not prove that an external result preserves the caller frame.
+Imported action equality is definitional after reindexing, not a global
+invariance premise.  Footprint and world-update facts are retained independently
+because reindexing alone would not prove that an external result preserves the
+caller frame.
 -/
 
 def wordByteRange (base : Word) (bytes : Nat) : CandidateFootprint :=
@@ -35,26 +36,26 @@ def FrameFootprintDisjoint
     (returnSlot : Word) (footprint : CandidateFootprint) : Prop :=
   forall address, wordByteRange returnSlot 4 address -> Not (footprint address)
 
-/-- Imported-call contract at one caller context.  The action equality relates
-the local standalone index to the real caller index.  The remaining fields
-check memory and world effects independently. -/
+/-- Imported-call contract at one caller context.  Actions are stated at their
+real caller indices because the selected standalone program is reindexed from
+that source. -/
 structure ImportedFrameEnvironmentContract
     (candidate : ExactNativeWorldProgram)
     (context : NativeWorldFrameContext) where
   footprint : NativeExternalEvent -> CandidateFootprint
   worldUpdate :
     NativeExternalEvent -> RelationalWorld -> RelationalWorld -> Prop
-  shiftedAction : forall localIndex event world,
-    candidate.environment.action (context.eventIndex + localIndex) event world =
-      candidate.environment.action localIndex event world
   returnedFrame : forall localIndex event world result,
-    candidate.environment.action localIndex event world = .returned result ->
+    candidate.environment.action (context.eventIndex + localIndex) event world =
+        .returned result ->
       MemoryAgreesOutside (footprint event) result.state.memory event.state.memory
   returnedWorld : forall localIndex event world result,
-    candidate.environment.action localIndex event world = .returned result ->
+    candidate.environment.action (context.eventIndex + localIndex) event world =
+        .returned result ->
       worldUpdate event world result.world
   terminatedWorld : forall localIndex event world successor,
-    candidate.environment.action localIndex event world = .terminated successor ->
+    candidate.environment.action (context.eventIndex + localIndex) event world =
+        .terminated successor ->
       worldUpdate event world successor
 
 /-- Resolved-callable contract.  This is deliberately separate from imported
@@ -152,12 +153,21 @@ theorem NativeWorldFrameCallableTailCompatibleAt.ofDisabled
           | running nextRva nextSlot nextState => trivial
           | fault => trivial
           | stopped outcome nextState =>
-              cases outcome <;> simp [disabled]
+              cases outcome with
+              | indirectJump target =>
+                  cases descriptorExact :
+                      candidate.indirectTargets.resolve? candidate.pe world rva
+                        .jump target with
+                  | none =>
+                      simp [stepExact, descriptorExact]
+                  | some descriptor =>
+                      cases descriptor <;>
+                        simp [stepExact, descriptorExact, disabled]
+              | _ => trivial
 
 def NativeWorldFrameExecutorEnvironmentContract.stable
     (contract : NativeWorldFrameExecutorEnvironmentContract candidate context) :
     NativeWorldFrameEnvironmentStable candidate context := {
-  importedAction := contract.imported.shiftedAction
   callableResult := contract.callable.shiftedResult
 }
 
@@ -198,7 +208,8 @@ theorem ImportedFrameEnvironmentContract.returnedFrameAndWorld
     (returnSlot : Word)
     (disjoint : FrameFootprintDisjoint returnSlot (contract.footprint event))
     (actionExact :
-      candidate.environment.action localIndex event world = .returned result) :
+      candidate.environment.action (context.eventIndex + localIndex) event
+        world = .returned result) :
     Memory.read32 result.state.memory returnSlot =
         Memory.read32 event.state.memory returnSlot /\
       contract.worldUpdate event world result.world := by
@@ -228,10 +239,7 @@ theorem applyNativeWorldExternalAction_frame
     (context : NativeWorldFrameContext)
     (continuation : Nat) (calls : List NativeCallFrame)
     (localIndex : Nat) (localEvents : List NativeExternalEvent)
-    (event : NativeExternalEvent) (world : RelationalWorld)
-    (stable : candidate.environment.action
-        (context.eventIndex + localIndex) event world =
-      candidate.environment.action localIndex event world) :
+    (event : NativeExternalEvent) (world : RelationalWorld) :
     (applyNativeWorldExternalAction continuation
       (calls ++ context.frame :: context.tail)
       (context.eventIndex + localIndex) (context.eventPrefix ++ localEvents)
@@ -241,10 +249,13 @@ theorem applyNativeWorldExternalAction_frame
       context.embed
         (applyNativeWorldExternalAction continuation calls localIndex localEvents
           event world
-          (candidate.environment.action localIndex event world)).next := by
-  rw [stable]
+          ((reindexExactNativeWorldProgram candidate
+            context.eventIndex).environment.action localIndex event world)).next := by
+  simp only [reindexExactNativeWorldProgram,
+    reindexNativeWorldEnvironment]
   cases actionExact :
-      candidate.environment.action localIndex event world <;>
+      candidate.environment.action (context.eventIndex + localIndex) event
+        world <;>
     simp [applyNativeWorldExternalAction,
       NativeWorldFrameContext.embed, blockedNativeWorldTransition,
       List.append_assoc, Nat.add_assoc]
@@ -255,10 +266,7 @@ theorem applyNativeWorldExternalTailAction_frame
     (calls : List NativeCallFrame)
     (localIndex : Nat) (localEvents : List NativeExternalEvent)
     (event : NativeExternalEvent) (world : RelationalWorld)
-    (indexExact : localIndex = localEvents.length)
-    (stable : candidate.environment.action
-        (context.eventIndex + localIndex) event world =
-      candidate.environment.action localIndex event world) :
+    (indexExact : localIndex = localEvents.length) :
     (applyNativeWorldExternalTailAction
       (calls ++ context.frame :: context.tail)
       (context.eventIndex + localIndex) (context.eventPrefix ++ localEvents)
@@ -268,11 +276,14 @@ theorem applyNativeWorldExternalTailAction_frame
       context.embed
         (applyNativeWorldExternalTailAction calls localIndex localEvents event
           world
-          (candidate.environment.action localIndex event world)).next := by
-  rw [stable]
+          ((reindexExactNativeWorldProgram candidate
+            context.eventIndex).environment.action localIndex event world)).next := by
+  simp only [reindexExactNativeWorldProgram,
+    reindexNativeWorldEnvironment]
   cases calls <;>
     cases actionExact :
-      candidate.environment.action localIndex event world <;>
+      candidate.environment.action (context.eventIndex + localIndex) event
+        world <;>
     simp [applyNativeWorldExternalTailAction,
       NativeWorldFrameContext.embed, blockedNativeWorldTransition,
       indexExact, List.append_assoc, Nat.add_assoc]
@@ -348,6 +359,8 @@ theorem nativeWorldFrameStepRefinesAt_of_running
         simpa [nativeWorldExecutionEventIndexExact] using eventIndexExact
       simp only [NativeWorldFrameStepRefinesAt,
         ExactNativeWorldProgram.transitionSystem,
+        reindexExactNativeWorldProgram,
+        reindexNativeWorldEnvironment,
         NativeWorldFrameContext.embed,
         stepPE32NativeWorldExecution]
       generalize stepExact :
@@ -382,124 +395,185 @@ theorem nativeWorldFrameStepRefinesAt_of_running
               exact applyNativeWorldExternalAction_frame candidate context
                 continuation calls localIndex localEvents
                 { imported, arguments, state := nextState } world
-                (environment.importedAction localIndex
-                  { imported, arguments, state := nextState } world)
           | externalJump imported arguments =>
               exact applyNativeWorldExternalTailAction_frame candidate context
                 calls localIndex localEvents
                 { imported, arguments, state := nextState } world localIndexExact
-                (environment.importedAction localIndex
-                  { imported, arguments, state := nextState } world)
           | bulkCopy destination source count direction continuation => rfl
+          | bulkFill destination value count direction continuation => rfl
           | checkedContinue valid continuation =>
               cases valid <;> rfl
           | atomicCompareExchange address expected replacement continuation =>
               rfl
           | indirectCall target continuation returnAddress =>
               simp only [transitionFromNativeWorldOutcome]
-              split <;> rename_i allowed
-              · rfl
-              · cases callableExact : candidate.callableExternal with
-                | none =>
-                    cases targetExact :
-                        exactNativeIndirectTargetRva? candidate.pe target <;>
-                      simp [callableExact, targetExact,
-                        NativeWorldFrameContext.embed,
-                        blockedNativeWorldTransition]
-                | some config =>
-                    simp only [callableExact]
-                    cases resolutionExact :
-                        resolveNativeCallableIndirect candidate.pe config world
-                          target .call with
-                    | internal targetRva => rfl
-                    | imported binding =>
-                        cases importExact :
-                            resolveWorldImportCall true config.context world target
-                              nextState with
-                        | none => rfl
-                        | some result =>
-                            exact applyNativeWorldExternalAction_frame candidate
-                              context continuation calls localIndex localEvents
-                              { imported := nativePEImportForBinding binding
-                                arguments := result.2
-                                state := nextState } world
-                              (environment.importedAction localIndex
-                                { imported := nativePEImportForBinding binding
-                                  arguments := result.2
-                                  state := nextState } world)
-                    | callable capability abi resource =>
-                        apply applyNativeWorldResolvedCallableCall_frame context
-                          config capability abi target continuation nextState
-                          calls localIndex localEvents world
-                        intro event
-                        exact environment.callableResult config callableExact
-                          localIndex event
-                    | invalidWorld => rfl
-                    | unmapped => rfl
-                    | invalidCallable => rfl
-                    | ambiguous => rfl
+              generalize descriptorExact :
+                  candidate.indirectTargets.resolve? candidate.pe world rva
+                    .call target = descriptor
+              cases descriptor with
+              | none => rfl
+              | some descriptor =>
+                  cases descriptor with
+                  | internalRva targetRva =>
+                      simp only [List.cons_append]
+                  | importBinding bindingId =>
+                      cases callableExact : candidate.callableExternal with
+                      | none =>
+                          simp [callableExact, blockedNativeWorldTransition,
+                            NativeWorldFrameContext.embed]
+                      | some config =>
+                          cases importExact :
+                              resolveNativeImportBindingCall? config world
+                                bindingId target nextState with
+                          | none =>
+                              simp [callableExact, importExact,
+                                blockedNativeWorldTransition,
+                                NativeWorldFrameContext.embed]
+                          | some result =>
+                              simp only [callableExact, importExact]
+                              simpa only [List.cons_append] using
+                                applyNativeWorldExternalAction_frame candidate
+                                  context continuation calls localIndex localEvents
+                                  { imported :=
+                                      nativePEImportForBinding result.1
+                                    arguments := result.2
+                                    state := nextState } world
+                  | callableResource resourceId =>
+                      cases callableExact : candidate.callableExternal with
+                      | none =>
+                          simp [callableExact, blockedNativeWorldTransition,
+                            NativeWorldFrameContext.embed]
+                      | some config =>
+                          cases resolutionExact :
+                              resolveNativeCallableResource config world
+                                resourceId target .call with
+                          | callable capability abi resource =>
+                              simp only [callableExact, resolutionExact]
+                              simpa only [List.cons_append] using
+                                applyNativeWorldResolvedCallableCall_frame context
+                                  config capability abi target continuation
+                                  nextState calls localIndex localEvents world
+                                  (by
+                                    intro event
+                                    exact environment.callableResult config
+                                      callableExact localIndex event)
+                          | invalidWorld =>
+                              simp [callableExact, resolutionExact,
+                                blockedNativeWorldTransition,
+                                NativeWorldFrameContext.embed]
+                          | unmapped =>
+                              simp [callableExact, resolutionExact,
+                                blockedNativeWorldTransition,
+                                NativeWorldFrameContext.embed]
+                          | invalidCallable =>
+                              simp [callableExact, resolutionExact,
+                                blockedNativeWorldTransition,
+                                NativeWorldFrameContext.embed]
+                          | ambiguous =>
+                              simp [callableExact, resolutionExact,
+                                blockedNativeWorldTransition,
+                                NativeWorldFrameContext.embed]
+                          | internal targetId =>
+                              simp [callableExact, resolutionExact,
+                                blockedNativeWorldTransition,
+                                NativeWorldFrameContext.embed]
+                          | imported binding =>
+                              simp [callableExact, resolutionExact,
+                                blockedNativeWorldTransition,
+                                NativeWorldFrameContext.embed]
           | indirectJump target =>
               simp only [transitionFromNativeWorldOutcome]
-              split <;> rename_i allowed
-              · rfl
-              · cases callableExact : candidate.callableExternal with
-                | none =>
-                    cases targetExact :
-                        exactNativeIndirectTargetRva? candidate.pe target <;>
-                      simp [callableExact, targetExact,
-                        NativeWorldFrameContext.embed,
-                        blockedNativeWorldTransition]
-                | some config =>
-                    simp only [callableExact]
-                    cases resolutionExact :
-                        resolveNativeCallableIndirect candidate.pe config world
-                          target .jump with
-                    | internal targetRva => rfl
-                    | imported binding =>
-                        cases importExact :
-                            resolveWorldImportCall true config.context world target
-                              nextState with
-                        | none => rfl
-                        | some result =>
-                            exact applyNativeWorldExternalTailAction_frame
-                              candidate context calls localIndex localEvents
-                              { imported := nativePEImportForBinding binding
-                                arguments := result.2
-                                state := nextState } world localIndexExact
-                              (environment.importedAction localIndex
-                                { imported := nativePEImportForBinding binding
+              generalize descriptorExact :
+                  candidate.indirectTargets.resolve? candidate.pe world rva
+                    .jump target = descriptor
+              cases descriptor with
+              | none => rfl
+              | some descriptor =>
+                  cases descriptor with
+                  | internalRva targetRva => rfl
+                  | importBinding bindingId =>
+                      cases callableExact : candidate.callableExternal with
+                      | none =>
+                          simp [callableExact, blockedNativeWorldTransition,
+                            NativeWorldFrameContext.embed]
+                      | some config =>
+                          cases importExact :
+                              resolveNativeImportBindingCall? config world
+                                bindingId target nextState with
+                          | none =>
+                              simp [callableExact, importExact,
+                                blockedNativeWorldTransition,
+                                NativeWorldFrameContext.embed]
+                          | some result =>
+                              simp only [callableExact, importExact]
+                              exact applyNativeWorldExternalTailAction_frame
+                                candidate context calls localIndex localEvents
+                                { imported := nativePEImportForBinding result.1
                                   arguments := result.2
-                                  state := nextState } world)
-                    | callable capability abi resource =>
-                        cases calls with
-                        | nil =>
-                            exfalso
-                            simpa [NativeWorldFrameCallableTailCompatibleAt,
-                              stepExact, allowed, callableExact,
-                              resolutionExact] using callableTailCompatible
-                        | cons frame tail =>
-                            apply applyNativeWorldResolvedCallableTail_frame
-                              context config capability abi target nextState
-                              frame tail localIndex localEvents world
-                            intro event
-                            exact environment.callableResult config callableExact
-                              localIndex event
-                    | invalidWorld => rfl
-                    | unmapped => rfl
-                    | invalidCallable => rfl
-                    | ambiguous => rfl
+                                  state := nextState } world localIndexExact
+                  | callableResource resourceId =>
+                      cases callableExact : candidate.callableExternal with
+                      | none =>
+                          simp [callableExact, blockedNativeWorldTransition,
+                            NativeWorldFrameContext.embed]
+                      | some config =>
+                          cases resolutionExact :
+                              resolveNativeCallableResource config world
+                                resourceId target .jump with
+                          | callable capability abi resource =>
+                              simp only [callableExact, resolutionExact]
+                              cases calls with
+                              | nil =>
+                                  exfalso
+                                  simpa [
+                                    NativeWorldFrameCallableTailCompatibleAt,
+                                    stepExact, descriptorExact, callableExact,
+                                    resolutionExact] using callableTailCompatible
+                              | cons frame tail =>
+                                  apply
+                                    applyNativeWorldResolvedCallableTail_frame
+                                      context config capability abi target
+                                      nextState frame tail localIndex localEvents
+                                      world
+                                  intro event
+                                  exact environment.callableResult config
+                                    callableExact localIndex event
+                          | invalidWorld =>
+                              simp [callableExact, resolutionExact,
+                                blockedNativeWorldTransition,
+                                NativeWorldFrameContext.embed]
+                          | unmapped =>
+                              simp [callableExact, resolutionExact,
+                                blockedNativeWorldTransition,
+                                NativeWorldFrameContext.embed]
+                          | invalidCallable =>
+                              simp [callableExact, resolutionExact,
+                                blockedNativeWorldTransition,
+                                NativeWorldFrameContext.embed]
+                          | ambiguous =>
+                              simp [callableExact, resolutionExact,
+                                blockedNativeWorldTransition,
+                                NativeWorldFrameContext.embed]
+                          | internal targetId =>
+                              simp [callableExact, resolutionExact,
+                                blockedNativeWorldTransition,
+                                NativeWorldFrameContext.embed]
+                          | imported binding =>
+                              simp [callableExact, resolutionExact,
+                                blockedNativeWorldTransition,
+                                NativeWorldFrameContext.embed]
 
-/-- Exact trace data emitted by the candidate executor.  `prefixRva` prevents
-terminal stuttering without trusting a status field.  Return compatibility is
-derived from the concrete stack slot and exact return decoder result. -/
+/-- Executor evidence for the exact canonical path selected by the operation
+producer.  Running prefixes, event-index exactness, and return compatibility
+belong to `selected`; this contract supplies the remaining environment,
+footprint, and callable-tail facts used to derive contextual refinement. -/
 structure NativeWorldFrameExecutorPathContract
     (candidate : ExactNativeWorldProgram)
     (context : NativeWorldFrameContext)
     {before after : NativeWorldExecution}
     {observations : List WorldRelationalObservable}
-    {fuel : Nat}
-    (path : StandaloneNativeWorldPath candidate before after observations fuel)
-    where
+    (selected : ProducerSelectedStandaloneNativeWorldPath candidate context
+      before after observations) where
   environment :
     NativeWorldFrameExecutorEnvironmentContract candidate context
   returnSlot : Word
@@ -507,111 +581,55 @@ structure NativeWorldFrameExecutorPathContract
     FrameFootprintDisjoint returnSlot (environment.imported.footprint event)
   callableDisjoint : forall event,
     FrameFootprintDisjoint returnSlot (environment.callable.footprint event)
-  prefixRva : forall consumed, consumed < fuel ->
-    exists rva,
-      (runRelatedSteps candidate.transitionSystem consumed before).1.rva? =
-        some rva
-  eventIndexExact : forall consumed, consumed < fuel ->
-    nativeWorldExecutionEventIndexExact
-      (runRelatedSteps candidate.transitionSystem consumed before).1
-  callableTailCompatible : forall consumed, consumed < fuel ->
+  callableTailCompatible : forall consumed, consumed < selected.fuel ->
     NativeWorldFrameCallableTailCompatibleAt candidate
-      (runRelatedSteps candidate.transitionSystem consumed before).1
-  emptyFrameStackSlot : forall consumed (beforeEnd : consumed < fuel)
-      rva undefinedSlot state localIndex localEvents world,
-    (runRelatedSteps candidate.transitionSystem consumed before).1 =
-        .running rva undefinedSlot state [] localIndex localEvents world ->
-      state.registers.esp = returnSlot /\
-        Memory.read32 state.memory returnSlot = context.frame.returnAddress
-  decodedReturnReadsStack : forall consumed (beforeEnd : consumed < fuel)
-      rva undefinedSlot state localIndex localEvents world target afterState,
-    (runRelatedSteps candidate.transitionSystem consumed before).1 =
-        .running rva undefinedSlot state [] localIndex localEvents world ->
-      stepKernelPE32Instruction candidate.pe candidate.imports
-          (.running rva undefinedSlot state) =
-        .stopped (.returned target) afterState ->
-      target = Memory.read32 state.memory state.registers.esp
-
-theorem nativeWorldExecutionIsRunning_of_rva
-    (execution : NativeWorldExecution) (rva : Nat)
-    (exact : execution.rva? = some rva) :
-    nativeWorldExecutionIsRunning execution := by
-  cases execution <;> simp_all [NativeWorldExecution.rva?,
-    nativeWorldExecutionIsRunning]
+      (runRelatedSteps
+        (reindexExactNativeWorldProgram candidate
+          context.eventIndex).transitionSystem
+        consumed before).1
 
 theorem NativeWorldFrameExecutorPathContract.prefixesRunning
     {candidate : ExactNativeWorldProgram}
     {context : NativeWorldFrameContext}
     {before after : NativeWorldExecution}
     {observations : List WorldRelationalObservable}
-    {fuel : Nat}
-    {path : StandaloneNativeWorldPath candidate before after observations fuel}
-    (contract : NativeWorldFrameExecutorPathContract candidate context path)
-    (consumed : Nat) (beforeEnd : consumed < fuel) :
+    {selected : ProducerSelectedStandaloneNativeWorldPath candidate context
+      before after observations}
+    (_contract : NativeWorldFrameExecutorPathContract candidate context selected)
+    (consumed : Nat) (beforeEnd : consumed < selected.fuel) :
     nativeWorldExecutionIsRunning
-      (runRelatedSteps candidate.transitionSystem consumed before).1 := by
-  obtain ⟨rva, exact⟩ := contract.prefixRva consumed beforeEnd
-  exact nativeWorldExecutionIsRunning_of_rva _ rva exact
+      (runRelatedSteps
+        (reindexExactNativeWorldProgram candidate
+          context.eventIndex).transitionSystem
+        consumed before).1 :=
+  selected.prefixesRunning consumed beforeEnd
 
 theorem NativeWorldFrameExecutorPathContract.returnCompatible
     {candidate : ExactNativeWorldProgram}
     {context : NativeWorldFrameContext}
     {before after : NativeWorldExecution}
     {observations : List WorldRelationalObservable}
-    {fuel : Nat}
-    {path : StandaloneNativeWorldPath candidate before after observations fuel}
-    (contract : NativeWorldFrameExecutorPathContract candidate context path)
-    (consumed : Nat) (beforeEnd : consumed < fuel) :
+    {selected : ProducerSelectedStandaloneNativeWorldPath candidate context
+      before after observations}
+    (_contract : NativeWorldFrameExecutorPathContract candidate context selected)
+    (consumed : Nat) (beforeEnd : consumed < selected.fuel) :
     NativeWorldFrameReturnCompatibleAt candidate context
-      (runRelatedSteps candidate.transitionSystem consumed before).1 := by
-  generalize executionExact :
-    (runRelatedSteps candidate.transitionSystem consumed before).1 = execution
-  have executionRunning := contract.prefixesRunning consumed beforeEnd
-  rw [executionExact] at executionRunning
-  cases execution with
-  | returned state events world => contradiction
-  | terminated events world => contradiction
-  | fault cause => contradiction
-  | blocked reason => contradiction
-  | running currentRva undefinedSlot state calls localIndex localEvents world =>
-      cases calls with
-      | nil =>
-          simp only [NativeWorldFrameReturnCompatibleAt]
-          generalize stepExact :
-            stepKernelPE32Instruction candidate.pe candidate.imports
-              (.running currentRva undefinedSlot state) = stepped
-          cases stepped with
-          | running nextRva nextSlot nextState => trivial
-          | fault => trivial
-          | stopped outcome afterState =>
-              cases outcome with
-              | returned target =>
-                  obtain ⟨stackExact, returnWordExact⟩ :=
-                    contract.emptyFrameStackSlot consumed beforeEnd currentRva
-                      undefinedSlot state localIndex localEvents world
-                      executionExact
-                  have targetExact :=
-                    contract.decodedReturnReadsStack consumed beforeEnd currentRva
-                      undefinedSlot state localIndex localEvents world target
-                      afterState executionExact stepExact
-                  simpa [stackExact, returnWordExact] using targetExact
-              | _ => trivial
-      | cons frame tail =>
-          trivial
+      (runRelatedSteps
+        (reindexExactNativeWorldProgram candidate
+          context.eventIndex).transitionSystem
+        consumed before).1 :=
+  selected.returnCompatible consumed beforeEnd
 
 def NativeWorldFrameExecutorPathContract.toPathRefinement
     {candidate : ExactNativeWorldProgram}
     {context : NativeWorldFrameContext}
     {before after : NativeWorldExecution}
     {observations : List WorldRelationalObservable}
-    {fuel : Nat}
-    {path : StandaloneNativeWorldPath candidate before after observations fuel}
-    (contract : NativeWorldFrameExecutorPathContract candidate context path) :
-    NativeWorldFramePathRefinement candidate context path := {
+    {selected : ProducerSelectedStandaloneNativeWorldPath candidate context
+      before after observations}
+    (contract : NativeWorldFrameExecutorPathContract candidate context selected) :
+    NativeWorldFramePathRefinement candidate context selected := {
   environmentStable := contract.environment.stable
-  prefixesRunning := contract.prefixesRunning
-  eventIndexExact := contract.eventIndexExact
-  returnCompatible := contract.returnCompatible
   callableTailCompatible := contract.callableTailCompatible
   stepRefines := by
     intro consumed beforeEnd running eventIndexExact environment
@@ -621,32 +639,33 @@ def NativeWorldFrameExecutorPathContract.toPathRefinement
 }
 
 /-- Executor-qualified operation certificate.  This is the candidate-facing
-layer: standalone operation refinement plus exact path contracts are enough
-to obtain the frame-parametric operation certificate. -/
+layer: a producer-selected operation path plus exact executor contracts are
+enough to obtain the frame-parametric operation certificate. -/
 structure KernelOperationFrameExecutorCertificate
     (program : CompiledKernelProgram) (abi : KernelABIRelation)
     (candidate : ExactNativeWorldProgram)
     (operation : KernelOperation) where
-  standalone : forall world,
-    KernelOperationRefinesUsing program abi
-      (StandaloneNativeWorldDispatches candidate world) operation
+  producer : forall context world,
+    KernelOperationRefinesUsingWhen program abi
+      (ProducerSelectedStandaloneNativeWorldDispatches candidate context world)
+      operation context.entryCompatible
   pathContract : forall context world entryRva before after events afterWorld
-      observations fuel
-      (path : StandaloneNativeWorldPath candidate
+      observations
+      (selected : ProducerSelectedStandaloneNativeWorldPath candidate context
         (.running entryRva 0 before [] 0 [] world)
-        (.returned after events afterWorld) observations fuel),
-    NativeWorldFrameExecutorPathContract candidate context path
+        (.returned after events afterWorld) observations),
+    NativeWorldFrameExecutorPathContract candidate context selected
 
 def KernelOperationFrameExecutorCertificate.toFrameParametric
     (certificate : KernelOperationFrameExecutorCertificate program abi
       candidate operation) :
     KernelOperationFrameParametricCertificate program abi candidate operation := {
-  standalone := certificate.standalone
-  contextRefinement := by
-    intro context world entryRva before after events afterWorld observations fuel
-      path
+  producer := certificate.producer
+  selectedPathRefinement := by
+    intro context world entryRva before after events afterWorld observations
+      selected
     exact (certificate.pathContract context world entryRva before after events
-      afterWorld observations fuel path).toPathRefinement
+      afterWorld observations selected).toPathRefinement
 }
 
 #print axioms NativeWorldFrameCallableTailCompatibleAt.ofDisabled

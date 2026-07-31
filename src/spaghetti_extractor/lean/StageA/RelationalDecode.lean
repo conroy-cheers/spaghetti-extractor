@@ -590,6 +590,7 @@ inductive PureOutcome where
   | externalCall (imported : ExternalTarget) (arguments : List Word) (continuation : Nat)
   | externalJump (imported : ExternalTarget) (arguments : List Word)
   | bulkCopy (destination source count : Word) (direction : Bool) (continuation : Nat)
+  | bulkFill (destination value count : Word) (direction : Bool) (continuation : Nat)
   | indirectCall (target : Word) (continuation : Nat)
   | indirectJump (target : Word)
   | checkedContinue (valid : Bool) (continuation : Nat)
@@ -686,6 +687,7 @@ inductive NormalizedOutcomeExpr where
   | externalCall (imported : ExternalTarget) (arguments : List Expr) (continuation : Nat)
   | externalJump (imported : ExternalTarget) (arguments : List Expr)
   | bulkCopy (destination source count : Expr) (direction : BoolExpr) (continuation : Nat)
+  | bulkFill (destination value count : Expr) (direction : BoolExpr) (continuation : Nat)
   | indirectCall (target : Expr) (continuation : Nat)
   | indirectJump (target : Expr)
   | checkedContinue (valid : BoolExpr) (continuation : Nat)
@@ -900,6 +902,11 @@ def normalizedOutcome : NormalizedOutcomeExpr → Json
         ("destination", expr destination), ("source", expr source),
         ("count", expr count), ("direction", boolExpr direction),
         ("continuation", toJson continuation)]
+  | .bulkFill destination value count direction continuation =>
+      tagged "bulk_fill" [
+        ("destination", expr destination), ("value", expr value),
+        ("count", expr count), ("direction", boolExpr direction),
+        ("continuation", toJson continuation)]
   | .indirectCall target continuation =>
       tagged "indirect_call" [
         ("target", expr target), ("continuation", toJson continuation)]
@@ -957,6 +964,9 @@ def normalizeOutcomeExpr (candidate : Bool) (targets : List CodeTargetPair) :
       return .externalJump (normalizeImport imported) arguments
   | .bulkCopy copy continuationRva =>
       return .bulkCopy copy.destination copy.source copy.count copy.direction
+        (← normalizeCodeTarget candidate targets continuationRva)
+  | .bulkFill fill continuationRva =>
+      return .bulkFill fill.destination fill.value fill.count fill.direction
         (← normalizeCodeTarget candidate targets continuationRva)
   | .indirectCall target continuationRva _ =>
       return .indirectCall target (← normalizeCodeTarget candidate targets continuationRva)

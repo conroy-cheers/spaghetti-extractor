@@ -52,10 +52,7 @@ class StageAGnuUniversalPairedExternalEnvironmentTests(unittest.TestCase):
             "protocol_and_callback_actions_have_separate_nested_frame_refinement",
             emitter,
         )
-        self.assertIn(
-            "candidate_exact_call_routes_use_the_pinned_contract_inventory",
-            emitter,
-        )
+        self.assertIn('"mixed_component_composition"', emitter)
         self.assertIn('"proof_authority": False', emitter)
 
 

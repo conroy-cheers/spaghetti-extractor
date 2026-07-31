@@ -37,6 +37,9 @@ INTERPRETER_KERNEL_ABI_PLAN_FILENAME = "interpreter-kernel-abi-plan.json"
 INTERPRETER_KERNEL_ABI_LEAN_FILENAME = (
     "GeneratedRelationalInterpreterKernelABI.lean"
 )
+INTERPRETER_KERNEL_ABI_PARAMETERS_LEAN_FILENAME = (
+    "GeneratedRelationalInterpreterKernelABIParameters.lean"
+)
 
 _REQUIRED_ROLES = (
     "programLookup",
@@ -545,6 +548,7 @@ def relational_interpreter_kernel_abi_source(
     kernel_import = _validate_module(kernel_module, "kernel module")
     data_import = _validate_module(data_module, "data module")
     return f"""import StageA.RelationalInterpreterKernelABI
+import StageA.GeneratedRelationalInterpreterKernelABIParameters
 import {kernel_import}
 import {data_import}
 
@@ -556,21 +560,6 @@ open StageA.Relational.InterpreterKernel
 open StageA.Relational.InterpreterKernelABI
 open StageA.GeneratedRelational.InterpreterKernel
 open StageA.GeneratedRelational.InterpreterKernelData
-
-def generatedInterpreterEngineLayout : EngineLayout :=
-  {_lean_layout(plan.engine_layout)}
-
-def generatedInterpreterKernelABIParameters : KernelABIParameters := {{
-  engineLayoutSpan := {{
-    start := {plan.engine_layout_offset}
-    size := {plan.engine_layout_size}
-  }}
-  writableWorkspace := {{
-    start := {plan.workspace_start}
-    size := {plan.workspace_size}
-  }}
-  stackReserve := {plan.stack_reserve}
-}}
 
 def generatedConcreteInterpreterKernelABI? :=
   buildConcreteKernelABI?
@@ -625,6 +614,37 @@ end StageA.GeneratedRelational.InterpreterKernelABI
 """
 
 
+def relational_interpreter_kernel_abi_parameters_source(
+    plan: InterpreterKernelABIPlan,
+) -> str:
+    """Emit the compact ABI layout projection shared by local proof phases."""
+
+    return f"""import StageA.RelationalInterpreterKernelABI
+
+namespace StageA.GeneratedRelational.InterpreterKernelABI
+
+open StageA.Relational.Engine
+open StageA.Relational.InterpreterKernelABI
+
+def generatedInterpreterEngineLayout : EngineLayout :=
+  {_lean_layout(plan.engine_layout)}
+
+def generatedInterpreterKernelABIParameters : KernelABIParameters := {{
+  engineLayoutSpan := {{
+    start := {plan.engine_layout_offset}
+    size := {plan.engine_layout_size}
+  }}
+  writableWorkspace := {{
+    start := {plan.workspace_start}
+    size := {plan.workspace_size}
+  }}
+  stackReserve := {plan.stack_reserve}
+}}
+
+end StageA.GeneratedRelational.InterpreterKernelABI
+"""
+
+
 def write_relational_interpreter_kernel_abi_bundle(
     *,
     out: Path | str,
@@ -642,6 +662,10 @@ def write_relational_interpreter_kernel_abi_bundle(
     (destination / INTERPRETER_KERNEL_ABI_LEAN_FILENAME).write_text(
         source, encoding="utf-8"
     )
+    parameters_source = relational_interpreter_kernel_abi_parameters_source(plan)
+    (
+        destination / INTERPRETER_KERNEL_ABI_PARAMETERS_LEAN_FILENAME
+    ).write_text(parameters_source, encoding="utf-8")
     return plan
 
 

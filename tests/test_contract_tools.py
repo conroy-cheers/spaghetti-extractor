@@ -8,6 +8,7 @@ from pathlib import Path
 from spaghetti_extractor.cli import _build_parser
 from spaghetti_extractor.contract_tools import (
     BlockMapping,
+    _semantic_fpu_state_from_observables,
     _semantic_transfer_contract,
     _semantic_transfer_contracts,
     _symbolic_execute,
@@ -30,6 +31,43 @@ from stage_a_relational_support import _pe32_image_with_immutable_indirect_call
 
 
 class ContractToolTests(unittest.TestCase):
+    def test_exact_x87_replay_is_retained_without_legacy_state_changes(self):
+        replay = {
+            "architecture": "x86",
+            "bitness": 32,
+            "rva_start": 0x1000,
+            "rva_end": 0x1001,
+            "bytes": "9b",
+        }
+
+        result = _semantic_fpu_state_from_observables(
+            {},
+            native_exact_command_replay=replay,
+        )
+
+        self.assertEqual(
+            result["model"],
+            "native_exact_x87_command_replay_obligation_v1",
+        )
+        self.assertEqual(result["status"], "required")
+        self.assertEqual(
+            result["missing_or_invalid_fields"],
+            [
+                "stack",
+                "tags",
+                "control",
+                "status",
+                "pending_exception",
+                "last_opcode",
+                "instruction_pointer",
+                "code_selector",
+                "data_pointer",
+                "data_selector",
+            ],
+        )
+        self.assertEqual(result["replay"]["rva_start"], 0x1000)
+        self.assertEqual(result["replay"]["bytes"], "9b")
+
     def test_relation_contract_isolates_x87_in_single_instruction_cutpoints(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -396,6 +434,103 @@ class ContractToolTests(unittest.TestCase):
             carry = next(item["value"] for item in transfer["flag_writes"] if item["flag"] == "cf")
             self.assertEqual(carry["op"], "eq_bool")
             self.assertIn("lshr32", json.dumps(carry))
+
+    def test_semantic_transfer_exports_large_rep_stosd_as_symbolic_fill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            encoded = bytes.fromhex("b9b9000000f3ab")
+            original = self._write_pe(root / "original.exe", encoded)
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1000 + len(encoded))
+            mapping = BlockMapping(
+                id="rep-stosd",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "rep_stosd"},
+            )
+
+            symbolic = _symbolic_execute(
+                binary,
+                side,
+                binary.pe.get_data(side.rva_start, side.size),
+                "original",
+                mapping,
+            )
+            transfer = _semantic_transfer_contract(
+                binary,
+                mapping,
+                "rep_stosd",
+                {"model": REFERENCE_CONTRACT_MODEL_ID},
+            )
+
+            self.assertEqual(symbolic["status"], "ok", symbolic)
+            event = transfer["external_events"][0]
+            self.assertEqual(
+                (event["kind"], event["index"], event["effect_model"]),
+                ("rep_stosd", 0, "symbolic_string_fill_v1"),
+            )
+            self.assertEqual(event["destination"]["name"], "edi")
+            self.assertEqual(event["value"]["name"], "eax")
+            self.assertEqual(event["count"]["value"], 185)
+            self.assertEqual(event["direction_flag"]["name"], "df")
+            writes = {
+                item["register"]: item["value"]
+                for item in transfer["register_writes"]
+            }
+            self.assertEqual(writes["ecx"], {"op": "const", "width": 32, "value": 0})
+            self.assertEqual(writes["edi"]["op"], "add32")
+            self.assertIn('"value": 740', json.dumps(writes["edi"]))
+
+    def test_rep_stosd_supports_symbolic_count_and_retains_small_unroll(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            symbolic_path = self._write_pe(
+                root / "symbolic.exe", bytes.fromhex("f3ab")
+            )
+            bounded_path = self._write_pe(
+                root / "bounded.exe", bytes.fromhex("b902000000f3ab")
+            )
+            results = {}
+            for name, path, size in (
+                ("symbolic", symbolic_path, 2),
+                ("bounded", bounded_path, 7),
+            ):
+                binary = _parse_stage_a_pe(path)
+                side = BlockSide(0x1000, 0x1000 + size)
+                mapping = BlockMapping(
+                    id=f"rep-stosd-{name}",
+                    original=side,
+                    candidate=side,
+                    kind="code",
+                    reachable=True,
+                    invariant_checked=True,
+                    source={"function": f"rep_stosd_{name}"},
+                )
+                results[name] = _symbolic_execute(
+                    binary,
+                    side,
+                    binary.pe.get_data(side.rva_start, side.size),
+                    "original",
+                    mapping,
+                )
+
+            self.assertEqual(results["symbolic"]["status"], "ok")
+            symbolic_event = results["symbolic"]["observables"]["external_events"][0]
+            self.assertEqual(symbolic_event[0], "rep_stosd")
+            self.assertEqual(symbolic_event[4], ("reg", "ecx"))
+            self.assertEqual(
+                results["symbolic"]["observables"]["reg:ecx"], ("const", 0)
+            )
+            self.assertEqual(results["bounded"]["status"], "ok")
+            self.assertEqual(
+                results["bounded"]["observables"]["external_events"], ()
+            )
+            self.assertEqual(
+                len(results["bounded"]["observables"]["memory_events"]), 2
+            )
 
     def test_semantic_transfer_exports_complete_import_call_boundary(self):
         with tempfile.TemporaryDirectory() as tmp:

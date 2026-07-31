@@ -1,10 +1,9 @@
-"""Emit the exact-candidate ``runFunction`` operation composition surface.
+"""Emit checked-call-tree ``runFunction`` operation composition.
 
-The planner binds the candidate, kernel/data/ABI artifacts, reflected native
-Run template, and the typed Step operation interface.  The generated Lean
-module closes static reflection and cdecl record identity, then exposes the six
-runtime proof objects consumed by the generic Run operation certificate.  No
-Python status can inhabit a semantic premise.
+The planner binds the candidate, kernel/data/ABI artifacts, and reflected
+native Run template.  The generated Lean module consumes one canonical finite
+semantic call-tree closure plus checked local native evidence.  It does not
+depend on an independently quantified interpreterStep operation theorem.
 """
 
 from __future__ import annotations
@@ -24,15 +23,8 @@ from .interpreter_kernel_run_native import (
     INTERPRETER_KERNEL_RUN_NATIVE_FORMAT,
     build_relational_interpreter_kernel_run_native_plan,
 )
-from .interpreter_kernel_step_operation import (
-    INTERPRETER_KERNEL_STEP_OPERATION_FORMAT,
-    INTERPRETER_KERNEL_STEP_OPERATION_REMAINING_PREMISES,
-    INTERPRETER_KERNEL_STEP_OPERATION_THEOREM,
-)
-
-
 INTERPRETER_KERNEL_RUN_OPERATION_FORMAT = (
-    "stage-a-relational-interpreter-kernel-run-operation-plan-v1"
+    "stage-a-relational-interpreter-kernel-run-operation-plan-v3"
 )
 INTERPRETER_KERNEL_RUN_OPERATION_PLAN_FILENAME = (
     "interpreter-kernel-run-operation-plan.json"
@@ -44,13 +36,19 @@ INTERPRETER_KERNEL_RUN_OPERATION_THEOREM = (
     "StageA.GeneratedRelational.InterpreterKernelRunOperation."
     "generatedRunFunctionOperationRefinesUsing"
 )
+INTERPRETER_KERNEL_RUN_ACCEPTANCE_REFINEMENT_THEOREM = (
+    "StageA.GeneratedRelational.InterpreterKernelRunOperation."
+    "generatedRunFunctionOperationRefinesUsingCheckedFamily"
+)
+INTERPRETER_KERNEL_RUN_ENDPOINT_REPLAY_THEOREM = (
+    "StageA.GeneratedRelational.InterpreterKernelRunOperation."
+    "generatedRunFunctionOperationEndpointReplay"
+)
 
 INTERPRETER_KERNEL_RUN_OPERATION_REMAINING_PREMISES = (
-    "frame_event_world_parametric_interpreter_step_certificate",
-    "loop_invariant_and_step_prelude",
-    "terminal_completion_dispatch_chunks",
-    "continuation_and_resolver_callback_refinement",
-    "entry_chunk_and_outer_frame",
+    "finite_checked_semantic_call_tree",
+    "checked_local_step_and_control_paths",
+    "entry_frame_and_loop_invariant",
     "cdecl_epilogue_response_and_memory_frame",
 )
 
@@ -81,8 +79,6 @@ class InterpreterKernelRunOperationPlan:
     abi_plan_sha256: str
     run_native_plan_path: Path
     run_native_plan_sha256: str
-    step_operation_plan_path: Path
-    step_operation_plan_sha256: str
     function_index: int
     function_symbol: str
     function_entry_rva: int
@@ -111,11 +107,6 @@ class InterpreterKernelRunOperationPlan:
                 "run_native_plan",
                 self.run_native_plan_path,
                 self.run_native_plan_sha256,
-            ),
-            (
-                "step_operation_plan",
-                self.step_operation_plan_path,
-                self.step_operation_plan_sha256,
             ),
         )
 
@@ -154,8 +145,11 @@ class InterpreterKernelRunOperationPlan:
                 "exact_interpreter_step_direct_call_target",
                 "finite_resolver_target_inventory",
                 "concrete_abi_program_table_and_record_identity",
-                "compatible_interpreter_step_operation_interface",
+                "finite_checked_semantic_call_tree_interface",
+                "request_local_checked_interpreter_step_derivations",
                 "producer_indexed_run_result_encoding",
+                "exact_candidate_run_function_replay",
+                "canonical_run_endpoint_cutpoints_and_fuels",
             ],
             "remaining_proof_premises": list(
                 INTERPRETER_KERNEL_RUN_OPERATION_REMAINING_PREMISES
@@ -163,6 +157,68 @@ class InterpreterKernelRunOperationPlan:
             "proof_frontiers": self._proof_frontiers(),
             "result": {
                 "theorem": INTERPRETER_KERNEL_RUN_OPERATION_THEOREM,
+                "acceptance_refinement_theorem": (
+                    INTERPRETER_KERNEL_RUN_ACCEPTANCE_REFINEMENT_THEOREM
+                ),
+                "checked_endpoint_replay": (
+                    INTERPRETER_KERNEL_RUN_ENDPOINT_REPLAY_THEOREM
+                ),
+            },
+            "checked_native_endpoint_constructor": {
+                "lean_type": (
+                    "RunFunctionNativeCheckedEndpointReplay "
+                    "(generatedRunFunctionOperationStatic environment)"
+                ),
+                "constructor": (
+                    "RunFunctionNativeCheckedEndpointReplay."
+                    "ofCanonicalChecked"
+                ),
+                "computed_segment_type": (
+                    "RunFunctionNativeCheckedInternalSegment"
+                ),
+                "computed_phase_constructors": [
+                    (
+                        "RunFunctionNativeCheckedInternalSegment."
+                        "terminalPhase"
+                    ),
+                    (
+                        "RunFunctionNativeCheckedInternalSegment."
+                        "directContinuation"
+                    ),
+                ],
+                "derived_facts": [
+                    "exact_candidate_function_bytes",
+                    "exact_function_range",
+                "canonical_entry_loop_continuation_and_epilogue_rvas",
+                "canonical_entry_step_continuation_resolver_and_epilogue_fuels",
+                "checked_resolver_indirect_target_inventory",
+                "computed_internal_segment_endpoint",
+                "computed_terminal_phase",
+                "computed_direct_continuation_phase",
+                ],
+                "residual_declarations": [
+                    (
+                        "RunFunctionNativeCheckedResultIndexedLocalSemantics."
+                        "stepCall"
+                    ),
+                    (
+                        "RunFunctionNativeCheckedResultIndexedLocalSemantics."
+                        "unavailableExit"
+                    ),
+                    (
+                        "RunFunctionNativeCheckedResultIndexedLocalSemantics."
+                        "terminalExit"
+                    ),
+                    (
+                        "RunFunctionNativeCheckedResultIndexedLocalSemantics."
+                        "continuation"
+                    ),
+                    "RunFunctionNativeCheckedEntryAuthority.entry",
+                    (
+                        "RunFunctionNativeResultIndexedCDeclSuffixAuthority."
+                        "suffix"
+                    ),
+                ],
             },
             "failure_mode": "incomplete",
         }
@@ -170,53 +226,33 @@ class InterpreterKernelRunOperationPlan:
     def _proof_frontiers(self) -> list[dict[str, Any]]:
         return [
             {
-                "id": "run-function:frame-parametric-interpreter-step",
-                "premise": (
-                    "frame_event_world_parametric_interpreter_step_certificate"
+                "id": "run-function:finite-call-tree",
+                "premise": "finite_checked_semantic_call_tree",
+                "rva": self.function_entry_rva,
+                "next_action": (
+                    "supply finite checked Step, Invoke, and nested Run "
+                    "derivations for every authoritative semantic transition"
                 ),
-                "rva": self.step_call_rva,
+            },
+            {
+                "id": "run-function:checked-local-semantics",
+                "premise": "checked_local_step_and_control_paths",
+                "rva": self.loop_header_rva,
                 "target_rva": self.step_entry_rva,
                 "next_action": (
-                    "supply the standalone interpreterStep world family and "
-                    "path-local environment, return, and frame-step "
-                    "refinement required by the generic lifting certificate"
-                ),
-            },
-            {
-                "id": "run-function:loop-prelude",
-                "premise": "loop_invariant_and_step_prelude",
-                "rva": self.loop_header_rva,
-                "next_action": (
-                    "establish an inductive machine/world invariant and the "
-                    "exact nine-instruction Step-call prelude"
-                ),
-            },
-            {
-                "id": "run-function:terminal-dispatch",
-                "premise": "terminal_completion_dispatch_chunks",
-                "rva": self.completion_dispatch_rva,
-                "next_action": (
-                    "prove each completion/status case reaches the exact "
-                    "epilogue cutpoint using its checked finite chunk"
-                ),
-            },
-            {
-                "id": "run-function:resolver-continuation",
-                "premise": "continuation_and_resolver_callback_refinement",
-                "rva": self.resolver_call_rva,
-                "target_inventory": "checked_finite_inventory_in_lean",
-                "next_action": (
-                    "prove direct continuations and every checked resolver "
-                    "callback preserve nested frames, world, and loop invariant"
+                    "instantiate checked block routes for the Step prelude, "
+                    "terminal dispatch, and direct or checked resolver "
+                    "continuations; attach request-indexed Step evidence over "
+                    "the same closed candidate program"
                 ),
             },
             {
                 "id": "run-function:entry",
-                "premise": "entry_chunk_and_outer_frame",
+                "premise": "entry_frame_and_loop_invariant",
                 "rva": self.function_entry_rva,
                 "next_action": (
-                    "derive the copied-state loop invariant from the exact "
-                    "cdecl request and outer native call frame"
+                    "derive the copied-state loop invariant from the concrete "
+                    "ABI request facts and the checked entry route"
                 ),
             },
             {
@@ -224,10 +260,9 @@ class InterpreterKernelRunOperationPlan:
                 "premise": "cdecl_epilogue_response_and_memory_frame",
                 "rva": self.epilogue_rva,
                 "next_action": (
-                    "derive exact suffix execution, EAX/engine-state "
-                    "preservation, symbolic frame facts, external trace, "
-                    "successor world, and scratch-footprint memory agreement; "
-                    "the semantic result is fixed by the Run producer"
+                    "combine the checked epilogue route with producer-indexed "
+                    "result encoding, concrete ABI response facts, successor "
+                    "world, and scratch-footprint memory agreement"
                 ),
             },
         ]
@@ -305,14 +340,12 @@ def build_relational_interpreter_kernel_run_operation_plan(
     data_inventory: Path | str,
     abi_plan: Path | str,
     run_native_plan: Path | str,
-    step_operation_plan: Path | str,
 ) -> InterpreterKernelRunOperationPlan:
     candidate_path = Path(candidate_pe)
     kernel_path = Path(kernel_plan)
     data_path = Path(data_inventory)
     abi_path = Path(abi_plan)
     run_native_path = Path(run_native_plan)
-    step_operation_path = Path(step_operation_plan)
     try:
         candidate_size = candidate_path.stat().st_size
         candidate_sha256 = sha256_file(candidate_path)
@@ -326,20 +359,12 @@ def build_relational_interpreter_kernel_run_operation_plan(
     data = _read_json(data_path, "data inventory")
     abi = _read_json(abi_path, "ABI plan")
     run_native = _read_json(run_native_path, "Run-native plan")
-    step_operation = _read_json(
-        step_operation_path, "interpreterStep operation plan"
-    )
 
     _require_format(kernel, INTERPRETER_KERNEL_PLAN_FORMAT, "kernel plan")
     _require_format(data, _DATA_INVENTORY_FORMATS, "data inventory")
     _require_format(abi, INTERPRETER_KERNEL_ABI_FORMAT, "ABI plan")
     _require_format(
         run_native, INTERPRETER_KERNEL_RUN_NATIVE_FORMAT, "Run-native plan"
-    )
-    _require_format(
-        step_operation,
-        INTERPRETER_KERNEL_STEP_OPERATION_FORMAT,
-        "interpreterStep operation plan",
     )
 
     kernel_candidate = _object(kernel.get("candidate"), "kernel candidate")
@@ -362,9 +387,6 @@ def build_relational_interpreter_kernel_run_operation_plan(
             "ABI plan describes a different candidate PE"
         )
     _require_identity(run_native, "Run-native plan", identity)
-    _require_identity(
-        step_operation, "interpreterStep operation plan", identity
-    )
 
     try:
         recomputed = build_relational_interpreter_kernel_run_native_plan(
@@ -386,25 +408,6 @@ def build_relational_interpreter_kernel_run_operation_plan(
     ):
         raise RelationalInterpreterKernelRunOperationGenerationError(
             "Run-native plan semantic premise inventory is stale"
-        )
-
-    step_result = _object(
-        step_operation.get("result"), "interpreterStep operation result"
-    )
-    step_static = _object(
-        step_operation.get("checked_static_authority"),
-        "interpreterStep static authority",
-    )
-    if (
-        step_operation.get("operation") != "interpreterStep"
-        or step_operation.get("remaining_proof_premises")
-        != list(INTERPRETER_KERNEL_STEP_OPERATION_REMAINING_PREMISES)
-        or step_result.get("theorem") != INTERPRETER_KERNEL_STEP_OPERATION_THEOREM
-        or step_operation.get("failure_mode") != "incomplete"
-        or step_static.get("entry_rva") != recomputed.run.interpreter_step_rva
-    ):
-        raise RelationalInterpreterKernelRunOperationGenerationError(
-            "interpreterStep operation plan is stale or incompatible"
         )
 
     functions = _array(kernel.get("kernel_functions"), "kernel functions")
@@ -457,6 +460,7 @@ def build_relational_interpreter_kernel_run_operation_plan(
         )
 
     run = recomputed.run
+    profile = recomputed.template_profile
     return InterpreterKernelRunOperationPlan(
         candidate_path=candidate_path,
         candidate_sha256=candidate_sha256,
@@ -469,8 +473,6 @@ def build_relational_interpreter_kernel_run_operation_plan(
         abi_plan_sha256=sha256_file(abi_path),
         run_native_plan_path=run_native_path,
         run_native_plan_sha256=sha256_file(run_native_path),
-        step_operation_plan_path=step_operation_path,
-        step_operation_plan_sha256=sha256_file(step_operation_path),
         function_index=function_index,
         function_symbol=run.generated_function_name,
         function_entry_rva=run.function_entry_rva,
@@ -479,10 +481,14 @@ def build_relational_interpreter_kernel_run_operation_plan(
         function_instructions=run.instruction_count,
         step_call_rva=run.function_entry_rva + run.direct_call_offsets[0],
         step_entry_rva=run.interpreter_step_rva,
-        loop_header_rva=run.function_entry_rva + 58,
-        completion_dispatch_rva=run.function_entry_rva + 96,
+        loop_header_rva=(
+            run.function_entry_rva + run.semantic_loop_header_offset
+        ),
+        completion_dispatch_rva=(
+            run.function_entry_rva + profile.direct_call_offset + 5
+        ),
         resolver_call_rva=run.function_entry_rva + run.indirect_call_offsets[0],
-        epilogue_rva=run.function_entry_rva + 326,
+        epilogue_rva=run.function_entry_rva + profile.block_offsets[-1],
     )
 
 
@@ -503,8 +509,14 @@ def relational_interpreter_kernel_run_operation_source(
     run_native_module: str = (
         "StageA.GeneratedRelationalInterpreterKernelRunNative"
     ),
-    step_operation_module: str = (
-        "StageA.GeneratedRelationalInterpreterKernelStepOperation"
+    step_native_module: str = (
+        "StageA.GeneratedRelationalInterpreterKernelStepNative"
+    ),
+    operation_candidate_module: str = (
+        "StageA.GeneratedRelationalInterpreterKernelOperationCandidate"
+    ),
+    closed_call_tree_module: str = (
+        "StageA.GeneratedRelationalInterpreterKernelClosedCallTree"
     ),
 ) -> str:
     for context, module in (
@@ -513,28 +525,39 @@ def relational_interpreter_kernel_run_operation_source(
         ("data module", data_module),
         ("Run module", run_module),
         ("Run-native module", run_native_module),
-        ("interpreterStep operation module", step_operation_module),
+        ("interpreterStep native module", step_native_module),
+        ("operation candidate module", operation_candidate_module),
+        ("closed call-tree module", closed_call_tree_module),
     ):
         _validate_module(module, context)
     function = plan.function_symbol
-    return f"""import StageA.RelationalInterpreterKernelRunOperationResultBridge
+    return f"""import StageA.RelationalInterpreterKernelOperationInstantiation
+import StageA.RelationalInterpreterKernelRunEndpointReplay
+import StageA.RelationalInterpreterKernelRunOperationResultBridge
 import {abi_module}
 import {kernel_module}
 import {data_module}
 import {run_module}
 import {run_native_module}
-import {step_operation_module}
+	import {step_native_module}
+	import {operation_candidate_module}
+	import {closed_call_tree_module}
 
-namespace StageA.GeneratedRelational.InterpreterKernelRunOperation
+	namespace StageA.GeneratedRelational.InterpreterKernelRunOperation
 
 open StageA.Formal StageA.Relational
 open StageA.Relational.Interpreter
 open StageA.Relational.InterpreterKernel
 open StageA.Relational.InterpreterKernelABI
+open StageA.Relational.InterpreterKernelClosedCallTree
+open StageA.Relational.InterpreterKernelOperationABIFrame
 open StageA.Relational.InterpreterKernelOperationFrameParametric
+open StageA.Relational.InterpreterKernelOperationInstantiation
+open StageA.Relational.InterpreterKernelOperationReplay
 open StageA.Relational.InterpreterKernelOperationResultEncoding
 open StageA.Relational.InterpreterKernelProgramLookupOperation
 open StageA.Relational.InterpreterKernelRun
+open StageA.Relational.InterpreterKernelRunEndpointReplay
 open StageA.Relational.InterpreterKernelRunOperation
 open StageA.Relational.InterpreterKernelRunOperationResultBridge
 open StageA.Relational.InterpreterNativeWorld
@@ -543,9 +566,11 @@ open StageA.GeneratedRelational.InterpreterKernelABI
 open StageA.GeneratedRelational.InterpreterKernelData
 open StageA.GeneratedRelational.InterpreterKernelRun
 open StageA.GeneratedRelational.InterpreterKernelRunNative
-open StageA.GeneratedRelational.InterpreterKernelStepNative
+	open StageA.GeneratedRelational.InterpreterKernelStepNative
+	open StageA.GeneratedRelational.InterpreterKernelOperationCandidate
+	open StageA.GeneratedRelational.InterpreterKernelClosedCallTree
 
-set_option maxRecDepth 1000000
+	set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 
 def generatedRunFunctionOperationCandidateSha256 : String :=
@@ -577,7 +602,7 @@ def generatedRunFunctionOperationReflected :
 def generatedRunFunctionOperationStatic
     (environment : NativeWorldEnvironment) :
     RunFunctionNativeStaticBinding generatedCompiledKernelProgram
-      (generatedInterpreterStepNativeProgram environment) := {{
+      (generatedClosedKernelOperationNativeProgram environment) := {{
   function := {function}
   reflected := generatedRunFunctionOperationReflected
   entryRvaExact := by decide +kernel
@@ -585,6 +610,50 @@ def generatedRunFunctionOperationStatic
   stepEntryRva := {plan.step_entry_rva}
   stepEntryExact := by decide +kernel
 }}
+
+/-- Exact mixed-decoder replay for every byte in the reflected Run function.
+The entries are computed from the candidate PE and cannot be submitted. -/
+def generatedRunFunctionOperationFunctionReplay
+    (environment : NativeWorldEnvironment) :
+    CheckedNativeOperationFunctionReplay
+      (generatedClosedKernelOperationNativeProgram environment) := {{
+  entryRva := {plan.function_entry_rva}
+  byteLength := {plan.function_end_rva - plan.function_entry_rva}
+  positive := by decide
+  checked := by decide +kernel
+}}
+
+/-- Checked exact-byte and canonical-cutpoint evidence shared by all dynamic
+Run endpoint constructors. -/
+def generatedRunFunctionOperationEndpointReplay
+    (environment : NativeWorldEnvironment) :
+    RunFunctionNativeCheckedEndpointReplay
+      (generatedRunFunctionOperationStatic environment) :=
+  .ofCanonicalChecked
+    (generatedRunFunctionOperationStatic environment)
+    (generatedRunFunctionOperationFunctionReplay environment)
+    (by decide +kernel)
+
+/-- Exact resolver-target closure required by the native transition system.
+For a candidate without the checked target inventory this proposition reduces
+to false at the concrete `call eax` site; no report field can inhabit it. -/
+def GeneratedRunFunctionResolverTargetInventoryGoal
+    (environment : NativeWorldEnvironment) : Prop :=
+  runFunctionNativeResolverTargetInventoryChecked
+    (generatedRunFunctionOperationStatic environment) = true
+
+/-- The candidate transition system uses the checked finite target inventory
+at the exact Run resolver site. -/
+theorem generatedRunFunctionResolverTargetInventoryChecked
+    (environment : NativeWorldEnvironment) :
+    runFunctionNativeResolverTargetInventoryChecked
+      (generatedRunFunctionOperationStatic environment) = true := by
+  decide +kernel
+
+theorem generatedRunFunctionResolverTargetInventoryGoal
+    (environment : NativeWorldEnvironment) :
+    GeneratedRunFunctionResolverTargetInventoryGoal environment :=
+  generatedRunFunctionResolverTargetInventoryChecked environment
 
 def generatedRunFunctionOperationABIEntry :
     RunFunctionNativeABIEntryAuthority
@@ -594,126 +663,135 @@ def generatedRunFunctionOperationABIEntry :
     concreteRunFunctionABIEntryAuthority
       generatedConcreteInterpreterKernelABI
 
-/-- Remaining frame-parametric Step certificate at exact call RVA
-{plan.step_call_rva}.  Its generic lifting theorem is universal over the
-active call-frame stack, event prefix/index, continuation, return word, and
-relational world. -/
-abbrev GeneratedRunFunctionFrameParametricStep
+/-- The canonical finite Step/Invoke/Run closure generated from exact semantic
+records.  It contains no native execution evidence. -/
+abbrev GeneratedRunFunctionCallTree :=
+  GeneratedFiniteCheckedSemanticFunctionBindings
+
+abbrev GeneratedRunFunctionCheckedLocalSemantics
     (environment : NativeWorldEnvironment) :=
-  RunFunctionNativeFrameParametricStepCertificate
+  RunFunctionNativeCheckedResultIndexedLocalSemantics
     generatedCompiledKernelProgram
-    generatedInterpreterKernelABIRelation
-    (generatedInterpreterStepNativeProgram environment)
-
-/-- Remaining loop invariant and exact Step-call prelude premise at RVA
-{plan.loop_header_rva}. -/
-abbrev GeneratedRunFunctionLoopPrelude
-    (environment : NativeWorldEnvironment)
-    (stepFrameParametric :
-      GeneratedRunFunctionFrameParametricStep environment) :=
-  RunFunctionNativeLoopPreludeAuthority generatedCompiledKernelProgram
-    generatedInterpreterKernelABIRelation semanticInterpreterProgramRecords
-    (generatedInterpreterStepNativeProgram environment)
-    (generatedRunFunctionOperationStatic environment)
-    stepFrameParametric.stepOperation
-
-/-- Remaining exact completion/status dispatch premise at RVA
-{plan.completion_dispatch_rva}. -/
-abbrev GeneratedRunFunctionTerminalDispatch
-    (environment : NativeWorldEnvironment)
-    (stepFrameParametric :
-      GeneratedRunFunctionFrameParametricStep environment)
-    (loop : GeneratedRunFunctionLoopPrelude environment
-      stepFrameParametric) :=
-  RunFunctionNativeResultIndexedTerminalDispatchAuthority
-    generatedCompiledKernelProgram
-    generatedInterpreterKernelABIRelation semanticInterpreterProgramRecords
-    (generatedInterpreterStepNativeProgram environment)
-    (generatedRunFunctionOperationStatic environment)
-    stepFrameParametric.stepOperation loop
+    (generatedClosedKernelOperationNativeProgram environment)
+    generatedRunFunctionTemplate semanticInterpreterProgramRecords
+    {plan.step_entry_rva}
+    generatedRunFunctionOperationReflected.resolverTargets
     (CallResultEncodingResidual generatedConcreteInterpreterKernelABI)
 
-/-- Remaining direct-continuation and finite resolver-callback premise at RVA
-{plan.resolver_call_rva}. -/
-abbrev GeneratedRunFunctionContinuation
-    (environment : NativeWorldEnvironment)
-    (stepFrameParametric :
-      GeneratedRunFunctionFrameParametricStep environment)
-    (loop : GeneratedRunFunctionLoopPrelude environment
-      stepFrameParametric) :=
-  RunFunctionNativeContinuationAuthority generatedCompiledKernelProgram
-    generatedInterpreterKernelABIRelation semanticInterpreterProgramRecords
-    (generatedInterpreterStepNativeProgram environment)
-    (generatedRunFunctionOperationStatic environment)
-    stepFrameParametric.stepOperation loop
+/-- The one authoritative Run loop invariant.  It records the checked loop
+cutpoint and the concrete engine-state relation established by the exact
+prologue.  Runtime frames, event prefixes, and worlds remain parametric. -/
+def generatedRunFunctionLoopInvariant
+    (sourceRva : Nat) (logical : InterpreterMachine)
+    (execution : NativeWorldExecution) : Prop :=
+  match execution with
+  | .running rva slot state _ _ _ _ =>
+      rva = generatedRunFunctionTemplate.loopHeaderRva /\\
+        slot = 0 /\\
+        EngineStateHolds generatedInterpreterEngineLayout
+          generatedRunWorkingStateAddress logical sourceRva state
+  | _ => False
 
-/-- Remaining exact prologue and outer-frame premise. -/
-abbrev GeneratedRunFunctionEntry
+	/-- Exact native Run evidence indexed by the checked finite derivations.
+Every path, ABI result, relational-world transition, and memory-frame fact
+remains an explicit field. -/
+structure GeneratedRunFunctionCheckedNativeEvidence
     (environment : NativeWorldEnvironment) (world : RelationalWorld)
-    (outerContinuationRva : Nat) (outerReturnAddress : Word)
-    (stepFrameParametric :
-      GeneratedRunFunctionFrameParametricStep environment)
-    (loop : GeneratedRunFunctionLoopPrelude environment
-      stepFrameParametric) :=
-  RunFunctionNativeEntryAuthority generatedCompiledKernelProgram
-    generatedInterpreterKernelABIRelation semanticInterpreterProgramRecords
-    (generatedInterpreterStepNativeProgram environment) world
+    (outerContinuationRva : Nat) (outerReturnAddress : Word) where
+  semantics : GeneratedRunFunctionCheckedLocalSemantics environment
+  entry : RunFunctionNativeCheckedEntryAuthority
+    generatedCompiledKernelProgram generatedInterpreterKernelABIRelation
+    semanticInterpreterProgramRecords
+    (generatedClosedKernelOperationNativeProgram environment) world
     outerContinuationRva outerReturnAddress
     (generatedRunFunctionOperationStatic environment)
-    stepFrameParametric.stepOperation loop
-
-/-- Remaining exact cdecl epilogue, response, successor-world, and memory-frame
-premise. -/
-abbrev GeneratedRunFunctionEpilogue
-    (environment : NativeWorldEnvironment) (world : RelationalWorld)
-    (outerContinuationRva : Nat) (outerReturnAddress : Word)
-    (stepFrameParametric :
-      GeneratedRunFunctionFrameParametricStep environment)
-    (loop : GeneratedRunFunctionLoopPrelude environment
-      stepFrameParametric) :=
-  RunFunctionNativeResultIndexedCDeclSuffixAuthority
+    semantics.toLocalSemantics
+  suffix : RunFunctionNativeResultIndexedCDeclSuffixAuthority
     generatedCompiledKernelProgram generatedConcreteInterpreterKernelABI
-    (generatedInterpreterStepNativeProgram environment) world
+    (generatedClosedKernelOperationNativeProgram environment) world
     outerContinuationRva outerReturnAddress
     (generatedRunFunctionOperationStatic environment)
-    stepFrameParametric.stepOperation loop
 
-/-- Exact-candidate Run operation theorem.  Its six semantic arguments are
-typed proof objects at named frontiers; none can be replaced by a generated
-status, submitted endpoint, or submitted whole-operation path. -/
+def generatedRunFunctionCheckedCertificate
+    (environment : NativeWorldEnvironment) (world : RelationalWorld)
+    (outerContinuationRva : Nat) (outerReturnAddress : Word)
+    (callTree : GeneratedRunFunctionCallTree)
+    (native : GeneratedRunFunctionCheckedNativeEvidence environment world
+      outerContinuationRva outerReturnAddress) :
+    RunFunctionNativeCheckedResultIndexedOperationCertificate
+      generatedCompiledKernelProgram generatedConcreteInterpreterKernelABI
+      (generatedClosedKernelOperationNativeProgram environment) world
+      outerContinuationRva outerReturnAddress := {{
+  static := generatedRunFunctionOperationStatic environment
+  abiEntry := generatedRunFunctionOperationABIEntry
+  closedTree := RunFunctionClosedCallTreeAuthority.ofClosure callTree.toClosure
+  semantics := native.semantics
+  entry := native.entry
+  suffix := native.suffix
+}}
+
+/-- Exact-candidate Run operation theorem.  Semantic closure is one finite
+checked call tree; native execution is a separate request-indexed certificate.
+No independent interpreterStep operation theorem is a premise. -/
 theorem generatedRunFunctionOperationRefinesUsing
     (environment : NativeWorldEnvironment) (world : RelationalWorld)
     (outerContinuationRva : Nat) (outerReturnAddress : Word)
-    (stepFrameParametric :
-      GeneratedRunFunctionFrameParametricStep environment)
-    (loop : GeneratedRunFunctionLoopPrelude environment
-      stepFrameParametric)
-    (terminal :
-      GeneratedRunFunctionTerminalDispatch environment stepFrameParametric
-        loop)
-    (continuation :
-      GeneratedRunFunctionContinuation environment stepFrameParametric loop)
-    (entry : GeneratedRunFunctionEntry environment world outerContinuationRva
-      outerReturnAddress stepFrameParametric loop)
-    (epilogue :
-      GeneratedRunFunctionEpilogue environment world outerContinuationRva
-        outerReturnAddress stepFrameParametric loop) :
+    (callTree : GeneratedRunFunctionCallTree)
+    (native : GeneratedRunFunctionCheckedNativeEvidence environment world
+      outerContinuationRva outerReturnAddress) :
     KernelOperationRefinesUsing generatedCompiledKernelProgram
       generatedInterpreterKernelABIRelation
       (NativeWorldSubroutineDispatches
-        (generatedInterpreterStepNativeProgram environment) world
+        (generatedClosedKernelOperationNativeProgram environment) world
         outerContinuationRva outerReturnAddress) .runFunction := by
-  exact (RunFunctionNativeResultIndexedOperationCertificate.mk
-    (generatedRunFunctionOperationStatic environment)
-    generatedRunFunctionOperationABIEntry
-    stepFrameParametric
-    loop
-    terminal
-    continuation
-    entry
-    epilogue).refines
+  exact (generatedRunFunctionCheckedCertificate environment world
+    outerContinuationRva outerReturnAddress callTree native).refines
 
-#print axioms generatedRunFunctionOperationRefinesUsing
+/-- The acceptance profile enters and returns through the PE entrypoint.  These
+coordinates are computed from the checked candidate and concrete ABI rather
+than invented by the dispatch projection. -/
+def generatedRunFunctionCanonicalContinuationRva : Nat :=
+  generatedInterpreterKernelCandidatePe.entrypointRva
+
+def generatedRunFunctionCanonicalReturnAddress : Word :=
+  generatedConcreteInterpreterKernelABI.parameters.returnAddress
+    generatedInterpreterKernelCandidatePe
+
+abbrev GeneratedRunFunctionCanonicalCheckedNativeEvidence
+    (environment : NativeWorldEnvironment) (world : RelationalWorld) :=
+  GeneratedRunFunctionCheckedNativeEvidence environment world
+    generatedRunFunctionCanonicalContinuationRva
+    generatedRunFunctionCanonicalReturnAddress
+
+/-- Acceptance-compatible Run refinement.  The finite semantic call tree is
+the exact generated term.  The native premise is still proof-bearing: it must
+establish every checked local route, entry invariant, result encoding, and
+cdecl return for the canonical ABI frame. -/
+theorem generatedRunFunctionOperationRefinesUsingCheckedFamily
+    (environment : NativeWorldEnvironment) (world : RelationalWorld)
+    (native :
+      GeneratedRunFunctionCanonicalCheckedNativeEvidence environment world) :
+    KernelOperationRefinesUsing generatedCompiledKernelProgram
+      generatedInterpreterKernelABIRelation
+      (checkedNativeWorldKernelOperationDispatchFamily
+        (generatedClosedKernelOperationNativeProgram environment) world
+        .runFunction) .runFunction := by
+  apply kernelOperationRefinesUsing_runFunction_mono
+    (generatedRunFunctionOperationRefinesUsing environment world
+      generatedRunFunctionCanonicalContinuationRva
+      generatedRunFunctionCanonicalReturnAddress
+      generatedFiniteCheckedSemanticFunctionBindings native)
+  intro entryRva before after events dispatched
+  exact Exists.intro generatedRunFunctionCanonicalContinuationRva
+    (Exists.intro generatedRunFunctionCanonicalReturnAddress dispatched)
+
+#print axioms generatedRunFunctionCheckedCertificate
+#print axioms generatedRunFunctionOperationFunctionReplay
+	#print axioms generatedRunFunctionOperationEndpointReplay
+	#print axioms generatedRunFunctionResolverTargetInventoryChecked
+	#print axioms generatedRunFunctionResolverTargetInventoryGoal
+	#print axioms generatedRunFunctionOperationRefinesUsing
+#print axioms generatedRunFunctionOperationRefinesUsingCheckedFamily
 
 end StageA.GeneratedRelational.InterpreterKernelRunOperation
 """
@@ -739,7 +817,9 @@ def write_relational_interpreter_kernel_run_operation_bundle(
 
 
 __all__ = [
+    "INTERPRETER_KERNEL_RUN_ACCEPTANCE_REFINEMENT_THEOREM",
     "INTERPRETER_KERNEL_RUN_OPERATION_FORMAT",
+    "INTERPRETER_KERNEL_RUN_ENDPOINT_REPLAY_THEOREM",
     "INTERPRETER_KERNEL_RUN_OPERATION_LEAN_FILENAME",
     "INTERPRETER_KERNEL_RUN_OPERATION_PLAN_FILENAME",
     "INTERPRETER_KERNEL_RUN_OPERATION_REMAINING_PREMISES",

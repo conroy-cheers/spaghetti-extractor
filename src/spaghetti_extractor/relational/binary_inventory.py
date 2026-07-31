@@ -133,7 +133,6 @@ def _validate_coverage(payload: Mapping[str, Any]) -> None:
             "passing binary cutpoint inventory has no executable sections"
         )
     previous_section_end: int | None = None
-    section_names: set[str] = set()
     for index, section in enumerate(sections):
         if not isinstance(section, Mapping) or set(section) != {
             "name",
@@ -149,7 +148,6 @@ def _validate_coverage(payload: Mapping[str, Any]) -> None:
         if (
             not isinstance(name, str)
             or not name
-            or name in section_names
             or isinstance(start, bool)
             or not isinstance(start, int)
             or start < 0
@@ -163,7 +161,6 @@ def _validate_coverage(payload: Mapping[str, Any]) -> None:
             )
         if previous_section_end is not None and start < previous_section_end:
             raise StageAInputError("binary executable sections overlap or are unordered")
-        section_names.add(name)
         previous_section_end = stop
     coverage: list[tuple[int, int, str]] = []
     for index, region in enumerate(regions):

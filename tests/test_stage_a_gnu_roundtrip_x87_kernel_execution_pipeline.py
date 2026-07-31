@@ -5,25 +5,22 @@ import subprocess
 import sys
 from pathlib import Path
 
+from spaghetti_extractor.relational.lean.interpreter_x87_replay_bridge_runtime import (
+    X87_REPLAY_FIXED_TEMPLATE_CERTIFICATE_PREMISES,
+    X87_REPLAY_FIXED_TEMPLATE_CHECKS_TYPE,
+    X87_REPLAY_FIXED_TEMPLATE_EXECUTOR_PREMISES,
+    X87_REPLAY_FIXED_TEMPLATE_PROGRAM_BINDING_PREMISES,
+    X87_REPLAY_FIXED_TEMPLATE_REMAINING_PREMISES,
+    X87_REPLAY_FIXED_TEMPLATE_SOURCE_FRAME_ASSUMPTIONS,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER = REPO_ROOT / "nix/gnu-hello-roundtrip-driver.py"
 LANE = REPO_ROOT / "nix/gnu-hello-roundtrip.nix"
 FLAKE = REPO_ROOT / "flake.nix"
 
-REMAINING_PREMISES = [
-    "program_binding.peExact",
-    "program_binding.importsExact",
-    "program_binding.targetInventory",
-    "endpoint_certificate.handlerResult",
-    "endpoint_certificate.callTarget",
-    "endpoint_certificate.callRun",
-    "endpoint_certificate.entryRun",
-    "endpoint_certificate.instructionRun",
-    "endpoint_certificate.captureRun",
-    "endpoint_certificate.returnRun",
-    "endpoint_certificate.frameEffect",
-]
+REMAINING_PREMISES = list(X87_REPLAY_FIXED_TEMPLATE_REMAINING_PREMISES)
+KERNEL_PREMISES = REMAINING_PREMISES
 
 
 def _runtime_plan(path: Path, *, acceptance_authority: bool = False) -> None:
@@ -33,8 +30,32 @@ def _runtime_plan(path: Path, *, acceptance_authority: bool = False) -> None:
                 "format": (
                     "stage-a-relational-x87-replay-bridge-runtime-plan-v1"
                 ),
-                "status": "evidence_ready",
+                "status": "complete",
+                "diagnostic_status": "kernel_execution_closed",
                 "acceptance_authority": acceptance_authority,
+                "static_evidence": True,
+                "conditional_theorem": (
+                    "StageA.Relational.InterpreterKernelX87Execution."
+                    "executeKernelReduction"
+                ),
+                "remaining_proof_premises": REMAINING_PREMISES,
+                "assumed_source_frame_fields": list(
+                    X87_REPLAY_FIXED_TEMPLATE_SOURCE_FRAME_ASSUMPTIONS
+                ),
+                "remaining_program_binding_fields": list(
+                    X87_REPLAY_FIXED_TEMPLATE_PROGRAM_BINDING_PREMISES
+                ),
+                "remaining_fixed_template_fields": list(
+                    X87_REPLAY_FIXED_TEMPLATE_CERTIFICATE_PREMISES
+                ),
+                "remaining_executor_fields": list(
+                    X87_REPLAY_FIXED_TEMPLATE_EXECUTOR_PREMISES
+                ),
+                "checked_execution_type": X87_REPLAY_FIXED_TEMPLATE_CHECKS_TYPE,
+                "checked_bundle_inhabited": True,
+                "required_checked_target_terms": [
+                    f"checkedTarget{index}" for index in range(7)
+                ],
                 "candidate": {
                     "path": "candidate.exe",
                     "sha256": "ab" * 32,
@@ -90,40 +111,47 @@ def test_driver_emits_typed_x87_kernel_frontier_without_authority(
         / "StageA/GeneratedRelationalInterpreterKernelX87Execution.lean"
     ).read_text(encoding="ascii")
 
-    assert manifest["diagnostic_status"] == "semantic_premises_required"
+    assert manifest["diagnostic_status"] == "kernel_execution_closed"
     assert manifest["proof_authority"] is False
-    assert manifest["failure_mode"] == "incomplete"
+    assert manifest["failure_mode"] == "none"
     assert manifest["runtime_targets"] == 7
-    assert manifest["remaining_proof_premises"] == REMAINING_PREMISES
-    assert frontier["remaining_proof_premises"] == REMAINING_PREMISES
-    assert frontier["remaining_authority"]["program_binding_fields"] == [
+    assert manifest["remaining_proof_premises"] == KERNEL_PREMISES
+    assert frontier["remaining_proof_premises"] == KERNEL_PREMISES
+    assert frontier["assumed_source_frame_fields"] == list(
+        X87_REPLAY_FIXED_TEMPLATE_SOURCE_FRAME_ASSUMPTIONS
+    )
+    assert frontier["remaining_program_binding_fields"] == list(
+        X87_REPLAY_FIXED_TEMPLATE_PROGRAM_BINDING_PREMISES
+    )
+    assert frontier["remaining_fixed_template_fields"] == list(
+        X87_REPLAY_FIXED_TEMPLATE_CERTIFICATE_PREMISES
+    )
+    assert frontier["remaining_authority"][
+        "structurally_derived_program_binding_fields"
+    ] == [
         "peExact",
         "importsExact",
         "targetInventory",
     ]
     assert frontier["remaining_authority"][
-        "endpoint_certificate_proof_fields"
+        "structurally_derived_handler_fields"
     ] == [
-        "handlerResult",
-        "callTarget",
-        "entryFuelPositive",
-        "instructionFuelPositive",
-        "captureFuelPositive",
-        "returnFuelPositive",
-        "callRun",
-        "entryRun",
-        "instructionRun",
-        "captureRun",
-        "returnRun",
-        "frameEffect",
+        "handlerInventory",
     ]
+    assert frontier["remaining_authority"]["authority_fields"] == []
+    assert frontier["remaining_authority"][
+        "fixed_template_certificate_proof_fields"
+    ] == []
     assert (
         "import StageA.GeneratedRelationalInterpreterX87ReplayBridgeRuntime"
         in source
     )
     assert "import StageA.RelationalInterpreterKernelX87Execution" in source
-    assert "GeneratedX87ReplayBridgeKernelEndpointAuthorityGoal" in source
-    assert "exact authority.kernelExecution" in source
+    assert "GeneratedX87ReplayBridgeFixedTemplateChecksGoal" in source
+    assert "generatedX87ReplayBridgeKernelExecutionClosed" in source
+    assert ".kernelExecution" in source
+    assert "generatedX87ReplayBridgeKernelProgramBinding" in source
+    assert "generatedX87ReplayBridgeHandlerInventoryCorrespondence" in source
     assert "def generatedX87ReplayBridgeKernelEndpointAuthority" not in source
     assert '"status"' not in source
 

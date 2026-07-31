@@ -44,6 +44,9 @@ from .common import _lean_byte_tree_definitions, _lean_bytes
 INTERPRETER_KERNEL_PLAN_FORMAT = "stage-a-relational-interpreter-kernel-plan-v2"
 INTERPRETER_KERNEL_PLAN_FILENAME = "interpreter-kernel-plan.json"
 INTERPRETER_KERNEL_LEAN_FILENAME = "GeneratedRelationalInterpreterKernel.lean"
+INTERPRETER_KERNEL_FUNCTION_MODULE_PREFIX = (
+    "GeneratedRelationalInterpreterKernelFunction"
+)
 
 _PROOF_COMPILE_POLICY = "deterministic-freestanding-proof-o0-v1"
 _REQUIRED_FLAGS = frozenset({"-O0", "-fno-inline", "-fno-omit-frame-pointer"})
@@ -572,7 +575,10 @@ def relational_interpreter_kernel_source(
         candidate_bytes_symbol=candidate_bytes_symbol,
         candidate_pe_symbol=candidate_pe_symbol,
     )
-    function_definitions, function_names = _lean_function_definitions(plan.functions)
+    function_names = [
+        f"generatedKernelFunction{index:04d}"
+        for index in range(len(plan.functions))
+    ]
     functions = ",\n  ".join(function_names)
     ranges = ",\n  ".join(_lean_exact_range(item) for item in plan.compiled_program_ranges)
     external_artifacts = (
@@ -588,6 +594,10 @@ def relational_interpreter_kernel_source(
                 f"{label} must be an ExternalArtifactBytesBinding"
             )
     import_modules = ["StageA.RelationalInterpreterKernel"]
+    import_modules.extend(
+        f"StageA.{INTERPRETER_KERNEL_FUNCTION_MODULE_PREFIX}{index:04d}"
+        for index in range(len(plan.functions))
+    )
     if external_candidate_data is None:
         candidate_definitions = _lean_byte_tree_definitions(
             "generatedKernelCandidateBytes", plan.candidate_bytes
@@ -677,8 +687,6 @@ def generatedKernelArtifactBinding : KernelArtifactBinding := {{
   engineLayoutSha256 := {_lean_string(sha256_bytes(plan.engine_layout_bytes))}
   engineLayoutRange := generatedKernelEngineLayoutRange
 }}
-
-{function_definitions}
 
 def generatedKernelFunctions : List KernelFunction := [
   {functions}
@@ -799,6 +807,12 @@ def write_relational_interpreter_kernel_bundle(
             },
         )
     write_json(output / INTERPRETER_KERNEL_PLAN_FILENAME, plan.payload())
+    for function_index, function in enumerate(plan.functions):
+        module = f"{INTERPRETER_KERNEL_FUNCTION_MODULE_PREFIX}{function_index:04d}"
+        (output / f"{module}.lean").write_text(
+            _lean_function_module_source(function_index, function),
+            encoding="utf-8",
+        )
     (output / INTERPRETER_KERNEL_LEAN_FILENAME).write_text(
         relational_interpreter_kernel_source(
             plan,
@@ -1466,10 +1480,12 @@ def _lean_function(
 
 def _lean_function_definitions(
     functions: Sequence[KernelFunctionPlan],
+    *,
+    first_index: int = 0,
 ) -> tuple[str, list[str]]:
     definitions: list[str] = []
     function_names: list[str] = []
-    for function_index, function in enumerate(functions):
+    for function_index, function in enumerate(functions, start=first_index):
         prefix = f"generatedKernelFunction{function_index:04d}"
         block_names: list[str] = []
         for block_index, block in enumerate(function.blocks):
@@ -1487,6 +1503,29 @@ def _lean_function_definitions(
         )
         function_names.append(prefix)
     return "\n\n".join(definitions), function_names
+
+
+def _lean_function_module_source(
+    function_index: int,
+    function: KernelFunctionPlan,
+) -> str:
+    definitions, _ = _lean_function_definitions(
+        (function,), first_index=function_index
+    )
+    return f"""import StageA.RelationalInterpreterKernel
+
+namespace StageA.GeneratedRelational.InterpreterKernel
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.InterpreterKernel
+
+set_option maxHeartbeats 0
+set_option maxRecDepth 1000000
+
+{definitions}
+
+end StageA.GeneratedRelational.InterpreterKernel
+"""
 
 
 def _load_function_hints(path: Path, binary: StageABinary) -> tuple[_FunctionHint, ...]:
@@ -1890,6 +1929,7 @@ def _count(value: Any, label: str, maximum: int) -> int:
 
 
 __all__ = [
+    "INTERPRETER_KERNEL_FUNCTION_MODULE_PREFIX",
     "INTERPRETER_KERNEL_LEAN_FILENAME",
     "INTERPRETER_KERNEL_PLAN_FILENAME",
     "INTERPRETER_KERNEL_PLAN_FORMAT",

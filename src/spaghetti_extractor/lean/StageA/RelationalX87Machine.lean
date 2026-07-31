@@ -115,6 +115,37 @@ theorem commandStepInput_valid_of_operand_bytes
       ((commandDataAddress descriptor state).getD state.x87Physical.dataPointer)
       bytes bounded
 
+/-- Every command accepted by the x87 decoder uses either no operand or one of
+the finite architectural widths supported by the concrete 80-bit reader. -/
+theorem commandStepInput_valid
+    (pe : PE32) (rva : Nat) (descriptor : DecodedCommand)
+    (state : MachineState) :
+    (commandStepInput pe rva descriptor state).validFor
+      descriptor.command := by
+  have supported :
+      descriptor.command.expectedOperandBytes = none ∨
+      descriptor.command.expectedOperandBytes = some 2 ∨
+      descriptor.command.expectedOperandBytes = some 4 ∨
+      descriptor.command.expectedOperandBytes = some 8 ∨
+      descriptor.command.expectedOperandBytes = some 10 := by
+    cases descriptor.command <;> try simp [StageA.X87.Command.expectedOperandBytes]
+    all_goals
+      first
+      | (rename_i format; cases format <;>
+          simp [StageA.X87.LoadFormat.byteWidth])
+      | (rename_i _operation format; cases format <;>
+          simp [StageA.X87.LoadFormat.byteWidth])
+  rcases supported with noOperand | twoBytes | fourBytes | eightBytes | tenBytes
+  · constructor <;> simp [commandStepInput, noOperand]
+  · exact commandStepInput_valid_of_operand_bytes pe rva descriptor state 2
+      twoBytes (by decide) (by decide)
+  · exact commandStepInput_valid_of_operand_bytes pe rva descriptor state 4
+      fourBytes (by decide) (by decide)
+  · exact commandStepInput_valid_of_operand_bytes pe rva descriptor state 8
+      eightBytes (by decide) (by decide)
+  · exact commandStepInput_valid_of_operand_bytes pe rva descriptor state 10
+      tenBytes (by decide) (by decide)
+
 def legacyConcreteState (state : MachineState) : ConcreteX87State := {
   stack := (List.range 8).map state.x87.stack
   control := state.x87.control
@@ -297,6 +328,40 @@ theorem executeSingletonCommand_outcome_of_continuation
               simp [storeFound, addressFound] at executed
               subst behavior
               rfl
+
+/-- Successful x87 singleton execution always carries the physical machine
+effect produced by the qualified x87 semantics. -/
+theorem executeSingletonCommand_effect_isSome
+    (candidate : Bool) (pe : PE32) (span : Span)
+    (targets : List CodeTargetPair) (state : MachineState)
+    (behavior : RelationalBehavior)
+    (executed : executeSingletonCommand candidate pe span targets state =
+      some behavior) :
+    behavior.x87Effect.isSome = true := by
+  unfold executeSingletonCommand at executed
+  cases descriptorFound : decodeSingletonCommand pe span with
+  | none => simp [descriptorFound] at executed
+  | some descriptor =>
+      simp only [descriptorFound] at executed
+      cases continuationFound : normalizeCodeTarget candidate targets span.stop with
+      | none => simp [continuationFound] at executed
+      | some continuation =>
+          simp [continuationFound, singletonBehavior] at executed
+          rcases executed with ⟨_, _, _, executed⟩
+          cases storeFound : (state.x87Semantics.execute descriptor.command
+              descriptor.waitMode state.x87Physical
+              (commandStepInput pe span.start descriptor state)).store with
+          | none =>
+              simp [storeFound] at executed
+              subst behavior
+              rfl
+          | some store =>
+              cases addressFound : commandDataAddress descriptor state with
+              | none => simp [storeFound, addressFound] at executed
+              | some address =>
+                  simp [storeFound, addressFound] at executed
+                  subst behavior
+                  rfl
 
 def spanStartsWithX87Command (pe : PE32) (span : Span) : Bool :=
   (decodeSingletonCommand pe span).isSome

@@ -274,14 +274,16 @@ def instructionMemoryEffectFree : Instruction -> Bool
   | .nop | .movRegImm _ _ | .movRegReg _ _ | .addZero _ | .subZero _ |
       .cmpImm _ _ | .branchEqual _ _ | .jumpRel8 _ | .jumpRel32 _ |
       .lea _ _ _ | .zeroReg _ | .leaAddress _ _ | .branchCondition _ _ _ |
-      .convertWordToDword | .convertDwordToQuad | .bitTestRegister _ _ => true
+      .convertWordToDword | .convertDwordToQuad | .bitTestRegister _ _ |
+      .clearDirection => true
   | .movFromOperand _ source | .movZeroExtend _ source _ |
       .movSignExtend _ source _ | .movFromOperandWidth _ _ source |
       .conditionalMove _ _ source | .multiplyFull _ source |
       .multiplyLow _ source _ | .bitScan _ _ source |
       .jumpIndirect source => operand32MemoryFree source
   | .movToOperand destination _ | .movImmediate destination _ |
-      .shift _ destination _ | .unary _ destination |
+      .shift _ destination _ | .shiftWidth _ _ destination _ |
+      .unary _ destination |
       .movToOperandWidth _ destination _ | .movImmediateWidth _ destination _ |
       .exchange destination _ | .doubleShift _ destination _ _ =>
       match destination with
@@ -303,14 +305,17 @@ def instructionMemoryEffectFree : Instruction -> Bool
       match destination with
       | .register _ => operand8MemoryFree source
       | .memory _ | .immediate _ => false
-  | .ret | .retPop _ | .pushReg _ | .popReg _ | .leave | .load32 _ _ _ |
+  | .ret | .retPop _ | .pushReg _ | .popReg _ | .pushFlags | .pushAll |
+      .popAll | .popFlags | .leave | .load32 _ _ _ |
       .store32 _ _ _ | .callRel32 _ | .callImport _ | .jumpImport _ |
       .x87LoadStack _ | .x87LoadConstant _ | .x87Exchange _ |
       .x87StoreStack _ _ | .x87Unary _ | .x87BinaryStack _ _ _ _ |
       .x87CompareStack _ _ _ _ | .x87LoadMemory _ _ |
       .x87StoreMemory _ _ _ | .x87BinaryMemory _ _ _ |
-      .x87LoadControl _ | .x87StoreControl _ | .x87Wait | .x87Initialize |
-      .x87StoreStatusAx | .x87Examine | .moveDwords _ | .callIndirect _ |
+      .x87LoadControl _ | .x87StoreControl _ | .x87SaveState _ |
+      .x87RestoreState _ | .x87Wait | .x87Initialize |
+      .x87StoreStatusAx | .x87Examine | .moveDwords _ | .storeDwords _ |
+      .callIndirect _ |
       .pushOperand _ | .movFs32 _ _ | .divideUnsigned _ | .divideSigned _ |
       .atomicCompareExchange _ _ => false
 
@@ -374,7 +379,8 @@ def wordNodeSupported (node : SemanticWordNode) : Bool :=
 
 def actionSupported : SemanticAction -> Bool
   | .evalWord _ | .setRegister _ _ | .setFlag _ _ | .syncEflags => true
-  | .memoryWrite _ _ _ | .divideIf _ | .call _ | .repMovsd _ _ _ _ => false
+  | .memoryWrite _ _ _ | .divideIf _ | .call _ |
+      .repMovsd _ _ _ _ | .repStosd _ _ _ _ => false
 
 def semanticOutcomeSupported : SemanticOutcome -> Bool
   | .fallthrough _ | .jump _ | .returned _ | .indirectJump _ => true
@@ -409,6 +415,7 @@ inductive FlatMemoryAccessKind where
   | read (width : MemoryWidth)
   | write (width : MemoryWidth)
   | repMovsd
+  | repStosd
 deriving Repr, DecidableEq
 
 structure FlatMemoryAccessSite where
@@ -432,6 +439,8 @@ def memoryAccessSite (transfer : SemanticTransfer) (actionIndex : Nat) :
       [⟨actionIndex, some address, some value, .write width⟩]
   | .repMovsd source destination _ _ =>
       [⟨actionIndex, some source, some destination, .repMovsd⟩]
+  | .repStosd destination value _ _ =>
+      [⟨actionIndex, some destination, some value, .repStosd⟩]
   | _ => []
 
 def orderedFlatMemoryFootprintFrom (transfer : SemanticTransfer) :
@@ -493,6 +502,7 @@ deriving Repr, DecidableEq
 inductive ConcreteFlatMemoryEffect where
   | access (value : ConcreteFlatMemoryAccess)
   | repMovsd (source destination count : Word) (direction : Bool)
+  | repStosd (destination value count : Word) (direction : Bool)
 deriving Repr, DecidableEq
 
 def concreteFlatMemoryEffect : InterpreterEvent -> Option ConcreteFlatMemoryEffect
@@ -500,11 +510,148 @@ def concreteFlatMemoryEffect : InterpreterEvent -> Option ConcreteFlatMemoryEffe
       some (.access { address, width })
   | .repMovsd source destination count direction =>
       some (.repMovsd source destination count direction)
+  | .repStosd destination value count direction =>
+      some (.repStosd destination value count direction)
   | .call _ => none
 
 def concreteFlatMemoryEffects (events : List InterpreterEvent) :
     List ConcreteFlatMemoryEffect :=
   events.filterMap concreteFlatMemoryEffect
+
+/-! `repStosdSpan?` computes the exact half-open byte span touched by REP STOSD.
+The direction flag denotes decrementing traversal when true.  A zero count
+touches no memory and therefore has an empty span. -/
+def repStosdSpan? (destination count : Word) (direction : Bool) : Option Span :=
+  let destination := destination.toNat
+  let count := count.toNat
+  if count = 0 then
+    some { start := destination, size := 0 }
+  else
+    let size := count * 4
+    if size > pe32AddressSpaceSize then none
+    else if direction then
+      let backwards := (count - 1) * 4
+      if destination < backwards then none
+      else
+        let start := destination - backwards
+        if pe32SpanBounded start size then some { start, size } else none
+    else if pe32SpanBounded destination size then
+      some { start := destination, size }
+    else none
+
+/-- REP MOVSD traverses equal-sized source and destination spans in the same
+direction. The two spans are checked independently because either side can
+cross the flat PE32 address-space boundary. -/
+def repMovsdSpans? (source destination count : Word)
+    (direction : Bool) : Option (Span × Span) := do
+  let sourceSpan <- repStosdSpan? source count direction
+  let destinationSpan <- repStosdSpan? destination count direction
+  pure (sourceSpan, destinationSpan)
+
+def interpreterEventAccessDomainChecked (side : RelationalSide)
+    (context : StaticProofContext) (world : RelationalWorld) :
+    InterpreterEvent -> Bool
+  | .memoryRead address width _ =>
+      relationalAccessSpanChecked side context world .read address.toNat width.bytes
+  | .memoryWrite address width _ =>
+      relationalAccessSpanChecked side context world .write address.toNat width.bytes
+  | .repStosd destination _ count direction =>
+      match repStosdSpan? destination count direction with
+      | some span =>
+          span.size == 0 ||
+            relationalAccessSpanChecked side context world .write span.start span.size
+      | none => false
+  | .repMovsd source destination count direction =>
+      match repMovsdSpans? source destination count direction with
+      | some (sourceSpan, destinationSpan) =>
+          (sourceSpan.size == 0 ||
+            relationalAccessSpanChecked side context world .read
+              sourceSpan.start sourceSpan.size) &&
+          (destinationSpan.size == 0 ||
+            relationalAccessSpanChecked side context world .write
+              destinationSpan.start destinationSpan.size)
+      | none => false
+  /- A call event is not itself a flat-memory access. The paired external
+  environment owns the callee's successor state, memory footprint, and fault
+  refinement; treating the event as a memory access here would duplicate that
+  authority. -/
+  | .call _ => true
+
+def interpreterEventsAccessDomainChecked (side : RelationalSide)
+    (context : StaticProofContext) (world : RelationalWorld)
+    (events : List InterpreterEvent) : Bool :=
+  events.all (interpreterEventAccessDomainChecked side context world)
+
+def InterpreterEventModeledAccessDomain (side : RelationalSide)
+    (context : StaticProofContext) (world : RelationalWorld)
+    (event : InterpreterEvent) : Prop :=
+  interpreterEventAccessDomainChecked side context world event = true
+
+theorem interpreterEventsAccessDomainChecked_sound
+    (side : RelationalSide) (context : StaticProofContext)
+    (world : RelationalWorld) (events : List InterpreterEvent)
+    (checked : interpreterEventsAccessDomainChecked side context world events = true) :
+    ∀ event ∈ events,
+      InterpreterEventModeledAccessDomain side context world event := by
+  intro event member
+  simp only [interpreterEventsAccessDomainChecked, List.all_eq_true] at checked
+  exact checked event member
+
+/-! A certificate is parametric in the source-state relation and in the event
+producer.  It proves only that all produced memory events are admitted by the
+modeled PE/world domain.  The explicit launch assumption is the separate bridge
+to concrete flat-segment and mapped-memory facts. -/
+structure CheckedAccessDomainCertificate
+    (StateRelation :
+      RelationalWorld -> InterpreterMachine -> InterpreterMachine -> Prop)
+    (context : StaticProofContext)
+    (originalEvents candidateEvents :
+      RelationalWorld -> InterpreterMachine -> InterpreterMachine ->
+        List InterpreterEvent) : Prop where
+  originalChecked :
+    ∀ world original candidate,
+      StateRelation world original candidate ->
+        interpreterEventsAccessDomainChecked .original context world
+          (originalEvents world original candidate) = true
+  candidateChecked :
+    ∀ world original candidate,
+      StateRelation world original candidate ->
+        interpreterEventsAccessDomainChecked .candidate context world
+          (candidateEvents world original candidate) = true
+
+theorem CheckedAccessDomainCertificate.originalModeled
+    {StateRelation :
+      RelationalWorld -> InterpreterMachine -> InterpreterMachine -> Prop}
+    {context : StaticProofContext}
+    {originalEvents candidateEvents :
+      RelationalWorld -> InterpreterMachine -> InterpreterMachine ->
+        List InterpreterEvent}
+    (certificate : CheckedAccessDomainCertificate StateRelation context
+      originalEvents candidateEvents)
+    (world : RelationalWorld) (original candidate : InterpreterMachine)
+    (related : StateRelation world original candidate) :
+    ∀ event ∈ originalEvents world original candidate,
+      InterpreterEventModeledAccessDomain .original context world event :=
+  interpreterEventsAccessDomainChecked_sound _ _ _
+    (originalEvents world original candidate)
+    (certificate.originalChecked world original candidate related)
+
+theorem CheckedAccessDomainCertificate.candidateModeled
+    {StateRelation :
+      RelationalWorld -> InterpreterMachine -> InterpreterMachine -> Prop}
+    {context : StaticProofContext}
+    {originalEvents candidateEvents :
+      RelationalWorld -> InterpreterMachine -> InterpreterMachine ->
+        List InterpreterEvent}
+    (certificate : CheckedAccessDomainCertificate StateRelation context
+      originalEvents candidateEvents)
+    (world : RelationalWorld) (original candidate : InterpreterMachine)
+    (related : StateRelation world original candidate) :
+    ∀ event ∈ candidateEvents world original candidate,
+      InterpreterEventModeledAccessDomain .candidate context world event :=
+  interpreterEventsAccessDomainChecked_sound _ _ _
+    (candidateEvents world original candidate)
+    (certificate.candidateChecked world original candidate related)
 
 def flatRangesDisjoint (left right : ConcreteFlatMemoryAccess) : Prop :=
   forall leftOffset, leftOffset < left.width.bytes ->
@@ -670,7 +817,8 @@ def normalizedCompletion (targets : List CodeTargetPair) (state : MachineState) 
       (originalTargetRva targets
         (if condition.eval state then taken else fallthrough)).map Completion.branch
   | .call _ continuation | .externalCall _ _ continuation |
-      .bulkCopy _ _ _ _ continuation | .indirectCall _ continuation |
+      .bulkCopy _ _ _ _ continuation | .bulkFill _ _ _ _ continuation |
+      .indirectCall _ continuation |
       .atomicCompareExchange _ _ _ continuation =>
       (originalTargetRva targets continuation).map Completion.fallthrough
   | .callUnmappedReturn _ => some .externalJump
@@ -684,7 +832,7 @@ def normalizedCompletion (targets : List CodeTargetPair) (state : MachineState) 
 def normalizedOutcomeDefersFinalState : NormalizedOutcomeExpr -> Bool
   | .call _ _ | .callUnmappedReturn _ | .externalCall _ _ _ |
       .externalJump _ _ |
-      .bulkCopy _ _ _ _ _ | .indirectCall _ _ |
+      .bulkCopy _ _ _ _ _ | .bulkFill _ _ _ _ _ | .indirectCall _ _ |
       .atomicCompareExchange _ _ _ _ => true
   | _ => false
 

@@ -52,6 +52,30 @@ def _lean_memory_arguments() -> list[str]:
     return ["-M", str(memory_mb)]
 
 
+def _lean_stack_arguments() -> list[str]:
+    configured = os.environ.get(
+        "SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_THREAD_STACK_KB",
+        "65536",
+    )
+    try:
+        stack_kb = int(configured)
+    except ValueError as exc:
+        raise StageAInputError(
+            "SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_THREAD_STACK_KB must be an integer"
+        ) from exc
+    if stack_kb <= 0:
+        raise StageAInputError(
+            "SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_THREAD_STACK_KB must be positive"
+        )
+    return [f"--tstack={stack_kb}"]
+
+
+def _lean_runtime_arguments() -> list[str]:
+    """Return resource controls shared by every Lean invocation."""
+
+    return [*_lean_stack_arguments(), *_lean_memory_arguments()]
+
+
 def _relational_cache_dir() -> Path | None:
     configured = os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE")
     if configured == "off":
@@ -209,7 +233,10 @@ def _run_lean_relational(
     bundle: str = "RelationalBundle",
     cancel_event: Event | None = None,
     reuse_bundle_cache: bool = False,
+    command_timeout_seconds: float = 300,
 ) -> dict[str, Any]:
+    if command_timeout_seconds <= 0:
+        raise StageAInputError("Lean command timeout must be positive")
     started = time.monotonic()
     command_elapsed: list[float] = []
 
@@ -314,7 +341,7 @@ def _run_lean_relational(
             continue
         command = [
             lean,
-            *_lean_memory_arguments(),
+            *_lean_runtime_arguments(),
             "-o",
             f"StageA/{module}.olean",
             f"StageA/{module}.lean",
@@ -341,7 +368,7 @@ def _run_lean_relational(
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
-        deadline = command_started + 300
+        deadline = command_started + command_timeout_seconds
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 _terminate_process_group(process)

@@ -72,6 +72,11 @@ class StageARelationalInterpreterKernelOperationFrameParametricTests(
     def test_plan_reports_only_the_two_smaller_typed_frontiers(self) -> None:
         payload = self._build().payload()
         self.assertEqual(
+            INTERPRETER_KERNEL_OPERATION_FRAME_PARAMETRIC_FORMAT,
+            "stage-a-relational-interpreter-kernel-operation-frame-parametric-"
+            "plan-v2",
+        )
+        self.assertEqual(
             payload["format"],
             INTERPRETER_KERNEL_OPERATION_FRAME_PARAMETRIC_FORMAT,
         )
@@ -98,14 +103,17 @@ class StageARelationalInterpreterKernelOperationFrameParametricTests(
             )
         )
         for required in (
-            "GeneratedStandaloneInterpreterStepOperation",
-            "GeneratedInterpreterStepContextRefinement",
-            "StandaloneNativeWorldPath",
+            "GeneratedInterpreterStepSelectedPathProducer",
+            "GeneratedInterpreterStepSelectedPathRefinement",
+            "ProducerSelectedStandaloneNativeWorldPath",
+            "ProducerSelectedStandaloneNativeWorldDispatches",
             "NativeWorldFramePathRefinement",
             "generatedInterpreterStepFrameParametricCertificate",
             "KernelOperationFrameParametricCertificate",
         ):
             self.assertIn(required, source)
+        self.assertNotIn("GeneratedStandaloneInterpreterStepOperation", source)
+        self.assertNotIn("contextRefinement", source)
         for marker in ("sorry", "axiom", "unsafe", "native_decide"):
             self.assertIsNone(re.search(rf"\b{marker}\b", source), marker)
 

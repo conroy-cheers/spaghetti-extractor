@@ -108,22 +108,38 @@ class WriteClassificationProposal:
         "runtime_separated",
     ]
     target_id: int | None = None
+    width: Literal[1, 2, 4] = 4
 
     def lean(self) -> str:
+        widths = {1: ".byte", 2: ".word", 4: ".dword"}
+        try:
+            width = widths[self.width]
+        except KeyError as error:
+            raise ReachableStaticPointerSlotGenerationError(
+                f"unsupported write width: {self.width!r}"
+            ) from error
         if self.kind == "slot_code_target":
             if self.target_id is None:
                 raise ReachableStaticPointerSlotGenerationError(
                     "slot_code_target requires target_id"
+                )
+            if self.width != 4:
+                raise ReachableStaticPointerSlotGenerationError(
+                    "slot_code_target requires a four-byte write"
                 )
             return f".slotCodeTarget {_natural(self.target_id, 'write target id')}"
         if self.target_id is not None:
             raise ReachableStaticPointerSlotGenerationError(
                 f"{self.kind} must not carry target_id"
             )
+        if self.kind == "slot_zero" and self.width != 4:
+            raise ReachableStaticPointerSlotGenerationError(
+                "slot_zero requires a four-byte write"
+            )
         names = {
-            "absolute_disjoint": ".absoluteDisjoint",
+            "absolute_disjoint": f".absoluteDisjoint {width}",
             "slot_zero": ".slotZero",
-            "runtime_separated": ".runtimeSeparated",
+            "runtime_separated": f".runtimeSeparated {width}",
         }
         try:
             return names[self.kind]

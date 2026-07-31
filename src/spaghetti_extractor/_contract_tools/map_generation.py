@@ -10,6 +10,7 @@ import re
 import shutil
 import sys
 from bisect import bisect_left
+from collections import Counter
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
@@ -1186,10 +1187,18 @@ def _gap_block_sample(items: list[dict[str, Any]], *, limit: int) -> list[dict[s
 
 def _section_gaps(binary: StageABinary, ranges: list[BlockSide]) -> dict[str, list[BlockSide]]:
     result: dict[str, list[BlockSide]] = {}
+    executable_name_counts = Counter(
+        section.name for section in binary.sections if section.executable
+    )
     for section in binary.sections:
         if not section.executable:
             continue
-        result[section.name] = _gaps(section.rva_start, section.rva_end, ranges)
+        identity = (
+            section.name
+            if executable_name_counts[section.name] == 1
+            else f"{section.name}@{section.rva_start:08x}"
+        )
+        result[identity] = _gaps(section.rva_start, section.rva_end, ranges)
     return result
 
 def _is_padding_bytes(binary: StageABinary, rva_start: int, data: bytes) -> bool:

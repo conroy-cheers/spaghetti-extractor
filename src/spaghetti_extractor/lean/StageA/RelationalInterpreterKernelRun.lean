@@ -344,6 +344,62 @@ def runFunctionNativeResolverCallOffset
     (template : RunFunctionMachineTemplate) : Nat :=
   if runFunctionNativeUsesOutputStateLayout template then 186 else 180
 
+def RunFunctionMachineTemplate.loopHeaderOffset
+    (template : RunFunctionMachineTemplate) : Nat :=
+  template.loops.head?.map (fun loop => loop.headerOffset) |>.getD 0
+
+def RunFunctionMachineTemplate.loopHeaderRva
+    (template : RunFunctionMachineTemplate) : Nat :=
+  template.entryRva + template.loopHeaderOffset
+
+def RunFunctionMachineTemplate.stepContinuationOffset
+    (template : RunFunctionMachineTemplate) : Nat :=
+  template.directCallOffsets.head?.getD 0 + 5
+
+def RunFunctionMachineTemplate.stepContinuationRva
+    (template : RunFunctionMachineTemplate) : Nat :=
+  template.entryRva + template.stepContinuationOffset
+
+def RunFunctionMachineTemplate.resolverContinuationOffset
+    (template : RunFunctionMachineTemplate) : Nat :=
+  runFunctionNativeResolverCallOffset template + 2
+
+def RunFunctionMachineTemplate.resolverContinuationRva
+    (template : RunFunctionMachineTemplate) : Nat :=
+  template.entryRva + template.resolverContinuationOffset
+
+def RunFunctionMachineTemplate.epilogueOffset
+    (template : RunFunctionMachineTemplate) : Nat :=
+  template.blocks.getLast?.map (fun block => block.entryOffset) |>.getD 0
+
+def RunFunctionMachineTemplate.epilogueRva
+    (template : RunFunctionMachineTemplate) : Nat :=
+  template.entryRva + template.epilogueOffset
+
+def runFunctionNativeEntryFuel
+    (template : RunFunctionMachineTemplate) : Nat :=
+  if runFunctionNativeUsesOutputStateLayout template then 20 else 18
+
+def runFunctionNativeStepPreludeFuel
+    (_template : RunFunctionMachineTemplate) : Nat :=
+  9
+
+def runFunctionNativeDirectContinuationFuel
+    (_template : RunFunctionMachineTemplate) : Nat :=
+  7
+
+def runFunctionNativeResolverPreludeFuel
+    (_template : RunFunctionMachineTemplate) : Nat :=
+  21
+
+def runFunctionNativeResolverSuffixFuel
+    (template : RunFunctionMachineTemplate) : Nat :=
+  if runFunctionNativeUsesOutputStateLayout template then 5 else 6
+
+def runFunctionNativeEpilogueFuel
+    (_template : RunFunctionMachineTemplate) : Nat :=
+  8
+
 structure RunFunctionNativeTemplateCertificate
     (program : CompiledKernelProgram) (pe : PE32) (imports : List PEImport)
     (function : KernelFunction) where
@@ -444,7 +500,7 @@ structure RunFunctionNativeStepOperation
 
 def runFunctionNativeReturnAddress (candidate : ExactNativeWorldProgram)
     (template : RunFunctionMachineTemplate) : Word :=
-  BitVec.ofNat 32 (candidate.pe.imageBase + template.entryRva + 96)
+  BitVec.ofNat 32 (candidate.pe.imageBase + template.stepContinuationRva)
 
 /-- The canonical prologue has eighteen exact instructions on every valid ABI
 entry and stops immediately before the first loop call setup. -/
@@ -454,13 +510,76 @@ structure RunFunctionNativeEntryPhase
     (outerFrame : NativeCallFrame) (sourceRva : Nat)
     (logical : InterpreterMachine) (before : MachineState)
     (world : RelationalWorld) where
+  fuel : Nat
   chunk : RunFunctionNativeChunk candidate
-    (.running template.entryRva 0 before [outerFrame] 0 [] world) 18
+    (.running template.entryRva 0 before [outerFrame] 0 [] world)
+    fuel
   loopState : MachineState
   atLoop : chunk.after =
-    .running (template.entryRva + 58) 0 loopState [outerFrame] 0 [] world
+    .running template.loopHeaderRva 0 loopState [outerFrame] 0 [] world
   silent : chunk.observations = []
   invariantHolds : invariant sourceRva logical chunk.after
+
+/-- Package an exact, silent native path to the Run loop header as the entry
+phase consumed by operation composition.  The path fixes its own fuel and
+endpoint; this constructor accepts neither as unchecked certificate data. -/
+noncomputable def RunFunctionNativeEntryPhase.ofExactPath
+    {candidate : ExactNativeWorldProgram}
+    {template : RunFunctionMachineTemplate}
+    {invariant : Nat -> InterpreterMachine -> NativeWorldExecution -> Prop}
+    {outerFrame : NativeCallFrame} {sourceRva : Nat}
+    {logical : InterpreterMachine} {before loopState : MachineState}
+    {world : RelationalWorld}
+    (path : NonemptyRelatedPath candidate.transitionSystem
+      (.running template.entryRva 0 before [outerFrame] 0 [] world)
+      []
+      (.running template.loopHeaderRva 0 loopState [outerFrame] 0 [] world))
+    (invariantHolds : invariant sourceRva logical
+      (.running template.loopHeaderRva 0 loopState [outerFrame] 0 [] world)) :
+    RunFunctionNativeEntryPhase candidate template invariant outerFrame sourceRva
+      logical before world := by
+  let witness : Nonempty { fuel : Nat //
+      0 < fuel ∧
+        runRelatedSteps candidate.transitionSystem fuel
+          (.running template.entryRva 0 before [outerFrame] 0 [] world) =
+          (.running template.loopHeaderRva 0 loopState [outerFrame] 0 [] world,
+            []) } := by
+    rcases path with ⟨fuel, positive, runExact⟩
+    exact ⟨⟨fuel, positive, runExact⟩⟩
+  let selected := Classical.choice witness
+  let fuel := selected.val
+  have positive : 0 < fuel := selected.property.1
+  have runExact :
+      runRelatedSteps candidate.transitionSystem fuel
+        (.running template.entryRva 0 before [outerFrame] 0 [] world) =
+        (.running template.loopHeaderRva 0 loopState [outerFrame] 0 [] world,
+          []) :=
+    selected.property.2
+  let chunk : RunFunctionNativeChunk candidate
+      (.running template.entryRva 0 before [outerFrame] 0 [] world) fuel := {
+    positive
+  }
+  have resultExact :
+      chunk.result =
+        (.running template.loopHeaderRva 0 loopState [outerFrame] 0 [] world,
+          []) :=
+    runExact
+  have afterExact :
+      chunk.after =
+        .running template.loopHeaderRva 0 loopState [outerFrame] 0 [] world :=
+    congrArg Prod.fst resultExact
+  refine {
+    fuel
+    chunk
+    loopState
+    atLoop := ?_
+    silent := ?_
+    invariantHolds := ?_
+  }
+  · exact afterExact
+  · exact congrArg Prod.snd resultExact
+  · rw [afterExact]
+    exact invariantHolds
 
 /-- Nine exact instructions marshal the copied interpreter state, source RVA,
 environment, and result pointer before entering `interpreterStep`. -/
@@ -472,12 +591,14 @@ structure RunFunctionNativeStepPrelude
     (sourceRva : Nat) (logical : InterpreterMachine)
     (stepEntryRva : Nat) (loopState : MachineState)
     (runtime : RunFunctionNativeRuntime) where
+  fuel : Nat
   chunk : RunFunctionNativeChunk candidate
-    (runtime.running (template.entryRva + 58) loopState) 9
+    (runtime.running template.loopHeaderRva loopState)
+    fuel
   calleeState : MachineState
   atCallee : chunk.after =
     .running stepEntryRva 0 calleeState
-      ({ continuationRva := template.entryRva + 96
+      ({ continuationRva := template.stepContinuationRva
          returnAddress := runFunctionNativeReturnAddress candidate template } ::
         runtime.calls)
       runtime.eventIndex runtime.events runtime.world
@@ -490,6 +611,7 @@ structure RunFunctionNativeStepPhase
     (template : RunFunctionMachineTemplate) (records : List ProgramRecord)
     (environment : StageA.Relational.Interpreter.Environment)
     (sourceRva : Nat) (logical : InterpreterMachine)
+    (semanticResult : Option MacroResult)
     (loopState : MachineState) (runtime : RunFunctionNativeRuntime) where
   calleeBefore : MachineState
   after : MachineState
@@ -497,17 +619,20 @@ structure RunFunctionNativeStepPhase
   afterWorld : RelationalWorld
   observations : List WorldRelationalObservable
   path : NonemptyRelatedPath candidate.transitionSystem
-    (runtime.running (template.entryRva + 58) loopState) observations
-    (.running (template.entryRva + 96) 0 after runtime.calls
+    (runtime.running template.loopHeaderRva loopState) observations
+    (.running template.stepContinuationRva 0 after runtime.calls
       (runtime.eventIndex + emitted.length) (runtime.events ++ emitted) afterWorld)
   responseRelated : abi.responseRelated
     (.interpreterStep records environment sourceRva logical)
-    (.interpreterStep
-      (abstractInterpreterStep records environment sourceRva logical)) after emitted
+    (.interpreterStep semanticResult) after emitted
   memoryFrame : MemoryAgreesOutside
     (abi.scratchFootprint
       (.interpreterStep records environment sourceRva logical))
     after.memory calleeBefore.memory
+
+/- The legacy whole-Step adapter below executes the external-call-only
+functional evaluator.  It cannot authorize the call-aware model.  Request-local
+checked Step execution lives in `RelationalInterpreterKernelRunOperation`.
 
 /-- Compose the exact nine-instruction call prelude with the already-proved
 nested `interpreterStep` operation.  The callee endpoint, emitted events, and
@@ -524,14 +649,16 @@ theorem RunFunctionNativeStepPrelude.execute
     (prelude : RunFunctionNativeStepPrelude program abi candidate template records
       environment sourceRva logical stepEntryRva loopState runtime) :
     Nonempty (RunFunctionNativeStepPhase abi candidate template records environment
-      sourceRva logical loopState runtime) := by
+      sourceRva logical
+      (abstractInterpreterStep records environment sourceRva logical)
+      loopState runtime) := by
   let request : AbstractKernelRequest :=
     .interpreterStep records environment sourceRva logical
   let response : AbstractKernelResponse :=
     .interpreterStep (abstractInterpreterStep records environment sourceRva logical)
   obtain ⟨entryRva, after, emitted, entryExact, nested, responseRelated,
       memoryFrame⟩ :=
-    operation.refines runtime (template.entryRva + 96)
+    operation.refines runtime template.stepContinuationRva
       (runFunctionNativeReturnAddress candidate template) request prelude.calleeState
       rfl prelude.requestRelated response
       (.interpreterStep records environment sourceRva logical)
@@ -556,31 +683,41 @@ theorem RunFunctionNativeStepPrelude.execute
     responseRelated := responseRelated
     memoryFrame := memoryFrame
   }⟩
+-/
 
 /-! ## Completion, resolver, and terminal chunks -/
 
 def runFunctionNativeTerminalFuel
+    (template : RunFunctionMachineTemplate)
     (result : Option MacroResult) (status : CallStatus) : Option Nat :=
+  let outputState := runFunctionNativeUsesOutputStateLayout template
   match result with
-  | none => if status == .unimplemented then some 23 else none
+  | none =>
+      if status == .unimplemented then
+        some (if outputState then 34 else 23)
+      else none
   | some macroResult =>
       match macroResult.completion, status with
-      | .returned _, .ok => some 19
-      | .externalJump, .ok => some 22
-      | .divideError, .divideError => some 17
-      | .memoryFault, .memoryFault => some 20
-      | .externalFault, .externalFault => some 23
-      | .unimplemented, .unimplemented => some 23
+      | .returned _, .ok => some (if outputState then 22 else 19)
+      | .externalJump, .ok => some (if outputState then 25 else 22)
+      | .divideError, .divideError => some (if outputState then 28 else 17)
+      | .memoryFault, .memoryFault => some (if outputState then 31 else 20)
+      | .externalFault, .externalFault =>
+          some (if outputState then 34 else 23)
+      | .unimplemented, .unimplemented =>
+          some (if outputState then 34 else 23)
       | _, _ => none
 
 structure RunFunctionNativeDirectContinuationExecution
     (candidate : ExactNativeWorldProgram) (template : RunFunctionMachineTemplate)
     (beforeState : MachineState) (runtime : RunFunctionNativeRuntime) where
+  fuel : Nat
   chunk : RunFunctionNativeChunk candidate
-    (runtime.running (template.entryRva + 96) beforeState) 7
+    (runtime.running template.stepContinuationRva beforeState)
+    fuel
   nextState : MachineState
   atLoop : chunk.after =
-    runtime.running (template.entryRva + 58) nextState
+    runtime.running template.loopHeaderRva nextState
   silent : chunk.observations = []
 
 structure RunFunctionNativeResolverExecution
@@ -590,13 +727,16 @@ structure RunFunctionNativeResolverExecution
   targetRva : Nat
   targetMember : targetRva ∈ allowedTargets
   targetState : MachineState
+  preludeFuel : Nat
   prelude : RunFunctionNativeChunk candidate
-    (runtime.running (template.entryRva + 96) beforeState) 21
+    (runtime.running template.stepContinuationRva beforeState)
+    preludeFuel
   atTarget : prelude.after =
     .running targetRva 0 targetState
-      ({ continuationRva := template.entryRva + 182
+      ({ continuationRva := template.resolverContinuationRva
          returnAddress := BitVec.ofNat 32
-           (candidate.pe.imageBase + template.entryRva + 182) } :: runtime.calls)
+           (candidate.pe.imageBase + template.resolverContinuationRva) } ::
+        runtime.calls)
       runtime.eventIndex runtime.events runtime.world
   preludeSilent : prelude.observations = []
   callbackFuel : Nat
@@ -604,18 +744,21 @@ structure RunFunctionNativeResolverExecution
   callbackState : MachineState
   callback : RunFunctionNativeChunk candidate
     (.running targetRva 0 targetState
-      ({ continuationRva := template.entryRva + 182
+      ({ continuationRva := template.resolverContinuationRva
          returnAddress := BitVec.ofNat 32
-           (candidate.pe.imageBase + template.entryRva + 182) } :: runtime.calls)
+           (candidate.pe.imageBase + template.resolverContinuationRva) } ::
+        runtime.calls)
       runtime.eventIndex runtime.events runtime.world) callbackFuel
   callbackReturned : callback.after =
-    runtime.running (template.entryRva + 182) callbackState
+    runtime.running template.resolverContinuationRva callbackState
   callbackSilent : callback.observations = []
+  suffixFuel : Nat
   suffix : RunFunctionNativeChunk candidate
-    (runtime.running (template.entryRva + 182) callbackState) 6
+    (runtime.running template.resolverContinuationRva callbackState)
+    suffixFuel
   nextState : MachineState
   atLoop : suffix.after =
-    runtime.running (template.entryRva + 58) nextState
+    runtime.running template.loopHeaderRva nextState
   suffixSilent : suffix.observations = []
 
 theorem RunFunctionNativeResolverExecution.path
@@ -625,8 +768,8 @@ theorem RunFunctionNativeResolverExecution.path
     (execution : RunFunctionNativeResolverExecution candidate template
       allowedTargets beforeState runtime) :
     NonemptyRelatedPath candidate.transitionSystem
-      (runtime.running (template.entryRva + 96) beforeState) []
-      (runtime.running (template.entryRva + 58) execution.nextState) := by
+      (runtime.running template.stepContinuationRva beforeState) []
+      (runtime.running template.loopHeaderRva execution.nextState) := by
   have preludePath := execution.prelude.path
   rw [execution.atTarget, execution.preludeSilent] at preludePath
   have callbackPath := execution.callback.path
@@ -660,8 +803,8 @@ theorem RunFunctionNativeContinuationLocal.path
     (evidence : RunFunctionNativeContinuationLocal candidate template allowedTargets
       beforeState nextState runtime) :
     NonemptyRelatedPath candidate.transitionSystem
-      (runtime.running (template.entryRva + 96) beforeState) []
-      (runtime.running (template.entryRva + 58) nextState) := by
+      (runtime.running template.stepContinuationRva beforeState) []
+      (runtime.running template.loopHeaderRva nextState) := by
   cases evidence with
   | direct execution nextExact =>
       have path := execution.chunk.path
@@ -707,19 +850,18 @@ structure RunFunctionNativeContinuationPhase
   localEvidence : RunFunctionNativeContinuationLocal candidate template allowedTargets
     beforeState nextState runtime
   invariantHolds : invariant continuation result.state
-    (runtime.running (template.entryRva + 58) nextState)
+    (runtime.running template.loopHeaderRva nextState)
 
 structure RunFunctionNativeTerminalPhase
     (candidate : ExactNativeWorldProgram) (template : RunFunctionMachineTemplate)
     (result : Option MacroResult) (status : CallStatus)
     (beforeState : MachineState) (runtime : RunFunctionNativeRuntime) where
   fuel : Nat
-  fuelExact : runFunctionNativeTerminalFuel result status = some fuel
   chunk : RunFunctionNativeChunk candidate
-    (runtime.running (template.entryRva + 96) beforeState) fuel
+    (runtime.running template.stepContinuationRva beforeState) fuel
   epilogueState : MachineState
   atEpilogue : chunk.after =
-    runtime.running (template.entryRva + 326) epilogueState
+    runtime.running template.epilogueRva epilogueState
   silent : chunk.observations = []
 
 structure RunFunctionNativeEpiloguePhase
@@ -730,7 +872,8 @@ structure RunFunctionNativeEpiloguePhase
     (logical : InterpreterMachine) (result : CallResult)
     (before : MachineState) (outerFrame : NativeCallFrame)
     (world : RelationalWorld) (afterLoop : NativeWorldExecution) where
-  chunk : RunFunctionNativeChunk candidate afterLoop 8
+  fuel : Nat
+  chunk : RunFunctionNativeChunk candidate afterLoop fuel
   after : MachineState
   nativeEvents : List NativeExternalEvent
   afterWorld : RelationalWorld
@@ -751,9 +894,11 @@ def RunFunctionNativeStepPhase.runtimeAfter
     {template : RunFunctionMachineTemplate} {records : List ProgramRecord}
     {environment : StageA.Relational.Interpreter.Environment}
     {sourceRva : Nat} {logical : InterpreterMachine}
+    {semanticResult : Option MacroResult}
     {loopState : MachineState} {runtime : RunFunctionNativeRuntime}
     (phase : RunFunctionNativeStepPhase abi candidate template records environment
-      sourceRva logical loopState runtime) : RunFunctionNativeRuntime := {
+      sourceRva logical semanticResult loopState runtime) :
+      RunFunctionNativeRuntime := {
   calls := runtime.calls
   eventIndex := runtime.eventIndex + phase.emitted.length
   events := runtime.events ++ phase.emitted
@@ -778,18 +923,18 @@ structure RunFunctionNativeLocalSemantics
   stepOperation : RunFunctionNativeStepOperation program abi candidate
   stepPrelude : forall environment sourceRva logical loopState runtime,
     invariant sourceRva logical
-      (runtime.running (template.entryRva + 58) loopState) ->
+      (runtime.running template.loopHeaderRva loopState) ->
     Nonempty (RunFunctionNativeStepPrelude program abi candidate template records
       environment sourceRva logical stepEntryRva loopState runtime)
   unavailableExit : forall environment sourceRva logical loopState runtime
       (stepPhase : RunFunctionNativeStepPhase abi candidate template records
-        environment sourceRva logical loopState runtime),
+        environment sourceRva logical none loopState runtime),
     abstractInterpreterStep records environment sourceRva logical = none ->
     Nonempty (RunFunctionNativeTerminalPhase candidate template none .unimplemented
       stepPhase.after stepPhase.runtimeAfter)
   terminalExit : forall environment sourceRva logical loopState runtime result status
       (stepPhase : RunFunctionNativeStepPhase abi candidate template records
-        environment sourceRva logical loopState runtime),
+        environment sourceRva logical (some result) loopState runtime),
     abstractInterpreterStep records environment sourceRva logical = some result ->
     completionCallStatus? result.completion = some status ->
     Nonempty (RunFunctionNativeTerminalPhase candidate template (some result) status
@@ -797,7 +942,7 @@ structure RunFunctionNativeLocalSemantics
   continuation : forall environment resolveCodeTarget sourceRva logical loopState
       runtime result continuationRva
       (stepPhase : RunFunctionNativeStepPhase abi candidate template records
-        environment sourceRva logical loopState runtime),
+        environment sourceRva logical (some result) loopState runtime),
     abstractInterpreterStep records environment sourceRva logical = some result ->
     completionContinuation? resolveCodeTarget result.completion =
       some continuationRva ->
@@ -805,6 +950,8 @@ structure RunFunctionNativeLocalSemantics
       allowedResolverTargets resolveCodeTarget result continuationRva
       stepPhase.after stepPhase.runtimeAfter)
 
+/- Legacy functional-Step loop execution; superseded by the checked
+call-tree executor in `RelationalInterpreterKernelRunOperation`.
 theorem RunFunctionNativeLocalSemantics.execute
     {program : CompiledKernelProgram} {abi : KernelABIRelation}
     {candidate : ExactNativeWorldProgram} {template : RunFunctionMachineTemplate}
@@ -820,9 +967,9 @@ theorem RunFunctionNativeLocalSemantics.execute
       sourceRva logical result)
     {loopState : MachineState} {runtime : RunFunctionNativeRuntime}
     (invariantHolds : semantics.invariant sourceRva logical
-      (runtime.running (template.entryRva + 58) loopState)) :
+      (runtime.running template.loopHeaderRva loopState)) :
     Nonempty (RunFunctionNativeLoopResult candidate
-      (runtime.running (template.entryRva + 58) loopState)) := by
+      (runtime.running template.loopHeaderRva loopState)) := by
   induction derivation generalizing loopState runtime with
   | unavailable sourceRva logical unavailable =>
       obtain ⟨prelude⟩ := semantics.stepPrelude environment sourceRva logical
@@ -833,7 +980,7 @@ theorem RunFunctionNativeLocalSemantics.execute
       have terminalPath := terminal.chunk.path
       rw [terminal.atEpilogue, terminal.silent] at terminalPath
       exact ⟨{
-        afterLoop := stepPhase.runtimeAfter.running (template.entryRva + 326)
+        afterLoop := stepPhase.runtimeAfter.running template.epilogueRva
           terminal.epilogueState
         observations := stepPhase.observations
         path := by simpa using stepPhase.path.trans terminalPath
@@ -847,7 +994,7 @@ theorem RunFunctionNativeLocalSemantics.execute
       have terminalPath := terminal.chunk.path
       rw [terminal.atEpilogue, terminal.silent] at terminalPath
       exact ⟨{
-        afterLoop := stepPhase.runtimeAfter.running (template.entryRva + 326)
+        afterLoop := stepPhase.runtimeAfter.running template.epilogueRva
           terminal.epilogueState
         observations := stepPhase.observations
         path := by simpa using stepPhase.path.trans terminalPath
@@ -869,6 +1016,7 @@ theorem RunFunctionNativeLocalSemantics.execute
           simpa only [List.append_assoc, List.append_nil] using
             stepPhase.path.trans (continuationPath.trans tailResult.path)
       }⟩
+-/
 
 /-! ## Result-indexed local execution
 
@@ -896,7 +1044,7 @@ structure RunFunctionNativeResultIndexedLocalSemantics
     stepEntryRva allowedResolverTargets
   unavailableEncoding : forall environment sourceRva logical loopState runtime
       (stepPhase : RunFunctionNativeStepPhase abi candidate template records
-        environment sourceRva logical loopState runtime)
+        environment sourceRva logical none loopState runtime)
       (unavailable :
         abstractInterpreterStep records environment sourceRva logical = none)
       (terminal : RunFunctionNativeTerminalPhase candidate template none
@@ -906,7 +1054,7 @@ structure RunFunctionNativeResultIndexedLocalSemantics
   terminalEncoding : forall environment sourceRva logical loopState runtime
       macroResult status
       (stepPhase : RunFunctionNativeStepPhase abi candidate template records
-        environment sourceRva logical loopState runtime)
+        environment sourceRva logical (some result) loopState runtime)
       (stepResult :
         abstractInterpreterStep records environment sourceRva logical =
           some macroResult)
@@ -928,7 +1076,7 @@ structure RunFunctionNativeResultIndexedLoopResult
   terminalState : MachineState
   observations : List WorldRelationalObservable
   path : NonemptyRelatedPath candidate.transitionSystem before observations
-    (terminalRuntime.running (template.entryRva + 326) terminalState)
+    (terminalRuntime.running template.epilogueRva terminalState)
   encoding : resultEncoding result terminalState
 
 def RunFunctionNativeResultIndexedLoopResult.toLoopResult
@@ -937,7 +1085,7 @@ def RunFunctionNativeResultIndexedLoopResult.toLoopResult
         resultEncoding semanticResult) :
     RunFunctionNativeLoopResult candidate before := {
   afterLoop := result.terminalRuntime.running
-    (template.entryRva + 326) result.terminalState
+    template.epilogueRva result.terminalState
   observations := result.observations
   path := result.path
 }
@@ -945,6 +1093,7 @@ def RunFunctionNativeResultIndexedLoopResult.toLoopResult
 /-- Execute the native Run loop while retaining the terminal result encoding.
 The proof follows the abstract derivation, so the final result is fixed by
 `AbstractRunFunction`; recursive continuations merely compose exact paths. -/
+/- Legacy functional-Step result-indexed execution.
 theorem RunFunctionNativeResultIndexedLocalSemantics.execute
     {program : CompiledKernelProgram} {abi : KernelABIRelation}
     {candidate : ExactNativeWorldProgram} {template : RunFunctionMachineTemplate}
@@ -962,9 +1111,9 @@ theorem RunFunctionNativeResultIndexedLocalSemantics.execute
       sourceRva logical result)
     {loopState : MachineState} {runtime : RunFunctionNativeRuntime}
     (invariantHolds : semantics.base.invariant sourceRva logical
-      (runtime.running (template.entryRva + 58) loopState)) :
+      (runtime.running template.loopHeaderRva loopState)) :
     Nonempty (RunFunctionNativeResultIndexedLoopResult candidate template
-      (runtime.running (template.entryRva + 58) loopState)
+      (runtime.running template.loopHeaderRva loopState)
       resultEncoding result) := by
   induction derivation generalizing loopState runtime with
   | unavailable sourceRva logical unavailable =>
@@ -1023,6 +1172,7 @@ theorem RunFunctionNativeResultIndexedLocalSemantics.execute
             stepPhase.path.trans (continuationPath.trans tailResult.path)
         encoding := tailResult.encoding
       }⟩
+-/
 
 def runFunctionNativeOuterFrame (continuationRva : Nat)
     (returnAddress : Word) : NativeCallFrame := {
@@ -1078,6 +1228,7 @@ structure RunFunctionNativeMachineCertificate
       (runFunctionNativeOuterFrame outerContinuationRva outerReturnAddress) world
       afterLoop
 
+/- Legacy whole-operation authorization over the functional Step evaluator.
 theorem RunFunctionNativeMachineCertificate.refines
     {program : CompiledKernelProgram} {abi : KernelABIRelation}
     {semanticRecords : List ProgramRecord} {candidate : ExactNativeWorldProgram}
@@ -1114,7 +1265,7 @@ theorem RunFunctionNativeMachineCertificate.refines
           }
           have entryInvariant : semantics.invariant sourceRva logical
               (initialRuntime.running
-                (certificate.reflected.reflected.template.entryRva + 58)
+                certificate.reflected.reflected.template.loopHeaderRva
                 entryPhase.loopState) := by
             have invariant := entryPhase.invariantHolds
             rw [entryPhase.atLoop] at invariant
@@ -1129,7 +1280,7 @@ theorem RunFunctionNativeMachineCertificate.refines
           rw [entryPhase.atLoop, entryPhase.silent] at entryPath
           have loopPath := loopResult.path
           change NonemptyRelatedPath candidate.transitionSystem
-            (.running (certificate.reflected.reflected.template.entryRva + 58) 0
+            (.running certificate.reflected.reflected.template.loopHeaderRva 0
               entryPhase.loopState
               [runFunctionNativeOuterFrame outerContinuationRva outerReturnAddress]
               0 [] world) loopResult.observations loopResult.afterLoop at loopPath
@@ -1147,14 +1298,11 @@ theorem RunFunctionNativeMachineCertificate.refines
           }⟩
           rw [← certificate.templateEntryExact]
           simpa only [List.nil_append, List.append_nil] using completePath
+-/
 
 #print axioms RunFunctionNativeChunk.path
-#print axioms RunFunctionNativeStepPrelude.execute
 #print axioms RunFunctionNativeResolverExecution.path
 #print axioms RunFunctionNativeContinuationLocal.path
-#print axioms RunFunctionNativeLocalSemantics.execute
-#print axioms RunFunctionNativeResultIndexedLocalSemantics.execute
-#print axioms RunFunctionNativeMachineCertificate.refines
 
 /-- The function prologue establishes the loop invariant after binding the
 abstract input state to the candidate's copied local state. -/
@@ -1271,6 +1419,7 @@ structure RunFunctionLoopResult
 /-- Induction over the authoritative abstract semantics composes only the
 phase-local executions above.  This is the semantic core of the operation
 proof and prevents generated data from choosing a final postcondition. -/
+/- Legacy functional-Step phase composition.
 theorem RunFunctionLoopPhases.execute
     {steps : NativeExecution -> NativeExecution -> Prop}
     {records : List ProgramRecord}
@@ -1319,6 +1468,7 @@ theorem RunFunctionLoopPhases.execute
         path := execution.trans stepPhase.path
           (execution.trans continuationPhase.path tailResult.path)
       }⟩
+-/
 
 structure RunFunctionEpiloguePhase
     (steps : NativeExecution -> NativeExecution -> Prop)
@@ -1380,6 +1530,7 @@ structure RunFunctionMachineCertificate
     RunFunctionEpiloguePhase steps abi semanticRecords environment
       resolveCodeTarget sourceRva logical result before loopResult.afterLoop
 
+/- Legacy functional-Step whole-operation authorization.
 theorem RunFunctionMachineCertificate.refines
     {program : CompiledKernelProgram} {pe : PE32} {imports : List PEImport}
     {abi : KernelABIRelation} {semanticRecords : List ProgramRecord}
@@ -1424,9 +1575,8 @@ theorem RunFunctionMachineCertificate.refines
             certificate.execution.dispatch certificate.function.span.start before
               epilogue.after epilogue.nativeEvents complete,
             epilogue.responseRelated, epilogue.memoryFrame⟩
+-/
 
 #print axioms RunFunctionContinuationKind.exact
-#print axioms RunFunctionLoopPhases.execute
-#print axioms RunFunctionMachineCertificate.refines
 
 end StageA.Relational.InterpreterKernelRun

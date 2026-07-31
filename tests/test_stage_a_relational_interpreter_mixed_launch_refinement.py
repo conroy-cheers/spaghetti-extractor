@@ -27,15 +27,11 @@ from spaghetti_extractor.util import sha256_bytes
 
 
 _CURRENT_CANDIDATE = Path(
-    "/nix/store/2gkgcbxrdrhxvd7rfxypnhwkxys48565-"
+    "/nix/store/31l38whrg5si0jy5hf369h63rx622jpq-"
     "stage-b-gnu-hello-roundtrip-candidate/candidate.exe"
 )
-_CURRENT_ENGINE_SEGMENTS = Path(
-    "/nix/store/07a3m89mypaixyr27w4rlc8zrdzskxdi-"
-    "stage-a-gnu-hello-roundtrip-engine-segments/engine-segments.json"
-)
 _CURRENT_CANDIDATE_SHA256 = (
-    "9da6e93d4ad8886d5ea76c08c7111f820dead1dd8a1242caa162ab8086c32eca"
+    "a6e5e98666032c300fa17eeff15fafe39659a155d4b4efe952c992a762d17e81"
 )
 _IMPORT = re.compile(r"^import StageA\.([A-Za-z0-9_]+)$", re.MULTILINE)
 
@@ -133,15 +129,42 @@ class StageARelationalInterpreterMixedLaunchRefinementTests(unittest.TestCase):
             ),
         )
         self.assertEqual(plan.payload()["status"], "incomplete")
+        self.assertEqual(
+            plan.payload()["lean_terms"]["checked_graph"],
+            "generatedCheckedMixedLaunchGraph",
+        )
         self.assertIsNone(
             plan.payload()["lean_terms"]["launch_wrapper_refinements"]
+        )
+        self.assertEqual(
+            plan.payload()["lean_terms"]["runtime_type"],
+            "GeneratedMixedLaunchGraphRuntime",
+        )
+        self.assertEqual(
+            plan.payload()["lean_terms"]["runtime_constructor"],
+            "generatedExactReplayMixedLaunchGraphRuntime",
+        )
+        self.assertEqual(
+            plan.payload()["lean_terms"]["root_frame_facts_type"],
+            "GeneratedMixedLaunchRootFrameFacts",
+        )
+        self.assertEqual(
+            plan.payload()["lean_terms"]["exact_binding_constructor"],
+            "generatedExactCanonicalMixedLaunchWrapperRefinementBinding",
         )
 
         source = relational_interpreter_mixed_launch_refinement_source(plan)
         for required in (
             "ExactNativeLaunchGraphCertificate",
             "generatedMixedLaunchGraphStaticChecked",
+            "generatedCheckedMixedLaunchGraph",
+            "CheckedExactNativeLaunchGraph",
             "GeneratedLaunchWrapperRefinements",
+            "GeneratedMixedLaunchGraphRuntime",
+            "generatedExactReplayMixedLaunchGraphRuntime",
+            "GeneratedMixedLaunchRootFrameFacts",
+            "generatedCanonicalMixedLaunchWrapperRefinement",
+            "generatedExactCanonicalMixedLaunchWrapperRefinementBinding",
             "CanonicalMixedLaunchWrapperRefinement",
             "successors := [4105, 4100]",
             "terminal := some .terminated",
@@ -159,6 +182,9 @@ class StageARelationalInterpreterMixedLaunchRefinementTests(unittest.TestCase):
         self.assertIn("canonicalNativeInitialLaunchRoot", bridge)
         self.assertIn(
             "directExactCandidateNativeLaunchRoot_canonicalRootExact", bridge
+        )
+        self.assertIn(
+            "CheckedExactNativeLaunchGraph.canonicalRootRoute", bridge
         )
         self.assertNotIn("Classical.choice", bridge)
 
@@ -314,18 +340,18 @@ class StageARelationalInterpreterMixedLaunchRefinementTests(unittest.TestCase):
                 )
 
     @unittest.skipUnless(
-        _CURRENT_CANDIDATE.is_file() and _CURRENT_ENGINE_SEGMENTS.is_file(),
+        _CURRENT_CANDIDATE.is_file(),
         "current GNU round-trip candidate is not present",
     )
     def test_current_gnu_candidate_root_routes_are_exact_and_guard_complete(self) -> None:
         roots = NativeLaunchGraphSpec(
             routes=(
-                NativeLaunchGraphRouteSpec("entry", "dispatch", 0x496BD),
+                NativeLaunchGraphRouteSpec("entry", "dispatch", 0x43EB5),
                 NativeLaunchGraphRouteSpec(
-                    "tls_callback", "dispatch", 0x4979F, source_index=0
+                    "tls_callback", "dispatch", 0x43F97, source_index=0
                 ),
                 NativeLaunchGraphRouteSpec(
-                    "tls_callback", "dispatch", 0x4979F, source_index=1
+                    "tls_callback", "dispatch", 0x43F97, source_index=1
                 ),
                 NativeLaunchGraphRouteSpec(
                     "stable_cutpoint", "returned", source_rva=0x353FC
@@ -338,11 +364,14 @@ class StageARelationalInterpreterMixedLaunchRefinementTests(unittest.TestCase):
                 ),
             )
         )
-        plan = build_relational_interpreter_native_launch_graph_plan(
-            candidate_pe=_CURRENT_CANDIDATE,
-            engine_segments=_CURRENT_ENGINE_SEGMENTS,
-            spec=roots,
-        )
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary) / "engine-segments.json"
+            _write_engine_segments(evidence, _CURRENT_CANDIDATE.read_bytes())
+            plan = build_relational_interpreter_native_launch_graph_plan(
+                candidate_pe=_CURRENT_CANDIDATE,
+                engine_segments=evidence,
+                spec=roots,
+            )
         self.assertEqual(plan.candidate_sha256, _CURRENT_CANDIDATE_SHA256)
         self.assertEqual(plan.entrypoint_rva, 0x1420)
         self.assertEqual(plan.tls_callback_rvas, (0xA2F0, 0xA2A0))
@@ -377,29 +406,32 @@ class StageARelationalInterpreterMixedLaunchRefinementTests(unittest.TestCase):
         self.assertEqual(plan.routes[5].nodes[-1].terminal, "returned")
 
     @unittest.skipUnless(
-        _CURRENT_CANDIDATE.is_file() and _CURRENT_ENGINE_SEGMENTS.is_file(),
+        _CURRENT_CANDIDATE.is_file(),
         "current GNU round-trip candidate is not present",
     )
     def test_current_gnu_candidate_has_modeled_termination_route(self) -> None:
         spec = NativeLaunchGraphSpec(
             routes=(
-                NativeLaunchGraphRouteSpec("entry", "dispatch", 0x496BD),
+                NativeLaunchGraphRouteSpec("entry", "dispatch", 0x43EB5),
                 NativeLaunchGraphRouteSpec(
-                    "tls_callback", "dispatch", 0x4979F, source_index=0
+                    "tls_callback", "dispatch", 0x43F97, source_index=0
                 ),
                 NativeLaunchGraphRouteSpec(
-                    "tls_callback", "dispatch", 0x4979F, source_index=1
+                    "tls_callback", "dispatch", 0x43F97, source_index=1
                 ),
                 NativeLaunchGraphRouteSpec(
                     "stable_cutpoint", "terminated", source_rva=0x35430
                 ),
             )
         )
-        plan = build_relational_interpreter_native_launch_graph_plan(
-            candidate_pe=_CURRENT_CANDIDATE,
-            engine_segments=_CURRENT_ENGINE_SEGMENTS,
-            spec=spec,
-        )
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary) / "engine-segments.json"
+            _write_engine_segments(evidence, _CURRENT_CANDIDATE.read_bytes())
+            plan = build_relational_interpreter_native_launch_graph_plan(
+                candidate_pe=_CURRENT_CANDIDATE,
+                engine_segments=evidence,
+                spec=spec,
+            )
         termination = plan.routes[-1]
         self.assertEqual(len(termination.nodes), 3)
         self.assertEqual(termination.nodes[-1].instruction.rva, 0x35433)
@@ -464,6 +496,7 @@ namespace StageA.Relational.InterpreterMixedLaunchRefinementKernel
 
 open StageA.Formal StageA.Relational
 open StageA.Relational.InterpreterMixedLaunchRefinement
+open StageA.Relational.InterpreterMixedProfile
 open StageA.Relational.InterpreterNativeWorld
 open StageA.GeneratedRelational.InterpreterMixedLaunchRefinement
 
@@ -503,6 +536,13 @@ theorem generatedEntryReplayExists :
       generatedMixedLaunchCutpoints entryBefore).isSome = true := by
   decide +kernel
 
+theorem generatedEntryRouteExists :
+    exists route,
+      route ∈ generatedCheckedMixedLaunchGraph.certificate.routes /\
+        route.source = .canonicalRoot .entry :=
+  generatedCheckedMixedLaunchGraph.canonicalRootRoute generatedProgram rfl
+    .entry 0x1000 (by decide +kernel)
+
 theorem generatedEntryReplaySound :
     exists result,
       generatedMixedLaunchRoute0000.replay? generatedProgram
@@ -518,10 +558,32 @@ theorem generatedEntryReplaySound :
       exact (generatedMixedLaunchRoute0000.replay?_sound generatedProgram
         generatedMixedLaunchCutpoints entryBefore result replayed).2.2
 
+abbrev generatedLaunchRootPhaseStateFacts :=
+  @ConstructiveMixedKernelPhaseStateFacts.ofLaunchExact
+
+#check GeneratedMixedLaunchGraphRuntime
+#check generatedExactReplayMixedLaunchGraphRuntime
+#check GeneratedMixedLaunchRootFrameFacts
+#check generatedCanonicalMixedLaunchWrapperRefinement
+#check generatedExactCanonicalMixedLaunchWrapperRefinementBinding
+#check generatedLaunchRootPhaseStateFacts
+#check ConstructiveMixedKernelPhaseStateFacts.launchRelated
+#check ExactConstructiveMixedLaunchCarrier.canonicalExecutions
+#check ConstructiveMixedKernelRuntimeEvidence
+#check ConstructiveMixedKernelPhaseStateFacts.ofRuntimeExact
+#print axioms ExactNativeLaunchGraphRuntime.ofExactReplay
+#print axioms CheckedExactNativeLaunchGraph.canonicalRootRoute
+#print axioms generatedEntryRouteExists
+#print axioms CanonicalMixedLaunchWrapperRefinement.ofCheckedRuntime
+#print axioms ExactCanonicalMixedLaunchWrapperRefinementBinding.ofCheckedRuntime
 #print axioms ReflectedNativeLaunchGraphRoute.replay?_sound
 #print axioms generatedMixedLaunchGraphStaticChecked
 #print axioms generatedEntryReplayExists
 #print axioms generatedEntryReplaySound
+#print axioms generatedLaunchRootPhaseStateFacts
+#print axioms ConstructiveMixedKernelPhaseStateFacts.launchRelated
+#print axioms ExactConstructiveMixedLaunchCarrier.canonicalExecutions
+#print axioms ConstructiveMixedKernelPhaseStateFacts.ofRuntimeExact
 
 end StageA.Relational.InterpreterMixedLaunchRefinementKernel
 """

@@ -7,6 +7,7 @@ qualify an ISA model, but they cannot close any Stage A proof obligation.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import struct
 from typing import Any
 
 import capstone
@@ -19,6 +20,7 @@ from .isa_conformance import (
     ControlClass,
     ExpectedOutcome,
     FaultClass,
+    FSState,
     GPR_NAMES,
     GPRState,
     ISAConformanceCorpus,
@@ -31,6 +33,7 @@ from .isa_conformance import (
     ReportCounts,
     ReportQualification,
     ReportTrust,
+    X87State,
     isa_conformance_corpus_sha256,
 )
 
@@ -55,9 +58,38 @@ UNICORN_CPU_PROFILES = {
 PAGE_SIZE = 0x1000
 MAX_MAPPED_BYTES = 16 * 1024 * 1024
 MAX_OBSERVED_BYTES = 1024 * 1024
+MAX_REPEAT_ITERATIONS = 65536
+_HARNESS_GDT_PAGE = 0x1000
+_HARNESS_TRANSITION_PAGE = 0x2000
+_HARNESS_TRANSITION_STACK_PAGE = 0x3000
+_HARNESS_END = 0x4000
+_KERNEL_CODE_SELECTOR = 0x08
+_KERNEL_DATA_SELECTOR = 0x10
+_USER_CODE_SELECTOR = 0x1B
+_USER_DATA_SELECTOR = 0x23
+_USER_CODE_INDEX = _USER_CODE_SELECTOR >> 3
+_USER_DATA_INDEX = _USER_DATA_SELECTOR >> 3
+_GDT_ENTRY_LIMIT = PAGE_SIZE // 8
+_FORBIDDEN_USER_EFLAGS = (3 << 12) | (1 << 14) | (1 << 17)
 
 _PERMISSION_BITS = {"r": 1, "w": 2, "x": 4}
 _CANONICAL_X87_SCALARS = (0x037F, 0, 0xFFFF, 0, 0, 0)
+_X87_CORE_REGISTER_NAMES = {
+    "fpcw",
+    "fpsw",
+    "fptag",
+    *(f"fp{index}" for index in range(8)),
+    *(f"st({index})" for index in range(8)),
+}
+_X87_REQUIRED_UNICORN_REGISTERS = (
+    "FPCW",
+    "FPSW",
+    "FPTAG",
+    "FIP",
+    "FDP",
+    "FOP",
+    *(f"FP{index}" for index in range(8)),
+)
 _SYSTEM_MNEMONICS = {
     "clts",
     "cpuid",
@@ -163,6 +195,7 @@ _MODELED_REGISTER_NAMES = {
     "ip",
     "eflags",
     "flags",
+    "fs",
     "cs",
     "ds",
     "es",
@@ -278,27 +311,19 @@ def _x87_input_is_canonical(state: MachineState) -> bool:
     )
 
 
-def _x87_outputs_are_unobserved(case: InstructionTestCase) -> bool:
+def _x87_core_outputs_are_unobserved(case: InstructionTestCase) -> bool:
     mask = case.defined_outputs.x87
     return (
         mask.control_word == 0
         and mask.status_word == 0
         and mask.tag_word == 0
-        and mask.last_opcode == 0
-        and mask.instruction_pointer == 0
-        and mask.data_pointer == 0
         and _all_zero(mask.registers)
     )
 
 
-def _fs_outputs_are_unobserved(case: InstructionTestCase) -> bool:
-    return (
-        case.defined_outputs.fs.selector == 0
-        and case.defined_outputs.fs.base == 0
-    )
-
-
-def _instruction_uses_unmodeled_registers(instruction: Any) -> str | None:
+def _instruction_uses_unmodeled_registers(
+    instruction: Any, *, allow_x87: bool
+) -> str | None:
     try:
         read_registers, written_registers = instruction.regs_access()
     except capstone.CsError as exc:
@@ -308,7 +333,10 @@ def _instruction_uses_unmodeled_registers(instruction: Any) -> str | None:
         for register in (*read_registers, *written_registers)
     }
     names.discard("")
-    unsupported = sorted(names - _MODELED_REGISTER_NAMES)
+    modeled = _MODELED_REGISTER_NAMES
+    if allow_x87:
+        modeled = modeled | _X87_CORE_REGISTER_NAMES
+    unsupported = sorted(names - modeled)
     if unsupported:
         return "instruction uses unmodeled register state: " + ", ".join(unsupported)
     for operand in instruction.operands:
@@ -358,17 +386,21 @@ def _decode_case(case: InstructionTestCase) -> _DecodedCase | str:
     if instruction.size != len(case.instruction_bytes):
         return "instruction_bytes must contain exactly one complete instruction"
     mnemonic = instruction.mnemonic.lower()
-    if 0x64 in instruction.prefix or 0x65 in instruction.prefix:
-        return "FS/GS segment overrides are outside the bounded Unicorn profile"
-    if instruction.group(capstone_x86.X86_GRP_FPU):
-        return "x87 instructions are outside the bounded Unicorn profile"
+    if 0x65 in instruction.prefix:
+        return "GS segment overrides are outside the bounded Unicorn profile"
     if instruction.group(capstone.CS_GRP_PRIVILEGE):
         return "privileged/system instructions are outside the bounded Unicorn profile"
     if mnemonic in _SYSTEM_MNEMONICS:
         return f"system instruction {mnemonic} is outside the bounded Unicorn profile"
     if mnemonic in _FAR_OR_SEGMENT_MNEMONICS:
         return f"far/segment control instruction {mnemonic} is unsupported"
-    register_issue = _instruction_uses_unmodeled_registers(instruction)
+    register_issue = _instruction_uses_unmodeled_registers(
+        instruction,
+        allow_x87=(
+            instruction.group(capstone_x86.X86_GRP_FPU)
+            or mnemonic.startswith("f")
+        ),
+    )
     if register_issue is not None:
         return register_issue
     control = _classify_control(instruction)
@@ -378,6 +410,119 @@ def _decode_case(case: InstructionTestCase) -> _DecodedCase | str:
             "external-state model"
         )
     return _DecodedCase(instruction=instruction, control=control)
+
+
+def _validate_user_fs(case: InstructionTestCase) -> str | None:
+    fs = case.initial_state.fs
+    if fs.selector == 0:
+        if fs.base != 0:
+            return "a null FS selector cannot carry a nonzero hidden base"
+        return None
+    if fs.selector & 0x4:
+        return "LDT-backed FS selectors are outside the bounded Unicorn profile"
+    if fs.selector & 0x3 != 0x3:
+        return "PE32 user-mode FS selectors must have RPL=3"
+    index = fs.selector >> 3
+    if index >= _GDT_ENTRY_LIMIT:
+        return "FS selector exceeds the bounded one-page GDT"
+    if index in {_USER_CODE_INDEX, _USER_DATA_INDEX}:
+        return "FS selector aliases a fixed CPL3 harness descriptor"
+    return None
+
+
+def _case_memory_read(
+    case: InstructionTestCase, address: int, size: int
+) -> bytes | None:
+    if size <= 0 or address + size > 2**32:
+        return None
+    for region in case.memory:
+        if (
+            "r" in region.permissions
+            and region.address <= address
+            and address + size <= region.address + len(region.data)
+        ):
+            offset = address - region.address
+            return region.data[offset : offset + size]
+    return None
+
+
+def _gpr_value(case: InstructionTestCase, name: str) -> int | None:
+    if name not in GPR_NAMES:
+        return None
+    return int(getattr(case.initial_state.gprs, name)) & 0xFFFFFFFF
+
+
+def _memory_operand_address(
+    case: InstructionTestCase, instruction: Any, operand: Any
+) -> int | None:
+    memory = operand.mem
+    base = 0
+    if memory.base:
+        base_name = instruction.reg_name(memory.base)
+        base_value = _gpr_value(case, base_name)
+        if base_value is None:
+            return None
+        base = base_value
+    index = 0
+    if memory.index:
+        index_name = instruction.reg_name(memory.index)
+        index_value = _gpr_value(case, index_name)
+        if index_value is None:
+            return None
+        index = index_value
+    segment_base = 0
+    if memory.segment:
+        segment_name = instruction.reg_name(memory.segment)
+        if segment_name != "fs":
+            return None
+        segment_base = case.initial_state.fs.base
+    return (
+        segment_base + base + index * int(memory.scale) + int(memory.disp)
+    ) & 0xFFFFFFFF
+
+
+def _decoded_control_target(
+    case: InstructionTestCase, decoded: _DecodedCase
+) -> int | None:
+    instruction = decoded.instruction
+    if decoded.control is ControlClass.RETURN:
+        raw = _case_memory_read(case, case.initial_state.gprs.esp, 4)
+        return None if raw is None else int.from_bytes(raw, "little")
+    if not instruction.operands:
+        return None
+    operand = instruction.operands[0]
+    if operand.type == capstone_x86.X86_OP_IMM:
+        return int(operand.imm) & 0xFFFFFFFF
+    if operand.type == capstone_x86.X86_OP_REG:
+        return _gpr_value(case, instruction.reg_name(operand.reg))
+    if operand.type == capstone_x86.X86_OP_MEM:
+        address = _memory_operand_address(case, instruction, operand)
+        if address is None:
+            return None
+        raw = _case_memory_read(case, address, 4)
+        return None if raw is None else int.from_bytes(raw, "little")
+    return None
+
+
+def _is_repeat_instruction(decoded: _DecodedCase) -> bool:
+    mnemonic = decoded.instruction.mnemonic.lower()
+    return mnemonic.startswith(("rep ", "repe ", "repne "))
+
+
+def _control_landing_addresses(
+    case: InstructionTestCase, decoded: _DecodedCase
+) -> tuple[int, ...] | str:
+    if case.expected.control in {ControlClass.FALLTHROUGH, ControlClass.FAULT}:
+        return ()
+    addresses: set[int] = set()
+    if case.expected.final_state is not None:
+        addresses.add(case.expected.final_state.eip)
+    decoded_target = _decoded_control_target(case, decoded)
+    if decoded_target is not None:
+        addresses.add(decoded_target)
+    if not addresses:
+        return "control-transfer destination cannot be provisioned fail-closed"
+    return tuple(sorted(addresses))
 
 
 def _preflight(case: InstructionTestCase) -> _DecodedCase | str:
@@ -394,14 +539,14 @@ def _preflight(case: InstructionTestCase) -> _DecodedCase | str:
         )
     if case.profile.features:
         return "feature overrides are unsupported; use a fixed CPU profile"
-    if case.initial_state.fs.selector != 0 or case.initial_state.fs.base != 0:
-        return "non-flat FS selector/base state is not representable by this backend"
-    if not _fs_outputs_are_unobserved(case):
-        return "FS output masks are unsupported by this backend"
-    if not _x87_input_is_canonical(case.initial_state):
-        return "non-canonical x87 input state is unsupported by this backend"
-    if not _x87_outputs_are_unobserved(case):
-        return "x87 output masks are unsupported by this backend"
+    fs_issue = _validate_user_fs(case)
+    if fs_issue is not None:
+        return fs_issue
+    if case.initial_state.eflags & _FORBIDDEN_USER_EFLAGS:
+        return (
+            "PE32 CPL3 cases require IOPL=0, NT=0, and VM=0 in the initial "
+            "EFLAGS state"
+        )
     mapped_bytes = sum(len(region.data) for region in case.memory)
     if mapped_bytes > MAX_MAPPED_BYTES:
         return f"declared memory exceeds the {MAX_MAPPED_BYTES}-byte backend bound"
@@ -445,6 +590,7 @@ def _unicorn_protection(bits: int) -> int:
 
 def _memory_plan(
     case: InstructionTestCase,
+    decoded: _DecodedCase,
 ) -> tuple[dict[int, int], tuple[_AccessRange, ...], str | None]:
     code_start = case.initial_state.eip
     code_end = code_start + len(case.instruction_bytes)
@@ -459,6 +605,9 @@ def _memory_plan(
             for region in case.memory
         ),
     ]
+    for row in ranges:
+        if row.start < _HARNESS_END and _HARNESS_GDT_PAGE < row.end:
+            return {}, (), "declared execution state overlaps the CPL3 harness"
     for region in case.memory:
         overlap_start = max(code_start, region.address)
         overlap_end = min(code_end, region.address + len(region.data))
@@ -491,7 +640,22 @@ def _memory_plan(
             page_permissions[page] = page_permissions.get(page, 0) | _permission_bits(
                 row.permissions
             )
-    if len(page_permissions) * PAGE_SIZE > MAX_MAPPED_BYTES + 2 * PAGE_SIZE:
+    landings = _control_landing_addresses(case, decoded)
+    if isinstance(landings, str):
+        return {}, (), landings
+    for landing in landings:
+        landing_page = _page_start(landing)
+        page_permissions[landing_page] = (
+            page_permissions.get(landing_page, 0) | _permission_bits("rx")
+        )
+        ranges.append(_AccessRange(landing_page, landing_page + PAGE_SIZE, "rx"))
+    for page in (
+        _HARNESS_GDT_PAGE,
+        _HARNESS_TRANSITION_PAGE,
+        _HARNESS_TRANSITION_STACK_PAGE,
+    ):
+        page_permissions[page] = _permission_bits("rwx")
+    if len(page_permissions) * PAGE_SIZE > MAX_MAPPED_BYTES + 4 * PAGE_SIZE:
         return {}, (), "page-rounded mappings exceed the bounded backend limit"
     return page_permissions, tuple(ranges), None
 
@@ -552,6 +716,166 @@ def _register_inventory() -> dict[str, int]:
     }
 
 
+def _x87_register_inventory() -> dict[str, int] | None:
+    if _unicorn_x86 is None:
+        return None
+    inventory: dict[str, int] = {}
+    for register in _X87_REQUIRED_UNICORN_REGISTERS:
+        value = getattr(_unicorn_x86, f"UC_X86_REG_{register}", None)
+        if not isinstance(value, int):
+            return None
+        inventory[register] = value
+    return inventory
+
+
+def _x87_word_to_unicorn(value: bytes) -> tuple[int, int]:
+    return (
+        int.from_bytes(value[:8], "little"),
+        int.from_bytes(value[8:], "little"),
+    )
+
+
+def _x87_word_from_unicorn(value: Any) -> bytes:
+    if (
+        not isinstance(value, tuple)
+        or len(value) != 2
+        or any(not isinstance(part, int) for part in value)
+    ):
+        raise ValueError(
+            "Unicorn FP register reads must return a (mantissa, exponent) tuple"
+        )
+    mantissa, exponent = value
+    if not 0 <= mantissa < 2**64 or not 0 <= exponent < 2**16:
+        raise ValueError("Unicorn FP register read is outside the 80-bit range")
+    return mantissa.to_bytes(8, "little") + exponent.to_bytes(2, "little")
+
+
+def _x87_top(status_word: int) -> int:
+    return (status_word >> 11) & 0x7
+
+
+def _read_x87_core(engine: Any) -> X87State:
+    inventory = _x87_register_inventory()
+    if inventory is None:
+        raise ValueError(
+            "Unicorn binding does not expose the required x87 register set"
+        )
+    control_word = int(engine.reg_read(inventory["FPCW"])) & 0xFFFF
+    status_word = int(engine.reg_read(inventory["FPSW"])) & 0xFFFF
+    tag_word = int(engine.reg_read(inventory["FPTAG"])) & 0xFFFF
+    physical = tuple(
+        _x87_word_from_unicorn(engine.reg_read(inventory[f"FP{index}"]))
+        for index in range(8)
+    )
+    top = _x87_top(status_word)
+    logical = tuple(physical[(top + index) & 0x7] for index in range(8))
+    return X87State(
+        control_word=control_word,
+        status_word=status_word,
+        tag_word=tag_word,
+        last_opcode=int(engine.reg_read(inventory["FOP"])) & 0x7FF,
+        instruction_pointer=(
+            int(engine.reg_read(inventory["FIP"])) & 0xFFFFFFFF
+        ),
+        data_pointer=int(engine.reg_read(inventory["FDP"])) & 0xFFFFFFFF,
+        registers=logical,
+    )
+
+
+def _write_x87_core(engine: Any, state: X87State) -> None:
+    inventory = _x87_register_inventory()
+    if inventory is None:
+        raise ValueError(
+            "Unicorn binding does not expose the required x87 register set"
+        )
+    top = _x87_top(state.status_word)
+    physical = [bytes(10) for _ in range(8)]
+    for logical_index, value in enumerate(state.registers):
+        physical[(top + logical_index) & 0x7] = value
+    engine.reg_write(inventory["FPCW"], state.control_word)
+    engine.reg_write(inventory["FPSW"], state.status_word)
+    engine.reg_write(inventory["FIP"], state.instruction_pointer)
+    engine.reg_write(inventory["FDP"], state.data_pointer)
+    engine.reg_write(inventory["FOP"], state.last_opcode)
+    for index, value in enumerate(physical):
+        engine.reg_write(inventory[f"FP{index}"], _x87_word_to_unicorn(value))
+    # Unicorn reconstructs non-empty tag classes from the physical FP value.
+    engine.reg_write(inventory["FPTAG"], state.tag_word)
+
+
+def _probe_x87_register_api(engine: Any) -> str | None:
+    inventory = _x87_register_inventory()
+    if inventory is None:
+        missing = [
+            name
+            for name in _X87_REQUIRED_UNICORN_REGISTERS
+            if _unicorn_x86 is None
+            or not isinstance(
+                getattr(_unicorn_x86, f"UC_X86_REG_{name}", None), int
+            )
+        ]
+        return "missing Unicorn x87 register constants: " + ", ".join(missing)
+    probe_registers = tuple(
+        (
+            0x8000000000000000 | index,
+            0x3FFF,
+        )
+        for index in range(8)
+    )
+    try:
+        engine.reg_write(inventory["FPCW"], 0x027F)
+        engine.reg_write(inventory["FPSW"], 3 << 11)
+        engine.reg_write(inventory["FIP"], 0x12345678)
+        engine.reg_write(inventory["FDP"], 0x9ABCDEF0)
+        engine.reg_write(inventory["FOP"], 0x5A5)
+        for index, value in enumerate(probe_registers):
+            engine.reg_write(inventory[f"FP{index}"], value)
+        engine.reg_write(inventory["FPTAG"], 0)
+        observed = (
+            int(engine.reg_read(inventory["FPCW"])) & 0xFFFF,
+            int(engine.reg_read(inventory["FPSW"])) & 0xFFFF,
+            int(engine.reg_read(inventory["FPTAG"])) & 0xFFFF,
+            int(engine.reg_read(inventory["FIP"])) & 0xFFFFFFFF,
+            int(engine.reg_read(inventory["FDP"])) & 0xFFFFFFFF,
+            int(engine.reg_read(inventory["FOP"])) & 0x7FF,
+            tuple(
+                engine.reg_read(inventory[f"FP{index}"])
+                for index in range(8)
+            ),
+        )
+    except Exception as exc:
+        return f"Unicorn x87 register round-trip raised {type(exc).__name__}: {exc}"
+    expected = (
+        0x027F,
+        3 << 11,
+        0,
+        0x12345678,
+        0x9ABCDEF0,
+        0x5A5,
+        probe_registers,
+    )
+    if observed != expected:
+        return (
+            "Unicorn x87 register round-trip was not exact: "
+            f"expected {expected!r}, observed {observed!r}"
+        )
+    return None
+
+
+def unicorn_x87_capability_detail(cpu_profile: str = "haswell") -> str:
+    """Return an empty string only when Unicorn exactly round-trips x87 core state."""
+    if not unicorn_available():
+        detail = "Unicorn Python binding is unavailable"
+        if _UNICORN_IMPORT_DETAIL:
+            detail += f": {_UNICORN_IMPORT_DETAIL}"
+        return detail
+    try:
+        engine = _new_engine(cpu_profile)
+    except Exception as exc:
+        return f"Unicorn CPU setup is unsupported: {exc}"
+    return _probe_x87_register_api(engine) or ""
+
+
 def _new_engine(cpu_profile: str) -> Any:
     assert _unicorn is not None and _unicorn_x86 is not None
     engine = _unicorn.Uc(_unicorn.UC_ARCH_X86, _unicorn.UC_MODE_32)
@@ -569,10 +893,109 @@ def _new_engine(cpu_profile: str) -> Any:
     return engine
 
 
+def _segment_descriptor(
+    *, base: int, limit: int, access: int, flags: int
+) -> bytes:
+    value = (
+        (limit & 0xFFFF)
+        | ((base & 0xFFFFFF) << 16)
+        | ((access & 0xFF) << 40)
+        | (((limit >> 16) & 0xF) << 48)
+        | ((flags & 0xF) << 52)
+        | (((base >> 24) & 0xFF) << 56)
+    )
+    return struct.pack("<Q", value)
+
+
+def _gdt_for_case(case: InstructionTestCase) -> bytes:
+    fs = case.initial_state.fs
+    fs_index = fs.selector >> 3 if fs.selector else 0
+    entry_count = max(5, fs_index + 1)
+    entries = [bytes(8) for _ in range(entry_count)]
+    entries[1] = _segment_descriptor(
+        base=0, limit=0xFFFFF, access=0x9A, flags=0xC
+    )
+    entries[2] = _segment_descriptor(
+        base=0, limit=0xFFFFF, access=0x92, flags=0xC
+    )
+    entries[_USER_CODE_INDEX] = _segment_descriptor(
+        base=0, limit=0xFFFFF, access=0xFA, flags=0xC
+    )
+    entries[_USER_DATA_INDEX] = _segment_descriptor(
+        base=0, limit=0xFFFFF, access=0xF2, flags=0xC
+    )
+    if fs.selector:
+        entries[fs_index] = _segment_descriptor(
+            base=fs.base, limit=0xFFFFF, access=0xF2, flags=0xC
+        )
+    return b"".join(entries)
+
+
+def _initialize_cpl3(engine: Any, case: InstructionTestCase) -> None:
+    assert _unicorn_x86 is not None
+    gdt = _gdt_for_case(case)
+    transition_eip = _HARNESS_TRANSITION_PAGE
+    transition_esp = _HARNESS_END - 5 * 4
+    engine.mem_write(_HARNESS_GDT_PAGE, gdt)
+    engine.mem_write(transition_eip, b"\xCF")
+    engine.mem_write(
+        transition_esp,
+        struct.pack(
+            "<IIIII",
+            case.initial_state.eip,
+            _USER_CODE_SELECTOR,
+            case.initial_state.eflags,
+            case.initial_state.gprs.esp,
+            _USER_DATA_SELECTOR,
+        ),
+    )
+    engine.reg_write(
+        _unicorn_x86.UC_X86_REG_GDTR,
+        (0, _HARNESS_GDT_PAGE, len(gdt) - 1, 0),
+    )
+    for register, selector in (
+        (_unicorn_x86.UC_X86_REG_DS, _KERNEL_DATA_SELECTOR),
+        (_unicorn_x86.UC_X86_REG_ES, _KERNEL_DATA_SELECTOR),
+        (_unicorn_x86.UC_X86_REG_SS, _KERNEL_DATA_SELECTOR),
+        (_unicorn_x86.UC_X86_REG_CS, _KERNEL_CODE_SELECTOR),
+    ):
+        engine.reg_write(register, selector)
+    engine.reg_write(_unicorn_x86.UC_X86_REG_ESP, transition_esp)
+    engine.reg_write(_unicorn_x86.UC_X86_REG_EIP, transition_eip)
+    engine.emu_start(transition_eip, transition_eip + 1, count=1)
+    for register in (
+        _unicorn_x86.UC_X86_REG_DS,
+        _unicorn_x86.UC_X86_REG_ES,
+    ):
+        engine.reg_write(register, _USER_DATA_SELECTOR)
+    engine.reg_write(
+        _unicorn_x86.UC_X86_REG_FS, case.initial_state.fs.selector
+    )
+    observed = (
+        int(engine.reg_read(_unicorn_x86.UC_X86_REG_CS)) & 0xFFFF,
+        int(engine.reg_read(_unicorn_x86.UC_X86_REG_SS)) & 0xFFFF,
+        int(engine.reg_read(_unicorn_x86.UC_X86_REG_FS)) & 0xFFFF,
+        int(engine.reg_read(_unicorn_x86.UC_X86_REG_FS_BASE)) & 0xFFFFFFFF,
+    )
+    expected = (
+        _USER_CODE_SELECTOR,
+        _USER_DATA_SELECTOR,
+        case.initial_state.fs.selector,
+        case.initial_state.fs.base,
+    )
+    if observed != expected:
+        raise ValueError(
+            "Unicorn CPL3/FS setup did not round-trip exactly: "
+            f"expected {expected!r}, observed {observed!r}"
+        )
+
+
 def _initialize_engine(
     engine: Any,
     case: InstructionTestCase,
     page_permissions: dict[int, int],
+    *,
+    initialize_x87: bool,
 ) -> None:
     assert _unicorn is not None and _unicorn_x86 is not None
     for page, permissions in sorted(page_permissions.items()):
@@ -581,15 +1004,36 @@ def _initialize_engine(
     for region in case.memory:
         engine.mem_write(region.address, region.data)
     engine.mem_write(case.initial_state.eip, case.instruction_bytes)
+    _initialize_cpl3(engine, case)
     for register, unicorn_register in _register_inventory().items():
         engine.reg_write(
             unicorn_register, getattr(case.initial_state.gprs, register)
         )
     engine.reg_write(_unicorn_x86.UC_X86_REG_EIP, case.initial_state.eip)
     engine.reg_write(_unicorn_x86.UC_X86_REG_EFLAGS, case.initial_state.eflags)
+    observed_eflags = (
+        int(engine.reg_read(_unicorn_x86.UC_X86_REG_EFLAGS)) & 0xFFFFFFFF
+    )
+    if observed_eflags != case.initial_state.eflags:
+        raise ValueError(
+            "requested CPL3 EFLAGS state does not round-trip exactly through "
+            f"Unicorn: expected 0x{case.initial_state.eflags:08x}, observed "
+            f"0x{observed_eflags:08x}"
+        )
+    if initialize_x87:
+        _write_x87_core(engine, case.initial_state.x87)
+        observed = _read_x87_core(engine)
+        if observed != case.initial_state.x87:
+            raise ValueError(
+                "requested x87 core state does not round-trip exactly through "
+                f"Unicorn: expected {case.initial_state.x87!r}, observed "
+                f"{observed!r}"
+            )
 
 
-def _read_final_state(engine: Any, case: InstructionTestCase) -> MachineState:
+def _read_final_state(
+    engine: Any, case: InstructionTestCase, *, observe_x87: bool
+) -> MachineState:
     assert _unicorn_x86 is not None
     gprs = {
         register: int(engine.reg_read(unicorn_register)) & 0xFFFFFFFF
@@ -599,8 +1043,18 @@ def _read_final_state(engine: Any, case: InstructionTestCase) -> MachineState:
         gprs=GPRState(**gprs),
         eip=int(engine.reg_read(_unicorn_x86.UC_X86_REG_EIP)) & 0xFFFFFFFF,
         eflags=int(engine.reg_read(_unicorn_x86.UC_X86_REG_EFLAGS)) & 0xFFFFFFFF,
-        fs=case.initial_state.fs,
-        x87=case.initial_state.x87,
+        fs=FSState(
+            selector=int(engine.reg_read(_unicorn_x86.UC_X86_REG_FS)) & 0xFFFF,
+            base=(
+                int(engine.reg_read(_unicorn_x86.UC_X86_REG_FS_BASE))
+                & 0xFFFFFFFF
+            ),
+        ),
+        x87=(
+            _read_x87_core(engine)
+            if observe_x87
+            else case.initial_state.x87
+        ),
     )
 
 
@@ -627,27 +1081,61 @@ def run_unicorn_case(case: InstructionTestCase) -> BackendObservation:
     preflight = _preflight(case)
     if isinstance(preflight, str):
         return _unsupported(case, preflight)
+    if (
+        _is_repeat_instruction(preflight)
+        and case.initial_state.gprs.ecx > MAX_REPEAT_ITERATIONS
+    ):
+        return _unsupported(
+            case,
+            "repeat count exceeds the bounded Unicorn single-instruction "
+            f"limit of {MAX_REPEAT_ITERATIONS}",
+        )
+    requires_x87 = (
+        preflight.instruction.group(capstone_x86.X86_GRP_FPU)
+        or preflight.instruction.mnemonic.lower().startswith("f")
+        or not _x87_input_is_canonical(case.initial_state)
+        or not _x87_core_outputs_are_unobserved(case)
+    )
     if not unicorn_available():
         detail = "Unicorn Python binding is unavailable"
         if _UNICORN_IMPORT_DETAIL:
             detail += f": {_UNICORN_IMPORT_DETAIL}"
         return _unsupported(case, detail)
-    page_permissions, access_ranges, memory_issue = _memory_plan(case)
+    page_permissions, access_ranges, memory_issue = _memory_plan(case, preflight)
     if memory_issue is not None:
         return _unsupported(case, memory_issue)
     try:
         engine = _new_engine(case.profile.cpu)
     except Exception as exc:
         return _unsupported(case, f"Unicorn CPU setup is unsupported: {exc}")
+    if requires_x87:
+        x87_issue = _probe_x87_register_api(engine)
+        if x87_issue is not None:
+            return _unsupported(
+                case,
+                f"Unicorn x87 register API is unsupported: {x87_issue}",
+            )
     try:
-        _initialize_engine(engine, case, page_permissions)
+        _initialize_engine(
+            engine,
+            case,
+            page_permissions,
+            initialize_x87=requires_x87,
+        )
     except _unicorn.UcError as exc:
         return _unsupported(case, f"Unicorn cannot represent the memory layout: {exc}")
+    except ValueError as exc:
+        return _unsupported(case, f"Unicorn cannot represent the x87 state: {exc}")
     except Exception as exc:
         return _error(case, f"Unicorn harness initialization failed: {exc}")
 
     access_violation: list[str] = []
     interrupt_vectors: list[int] = []
+    repeat_steps = [0]
+    repeat_bound_exceeded = [False]
+    # Unicorn reports one same-EIP code hook per iteration plus a final hook
+    # that retires the completed REP instruction and advances EIP.
+    repeat_hook_limit = max(1, case.initial_state.gprs.ecx + 1)
     assert _unicorn is not None
     access_permissions = {
         _unicorn.UC_MEM_READ: "r",
@@ -680,6 +1168,21 @@ def run_unicorn_case(case: InstructionTestCase) -> BackendObservation:
         interrupt_vectors.append(int(vector))
         hooked_engine.emu_stop()
 
+    def finish_repeat_instruction(
+        hooked_engine: Any,
+        address: int,
+        _size: int,
+        _user_data: Any,
+    ) -> None:
+        if address != case.initial_state.eip:
+            hooked_engine.emu_stop()
+            return
+        if repeat_steps[0] >= repeat_hook_limit:
+            repeat_bound_exceeded[0] = True
+            hooked_engine.emu_stop()
+            return
+        repeat_steps[0] += 1
+
     try:
         engine.hook_add(
             _unicorn.UC_HOOK_MEM_READ
@@ -688,11 +1191,22 @@ def run_unicorn_case(case: InstructionTestCase) -> BackendObservation:
             check_access,
         )
         engine.hook_add(_unicorn.UC_HOOK_INTR, record_interrupt)
-        engine.emu_start(
-            case.initial_state.eip,
-            case.initial_state.eip + len(case.instruction_bytes),
-            count=1,
-        )
+        if _is_repeat_instruction(preflight):
+            engine.hook_add(_unicorn.UC_HOOK_CODE, finish_repeat_instruction)
+            engine.emu_start(case.initial_state.eip, 0xFFFFFFFF)
+        else:
+            control_target = _decoded_control_target(case, preflight)
+            stop_address = (
+                control_target
+                if control_target is not None
+                and control_target != case.initial_state.eip
+                else case.initial_state.eip + len(case.instruction_bytes)
+            )
+            engine.emu_start(
+                case.initial_state.eip,
+                stop_address,
+                count=1,
+            )
     except _unicorn.UcError as exc:
         if access_violation:
             return _complete_observation(
@@ -728,6 +1242,11 @@ def run_unicorn_case(case: InstructionTestCase) -> BackendObservation:
     except Exception as exc:
         return _error(case, f"Unicorn harness execution failed: {exc}")
 
+    if repeat_bound_exceeded[0]:
+        return _unsupported(
+            case,
+            "Unicorn repeat execution exceeded its checked iteration bound",
+        )
     if access_violation:
         return _complete_observation(
             case,
@@ -753,7 +1272,11 @@ def run_unicorn_case(case: InstructionTestCase) -> BackendObservation:
             fault=fault,
         )
     try:
-        final_state = _read_final_state(engine, case)
+        final_state = _read_final_state(
+            engine,
+            case,
+            observe_x87=requires_x87,
+        )
         memory = _read_observed_memory(engine, case)
     except Exception as exc:
         return _error(case, f"Unicorn harness observation failed: {exc}")

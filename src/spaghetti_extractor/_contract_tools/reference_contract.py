@@ -1219,7 +1219,7 @@ def _semantic_fpu_state_from_observables(
         for output_name, input_name in _X87_PHYSICAL_OBSERVABLE_FIELDS
         if input_name in observables
     }
-    if not present:
+    if not present and native_exact_command_replay is None:
         return None
 
     converted = {
@@ -1888,6 +1888,16 @@ def _semantic_external_event_json(event: Any) -> dict[str, Any]:
             "count": _semantic_expr_json(event[4]),
             "direction_flag": _semantic_expr_json(event[5]),
             "effect_model": "symbolic_string_copy_v1",
+        }
+    if isinstance(event, tuple) and len(event) >= 6 and event[0] == "rep_stosd":
+        return {
+            "kind": "rep_stosd",
+            "index": int(event[1]),
+            "destination": _semantic_expr_json(event[2]),
+            "value": _semantic_expr_json(event[3]),
+            "count": _semantic_expr_json(event[4]),
+            "direction_flag": _semantic_expr_json(event[5]),
+            "effect_model": "symbolic_string_fill_v1",
         }
     return {"kind": "unknown_external_event", "raw": _expr_json(event)}
 

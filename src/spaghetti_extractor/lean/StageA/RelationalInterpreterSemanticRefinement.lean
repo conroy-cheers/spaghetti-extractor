@@ -1,5 +1,6 @@
 import StageA.RelationalInterpreterNormalization
 import StageA.RelationalSymbolicSoundness
+import Lean
 
 namespace StageA.Relational.InterpreterSemanticRefinement
 
@@ -8,12 +9,40 @@ open StageA.Relational.Interpreter
 open StageA.Relational.InterpreterTransfer
 open StageA.Relational.InterpreterNormalization
 
+open Lean Elab Term Meta
+
+/-- Elaborate one concrete decoder result into an explicit checked term.
+The elaborator supplies data only: generated shards must still prove by kernel
+reduction that `decodeInstructionExact` returns that exact term. -/
+elab "exactDecodedInstruction% " bytes:term : term => do
+  let bytesExpr ←
+    elabTermEnsuringType bytes (mkConst ``StageA.Formal.Bytes)
+  let bytesExpr ← instantiateMVars bytesExpr
+  let decodedExpr ← mkAppM ``decodeInstructionExact #[bytesExpr]
+  let reduced ← withTransparency .all <| whnf decodedExpr
+  unless reduced.isAppOfArity ``Option.some 2 do
+    throwError "exactDecodedInstruction% requires one exactly decoded instruction"
+  pure reduced.getAppArgs[1]!
+
 /-!
 This module is the stable proof boundary used by generated ordinary-transfer
 refinement shards.  Generated sources supply exact PE-byte and import-table
 facts plus a reduced equality between the typed semantic transfer and the
 reviewed exact instruction runner.  No extractor status is represented here.
 -/
+
+/-- Cached concrete proof boundary between one exact PE span and its decoded
+semantic transfer. Generated shards prove this proposition by reducing the
+exact bytes once; downstream composition consumes the opaque theorem without
+re-running symbolic execution. -/
+def ExactSemanticTransferFusedMachineRefinement
+    (pe : PE32) (imports : List PEImport) (span : Span)
+    (transfer : SemanticTransfer) : Prop :=
+  forall targets state environment symbolic behavior result,
+    executePE32SymbolicSpan pe imports span = some symbolic ->
+    evalBehavior false targets state symbolic = some behavior ->
+    transfer.execute environment (machineFromFormal state) = some result ->
+    machineFromFormal (behavior.nextMachineState state) = result.state
 
 /-- Reduce the public refinement goal to exact sequential execution after the
 PE path and import table have both been checked by Lean. -/

@@ -40,6 +40,20 @@ class StageARelationalInterpreterKernelOperationFrameParametricKernelTests(
             source_root = (
                 Path(__file__).parents[1] / "src/spaghetti_extractor/lean/StageA"
             )
+            source = (
+                source_root
+                / "RelationalInterpreterKernelOperationFrameParametric.lean"
+            ).read_text(encoding="utf-8")
+            for selected_path_field in (
+                "fuel : Nat",
+                "prefixesRunning",
+                "eventIndexExact",
+                "returnCompatible",
+                "producer : forall context world",
+                "selectedPathRefinement",
+            ):
+                self.assertIn(selected_path_field, source)
+            self.assertNotIn("contextRefinement :", source)
             _copy_module_closure(
                 source_root,
                 stage_a,
@@ -55,7 +69,7 @@ class StageARelationalInterpreterKernelOperationFrameParametricKernelTests(
         self.assertNotIn("declaration uses 'sorry'", result["stderr"])
         for theorem in (
             "runRelatedSteps_frameContext_fst",
-            "StandaloneNativeWorldPath.liftFrameContext",
+            "ProducerSelectedStandaloneNativeWorldPath.liftFrameContext",
             "KernelOperationFrameParametricCertificate.refinesInContext",
         ):
             self.assertIn(theorem, result["stdout"])

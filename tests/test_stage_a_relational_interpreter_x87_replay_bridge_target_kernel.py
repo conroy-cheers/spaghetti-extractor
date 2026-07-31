@@ -46,6 +46,10 @@ class StageAX87ReplayBridgeTargetKernelTests(unittest.TestCase):
         source = (source_root / f"{module}.lean").read_text(encoding="utf-8")
         for marker in ("sorry", "axiom", "unsafe", "native_decide"):
             self.assertIsNone(re.search(rf"\b{marker}\b", source), marker)
+        self.assertIn(
+            "def nativeX87ReplayLogicalScratchBytes : Nat :=\n  2 * 4",
+            source,
+        )
         for field in (
             "targetBefore",
             "targetAfter",
@@ -126,34 +130,34 @@ def _synthetic_generated_plan() -> tuple[bytes, X87ReplayBridgeTargetPlan]:
     empty_digest = sha256_bytes(b"")
     image = bytearray(1400)
     bridge_target_rva = 4
-    instruction_rva = 260
-    capture_rva = bridge_target_rva + 66
+    instruction_rva = bridge_target_rva + 52
+    capture_rva = bridge_target_rva + 72
     active_frame_pointer_rva = 1240
     active_frame_va = image_base + active_frame_pointer_rva
-    body = bytearray.fromhex(
-        "55535657a10840d70085c0743089600cdd60148b48048b611c"
-        "ffb1f0000000ff31ff7108ff710cff7104ff711cff7118ff7110"
-        "ff7114619de9f17a01005f5e5b5dc39c60a10840d70085c00f84"
-        "8ffbffffddb0800000008b50088b0c24894a148b4c2404894a108b"
-        "4c2408894a188b4c2410894a048b4c2414894a0c8b4c2418894a08"
-        "8b4c241c890a8d4c2424894a1c8b4c2420898af00000008b4c2420"
-        "c1e90083e101894a208b4c2420c1e90283e101894a308b4c2420c1"
-        "e90683e101894a248b4c2420c1e90783e101894a288b4c2420c1e9"
-        "0a83e101894a348b4c2420c1e90b83e101894a2cc7401000000000"
-        "8b600cfc5f5e5b5dc3"
+    entry_body = bytes.fromhex(
+        "89600cdd60148b40048b58048b48088b70108b78148b68188b601c"
+        "ffb0f0000000ff308b500c589d909090"
     )
-    struct.pack_into("<I", body, 5, active_frame_va)
-    struct.pack_into("<I", body, 69, active_frame_va)
-    struct.pack_into("<i", body, 57, instruction_rva - (bridge_target_rva + 61))
+    capture_body = bytes.fromhex(
+        "ddb0800000008b50088b0c24890a0f9242200f9a42300f9442240f984228"
+        "0f90422c8b5c24048b48048b89f000000081e12af3ffff81e3d50c000009"
+        "d9898af0000000"
+        "90909090909090909090"
+        "c74010000000008b600cfc5f5e5b5dc390909090"
+    )
+    body = bytearray(
+        b"\x55\x53\x56\x57\xa1"
+        + struct.pack("<I", active_frame_va)
+        + entry_body
+        + instruction
+        + b"\x90" * (72 - 52 - len(instruction))
+        + b"\x9c\x50\xa1"
+        + struct.pack("<I", active_frame_va)
+        + capture_body
+    )
+    assert len(body) == 176
     image[bridge_target_rva : bridge_target_rva + len(body)] = body
-    instruction_path = bytearray(instruction + b"\xe9\0\0\0\0")
-    struct.pack_into(
-        "<i",
-        instruction_path,
-        len(instruction) + 1,
-        capture_rva - (instruction_rva + len(instruction_path)),
-    )
-    image[instruction_rva : instruction_rva + len(instruction_path)] = instruction_path
+    instruction_path = instruction
     image[289:294] = b"\xa3" + struct.pack("<I", active_frame_va)
     image[294:297] = b"\x8b\x45\xe4"
     image[297:300] = b"\x8b\x40\x20"
@@ -179,7 +183,7 @@ def _synthetic_generated_plan() -> tuple[bytes, X87ReplayBridgeTargetPlan]:
     image[546:611] = empty_digest.encode() + b"\0"
     relocation_entries = [
         (3 << 12) | offset
-        for offset in (9, 73, 290, 304, 356, 360, 364, 368, 372)
+        for offset in (9, 79, 290, 304, 356, 360, 364, 368, 372)
     ] + [0]
     struct.pack_into("<II10H", image, 800, 0, 28, *relocation_entries)
     descriptor = X87ReplayBridgeDescriptorPlan(
@@ -206,7 +210,7 @@ def _synthetic_generated_plan() -> tuple[bytes, X87ReplayBridgeTargetPlan]:
         bridge_target_rva=bridge_target_rva,
         instruction_rva=instruction_rva,
         capture_rva=capture_rva,
-        return_rva=bridge_target_rva + 247,
+        return_rva=bridge_target_rva + 171,
         bridge_body_bytes=bytes(body),
         instruction_path_bytes=bytes(instruction_path),
     )
@@ -292,7 +296,7 @@ open StageA.Formal
 
 def generatedInterpreterKernelRelocations : List BaseRelocation := [
   { rva := 9, kind := 3 },
-  { rva := 73, kind := 3 },
+  { rva := 79, kind := 3 },
   { rva := 290, kind := 3 },
   { rva := 304, kind := 3 },
   { rva := 356, kind := 3 },

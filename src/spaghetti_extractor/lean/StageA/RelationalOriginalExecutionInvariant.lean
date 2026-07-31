@@ -105,10 +105,10 @@ def strengthenMixedExecutionInvariant
       related originalWorldExact candidateWorldExact :=
     mixed.worldsRelated originalExecution candidateExecution originalWorld
       candidateWorld related.1 originalWorldExact candidateWorldExact
-  runtimeStatesRelated originalExecution candidateExecution originalWorld
+  machineStatesRelated originalExecution candidateExecution originalWorld
       candidateWorld originalState candidateState related originalWorldExact
       candidateWorldExact originalStateExact candidateStateExact :=
-    mixed.runtimeStatesRelated originalExecution candidateExecution originalWorld
+    mixed.machineStatesRelated originalExecution candidateExecution originalWorld
       candidateWorld originalState candidateState related.1 originalWorldExact
       candidateWorldExact originalStateExact candidateStateExact
 
@@ -146,24 +146,12 @@ def strengthenMixedWorldChunkComposition
     (composition : MixedWorldChunkComposition originalContext originalAuthority
       original candidate candidateAuthority programBinding contract launch
       originalRoot reachability candidateRootRva candidateRoot)
-    (originalInvariant : OriginalWorldExecutionInvariant original)
-    (rootHolds : forall originalWorld candidateWorld originalState candidateState,
-      MixedLaunchStatesRelated originalContext candidate contract
-          originalWorld candidateWorld originalState candidateState ->
-        originalInvariant.holds
-          (.running launch.rootTargetId originalState
-            launch.continuationTargetIds 0 originalWorld)) :
+    (originalInvariant : OriginalWorldExecutionInvariant original) :
     MixedWorldChunkComposition originalContext originalAuthority
       original candidate candidateAuthority programBinding contract launch
       originalRoot reachability candidateRootRva candidateRoot where
   invariant :=
     strengthenMixedExecutionInvariant composition.invariant originalInvariant
-  candidateLaunchCalls := composition.candidateLaunchCalls
-  candidateLaunchCallsExact := composition.candidateLaunchCallsExact
-  rootsRelated originalWorld candidateWorld originalState candidateState launched :=
-    ⟨composition.rootsRelated originalWorld candidateWorld originalState
-        candidateState launched,
-      rootHolds originalWorld candidateWorld originalState candidateState launched⟩
   component originalBefore candidateBefore related := by
     let prior := composition.component originalBefore candidateBefore related.1
     exact {
@@ -179,8 +167,43 @@ def strengthenMixedWorldChunkComposition
         originalInvariant.pathClosed related.2 prior.originalPath⟩
     }
 
+/-- Transport a one-time launch prefix across an independently proved original
+invariant.  The original side is the exact zero-step root retained by the
+prefix, so only the root fact is required here. -/
+def strengthenMixedWorldLaunchPrefixCertificate
+    {reachabilityTargetIds : List Nat}
+    {contract : MixedRelationContract}
+    {base : MixedExecutionInvariant reachabilityTargetIds contract}
+    (certificate : MixedWorldLaunchPrefixCertificate originalContext original
+      candidate contract launch candidateRootRva base)
+    (originalInvariant : OriginalWorldExecutionInvariant original)
+    (rootHolds : forall originalWorld candidateWorld originalState candidateState,
+      MixedLaunchStatesRelated originalContext candidate contract
+          originalWorld candidateWorld originalState candidateState ->
+        originalInvariant.holds
+          (.running launch.rootTargetId originalState
+            launch.continuationTargetIds 0 originalWorld)) :
+    MixedWorldLaunchPrefixCertificate originalContext original candidate contract
+      launch candidateRootRva
+      (strengthenMixedExecutionInvariant base originalInvariant) where
+  candidateLaunchCalls := certificate.candidateLaunchCalls
+  candidateLaunchCallsExact := certificate.candidateLaunchCallsExact
+  launchPaths := by
+    intro originalWorld candidateWorld originalState candidateState launchRelated
+    let prior := certificate.launchPaths originalWorld candidateWorld originalState
+      candidateState launchRelated
+    exact {
+      candidateAfter := prior.candidateAfter
+      originalIdentity := prior.originalIdentity
+      candidatePath := prior.candidatePath
+      afterRelated := ⟨prior.afterRelated,
+        rootHolds originalWorld candidateWorld originalState candidateState
+          launchRelated⟩
+    }
+
 #print axioms OriginalWorldExecutionInvariant.pathClosed
 #print axioms OriginalWorldExecutionInvariant.all_member
 #print axioms strengthenMixedWorldChunkComposition
+#print axioms strengthenMixedWorldLaunchPrefixCertificate
 
 end StageA.Relational.OriginalExecutionInvariant

@@ -31,7 +31,7 @@ from .common import (
 from .interpreter_kernel import _load_symbols, _unique_symbol
 
 
-INTERPRETER_KERNEL_DATA_FORMAT = "stage-a-interpreter-kernel-data-inventory-v7"
+INTERPRETER_KERNEL_DATA_FORMAT = "stage-a-interpreter-kernel-data-inventory-v9"
 INTERPRETER_KERNEL_DATA_LOCAL_CONTEXT = (
     "GeneratedInterpreterKernelDataLocalContext"
 )
@@ -43,14 +43,30 @@ INTERPRETER_KERNEL_DATA_AUTHORITY = "GeneratedInterpreterKernelDataAuthority"
 INTERPRETER_KERNEL_DATA_AUTHORITY_PACK_PREFIX = (
     "GeneratedInterpreterKernelDataAuthorityPack"
 )
+INTERPRETER_KERNEL_DATA_NATIVE_PROJECTION_PACK_PREFIX = (
+    "GeneratedInterpreterKernelDataNativeProjectionPack"
+)
 INTERPRETER_KERNEL_DATA_SHARD_FACADE_PREFIX = (
     "GeneratedInterpreterKernelDataShard"
 )
 INTERPRETER_KERNEL_DATA_BUNDLE = "GeneratedInterpreterKernelDataBundle"
+INTERPRETER_KERNEL_DATA_SEMANTIC_RECORD_PACK_PREFIX = (
+    "GeneratedInterpreterKernelSemanticRecordPack"
+)
+INTERPRETER_KERNEL_DATA_SEMANTIC_RECORD_BUNDLE = (
+    "GeneratedInterpreterKernelSemanticRecordBundle"
+)
+INTERPRETER_KERNEL_DATA_ACTION_CURSOR_PACK_PREFIX = (
+    "GeneratedInterpreterKernelActionCursorPack"
+)
+INTERPRETER_KERNEL_DATA_ACTION_CURSOR_BUNDLE = (
+    "GeneratedInterpreterKernelActionCursorBundle"
+)
 INTERPRETER_KERNEL_DATA_BYTE_PACK_PREFIX = (
     "GeneratedInterpreterKernelDataBytePack"
 )
 INTERPRETER_KERNEL_DATA_BYTE_PACK_SIZE = 64 * 1024
+INTERPRETER_KERNEL_DATA_BYTE_CHUNK_SIZE = 1024
 INTERPRETER_KERNEL_DATA_RELOCATION_PACK_PREFIX = (
     "GeneratedInterpreterKernelDataRelocationPack"
 )
@@ -80,6 +96,7 @@ INTERPRETER_KERNEL_DATA_CERTIFICATE_PACK_SIZE = 16
 INTERPRETER_KERNEL_DATA_RELOCATION_PACK_SIZE = 512
 INTERPRETER_KERNEL_DATA_RELOCATION_CHAIN_PACK_SIZE = 64
 _TRANSFER_RECORD_SIZE = 40
+_ACTION_SIZE = 32
 _CALL_SIZE = 64
 _X87_REPLAY_SIZE = 44
 _LEAN_IMPORT = re.compile(r"^import StageA\.([A-Za-z0-9_]+)$", re.MULTILINE)
@@ -97,7 +114,11 @@ _CERTIFICATE_PACK_RESOURCES = ("medium", 4096)
 _AUTHORITY_RESOURCES = ("high-memory", 24576)
 _AUTHORITY_PACK_RESOURCES = ("high-memory", 12288)
 _BYTE_RANGE_LEAF_CAPACITY = 256
-_AUTHORITY_TRANSFER_LIMIT = 64
+# Keep the exact-byte authority layer aligned with the independently checked
+# transfer packs.  Larger authority modules repeatedly elaborate dozens of
+# byte-binding and relocation certificates in one process; for full programs
+# that creates non-linear memory use and prevents useful incremental caching.
+_AUTHORITY_TRANSFER_LIMIT = INTERPRETER_KERNEL_DATA_CERTIFICATE_PACK_SIZE
 
 
 class InterpreterKernelDataGenerationError(StageAInputError):
@@ -159,6 +180,11 @@ class _PointerFieldProof:
 class _ByteSlicePlan:
     pack_index: int
     pack_offset: int
+    chunk_index: int
+    chunk_offset: int
+    chunk_size: int
+    leaf_offset: int
+    chunk_path: tuple[str, ...]
     size: int
 
 
@@ -201,6 +227,8 @@ class InterpreterKernelDataInventory:
     record_count: int
     certificate_pack_count: int
     authority_pack_count: int
+    native_projection_pack_count: int
+    action_cursor_pack_count: int
     standalone_module_count: int
     modules: tuple[dict[str, Any], ...]
 
@@ -225,6 +253,8 @@ class InterpreterKernelDataInventory:
                 "records": self.record_count,
                 "certificate_packs": self.certificate_pack_count,
                 "authority_packs": self.authority_pack_count,
+                "native_projection_packs": self.native_projection_pack_count,
+                "action_cursor_packs": self.action_cursor_pack_count,
                 "generated_modules": len(self.modules),
                 "standalone_modules": self.standalone_module_count,
             },
@@ -430,6 +460,26 @@ def _authority_pack_definition(index: int) -> str:
     return f"generatedInterpreterKernelDataAuthorityPack{index:04d}Shards"
 
 
+def _authority_pack_included_theorem(index: int) -> str:
+    return (
+        f"generatedInterpreterKernelDataAuthorityPack{index:04d}"
+        "Included"
+    )
+
+
+def _native_projection_pack_name(index: int) -> str:
+    return (
+        f"{INTERPRETER_KERNEL_DATA_NATIVE_PROJECTION_PACK_PREFIX}{index:04d}"
+    )
+
+
+def _native_projection_pack_checked_theorem(index: int) -> str:
+    return (
+        f"generatedInterpreterKernelDataNativeProjectionPack{index:04d}"
+        "Checked"
+    )
+
+
 def _shard_facade_name(index: int) -> str:
     return f"{INTERPRETER_KERNEL_DATA_SHARD_FACADE_PREFIX}{index:04d}"
 
@@ -480,6 +530,30 @@ def _certificate_pack_source_rvas_definition(index: int) -> str:
 
 def _certificate_pack_metadata_definition(index: int) -> str:
     return f"{_certificate_pack_definition(index)}MetadataCertificate"
+
+
+def _semantic_record_pack_name(index: int) -> str:
+    return f"{INTERPRETER_KERNEL_DATA_SEMANTIC_RECORD_PACK_PREFIX}{index:04d}"
+
+
+def _semantic_record_definition(pack_index: int, entry_offset: int) -> str:
+    return (
+        f"generatedInterpreterKernelSemanticRecordPack{pack_index:04d}"
+        f"Entry{entry_offset:04d}"
+    )
+
+
+def _action_cursor_pack_name(index: int) -> str:
+    return f"{INTERPRETER_KERNEL_DATA_ACTION_CURSOR_PACK_PREFIX}{index:04d}"
+
+
+def _loaded_semantic_transfer_definition(
+    pack_index: int, entry_offset: int
+) -> str:
+    return (
+        f"generatedInterpreterKernelActionCursorPack{pack_index:04d}"
+        f"Entry{entry_offset:04d}LoadedSemanticTransfer"
+    )
 
 
 def _descriptor_name(index: int) -> str:
@@ -676,6 +750,10 @@ def _byte_pack_definition(index: int) -> str:
     return f"generatedInterpreterKernelCandidateBytesPack{index:04d}"
 
 
+def _byte_pack_chunk_definition(pack_index: int, chunk_index: int) -> str:
+    return f"{_byte_pack_definition(pack_index)}Chunk{chunk_index}"
+
+
 def _byte_pack_length_theorem(index: int) -> str:
     return f"generatedInterpreterKernelCandidateBytesPack{index:04d}Length"
 
@@ -724,6 +802,32 @@ def _byte_pack_ranges(byte_count: int, pack_size: int) -> tuple[tuple[int, int],
     return tuple(
         (offset, min(pack_size, byte_count - offset))
         for offset in range(0, byte_count, pack_size)
+    )
+
+
+def _byte_pack_chunk_layout(
+    pack_size: int,
+) -> tuple[tuple[int, int, tuple[str, ...]], ...]:
+    chunks = tuple(
+        (
+            offset,
+            min(
+                INTERPRETER_KERNEL_DATA_BYTE_CHUNK_SIZE,
+                pack_size - offset,
+            ),
+        )
+        for offset in range(
+            0,
+            pack_size,
+            INTERPRETER_KERNEL_DATA_BYTE_CHUNK_SIZE,
+        )
+    )
+    _tree, paths = _lean_byte_tree_composition_with_paths(
+        [(size, str(index)) for index, (_offset, size) in enumerate(chunks)]
+    )
+    return tuple(
+        (offset, size, path)
+        for (offset, size), path in zip(chunks, paths, strict=True)
     )
 
 
@@ -777,9 +881,39 @@ def _byte_range_plan(
     while remaining:
         for pack_index, (pack_offset, pack_size) in enumerate(byte_pack_ranges):
             if pack_offset <= cursor < pack_offset + pack_size:
-                count = min(remaining, pack_offset + pack_size - cursor)
+                relative_offset = cursor - pack_offset
+                for chunk_index, (
+                    chunk_offset,
+                    chunk_size,
+                    chunk_path,
+                ) in enumerate(_byte_pack_chunk_layout(pack_size)):
+                    if (
+                        chunk_offset
+                        <= relative_offset
+                        < chunk_offset + chunk_size
+                    ):
+                        leaf_offset = relative_offset - chunk_offset
+                        count = min(
+                            remaining,
+                            chunk_size - leaf_offset,
+                        )
+                        break
+                else:
+                    raise InterpreterKernelDataGenerationError(
+                        "raw byte offset "
+                        f"0x{cursor:x} is outside candidate pack {pack_index} chunks"
+                    )
                 slices.append(
-                    _ByteSlicePlan(pack_index, cursor - pack_offset, count)
+                    _ByteSlicePlan(
+                        pack_index=pack_index,
+                        pack_offset=relative_offset,
+                        chunk_index=chunk_index,
+                        chunk_offset=chunk_offset,
+                        chunk_size=chunk_size,
+                        leaf_offset=leaf_offset,
+                        chunk_path=chunk_path,
+                        size=count,
+                    )
                 )
                 cursor += count
                 remaining -= count
@@ -1101,7 +1235,11 @@ def _lean_relocation_index_composition(
 
 def _byte_pack_source(index: int, candidate_bytes: bytes) -> str:
     definition = _byte_pack_definition(index)
-    tree = _lean_byte_tree_definitions(definition, candidate_bytes)
+    tree = _lean_byte_tree_definitions(
+        definition,
+        candidate_bytes,
+        chunk_size=INTERPRETER_KERNEL_DATA_BYTE_CHUNK_SIZE,
+    )
     return f"""import StageA.Formal
 
 namespace StageA.GeneratedRelational.InterpreterKernelData
@@ -1150,6 +1288,7 @@ namespace StageA.GeneratedRelational.InterpreterKernelData
 open StageA.Formal
 open StageA.Relational
 open StageA.Relational.InterpreterKernelData
+open StageA.Relational.PEBytePacks
 
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -1361,6 +1500,7 @@ namespace StageA.GeneratedRelational.InterpreterKernelData
 open StageA.Formal
 open StageA.Relational
 open StageA.Relational.InterpreterKernelData
+open StageA.Relational.PEBytePacks
 
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -1660,6 +1800,19 @@ def _unique_byte_range_plans(
     return tuple(unique[key] for key in sorted(unique))
 
 
+def _byte_slice_located_expression(slice_plan: _ByteSlicePlan) -> str:
+    chunk = _byte_pack_chunk_definition(
+        slice_plan.pack_index,
+        slice_plan.chunk_index,
+    )
+    located = f"ByteTreePackAt.here (ByteTree.leaf {chunk})"
+    for direction in reversed(slice_plan.chunk_path):
+        located = (
+            f"ByteTreePackAt.{direction} (by rfl) (by rfl) ({located})"
+        )
+    return located
+
+
 def _local_byte_cache_source(
     pack_index: int,
     entry_offset: int,
@@ -1671,11 +1824,91 @@ def _local_byte_cache_source(
     declarations: list[str] = []
     for range_index, plan in enumerate(ranges):
         name = f"{entry_stem}ByteRange{range_index:04d}"
+        if plan.raw_count != len(plan.raw_bytes):
+            raise InterpreterKernelDataGenerationError(
+                "immutable byte range raw-count differs from its raw bytes: "
+                f"0x{plan.rva:x}+0x{plan.size:x}"
+            )
+        expected = plan.raw_bytes + bytes(plan.size - plan.raw_count)
+        if plan.expected_bytes != expected:
+            raise InterpreterKernelDataGenerationError(
+                "immutable byte range is not its exact raw bytes plus zero-fill: "
+                f"0x{plan.rva:x}+0x{plan.size:x}"
+            )
+        cursor = 0
+        slice_byte_names: list[str] = []
+        for slice_index, slice_plan in enumerate(plan.slices):
+            slice_stop = cursor + slice_plan.size
+            slice_bytes = plan.raw_bytes[cursor:slice_stop]
+            if len(slice_bytes) != slice_plan.size:
+                raise InterpreterKernelDataGenerationError(
+                    "immutable byte-range slice exceeds its raw-byte payload: "
+                    f"0x{plan.rva:x}+0x{plan.size:x}"
+                )
+            slice_bytes_name = f"{name}RawSlice{slice_index:04d}Bytes"
+            slice_exact_name = f"{name}RawSlice{slice_index:04d}Exact"
+            slice_located_name = f"{name}RawSlice{slice_index:04d}ChunkLocated"
+            pack = _byte_pack_definition(slice_plan.pack_index)
+            chunk = _byte_pack_chunk_definition(
+                slice_plan.pack_index,
+                slice_plan.chunk_index,
+            )
+            if (
+                slice_plan.pack_offset
+                != slice_plan.chunk_offset + slice_plan.leaf_offset
+                or slice_plan.leaf_offset + slice_plan.size
+                > slice_plan.chunk_size
+            ):
+                raise InterpreterKernelDataGenerationError(
+                    "immutable byte-range slice crosses its candidate byte chunk"
+                )
+            declarations.append(f"""
+def {slice_bytes_name} : Bytes :=
+  {_lean_bytes(slice_bytes)}
+
+theorem {slice_located_name} :
+    ByteTreePackAt {pack} {slice_plan.chunk_offset}
+      (ByteTree.leaf {chunk}) := by
+  unfold {pack}
+  exact {_byte_slice_located_expression(slice_plan)}
+
+theorem {slice_exact_name} :
+    {pack}.readBytes {slice_plan.pack_offset} {slice_plan.size} =
+      some {slice_bytes_name} := by
+  have bounded :
+      {slice_plan.leaf_offset} + {slice_plan.size} <= {chunk}.length := by
+    decide +kernel
+  calc
+    {pack}.readBytes {slice_plan.pack_offset} {slice_plan.size} =
+        (ByteTree.leaf {chunk}).readBytes
+          {slice_plan.leaf_offset} {slice_plan.size} :=
+      {slice_located_name}.readBytes_eq
+        {slice_plan.leaf_offset} {slice_plan.size} bounded
+    _ = some (
+        ({chunk}.drop {slice_plan.leaf_offset}).take {slice_plan.size}) :=
+      ByteTree.readBytes_leaf_eq_drop_take
+        {chunk} {slice_plan.leaf_offset} {slice_plan.size} bounded
+    _ = some {slice_bytes_name} := by
+      decide +kernel
+""")
+            slice_byte_names.append(slice_bytes_name)
+            cursor = slice_stop
+        if cursor != plan.raw_count:
+            raise InterpreterKernelDataGenerationError(
+                "immutable byte-range slices do not cover its raw-byte payload: "
+                f"0x{plan.rva:x}+0x{plan.size:x}"
+            )
+        raw_bytes_name = f"{name}RawBytes"
+        raw_bytes = " ++ ".join([*slice_byte_names, "[]"])
         declarations.append(f"""
+def {raw_bytes_name} : Bytes :=
+  {raw_bytes}
+
 noncomputable def {name} : ImmutableByteRange := {{
   rva := {plan.rva}
   size := {plan.size}
-  bytes := {_lean_bytes(plan.expected_bytes)}
+  bytes := {raw_bytes_name} ++
+    List.replicate ({plan.size} - {plan.raw_count}) 0
 }}
 """)
         range_names.append(name)
@@ -1859,6 +2092,18 @@ def _certificate_pack_source(
         raise InterpreterKernelDataGenerationError(
             "certificate pack must contain matching nonempty transfer data"
         )
+    byte_pack_indices = sorted(
+        {
+            slice_plan.pack_index
+            for entry_ranges in byte_ranges
+            for plan in entry_ranges
+            for slice_plan in plan.slices
+        }
+    )
+    byte_pack_imports = "\n".join(
+        f"import StageA.{_byte_pack_name(index)}"
+        for index in byte_pack_indices
+    )
     definition = _certificate_pack_definition(pack_index)
     declarations: list[str] = []
     entry_names: list[str] = []
@@ -1958,12 +2203,14 @@ noncomputable def {entry_stem}LocalCertificate :
 """)
     rows = ",\n  ".join(entry_names)
     return f"""import StageA.{INTERPRETER_KERNEL_DATA_LOCAL_CONTEXT}
+{byte_pack_imports}
 
 namespace StageA.GeneratedRelational.InterpreterKernelData
 
 open StageA.Formal
 open StageA.Relational
 open StageA.Relational.InterpreterKernelData
+open StageA.Relational.PEBytePacks
 
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -1996,23 +2243,43 @@ end StageA.GeneratedRelational.InterpreterKernelData
 
 def _authority_ranges_source(
     pack_index: int,
+    entry_offset: int,
     plans: Sequence[_ByteRangePlan],
 ) -> tuple[str, str]:
     ranges = _unique_byte_range_plans(plans)
     declarations: list[str] = []
     exact_names: list[str] = []
+    range_evidence: list[
+        tuple[
+            _ByteRangePlan,
+            str,
+            str,
+            str,
+            str,
+            str,
+            str,
+            str,
+            str,
+        ]
+    ] = []
+    entry_stem = _certificate_entry_stem(pack_index, entry_offset)
     for range_index, plan in enumerate(ranges):
-        local_range = (
-            f"generatedInterpreterKernelDataCertificatePack{pack_index:04d}"
-            f"ByteRange{range_index:04d}"
-        )
+        local_range = f"{entry_stem}ByteRange{range_index:04d}"
         stem = f"{local_range}Authority"
         slice_names: list[str] = []
+        slice_read_names: list[str] = []
         for slice_index, slice_plan in enumerate(plan.slices):
             slice_name = f"{stem}Slice{slice_index:04d}"
+            slice_read_name = f"{slice_name}Read"
             certificate = _byte_pack_certificate_definition(slice_plan.pack_index)
             pack = _byte_pack_definition(slice_plan.pack_index)
             length = _byte_pack_length_theorem(slice_plan.pack_index)
+            local_slice_bytes = (
+                f"{local_range}RawSlice{slice_index:04d}Bytes"
+            )
+            local_slice_exact = (
+                f"{local_range}RawSlice{slice_index:04d}Exact"
+            )
             declarations.append(f"""
 def {slice_name} :
     PEBytePackSlice generatedInterpreterKernelCandidatePe := {{
@@ -2025,8 +2292,15 @@ def {slice_name} :
     rw [{length}]
     decide
 }}
+
+theorem {slice_read_name} :
+    {slice_name}.bytes = some {local_slice_bytes} := by
+  change {pack}.readBytes {slice_plan.pack_offset} {slice_plan.size} =
+    some {local_slice_bytes}
+  exact {local_slice_exact}
 """)
             slice_names.append(slice_name)
+            slice_read_names.append(slice_read_name)
         slices_name = f"{stem}Slices"
         declarations.append(f"""
 def {slices_name} : List
@@ -2039,9 +2313,13 @@ def {slices_name} : List
         ):
             chain = f".cons {slice_name} (by decide) ({chain})"
         chain_name = f"{stem}Chain"
-        raw_bytes_name = f"{stem}RawBytes"
+        raw_bytes_name = f"{local_range}RawBytes"
         slices_read_name = f"{stem}SlicesRead"
+        metadata_plan_name = f"{stem}MetadataPlan"
+        metadata_checked_name = f"{stem}MetadataChecked"
+        metadata_certificate_name = f"{stem}MetadataCertificate"
         exact_name = f"{stem}Exact"
+        slice_read_simp = ", ".join(slice_read_names)
         declarations.append(f"""
 theorem {chain_name} :
     PEBytePackSliceChain generatedInterpreterKernelCandidatePe
@@ -2049,38 +2327,123 @@ theorem {chain_name} :
   unfold {slices_name}
   exact {chain}
 
-def {raw_bytes_name} : Bytes :=
-  (readPEBytePackSlices {slices_name}).getD []
-
 theorem {slices_read_name} :
     readPEBytePackSlices {slices_name} = some {raw_bytes_name} := by
+  simp only [{slices_name}, readPEBytePackSlices, {slice_read_simp}]
+  rfl
+
+def {metadata_plan_name} : ImmutableRangeMetadataPlan := {{
+  sectionIndex := {plan.section_index}
+  rawOffset := {plan.raw_offset}
+  rawCount := {plan.raw_count}
+}}
+""")
+        range_evidence.append(
+            (
+                plan,
+                local_range,
+                slices_name,
+                chain_name,
+                raw_bytes_name,
+                slices_read_name,
+                metadata_plan_name,
+                metadata_checked_name,
+                metadata_certificate_name,
+            )
+        )
+        exact_names.append(exact_name)
+    metadata_requests_name = f"{entry_stem}MetadataRequests"
+    metadata_batch_checked_name = f"{entry_stem}MetadataBatchChecked"
+    metadata_batch_certificate_name = (
+        f"{entry_stem}MetadataBatchCertificate"
+    )
+    request_rows = ",\n  ".join(
+        "{ rva := %d, size := %d, plan := %s }"
+        % (plan.rva, plan.size, metadata_plan_name)
+        for (
+            plan,
+            _local_range,
+            _slices_name,
+            _chain_name,
+            _raw_bytes_name,
+            _slices_read_name,
+            metadata_plan_name,
+            _metadata_checked_name,
+            _metadata_certificate_name,
+        ) in range_evidence
+    )
+    declarations.append(f"""
+def {metadata_requests_name} : List ImmutableRangeMetadataRequest := [
+  {request_rows}
+]
+
+theorem {metadata_batch_checked_name} :
+    immutableRangeMetadataBatchChecked
+      generatedInterpreterKernelCandidateDataLayout
+      generatedInterpreterKernelImports {metadata_requests_name} = true := by
   decide +kernel
+
+def {metadata_batch_certificate_name} :
+    ImmutableRangeMetadataBatchCertificate
+      generatedInterpreterKernelCandidateDataLayout
+      generatedInterpreterKernelImports {metadata_requests_name} :=
+  ImmutableRangeMetadataBatchCertificate.of_checked
+    generatedInterpreterKernelCandidateDataLayout
+    generatedInterpreterKernelImports {metadata_requests_name}
+    {metadata_batch_checked_name}
+""")
+    for range_index, (
+        plan,
+        local_range,
+        slices_name,
+        chain_name,
+        raw_bytes_name,
+        slices_read_name,
+        metadata_plan_name,
+        metadata_checked_name,
+        metadata_certificate_name,
+    ) in enumerate(range_evidence):
+        exact_name = f"{local_range}AuthorityExact"
+        declarations.append(f"""
+theorem {metadata_checked_name} :
+    immutableRangeMetadataChecked
+      generatedInterpreterKernelCandidateDataLayout
+      generatedInterpreterKernelImports {local_range}
+      {metadata_plan_name} = true := by
+  change immutableRangeMetadataRequestChecked
+    generatedInterpreterKernelCandidateDataLayout
+    generatedInterpreterKernelImports
+    {{ rva := {plan.rva}, size := {plan.size}, plan := {metadata_plan_name} }} =
+      true
+  simpa [{metadata_requests_name}] using
+    {metadata_batch_certificate_name}.checkedAt
+      ⟨{range_index}, by decide⟩
+
+noncomputable def {metadata_certificate_name} :
+    ImmutableRangeMetadataCertificate
+      generatedInterpreterKernelCandidateDataLayout
+      generatedInterpreterKernelImports {local_range}
+      {metadata_plan_name} :=
+  ImmutableRangeMetadataCertificate.of_checked
+    generatedInterpreterKernelCandidateDataLayout
+    generatedInterpreterKernelImports {local_range}
+    {metadata_plan_name} {metadata_checked_name}
 
 theorem {exact_name} :
     immutableRvaBytes generatedInterpreterKernelCandidatePe
       generatedInterpreterKernelImports {plan.rva} {plan.size} =
         some {local_range}.bytes := by
-  apply immutableRvaBytes_eq_slices
-    generatedInterpreterKernelCandidatePe generatedInterpreterKernelImports
-    {_lean_section_from_range(plan)} {plan.rva} {plan.size} {plan.raw_count}
-    {slices_name} {raw_bytes_name} {local_range}.bytes
-  · decide +kernel
-  · decide +kernel
-  · decide +kernel
-  · decide +kernel
-  · exact {chain_name}
-  · exact {slices_read_name}
-  · decide +kernel
+  exact {metadata_certificate_name}.exact_of_slices
+    generatedInterpreterKernelCandidateDataLayoutExact
+    {slices_name} {chain_name} {raw_bytes_name} {slices_read_name} rfl
 """)
-        exact_names.append(exact_name)
     ranges_name = (
-        f"generatedInterpreterKernelDataCertificatePack{pack_index:04d}ByteRanges"
+        f"{entry_stem}ByteRanges"
     )
     authoritative_name = f"{ranges_name}Authoritative"
     if exact_names:
         alternatives = " | ".join(
-            f"range = generatedInterpreterKernelDataCertificatePack{pack_index:04d}"
-            f"ByteRange{index:04d}"
+            f"range = {entry_stem}ByteRange{index:04d}"
             for index in range(len(exact_names))
         )
         authoritative = f"""by
@@ -2427,7 +2790,7 @@ def _packed_authority_source(
             data_name = f"{entry_stem}Data"
             cache = f"{entry_stem}ByteCache"
             range_source, ranges_authoritative = (
-                _reflective_authority_ranges_source(
+                _authority_ranges_source(
                     pack_index, entry_offset, ranges
                 )
             )
@@ -2620,6 +2983,191 @@ end StageA.GeneratedRelational.InterpreterKernelData
 """
 
 
+def _nested_and_projection(root: str, index: int, count: int) -> str:
+    if not 0 <= index < count:
+        raise InterpreterKernelDataGenerationError(
+            "native projection index is outside its pack"
+        )
+    if count == 1:
+        return root
+    if index == count - 1:
+        return root + ".2" * index
+    return root + ".2" * index + ".1"
+
+
+def _byte_range_index(
+    plans: Sequence[_ByteRangePlan],
+    *,
+    rva: int,
+    size: int,
+    label: str,
+) -> int:
+    ranges = _unique_byte_range_plans(plans)
+    matches = [
+        index
+        for index, plan in enumerate(ranges)
+        if plan.rva == rva and plan.size == size
+    ]
+    if len(matches) != 1:
+        raise InterpreterKernelDataGenerationError(
+            f"{label} does not identify one local immutable byte range: "
+            f"0x{rva:x}+0x{size:x}"
+        )
+    return matches[0]
+
+
+def _finite_index_membership_proof(index: int, count: int) -> str:
+    if not 0 <= index < count:
+        raise InterpreterKernelDataGenerationError(
+            "local immutable byte range index is outside its finite index"
+        )
+    proof = "True.intro" if index == count - 1 else "Or.inl True.intro"
+    for _ in range(index):
+        proof = f"Or.inr ({proof})"
+    return proof
+
+
+def _native_projection_pack_source(
+    pack_index: int,
+    authority_pack_index: int,
+    start: int,
+    table_rva: int,
+    image_base: int,
+    plans: Sequence[_TransferProofPlan],
+    byte_ranges: Sequence[Sequence[_ByteRangePlan]],
+) -> str:
+    entry_count = len(plans)
+    if entry_count <= 0:
+        raise InterpreterKernelDataGenerationError(
+            "native projection pack must contain at least one transfer"
+        )
+    if entry_count != len(byte_ranges):
+        raise InterpreterKernelDataGenerationError(
+            "native projection plans and byte ranges differ in length"
+        )
+    checks: list[str] = []
+    entry_theorems: list[str] = []
+    for entry_offset, (plan, entry_ranges) in enumerate(
+        zip(plans, byte_ranges, strict=True)
+    ):
+        entry_index = start + entry_offset
+        entry_stem = _certificate_entry_stem(pack_index, entry_offset)
+        data_name = f"{entry_stem}Data"
+        ranges_name = f"{entry_stem}ByteRanges"
+        range_count = len(_unique_byte_range_plans(entry_ranges))
+        descriptor_range_index = _byte_range_index(
+            entry_ranges,
+            rva=table_rva + entry_index * _TRANSFER_RECORD_SIZE,
+            size=_TRANSFER_RECORD_SIZE,
+            label=f"transfer {entry_index} descriptor",
+        )
+        if plan.descriptor.action_count <= 0:
+            raise InterpreterKernelDataGenerationError(
+                f"transfer {entry_index} has no native action array"
+            )
+        action_rva = _pointer_target_rva(
+            plan.descriptor.action_pointer,
+            image_base,
+            f"transfer {entry_index} action array",
+        )
+        action_range_index = _byte_range_index(
+            entry_ranges,
+            rva=action_rva,
+            size=plan.descriptor.action_count * _ACTION_SIZE,
+            label=f"transfer {entry_index} action array",
+        )
+        descriptor_range = (
+            f"{entry_stem}ByteRange{descriptor_range_index:04d}"
+        )
+        action_range = f"{entry_stem}ByteRange{action_range_index:04d}"
+        authoritative = f"{entry_stem}ByteRangesAuthoritative"
+        descriptor_exact = f"{entry_stem}NativeDescriptorRangeExact"
+        action_exact = f"{entry_stem}NativeActionRangeExact"
+        theorem_name = f"{entry_stem}NativeTransferActionsChecked"
+        loaded_name = f"{entry_stem}LoadedTransferActions"
+        check = (
+            "transferActionsRangesChecked "
+            "generatedInterpreterKernelCandidatePe "
+            f"generatedInterpreterKernelTableRva {entry_index} {data_name}"
+            f" {descriptor_range} {action_range}"
+        )
+        checks.append(f"{check} = true")
+        descriptor_member = _finite_index_membership_proof(
+            descriptor_range_index, range_count
+        )
+        action_member = _finite_index_membership_proof(
+            action_range_index, range_count
+        )
+        entry_theorems.append(
+            f"""
+theorem {descriptor_exact} :
+    immutableRvaBytes generatedInterpreterKernelCandidatePe
+      generatedInterpreterKernelImports {descriptor_range}.rva
+        {descriptor_range}.size = some {descriptor_range}.bytes :=
+  {authoritative} {descriptor_range} (by
+    unfold {ranges_name}
+    simp only [FiniteIndex.toList, List.mem_cons, List.not_mem_nil, or_false]
+    exact {descriptor_member})
+
+theorem {action_exact} :
+    immutableRvaBytes generatedInterpreterKernelCandidatePe
+      generatedInterpreterKernelImports {action_range}.rva
+        {action_range}.size = some {action_range}.bytes :=
+  {authoritative} {action_range} (by
+    unfold {ranges_name}
+    simp only [FiniteIndex.toList, List.mem_cons, List.not_mem_nil, or_false]
+    exact {action_member})
+
+theorem {theorem_name} :
+    {check} = true :=
+  by rfl
+
+noncomputable def {loaded_name} (memory : Memory)
+    (loaded : LoadedCandidateImageMemory generatedInterpreterKernelCandidatePe
+      generatedInterpreterKernelImports generatedInterpreterKernelRelocations
+      memory) :
+    LoadedTransferActionsAt generatedInterpreterKernelCandidatePe
+      generatedInterpreterKernelTableRva {entry_index} {data_name} memory :=
+  LoadedTransferActionsAt.of_ranges_checked loaded {descriptor_exact}
+    {action_exact} {theorem_name}
+"""
+        )
+    conjunction = "\n    ∧ ".join(checks)
+    checked_name = _native_projection_pack_checked_theorem(pack_index)
+    theorem_names = [
+        _certificate_entry_stem(pack_index, entry_offset)
+        + "NativeTransferActionsChecked"
+        for entry_offset in range(entry_count)
+    ]
+    conjunction_proof = theorem_names[-1]
+    for theorem_name in reversed(theorem_names[:-1]):
+        conjunction_proof = f"⟨{theorem_name}, {conjunction_proof}⟩"
+    return f"""import StageA.RelationalInterpreterKernelProgramTableProjection
+import StageA.{_authority_pack_name(authority_pack_index)}
+
+namespace StageA.GeneratedRelational.InterpreterKernelData
+
+open StageA.Formal
+open StageA.Relational
+open StageA.Relational.InterpreterKernelABI
+open StageA.Relational.InterpreterKernelData
+open StageA.Relational.InterpreterKernelProgramTableProjection
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+set_option compiler.extract_closed false
+set_option Elab.async false
+
+{''.join(entry_theorems)}
+
+theorem {checked_name} :
+    {conjunction} := by
+  exact {conjunction_proof}
+
+end StageA.GeneratedRelational.InterpreterKernelData
+"""
+
+
 def _global_authority_source(authority_pack_count: int) -> str:
     imports = "\n".join(
         f"import StageA.{_authority_pack_name(index)}"
@@ -2629,6 +3177,31 @@ def _global_authority_source(authority_pack_count: int) -> str:
         _authority_pack_definition(index)
         for index in range(authority_pack_count)
     )
+    inclusion_theorems: list[str] = []
+    for index in range(authority_pack_count):
+        if authority_pack_count == 1:
+            membership = "member"
+        else:
+            alternatives = "Or.inl member"
+            if index == authority_pack_count - 1:
+                alternatives = "member"
+            for _ in range(index):
+                alternatives = f"Or.inr ({alternatives})"
+            membership = alternatives
+        inclusion_theorems.append(
+            f"""
+theorem {_authority_pack_included_theorem(index)}
+    (shard : ProgramTableShardCertificate
+      generatedInterpreterKernelCandidatePe generatedInterpreterKernelImports
+      generatedInterpreterKernelRelocations
+      generatedInterpreterKernelTableRva)
+    (member : shard ∈ {_authority_pack_definition(index)}) :
+    shard ∈ generatedInterpreterKernelDataShards := by
+  unfold generatedInterpreterKernelDataShards
+  {"simp only [List.mem_append]" if authority_pack_count > 1 else ""}
+  exact {membership}
+"""
+        )
     return f"""{imports}
 
 namespace StageA.GeneratedRelational.InterpreterKernelData
@@ -2640,6 +3213,8 @@ noncomputable def generatedInterpreterKernelDataShards : List
       generatedInterpreterKernelImports generatedInterpreterKernelRelocations
       generatedInterpreterKernelTableRva) :=
   {shards}
+
+{''.join(inclusion_theorems)}
 
 end StageA.GeneratedRelational.InterpreterKernelData
 """
@@ -3090,6 +3665,139 @@ end StageA.GeneratedRelational.InterpreterKernelData
 """
 
 
+def _semantic_record_pack_source(
+    pack_index: int,
+    authority_pack_index: int,
+    entries: Sequence[tuple[int, int]],
+) -> str:
+    shard = _certificate_pack_shard_definition(pack_index)
+    authority_pack = _authority_pack_definition(authority_pack_index)
+    shard_member = (
+        f"generatedInterpreterKernelSemanticRecordPack{pack_index:04d}"
+        "ShardMember"
+    )
+    records: list[str] = []
+    for entry_offset, source_rva in entries:
+        entry = f"{_certificate_entry_stem(pack_index, entry_offset)}Data.compiled.record"
+        definition = _semantic_record_definition(pack_index, entry_offset)
+        checked = f"{definition}Checked"
+        records.append(
+            f"""
+theorem {checked} : {entry}.checked = true := by
+  decide +kernel
+
+noncomputable def {definition} :
+    CheckedSemanticProgramRecord semanticInterpreterProgramRecords
+      {source_rva} :=
+  ProgramTableCertificate.checkedSemanticRecordOfShardMember
+      generatedInterpreterKernelDataCertificate
+      {shard} {entry} {source_rva}
+      {shard_member}
+      (by
+        unfold ProgramTableShardCertificate.records {shard}
+          {_certificate_pack_compiled_entries_definition(pack_index)}
+        simp)
+      (by rfl)
+      {checked}
+"""
+        )
+    return f"""import StageA.{INTERPRETER_KERNEL_DATA_BUNDLE}
+
+namespace StageA.GeneratedRelational.InterpreterKernelData
+
+open StageA.Relational.InterpreterKernelData
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+theorem {shard_member} :
+    {shard} ∈ generatedInterpreterKernelDataCertificate.shards := by
+  apply {_authority_pack_included_theorem(authority_pack_index)}
+  unfold {authority_pack}
+  simp
+
+{''.join(records)}
+
+end StageA.GeneratedRelational.InterpreterKernelData
+"""
+
+
+def _semantic_record_bundle_source(module_names: Sequence[str]) -> str:
+    imports = "\n".join(
+        f"import StageA.{name}" for name in module_names
+    )
+    return f"""{imports}
+
+namespace StageA.GeneratedRelational.InterpreterKernelData
+
+/-!
+Stable import boundary for exact PE-backed, lookup-bound semantic records.
+Every record was checked once in its local table shard; consumers compose the
+opaque checked handles exported by the pack modules.
+-/
+
+end StageA.GeneratedRelational.InterpreterKernelData
+"""
+
+
+def _action_cursor_pack_source(
+    pack_index: int,
+    start: int,
+    entries: Sequence[tuple[int, int]],
+) -> str:
+    definitions: list[str] = []
+    for entry_offset, _source_rva in entries:
+        entry_stem = _certificate_entry_stem(pack_index, entry_offset)
+        data_name = f"{entry_stem}Data"
+        semantic_name = _semantic_record_definition(pack_index, entry_offset)
+        loaded_name = f"{entry_stem}LoadedTransferActions"
+        definition = _loaded_semantic_transfer_definition(
+            pack_index, entry_offset
+        )
+        entry_index = start + entry_offset
+        definitions.append(
+            f"""
+noncomputable def {definition} (memory : Memory)
+    (loaded : LoadedCandidateImageMemory generatedInterpreterKernelCandidatePe
+      generatedInterpreterKernelImports generatedInterpreterKernelRelocations
+      memory) :
+    CheckedLoadedSemanticTransfer generatedInterpreterKernelCandidatePe
+      generatedInterpreterKernelTableRva {entry_index} {data_name}
+      semanticInterpreterProgramRecords memory := {{
+  semantic := {semantic_name}
+  recordExact := rfl
+  sourceIndexExact := by
+    rw [semanticInterpreterProgramSourceRvasExact]
+    decide +kernel
+  loaded := {loaded_name} memory loaded
+}}
+"""
+        )
+    return f"""import StageA.RelationalInterpreterKernelActionAlignment
+import StageA.{_native_projection_pack_name(pack_index)}
+import StageA.{_semantic_record_pack_name(pack_index)}
+
+namespace StageA.GeneratedRelational.InterpreterKernelData
+
+open StageA.Formal
+open StageA.Relational.InterpreterKernelABI
+open StageA.Relational.InterpreterKernelActionCursor
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+set_option compiler.extract_closed false
+set_option Elab.async false
+
+{''.join(definitions)}
+
+end StageA.GeneratedRelational.InterpreterKernelData
+"""
+
+
+def _named_module_bundle_source(module_names: Sequence[str]) -> str:
+    return "\n".join(f"import StageA.{name}" for name in module_names) + "\n"
+
+
 def _module_row(
     name: str,
     source: str,
@@ -3113,12 +3821,150 @@ def _module_row(
     return row
 
 
+def _topological_pack_order(
+    members: Sequence[str], imports: dict[str, tuple[str, ...]]
+) -> list[str]:
+    member_set = set(members)
+    pending = {
+        module: {dependency for dependency in imports[module]
+                 if dependency in member_set}
+        for module in members
+    }
+    ordered: list[str] = []
+    while pending:
+        ready = sorted(
+            module for module, dependencies in pending.items()
+            if not dependencies
+        )
+        if not ready:
+            raise InterpreterKernelDataGenerationError(
+                "generated Lean build pack contains an import cycle"
+            )
+        for module in ready:
+            ordered.append(module)
+            del pending[module]
+        for dependencies in pending.values():
+            dependencies.difference_update(ready)
+    return ordered
+
+
+def _write_module_build_packs(
+    destination: Path,
+    kernel_modules: Sequence[str],
+    modules: Sequence[dict[str, Any]],
+    certificate_packs_per_authority: int,
+) -> None:
+    rows = {str(row["name"]): row for row in modules}
+    imports: dict[str, tuple[str, ...]] = {}
+    for module in kernel_modules:
+        source = destination / "StageA" / f"{module}.lean"
+        imports[module] = tuple(_LEAN_IMPORT.findall(source.read_text()))
+    for name, row in rows.items():
+        imports[name] = tuple(str(value) for value in row["imports"])
+
+    assignments: dict[str, str] = {
+        module: f"kernel-{module}" for module in kernel_modules
+    }
+    for name, row in rows.items():
+        role = str(row["role"])
+        if role == "candidate-byte-pack":
+            suffix = int(name.removeprefix(INTERPRETER_KERNEL_DATA_BYTE_PACK_PREFIX))
+            pack = f"candidate-bytes-{suffix // 8:04d}"
+        elif role == "candidate-local-data-context":
+            pack = "candidate-local-context"
+        elif role in {"candidate-pe-binding", "candidate-pe-authority-facade"}:
+            pack = "candidate-pe-root"
+        elif role == "candidate-relocation-entry-pack":
+            suffix = int(
+                name.removeprefix(INTERPRETER_KERNEL_DATA_RELOCATION_PACK_PREFIX)
+            )
+            pack = f"candidate-relocation-entries-{suffix // 8:04d}"
+        elif role == "candidate-relocation-block":
+            suffix = int(
+                name.removeprefix(INTERPRETER_KERNEL_DATA_RELOCATION_BLOCK_PREFIX)
+            )
+            pack = f"candidate-relocation-blocks-{suffix // 8:04d}"
+        elif role in {"candidate-relocation-chain", "candidate-relocation-bundle"}:
+            pack = "candidate-relocation-closure"
+        elif role == "transfer-certificate-pack":
+            suffix = int(
+                name.removeprefix(INTERPRETER_KERNEL_DATA_CERTIFICATE_PACK_PREFIX)
+            )
+            pack = (
+                "transfer-native-authority-"
+                f"{suffix // certificate_packs_per_authority:04d}"
+            )
+        elif role == "candidate-data-authority-pack":
+            suffix = int(
+                name.removeprefix(INTERPRETER_KERNEL_DATA_AUTHORITY_PACK_PREFIX)
+            )
+            pack = f"transfer-native-authority-{suffix:04d}"
+        elif role == "candidate-data-native-projection-pack":
+            suffix = int(
+                name.removeprefix(
+                    INTERPRETER_KERNEL_DATA_NATIVE_PROJECTION_PACK_PREFIX
+                )
+            )
+            pack = f"transfer-native-projection-{suffix:04d}"
+        elif role == "candidate-data-shard-facade":
+            suffix = int(
+                name.removeprefix(INTERPRETER_KERNEL_DATA_SHARD_FACADE_PREFIX)
+            )
+            pack = f"transfer-shard-facade-{suffix // 16:04d}"
+        elif role in {
+            "candidate-data-global-authority",
+            "transfer-table-bundle",
+        }:
+            pack = "transfer-table-global"
+        elif role == "checked-semantic-record-pack":
+            suffix = int(
+                name.removeprefix(INTERPRETER_KERNEL_DATA_SEMANTIC_RECORD_PACK_PREFIX)
+            )
+            pack = f"semantic-records-{suffix // 8:04d}"
+        elif role == "checked-semantic-record-bundle":
+            pack = "semantic-records-global"
+        elif role == "checked-action-cursor-pack":
+            suffix = int(
+                name.removeprefix(
+                    INTERPRETER_KERNEL_DATA_ACTION_CURSOR_PACK_PREFIX
+                )
+            )
+            pack = f"action-cursors-{suffix // 8:04d}"
+        elif role == "checked-action-cursor-bundle":
+            pack = "action-cursors-global"
+        else:
+            raise InterpreterKernelDataGenerationError(
+                f"generated Lean module role lacks a build-pack policy: {role}"
+            )
+        assignments[name] = pack
+
+    packs: dict[str, list[str]] = {}
+    for module, pack in assignments.items():
+        packs.setdefault(pack, []).append(module)
+    ordered_packs = {
+        pack: _topological_pack_order(members, imports)
+        for pack, members in sorted(packs.items())
+    }
+    write_json(
+        destination / "module-build-packs.json",
+        {
+            "format": "stage-a-lean-build-packs-v1",
+            "modules": dict(sorted(assignments.items())),
+            "packs": ordered_packs,
+        },
+    )
+
+
 def _copy_kernel_closure(
     destination: Path, source_root: Path | None = None
 ) -> tuple[str, ...]:
     if source_root is None:
         source_root = Path(__file__).parents[2] / "lean/StageA"
-    pending = ["RelationalInterpreterKernelData"]
+    pending = [
+        "RelationalInterpreterKernelActionAlignment",
+        "RelationalInterpreterKernelData",
+        "RelationalInterpreterKernelProgramTableProjection",
+    ]
     copied: set[str] = set()
     while pending:
         module = pending.pop()
@@ -3586,6 +4432,39 @@ def generate_interpreter_kernel_data_bundle(
             )
         )
 
+    native_projection_pack_names: list[str] = []
+    for pack_index, pack_ranges in enumerate(byte_ranges_by_pack):
+        authority_index = pack_index // certificate_packs_per_authority
+        name = _native_projection_pack_name(pack_index)
+        source = _native_projection_pack_source(
+            pack_index,
+            authority_index,
+            pack_index * shard_size,
+            table_rva,
+            image_base,
+            transfer_plans[
+                pack_index * shard_size : pack_index * shard_size + len(pack_ranges)
+            ],
+            pack_ranges,
+        )
+        (stage_a / f"{name}.lean").write_text(source, encoding="utf-8")
+        native_projection_pack_names.append(name)
+        modules.append(
+            _module_row(
+                name,
+                source,
+                role="candidate-data-native-projection-pack",
+                resources=_AUTHORITY_PACK_RESOURCES,
+                extra={
+                    "certificate_pack_index": pack_index,
+                    "authority_pack_index": authority_index,
+                    "transfer_start": pack_index * shard_size,
+                    "transfer_count": len(pack_ranges),
+                    "boolean_certificate_count": len(pack_ranges),
+                },
+            )
+        )
+
     for pack_index in range(len(certificate_pack_names)):
         authority_index = pack_index // certificate_packs_per_authority
         name = _shard_facade_name(pack_index)
@@ -3643,6 +4522,113 @@ def generate_interpreter_kernel_data_bundle(
         )
     )
 
+    semantic_record_pack_names: list[str] = []
+    semantic_entries_by_pack: dict[
+        int, tuple[tuple[int, int], ...]
+    ] = {}
+    semantic_record_count = 0
+    for pack_index, source_rvas in enumerate(source_rvas_by_pack):
+        start = pack_index * shard_size
+        pack_transfers = transfers[start : start + shard_size]
+        semantic_entries = tuple(
+            (entry_offset, source_rva)
+            for entry_offset, (source_rva, transfer) in enumerate(
+                zip(source_rvas, pack_transfers, strict=True)
+            )
+            if not transfer.x87_replays
+        )
+        if not semantic_entries:
+            continue
+        semantic_entries_by_pack[pack_index] = semantic_entries
+        authority_index = pack_index // certificate_packs_per_authority
+        name = _semantic_record_pack_name(pack_index)
+        source = _semantic_record_pack_source(
+            pack_index,
+            authority_index,
+            semantic_entries,
+        )
+        (stage_a / f"{name}.lean").write_text(source, encoding="utf-8")
+        semantic_record_pack_names.append(name)
+        modules.append(
+            _module_row(
+                name,
+                source,
+                role="checked-semantic-record-pack",
+                resources=_LIGHT_RESOURCES,
+                extra={
+                    "certificate_pack_index": pack_index,
+                    "authority_pack_index": authority_index,
+                    "semantic_record_count": len(semantic_entries),
+                },
+            )
+        )
+        semantic_record_count += len(semantic_entries)
+
+    semantic_record_bundle = _semantic_record_bundle_source(
+        semantic_record_pack_names
+    )
+    (
+        stage_a / f"{INTERPRETER_KERNEL_DATA_SEMANTIC_RECORD_BUNDLE}.lean"
+    ).write_text(semantic_record_bundle, encoding="utf-8")
+    modules.append(
+        _module_row(
+            INTERPRETER_KERNEL_DATA_SEMANTIC_RECORD_BUNDLE,
+            semantic_record_bundle,
+            role="checked-semantic-record-bundle",
+            resources=_LIGHT_RESOURCES,
+            extra={
+                "semantic_record_pack_count": len(
+                    semantic_record_pack_names
+                ),
+                "semantic_record_count": semantic_record_count,
+            },
+        )
+    )
+
+    action_cursor_pack_names: list[str] = []
+    action_cursor_count = 0
+    for pack_index, semantic_entries in semantic_entries_by_pack.items():
+        name = _action_cursor_pack_name(pack_index)
+        source = _action_cursor_pack_source(
+            pack_index,
+            pack_index * shard_size,
+            semantic_entries,
+        )
+        (stage_a / f"{name}.lean").write_text(source, encoding="utf-8")
+        action_cursor_pack_names.append(name)
+        modules.append(
+            _module_row(
+                name,
+                source,
+                role="checked-action-cursor-pack",
+                resources=_LIGHT_RESOURCES,
+                extra={
+                    "certificate_pack_index": pack_index,
+                    "action_cursor_count": len(semantic_entries),
+                },
+            )
+        )
+        action_cursor_count += len(semantic_entries)
+
+    action_cursor_bundle = _named_module_bundle_source(
+        action_cursor_pack_names
+    )
+    (
+        stage_a / f"{INTERPRETER_KERNEL_DATA_ACTION_CURSOR_BUNDLE}.lean"
+    ).write_text(action_cursor_bundle, encoding="utf-8")
+    modules.append(
+        _module_row(
+            INTERPRETER_KERNEL_DATA_ACTION_CURSOR_BUNDLE,
+            action_cursor_bundle,
+            role="checked-action-cursor-bundle",
+            resources=_LIGHT_RESOURCES,
+            extra={
+                "action_cursor_pack_count": len(action_cursor_pack_names),
+                "action_cursor_count": action_cursor_count,
+            },
+        )
+    )
+
     inventory = InterpreterKernelDataInventory(
         candidate_sha256=sha256_bytes(candidate_bytes),
         candidate_size=len(candidate_bytes),
@@ -3664,8 +4650,16 @@ def generate_interpreter_kernel_data_bundle(
         record_count=len(transfer_plans),
         certificate_pack_count=len(certificate_pack_names),
         authority_pack_count=len(authority_pack_names),
+        native_projection_pack_count=len(native_projection_pack_names),
+        action_cursor_pack_count=len(action_cursor_pack_names),
         standalone_module_count=len(kernel_modules) + len(modules),
         modules=tuple(modules),
+    )
+    _write_module_build_packs(
+        destination,
+        kernel_modules,
+        modules,
+        certificate_packs_per_authority,
     )
     write_json(destination / "module-inventory.json", inventory.payload())
     write_json(
@@ -3696,11 +4690,14 @@ def generate_interpreter_kernel_data_bundle(
 
 
 __all__ = [
+    "INTERPRETER_KERNEL_DATA_ACTION_CURSOR_BUNDLE",
+    "INTERPRETER_KERNEL_DATA_ACTION_CURSOR_PACK_PREFIX",
     "INTERPRETER_KERNEL_DATA_AUTHORITY",
     "INTERPRETER_KERNEL_DATA_AUTHORITY_PACK_PREFIX",
     "INTERPRETER_KERNEL_DATA_BASE",
     "INTERPRETER_KERNEL_DATA_BUNDLE",
     "INTERPRETER_KERNEL_DATA_CANDIDATE_AUTHORITY",
+    "INTERPRETER_KERNEL_DATA_BYTE_CHUNK_SIZE",
     "INTERPRETER_KERNEL_DATA_BYTE_PACK_PREFIX",
     "INTERPRETER_KERNEL_DATA_BYTE_PACK_SIZE",
     "INTERPRETER_KERNEL_DATA_CERTIFICATE_PACK_PREFIX",
@@ -3715,8 +4712,11 @@ __all__ = [
     "INTERPRETER_KERNEL_DATA_RELOCATION_BUNDLE",
     "INTERPRETER_KERNEL_DATA_RELOCATION_BLOCK_PREFIX",
     "INTERPRETER_KERNEL_DATA_RELOCATION_CHAIN_PREFIX",
+    "INTERPRETER_KERNEL_DATA_SEMANTIC_RECORD_BUNDLE",
+    "INTERPRETER_KERNEL_DATA_SEMANTIC_RECORD_PACK_PREFIX",
     "INTERPRETER_KERNEL_DATA_FORMAT",
     "INTERPRETER_KERNEL_DATA_LOCAL_CONTEXT",
+    "INTERPRETER_KERNEL_DATA_NATIVE_PROJECTION_PACK_PREFIX",
     "InterpreterKernelDataGenerationError",
     "InterpreterKernelDataInventory",
     "generate_interpreter_kernel_data_bundle",

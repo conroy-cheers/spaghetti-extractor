@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import re
 import shutil
 import tempfile
@@ -9,6 +10,9 @@ from pathlib import Path
 from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
 from spaghetti_extractor.relational.lean.interpreter_normalization import (
     relational_interpreter_normalization_bundle_sources,
+)
+from spaghetti_extractor.relational.lean.interpreter_semantic_refinement import (
+    relational_interpreter_semantic_refinement_bundle_sources,
 )
 from spaghetti_extractor.util import sha256_bytes
 
@@ -54,7 +58,7 @@ class StageARelationalInterpreterNormalizationKernelTests(unittest.TestCase):
             stage_a = root / "StageA"
             stage_a.mkdir()
             _copy_module_closure(
-                source_root, stage_a, "RelationalInterpreterNormalization"
+                source_root, stage_a, "RelationalInterpreterSemanticRefinement"
             )
             (stage_a / "RelationalInterpreterNormalizationKernel.lean").write_text(
                 _FIXTURE,
@@ -80,13 +84,19 @@ class StageARelationalInterpreterNormalizationKernelTests(unittest.TestCase):
             transfer_prefix="semanticInterpreterTransfer",
             shard_size=1,
         )
+        refinement_sources = relational_interpreter_semantic_refinement_bundle_sources(
+            [_lea_row()],
+            pe_module="StageA.GeneratedNormalizationProgramFixture",
+            module_prefix="GeneratedNormalizationRefinementProof",
+            shard_size=1,
+        )
         source_root = Path(__file__).parents[1] / "src/spaghetti_extractor/lean/StageA"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             stage_a = root / "StageA"
             stage_a.mkdir()
             _copy_module_closure(
-                source_root, stage_a, "RelationalInterpreterNormalization"
+                source_root, stage_a, "RelationalInterpreterSemanticRefinement"
             )
             _copy_module_closure(
                 source_root, stage_a, "RelationalInterpreterAcceptance"
@@ -101,8 +111,13 @@ class StageARelationalInterpreterNormalizationKernelTests(unittest.TestCase):
             (stage_a / f"{data_module}.lean").write_text(
                 sources[data_module], encoding="utf-8"
             )
-            (stage_a / "GeneratedNormalizationRefinementFixture.lean").write_text(
-                _REFINEMENT_FIXTURE, encoding="utf-8"
+            for module, source in refinement_sources.items():
+                (stage_a / f"{module}.lean").write_text(source, encoding="utf-8")
+            (
+                stage_a / "GeneratedNormalizationRefinementFixture.lean"
+            ).write_text(
+                "import StageA.GeneratedNormalizationRefinementProofBundle\n",
+                encoding="utf-8",
             )
             for module, source in sources.items():
                 if module != data_module:
@@ -113,6 +128,57 @@ class StageARelationalInterpreterNormalizationKernelTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "checked", result)
         self.assertNotIn("sorryAx", result["stdout"])
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for kernel checks")
+    def test_generated_fused_refinement_rejects_mutated_span_bytes(self) -> None:
+        row = _lea_row()
+        mutated = copy.deepcopy(row)
+        mutated["instructions"][0]["bytes"] = "8d4002"  # type: ignore[index]
+        mutated["instruction_bytes_sha256"] = sha256_bytes(
+            bytes.fromhex("8d4002")
+        )
+        normalization_sources = relational_interpreter_normalization_bundle_sources(
+            [row],
+            source_module="StageA.GeneratedNormalizationProgramFixture",
+            pe_name="StageA.GeneratedRelational.originalPe",
+            semantic_refinement_module="StageA.GeneratedNormalizationRefinementFixture",
+            record_prefix="semanticInterpreterProgramRecord",
+            transfer_prefix="semanticInterpreterTransfer",
+            shard_size=1,
+        )
+        refinement_sources = relational_interpreter_semantic_refinement_bundle_sources(
+            [mutated],
+            pe_module="StageA.GeneratedNormalizationProgramFixture",
+            module_prefix="GeneratedNormalizationRefinementProof",
+            shard_size=1,
+        )
+        source_root = Path(__file__).parents[1] / "src/spaghetti_extractor/lean/StageA"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stage_a = root / "StageA"
+            stage_a.mkdir()
+            _copy_module_closure(
+                source_root, stage_a, "RelationalInterpreterSemanticRefinement"
+            )
+            (stage_a / "RelationalInterpreterNormalizationKernel.lean").write_text(
+                _FIXTURE, encoding="utf-8"
+            )
+            (stage_a / "GeneratedNormalizationProgramFixture.lean").write_text(
+                _PROGRAM_FIXTURE, encoding="utf-8"
+            )
+            data_module = "GeneratedInterpreterNormalizationShard0000Data"
+            (stage_a / f"{data_module}.lean").write_text(
+                normalization_sources[data_module], encoding="utf-8"
+            )
+            for module, source in refinement_sources.items():
+                (stage_a / f"{module}.lean").write_text(source, encoding="utf-8")
+            result = _run_lean_relational(
+                root, bundle="GeneratedNormalizationRefinementProofBundle"
+            )
+
+        self.assertEqual(result["status"], "failed", result)
+        self.assertIn("exactRvaBytes originalPe 4096 3", result["stdout"])
+        self.assertIn("some [141, 64, 2]", result["stdout"])
 
 
 def _lea_row() -> dict[str, object]:
@@ -152,13 +218,14 @@ def _lea_row() -> dict[str, object]:
     }
 
 
-_FIXTURE = r"""import StageA.RelationalInterpreterNormalization
+_FIXTURE = r"""import StageA.RelationalInterpreterSemanticRefinement
 
 namespace StageA.RelationalInterpreterNormalizationKernel
 
 open StageA.Formal StageA.Relational
 open StageA.Relational.Interpreter
 open StageA.Relational.InterpreterNormalization
+open StageA.Relational.InterpreterSemanticRefinement
 open StageA.Relational.InterpreterTransfer
 
 theorem updateObservedFlag (word : Word) (index : Nat)
@@ -328,7 +395,8 @@ theorem exactSemanticRefinement :
   simp only [runExactDecodedInstructions]
   simp only [executeExactDecodedInstruction?, exactDecoded]
   simp [exactTransfer, leaDecoded,
-    exactInstructionMemoryEvents?, executeInstruction,
+    exactInstructionMemoryEvents?, executeInstructionWithContext,
+    executeInstruction,
     SemanticTransfer.execute, SemanticTransfer.executeBody,
     SemanticTransfer.executeAction, SemanticWordNode.evaluate,
     SemanticOutcome.complete, halted, evalPrimitive,
@@ -343,6 +411,59 @@ theorem exactSemanticRefinement :
     leaInstruction, readMemory, InterpreterMachine.setRegister]
   funext register
   cases register <;> rfl
+
+set_option maxHeartbeats 2000000 in
+theorem exactFusedMachineRefinement :
+    ExactSemanticTransferFusedMachineRefinement exactPe []
+      { start := 0x1000, size := 3 } exactTransfer := by
+  intro targets state environment symbolic behavior result symbolicExact
+    evaluated transferExact
+  have exactBytes :
+      exactRvaBytes exactPe 0x1000 3 = some [0x8d, 0x40, 0x01] := by
+    decide +kernel
+  have exactWindow :
+      executableSpanInstructionWindow exactPe 0x1000 0x1003 =
+        some [0x8d, 0x40, 0x01] := by
+    decide +kernel
+  have exactDecoded :
+      decodeInstructionExact [0x8d, 0x40, 0x01] = some leaDecoded := by
+    decide +kernel
+  simp (config := { maxSteps := 4000000 })
+    [executePE32SymbolicSpan, runPE32SymbolicSpanFuel,
+      Span.stop, exactWindow, exactDecoded, leaDecoded,
+      executeInstruction, executeInstructionWithContext,
+      initialSymbolic, initialSymbolicX87, Addressing.expression,
+      Registers.set, Registers.get, Expr.addNormalized] at symbolicExact
+  subst symbolic
+  unfold evalBehavior at evaluated
+  generalize normalizedExact :
+      normalizeSymbolicBehavior false targets _ = normalized at evaluated
+  cases normalized with
+  | none => simp at evaluated
+  | some normalized =>
+      injection evaluated with evaluated
+      subst behavior
+      simp (config := { maxSteps := 4000000 })
+        [exactTransfer, SemanticTransfer.execute, SemanticTransfer.executeBody,
+          SemanticTransfer.executeAction, SemanticWordNode.evaluate,
+          SemanticOutcome.complete, halted, evalPrimitive, RuntimeState.setWord,
+          Register.ofIndex?, formalRegister, machineFromFormal,
+          InterpreterMachine.setRegister] at transferExact
+      subst result
+      obtain ⟨registersExact, x87Exact, writesExact, flagsExact⟩ :=
+        normalizeSymbolicBehavior_fields false targets _ normalized
+          normalizedExact
+      simp [registersExact, x87Exact, writesExact, flagsExact,
+        NormalizedSymbolicBehavior.eval,
+        RelationalBehavior.nextMachineState, machineFromFormal,
+        evalNormalizedRegisters, evalNormalizedX87, evalNormalizedWrites,
+        evalNormalizedFlags, applyConcreteWrites,
+        StageA.Formal.applyWrites, InterpreterTransfer.applyWrites,
+        StageA.Formal.Expr.eval, StageA.Formal.X87Expr.eval,
+        StageA.Formal.BoolExpr.eval, StageA.Formal.FlagsExpr.eval,
+        reconstructedInputFlags]
+      funext register
+      cases register <;> rfl
 
 example : ExactNormalizationCertificate exactPe exactPath exactTransfer := {
   diagnosticShape := by native_decide
@@ -389,6 +510,7 @@ theorem wrongArithmeticRejected :
   cases eaxEquality
 
 #print axioms exactSemanticRefinement
+#print axioms exactFusedMachineRefinement
 #print axioms wrongArithmeticRejected
 #print axioms ExactNormalizationCertificate.sound
 #print axioms ExactProgramRecordNormalizationCertificate.rawMacroStep
@@ -409,8 +531,19 @@ def originalPe : StageA.Formal.PE32 :=
 def semanticInterpreterProgramRecord0 : ProgramRecord :=
   StageA.RelationalInterpreterNormalizationKernel.exactRecord
 
-def semanticInterpreterTransfer0 : SemanticTransfer :=
-  StageA.RelationalInterpreterNormalizationKernel.exactTransfer
+def semanticInterpreterTransfer0 : SemanticTransfer := {
+  sourceRva := 0x1000
+  wordNodes := [
+    { op := .register, aux := 0, immediate := 0, args := [] },
+    { op := .constant, aux := 0, immediate := 1, args := [] },
+    { op := .add32, aux := 0, immediate := 0, args := [0, 1] }
+  ]
+  calls := []
+  body := [.evalWord 0, .evalWord 1, .evalWord 2, .setRegister .eax 2]
+  outcome := .fallthrough 0x1003
+}
+
+def originalImports : List StageA.Formal.PEImport := []
 
 theorem semanticInterpreterProgramRecord0Decoded :
     semanticInterpreterProgramRecord0.decode =
@@ -418,25 +551,6 @@ theorem semanticInterpreterProgramRecord0Decoded :
 
 theorem semanticInterpreterProgramRecord0TransferChecked :
     semanticInterpreterTransfer0.checked = true := by native_decide
-
-end StageA.GeneratedRelational
-"""
-
-
-_REFINEMENT_FIXTURE = r"""import StageA.GeneratedInterpreterNormalizationShard0000Data
-import StageA.RelationalInterpreterNormalizationKernel
-
-namespace StageA.GeneratedRelational
-
-open StageA.Relational.InterpreterNormalization
-
-theorem exactNormalizedTransferSemanticRefinement0 :
-    SemanticTransferRefinesExactPath originalPe exactNormalizedTransferPath0
-      semanticInterpreterTransfer0 := by
-  simpa [originalPe, exactNormalizedTransferPath0,
-    semanticInterpreterProgramRecord0, semanticInterpreterTransfer0,
-    StageA.RelationalInterpreterNormalizationKernel.exactPath] using
-      StageA.RelationalInterpreterNormalizationKernel.exactSemanticRefinement
 
 end StageA.GeneratedRelational
 """

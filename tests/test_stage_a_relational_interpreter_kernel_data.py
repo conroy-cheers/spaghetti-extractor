@@ -98,6 +98,52 @@ def pe : PE32 := {{
   }}]
 }}
 
+def layout : CandidateDataLayout := CandidateDataLayout.ofPE pe
+
+def metadataPlan1040 : ImmutableRangeMetadataPlan := {{
+  sectionIndex := 0
+  rawOffset := 0x40
+  rawCount := 4
+}}
+
+def metadataPlan1070 : ImmutableRangeMetadataPlan := {{
+  sectionIndex := 0
+  rawOffset := 0x70
+  rawCount := 8
+}}
+
+def metadataRequests : List ImmutableRangeMetadataRequest := [
+  {{ rva := 0x1040, size := 4, plan := metadataPlan1040 }},
+  {{ rva := 0x1070, size := 8, plan := metadataPlan1070 }}
+]
+
+theorem metadataBatchChecked :
+    immutableRangeMetadataBatchChecked layout [] metadataRequests = true := by
+  decide +kernel
+
+def metadataBatchCertificate :
+    ImmutableRangeMetadataBatchCertificate layout [] metadataRequests :=
+  ImmutableRangeMetadataBatchCertificate.of_checked
+    layout [] metadataRequests metadataBatchChecked
+
+theorem metadata1040Checked :
+    immutableRangeMetadataRequestChecked layout []
+      {{ rva := 0x1040, size := 4, plan := metadataPlan1040 }} = true := by
+  simpa [metadataRequests] using
+    metadataBatchCertificate.checkedAt ⟨0, by decide⟩
+
+theorem metadata1070Checked :
+    immutableRangeMetadataRequestChecked layout []
+      {{ rva := 0x1070, size := 8, plan := metadataPlan1070 }} = true := by
+  simpa [metadataRequests] using
+    metadataBatchCertificate.checkedAt ⟨1, by decide⟩
+
+example :
+    immutableRangeMetadataRequestChecked layout []
+      {{ rva := 0x1040, size := 4,
+        plan := {{ metadataPlan1040 with rawOffset := 0x41 }} }} = false := by
+  decide +kernel
+
 def relocations : List BaseRelocation := [
   {{ rva := 0x1014, kind := 3 }},
   {{ rva := 0x1018, kind := 3 }},
@@ -441,6 +487,8 @@ class StageARelationalInterpreterKernelDataTests(unittest.TestCase):
         self.assertIn("ImmutableByteCache", source)
         self.assertIn("read_eq_authoritative", source)
         self.assertIn("immutableRvaBytes_eq_slices", source)
+        self.assertIn("ImmutableRangeMetadataBatchCertificate", source)
+        self.assertIn("checkedAt", source)
         self.assertIn("RelocationRvaIndexCertificate", source)
         self.assertIn("contains_eq_present", source)
         self.assertIn("transferLocalCertificateChecked", source)

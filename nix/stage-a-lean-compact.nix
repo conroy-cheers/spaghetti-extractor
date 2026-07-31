@@ -227,6 +227,19 @@ let
   '') topologicalModules;
 
   selectedAuditTheorem = graph.expected_final_theorem or null;
+  linkedAcceptanceTheorem =
+    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked";
+  mixedChunkedAcceptanceTheorem =
+    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentMixedChunked";
+  linkedAcceptanceProfile = "linked-raw-pe32";
+  mixedChunkedAcceptanceProfile = "mixed-native-pe32-chunked-closed";
+  selectedAuthorityProfile =
+    graph.acceptance.authority_profile or (
+      if selectedAuditTheorem == linkedAcceptanceTheorem then
+        linkedAcceptanceProfile
+      else
+        null
+    );
   acceptanceNodeSteps = graph.acceptance.node_steps or null;
   acceptanceNodeStepsValid =
     builtins.isList acceptanceNodeSteps
@@ -277,21 +290,36 @@ let
       ''
     else
       linkedCanonicalResult "originalWorldProgram" "candidateWorldProgram";
+  mixedChunkedCanonicalType = ''
+    StageA.Relational.InterpreterMixedProfile.CanonicalMixedWorldProgramsChunkObservationallyEquivalentFamily
+      StageA.GeneratedRelational.candidatePE32CanonicalMixedRelationFamily
+  '';
   canonicalAuditType =
-    if selectedAuditTheorem == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked" then
+    if
+      selectedAuditTheorem == linkedAcceptanceTheorem
+      && selectedAuthorityProfile == linkedAcceptanceProfile
+    then
       linkedCanonicalType
+    else if
+      selectedAuditTheorem == mixedChunkedAcceptanceTheorem
+      && selectedAuthorityProfile == mixedChunkedAcceptanceProfile
+    then
+      mixedChunkedCanonicalType
     else
-      throw "Stage A final audit requires the linked whole-program theorem";
+      throw "Stage A final audit requires an exact authoritative theorem profile";
   canonicalAuditProfile =
-    "linked-raw-pe32"
-    + (
-      if parameterizedProtocolEnvironment then
-        "-stateful-protocol"
-      else if parameterizedEnvironment then
-        "-external-environment"
-      else
-        "-closed"
-    );
+    if selectedAuditTheorem == linkedAcceptanceTheorem then
+      linkedAcceptanceProfile
+      + (
+        if parameterizedProtocolEnvironment then
+          "-stateful-protocol"
+        else if parameterizedEnvironment then
+          "-external-environment"
+        else
+          "-closed"
+      )
+    else
+      mixedChunkedAcceptanceProfile;
   auditSource = pkgs.writeText "StageARelationalCompactAudit.lean" ''
     import StageA.${graph.root_module}
 
@@ -317,6 +345,8 @@ let
     && builtins.length graph.approved_axioms == builtins.length (lib.unique graph.approved_axioms);
   approvedAxioms = builtins.toJSON graph.approved_axioms;
   linkedAcceptance = graph.acceptance.linked_acceptance or null;
+  mixedChunkedAcceptance =
+    graph.acceptance.mixed_chunked_acceptance or null;
   linkedAcceptanceReady =
     acceptanceNodeStepsValid
     && graph.acceptance.status == "ready"
@@ -325,10 +355,21 @@ let
     && linkedAcceptance != null
     && linkedAcceptance.status == "ready"
     && linkedAcceptance.theorem == selectedAuditTheorem
-    && selectedAuditTheorem == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked";
+    && selectedAuditTheorem == linkedAcceptanceTheorem
+    && selectedAuthorityProfile == linkedAcceptanceProfile;
+  mixedChunkedAcceptanceReady =
+    acceptanceNodeStepsValid
+    && graph.acceptance.status == "ready"
+    && graph.acceptance.required_theorem == selectedAuditTheorem
+    && graph.acceptance.theorem == selectedAuditTheorem
+    && mixedChunkedAcceptance != null
+    && mixedChunkedAcceptance.status == "ready"
+    && mixedChunkedAcceptance.theorem == selectedAuditTheorem
+    && mixedChunkedAcceptance.profile == mixedChunkedAcceptanceProfile
+    && selectedAuditTheorem == mixedChunkedAcceptanceTheorem
+    && selectedAuthorityProfile == mixedChunkedAcceptanceProfile;
   acceptanceReady =
-    selectedAuditTheorem == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
-    && linkedAcceptanceReady;
+    linkedAcceptanceReady || mixedChunkedAcceptanceReady;
 in
 assert effectiveGraphFile != null;
 assert effectivePreparedManifest != null;

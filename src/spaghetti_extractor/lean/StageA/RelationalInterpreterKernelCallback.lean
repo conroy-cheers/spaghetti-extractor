@@ -1,4 +1,5 @@
 import StageA.RelationalInterpreterKernel
+import StageA.RelationalInterpreterKernelMixedReplay
 import StageA.RelationalLinkedFrames
 import StageA.RelationalCallbacks
 
@@ -6,6 +7,8 @@ namespace StageA.Relational.InterpreterKernelCallback
 
 open StageA.Formal StageA.Relational
 open StageA.Relational.InterpreterKernel
+open StageA.Relational.InterpreterKernelMixedReplay
+open StageA.Relational.SymbolicSoundness
 
 /-! Checked machine-level ABI contracts for indirect calls made by a compiled
 Stage B interpreter kernel.  Static inventories are reflected Booleans over
@@ -69,18 +72,27 @@ def CallbackTargetSet.contains (targets : CallbackTargetSet)
   targets.entries.any fun entry => entry.address pe == target
 
 def evalAddressing (state : MachineState) (addressing : Addressing) : Word :=
-  let base := addressing.base.map state.registers.get
-    |>.getD (BitVec.ofNat 32 0)
-  let index := addressing.index.map state.registers.get
-    |>.getD (BitVec.ofNat 32 0)
-  let index := if addressing.scaleShift == 0 then index
-    else index.shiftLeft addressing.scaleShift
-  base + index + BitVec.ofNat 32 addressing.displacement
+  (addressing.expression initialSymbolic.registers).eval state
 
 def evalOperand32 (state : MachineState) : Operand32 -> Word
   | .register register => state.registers.get register
   | .memory addressing => Memory.read32 state.memory (evalAddressing state addressing)
   | .immediate value => BitVec.ofNat 32 value
+
+theorem readOperand32_initialSymbolic_eval (state : MachineState)
+    (operand : Operand32) :
+    (readOperand32 initialSymbolic operand).eval state =
+      evalOperand32 state operand := by
+  cases operand with
+  | register register =>
+      cases register <;>
+        rfl
+  | immediate value =>
+      rfl
+  | memory addressing =>
+      simp [readOperand32, symbolicRead32, exactWrite32WithDisjointTail?,
+        initialSymbolic, StageA.Formal.Expr.eval, evalOperand32,
+        evalAddressing]
 
 structure KernelIndirectCallbackSite where
   id : Nat
@@ -113,6 +125,128 @@ def KernelIndirectCallbackSite.targetAllowed
     (site : KernelIndirectCallbackSite) (pe : PE32)
     (state : MachineState) : Prop :=
   site.targets.contains pe (site.targetWord state) = true
+
+/-- The reviewed ordinary-instruction evaluator's legacy x87 projection.  The
+formal legacy stack is intentionally bounded to the eight architectural slots,
+so this is not definitionally equal to an arbitrary input function outside
+that range. -/
+def ordinaryInstructionX87State (state : MachineState) : X87MachineState := {
+  stack := fun index =>
+    (Option.map (X87Expr.eval state ∘ X87Expr.inputStack)
+      (List.range 8)[index]?).getD (BitVec.ofNat 80 0)
+  control := (BitVec.setWidth 32 state.x87.control).extractLsb' 0 16
+  status := (BitVec.setWidth 32 state.x87.status).extractLsb' 0 16
+  semantics := state.x87.semantics
+}
+
+def ordinaryInstructionInitialFlags (state : MachineState) : Word :=
+  (initialSymbolic.flags.map (FlagsExpr.eval state)).getD state.eflags
+
+/-- Concrete machine state after IA-32 has pushed an indirect call's return
+address.  Keeping this state constructor independent of callback policy lets
+internal calls, imports, callbacks, and replay bridges share the same checked
+machine boundary. -/
+def indirectCallEntryState (returnAddress : Nat)
+    (state : MachineState) : MachineState := {
+  registers := { state.registers with
+    esp := state.registers.esp - BitVec.ofNat 32 4 }
+  memory := state.memory.write32
+    (state.registers.esp - BitVec.ofNat 32 4)
+    (BitVec.ofNat 32 returnAddress)
+  undefinedValue := state.undefinedValue
+  x87 := ordinaryInstructionX87State state
+  x87Physical := state.x87Physical
+  x87Semantics := state.x87Semantics
+  eflags := ordinaryInstructionInitialFlags state
+  fsBase := state.fsBase
+}
+
+/-- A checked indirect-call site has an exact, reusable call-entry state. -/
+theorem KernelIndirectCallbackSite.step_exactIndirectCallState
+    (site : KernelIndirectCallbackSite) (pe : PE32)
+    (imports : List PEImport) (undefinedSlot : Nat) (state : MachineState)
+    (checked : site.checked pe imports = true)
+    (specializedClear :
+      KernelMixedReplayInstruction.specializedDecodersClear pe
+        site.instruction = true) :
+    stepKernelPE32Instruction pe imports
+        (.running site.instruction.rva undefinedSlot state) =
+      .stopped
+        (.indirectCall (site.targetWord state) site.continuationRva
+          (pe.imageBase + site.continuationRva))
+        (indirectCallEntryState (pe.imageBase + site.continuationRva) state) := by
+  simp only [KernelIndirectCallbackSite.checked, Bool.and_eq_true] at checked
+  have decodedExact := checked.1.1.1
+  have instructionChecked := checked.1.1.2
+  unfold KernelIndirectCallbackSite.decodedExact at decodedExact
+  cases decodedRead : site.instruction.decode? pe with
+  | none => simp [decodedRead] at decodedExact
+  | some decoded =>
+      simp only [decodedRead, Bool.and_eq_true, beq_iff_eq] at decodedExact
+      have instructionExact := decodedExact.1.1
+      have sizeExact := decodedExact.1.2
+      have continuationExact := decodedExact.2
+      cases decoded with
+      | mk instruction size trailing =>
+          simp only at instructionExact
+          subst instruction
+          have kernelExact :=
+            KernelMixedReplayInstruction.semanticStep_exact pe imports
+              undefinedSlot state (.ordinary site.instruction) (by
+                simp only [KernelMixedReplayInstruction.checked,
+                  Bool.and_eq_true]
+                exact ⟨instructionChecked, specializedClear⟩)
+          change stepKernelPE32Instruction pe imports
+              (.running
+                (KernelMixedReplayInstruction.ordinary site.instruction).rva
+                undefinedSlot state) =
+            .stopped
+              (.indirectCall (site.targetWord state) site.continuationRva
+                (pe.imageBase + site.continuationRva))
+              (indirectCallEntryState
+                (pe.imageBase + site.continuationRva) state)
+          rw [← kernelExact]
+          simp (config := { maxSteps := 1000000 })
+            [KernelMixedReplayInstruction.semanticStep,
+              KernelInstruction.semanticStep, decodedRead, executeInstruction,
+              executeInstructionWithContext, executeInstructionResult,
+              concreteBehaviorNextMachineState, SymbolicBehavior.eval,
+              SymbolicBehavior.write32, initialSymbolic, initialSymbolicX87,
+              Registers.set, Registers.get, StageA.Formal.Expr.eval,
+              StageA.Formal.FlagsExpr.eval,
+              StageA.Formal.applyWrites,
+              KernelIndirectCallbackSite.targetWord,
+              SymbolicImageContext.ofPE, continuationExact,
+              indirectCallEntryState, ordinaryInstructionX87State,
+              ordinaryInstructionInitialFlags]
+          constructor
+          · simpa [initialSymbolic] using
+              readOperand32_initialSymbolic_eval state site.targetOperand
+          constructor <;>
+            simp [Expr.offset, Expr.addNormalized, StageA.Formal.Expr.eval,
+              Registers.get]
+
+/-- A checked callback site executes as the exact machine-level indirect call
+described by its ABI record.  The successor state is existential because this
+boundary theorem is concerned with decoded control; stack-write and call-frame
+proofs consume the exact successor separately. -/
+theorem KernelIndirectCallbackSite.step_exactIndirectCall
+    (site : KernelIndirectCallbackSite) (pe : PE32)
+    (imports : List PEImport) (undefinedSlot : Nat) (state : MachineState)
+    (checked : site.checked pe imports = true)
+    (specializedClear :
+      KernelMixedReplayInstruction.specializedDecodersClear pe
+        site.instruction = true) :
+    ∃ after,
+      stepKernelPE32Instruction pe imports
+          (.running site.instruction.rva undefinedSlot state) =
+        .stopped
+          (.indirectCall (site.targetWord state) site.continuationRva
+            (pe.imageBase + site.continuationRva))
+          after := by
+  exact ⟨indirectCallEntryState (pe.imageBase + site.continuationRva) state,
+    site.step_exactIndirectCallState pe imports undefinedSlot state checked
+      specializedClear⟩
 
 def callbackSitesContainRva
     (sites : List KernelIndirectCallbackSite) (rva : Nat) : Bool :=

@@ -110,12 +110,46 @@ class StageARelationalInterpreterMixedProfileTests(unittest.TestCase):
             "def decodedWorldProgramWithProtocolEnvironment", start
         )
         wrapper = self.source[start:end]
-        self.assertIn("ExactNativeLaunchWrapperCertificate", wrapper)
+        self.assertIn("ExactNativeLaunchGraphCertificate", wrapper)
         self.assertIn("staticChecked : reflected.staticChecked", wrapper)
-        self.assertIn("replayTotal : forall path", wrapper)
+        self.assertIn(
+            "routeReady : ReflectedNativeLaunchGraphRoute",
+            wrapper,
+        )
+        self.assertIn("replayTotal : forall route", wrapper)
         self.assertIn("rootsEstablishRuntime : forall root", wrapper)
-        self.assertIn("path.replay? candidate", wrapper)
+        self.assertIn("route.replay? candidate", wrapper)
         self.assertIn("contract.runtimeStatesRelated", wrapper)
+        self.assertIn(
+            "structure CanonicalMixedLaunchRootFrameFacts",
+            wrapper,
+        )
+        self.assertIn("rootReady : forall root", wrapper)
+        self.assertIn(
+            "exactNativeLaunchGraphRuntime_rootsEstablishRuntime",
+            wrapper,
+        )
+        self.assertIn(
+            "CanonicalMixedLaunchWrapperRefinement.ofCheckedRuntime",
+            wrapper,
+        )
+        self.assertIn(
+            "structure ExactCanonicalMixedLaunchWrapperRefinementBinding",
+            wrapper,
+        )
+        self.assertIn("reflectedExact : refinement.reflected", wrapper)
+        self.assertIn(
+            "ExactCanonicalMixedLaunchWrapperRefinementBinding.replayTotal",
+            wrapper,
+        )
+        self.assertIn(
+            "ExactCanonicalMixedLaunchWrapperRefinementBinding.rootsEstablishRuntime",
+            wrapper,
+        )
+        self.assertIn(
+            "ExactCanonicalMixedLaunchWrapperRefinementBinding.ofCheckedRuntime",
+            wrapper,
+        )
         self.assertNotIn("exists before", wrapper)
 
     def test_profile_requires_realizable_launch_and_universal_environment_refinement(
@@ -213,10 +247,33 @@ open StageA.Formal StageA.Relational
 open StageA.Relational.InterpreterKernelABI
 open StageA.Relational.InterpreterMixedContext
 open StageA.Relational.InterpreterMixedEnvironment
+open StageA.Relational.InterpreterMixedLaunchRefinement
 open StageA.Relational.InterpreterMixedProfile
 open StageA.Relational.InterpreterMixedWorldBridge
 open StageA.Relational.InterpreterNativeLaunch
 open StageA.Relational.InterpreterNativeWorld
+
+example
+    (checked : CheckedExactNativeLaunchGraph)
+    (refinement :
+      CanonicalMixedLaunchWrapperRefinement original candidate contract launch)
+    (binding : ExactCanonicalMixedLaunchWrapperRefinementBinding checked original
+      candidate contract launch refinement) :
+    checked.certificate.staticChecked candidate.pe candidate.imports = true :=
+  binding.staticChecked
+
+#check ExactCanonicalMixedLaunchWrapperRefinementBinding.replayTotal
+#check ExactCanonicalMixedLaunchWrapperRefinementBinding.rootsEstablishRuntime
+
+example
+    (runtime : ExactNativeLaunchGraphRuntime checked candidate)
+    (frames : CanonicalMixedLaunchRootFrameFacts checked runtime original
+      candidate contract launch) :
+    ExactCanonicalMixedLaunchWrapperRefinementBinding checked original candidate
+      contract launch
+      (CanonicalMixedLaunchWrapperRefinement.ofCheckedRuntime runtime frames) :=
+  ExactCanonicalMixedLaunchWrapperRefinementBinding.ofCheckedRuntime runtime
+    frames
 
 example
     (core : CanonicalMixedRelationCore original originalAuthority originalProgram
@@ -233,7 +290,20 @@ example
           core.contract frames ->
         CanonicalMixedLaunchWrapperRefinement original
           (exactNativeWorldProgramWithEnvironment candidate candidateEnvironment)
-          core.contract launch) :
+          core.contract launch)
+    (checked : CheckedExactNativeLaunchGraph)
+    (_routeBinding : forall originalEnvironment candidateEnvironment
+      (environmentRefines :
+        ExactOneToOneMixedExternalEnvironmentsRefine
+          (decodedWorldProgramWithProtocolEnvironment originalProgram
+            originalEnvironment)
+          (exactNativeWorldProgramWithEnvironment candidate candidateEnvironment)
+          core.contract frames),
+      ExactCanonicalMixedLaunchWrapperRefinementBinding checked original
+        (exactNativeWorldProgramWithEnvironment candidate candidateEnvironment)
+        core.contract launch
+        (wrapperRefines originalEnvironment candidateEnvironment
+          environmentRefines)) :
     CanonicalMixedRelationProfile original originalAuthority originalProgram
       candidate candidateAuthority programBinding abi launch originalRoot
       reachability := {

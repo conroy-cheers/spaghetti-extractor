@@ -116,11 +116,15 @@ class StageAUniversalPairedExternalEnvironmentTests(unittest.TestCase):
             )
             self.assertIn(
                 "each_returning_site_has_a_universally_sound_response_relation",
-                manifest["remaining_premises"],
+                manifest["conditional_environment_parameters"],
             )
             self.assertIn(
                 "protocol_and_callback_actions_have_separate_nested_frame_refinement",
-                manifest["remaining_premises"],
+                manifest["conditional_environment_parameters"],
+            )
+            self.assertEqual(manifest["remaining_premises"], [])
+            self.assertEqual(
+                manifest["route_authority"], "mixed_component_composition"
             )
 
     def test_writer_rejects_stale_or_incomplete_machine_import_reports(self) -> None:

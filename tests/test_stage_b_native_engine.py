@@ -666,6 +666,26 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertIn("fnsave", assembly)
             self.assertIn("frstor", assembly)
             self.assertIn(".byte 0xd9, 0xe8", assembly)
+            x87_capture = assembly.split(
+                "_stage_b_native_x87_capture_0000:", maxsplit=1
+            )[1]
+            self.assertIn("push eax", x87_capture)
+            self.assertNotIn("pushad", x87_capture)
+            self.assertIn("mov ecx, DWORD PTR [esp]", x87_capture)
+            self.assertIn("mov ecx, DWORD PTR [esp + 4]", x87_capture)
+            self.assertIn("mov DWORD PTR [edx + 0], ecx", x87_capture)
+            for offset in (4, 8, 12, 16, 20, 24, 28):
+                self.assertNotIn(
+                    f"mov DWORD PTR [edx + {offset}], ecx", x87_capture
+                )
+            for offset in (32, 36, 48):
+                self.assertIn(
+                    f"mov DWORD PTR [edx + {offset}], ecx", x87_capture
+                )
+            for offset in (40, 44, 52):
+                self.assertNotIn(
+                    f"mov DWORD PTR [edx + {offset}], ecx", x87_capture
+                )
 
     def test_x87_absolute_disp32_replay_is_rejected_for_dynamicbase(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1009,6 +1029,35 @@ stage_b_call_status stage_b_native_runtime_run_nested_callback(
                 out=package,
             )
             self.assertEqual(result["status"], "ready", result)
+            assembly = (package / "native-engine-bridges.S").read_text(
+                encoding="ascii"
+            )
+            replay_bridge = assembly.split(
+                "_stage_b_native_x87_bridge_0000:", maxsplit=1
+            )[1].split("_stage_b_native_x87_capture_0000:", maxsplit=1)[0]
+            self.assertNotIn("popad", replay_bridge)
+            for instruction in (
+                "mov ebx, DWORD PTR [eax + 4]",
+                "mov ecx, DWORD PTR [eax + 8]",
+                "mov edx, DWORD PTR [eax + 12]",
+                "mov esi, DWORD PTR [eax + 16]",
+                "mov edi, DWORD PTR [eax + 20]",
+                "mov ebp, DWORD PTR [eax + 24]",
+                "mov esp, DWORD PTR [eax + 28]",
+                "push DWORD PTR [eax + 240]",
+                "push DWORD PTR [eax + 0]",
+            ):
+                self.assertIn(instruction, replay_bridge)
+            replay_capture = assembly.split(
+                "_stage_b_native_x87_capture_0000:", maxsplit=1
+            )[1].split("_stage_b_native_x87_return_0000:", maxsplit=1)[0]
+            for instruction in (
+                "sets BYTE PTR [edx + 40]",
+                "seto BYTE PTR [edx + 44]",
+                "and ecx, 0xfffff32a",
+                "and ebx, 0x00000cd5",
+            ):
+                self.assertIn(instruction, replay_capture)
             (package / "state-machine-runtime.h").write_text(
                 _x87_runtime_header(), encoding="ascii"
             )

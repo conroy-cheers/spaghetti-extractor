@@ -48,6 +48,31 @@ def _write_machine(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 class StageBInterpreterBackendTests(unittest.TestCase):
+    def test_interpreter_stack_capacity_matches_checked_program_maximum(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine = root / "state-machine.jsonl"
+            _write_machine(machine, [_row()])
+
+            write_stage_b_interpreter_package(
+                state_machine=machine, out=root / "package"
+            )
+            program = json.loads(
+                (root / "package/state-machine-interpreter-program.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            maximum = program["counts"]["max_word_nodes_per_transfer"]
+            source = (
+                root / "package/state-machine-interpreter.c"
+            ).read_text(encoding="ascii")
+            self.assertGreater(maximum, 0)
+            self.assertIn(
+                f"#define STAGE_B_MAX_WORD_NODES {maximum}U",
+                source,
+            )
+            self.assertNotIn("#define STAGE_B_MAX_WORD_NODES 1024U", source)
+
     def test_undefined_nodes_emit_complete_non_authoritative_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -292,6 +317,158 @@ class StageBInterpreterBackendTests(unittest.TestCase):
             self.assertEqual(effect_schedule, ["read", "read", "write", "read"])
             self.assertEqual(result_node.op, "add32")
             self.assertEqual(result_node.args, (read_nodes[2], read_nodes[1]))
+
+    def test_rep_stosd_lowers_to_stable_action_26_and_executes_ordered_fill(self) -> None:
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("C compiler is unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine = root / "state-machine.jsonl"
+            row = _row()
+            row["ordered_events"] = [{
+                "family": "external",
+                "kind": "rep_stosd",
+                "index": 0,
+                "instruction_rva": 0x1000,
+                "destination": {"op": "reg", "name": "edi", "width": 32},
+                "value": {"op": "reg", "name": "eax", "width": 32},
+                "count": {"op": "reg", "name": "ecx", "width": 32},
+                "direction_flag": {"op": "flag", "name": "df"},
+                "effect_model": "symbolic_string_fill_v1",
+            }]
+            row["register_writes"] = []
+            _write_machine(machine, [row])
+
+            transfer = compile_stage_b_interpreter_program(machine)[0]
+            fill = next(action for action in transfer.actions if action.op == "rep_stosd")
+            self.assertEqual(len(fill.args), 4)
+
+            package_dir = root / "package"
+            package = write_stage_b_interpreter_package(
+                state_machine=machine, out=package_dir
+            )
+            self.assertEqual(package["status"], "ready")
+            program = json.loads(
+                (package_dir / "state-machine-interpreter-program.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertIn("rep_stosd", program["capability"]["action_ops"])
+            program_source = (
+                package_dir / "state-machine-program.c"
+            ).read_text(encoding="ascii")
+            self.assertRegex(program_source, r"\{\s*26U,\s*4U,\s*0U,")
+
+            harness = root / "harness.c"
+            harness.write_text(
+                r'''
+#include "state-machine-interpreter.h"
+
+typedef struct fill_context {
+  uint32_t addresses[3];
+  uint32_t values[3];
+  uint32_t count;
+} fill_context;
+
+static uint32_t read_word(
+    void *context, uint32_t address, uint32_t width, uint32_t *fault) {
+  (void)context; (void)address; (void)width; *fault = 1U; return 0U;
+}
+
+static void write_word(
+    void *raw, uint32_t address, uint32_t width, uint32_t value,
+    uint32_t *fault) {
+  fill_context *context = (fill_context *)raw;
+  if (width != 4U || context->count >= 3U) { *fault = 1U; return; }
+  context->addresses[context->count] = address;
+  context->values[context->count] = value;
+  ++context->count;
+}
+
+stage_b_call_status stage_b_dispatch_external_call(
+    stage_b_runtime *runtime, const stage_b_call_event *event,
+    const stage_b_machine_state *input, stage_b_machine_state *output) {
+  (void)runtime; (void)event; (void)input; (void)output;
+  return STAGE_B_CALL_UNIMPLEMENTED;
+}
+
+int main(void) {
+  fill_context context = {{0U,0U,0U},{0U,0U,0U},0U};
+  stage_b_runtime runtime = {0};
+  stage_b_machine_state state = {0};
+  stage_b_step_result result;
+  runtime.context = &context;
+  runtime.read = read_word;
+  runtime.write = write_word;
+  state.eax = 0x11223344U;
+  state.ecx = 3U;
+  state.edi = 0x100cU;
+  state.df = 1U;
+  result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
+  if (result.kind != STAGE_B_FALLTHROUGH) return 1;
+  if (context.count != 3U) return 2;
+  if (context.addresses[0] != 0x100cU ||
+      context.addresses[1] != 0x1008U ||
+      context.addresses[2] != 0x1004U) return 3;
+  if (context.values[0] != 0x11223344U ||
+      context.values[1] != 0x11223344U ||
+      context.values[2] != 0x11223344U) return 4;
+  if (state.edi != 0x1000U || state.ecx != 0U) return 5;
+  return 0;
+}
+''',
+                encoding="ascii",
+            )
+            executable = root / "rep-stosd"
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=c11",
+                    "-Werror",
+                    "-I",
+                    str(package_dir),
+                    str(package_dir / "state-machine-interpreter.c"),
+                    str(package_dir / "state-machine-program.c"),
+                    str(harness),
+                    "-o",
+                    str(executable),
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            subprocess.run([str(executable)], check=True)
+
+    def test_rep_stosd_event_validation_fails_closed(self) -> None:
+        base = {
+            "family": "external",
+            "kind": "rep_stosd",
+            "index": 0,
+            "instruction_rva": 0x1000,
+            "destination": {"op": "reg", "name": "edi", "width": 32},
+            "value": {"op": "reg", "name": "eax", "width": 32},
+            "count": {"op": "reg", "name": "ecx", "width": 32},
+            "direction_flag": {"op": "flag", "name": "df"},
+            "effect_model": "symbolic_string_fill_v1",
+        }
+        cases = (
+            ({"effect_model": "unchecked"}, "symbolic_string_fill_v1"),
+            ({"index": 1}, "event index"),
+            ({"source": {"op": "reg", "name": "esi", "width": 32}}, "source address"),
+        )
+        for mutation, message in cases:
+            with self.subTest(mutation=mutation):
+                with tempfile.TemporaryDirectory() as temporary:
+                    machine = Path(temporary) / "state-machine.jsonl"
+                    row = _row()
+                    row["ordered_events"] = [{**base, **mutation}]
+                    _write_machine(machine, [row])
+                    with self.assertRaisesRegex(StageBInterpreterError, message) as raised:
+                        compile_stage_b_interpreter_program(machine)
+                    self.assertEqual(
+                        raised.exception.code, "malformed_rep_stosd_event"
+                    )
 
     def test_deterministic_package_compiles_as_freestanding_pe32_objects(self) -> None:
         compiler = shutil.which("i686-w64-mingw32-gcc")

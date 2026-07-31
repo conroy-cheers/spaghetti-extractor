@@ -275,12 +275,11 @@ class StageARelationalInterpreterKernelRunGenerationTests(unittest.TestCase):
             "GeneratedRunFunctionTemplateGoal",
             "generatedKernelCallbackInventory",
             "ExactDecodeInventory",
-            "GeneratedRunFunctionMachineCertificateGoal",
-            "GeneratedRunFunctionRefines",
-            "certificate.refines",
             "StageA.GeneratedRelational.InterpreterKernelData",
         ):
             self.assertIn(required, source)
+        self.assertNotIn("GeneratedRunFunctionMachineCertificateGoal", source)
+        self.assertNotIn("GeneratedRunFunctionRefines", source)
         self.assertNotRegex(source, r"\bsimulate\s*:")
         self.assertNotRegex(source, r"\brefinement\s*:")
         for marker in ("sorry", "axiom", "unsafe", "native_decide"):

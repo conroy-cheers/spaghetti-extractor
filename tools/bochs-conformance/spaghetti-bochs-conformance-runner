@@ -16,8 +16,8 @@ from typing import Any
 MACHINE_FORMAT = "stage-a-isa-conformance-bochs-machine-v1"
 RESULT_FORMAT = "stage-a-isa-conformance-bochs-result-v1"
 BACKEND_ID = "bochs-x86-32-batch-v1"
-BACKEND_VERSION = "3.0"
-PRIVATE_PROTOCOL_VERSION = "2"
+BACKEND_VERSION = "3.1"
+PRIVATE_PROTOCOL_VERSION = "5"
 
 REQUIRE_MEMORY = 0x01
 REQUIRE_FAULT = 0x02
@@ -68,9 +68,17 @@ CASE_FIELDS = {
 
 SUPPORTED_PROFILE_MODELS = {
     ("x86", "haswell", "protected-32", "pe32", ()): "corei7_haswell_4770",
+    (
+        "x86",
+        "haswell",
+        "protected-32",
+        "pe32",
+        ("x87",),
+    ): "corei7_haswell_4770",
     # Bochs has no Pentium Pro preset. Pentium II is the nearest architectural
     # superset; the pe32-i686-v1 catalog excludes MMX and later forms.
     ("x86", "i686", "protected-32", "pe32", ()): "p2_klamath",
+    ("x86", "i686", "protected-32", "pe32", ("x87",)): "p2_klamath",
 }
 RESET_X87 = {
     "control_word": 0x037F,
@@ -142,8 +150,11 @@ def any_mask(value: Any) -> bool:
 
 def validate_x87(value: Any, context: str) -> dict[str, Any]:
     x87 = exact_object(value, X87_FIELDS, context)
-    for field in ("control_word", "status_word", "tag_word", "last_opcode"):
+    for field in ("control_word", "status_word", "tag_word"):
         u16(x87[field], f"{context}.{field}")
+    last_opcode = u16(x87["last_opcode"], f"{context}.last_opcode")
+    if last_opcode > 0x7FF:
+        raise RunnerError(f"{context}.last_opcode must fit the architectural 11 bits")
     for field in ("instruction_pointer", "data_pointer"):
         u32(x87[field], f"{context}.{field}")
     registers = x87["registers"]
@@ -351,6 +362,20 @@ def private_memory_field(case: dict[str, Any]) -> str:
     )
 
 
+def private_x87_field(case: dict[str, Any]) -> str:
+    x87 = validate_x87(case["initial_state"]["x87"], "initial_state.x87")
+    fields = [
+        f"{x87['control_word']:04x}",
+        f"{x87['status_word']:04x}",
+        f"{x87['tag_word']:04x}",
+        f"{x87['last_opcode']:04x}",
+        f"{x87['instruction_pointer']:08x}",
+        f"{x87['data_pointer']:08x}",
+    ]
+    fields.extend(bytes(register).hex() for register in x87["registers"])
+    return ":".join(fields)
+
+
 def private_case_line(sequence: int, case: dict[str, Any]) -> str:
     state = case["initial_state"]
     gprs = state["gprs"]
@@ -366,7 +391,11 @@ def private_case_line(sequence: int, case: dict[str, Any]) -> str:
         f"{u32(gprs[name], f'initial_state.gprs.{name}'):08x}" for name in GPRS
     )
     values.append(f"{case_requirements(case):08x}")
+    fs = validate_fs(state["fs"], "initial_state.fs")
+    values.append(f"{fs['selector']:04x}")
+    values.append(f"{fs['base']:08x}")
     values.append(private_memory_field(case))
+    values.append(private_x87_field(case))
     return "\t".join(values)
 
 
@@ -381,7 +410,7 @@ def parse_private_output(text: str, case_count: int) -> list[dict[str, Any]]:
             raise RunnerError("private observation is malformed or out of order")
         status = fields[2]
         if status == "complete":
-            if len(fields) != 16:
+            if len(fields) != 17:
                 raise RunnerError("private complete observation is malformed")
             try:
                 words = [int(field, 16) for field in fields[3:13]]
@@ -402,15 +431,22 @@ def parse_private_output(text: str, case_count: int) -> list[dict[str, Any]]:
                 "direct_call",
                 "indirect_call",
                 "return",
+                "fault",
             }:
                 raise RunnerError(
                     "private complete observation control is unsupported"
                 )
-            if fault != "none":
+            if fault not in {"none", "divide_error"}:
                 raise RunnerError(
                     "private complete observation fault is unsupported"
                 )
+            if (control == "fault") != (fault != "none"):
+                raise RunnerError(
+                    "private complete observation must use control=fault "
+                    "exactly when a fault is present"
+                )
             memory = parse_private_memory(fields[15])
+            x87 = parse_private_x87(fields[16])
             records.append(
                 {
                     "status": status,
@@ -418,6 +454,7 @@ def parse_private_output(text: str, case_count: int) -> list[dict[str, Any]]:
                     "control": control,
                     "fault": fault,
                     "memory": memory,
+                    "x87": x87,
                     "detail": "",
                 }
             )
@@ -449,6 +486,31 @@ def parse_private_memory(value: str) -> list[dict[str, Any]]:
             raise RunnerError("private memory observation is malformed")
         regions.append({"address": address, "bytes": list(data)})
     return regions
+
+
+def parse_private_x87(value: str) -> dict[str, Any]:
+    fields = value.split(":")
+    expected_widths = (4, 4, 4, 4, 8, 8) + (20,) * 8
+    if len(fields) != len(expected_widths) or any(
+        len(field) != width for field, width in zip(fields, expected_widths)
+    ):
+        raise RunnerError("private x87 observation is malformed")
+    try:
+        scalars = [int(field, 16) for field in fields[:6]]
+        registers = [bytes.fromhex(field) for field in fields[6:]]
+    except ValueError as exc:
+        raise RunnerError("private x87 observation is malformed") from exc
+    if scalars[3] > 0x7FF or any(len(register) != 10 for register in registers):
+        raise RunnerError("private x87 observation is malformed")
+    return {
+        "control_word": scalars[0],
+        "status_word": scalars[1],
+        "tag_word": scalars[2],
+        "last_opcode": scalars[3],
+        "instruction_pointer": scalars[4],
+        "data_pointer": scalars[5],
+        "registers": [list(register) for register in registers],
+    }
 
 
 def select_observed_memory(
@@ -511,7 +573,7 @@ def machine_record(
         "eip": words[8],
         "eflags": words[9],
         "fs": initial["fs"],
-        "x87": initial["x87"],
+        "x87": private["x87"],
     }
     return {
         "format": MACHINE_FORMAT,

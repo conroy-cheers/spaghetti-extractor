@@ -41,6 +41,39 @@ def decodeInstructionFormsSpan (pe : PE32)
     (span : Span) : Option (List InstructionFormOccurrence) :=
   decodeInstructionFormsFuel pe span.stop (span.size + 1) span.start
 
+/--
+Decode a proposed contiguous byte slice without constructing a complete PE
+image. This is used only by the untrusted inventory producer; acceptance
+replays the resulting occurrences with `decodeInstructionFormsSpan`.
+-/
+def decodeInstructionFormsBytesFuel (stop : Nat) :
+    Nat -> Nat -> Bytes -> Option (List InstructionFormOccurrence)
+  | 0, _, _ => none
+  | fuel + 1, rva, bytes =>
+      if rva == stop then
+        if bytes.isEmpty then some [] else none
+      else if stop < rva then none
+      else do
+        let decoded <- decodeInstructionExact bytes
+        if decoded.size == 0 ||
+            bytes.length < decoded.size ||
+            stop < rva + decoded.size then
+          none
+        else
+          let tail <- decodeInstructionFormsBytesFuel stop fuel
+            (rva + decoded.size) (bytes.drop decoded.size)
+          pure ({
+            offset := rva
+            size := decoded.size
+            bytes := bytes.take decoded.size
+            form := decoded.instruction.semanticForm
+          } :: tail)
+
+def decodeInstructionFormsBytes (start : Nat) (bytes : Bytes) :
+    Option (List InstructionFormOccurrence) :=
+  decodeInstructionFormsBytesFuel (start + bytes.length)
+    (bytes.length + 1) start bytes
+
 structure ISARequirementRegion where
   nodeId : Nat
   occurrences : List InstructionFormOccurrence

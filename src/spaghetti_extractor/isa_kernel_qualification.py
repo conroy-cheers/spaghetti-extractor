@@ -1,9 +1,13 @@
 """Deterministic, evidence-only qualification for the Stage A ISA kernel.
 
 The artifacts in this module deliberately sit outside the Stage A proof
-boundary.  Concrete agreement can qualify a semantic-kernel revision for a
-declared corpus, while disagreement can veto it, but no artifact emitted here
-can close a Stage A proof obligation.
+boundary.  Structural coverage records that a declared semantic form has an
+exact generated corpus case; concrete-oracle qualification records whether
+Bochs, Unicorn, and Lean could execute and agree on those cases.  Unsupported
+oracle execution therefore leaves structural coverage intact but makes oracle
+qualification incomplete.  Concrete disagreement blocks qualification, and
+agreement remains evidence rather than proof authority.  No artifact emitted
+here can close a Stage A proof obligation.
 """
 
 from __future__ import annotations
@@ -30,9 +34,12 @@ from .isa_conformance import (
 )
 ISA_ORACLE_OBSERVATION_FORMAT = "stage-a-isa-oracle-observation-v1"
 ISA_ORACLE_CONSENSUS_FORMAT = "stage-a-isa-oracle-consensus-v1"
-ISA_FORM_QUALIFICATION_FORMAT = "stage-a-isa-form-qualification-v1"
-ISA_KERNEL_QUALIFICATION_FORMAT = "stage-a-isa-kernel-qualification-v1"
-ISA_KERNEL_SELECTION_FORMAT = "stage-a-isa-kernel-selection-v1"
+ISA_FORM_QUALIFICATION_FORMAT_V1 = "stage-a-isa-form-qualification-v1"
+ISA_FORM_QUALIFICATION_FORMAT = "stage-a-isa-form-qualification-v2"
+ISA_KERNEL_QUALIFICATION_FORMAT_V1 = "stage-a-isa-kernel-qualification-v1"
+ISA_KERNEL_QUALIFICATION_FORMAT = "stage-a-isa-kernel-qualification-v2"
+ISA_KERNEL_SELECTION_FORMAT_V1 = "stage-a-isa-kernel-selection-v1"
+ISA_KERNEL_SELECTION_FORMAT = "stage-a-isa-kernel-selection-v2"
 ISA_KERNEL_SELECTION_REQUIREMENTS_FORMAT = (
     "stage-a-isa-kernel-selection-requirements-v1"
 )
@@ -52,6 +59,11 @@ class QualificationStatus(str, Enum):
     INCOMPLETE = "incomplete"
     DISPUTED = "disputed"
     VETOED = "vetoed"
+
+
+class StructuralCoverageStatus(str, Enum):
+    COMPLETE = "complete"
+    INCOMPLETE = "incomplete"
 
 
 class BackendRole(str, Enum):
@@ -232,6 +244,26 @@ class ISAFormQualification:
     def sha256(self) -> str:
         return artifact_sha256(self)
 
+    @property
+    def structural_status(self) -> StructuralCoverageStatus:
+        return (
+            StructuralCoverageStatus.COMPLETE
+            if self.consensuses
+            else StructuralCoverageStatus.INCOMPLETE
+        )
+
+    @property
+    def concrete_oracle_status(self) -> QualificationStatus:
+        return self.status
+
+    @property
+    def structural_diagnostics(self) -> tuple[MismatchDiagnostic, ...]:
+        return () if self.consensuses else self.diagnostics
+
+    @property
+    def concrete_oracle_diagnostics(self) -> tuple[MismatchDiagnostic, ...]:
+        return self.diagnostics
+
 
 @dataclass(frozen=True)
 class ISAKernelQualification:
@@ -257,6 +289,40 @@ class ISAKernelQualification:
 
     def sha256(self) -> str:
         return artifact_sha256(self)
+
+    @property
+    def structural_status(self) -> StructuralCoverageStatus:
+        return _structural_status(row.structural_status for row in self.forms)
+
+    @property
+    def concrete_oracle_status(self) -> QualificationStatus:
+        return _status(row.concrete_oracle_status for row in self.forms)
+
+    @property
+    def structural_diagnostics(self) -> tuple[MismatchDiagnostic, ...]:
+        return tuple(
+            sorted(
+                (
+                    diagnostic
+                    for row in self.forms
+                    for diagnostic in row.structural_diagnostics
+                ),
+                key=_diagnostic_key,
+            )
+        )
+
+    @property
+    def concrete_oracle_diagnostics(self) -> tuple[MismatchDiagnostic, ...]:
+        return tuple(
+            sorted(
+                (
+                    diagnostic
+                    for row in self.forms
+                    for diagnostic in row.concrete_oracle_diagnostics
+                ),
+                key=_diagnostic_key,
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -296,6 +362,34 @@ class SelectedFormQualification:
     status: QualificationStatus
     diagnostics: tuple[MismatchDiagnostic, ...]
 
+    @property
+    def structural_status(self) -> StructuralCoverageStatus:
+        structural_blockers = {
+            "missing_required_form",
+            "semantic_form_binding_mismatch",
+            "no_conformance_cases",
+        }
+        return (
+            StructuralCoverageStatus.INCOMPLETE
+            if self.qualification_sha256 is None
+            or any(row.code in structural_blockers for row in self.diagnostics)
+            else StructuralCoverageStatus.COMPLETE
+        )
+
+    @property
+    def concrete_oracle_status(self) -> QualificationStatus:
+        return self.status
+
+    @property
+    def structural_diagnostics(self) -> tuple[MismatchDiagnostic, ...]:
+        if self.structural_status is StructuralCoverageStatus.COMPLETE:
+            return ()
+        return self.diagnostics
+
+    @property
+    def concrete_oracle_diagnostics(self) -> tuple[MismatchDiagnostic, ...]:
+        return self.diagnostics
+
 
 @dataclass(frozen=True)
 class ISAKernelSelection:
@@ -321,6 +415,44 @@ class ISAKernelSelection:
 
     def sha256(self) -> str:
         return artifact_sha256(self)
+
+    @property
+    def structural_status(self) -> StructuralCoverageStatus:
+        return _structural_status(
+            row.structural_status for row in self.selected_forms
+        )
+
+    @property
+    def concrete_oracle_status(self) -> QualificationStatus:
+        return _status(
+            row.concrete_oracle_status for row in self.selected_forms
+        )
+
+    @property
+    def structural_diagnostics(self) -> tuple[MismatchDiagnostic, ...]:
+        return tuple(
+            sorted(
+                (
+                    diagnostic
+                    for row in self.selected_forms
+                    for diagnostic in row.structural_diagnostics
+                ),
+                key=_diagnostic_key,
+            )
+        )
+
+    @property
+    def concrete_oracle_diagnostics(self) -> tuple[MismatchDiagnostic, ...]:
+        return tuple(
+            sorted(
+                (
+                    diagnostic
+                    for row in self.selected_forms
+                    for diagnostic in row.concrete_oracle_diagnostics
+                ),
+                key=_diagnostic_key,
+            )
+        )
 
 
 def _object(value: Any, context: str) -> Mapping[str, Any]:
@@ -754,6 +886,26 @@ def _status_counts(
     }
 
 
+def _structural_status(
+    values: Iterable[StructuralCoverageStatus],
+) -> StructuralCoverageStatus:
+    statuses = tuple(values)
+    if not statuses or StructuralCoverageStatus.INCOMPLETE in statuses:
+        return StructuralCoverageStatus.INCOMPLETE
+    return StructuralCoverageStatus.COMPLETE
+
+
+def _structural_counts(
+    values: Iterable[StructuralCoverageStatus], *, total_name: str
+) -> dict[str, int]:
+    statuses = tuple(values)
+    return {
+        total_name: len(statuses),
+        "complete": statuses.count(StructuralCoverageStatus.COMPLETE),
+        "incomplete": statuses.count(StructuralCoverageStatus.INCOMPLETE),
+    }
+
+
 def _parse_counts(
     value: Any, context: str, *, total_name: str
 ) -> dict[str, int]:
@@ -767,6 +919,23 @@ def _parse_counts(
     if counts[total_name] != sum(
         counts[name] for name in ("qualified", "incomplete", "disputed", "vetoed")
     ):
+        raise ISAKernelQualificationError(
+            f"{context} status counts do not sum to {total_name}"
+        )
+    return counts
+
+
+def _parse_structural_counts(
+    value: Any, context: str, *, total_name: str
+) -> dict[str, int]:
+    payload = _object(value, context)
+    fields = {total_name, "complete", "incomplete"}
+    _exact_fields(payload, fields, context)
+    counts = {
+        field: _count(payload.get(field), f"{context}.{field}")
+        for field in fields
+    }
+    if counts[total_name] != counts["complete"] + counts["incomplete"]:
         raise ISAKernelQualificationError(
             f"{context} status counts do not sum to {total_name}"
         )
@@ -921,6 +1090,102 @@ def _ordered_diagnostics(
             f"{context} must be deterministically ordered"
         )
     return result
+
+
+def _qualification_layers_payload(
+    *,
+    structural_status: StructuralCoverageStatus,
+    structural_statuses: Iterable[StructuralCoverageStatus],
+    structural_diagnostics: Iterable[MismatchDiagnostic],
+    structural_total_name: str,
+    concrete_oracle_status: QualificationStatus,
+    concrete_oracle_counts: Mapping[str, int],
+    concrete_oracle_diagnostics: Iterable[MismatchDiagnostic],
+) -> dict[str, Any]:
+    return {
+        "structural": {
+            "status": structural_status.value,
+            "counts": _structural_counts(
+                structural_statuses, total_name=structural_total_name
+            ),
+            "diagnostics": [
+                _diagnostic_payload(row) for row in structural_diagnostics
+            ],
+        },
+        "concrete_oracle": {
+            "status": concrete_oracle_status.value,
+            "counts": dict(concrete_oracle_counts),
+            "diagnostics": [
+                _diagnostic_payload(row)
+                for row in concrete_oracle_diagnostics
+            ],
+        },
+    }
+
+
+def _validate_qualification_layers(
+    value: Any,
+    *,
+    expected: Mapping[str, Any],
+    context: str,
+    structural_total_name: str,
+    concrete_oracle_total_name: str,
+) -> None:
+    payload = _object(value, context)
+    _exact_fields(payload, {"structural", "concrete_oracle"}, context)
+    structural = _object(payload.get("structural"), f"{context}.structural")
+    concrete_oracle = _object(
+        payload.get("concrete_oracle"), f"{context}.concrete_oracle"
+    )
+    for name, layer in (
+        ("structural", structural),
+        ("concrete_oracle", concrete_oracle),
+    ):
+        _exact_fields(
+            layer,
+            {"status", "counts", "diagnostics"},
+            f"{context}.{name}",
+        )
+    _enum(
+        StructuralCoverageStatus,
+        structural.get("status"),
+        f"{context}.structural.status",
+    )
+    _parse_structural_counts(
+        structural.get("counts"),
+        f"{context}.structural.counts",
+        total_name=structural_total_name,
+    )
+    _enum(
+        QualificationStatus,
+        concrete_oracle.get("status"),
+        f"{context}.concrete_oracle.status",
+    )
+    _parse_counts(
+        concrete_oracle.get("counts"),
+        f"{context}.concrete_oracle.counts",
+        total_name=concrete_oracle_total_name,
+    )
+    for name, layer in (
+        ("structural", structural),
+        ("concrete_oracle", concrete_oracle),
+    ):
+        diagnostics = tuple(
+            _parse_diagnostic(
+                row, f"{context}.{name}.diagnostics[{index}]"
+            )
+            for index, row in enumerate(
+                _objects(
+                    layer.get("diagnostics"),
+                    f"{context}.{name}.diagnostics",
+                )
+            )
+        )
+        _ordered_diagnostics(diagnostics, f"{context}.{name}.diagnostics")
+    if payload != expected:
+        raise ISAKernelQualificationError(
+            f"{context} is inconsistent with the qualification evidence"
+        )
 
 
 def _json_differences(
@@ -1586,6 +1851,8 @@ def build_form_qualification(
 
 def parse_form_qualification(value: Any) -> ISAFormQualification:
     payload = _object(value, "ISA form qualification")
+    artifact_format = payload.get("format")
+    legacy = artifact_format == ISA_FORM_QUALIFICATION_FORMAT_V1
     _exact_fields(
         payload,
         {
@@ -1603,10 +1870,14 @@ def parse_form_qualification(value: Any) -> ISAFormQualification:
             "diagnostics",
             "counts",
             "trust",
-        },
+        }
+        | (set() if legacy else {"qualification_layers"}),
         "ISA form qualification",
     )
-    if payload.get("format") != ISA_FORM_QUALIFICATION_FORMAT:
+    if artifact_format not in {
+        ISA_FORM_QUALIFICATION_FORMAT_V1,
+        ISA_FORM_QUALIFICATION_FORMAT,
+    }:
         raise ISAKernelQualificationError(
             "unsupported ISA form qualification format"
         )
@@ -1687,8 +1958,25 @@ def parse_form_qualification(value: Any) -> ISAFormQualification:
         raise ISAKernelQualificationError(
             "ISA form qualification counts are inconsistent"
         )
+    if not legacy:
+        expected_layers = _qualification_layers_payload(
+            structural_status=result.structural_status,
+            structural_statuses=(result.structural_status,),
+            structural_diagnostics=result.structural_diagnostics,
+            structural_total_name="required_forms",
+            concrete_oracle_status=result.concrete_oracle_status,
+            concrete_oracle_counts=result.counts,
+            concrete_oracle_diagnostics=result.concrete_oracle_diagnostics,
+        )
+        _validate_qualification_layers(
+            payload.get("qualification_layers"),
+            expected=expected_layers,
+            context="ISA form qualification.qualification_layers",
+            structural_total_name="required_forms",
+            concrete_oracle_total_name="consensus_cases",
+        )
     _parse_trust(payload.get("trust"), "ISA form qualification.trust")
-    return result
+    return replace(result, format=artifact_format)
 
 
 def serialize_form_qualification(
@@ -1718,6 +2006,20 @@ def serialize_form_qualification(
         "counts": dict(value.counts),
         "trust": _trust_payload(value.trust),
     }
+    if value.format == ISA_FORM_QUALIFICATION_FORMAT:
+        payload["qualification_layers"] = _qualification_layers_payload(
+            structural_status=value.structural_status,
+            structural_statuses=(value.structural_status,),
+            structural_diagnostics=value.structural_diagnostics,
+            structural_total_name="required_forms",
+            concrete_oracle_status=value.concrete_oracle_status,
+            concrete_oracle_counts=value.counts,
+            concrete_oracle_diagnostics=value.concrete_oracle_diagnostics,
+        )
+    elif value.format != ISA_FORM_QUALIFICATION_FORMAT_V1:
+        raise ISAKernelQualificationError(
+            "form qualification has an unsupported format"
+        )
     if parse_form_qualification(payload) != value:
         raise ISAKernelQualificationError(
             "form qualification is not a valid typed instance"
@@ -1841,6 +2143,8 @@ def build_isa_kernel_qualification(
 
 def parse_kernel_qualification(value: Any) -> ISAKernelQualification:
     payload = _object(value, "ISA kernel qualification")
+    artifact_format = payload.get("format")
+    legacy = artifact_format == ISA_KERNEL_QUALIFICATION_FORMAT_V1
     _exact_fields(
         payload,
         {
@@ -1857,10 +2161,14 @@ def parse_kernel_qualification(value: Any) -> ISAKernelQualification:
             "diagnostics",
             "counts",
             "trust",
-        },
+        }
+        | (set() if legacy else {"qualification_layers"}),
         "ISA kernel qualification",
     )
-    if payload.get("format") != ISA_KERNEL_QUALIFICATION_FORMAT:
+    if artifact_format not in {
+        ISA_KERNEL_QUALIFICATION_FORMAT_V1,
+        ISA_KERNEL_QUALIFICATION_FORMAT,
+    }:
         raise ISAKernelQualificationError(
             "unsupported ISA kernel qualification format"
         )
@@ -1947,8 +2255,30 @@ def parse_kernel_qualification(value: Any) -> ISAKernelQualification:
         raise ISAKernelQualificationError(
             "ISA kernel qualification counts are inconsistent"
         )
+    if not legacy:
+        expected_layers = _qualification_layers_payload(
+            structural_status=result.structural_status,
+            structural_statuses=(
+                row.structural_status for row in result.forms
+            ),
+            structural_diagnostics=result.structural_diagnostics,
+            structural_total_name="required_forms",
+            concrete_oracle_status=result.concrete_oracle_status,
+            concrete_oracle_counts=_status_counts(
+                (row.concrete_oracle_status for row in result.forms),
+                total_name="required_forms",
+            ),
+            concrete_oracle_diagnostics=result.concrete_oracle_diagnostics,
+        )
+        _validate_qualification_layers(
+            payload.get("qualification_layers"),
+            expected=expected_layers,
+            context="ISA kernel qualification.qualification_layers",
+            structural_total_name="required_forms",
+            concrete_oracle_total_name="required_forms",
+        )
     _parse_trust(payload.get("trust"), "ISA kernel qualification.trust")
-    return result
+    return replace(result, format=artifact_format)
 
 
 def serialize_kernel_qualification(
@@ -1975,6 +2305,25 @@ def serialize_kernel_qualification(
         "counts": dict(value.counts),
         "trust": _trust_payload(value.trust),
     }
+    if value.format == ISA_KERNEL_QUALIFICATION_FORMAT:
+        payload["qualification_layers"] = _qualification_layers_payload(
+            structural_status=value.structural_status,
+            structural_statuses=(
+                row.structural_status for row in value.forms
+            ),
+            structural_diagnostics=value.structural_diagnostics,
+            structural_total_name="required_forms",
+            concrete_oracle_status=value.concrete_oracle_status,
+            concrete_oracle_counts=_status_counts(
+                (row.concrete_oracle_status for row in value.forms),
+                total_name="required_forms",
+            ),
+            concrete_oracle_diagnostics=value.concrete_oracle_diagnostics,
+        )
+    elif value.format != ISA_KERNEL_QUALIFICATION_FORMAT_V1:
+        raise ISAKernelQualificationError(
+            "kernel qualification has an unsupported format"
+        )
     if parse_kernel_qualification(payload) != value:
         raise ISAKernelQualificationError(
             "kernel qualification is not a valid typed instance"
@@ -2025,7 +2374,7 @@ def _requirement_payload(value: BinaryFormRequirement) -> dict[str, Any]:
 
 
 def _parse_selected_form(
-    value: Any, context: str
+    value: Any, context: str, *, layered: bool
 ) -> SelectedFormQualification:
     payload = _object(value, context)
     _exact_fields(
@@ -2037,7 +2386,8 @@ def _parse_selected_form(
             "qualification_sha256",
             "status",
             "diagnostics",
-        },
+        }
+        | ({"qualification_layers"} if layered else set()),
         context,
     )
     locations = tuple(
@@ -2065,7 +2415,7 @@ def _parse_selected_form(
         raise ISAKernelQualificationError(
             f"{context} diagnostics are not localized to the selected form"
         )
-    return SelectedFormQualification(
+    result = SelectedFormQualification(
         form_id=form_id,
         semantic_form=_string(
             payload.get("semantic_form"), f"{context}.semantic_form"
@@ -2080,10 +2430,33 @@ def _parse_selected_form(
         ),
         diagnostics=diagnostics,
     )
+    if layered:
+        expected_layers = _qualification_layers_payload(
+            structural_status=result.structural_status,
+            structural_statuses=(result.structural_status,),
+            structural_diagnostics=result.structural_diagnostics,
+            structural_total_name="required_forms",
+            concrete_oracle_status=result.concrete_oracle_status,
+            concrete_oracle_counts=_status_counts(
+                (result.concrete_oracle_status,),
+                total_name="required_forms",
+            ),
+            concrete_oracle_diagnostics=result.concrete_oracle_diagnostics,
+        )
+        _validate_qualification_layers(
+            payload.get("qualification_layers"),
+            expected=expected_layers,
+            context=f"{context}.qualification_layers",
+            structural_total_name="required_forms",
+            concrete_oracle_total_name="required_forms",
+        )
+    return result
 
 
-def _selected_form_payload(value: SelectedFormQualification) -> dict[str, Any]:
-    return {
+def _selected_form_payload(
+    value: SelectedFormQualification, *, layered: bool
+) -> dict[str, Any]:
+    payload = {
         "form_id": value.form_id,
         "semantic_form": value.semantic_form,
         "source_locations": [
@@ -2096,6 +2469,20 @@ def _selected_form_payload(value: SelectedFormQualification) -> dict[str, Any]:
             for diagnostic in value.diagnostics
         ],
     }
+    if layered:
+        payload["qualification_layers"] = _qualification_layers_payload(
+            structural_status=value.structural_status,
+            structural_statuses=(value.structural_status,),
+            structural_diagnostics=value.structural_diagnostics,
+            structural_total_name="required_forms",
+            concrete_oracle_status=value.concrete_oracle_status,
+            concrete_oracle_counts=_status_counts(
+                (value.concrete_oracle_status,),
+                total_name="required_forms",
+            ),
+            concrete_oracle_diagnostics=value.concrete_oracle_diagnostics,
+        )
+    return payload
 
 
 def _localized(
@@ -2288,6 +2675,8 @@ def select_isa_kernel_qualification(
 
 def parse_kernel_selection(value: Any) -> ISAKernelSelection:
     payload = _object(value, "ISA kernel selection")
+    artifact_format = payload.get("format")
+    legacy = artifact_format == ISA_KERNEL_SELECTION_FORMAT_V1
     _exact_fields(
         payload,
         {
@@ -2302,10 +2691,14 @@ def parse_kernel_selection(value: Any) -> ISAKernelSelection:
             "diagnostics",
             "counts",
             "trust",
-        },
+        }
+        | (set() if legacy else {"qualification_layers"}),
         "ISA kernel selection",
     )
-    if payload.get("format") != ISA_KERNEL_SELECTION_FORMAT:
+    if artifact_format not in {
+        ISA_KERNEL_SELECTION_FORMAT_V1,
+        ISA_KERNEL_SELECTION_FORMAT,
+    }:
         raise ISAKernelQualificationError(
             "unsupported ISA kernel selection format"
         )
@@ -2329,7 +2722,11 @@ def parse_kernel_selection(value: Any) -> ISAKernelSelection:
             "and ordered"
         )
     selected = tuple(
-        _parse_selected_form(row, f"ISA kernel selection.selected_forms[{index}]")
+        _parse_selected_form(
+            row,
+            f"ISA kernel selection.selected_forms[{index}]",
+            layered=not legacy,
+        )
         for index, row in enumerate(
             _objects(
                 payload.get("selected_forms"),
@@ -2398,7 +2795,7 @@ def parse_kernel_selection(value: Any) -> ISAKernelSelection:
         raise ISAKernelQualificationError(
             "ISA kernel selection source location does not bind its binary"
         )
-    return ISAKernelSelection(
+    result = ISAKernelSelection(
         binary_id=_string(binary.get("id"), "ISA kernel selection.binary.id"),
         binary_sha256=binary_sha256,
         profile=_parse_profile(
@@ -2417,7 +2814,34 @@ def parse_kernel_selection(value: Any) -> ISAKernelSelection:
         status=status,
         diagnostics=diagnostics,
         counts=counts,
+        format=artifact_format,
     )
+    if not legacy:
+        expected_layers = _qualification_layers_payload(
+            structural_status=result.structural_status,
+            structural_statuses=(
+                row.structural_status for row in result.selected_forms
+            ),
+            structural_diagnostics=result.structural_diagnostics,
+            structural_total_name="required_forms",
+            concrete_oracle_status=result.concrete_oracle_status,
+            concrete_oracle_counts=_status_counts(
+                (
+                    row.concrete_oracle_status
+                    for row in result.selected_forms
+                ),
+                total_name="required_forms",
+            ),
+            concrete_oracle_diagnostics=result.concrete_oracle_diagnostics,
+        )
+        _validate_qualification_layers(
+            payload.get("qualification_layers"),
+            expected=expected_layers,
+            context="ISA kernel selection.qualification_layers",
+            structural_total_name="required_forms",
+            concrete_oracle_total_name="required_forms",
+        )
+    return result
 
 
 def serialize_kernel_selection(
@@ -2435,7 +2859,10 @@ def serialize_kernel_selection(
         "kernel_qualification_sha256": value.kernel_qualification_sha256,
         "required_form_ids": list(value.required_form_ids),
         "selected_forms": [
-            _selected_form_payload(row) for row in value.selected_forms
+            _selected_form_payload(
+                row, layered=value.format == ISA_KERNEL_SELECTION_FORMAT
+            )
+            for row in value.selected_forms
         ],
         "status": value.status.value,
         "diagnostics": [
@@ -2444,6 +2871,28 @@ def serialize_kernel_selection(
         "counts": dict(value.counts),
         "trust": _trust_payload(value.trust),
     }
+    if value.format == ISA_KERNEL_SELECTION_FORMAT:
+        payload["qualification_layers"] = _qualification_layers_payload(
+            structural_status=value.structural_status,
+            structural_statuses=(
+                row.structural_status for row in value.selected_forms
+            ),
+            structural_diagnostics=value.structural_diagnostics,
+            structural_total_name="required_forms",
+            concrete_oracle_status=value.concrete_oracle_status,
+            concrete_oracle_counts=_status_counts(
+                (
+                    row.concrete_oracle_status
+                    for row in value.selected_forms
+                ),
+                total_name="required_forms",
+            ),
+            concrete_oracle_diagnostics=value.concrete_oracle_diagnostics,
+        )
+    elif value.format != ISA_KERNEL_SELECTION_FORMAT_V1:
+        raise ISAKernelQualificationError(
+            "kernel selection has an unsupported format"
+        )
     if parse_kernel_selection(payload) != value:
         raise ISAKernelQualificationError(
             "kernel selection is not a valid typed instance"
@@ -2485,6 +2934,27 @@ def _masked_bytes(value: bytes, mask: bytes) -> list[int]:
     ]
 
 
+def _has_defined_machine_output(case: InstructionTestCase) -> bool:
+    masks = case.defined_outputs
+    return any(
+        (
+            *(getattr(masks.gprs, register) for register in GPR_NAMES),
+            masks.eip,
+            masks.eflags,
+            masks.fs.selector,
+            masks.fs.base,
+            masks.x87.control_word,
+            masks.x87.status_word,
+            masks.x87.tag_word,
+            masks.x87.last_opcode,
+            masks.x87.instruction_pointer,
+            masks.x87.data_pointer,
+            *(byte for register in masks.x87.registers for byte in register),
+            *(byte for region in masks.memory for byte in region.mask),
+        )
+    )
+
+
 def _normalized_complete_result(
     case: InstructionTestCase, observation: BackendObservation
 ) -> dict[str, Any]:
@@ -2498,6 +2968,8 @@ def _normalized_complete_result(
         "final_state": None,
         "memory": None,
     }
+    if not _has_defined_machine_output(case):
+        return result
     if observation.final_state is None:
         if observation.memory is not None:
             raise ISAKernelQualificationError(
@@ -2657,22 +3129,12 @@ def observations_from_conformance_report(
         if observation.status in {
             ObservationStatus.MATCH,
             ObservationStatus.MISMATCH,
-        } and observation.final_state is not None and observation.memory is not None:
+        }:
             availability = ObservationAvailability.COMPLETE
             result = _normalized_complete_result(
                 cases_by_id[observation.case_id], observation
             )
             detail = observation.detail
-        elif observation.status in {
-            ObservationStatus.MATCH,
-            ObservationStatus.MISMATCH,
-        }:
-            availability = ObservationAvailability.INCOMPLETE
-            result = None
-            detail = (
-                observation.detail
-                or "complete report observation has no actual machine state"
-            )
         elif observation.status is ObservationStatus.UNSUPPORTED:
             availability = ObservationAvailability.UNSUPPORTED
             result = None
@@ -3001,9 +3463,12 @@ __all__ = [
     "EvidenceTrust",
     "GeneratorBinding",
     "ISA_FORM_QUALIFICATION_FORMAT",
+    "ISA_FORM_QUALIFICATION_FORMAT_V1",
     "ISA_KERNEL_QUALIFICATION_FORMAT",
+    "ISA_KERNEL_QUALIFICATION_FORMAT_V1",
     "ISA_KERNEL_QUALIFICATION_TRUST_ROLE",
     "ISA_KERNEL_SELECTION_FORMAT",
+    "ISA_KERNEL_SELECTION_FORMAT_V1",
     "ISA_KERNEL_SELECTION_REQUIREMENTS_FORMAT",
     "ISA_ORACLE_CONSENSUS_FORMAT",
     "ISA_ORACLE_OBSERVATION_FORMAT",
@@ -3021,6 +3486,7 @@ __all__ = [
     "SelectedFormQualification",
     "SemanticKernelBinding",
     "SourceLocation",
+    "StructuralCoverageStatus",
     "artifact_sha256",
     "build_form_qualification",
     "build_isa_kernel_qualification",

@@ -110,6 +110,7 @@ class ReachableStaticPointerSlotProposalPlan:
                             {
                                 "kind": write.kind,
                                 "target_id": write.target_id,
+                                "width": write.width,
                             }
                             for write in region.writes or ()
                         ],
@@ -146,6 +147,7 @@ class ReachableStaticPointerSlotProposalPlan:
                             {
                                 "kind": write.kind,
                                 "target_id": write.target_id,
+                                "width": write.width,
                             }
                             for write in region.writes or ()
                         ],
@@ -598,34 +600,34 @@ def _classify_writes(
     writes = [event for event in row.memory_events if event.get("kind") == "write"]
     for write_index, event in enumerate(writes):
         width = event.get("width")
-        if width != 4:
+        if width not in {1, 2, 4}:
             blockers.append(ProposalBlocker(
                 "unsupported_write_width",
                 row.rva,
                 f"write {write_index} has width {width!r}; the slot checker "
-                "replays exact 32-bit writes",
-                "split or extend the generic normalized-write checker for this width",
+                "supports exact one-, two-, and four-byte semantic writes",
+                "extend the generic width-aware checker for this semantic width",
             ))
             continue
         address = _constant(event.get("address"))
         if address is None:
-            blockers.append(ProposalBlocker(
-                "dynamic_write_may_alias_slot",
-                row.rva,
-                f"write {write_index} has a non-constant address",
-                "supply a Lean-checked separation witness or make the candidate "
-                "expose a statically disjoint address",
+            classifications.append(WriteClassificationProposal(
+                "runtime_separated", width=width
+            ))
+            has_may_touch = True
+            continue
+        if _disjoint_spans(address, width, slot_va, 4):
+            classifications.append(WriteClassificationProposal(
+                "absolute_disjoint", width=width
             ))
             continue
-        if _disjoint_words(address, slot_va):
-            classifications.append(WriteClassificationProposal("absolute_disjoint"))
-            continue
         has_may_touch = True
-        if address != slot_va:
+        if address != slot_va or width != 4:
             blockers.append(ProposalBlocker(
                 "overlapping_write_may_corrupt_slot",
                 row.rva,
-                f"write {write_index} at 0x{address:x} partially overlaps slot 0x{slot_va:x}",
+                f"{width}-byte write {write_index} at 0x{address:x} partially "
+                f"overlaps slot 0x{slot_va:x}",
                 "model the overlapping memory update explicitly; it cannot be "
                 "classified as a slot word write",
             ))
@@ -944,6 +946,15 @@ def _rva_executable(pe: pefile.PE, rva: int) -> bool:
 
 def _disjoint_words(left: int, right: int) -> bool:
     return left + 4 <= right or right + 4 <= left
+
+
+def _disjoint_spans(
+    left: int,
+    left_size: int,
+    right: int,
+    right_size: int,
+) -> bool:
+    return left + left_size <= right or right + right_size <= left
 
 
 def _constant(value: Any) -> int | None:

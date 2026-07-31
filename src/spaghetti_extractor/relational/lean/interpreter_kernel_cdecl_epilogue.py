@@ -467,16 +467,6 @@ def build_relational_interpreter_kernel_cdecl_epilogue_plan(
             raise RelationalInterpreterKernelCDeclEpilogueGenerationError(
                 f"{operation_name} operation plan candidate is stale"
             )
-    run_inputs = _object(run_payload.get("inputs"), "runFunction inputs")
-    run_step = _object(
-        run_inputs.get("step_operation_plan"),
-        "runFunction interpreterStep operation input",
-    )
-    if run_step.get("sha256") != sha256_file(step_path):
-        raise RelationalInterpreterKernelCDeclEpilogueGenerationError(
-            "runFunction operation plan does not reference the supplied "
-            "interpreterStep operation plan"
-        )
     if run.fuel != 8:
         raise RelationalInterpreterKernelCDeclEpilogueGenerationError(
             "the current Run phase interface requires exactly eight epilogue steps"

@@ -49,11 +49,25 @@ class StageARelationalInterpreterMixedConstructiveSourceClassifierTests(
             "ExactOriginalSemanticSourceCoverage.sources_targetIds",
             "lookupProgramRecord_eq_some_of_mem_sourceRva",
             "ExactCandidateKernelEntry",
+            "ExactConstructiveMixedLaunchCarrier",
+            "exactConstructiveMixedLaunchCarrier?",
+            "originalContinuationsExact",
+            "originalUndefinedExact",
+            "candidateUndefinedExact",
+            "candidateEventIndexExact",
+            "candidateEventsExact",
+            "callsExact",
             "ConstructiveMixedKernelSourceEvidence",
+            "ConstructiveMixedKernelPhaseMachineStatesRelated",
+            "MixedLaunchStatesRelated originalContext candidate contract",
+            "ConstructiveMixedKernelPhaseStateFacts",
+            "executionMachineStatesRelated",
             "ConstructiveMixedKernelSourceRule",
             "ConstructiveMixedKernelSourceRule.sourceTargetId",
             "constructiveSemanticRulesWithLaunch",
             "constructiveSemanticRulesWithLaunch_targetIds",
+            "constructiveSemanticRulesWithRootBoundary",
+            "constructiveSemanticRulesWithRootBoundary_targetIds",
             "| launch",
             "| semanticTransfer",
             "| externalOperation",
@@ -75,7 +89,8 @@ class StageARelationalInterpreterMixedConstructiveSourceClassifierTests(
             "toRelatedSourceCase",
             "constructiveMixedKernelInvariant",
             "ConstructiveMixedKernelStateFacts reachability.targetIds contract",
-            ").isSome = true",
+            "ConstructiveMixedKernelPhaseStateFacts contract evidence",
+            "= some evidence",
             "constructiveMixedKernelInvariant_holds",
             "constructiveMixedKernelSourceClassifier",
             "MixedKernelSourceClassifier",
@@ -142,9 +157,11 @@ class StageARelationalInterpreterMixedConstructiveSourceClassifierTests(
             "ExactOriginalSemanticSourceCoverage.source",
             "ExactOriginalSemanticSourceCoverage.sources_targetIds",
             "constructiveSemanticRulesWithLaunch_targetIds",
+            "constructiveSemanticRulesWithRootBoundary_targetIds",
             "ConstructiveMixedKernelSourceRule.evidence?",
             "constructiveMixedKernelSourceEvidence?",
             "ConstructiveMixedKernelSourceEvidence.toRelatedSourceCase",
+            "ConstructiveMixedKernelPhaseStateFacts.executionMachineStatesRelated",
             "constructiveMixedKernelInvariant_holds",
             "constructiveMixedKernelSourceClassifier",
         ):
@@ -174,10 +191,15 @@ open StageA.Relational.InterpreterMixedConstructiveSourceClassifier
 #check lookupProgramRecord_eq_some_of_mem_sourceRva
 #check ExactCandidateKernelEntry
 #check ConstructiveMixedKernelSourceEvidence
+#check ConstructiveMixedKernelPhaseMachineStatesRelated
+#check ConstructiveMixedKernelPhaseStateFacts
+#check ConstructiveMixedKernelPhaseStateFacts.executionMachineStatesRelated
 #check ConstructiveMixedKernelSourceRule
 #check ConstructiveMixedKernelSourceRule.sourceTargetId
 #check constructiveSemanticRulesWithLaunch
 #check constructiveSemanticRulesWithLaunch_targetIds
+#check constructiveSemanticRulesWithRootBoundary
+#check constructiveSemanticRulesWithRootBoundary_targetIds
 #check ConstructiveMixedKernelSourceEvidence.launch
 #check ConstructiveMixedKernelSourceEvidence.semanticTransfer
 #check ConstructiveMixedKernelSourceEvidence.externalOperation
@@ -200,8 +222,10 @@ open StageA.Relational.InterpreterMixedConstructiveSourceClassifier
 #print axioms ExactOriginalSemanticSourceCoverage.source
 #print axioms ExactOriginalSemanticSourceCoverage.sources_targetIds
 #print axioms constructiveSemanticRulesWithLaunch_targetIds
+#print axioms constructiveSemanticRulesWithRootBoundary_targetIds
 #print axioms constructiveMixedKernelSourceEvidence?
 #print axioms ConstructiveMixedKernelSourceEvidence.toRelatedSourceCase
+#print axioms ConstructiveMixedKernelPhaseStateFacts.executionMachineStatesRelated
 #print axioms constructiveMixedKernelInvariant_holds
 #print axioms constructiveMixedKernelSourceClassifier
 

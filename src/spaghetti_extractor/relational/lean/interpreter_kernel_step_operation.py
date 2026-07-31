@@ -1,11 +1,10 @@
-"""Emit the exact-candidate ``interpreterStep`` operation composition surface.
+"""Emit checked-call-tree ``interpreterStep`` operation composition.
 
-Static evidence is re-bound across the candidate PE, kernel/data/ABI plans,
-callback inventory, and the already-closed ``programLookup`` operation.  The
-generated Lean module closes static reflection and cdecl record identity,
-extracts the exact callee result from the ``programLookup`` theorem, then
-exposes typed dynamic premises for caller-frame composition, loops, helpers,
-x87, and the epilogue.  No Python status can inhabit those premises.
+Static evidence is re-bound across the candidate artifacts and the closed
+programLookup operation.  Semantic closure comes from the canonical finite
+Step/Invoke/Run call tree.  Native Invoke evidence is request-local to the
+checked Step derivation rather than an independently quantified invokeCall
+operation theorem.
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ from .interpreter_x87_replay_bridge_target import (
 
 
 INTERPRETER_KERNEL_STEP_OPERATION_FORMAT = (
-    "stage-a-relational-interpreter-kernel-step-operation-plan-v1"
+    "stage-a-relational-interpreter-kernel-step-operation-plan-v2"
 )
 INTERPRETER_KERNEL_STEP_OPERATION_PLAN_FILENAME = (
     "interpreter-kernel-step-operation-plan.json"
@@ -46,16 +45,19 @@ INTERPRETER_KERNEL_STEP_OPERATION_PLAN_FILENAME = (
 INTERPRETER_KERNEL_STEP_OPERATION_LEAN_FILENAME = (
     "GeneratedRelationalInterpreterKernelStepOperation.lean"
 )
+INTERPRETER_KERNEL_STEP_OPERATION_INTERFACE_LEAN_FILENAME = (
+    "GeneratedRelationalInterpreterKernelStepOperationInterface.lean"
+)
 INTERPRETER_KERNEL_STEP_OPERATION_THEOREM = (
     "StageA.GeneratedRelational.InterpreterKernelStepOperation."
     "generatedInterpreterStepOperationRefinesUsing"
 )
 
 INTERPRETER_KERNEL_STEP_OPERATION_REMAINING_PREMISES = (
+    "finite_checked_semantic_call_tree",
     "program_lookup_world_subroutine_composition",
     "per_action_loop_chunks",
-    "direct_helper_subroutine_refinements",
-    "invoke_call_subroutine_operation_refinement",
+    "request_local_invoke_call_refinement",
     "x87_replay_nested_callback_refinement",
     "cdecl_epilogue_response_and_memory_frame",
 )
@@ -187,6 +189,49 @@ class InterpreterKernelStepOperationPlan:
                 "closed_program_lookup_operation",
                 "program_lookup_operation_result_extraction",
                 "exact_x87_replay_static_table",
+                "finite_checked_semantic_call_tree_interface",
+                "request_local_checked_invoke_derivations",
+                "exact_native_step_closure_adapters",
+            ],
+            "checked_native_closure_interfaces": [
+                {
+                    "field": "programLookupCall",
+                    "lean_type": (
+                        "GeneratedInterpreterStepExactProgramLookupClosure"
+                    ),
+                    "evidence": (
+                        "exact prefix/call replay, concrete nested ABI frame, "
+                        "and operation-selected exact return replay"
+                    ),
+                },
+                {
+                    "field": "invokeCallRefines",
+                    "lean_type": (
+                        "GeneratedInterpreterStepCheckedInvokeClosure"
+                    ),
+                    "evidence": (
+                        "checked Invoke operation under the concrete nested "
+                        "continuation and return word"
+                    ),
+                },
+                {
+                    "field": "actionLoops",
+                    "lean_type": "GeneratedInterpreterStepExactActionClosure",
+                    "evidence": (
+                        "checked Step chunks, request-local x87 frame evidence, "
+                        "and exact request-local helper subroutines"
+                    ),
+                },
+                {
+                    "field": "epilogue",
+                    "lean_type": (
+                        "GeneratedInterpreterStepExactEpilogueClosure"
+                    ),
+                    "evidence": (
+                        "exact cdecl execution, ABI response, world, and "
+                        "scratch-footprint frame"
+                    ),
+                },
             ],
             "remaining_proof_premises": list(
                 INTERPRETER_KERNEL_STEP_OPERATION_REMAINING_PREMISES
@@ -201,6 +246,15 @@ class InterpreterKernelStepOperationPlan:
 
     def _proof_frontiers(self) -> list[dict[str, Any]]:
         return [
+            {
+                "id": "interpreter-step:finite-call-tree",
+                "premise": "finite_checked_semantic_call_tree",
+                "rva": self.function_entry_rva,
+                "next_action": (
+                    "supply finite checked Step, Invoke, and nested Run "
+                    "derivations for every authoritative semantic transition"
+                ),
+            },
             {
                 "id": "interpreter-step:program-lookup-world-call",
                 "premise": "program_lookup_world_subroutine_composition",
@@ -219,26 +273,19 @@ class InterpreterKernelStepOperationPlan:
                 "blocks": self.function_blocks,
                 "next_action": (
                     "assemble every feasible action path from fixed-fuel "
-                    "checked chunks and the named subroutine authorities"
+                    "checked chunks, including the exact helper calls reached "
+                    "by that checked semantic derivation"
                 ),
-            },
-            {
-                "id": "interpreter-step:direct-helpers",
-                "premise": "direct_helper_subroutine_refinements",
                 "target_rvas": list(self.helper_target_rvas),
-                "next_action": (
-                    "prove exact event-free call/return paths for every helper "
-                    "target and checked continuation"
-                ),
             },
             {
                 "id": "interpreter-step:invoke-call",
-                "premise": "invoke_call_subroutine_operation_refinement",
+                "premise": "request_local_invoke_call_refinement",
                 "rva": self.invoke_call_rva,
                 "target_rva": self.invoke_target_rva,
                 "next_action": (
-                    "close invokeCall under a nested native call frame for "
-                    "all continuations and return words"
+                    "close only the Invoke sites retained by each checked "
+                    "Step derivation under their exact nested native frames"
                 ),
             },
             {
@@ -649,6 +696,9 @@ def relational_interpreter_kernel_step_operation_source(
     x87_replay_module: str = (
         "StageA.GeneratedRelationalInterpreterX87ReplayBridgeTarget"
     ),
+    closed_call_tree_module: str = (
+        "StageA.GeneratedRelationalInterpreterKernelClosedCallTree"
+    ),
 ) -> str:
     modules = (
         ("ABI module", abi_module),
@@ -658,12 +708,14 @@ def relational_interpreter_kernel_step_operation_source(
         ("programLookup operation module", lookup_operation_module),
         ("invoke-native module", invoke_native_module),
         ("x87 replay module", x87_replay_module),
+        ("closed call-tree module", closed_call_tree_module),
     )
     for context, module in modules:
         _validate_module(module, context)
     function = plan.function_symbol
     callback_target = plan.callback_target_rva
     return f"""import StageA.RelationalInterpreterKernelStepOperation
+import StageA.RelationalInterpreterKernelStepOperationClosure
 import {abi_module}
 import {kernel_module}
 import {data_module}
@@ -671,6 +723,7 @@ import {step_native_module}
 import {lookup_operation_module}
 import {invoke_native_module}
 import {x87_replay_module}
+import {closed_call_tree_module}
 
 namespace StageA.GeneratedRelational.InterpreterKernelStepOperation
 
@@ -678,10 +731,15 @@ open StageA.Formal StageA.Relational
 open StageA.Relational.Interpreter
 open StageA.Relational.InterpreterKernel
 open StageA.Relational.InterpreterKernelABI
+open StageA.Relational.InterpreterKernelCdeclEpilogue
+open StageA.Relational.InterpreterKernelClosedCallTree
 open StageA.Relational.InterpreterKernelInvokeNative
+open StageA.Relational.InterpreterKernelOperationABIFrame
 open StageA.Relational.InterpreterKernelProgramLookupOperation
 open StageA.Relational.InterpreterKernelStepNative
 open StageA.Relational.InterpreterKernelStepOperation
+open StageA.Relational.InterpreterKernelStepOperationClosure
+open StageA.Relational.InterpreterKernelStepProgramLookupCall
 open StageA.Relational.InterpreterNativeWorld
 open StageA.Relational.InterpreterX87ReplayBridgeTarget
 open StageA.GeneratedRelational.InterpreterKernel
@@ -691,6 +749,7 @@ open StageA.GeneratedRelational.InterpreterKernelStepNative
 open StageA.GeneratedRelational.InterpreterKernelProgramLookupOperation
 open StageA.GeneratedRelational.InterpreterKernelInvokeNative
 open StageA.GeneratedRelational.InterpreterX87ReplayBridgeTarget
+open StageA.GeneratedRelational.InterpreterKernelClosedCallTree
 
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -758,9 +817,8 @@ structure GeneratedInterpreterStepProgramLookupWorldCall
     generatedInterpreterKernelABIRelation.requestRelated
         (.interpreterStep semanticInterpreterProgramRecords semanticEnvironment
           sourceRva logical) before ->
-      InterpreterStepNativeProgramLookupPrepared
-        generatedCompiledKernelProgram generatedInterpreterKernelABIRelation
-        semanticInterpreterProgramRecords
+      InterpreterStepNativeCheckedProgramLookupFrame
+        generatedCompiledKernelProgram semanticInterpreterProgramRecords
         (generatedInterpreterStepNativeProgram environment) world
         (generatedInterpreterStepOperationStatic environment) sourceRva before
 
@@ -768,56 +826,31 @@ def GeneratedInterpreterStepProgramLookupWorldCall.toAuthority
     {{environment : NativeWorldEnvironment}} {{world : RelationalWorld}}
     (authority : GeneratedInterpreterStepProgramLookupWorldCall environment
       world) :
-    InterpreterStepNativeProgramLookupCallAuthority
+    InterpreterStepNativeCheckedProgramLookupCallAuthority
       generatedCompiledKernelProgram generatedInterpreterKernelABIRelation
       semanticInterpreterProgramRecords
       (generatedInterpreterStepNativeProgram environment) world
-      (generatedInterpreterStepOperationStatic environment)
-      (generatedInterpreterStepProgramLookupOperation environment) := {{
+      (generatedInterpreterStepOperationStatic environment) := {{
   prepare := authority.prepare
 }}
 
-/-- Remaining premise at the exact invokeCall RVA {plan.invoke_call_rva}. -/
-structure GeneratedInterpreterStepInvokeCallSubroutine
-    (environment : NativeWorldEnvironment) (world : RelationalWorld) : Prop where
-  refines : forall continuationRva returnAddress,
-    KernelOperationRefinesUsing generatedCompiledKernelProgram
-      generatedInterpreterKernelABIRelation
-      (NativeWorldSubroutineDispatches
-        (generatedInterpreterStepNativeProgram environment) world
-        continuationRva returnAddress) .invokeCall
-
-def GeneratedInterpreterStepInvokeCallSubroutine.toAuthority
-    {{environment : NativeWorldEnvironment}} {{world : RelationalWorld}}
-    (authority : GeneratedInterpreterStepInvokeCallSubroutine environment
-      world) :
-    InterpreterStepNativeInvokeCallAuthority generatedCompiledKernelProgram
-      generatedInterpreterKernelABIRelation
-      (generatedInterpreterStepNativeProgram environment) world
+/-- Exact static invokeCall target used by request-local checked Invoke
+evidence.  No universal invokeCall operation theorem is stored here. -/
+def generatedInterpreterStepInvokeCallStatic
+    (environment : NativeWorldEnvironment) :
+    InterpreterStepNativeInvokeCallStaticBinding generatedCompiledKernelProgram
+      (generatedInterpreterStepNativeProgram environment)
       generatedInterpreterStepNativeTemplate := {{
   invokeEntryRva := {plan.invoke_target_rva}
   entryExact := by decide +kernel
   callExact := by decide +kernel
-  refines := authority.refines
 }}
 
-/-- Remaining runtime premise tying the checked replay table to the exact Step
-callback helper RVA {callback_target}. -/
-structure GeneratedInterpreterStepX87ReplayNestedCallback
-    (environment : NativeWorldEnvironment) : Prop where
-  execute : forall call before,
-    List.Mem call generatedInterpreterStepNativeTemplate.indirectCalls ->
-      List.Mem {callback_target} call.targetRvas ->
-      before.rva? = some {callback_target} ->
-      Exists fun after => Exists fun observations =>
-        Nonempty (InterpreterStepNativeLocalSubroutine
-          generatedInterpreterStepNativeTemplate
-          (generatedInterpreterStepNativeProgram environment) before after
-          observations)
-
-def GeneratedInterpreterStepX87ReplayNestedCallback.toAuthority
-    {{environment : NativeWorldEnvironment}}
-    (authority : GeneratedInterpreterStepX87ReplayNestedCallback environment) :
+/-- Static replay-table authority.  Dynamic x87 execution is retained inside
+the request-local action proof, where the exact frame and value-origin
+preconditions are available. -/
+def generatedInterpreterStepX87ReplayAuthority
+    (environment : NativeWorldEnvironment) :
     InterpreterStepNativeX87ReplayAuthority
       (generatedInterpreterStepNativeProgram environment)
       generatedInterpreterStepNativeTemplate := {{
@@ -827,7 +860,6 @@ def GeneratedInterpreterStepX87ReplayNestedCallback.toAuthority
   static := generatedX87ReplayBridgeStaticCertificate
   replayHelperTargetRva := {callback_target}
   replayHelperChecked := by decide +kernel
-  execute := authority.execute
 }}
 
 abbrev GeneratedInterpreterStepHelpers
@@ -836,61 +868,300 @@ abbrev GeneratedInterpreterStepHelpers
     (generatedInterpreterStepNativeProgram environment)
     generatedInterpreterStepNativeTemplate
 
-abbrev GeneratedInterpreterStepActionLoops
-    (environment : NativeWorldEnvironment) (world : RelationalWorld)
-    (helpers : GeneratedInterpreterStepHelpers environment)
-    (invokeCall : GeneratedInterpreterStepInvokeCallSubroutine environment world)
-    (x87Replay : GeneratedInterpreterStepX87ReplayNestedCallback environment) :=
-  InterpreterStepNativeActionLoopAuthority generatedCompiledKernelProgram
-    generatedInterpreterKernelABIRelation semanticInterpreterProgramRecords
+abbrev GeneratedInterpreterStepActionLoopsFor
+    (operationABI : KernelABIRelation)
+    (environment : NativeWorldEnvironment) (world : RelationalWorld) :=
+  InterpreterStepNativeCheckedActionLoopAuthority generatedCompiledKernelProgram
+    operationABI semanticInterpreterProgramRecords
     (generatedInterpreterStepNativeProgram environment) world
-    (generatedInterpreterStepOperationStatic environment) helpers
-    invokeCall.toAuthority x87Replay.toAuthority
+    (generatedInterpreterStepOperationStatic environment)
+    (generatedInterpreterStepInvokeCallStatic environment)
+    (generatedInterpreterStepX87ReplayAuthority environment)
 
-abbrev GeneratedInterpreterStepEpilogue
+abbrev GeneratedInterpreterStepActionLoops
+    (environment : NativeWorldEnvironment) (world : RelationalWorld) :=
+  GeneratedInterpreterStepActionLoopsFor generatedInterpreterKernelABIRelation
+    environment world
+
+abbrev GeneratedInterpreterStepEpilogueFor
+    (operationABI : KernelABIRelation)
     (environment : NativeWorldEnvironment) (world : RelationalWorld) :=
   InterpreterStepNativeCDeclEpilogueAuthority generatedCompiledKernelProgram
-    generatedInterpreterKernelABIRelation semanticInterpreterProgramRecords
+    operationABI semanticInterpreterProgramRecords
     (generatedInterpreterStepNativeProgram environment) world
     (generatedInterpreterStepOperationStatic environment)
 
-/-- Exact-candidate operation theorem.  Environment and world are universally
-quantified.  Its six arguments are semantic proof objects at named frontiers.
-The action-loop object consumes the exact helper, invoke, and x87 theorem
-fields, and the lookup object consumes the exact closed-operation result.
-None can be replaced by a generated status or submitted whole-operation path. -/
+abbrev GeneratedInterpreterStepEpilogue
+    (environment : NativeWorldEnvironment) (world : RelationalWorld) :=
+  GeneratedInterpreterStepEpilogueFor generatedInterpreterKernelABIRelation
+    environment world
+
+/-! Exact-executor closure adapters
+
+These aliases are the supported construction surface for the six native Step
+fields.  They retain the exact candidate execution and checked lower-operation
+objects; no endpoint or status field can inhabit them. -/
+
+def generatedInterpreterStepProgramLookupCallSiteParameters :
+    InterpreterStepProgramLookupCallSiteParameters := {{
+  callSiteRva := {plan.program_lookup_call_rva}
+  targetRva := {plan.program_lookup_target_rva}
+  continuationRva := {plan.program_lookup_call_rva + 5}
+}}
+
+theorem generatedInterpreterStepProgramLookupCallSiteChecked
+    (environment : NativeWorldEnvironment) :
+    generatedInterpreterStepProgramLookupCallSiteParameters.checked
+      generatedCompiledKernelProgram
+      (generatedInterpreterStepNativeProgram environment).pe
+      (generatedInterpreterStepOperationStatic environment).function
+      (generatedInterpreterStepOperationStatic environment).reflected.template =
+        true := by
+  decide +kernel
+
+def generatedInterpreterStepProgramLookupCallSite
+    (environment : NativeWorldEnvironment) :
+    InterpreterStepProgramLookupCallSiteCertificate
+      generatedCompiledKernelProgram
+      (generatedInterpreterStepNativeProgram environment)
+      (generatedInterpreterStepOperationStatic environment) := {{
+  parameters := generatedInterpreterStepProgramLookupCallSiteParameters
+  checked := generatedInterpreterStepProgramLookupCallSiteChecked environment
+}}
+
+abbrev GeneratedInterpreterStepExactProgramLookupClosure
+    (environment : NativeWorldEnvironment) (world : RelationalWorld) :=
+  InterpreterStepExactProgramLookupClosure semanticInterpreterProgramRecords
+    generatedConcreteInterpreterKernelABI generatedCompiledKernelProgram
+    (generatedInterpreterStepNativeProgram environment) world
+    (generatedInterpreterStepOperationStatic environment)
+    (generatedInterpreterStepProgramLookupCallSite environment)
+
+def generatedInterpreterStepProgramLookupWorldCallOfExact
+    {{environment : NativeWorldEnvironment}} {{world : RelationalWorld}}
+    (closure :
+      GeneratedInterpreterStepExactProgramLookupClosure environment world) :
+    GeneratedInterpreterStepProgramLookupWorldCall environment world := {{
+  prepare :=
+    (closure.toAuthority
+      (generatedInterpreterStepProgramLookupOperation environment)).prepare
+}}
+
+abbrev GeneratedInterpreterStepExactHelperClosure
+    (environment : NativeWorldEnvironment) :=
+  InterpreterStepExactHelperClosure
+    (generatedInterpreterStepNativeProgram environment)
+    generatedInterpreterStepNativeTemplate
+
+def generatedInterpreterStepHelpersOfExact
+    {{environment : NativeWorldEnvironment}}
+    (closure : GeneratedInterpreterStepExactHelperClosure environment) :
+    GeneratedInterpreterStepHelpers environment :=
+  closure.toAuthority
+
+abbrev GeneratedInterpreterStepCheckedInvokeClosure
+    (environment : NativeWorldEnvironment) (world : RelationalWorld) :=
+  InterpreterStepCheckedInvokeOperationClosure generatedCompiledKernelProgram
+    (generatedInterpreterStepNativeProgram environment) world
+
+abbrev GeneratedInterpreterStepExactActionClosureFor
+    (operationABI : KernelABIRelation)
+    (environment : NativeWorldEnvironment) (world : RelationalWorld) :=
+  InterpreterStepExactActionClosure generatedCompiledKernelProgram
+    operationABI semanticInterpreterProgramRecords
+    (generatedInterpreterStepNativeProgram environment) world
+    (generatedInterpreterStepOperationStatic environment)
+    (generatedInterpreterStepInvokeCallStatic environment)
+    (generatedInterpreterStepX87ReplayAuthority environment)
+
+abbrev GeneratedInterpreterStepExactActionClosure
+    (environment : NativeWorldEnvironment) (world : RelationalWorld) :=
+  GeneratedInterpreterStepExactActionClosureFor
+    generatedInterpreterKernelABIRelation environment world
+
+abbrev GeneratedInterpreterStepExactEpilogueClosure
+    (environment : NativeWorldEnvironment) (world : RelationalWorld)
+    (checked : CheckedKernelCDeclEpilogue generatedCompiledKernelProgram
+      (generatedInterpreterStepNativeProgram environment)
+      (generatedInterpreterStepOperationStatic environment).function)
+    (adapter : InterpreterStepCDeclEpilogueAdapter
+      generatedConcreteInterpreterKernelABI generatedCompiledKernelProgram
+      (generatedInterpreterStepNativeProgram environment)
+      (generatedInterpreterStepOperationStatic environment) checked) :=
+  InterpreterStepExactEpilogueClosure semanticInterpreterProgramRecords
+    generatedConcreteInterpreterKernelABI generatedCompiledKernelProgram
+    (generatedInterpreterStepNativeProgram environment) world
+    (generatedInterpreterStepOperationStatic environment) checked adapter
+
+abbrev GeneratedInterpreterStepExactFramedEpilogueClosure
+    (frame : KernelOperationABIFrame)
+    (environment : NativeWorldEnvironment) (world : RelationalWorld)
+    (checked : CheckedKernelCDeclEpilogue generatedCompiledKernelProgram
+      (generatedInterpreterStepNativeProgram environment)
+      (generatedInterpreterStepOperationStatic environment).function)
+    (adapter : InterpreterStepCDeclEpilogueAdapter
+      generatedConcreteInterpreterKernelABI generatedCompiledKernelProgram
+      (generatedInterpreterStepNativeProgram environment)
+      (generatedInterpreterStepOperationStatic environment) checked) :=
+  InterpreterStepExactFramedEpilogueClosure semanticInterpreterProgramRecords
+    frame generatedConcreteInterpreterKernelABI generatedCompiledKernelProgram
+    (generatedInterpreterStepNativeProgram environment) world
+    (generatedInterpreterStepOperationStatic environment) checked adapter
+
+/-- Native Step evidence indexed by one finite checked semantic call tree.
+Invoke refinement is required only for sites retained by each supplied Step
+derivation. Exact helper execution is part of the request-local action path,
+so no proof from arbitrary helper-entry states is accepted. -/
+structure GeneratedInterpreterStepCheckedNativeEvidence
+    (environment : NativeWorldEnvironment) (world : RelationalWorld)
+    where
+  programLookupCall :
+    GeneratedInterpreterStepProgramLookupWorldCall environment world
+  invokeCallRefines : forall semanticEnvironment resolveCodeTarget sourceRva
+      logical result
+      (derivation : CheckedInterpreterStepDerivation
+        semanticInterpreterProgramRecords semanticEnvironment resolveCodeTarget
+        sourceRva logical result),
+    InterpreterStepNativeFramedRequestLocalInvokeEvidence
+      generatedCompiledKernelProgram
+      (generatedInterpreterStepNativeProgram environment) world derivation
+  actionLoops : GeneratedInterpreterStepActionLoops environment world
+  epilogue : GeneratedInterpreterStepEpilogue environment world
+
+def generatedInterpreterStepCheckedNativeEvidenceOfExact
+    (environment : NativeWorldEnvironment) (world : RelationalWorld)
+    (programLookup :
+      GeneratedInterpreterStepExactProgramLookupClosure environment world)
+    (invokeCall :
+      GeneratedInterpreterStepCheckedInvokeClosure environment world)
+    (actionLoops : GeneratedInterpreterStepExactActionClosure environment world)
+    (checked : CheckedKernelCDeclEpilogue generatedCompiledKernelProgram
+      (generatedInterpreterStepNativeProgram environment)
+      (generatedInterpreterStepOperationStatic environment).function)
+    (adapter : InterpreterStepCDeclEpilogueAdapter
+      generatedConcreteInterpreterKernelABI generatedCompiledKernelProgram
+      (generatedInterpreterStepNativeProgram environment)
+      (generatedInterpreterStepOperationStatic environment) checked)
+    (epilogue : GeneratedInterpreterStepExactEpilogueClosure environment world
+      checked adapter) :
+    GeneratedInterpreterStepCheckedNativeEvidence environment world := {{
+  programLookupCall :=
+    generatedInterpreterStepProgramLookupWorldCallOfExact programLookup
+  invokeCallRefines := by
+    intro _ _ _ _ _ derivation
+    exact invokeCall.requestLocal derivation
+  actionLoops := actionLoops.toAuthority
+  epilogue := epilogue.toAuthority
+}}
+
+def generatedInterpreterStepCheckedCertificate
+    (environment : NativeWorldEnvironment) (world : RelationalWorld)
+    (callTree : GeneratedFiniteCheckedSemanticFunctionBindings)
+    (native : GeneratedInterpreterStepCheckedNativeEvidence environment world) :
+    InterpreterStepNativeCheckedOperationCertificate
+      generatedCompiledKernelProgram generatedInterpreterKernelABIRelation
+      semanticInterpreterProgramRecords
+      (generatedInterpreterStepNativeProgram environment) world := {{
+  static := generatedInterpreterStepOperationStatic environment
+  abiEntry := generatedInterpreterStepOperationABIEntry
+  closedTree := InterpreterStepClosedCallTreeAuthority.ofClosure
+    callTree.toClosure
+  programLookupCall := native.programLookupCall.toAuthority
+  invokeCall := generatedInterpreterStepInvokeCallStatic environment
+  invokeCallRefines := native.invokeCallRefines
+  x87Replay := generatedInterpreterStepX87ReplayAuthority environment
+  actionLoops := native.actionLoops
+  epilogue := native.epilogue
+}}
+
+/-- Exact-candidate operation theorem.  It consumes one finite checked semantic
+closure and one native evidence package.  There is no independent universal
+invokeCall operation premise. -/
 theorem generatedInterpreterStepOperationRefinesUsing
     (environment : NativeWorldEnvironment) (world : RelationalWorld)
-    (programLookupCall :
-      GeneratedInterpreterStepProgramLookupWorldCall environment world)
-    (helpers : GeneratedInterpreterStepHelpers environment)
-    (invokeCall :
-      GeneratedInterpreterStepInvokeCallSubroutine environment world)
-    (x87Replay : GeneratedInterpreterStepX87ReplayNestedCallback environment)
-    (actionLoops :
-      GeneratedInterpreterStepActionLoops environment world helpers invokeCall
-        x87Replay)
-    (epilogue : GeneratedInterpreterStepEpilogue environment world) :
+    (callTree : GeneratedFiniteCheckedSemanticFunctionBindings)
+    (native : GeneratedInterpreterStepCheckedNativeEvidence environment world) :
     KernelOperationRefinesUsing generatedCompiledKernelProgram
       generatedInterpreterKernelABIRelation
       (InterpreterStepNativeDispatches
         (generatedInterpreterStepNativeProgram environment) world)
       .interpreterStep := by
-  exact (InterpreterStepNativeOperationCertificate.mk
-    (generatedInterpreterStepOperationStatic environment)
-    generatedInterpreterStepOperationABIEntry
-    (generatedInterpreterStepProgramLookupOperation environment)
-    programLookupCall.toAuthority
-    helpers
-    invokeCall.toAuthority
-    x87Replay.toAuthority
-    actionLoops
-    epilogue).refines
+  exact (generatedInterpreterStepCheckedCertificate environment world callTree
+    native).refines
 
+#print axioms generatedInterpreterStepCheckedCertificate
+#print axioms generatedInterpreterStepCheckedNativeEvidenceOfExact
 #print axioms generatedInterpreterStepOperationRefinesUsing
 
 end StageA.GeneratedRelational.InterpreterKernelStepOperation
 """
+
+
+def relational_interpreter_kernel_step_operation_interface_source(
+    plan: InterpreterKernelStepOperationPlan,
+    *,
+    closed_call_tree_module: str = (
+        "StageA.GeneratedRelationalInterpreterKernelClosedCallTree"
+    ),
+) -> str:
+    """Emit the cache-stable Step surface that does not require the call tree."""
+
+    source = relational_interpreter_kernel_step_operation_source(
+        plan, closed_call_tree_module=closed_call_tree_module
+    )
+    marker = "def generatedInterpreterStepCheckedCertificate\n"
+    if marker not in source:
+        raise RelationalInterpreterKernelStepOperationGenerationError(
+            "Step operation source is missing the certificate split marker"
+        )
+    prefix = source.split(marker, 1)[0]
+    prefix = prefix.replace(f"import {closed_call_tree_module}\n", "")
+    prefix = prefix.replace(
+        "open StageA.GeneratedRelational.InterpreterKernelClosedCallTree\n",
+        "",
+    )
+    return (
+        prefix
+        + "#print axioms generatedInterpreterStepOperationStatic\n"
+        + "#print axioms generatedInterpreterStepOperationABIEntry\n"
+        + "#print axioms generatedInterpreterStepCheckedNativeEvidenceOfExact\n\n"
+        + "end StageA.GeneratedRelational.InterpreterKernelStepOperation\n"
+    )
+
+
+def relational_interpreter_kernel_step_operation_certificate_source(
+    plan: InterpreterKernelStepOperationPlan,
+    *,
+    closed_call_tree_module: str = (
+        "StageA.GeneratedRelationalInterpreterKernelClosedCallTree"
+    ),
+) -> str:
+    """Emit the call-tree-dependent Step certificate over the checked interface."""
+
+    source = relational_interpreter_kernel_step_operation_source(
+        plan, closed_call_tree_module=closed_call_tree_module
+    )
+    marker = "def generatedInterpreterStepCheckedCertificate\n"
+    namespace = (
+        "namespace StageA.GeneratedRelational.InterpreterKernelStepOperation\n"
+    )
+    first_definition = (
+        "def generatedInterpreterStepOperationCandidateSha256 : String :=\n"
+    )
+    if marker not in source or namespace not in source or first_definition not in source:
+        raise RelationalInterpreterKernelStepOperationGenerationError(
+            "Step operation source cannot be split into interface and certificate"
+        )
+    body = marker + source.split(marker, 1)[1]
+    opens = namespace + source.split(namespace, 1)[1].split(
+        first_definition, 1
+    )[0]
+    return (
+        "import StageA.GeneratedRelationalInterpreterKernelStepOperationInterface\n"
+        f"import {closed_call_tree_module}\n\n"
+        + opens
+        + body
+    )
 
 
 def write_relational_interpreter_kernel_step_operation_bundle(
@@ -903,8 +1174,15 @@ def write_relational_interpreter_kernel_step_operation_bundle(
         output / INTERPRETER_KERNEL_STEP_OPERATION_PLAN_FILENAME,
         plan.payload(),
     )
+    (
+        output
+        / INTERPRETER_KERNEL_STEP_OPERATION_INTERFACE_LEAN_FILENAME
+    ).write_text(
+        relational_interpreter_kernel_step_operation_interface_source(plan),
+        encoding="ascii",
+    )
     (output / INTERPRETER_KERNEL_STEP_OPERATION_LEAN_FILENAME).write_text(
-        relational_interpreter_kernel_step_operation_source(plan),
+        relational_interpreter_kernel_step_operation_certificate_source(plan),
         encoding="ascii",
     )
     return plan
@@ -912,6 +1190,7 @@ def write_relational_interpreter_kernel_step_operation_bundle(
 
 __all__ = [
     "INTERPRETER_KERNEL_STEP_OPERATION_FORMAT",
+    "INTERPRETER_KERNEL_STEP_OPERATION_INTERFACE_LEAN_FILENAME",
     "INTERPRETER_KERNEL_STEP_OPERATION_LEAN_FILENAME",
     "INTERPRETER_KERNEL_STEP_OPERATION_PLAN_FILENAME",
     "INTERPRETER_KERNEL_STEP_OPERATION_REMAINING_PREMISES",
@@ -919,6 +1198,8 @@ __all__ = [
     "InterpreterKernelStepOperationPlan",
     "RelationalInterpreterKernelStepOperationGenerationError",
     "build_relational_interpreter_kernel_step_operation_plan",
+    "relational_interpreter_kernel_step_operation_certificate_source",
+    "relational_interpreter_kernel_step_operation_interface_source",
     "relational_interpreter_kernel_step_operation_source",
     "write_relational_interpreter_kernel_step_operation_bundle",
 ]

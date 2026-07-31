@@ -38,6 +38,11 @@ class StageARelationalInterpreterKernelFrameExecutorKernelTests(
             source_root = (
                 Path(__file__).parents[1] / "src/spaghetti_extractor/lean/StageA"
             )
+            source = (
+                source_root / "RelationalInterpreterKernelFrameExecutor.lean"
+            ).read_text(encoding="utf-8")
+            self.assertIn("reindexExactNativeWorldProgram", source)
+            self.assertNotIn("shiftedAction :", source)
             _copy_module_closure(
                 source_root,
                 stage_a,

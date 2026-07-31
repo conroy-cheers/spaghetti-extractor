@@ -29,6 +29,7 @@ from spaghetti_extractor.relational.lean.interpreter import (
     relational_interpreter_program_source,
 )
 from spaghetti_extractor.relational.lean.interpreter_kernel import (
+    INTERPRETER_KERNEL_FUNCTION_MODULE_PREFIX,
     INTERPRETER_KERNEL_LEAN_FILENAME,
     write_relational_interpreter_kernel_bundle,
 )
@@ -37,6 +38,7 @@ from spaghetti_extractor.relational.lean.interpreter_kernel_block import (
 )
 from spaghetti_extractor.relational.lean.interpreter_kernel_abi import (
     INTERPRETER_KERNEL_ABI_LEAN_FILENAME,
+    INTERPRETER_KERNEL_ABI_PARAMETERS_LEAN_FILENAME,
     INTERPRETER_KERNEL_ABI_PLAN_FILENAME,
     abi_plan_payload_sha256,
     write_relational_interpreter_kernel_abi_bundle,
@@ -199,9 +201,11 @@ from spaghetti_extractor.relational.lean.interpreter_mixed_original import (
     derive_direct_call_summary_requests_from_register_authority,
     derive_mixed_original_direct_call_summary_requests,
     load_checked_direct_call_summary_contract_proposals,
+    load_checked_stack_finite_origin_call_entry_authorities,
     load_original_iat_import_proposals,
     load_original_register_control_call_contract_proposals,
     plan_interpreter_mixed_original,
+    stage_finite_origin_entry_requests,
     write_relational_interpreter_mixed_original,
     write_relational_interpreter_mixed_original_base,
     write_relational_interpreter_mixed_original_final,
@@ -288,6 +292,12 @@ from spaghetti_extractor.relational.lean.interpreter_x87_replay_bridge_runtime i
     X87_REPLAY_BRIDGE_RUNTIME_LEAN_BUNDLE,
     X87_REPLAY_BRIDGE_RUNTIME_PLAN_FORMAT,
     X87_REPLAY_BRIDGE_RUNTIME_PLAN_FILENAME,
+    X87_REPLAY_FIXED_TEMPLATE_CERTIFICATE_PREMISES,
+    X87_REPLAY_FIXED_TEMPLATE_CHECKS_TYPE,
+    X87_REPLAY_FIXED_TEMPLATE_EXECUTOR_PREMISES,
+    X87_REPLAY_FIXED_TEMPLATE_PROGRAM_BINDING_PREMISES,
+    X87_REPLAY_FIXED_TEMPLATE_REMAINING_PREMISES,
+    X87_REPLAY_FIXED_TEMPLATE_SOURCE_FRAME_ASSUMPTIONS,
     build_x87_replay_bridge_runtime_plan,
     x87_replay_bridge_runtime_lean_sources,
 )
@@ -326,19 +336,8 @@ X87_KERNEL_EXECUTION_LEAN_MODULE = (
 X87_KERNEL_EXECUTION_FRONTIER_FILENAME = (
     "x87-kernel-execution-frontier.json"
 )
-X87_KERNEL_EXECUTION_REMAINING_PROOF_PREMISES = (
-    "program_binding.peExact",
-    "program_binding.importsExact",
-    "program_binding.targetInventory",
-    "endpoint_certificate.handlerResult",
-    "endpoint_certificate.callTarget",
-    "endpoint_certificate.callRun",
-    "endpoint_certificate.entryRun",
-    "endpoint_certificate.instructionRun",
-    "endpoint_certificate.captureRun",
-    "endpoint_certificate.returnRun",
-    "endpoint_certificate.frameEffect",
-)
+X87_KERNEL_EXECUTION_REMAINING_PROOF_PREMISES: tuple[str, ...] = ()
+X87_KERNEL_EXECUTION_PREMISE_DETAILS: dict[str, tuple[str, ...]] = {}
 
 
 def _direct_call_integration_module(
@@ -845,8 +844,29 @@ def _x87_replay_bridge_runtime_sources(args: argparse.Namespace) -> None:
             "native_engine_plan": native_engine_plan,
         },
         status="source-ready",
+        diagnostic_status="kernel_execution_closed",
         proof_authority=False,
+        static_evidence=True,
         candidate_sha256=plan.candidate_sha256,
+        conditional_theorem=(
+            "StageA.Relational.InterpreterKernelX87Execution."
+            "executeKernelReduction"
+        ),
+        remaining_proof_premises=list(
+            X87_REPLAY_FIXED_TEMPLATE_REMAINING_PREMISES
+        ),
+        assumed_source_frame_fields=list(
+            X87_REPLAY_FIXED_TEMPLATE_SOURCE_FRAME_ASSUMPTIONS
+        ),
+        remaining_program_binding_fields=list(
+            X87_REPLAY_FIXED_TEMPLATE_PROGRAM_BINDING_PREMISES
+        ),
+        remaining_fixed_template_fields=list(
+            X87_REPLAY_FIXED_TEMPLATE_CERTIFICATE_PREMISES
+        ),
+        remaining_executor_fields=list(
+            X87_REPLAY_FIXED_TEMPLATE_EXECUTOR_PREMISES
+        ),
         modules=sorted(Path(filename).stem for filename in sources),
         targets=[X87_REPLAY_BRIDGE_RUNTIME_LEAN_BUNDLE],
         counts={
@@ -863,8 +883,29 @@ def _x87_kernel_execution_sources(args: argparse.Namespace) -> None:
     counts = runtime_plan.get("counts")
     if (
         runtime_plan.get("format") != X87_REPLAY_BRIDGE_RUNTIME_PLAN_FORMAT
-        or runtime_plan.get("status") != "evidence_ready"
+        or runtime_plan.get("status") != "complete"
+        or runtime_plan.get("diagnostic_status")
+        != "kernel_execution_closed"
         or runtime_plan.get("acceptance_authority") is not False
+        or runtime_plan.get("static_evidence") is not True
+        or runtime_plan.get("conditional_theorem")
+        != (
+            "StageA.Relational.InterpreterKernelX87Execution."
+            "executeKernelReduction"
+        )
+        or runtime_plan.get("remaining_proof_premises")
+        != list(X87_REPLAY_FIXED_TEMPLATE_REMAINING_PREMISES)
+        or runtime_plan.get("assumed_source_frame_fields")
+        != list(X87_REPLAY_FIXED_TEMPLATE_SOURCE_FRAME_ASSUMPTIONS)
+        or runtime_plan.get("remaining_program_binding_fields")
+        != list(X87_REPLAY_FIXED_TEMPLATE_PROGRAM_BINDING_PREMISES)
+        or runtime_plan.get("remaining_fixed_template_fields")
+        != list(X87_REPLAY_FIXED_TEMPLATE_CERTIFICATE_PREMISES)
+        or runtime_plan.get("remaining_executor_fields")
+        != list(X87_REPLAY_FIXED_TEMPLATE_EXECUTOR_PREMISES)
+        or runtime_plan.get("checked_execution_type")
+        != X87_REPLAY_FIXED_TEMPLATE_CHECKS_TYPE
+        or runtime_plan.get("checked_bundle_inhabited") is not True
         or not isinstance(counts, dict)
         or not isinstance(counts.get("runtime_targets"), int)
         or isinstance(counts.get("runtime_targets"), bool)
@@ -872,6 +913,9 @@ def _x87_kernel_execution_sources(args: argparse.Namespace) -> None:
         or not isinstance(counts.get("relocated_operands"), int)
         or isinstance(counts.get("relocated_operands"), bool)
         or counts.get("unbound_relocated_operands") != 0
+        or not isinstance(runtime_plan.get("required_checked_target_terms"), list)
+        or len(runtime_plan["required_checked_target_terms"])
+        != counts["runtime_targets"]
     ):
         raise ValueError(
             "x87 replay runtime plan is malformed, incomplete, or claims authority"
@@ -917,7 +961,7 @@ end StageA.GeneratedRelational.InterpreterKernelX87Execution
 
     frontier = {
         "format": "stage-a-gnu-hello-x87-kernel-execution-frontier-v1",
-        "status": "semantic_premises_required",
+        "status": "closed",
         "acceptance_authority": False,
         "candidate_sha256": candidate["sha256"],
         "runtime_targets": counts["runtime_targets"],
@@ -927,59 +971,47 @@ end StageA.GeneratedRelational.InterpreterKernelX87Execution
         ),
         "generated_theorem": (
             "StageA.GeneratedRelational.InterpreterKernelX87Execution."
-            "generatedX87ReplayBridgeKernelExecution"
+            "generatedX87ReplayBridgeKernelExecutionClosed"
         ),
         "remaining_authority": {
             "lean_type": (
-                "ExactNativeX87ReplayKernelEndpointAuthority "
-                "generatedX87ReplayBridgeRuntimeInventory program handler "
-                "sourceInvariant"
+                "GeneratedX87ReplayBridgeKernelExecutionGoal "
+                "(generatedX87ReplayBridgeNestedProgram carrier)"
             ),
-            "program_binding_fields": [
+            "authority_fields": [],
+            "structurally_derived_program_binding_fields": [
                 "peExact",
                 "importsExact",
                 "targetInventory",
             ],
-            "endpoint_quantification": (
-                "every checked runtime target, every caller and logical input "
-                "satisfying sourceInvariant"
+            "structurally_derived_handler_fields": ["handlerInventory"],
+            "fixed_template_quantification": (
+                "every checked runtime target, every caller and logical "
+                "input, and every exact admitted source frame"
             ),
-            "endpoint_certificate_witness_fields": [
-                "result",
-                "calleeEntry",
-                "instructionEntryState",
-                "captureEntryState",
-                "returnEntryState",
-                "returned",
-                "calls",
-                "eventIndex",
-                "events",
-                "world",
-                "externalFrames",
-                "entryFuel",
-                "instructionFuel",
-                "captureFuel",
-                "returnFuel",
-            ],
-            "endpoint_certificate_proof_fields": [
-                "handlerResult",
-                "callTarget",
-                "entryFuelPositive",
-                "instructionFuelPositive",
-                "captureFuelPositive",
-                "returnFuelPositive",
-                "callRun",
-                "entryRun",
-                "instructionRun",
-                "captureRun",
-                "returnRun",
-                "frameEffect",
+            "fixed_template_certificate_witness_fields": [],
+            "fixed_template_certificate_proof_fields": [],
+            "required_checked_target_terms": runtime_plan[
+                "required_checked_target_terms"
             ],
         },
         "remaining_proof_premises": list(
             X87_KERNEL_EXECUTION_REMAINING_PROOF_PREMISES
         ),
-        "failure_mode": "incomplete",
+        "premise_details": {
+            family: list(details)
+            for family, details in X87_KERNEL_EXECUTION_PREMISE_DETAILS.items()
+        },
+        "assumed_source_frame_fields": list(
+            X87_REPLAY_FIXED_TEMPLATE_SOURCE_FRAME_ASSUMPTIONS
+        ),
+        "remaining_program_binding_fields": list(
+            X87_REPLAY_FIXED_TEMPLATE_PROGRAM_BINDING_PREMISES
+        ),
+        "remaining_fixed_template_fields": list(
+            X87_REPLAY_FIXED_TEMPLATE_CERTIFICATE_PREMISES
+        ),
+        "failure_mode": "none",
     }
     write_json(out / X87_KERNEL_EXECUTION_FRONTIER_FILENAME, frontier)
     write_json(
@@ -996,14 +1028,14 @@ end StageA.GeneratedRelational.InterpreterKernelX87Execution
         "x87-kernel-execution-lean",
         {"runtime_plan": runtime_plan_path},
         status="source-ready",
-        diagnostic_status="semantic_premises_required",
+        diagnostic_status="kernel_execution_closed",
         proof_authority=False,
         candidate_sha256=candidate["sha256"],
         runtime_targets=counts["runtime_targets"],
         theorem=frontier["generated_theorem"],
         remaining_proof_premises=frontier["remaining_proof_premises"],
         remaining_authority=frontier["remaining_authority"],
-        failure_mode="incomplete",
+        failure_mode="none",
         public_outputs={
             "frontier": X87_KERNEL_EXECUTION_FRONTIER_FILENAME,
             "lean_module": (
@@ -1060,7 +1092,20 @@ def _kernel(args: argparse.Namespace) -> None:
         str(out / INTERPRETER_KERNEL_LEAN_FILENAME),
         str(stage_a / INTERPRETER_KERNEL_LEAN_FILENAME),
     )
+    for source in sorted(
+        out.glob(f"{INTERPRETER_KERNEL_FUNCTION_MODULE_PREFIX}*.lean")
+    ):
+        shutil.move(str(source), str(stage_a / source.name))
     modules = sorted(path.stem for path in stage_a.glob("*.lean"))
+    function_modules = [
+        module
+        for module in modules
+        if module.startswith(INTERPRETER_KERNEL_FUNCTION_MODULE_PREFIX)
+    ]
+    if len(function_modules) != len(plan.functions):
+        raise RuntimeError(
+            "compiled-kernel function module count does not match the plan"
+        )
     _manifest(
         out,
         "compiled-kernel",
@@ -1075,7 +1120,10 @@ def _kernel(args: argparse.Namespace) -> None:
         diagnostic_status=plan.payload().get("status", "semantic_proof_required"),
         modules=modules,
         targets=[Path(INTERPRETER_KERNEL_LEAN_FILENAME).stem],
-        counts={"modules": len(modules)},
+        counts={
+            "modules": len(modules),
+            "function_modules": len(function_modules),
+        },
     )
 
 
@@ -1181,6 +1229,10 @@ def _kernel_abi(args: argparse.Namespace) -> None:
         public_outputs={
             "plan": INTERPRETER_KERNEL_ABI_PLAN_FILENAME,
             "lean_module": f"StageA/{INTERPRETER_KERNEL_ABI_LEAN_FILENAME}",
+            "parameters_lean_module": (
+                "StageA/"
+                f"{INTERPRETER_KERNEL_ABI_PARAMETERS_LEAN_FILENAME}"
+            ),
         },
         modules=modules,
         targets=[target],
@@ -2383,6 +2435,31 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
     runtime_value_carry_hints_value = getattr(
         args, "runtime_value_carry_hints", None
     )
+    checked_stack_entry_authority_value = getattr(
+        args, "checked_stack_entry_authority", None
+    )
+    checked_stack_entry_authority: Mapping[str, Any] | None = None
+    checked_stack_entry_authority_path: Path | None = None
+    checked_stack_entry_authorities = ()
+    if checked_stack_entry_authority_value is not None:
+        checked_stack_entry_authority_path = Path(
+            checked_stack_entry_authority_value
+        )
+        loaded_stack_authority = json.loads(
+            checked_stack_entry_authority_path.read_text(encoding="utf-8")
+        )
+        if not isinstance(loaded_stack_authority, Mapping):
+            raise ValueError(
+                "checked stack entry authority is not an object"
+            )
+        checked_stack_entry_authority = loaded_stack_authority
+        checked_stack_entry_authorities = (
+            load_checked_stack_finite_origin_call_entry_authorities(
+                checked_stack_entry_authority,
+                original_sha256=sha256_file(original),
+                state_machine_sha256=str(base_payload["state_machine_sha256"]),
+            )
+        )
     runtime_value_carry_hints: Path | None = None
     if runtime_value_carry_hints_value is not None:
         runtime_value_carry_hints = Path(runtime_value_carry_hints_value)
@@ -2397,6 +2474,9 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
                 hints_payload,
                 proposal_ir,
                 original_sha256=sha256_file(original),
+                checked_stack_entry_authority=(
+                    checked_stack_entry_authority
+                ),
             )
         )
     prebound_requests = {
@@ -2445,6 +2525,67 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
         (authority.source_rva, authority.instruction_rva)
         for authority in finite_origin_call_authorities
     }
+    for authority in checked_stack_entry_authorities:
+        key = (authority.source_rva, authority.instruction_rva)
+        if key in existing_finite_sites:
+            raise ValueError(
+                "checked stack finite-origin entry duplicates an existing "
+                f"call authority at RVA 0x{authority.instruction_rva:x}"
+            )
+        missing_target_ids = [
+            target_id
+            for target_id in authority.target_ids
+            if target_id not in target_rvas
+        ]
+        if missing_target_ids:
+            raise ValueError(
+                "checked stack finite-origin entry names absent target IDs: "
+                + ", ".join(str(target_id) for target_id in missing_target_ids)
+            )
+        if authority.continuation_target_id not in target_rvas:
+            raise ValueError(
+                "checked stack finite-origin entry names an absent "
+                f"continuation target ID {authority.continuation_target_id}"
+            )
+        if (
+            target_rvas[authority.continuation_target_id]
+            != authority.continuation_rva
+        ):
+            raise ValueError(
+                "checked stack finite-origin entry continuation no longer "
+                "matches the canonical target map"
+            )
+        target_rvas_for_authority = tuple(
+            target_rvas[target_id] for target_id in authority.target_ids
+        )
+        finite_origin_call_authorities.append(
+            FiniteOriginCallAuthorityBinding(
+                source_rva=authority.source_rva,
+                instruction_rva=authority.instruction_rva,
+                continuation_rva=authority.continuation_rva,
+                continuation_target_id=authority.continuation_target_id,
+                internal_targets=tuple(
+                    LeanFiniteOriginTailTarget(
+                        target_id=target_id,
+                        region_id=target_rva,
+                    )
+                    for target_id, target_rva in zip(
+                        authority.target_ids,
+                        target_rvas_for_authority,
+                        strict=True,
+                    )
+                ),
+                internal_target_rvas=target_rvas_for_authority,
+                authority_module=authority.module,
+                indirect_exit_authority_term=(
+                    authority.indirect_exit_authority_term
+                ),
+                indirect_exit_certificate_exact_term=(
+                    authority.indirect_exit_certificate_exact_term
+                ),
+            ).checked()
+        )
+        existing_finite_sites.add(key)
     for authority in recovered_entry_authorities:
         key = (authority.source_rva, authority.instruction_rva)
         if key in existing_finite_sites:
@@ -2480,6 +2621,13 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
             )
         )
         existing_finite_sites.add(key)
+    requests = stage_finite_origin_entry_requests(
+        requests,
+        available_instruction_rvas=(
+            authority.instruction_rva
+            for authority in finite_origin_call_authorities
+        ),
+    )
     proposal_plan = None
     if requests.requests or requests.finite_origin_entry_requests:
         proposal_plan = construct_internal_direct_call_summary_proposals(
@@ -2773,6 +2921,11 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
                 if runtime_value_carry_hints is None
                 else sha256_file(runtime_value_carry_hints)
             ),
+            "checked_stack_entry_authority_sha256": (
+                None
+                if checked_stack_entry_authority_path is None
+                else sha256_file(checked_stack_entry_authority_path)
+            ),
         },
         "authority": {
             "proposal_only": True,
@@ -2814,6 +2967,15 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
                     "runtime_value_carry_hints": runtime_value_carry_hints
                 }
             ),
+            **(
+                {}
+                if checked_stack_entry_authority_path is None
+                else {
+                    "checked_stack_entry_authority": (
+                        checked_stack_entry_authority_path
+                    )
+                }
+            ),
         },
         status="proposal-source-ready",
         proof_authority=False,
@@ -2841,6 +3003,9 @@ def _mixed_original_direct_call_proposals(args: argparse.Namespace) -> None:
             "structural_family_artifacts": len(summary_artifact_modules),
             "recovered_finite_origin_entry_authorities": len(
                 recovered_entry_authorities
+            ),
+            "checked_stack_finite_origin_entry_authorities": len(
+                checked_stack_entry_authorities
             ),
         },
     )
@@ -3812,7 +3977,6 @@ def _kernel_run_operation(args: argparse.Namespace) -> None:
         "kernel_data_inventory": Path(args.kernel_data_inventory),
         "abi_plan": Path(args.abi_plan),
         "run_native_plan": Path(args.run_native_plan),
-        "step_operation_plan": Path(args.step_operation_plan),
     }
     plan = write_relational_interpreter_kernel_run_operation_bundle(
         candidate_pe=inputs["candidate"],
@@ -3820,7 +3984,6 @@ def _kernel_run_operation(args: argparse.Namespace) -> None:
         data_inventory=inputs["kernel_data_inventory"],
         abi_plan=inputs["abi_plan"],
         run_native_plan=inputs["run_native_plan"],
-        step_operation_plan=inputs["step_operation_plan"],
         out=out,
     )
     payload = plan.payload()
@@ -3920,6 +4083,7 @@ def _kernel_invoke_operation(args: argparse.Namespace) -> None:
         "abi_plan": Path(args.abi_plan),
         "callback_plan": Path(args.callback_plan),
         "invoke_native_plan": Path(args.invoke_native_plan),
+        "run_operation_plan": Path(args.run_operation_plan),
     }
     plan = write_relational_interpreter_kernel_invoke_operation_bundle(
         candidate_pe=inputs["candidate"],
@@ -3928,6 +4092,7 @@ def _kernel_invoke_operation(args: argparse.Namespace) -> None:
         abi_plan=inputs["abi_plan"],
         callback_plan=inputs["callback_plan"],
         invoke_native_plan=inputs["invoke_native_plan"],
+        run_operation_plan=inputs["run_operation_plan"],
         out=out,
     )
     payload = plan.payload()
@@ -3987,8 +4152,11 @@ def _mixed_candidate_authority(args: argparse.Namespace) -> None:
 _DIRECT_CALL_NODE_FAMILY = re.compile(
     r"^GeneratedRelationalInternalDirectCallSummaryNode([0-9a-f]{64}).*$"
 )
-_DIRECT_CALL_BUILD_PACK_MAX_MODULES = 4
-_DIRECT_CALL_BUILD_PACK_SPLIT_THRESHOLD = 8
+# Keep one direct-call certificate family as one Nix scheduling unit. Lean
+# compiles modules within the pack sequentially and the aggregator checks their
+# topological order. Only exceptionally large families need another layer.
+_DIRECT_CALL_BUILD_PACK_MAX_MODULES = 128
+_DIRECT_CALL_BUILD_PACK_SPLIT_THRESHOLD = 128
 
 
 def _direct_call_family_levels(
@@ -4251,12 +4419,118 @@ def _aggregate(args: argparse.Namespace) -> None:
     )
 
 
+def _acceptance_manifest(
+    path_value: str,
+    label: str,
+) -> tuple[Path, dict[str, Any]]:
+    path = Path(path_value)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} is unreadable or malformed: {path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    return path, payload
+
+
+def _acceptance_phase_manifest(
+    path_value: str,
+    label: str,
+    *,
+    format_name: str,
+    phase: str,
+    status: str,
+    authority_field: str,
+    failure_mode: str | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    path, payload = _acceptance_manifest(path_value, label)
+    if (
+        payload.get("format") != format_name
+        or payload.get("phase") != phase
+        or payload.get("status") != status
+        or payload.get(authority_field) is not False
+        or payload.get("proof_authority") is True
+        or payload.get("acceptance_authority") is True
+        or payload.get("executes_original_binary") is True
+        or payload.get("executes_candidate_binary") is True
+        or (
+            failure_mode is not None
+            and payload.get("failure_mode") != failure_mode
+        )
+    ):
+        raise ValueError(f"{label} is malformed or claims proof authority")
+    return path, payload
+
+
+def _acceptance_natural(value: object, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{label} must be a natural number")
+    return value
+
+
+def _acceptance_digest(value: object, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"[0-9a-f]{64}", value) is None
+    ):
+        raise ValueError(f"{label} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _acceptance_string_list(value: object, label: str) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or not all(isinstance(item, str) and item for item in value)
+        or len(set(value)) != len(value)
+    ):
+        raise ValueError(f"{label} must be a duplicate-free array of strings")
+    return value
+
+
+def _acceptance_counts(
+    payload: Mapping[str, Any],
+    label: str,
+) -> Mapping[str, Any]:
+    counts = payload.get("counts")
+    if not isinstance(counts, Mapping):
+        raise ValueError(f"{label} counts are malformed")
+    return counts
+
+
+def _acceptance_candidate_input_digest(
+    payload: Mapping[str, Any],
+    label: str,
+) -> str:
+    inputs = payload.get("inputs")
+    candidate = inputs.get("candidate") if isinstance(inputs, Mapping) else None
+    if not isinstance(candidate, Mapping):
+        raise ValueError(f"{label} candidate input is malformed")
+    return _acceptance_digest(candidate.get("sha256"), f"{label} candidate")
+
+
+def _acceptance_premise_blocker(
+    *,
+    manifest_path: Path,
+    manifest: Mapping[str, Any],
+    premise_field: str,
+    premises: list[str],
+) -> dict[str, Any] | None:
+    if not premises:
+        return None
+    phase = str(manifest["phase"])
+    return {
+        "id": f"{phase.replace('-', '_')}_premises_remaining",
+        "phase": phase,
+        "source_manifest_sha256": sha256_file(manifest_path),
+        "remaining_count": len(premises),
+        premise_field: premises,
+    }
+
+
 def _acceptance_sources(args: argparse.Namespace) -> None:
-    """Emit the canonical mixed-context acceptance interface for GNU hello."""
+    """Emit the fail-closed mixed-context acceptance interface for GNU hello."""
 
     out = Path(args.out)
-    stage_a = out / "StageA"
-    stage_a.mkdir(parents=True, exist_ok=True)
     original_carrier_manifest_path = Path(args.original_carrier_manifest)
     original_carrier_manifest = json.loads(
         original_carrier_manifest_path.read_text(encoding="utf-8")
@@ -4287,25 +4561,26 @@ def _acceptance_sources(args: argparse.Namespace) -> None:
         or native_launch_request.get("acceptance_authority") is not False
     ):
         raise ValueError("native launch request is malformed or claims authority")
-    x87_kernel_execution_manifest_path = Path(
-        args.x87_kernel_execution_manifest
-    )
-    x87_kernel_execution_manifest = json.loads(
-        x87_kernel_execution_manifest_path.read_text(encoding="utf-8")
+    (
+        x87_kernel_execution_manifest_path,
+        x87_kernel_execution_manifest,
+    ) = _acceptance_phase_manifest(
+        args.x87_kernel_execution_manifest,
+        "x87 kernel execution manifest",
+        format_name="stage-a-relational-phase-v1",
+        phase="x87-kernel-execution-lean",
+        status="source-ready",
+        authority_field="proof_authority",
+        failure_mode="none",
     )
     x87_remaining_premises = x87_kernel_execution_manifest.get(
         "remaining_proof_premises"
     )
     if (
-        x87_kernel_execution_manifest.get("phase")
-        != "x87-kernel-execution-lean"
-        or x87_kernel_execution_manifest.get("status") != "source-ready"
-        or x87_kernel_execution_manifest.get("diagnostic_status")
-        != "semantic_premises_required"
-        or x87_kernel_execution_manifest.get("proof_authority") is not False
+        x87_kernel_execution_manifest.get("diagnostic_status")
+        != "kernel_execution_closed"
         or x87_remaining_premises
         != list(X87_KERNEL_EXECUTION_REMAINING_PROOF_PREMISES)
-        or x87_kernel_execution_manifest.get("failure_mode") != "incomplete"
         or x87_kernel_execution_manifest.get("targets")
         != [X87_KERNEL_EXECUTION_LEAN_MODULE]
     ):
@@ -4317,7 +4592,11 @@ def _acceptance_sources(args: argparse.Namespace) -> None:
         mixed_original_manifest_path.read_text(encoding="utf-8")
     )
     remaining_frontiers = mixed_original_manifest.get("remaining_frontiers")
-    blocker_count = mixed_original_manifest.get("counts", {}).get("blockers")
+    mixed_counts = mixed_original_manifest.get("counts")
+    blocker_count = _acceptance_natural(
+        mixed_counts.get("blockers") if isinstance(mixed_counts, Mapping) else None,
+        "mixed-original blocker count",
+    )
     authorizing_direct_call_terms = mixed_original_manifest.get(
         "authorizing_lean_terms"
     )
@@ -4325,6 +4604,7 @@ def _acceptance_sources(args: argparse.Namespace) -> None:
         mixed_original_manifest.get("phase") != "mixed-original-final-lean"
         or mixed_original_manifest.get("proof_authority") is not False
         or not isinstance(remaining_frontiers, list)
+        or not all(isinstance(frontier, Mapping) for frontier in remaining_frontiers)
         or blocker_count != len(remaining_frontiers)
         or not isinstance(authorizing_direct_call_terms, list)
         or not all(
@@ -4332,6 +4612,440 @@ def _acceptance_sources(args: argparse.Namespace) -> None:
         )
     ):
         raise ValueError("mixed-original final manifest is malformed")
+    (
+        static_reachability_manifest_path,
+        static_reachability_manifest,
+    ) = _acceptance_phase_manifest(
+        args.static_reachability_manifest,
+        "static reachability manifest",
+        format_name="stage-a-relational-phase-v1",
+        phase="mixed-original-static-reachability",
+        status="typed-interface-ready",
+        authority_field="proof_authority",
+        failure_mode="incomplete",
+    )
+    static_counts = _acceptance_counts(
+        static_reachability_manifest, "static reachability manifest"
+    )
+    static_reachable_targets = _acceptance_natural(
+        static_counts.get("reachable_targets"),
+        "static reachability target count",
+    )
+    static_frontier_count = _acceptance_natural(
+        static_counts.get("runtime_indirect_frontiers"),
+        "static reachability runtime frontier count",
+    )
+    static_runtime_control = static_reachability_manifest.get(
+        "runtime_indirect_control"
+    )
+    expected_runtime_status = (
+        "satisfied" if static_frontier_count == 0 else "incomplete"
+    )
+    if (
+        static_reachability_manifest.get("theorem")
+        != INTERPRETER_MIXED_ORIGINAL_STATIC_REACHABILITY_THEOREM
+        or static_reachability_manifest.get("targets")
+        != [
+            Path(
+                INTERPRETER_MIXED_ORIGINAL_STATIC_REACHABILITY_LEAN_FILENAME
+            ).stem
+        ]
+        or not isinstance(static_runtime_control, Mapping)
+        or static_runtime_control.get("status") != expected_runtime_status
+        or static_runtime_control.get("closed_by_this_artifact") is not False
+        or static_runtime_control.get("required_at")
+        != "mixed-component-composition"
+        or static_frontier_count != blocker_count
+    ):
+        raise ValueError(
+            "static reachability manifest is malformed or disagrees with "
+            "mixed-original frontiers"
+        )
+
+    native_launch_graph_manifest_path, native_launch_graph_manifest = (
+        _acceptance_phase_manifest(
+            args.native_launch_graph_manifest,
+            "native launch graph manifest",
+            format_name="stage-a-gnu-hello-native-launch-graph-v1",
+            phase="native-launch-graph",
+            status="source-ready",
+            authority_field="acceptance_authority",
+            failure_mode="incomplete",
+        )
+    )
+    native_launch_counts = _acceptance_counts(
+        native_launch_graph_manifest, "native launch graph manifest"
+    )
+    native_canonical_roots = _acceptance_natural(
+        native_launch_counts.get("canonical_roots"),
+        "native launch canonical-root count",
+    )
+    for field in ("cutpoints", "routes", "decoded_nodes"):
+        _acceptance_natural(
+            native_launch_counts.get(field),
+            f"native launch {field} count",
+        )
+    canonical_sources = native_launch_request.get("canonical_sources")
+    if (
+        not isinstance(canonical_sources, list)
+        or not all(isinstance(source, Mapping) for source in canonical_sources)
+        or native_canonical_roots != len(canonical_sources)
+    ):
+        raise ValueError(
+            "native launch graph canonical roots disagree with the route request"
+        )
+
+    (
+        universal_environment_manifest_path,
+        universal_environment_manifest,
+    ) = _acceptance_phase_manifest(
+        args.universal_paired_external_environment_manifest,
+        "universal paired external environment manifest",
+        format_name="stage-a-relational-phase-v1",
+        phase="universal-paired-external-environment",
+        status="source-ready",
+        authority_field="proof_authority",
+    )
+    universal_remaining_premises = _acceptance_string_list(
+        universal_environment_manifest.get("remaining_premises"),
+        "universal paired external environment remaining premises",
+    )
+    universal_counts = _acceptance_counts(
+        universal_environment_manifest,
+        "universal paired external environment manifest",
+    )
+    for field in (
+        "required_imports",
+        "machine_contracts",
+        "candidate_pe_byte_packs",
+    ):
+        _acceptance_natural(
+            universal_counts.get(field),
+            f"universal paired external environment {field} count",
+        )
+
+    (
+        constructive_source_coverage_manifest_path,
+        constructive_source_coverage_manifest,
+    ) = _acceptance_phase_manifest(
+        args.constructive_source_coverage_manifest,
+        "constructive source coverage manifest",
+        format_name="stage-a-gnu-hello-constructive-source-coverage-v1",
+        phase="constructive-source-coverage",
+        status="source-ready",
+        authority_field="acceptance_authority",
+        failure_mode="incomplete",
+    )
+    constructive_remaining_premises = _acceptance_string_list(
+        constructive_source_coverage_manifest.get("remaining_proof_premises"),
+        "constructive source coverage remaining proof premises",
+    )
+    constructive_counts = _acceptance_counts(
+        constructive_source_coverage_manifest,
+        "constructive source coverage manifest",
+    )
+    constructive_records = _acceptance_natural(
+        constructive_counts.get("candidate_records"),
+        "constructive source coverage candidate-record count",
+    )
+    constructive_reachable_targets = _acceptance_natural(
+        constructive_counts.get("reachable_targets"),
+        "constructive source coverage reachable-target count",
+    )
+    constructive_candidate_sha256 = _acceptance_digest(
+        constructive_source_coverage_manifest.get("candidate_sha256"),
+        "constructive source coverage candidate",
+    )
+    constructive_state_machine_sha256 = _acceptance_digest(
+        constructive_source_coverage_manifest.get("state_machine_sha256"),
+        "constructive source coverage state machine",
+    )
+    if (
+        constructive_records < constructive_reachable_targets
+        or constructive_reachable_targets != static_reachable_targets
+    ):
+        raise ValueError(
+            "constructive source coverage counts disagree with static reachability"
+        )
+
+    (
+        canonical_relation_core_manifest_path,
+        canonical_relation_core_manifest,
+    ) = _acceptance_phase_manifest(
+        args.canonical_relation_core_manifest,
+        "canonical relation core manifest",
+        format_name="stage-a-gnu-hello-canonical-relation-core-v1",
+        phase="canonical-relation-core",
+        status="source-ready",
+        authority_field="acceptance_authority",
+        failure_mode="incomplete",
+    )
+    canonical_core_inputs = canonical_relation_core_manifest.get("inputs")
+    canonical_core_outputs = canonical_relation_core_manifest.get("outputs")
+    if (
+        not isinstance(canonical_core_inputs, Mapping)
+        or not all(
+            re.fullmatch(r"[0-9a-f]{64}", value) is not None
+            for value in canonical_core_inputs.values()
+            if isinstance(value, str)
+        )
+        or set(canonical_core_inputs)
+        != {
+            "mixed_original_plan",
+            "static_reachability_plan",
+            "kernel_data_inventory",
+        }
+        or not all(
+            isinstance(value, str) for value in canonical_core_inputs.values()
+        )
+        or canonical_relation_core_manifest.get("candidate_sha256")
+        != constructive_candidate_sha256
+        or canonical_relation_core_manifest.get("state_machine_sha256")
+        != constructive_state_machine_sha256
+        or canonical_core_outputs
+        != {
+            "binding_module": (
+                "StageA/GeneratedGnuHelloCanonicalRelationCoreBindings.lean"
+            ),
+            "core_module": "StageA/GeneratedGnuHelloCanonicalRelationCore.lean",
+            "core_plan": "interpreter-mixed-relation-core-plan.json",
+        }
+    ):
+        raise ValueError(
+            "canonical relation core manifest is malformed or disagrees with "
+            "constructive source coverage"
+        )
+
+    operation_specs = (
+        (
+            "kernel_program_lookup_operation_manifest",
+            "kernel programLookup operation manifest",
+            "compiled-kernel-program-lookup-operation",
+            INTERPRETER_KERNEL_PROGRAM_LOOKUP_OPERATION_THEOREM,
+        ),
+        (
+            "kernel_step_operation_manifest",
+            "kernel interpreterStep operation manifest",
+            "compiled-kernel-interpreter-step-operation",
+            INTERPRETER_KERNEL_STEP_OPERATION_THEOREM,
+        ),
+        (
+            "kernel_run_operation_manifest",
+            "kernel runFunction operation manifest",
+            "compiled-kernel-run-function-operation",
+            INTERPRETER_KERNEL_RUN_OPERATION_THEOREM,
+        ),
+        (
+            "kernel_invoke_operation_manifest",
+            "kernel invokeCall operation manifest",
+            "compiled-kernel-invoke-call-operation",
+            INTERPRETER_KERNEL_INVOKE_OPERATION_THEOREM,
+        ),
+    )
+    operation_manifests: list[
+        tuple[str, Path, dict[str, Any], list[str]]
+    ] = []
+    for attribute, label, phase, theorem in operation_specs:
+        manifest_path, manifest = _acceptance_phase_manifest(
+            getattr(args, attribute),
+            label,
+            format_name="stage-a-relational-phase-v1",
+            phase=phase,
+            status="source-ready",
+            authority_field="proof_authority",
+            failure_mode="incomplete",
+        )
+        premises = _acceptance_string_list(
+            manifest.get("remaining_proof_premises"),
+            f"{label} remaining proof premises",
+        )
+        if manifest.get("theorem") != theorem:
+            raise ValueError(f"{label} names an unexpected theorem")
+        operation_manifests.append(
+            (attribute, manifest_path, manifest, premises)
+        )
+
+    candidate_sha256 = _acceptance_digest(
+        native_launch_request.get("candidate_sha256"),
+        "native launch request candidate",
+    )
+    universal_inputs = universal_environment_manifest.get("inputs")
+    candidate_digests = {
+        "native launch graph": _acceptance_digest(
+            native_launch_graph_manifest.get("candidate_sha256"),
+            "native launch graph candidate",
+        ),
+        "universal paired external environment": _acceptance_digest(
+            (
+                universal_inputs.get("candidate_sha256")
+                if isinstance(universal_inputs, Mapping)
+                else None
+            ),
+            "universal paired external environment candidate",
+        ),
+        "constructive source coverage": constructive_candidate_sha256,
+        "canonical relation core": _acceptance_digest(
+            canonical_relation_core_manifest.get("candidate_sha256"),
+            "canonical relation core candidate",
+        ),
+        "x87 kernel execution": _acceptance_digest(
+            x87_kernel_execution_manifest.get("candidate_sha256"),
+            "x87 kernel execution candidate",
+        ),
+        **{
+            str(manifest["phase"]): _acceptance_candidate_input_digest(
+                manifest, str(manifest["phase"])
+            )
+            for _role, _path, manifest, _premises in operation_manifests
+        },
+    }
+    mismatched_candidates = sorted(
+        label
+        for label, digest in candidate_digests.items()
+        if digest != candidate_sha256
+    )
+    if mismatched_candidates:
+        raise ValueError(
+            "acceptance phase manifests bind different candidate PEs: "
+            + ", ".join(mismatched_candidates)
+        )
+    for field in ("required_path_shapes", "forbidden_authority"):
+        _acceptance_string_list(
+            native_launch_request.get(field),
+            f"native launch request {field}",
+        )
+    x87_runtime_targets = _acceptance_natural(
+        x87_kernel_execution_manifest.get("runtime_targets"),
+        "x87 kernel execution runtime-target count",
+    )
+
+    semantic_blockers: list[dict[str, Any]] = []
+    if static_frontier_count:
+        semantic_blockers.append(
+            {
+                "id": (
+                    f"{static_reachability_manifest['phase'].replace('-', '_')}"
+                    "_runtime_frontiers_remaining"
+                ),
+                "phase": static_reachability_manifest["phase"],
+                "source_manifest_sha256": sha256_file(
+                    static_reachability_manifest_path
+                ),
+                "remaining_count": static_frontier_count,
+                "remaining_frontiers": remaining_frontiers,
+            }
+        )
+    premise_sources = [
+        (
+            universal_environment_manifest_path,
+            universal_environment_manifest,
+            "remaining_premises",
+            universal_remaining_premises,
+        ),
+        (
+            constructive_source_coverage_manifest_path,
+            constructive_source_coverage_manifest,
+            "remaining_proof_premises",
+            constructive_remaining_premises,
+        ),
+        *[
+            (
+                manifest_path,
+                manifest,
+                "remaining_proof_premises",
+                premises,
+            )
+            for _role, manifest_path, manifest, premises in operation_manifests
+        ],
+        (
+            x87_kernel_execution_manifest_path,
+            x87_kernel_execution_manifest,
+            "remaining_proof_premises",
+            x87_remaining_premises,
+        ),
+    ]
+    for manifest_path, manifest, premise_field, premises in premise_sources:
+        blocker = _acceptance_premise_blocker(
+            manifest_path=manifest_path,
+            manifest=manifest,
+            premise_field=premise_field,
+            premises=premises,
+        )
+        if blocker is not None:
+            semantic_blockers.append(blocker)
+
+    remaining_by_phase = {
+        str(static_reachability_manifest["phase"]): static_frontier_count,
+        str(universal_environment_manifest["phase"]): len(
+            universal_remaining_premises
+        ),
+        str(constructive_source_coverage_manifest["phase"]): len(
+            constructive_remaining_premises
+        ),
+        **{
+            str(manifest["phase"]): len(premises)
+            for _role, _path, manifest, premises in operation_manifests
+        },
+        str(x87_kernel_execution_manifest["phase"]): len(
+            x87_remaining_premises
+        ),
+    }
+    validated_phase_manifests = [
+        {
+            "role": role,
+            "phase": manifest["phase"],
+            "sha256": sha256_file(path),
+            "reported_remaining_count": reported_remaining_count,
+        }
+        for role, path, manifest, reported_remaining_count in (
+            (
+                "static_reachability",
+                static_reachability_manifest_path,
+                static_reachability_manifest,
+                static_frontier_count,
+            ),
+            (
+                "native_launch_graph",
+                native_launch_graph_manifest_path,
+                native_launch_graph_manifest,
+                None,
+            ),
+            (
+                "universal_paired_external_environment",
+                universal_environment_manifest_path,
+                universal_environment_manifest,
+                len(universal_remaining_premises),
+            ),
+            (
+                "constructive_source_coverage",
+                constructive_source_coverage_manifest_path,
+                constructive_source_coverage_manifest,
+                len(constructive_remaining_premises),
+            ),
+            (
+                "canonical_relation_core",
+                canonical_relation_core_manifest_path,
+                canonical_relation_core_manifest,
+                None,
+            ),
+            *[
+                (
+                    role.removesuffix("_manifest"),
+                    path,
+                    manifest,
+                    len(premises),
+                )
+                for role, path, manifest, premises in operation_manifests
+            ],
+            (
+                "x87_kernel_execution",
+                x87_kernel_execution_manifest_path,
+                x87_kernel_execution_manifest,
+                len(x87_remaining_premises),
+            ),
+        )
+    ]
+
     block_manifest = json.loads(
         Path(args.kernel_block_manifest).read_text(encoding="utf-8")
     )
@@ -4340,6 +5054,8 @@ def _acceptance_sources(args: argparse.Namespace) -> None:
         for target in block_manifest.get("targets", [])
         if isinstance(target, str)
     )
+    stage_a = out / "StageA"
+    stage_a.mkdir(parents=True, exist_ok=True)
     requirements_module = "GeneratedGnuHelloRoundTripRequirements"
     requirements_namespace = "StageA.GeneratedGnuHelloRoundTripRequirements"
     core_type = "MixedKernelBindingRequirements"
@@ -4349,6 +5065,7 @@ def _acceptance_sources(args: argparse.Namespace) -> None:
         "StageA.GeneratedCallableExternalProgram",
         "StageA.GeneratedRelationalInterpreterMixedAuthority",
         "StageA.GeneratedRelationalInterpreterKernelABI",
+        "StageA.GeneratedRelationalInterpreterNativeLaunchGraph",
         "StageA.RelationalCallableExternalMixedBridge",
         "StageA.RelationalInterpreterNativeLaunch",
     ]
@@ -4377,11 +5094,8 @@ namespace {requirements_namespace}
   namespace Callable := StageA.GeneratedRelational.CallableExternalProgram
   namespace Candidate := StageA.GeneratedRelational.InterpreterMixedAuthority
   namespace KernelABI := StageA.GeneratedRelational.InterpreterKernelABI
-
-/- Deliberately uninhabited until a generated native-launch source phase binds
-the exact candidate entry/TLS paths and outbound wrappers to `launch_chunk`.
-Root identity alone is not a constructor for this proposition. -/
-inductive ExactGnuHelloCandidateNativeLaunchRouteBinding : Prop
+  namespace NativeLaunchGraph :=
+    StageA.GeneratedRelational.InterpreterNativeLaunchGraph
 
 /- The generic mixed-kernel interface is wrapped with exact artifact pins.
 The equalities have no status interpretation: constructing this value requires
@@ -4417,12 +5131,23 @@ structure GnuHelloRoundTripRequiredTerms where
     (Candidate.generatedExactNativeCandidateAuthority candidateEnvironment)
   kernelABIExact : HEq core.concrete_abi
     KernelABI.generatedConcreteInterpreterKernelABI
-  candidateNativeLaunchCertificate : ExactNativeLaunchGraphCertificate
-  candidateNativeLaunchCertificateStaticChecked :
-    candidateNativeLaunchCertificate.staticChecked core.candidate_program.pe
-      core.candidate_program.imports = true
   candidateNativeLaunchRouteBinding :
-    ExactGnuHelloCandidateNativeLaunchRouteBinding
+    forall originalEnvironment candidateEnvironment
+      (environmentRefines :
+        ExactOneToOneMixedExternalEnvironmentsRefine
+          (decodedWorldProgramWithProtocolEnvironment core.original_program
+            originalEnvironment)
+          (exactNativeWorldProgramWithEnvironment core.candidate_program
+            candidateEnvironment)
+          core.relation_core.contract core.external_frames),
+      ExactCanonicalMixedLaunchWrapperRefinementBinding
+        NativeLaunchGraph.generatedCheckedNativeLaunchGraph
+        core.original_context
+        (exactNativeWorldProgramWithEnvironment core.candidate_program
+          candidateEnvironment)
+        core.relation_core.contract core.launch
+        (core.launch_wrapper_refinements originalEnvironment candidateEnvironment
+          environmentRefines)
 
 def GnuHelloRoundTripRequiredTerms.originalCallableBinding
     (requirements : GnuHelloRoundTripRequiredTerms) :
@@ -4563,65 +5288,8 @@ end {requirements_namespace}
                     "named_lean_terms_consumed": [],
                 },
             ],
-            "blocking_obligations": [
-                {
-                    "id": "mixed_original_exact_reachability_missing",
-                    "frontier_count": blocker_count,
-                    "authority": "named Lean terms consumed by exact reachability",
-                },
-                {
-                    "id": "exact_candidate_native_launch_wrapper_missing",
-                    "candidate_sha256": native_launch_request["candidate_sha256"],
-                    "canonical_sources": native_launch_request["canonical_sources"],
-                    "required_path_shapes": native_launch_request[
-                        "required_path_shapes"
-                    ],
-                    "required_lean_fields": [
-                        "candidateNativeLaunchCertificate",
-                        "candidateNativeLaunchCertificateStaticChecked",
-                        "candidateNativeLaunchRouteBinding",
-                    ],
-                    "forbidden_authority": native_launch_request[
-                        "forbidden_authority"
-                    ],
-                },
-                {
-                    "id": "universal_paired_environment_refinement_missing",
-                    "required_lean_fields": [
-                        "core.launch_wrapper_refinements",
-                        "core.environment_compositions",
-                    ],
-                    "scope": (
-                        "every paired environment satisfying exact 1:1 import, "
-                        "event, ABI, world, and external-protocol refinement"
-                    ),
-                    "forbidden_authority": [
-                        "one favorable concrete OS response schedule",
-                        "hand-crafted trivial environment functions",
-                    ],
-                },
-                {
-                    "id": "x87_replay_kernel_execution_premises_missing",
-                    "candidate_sha256": x87_kernel_execution_manifest[
-                        "candidate_sha256"
-                    ],
-                    "runtime_targets": x87_kernel_execution_manifest[
-                        "runtime_targets"
-                    ],
-                    "generated_theorem": x87_kernel_execution_manifest[
-                        "theorem"
-                    ],
-                    "remaining_proof_premises": x87_remaining_premises,
-                    "required_authority": x87_kernel_execution_manifest[
-                        "remaining_authority"
-                    ],
-                    "forbidden_authority": [
-                        "submitted paths or endpoint states",
-                        "Python status fields",
-                        "solver status without checked semantic equations",
-                    ],
-                },
-            ],
+            "validated_phase_manifests": validated_phase_manifests,
+            "blocking_obligations": semantic_blockers,
         },
     )
     audit_module = "GeneratedGnuHelloRoundTripFinalAudit"
@@ -4655,6 +5323,21 @@ end StageA.GeneratedGnuHelloRoundTripFinalAudit
             "mixed_original_manifest": mixed_original_manifest_path,
             "original_carrier_manifest": original_carrier_manifest_path,
             "native_launch_request": native_launch_request_path,
+            "static_reachability_manifest": static_reachability_manifest_path,
+            "native_launch_graph_manifest": native_launch_graph_manifest_path,
+            "universal_paired_external_environment_manifest": (
+                universal_environment_manifest_path
+            ),
+            "constructive_source_coverage_manifest": (
+                constructive_source_coverage_manifest_path
+            ),
+            "canonical_relation_core_manifest": (
+                canonical_relation_core_manifest_path
+            ),
+            **{
+                role: path
+                for role, path, _manifest_payload, _premises in operation_manifests
+            },
             "x87_kernel_execution_manifest": (
                 x87_kernel_execution_manifest_path
             ),
@@ -4679,34 +5362,17 @@ end StageA.GeneratedGnuHelloRoundTripFinalAudit
                 "mixed-context GNU hello binding type"
             ),
         },
-        semantic_blockers=[
-            {
-                "id": "mixed_original_exact_reachability_missing",
-                "frontier_count": blocker_count,
-            },
-            {
-                "id": "exact_candidate_native_launch_wrapper_missing",
-                "candidate_sha256": native_launch_request["candidate_sha256"],
-            },
-            {
-                "id": "universal_paired_environment_refinement_missing",
-            },
-            {
-                "id": "x87_replay_kernel_execution_premises_missing",
-                "runtime_targets": x87_kernel_execution_manifest[
-                    "runtime_targets"
-                ],
-                "remaining_proof_premises": x87_remaining_premises,
-            },
-        ],
+        validated_phase_manifests=validated_phase_manifests,
+        semantic_blockers=semantic_blockers,
         counts={
             "remaining_original_control_frontiers": blocker_count,
             "remaining_x87_kernel_execution_premises": len(
                 x87_remaining_premises
             ),
-            "x87_runtime_targets": x87_kernel_execution_manifest[
-                "runtime_targets"
-            ],
+            "x87_runtime_targets": x87_runtime_targets,
+            "diagnostic_blockers": len(semantic_blockers),
+            "remaining_diagnostic_items": sum(remaining_by_phase.values()),
+            "remaining_diagnostic_items_by_phase": remaining_by_phase,
         },
     )
 
@@ -4907,6 +5573,7 @@ def _parser() -> argparse.ArgumentParser:
                 "--prior-direct-call-authority-report"
             )
             command.add_argument("--runtime-value-carry-hints")
+            command.add_argument("--checked-stack-entry-authority")
         command.set_defaults(run=runner)
 
     command = sub.add_parser("mixed-original-direct-call-semantics")
@@ -5034,7 +5701,6 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("--kernel-data-inventory", required=True)
     command.add_argument("--abi-plan", required=True)
     command.add_argument("--run-native-plan", required=True)
-    command.add_argument("--step-operation-plan", required=True)
     command.add_argument("--out", required=True)
     command.set_defaults(run=_kernel_run_operation)
 
@@ -5089,6 +5755,7 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("--abi-plan", required=True)
     command.add_argument("--callback-plan", required=True)
     command.add_argument("--invoke-native-plan", required=True)
+    command.add_argument("--run-operation-plan", required=True)
     command.add_argument("--out", required=True)
     command.set_defaults(run=_kernel_invoke_operation)
 
@@ -5109,6 +5776,24 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("--mixed-original-manifest", required=True)
     command.add_argument("--original-carrier-manifest", required=True)
     command.add_argument("--native-launch-request", required=True)
+    command.add_argument("--static-reachability-manifest", required=True)
+    command.add_argument("--native-launch-graph-manifest", required=True)
+    command.add_argument(
+        "--universal-paired-external-environment-manifest",
+        required=True,
+    )
+    command.add_argument(
+        "--constructive-source-coverage-manifest",
+        required=True,
+    )
+    command.add_argument("--canonical-relation-core-manifest", required=True)
+    command.add_argument(
+        "--kernel-program-lookup-operation-manifest",
+        required=True,
+    )
+    command.add_argument("--kernel-step-operation-manifest", required=True)
+    command.add_argument("--kernel-run-operation-manifest", required=True)
+    command.add_argument("--kernel-invoke-operation-manifest", required=True)
     command.add_argument("--x87-kernel-execution-manifest", required=True)
     command.add_argument("--out", required=True)
     command.set_defaults(run=_acceptance_sources)

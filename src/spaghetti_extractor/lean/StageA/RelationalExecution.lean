@@ -457,6 +457,10 @@ def transitionFromOutcome (program : RelationalProgramSemantics)
       let memory := Memory.bulkCopyDwords state.memory destination source direction count.toNat
       { next := .running continuation { state with memory } calls eventIndex,
         observation := none }
+  | .bulkFill destination value count direction continuation =>
+      let memory := Memory.bulkFillDwords state.memory destination value direction count.toNat
+      { next := .running continuation { state with memory } calls eventIndex,
+        observation := none }
   | .indirectCall target continuation =>
       match program.resolveTarget target with
       | some resolved =>

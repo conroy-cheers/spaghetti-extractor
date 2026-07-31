@@ -29,6 +29,10 @@ from .isa_corpus_generator import (
     parse_generated_isa_corpus,
     serialize_generated_isa_corpus,
 )
+from .isa_catalog_enrichment import (
+    SIDE_ISA_CATALOG_ENRICHMENT_FORMAT,
+    resolved_isa_catalog,
+)
 from .isa_kernel_qualification import (
     BackendBinding,
     BackendRole,
@@ -49,11 +53,11 @@ from .isa_kernel_qualification import (
     serialize_kernel_qualification,
     serialize_kernel_selection,
 )
+from .isa_semantic_forms import lean_semantic_form_id
 from .relational.isa_requirements import (
     ISARequirementInventory,
-    LEAN_ISA_REQUIREMENT_FORM_FORMAT,
 )
-from .relational.schema import STAGE_A_RELATIONAL_MODEL_ID
+from .isa_side_adapter import SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT
 from .stage_binary import StageAInputError
 from .util import sha256_bytes, sha256_file, write_json
 
@@ -234,8 +238,29 @@ def write_isa_qualification_campaign(
 def generate_isa_corpus(
     *, catalog: Path, seed: int, out: Path
 ) -> dict[str, Any]:
+    exact_encoding_sources: dict[str, Mapping[str, Any]] = {}
     try:
-        typed = parse_isa_catalog(_read_json(catalog, "ISA form catalog"))
+        catalog_payload = _read_json(catalog, "ISA form catalog")
+        if (
+            catalog_payload.get("format")
+            == SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT
+        ):
+            raise StageAInputError(
+                "cannot generate ISA corpus from a side-ISA catalog proposal: "
+                "effects, defined-output masks, and required features are not enriched"
+            )
+        if catalog_payload.get("format") == SIDE_ISA_CATALOG_ENRICHMENT_FORMAT:
+            typed = resolved_isa_catalog(catalog_payload)
+            qualified_encoding_ids = {
+                entry.encoding_id for entry in typed.entries
+            }
+            exact_encoding_sources = {
+                str(row["encoding_id"]): row
+                for row in catalog_payload["encodings"]
+                if row["encoding_id"] in qualified_encoding_ids
+            }
+        else:
+            typed = parse_isa_catalog(catalog_payload)
         if not isinstance(typed, ISAFormCatalog):
             raise StageAInputError(
                 "raw XED metadata must first be enriched with exact encodings "
@@ -270,6 +295,19 @@ def generate_isa_corpus(
                 "case_id": case.id,
                 "catalog_form_id": case.form_id,
                 "coverage_cell": case.coverage_cell.id,
+                **(
+                    {
+                        "source_encoding_id": case.form_id,
+                        "source_form_id": exact_encoding_sources[case.form_id][
+                            "form_id"
+                        ],
+                        "semantic_form": exact_encoding_sources[case.form_id][
+                            "semantic_form"
+                        ],
+                    }
+                    if case.form_id in exact_encoding_sources
+                    else {}
+                ),
             }
             for case in generated.cases
         ],
@@ -285,6 +323,25 @@ def generate_isa_corpus(
         "status": "generated",
         "out": str(out),
         "case_count": len(generated.cases),
+        **(
+            {
+                "exact_decoded_encoding_count": catalog_payload["counts"][
+                    "encodings"
+                ],
+                "resolved_encoding_count": catalog_payload["counts"]["resolved"],
+                "unresolved_encoding_count": catalog_payload["counts"][
+                    "unresolved"
+                ],
+                "qualified_form_count": catalog_payload["counts"][
+                    "qualified_forms"
+                ],
+                "unresolved_form_count": catalog_payload["counts"][
+                    "unresolved_forms"
+                ],
+            }
+            if exact_encoding_sources
+            else {}
+        ),
         "manifest_sha256": sha256_file(out / "manifest.json"),
         "proof_authority": False,
         "closes_stage_a_proof": False,
@@ -335,13 +392,10 @@ def _lean_form_crosswalk(
         semantic_form = row.get("semantic_form")
         if not isinstance(case_id, str) or not isinstance(semantic_form, str):
             raise StageAInputError("Lean semantic-form row is malformed")
-        core = {
-            "format": LEAN_ISA_REQUIREMENT_FORM_FORMAT,
-            "model": STAGE_A_RELATIONAL_MODEL_ID,
-            "classifier_sha256": classifier_sha256,
-            "semantic_form": semantic_form,
-        }
-        form_id = "lean-x86-form-" + _canonical_sha256(core)[:20]
+        form_id = lean_semantic_form_id(
+            semantic_form,
+            classifier_sha256=classifier_sha256,
+        )
         previous = semantic_forms_by_id.setdefault(form_id, semantic_form)
         if previous != semantic_form:
             raise StageAInputError("Lean semantic-form identity collision")
@@ -469,6 +523,14 @@ def _binary_requirements(
     if side not in {"original", "candidate"}:
         raise StageAInputError("ISA qualification side must be original or candidate")
     binary_sha256 = inventory["inputs"][f"{side}_sha256"]
+    if (
+        not isinstance(binary_sha256, str)
+        or len(binary_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in binary_sha256)
+    ):
+        raise StageAInputError(
+            f"ISA requirements do not contain a valid {side} binary identity"
+        )
     semantic_forms = {
         row["id"]: row["semantic_form"] for row in inventory["forms"]
     }

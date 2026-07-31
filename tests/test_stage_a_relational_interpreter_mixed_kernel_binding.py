@@ -111,6 +111,50 @@ class StageARelationalInterpreterMixedKernelBindingTests(unittest.TestCase):
             "environment_compositions"
         ].lean_type)
 
+    def test_nonterminal_chunks_consume_exact_classifier_evidence(self) -> None:
+        inhabitants = {item.key: item for item in REQUIRED_INHABITANTS}
+        for key in (
+            "semantic_chunk_factory",
+            "external_operation_chunk_factory",
+            "external_boundary_chunk",
+        ):
+            self.assertIn(
+                "$invariant.holds originalBefore candidateBefore",
+                inhabitants[key].lean_type,
+            )
+            self.assertIn(
+                "$classify_source.classifier.classify",
+                inhabitants[key].lean_type,
+            )
+
+    def test_operation_authority_is_indexed_by_exact_candidate_world(self) -> None:
+        inhabitants = {item.key: item for item in REQUIRED_INHABITANTS}
+        self.assertEqual(
+            inhabitants["dispatch_family"].lean_type,
+            "RelationalWorld -> KernelOperationDispatchFamily",
+        )
+        for key in (
+            "program_lookup_refines",
+            "interpreter_step_refines",
+            "run_function_refines",
+            "invoke_call_refines",
+        ):
+            self.assertIn("forall world,", inhabitants[key].lean_type)
+            self.assertIn("$dispatch_family world", inhabitants[key].lean_type)
+        for key in (
+            "semantic_chunk_factory",
+            "external_operation_chunk_factory",
+        ):
+            self.assertIn(
+                "candidateWorldExact : nativeExecutionWorld? candidateBefore = "
+                "some candidateWorld",
+                inhabitants[key].lean_type,
+            )
+            self.assertIn(
+                "combinedKernelDispatchRelation ($dispatch_family candidateWorld)",
+                inhabitants[key].lean_type,
+            )
+
     def test_incomplete_inventory_is_precise_deterministic_and_fail_closed(
         self,
     ) -> None:
@@ -290,10 +334,15 @@ class StageARelationalInterpreterMixedKernelBindingTests(unittest.TestCase):
         )
 
         self.assertTrue(plan.complete)
-        self.assertIn("classify := requirements.classify_source", source)
+        self.assertIn(
+            "classifier := generatedMixedKernelSourceClassifier requirements",
+            source,
+        )
+        self.assertIn(
+            "requirements.classify_source",
+            source,
+        )
         self.assertNotIn("MixedKernelObservationFamily", requirements_source)
-        self.assertNotIn(".internal", requirements_source)
-        self.assertNotIn(".external", requirements_source)
         for operation in (
             "programLookup",
             "interpreterStep",
@@ -305,16 +354,28 @@ class StageARelationalInterpreterMixedKernelBindingTests(unittest.TestCase):
         self.assertIn("requirements.dispatch_family", source)
         self.assertEqual(
             source.count(
-                "generatedKernelOperationRefinements requirements operation"
+                "generatedKernelOperationRefinements requirements candidateWorld "
+                "operation"
             ),
             2,
         )
+        self.assertIn("forall world operation,", source)
+        self.assertIn(
+            "combinedKernelDispatchRelation (requirements.dispatch_family world)",
+            source,
+        )
+        self.assertIn(
+            "fun world =>\n        combinedKernelDispatchRelation "
+            "(requirements.dispatch_family world)",
+            source,
+        )
+        self.assertEqual(source.count("candidateWorldExact"), 4)
+        self.assertNotIn("generatedLaunchWorld", source)
         for generated in (
             "generatedCanonicalMixedRelationProfile",
             "generatedMixedKernelSourceClassifier",
             "generatedCheckedMixedKernelComponentCases",
             "generatedMixedWorldChunkComposition",
-            "generatedSelectedMixedWorldAcceptanceCertificate",
             "generatedUniversalMixedWorldAcceptanceCertificate",
             "generatedMixedWorldProgramsEquivalent",
         ):
@@ -359,7 +420,6 @@ class StageARelationalInterpreterMixedKernelBindingTests(unittest.TestCase):
             "RelationalProductGraph",
             "ProductInvariantTable",
             "KernelABIRelation\n  dispatches",
-            "environmentRefines : ExactOneToOneMixedExternalEnvironmentsRefine",
         ):
             self.assertNotIn(forbidden, requirements_source)
         for forbidden in (

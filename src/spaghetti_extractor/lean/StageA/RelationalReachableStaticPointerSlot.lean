@@ -1,26 +1,32 @@
 import StageA.RelationalInterpreterMixedOriginal
+import StageA.RelationalInterpreterNormalization
 
 namespace StageA.Relational.ReachableStaticPointerSlot
 
 open StageA.Formal StageA.Relational
+open StageA.Relational.Interpreter
 open StageA.Relational.InterpreterMixedContext
 open StageA.Relational.InterpreterMixedOriginal
+open StageA.Relational.InterpreterNormalization
 
 /-! # Reachable writable static pointer slots
 
 This module checks finite proposals against an exact decoded-original context.
-It deliberately separates immutable facts from the one runtime premise which a
-whole-program composition proof must provide: a non-constant write classified
-as `runtimeSeparated` must be proved disjoint from the slot in the concrete
-source state.  Such a classification is never itself an acceptance fact.
+It re-decodes scalar write widths and REP outcomes, then separates immutable
+facts from runtime footprint premises. A non-constant scalar write classified
+as `runtimeSeparated`, or each exact REP destination, must be proved disjoint
+from the slot in the concrete source state. Such a classification is never
+itself an acceptance fact.
 
 `Certificate.regions` is sparse. A missing row is accepted only when Lean
 replays the normalized behavior and proves every write to be an absolute
-four-byte write disjoint from the slot. Thus artifacts scale with may-touch
+width-aware write disjoint from the slot. Thus artifacts scale with may-touch
 regions, although the current `ExactOriginalDecodedAuthority` does not expose a
 shared normalized-behavior inventory: kernel reduction still re-decodes each
 reachable region for each slot certificate. A future authority-level behavior
 object can remove that compute without changing the certificate semantics.
+Reachable external outcomes additionally resolve to a unique validated
+footprint-bounded machine-call contract.
 -/
 
 inductive Knowledge (alpha : Type) where
@@ -29,11 +35,15 @@ inductive Knowledge (alpha : Type) where
 deriving Repr, DecidableEq
 
 inductive WriteClassification where
-  | absoluteDisjoint
+  | absoluteDisjoint (width : MemoryWidth)
   | slotZero
   | slotCodeTarget (targetId : Nat)
-  | runtimeSeparated
+  | runtimeSeparated (width : MemoryWidth)
 deriving Repr, DecidableEq, BEq
+
+def WriteClassification.width : WriteClassification -> MemoryWidth
+  | .absoluteDisjoint width | .runtimeSeparated width => width
+  | .slotZero | .slotCodeTarget _ => .dword
 
 structure RegionBinding where
   targetId : Nat
@@ -110,6 +120,93 @@ def normalizedRegionBehavior? (context : OriginalDecodedStaticContext)
   let targets <- originalTargetPairs? context source.region.targets
   normalizeSymbolicBehavior false targets behavior
 
+structure DecodedWriteInventory where
+  scalarWidths : List MemoryWidth
+  repMovsdCount : Nat
+  repStosdCount : Nat
+deriving Repr, DecidableEq
+
+def DecodedWriteInventory.append
+    (left right : DecodedWriteInventory) : DecodedWriteInventory := {
+  scalarWidths := left.scalarWidths ++ right.scalarWidths
+  repMovsdCount := left.repMovsdCount + right.repMovsdCount
+  repStosdCount := left.repStosdCount + right.repStosdCount
+}
+
+def orderedEffectsWriteInventory
+    (effects : List OrderedEffectKind) : DecodedWriteInventory :=
+  effects.foldl (fun inventory effect =>
+    match effect with
+    | .write width =>
+        { inventory with scalarWidths := inventory.scalarWidths ++ [width] }
+    | .repMovsd =>
+        { inventory with repMovsdCount := inventory.repMovsdCount + 1 }
+    | .repStosd =>
+        { inventory with repStosdCount := inventory.repStosdCount + 1 }
+    | .read _ | .call _ | .divideGuard => inventory) {
+      scalarWidths := []
+      repMovsdCount := 0
+      repStosdCount := 0
+    }
+
+/-- Re-decode one exact region and recover its complete ordered write-width
+inventory from the reviewed architectural effect table. The submitted state
+machine is not consulted. -/
+def decodedRegionWriteInventoryFrom :
+    PE32 -> List PEImport -> Nat -> Nat -> Bytes ->
+      Option DecodedWriteInventory
+  | _, _, 0, _, [] => some {
+      scalarWidths := []
+      repMovsdCount := 0
+      repStosdCount := 0
+    }
+  | _, _, 0, _, _ :: _ => none
+  | pe, imports, fuel + 1, rva, bytes =>
+      if bytes.isEmpty then
+        some {
+          scalarWidths := []
+          repMovsdCount := 0
+          repStosdCount := 0
+        }
+      else do
+        let decoded : DecodedInstruction <- decodeInstructionExact bytes
+        if decoded.size = 0 || decoded.size > bytes.length then none else
+        let instruction : ExactDecodedInstruction := {
+          rva
+          bytes := bytes.take decoded.size
+        }
+        let exact <- instruction.decode? pe
+        let effects <- decodedOrderedEffects? pe imports instruction exact
+        let tail <- decodedRegionWriteInventoryFrom pe imports fuel
+          (rva + decoded.size) decoded.trailing
+        pure ((orderedEffectsWriteInventory effects).append tail)
+
+def decodedRegionWriteInventory? (context : OriginalDecodedStaticContext)
+    (targetId : Nat) : Option DecodedWriteInventory := do
+  let source : OriginalDecodedSource <- context.source? targetId
+  let bytes : Bytes <- spanBytes context.pe source.region.span
+  decodedRegionWriteInventoryFrom context.pe context.imports
+    (bytes.length + 1) source.region.span.start bytes
+
+def nonScalarWriteInventoryChecked
+    (inventory : DecodedWriteInventory)
+    (behavior : NormalizedSymbolicBehavior) : Bool :=
+  match behavior.outcome with
+  | .bulkCopy .. => inventory.repMovsdCount == 1 && inventory.repStosdCount == 0
+  | .bulkFill .. => inventory.repMovsdCount == 0 && inventory.repStosdCount == 1
+  | _ => inventory.repMovsdCount == 0 && inventory.repStosdCount == 0
+
+def normalizedRegionWriteInventory?
+    (context : OriginalDecodedStaticContext) (targetId : Nat) :
+    Option (NormalizedSymbolicBehavior × DecodedWriteInventory) := do
+  let behavior <- normalizedRegionBehavior? context targetId
+  let inventory <- decodedRegionWriteInventory? context targetId
+  if inventory.scalarWidths.length != behavior.writes.length ||
+      !nonScalarWriteInventoryChecked inventory behavior then
+    none
+  else
+    some (behavior, inventory)
+
 def sourceTargets (context : OriginalDecodedStaticContext)
     (targetId : Nat) : List Nat :=
   match context.source? targetId with
@@ -145,6 +242,7 @@ def normalizedDirectTargets : NormalizedOutcomeExpr -> List Nat
   | .externalCall _ _ continuation => [continuation]
   | .externalJump _ _ => []
   | .bulkCopy _ _ _ _ continuation => [continuation]
+  | .bulkFill _ _ _ _ continuation => [continuation]
   | .indirectCall _ continuation => [continuation]
   | .indirectJump _ => []
   | .checkedContinue _ continuation => [continuation]
@@ -184,18 +282,19 @@ def allowedWords (context : OriginalDecodedStaticContext)
   0 :: (targetIds.filterMap (targetCanonicalWord? context)).map
     (BitVec.ofNat 32)
 
-def natWordsDisjoint (left right : Nat) : Bool :=
-  left + 4 <= right || right + 4 <= left
+def natWriteSpanDisjoint (slot address : Nat) (width : MemoryWidth) : Bool :=
+  slot + 4 <= address || address + width.bytes <= slot
 
 def WriteClassification.checked (context : OriginalDecodedStaticContext)
     (certificate : Certificate) (allowedTargetIds : List Nat)
     (classification : WriteClassification) (write : Expr × Expr) : Bool :=
   let slot := slotAddress context certificate
   match classification with
-  | .absoluteDisjoint =>
+  | .absoluteDisjoint width =>
       match write.1 with
       | .constant address =>
-          address + 4 <= 2 ^ 32 && natWordsDisjoint slot address
+          address + width.bytes <= 2 ^ 32 &&
+            natWriteSpanDisjoint slot address width
       | _ => false
   | .slotZero =>
       write.1 == .constant slot && write.2 == .constant 0
@@ -204,46 +303,47 @@ def WriteClassification.checked (context : OriginalDecodedStaticContext)
         match targetCanonicalWord? context targetId with
         | some value => write.1 == .constant slot && write.2 == .constant value
         | none => false
-  | .runtimeSeparated =>
+  | .runtimeSeparated _ =>
       match write.1 with
       | .constant _ => false
       | _ => true
 
 def classificationsChecked (context : OriginalDecodedStaticContext)
     (certificate : Certificate) (allowedTargetIds : List Nat) :
-    List WriteClassification -> List (Expr × Expr) -> Bool
-  | [], [] => true
-  | classification :: classifications, write :: writes =>
-      classification.checked context certificate allowedTargetIds write &&
+    List WriteClassification -> List MemoryWidth -> List (Expr × Expr) -> Bool
+  | [], [], [] => true
+  | classification :: classifications, width :: widths, write :: writes =>
+      decide (classification.width = width) &&
+        classification.checked context certificate allowedTargetIds write &&
         classificationsChecked context certificate allowedTargetIds
-          classifications writes
-  | _, _ => false
+          classifications widths writes
+  | _, _, _ => false
 
 def RegionBinding.checked (context : OriginalDecodedStaticContext)
     (certificate : Certificate) (reachableTargetIds allowedTargetIds : List Nat)
     (binding : RegionBinding) : Bool :=
   reachableTargetIds.contains binding.targetId &&
-    match binding.writes, normalizedRegionBehavior? context binding.targetId with
-    | .exact classifications, some behavior =>
+    match binding.writes, normalizedRegionWriteInventory? context binding.targetId with
+    | .exact classifications, some (behavior, inventory) =>
         classificationsChecked context certificate allowedTargetIds
-          classifications behavior.writes
+          classifications inventory.scalarWidths behavior.writes
     | _, _ => false
 
 def defaultDisjointClassifications
-    (writes : List (Expr × Expr)) : List WriteClassification :=
-  writes.map fun _ => .absoluteDisjoint
+    (widths : List MemoryWidth) : List WriteClassification :=
+  widths.map .absoluteDisjoint
 
 /-- A missing sparse row means that every write must independently replay as
 an absolute write disjoint from this slot. Unknown submitted rows still reject.
 -/
 def regionClassifications? (bindings : List RegionBinding) (targetId : Nat)
-    (behavior : NormalizedSymbolicBehavior) : Option (List WriteClassification) :=
+    (inventory : DecodedWriteInventory) : Option (List WriteClassification) :=
   match bindings.find? fun binding => binding.targetId == targetId with
   | some binding =>
       match binding.writes with
       | .exact classifications => some classifications
       | .unknown => none
-  | none => some (defaultDisjointClassifications behavior.writes)
+  | none => some (defaultDisjointClassifications inventory.scalarWidths)
 
 def sparseBindingsChecked (reachableTargetIds : List Nat)
     (bindings : List RegionBinding) : Bool :=
@@ -255,12 +355,12 @@ def regionInventoryChecked (context : OriginalDecodedStaticContext)
     (bindings : List RegionBinding) : Bool :=
   sparseBindingsChecked reachableTargetIds bindings &&
     reachableTargetIds.all fun targetId =>
-      match normalizedRegionBehavior? context targetId with
-      | some behavior =>
-          match regionClassifications? bindings targetId behavior with
+      match normalizedRegionWriteInventory? context targetId with
+      | some (behavior, inventory) =>
+          match regionClassifications? bindings targetId inventory with
           | some classifications =>
               classificationsChecked context certificate allowedTargetIds
-                classifications behavior.writes
+                classifications inventory.scalarWidths behavior.writes
           | none => false
       | none => false
 
@@ -333,6 +433,82 @@ def indirectInventoryChecked (context : OriginalDecodedStaticContext)
     sites.all (IndirectSlotSite.checked context certificate reachableTargetIds
       allowedTargetIds)
 
+def machineCallMemoryEffectFootprintBoundedChecked :
+    MachineCallMemoryEffect -> Bool
+  | .none | .readOnly | .argumentRanges => true
+  | .newDynamicRanges | .relationalState => false
+
+def footprintBoundedContract? (contract : MachineImportCallContract) :
+    Option MachineImportCallContract :=
+  if machineCallMemoryEffectFootprintBoundedChecked contract.memoryEffect
+  then some contract else none
+
+theorem footprintBoundedContract?_sound
+    {source result : MachineImportCallContract}
+    (found : footprintBoundedContract? source = some result) :
+    machineCallMemoryEffectFootprintBoundedChecked result.memoryEffect = true := by
+  unfold footprintBoundedContract? at found
+  split at found
+  case isTrue bounded =>
+    have exact := Option.some.inj found
+    subst result
+    exact bounded
+  case isFalse => simp at found
+
+def checkedExternalOutcomeContract?
+    (context : OriginalDecodedStaticContext)
+    (behavior : NormalizedSymbolicBehavior) :
+    Option MachineImportCallContract :=
+  match behavior.outcome with
+  | .externalCall imported _ _ | .externalJump imported _ =>
+      match context.machineImportCallContracts.filter
+          (fun contract => contract.imported == imported) with
+      | [contract] => footprintBoundedContract? contract
+      | _ => none
+  | _ => none
+
+def externalOutcomeFootprintChecked
+    (context : OriginalDecodedStaticContext)
+    (behavior : NormalizedSymbolicBehavior) : Bool :=
+  match behavior.outcome with
+  | .externalCall .. | .externalJump .. =>
+      (checkedExternalOutcomeContract? context behavior).isSome
+  | _ => true
+
+theorem checkedExternalOutcomeContract?_bounded
+    {context : OriginalDecodedStaticContext}
+    {behavior : NormalizedSymbolicBehavior}
+    {contract : MachineImportCallContract}
+    (found :
+      checkedExternalOutcomeContract? context behavior = some contract) :
+    machineCallMemoryEffectFootprintBoundedChecked contract.memoryEffect = true := by
+  unfold checkedExternalOutcomeContract? at found
+  generalize outcomeExact : behavior.outcome = outcome at found
+  cases outcome <;> try simp at found
+  all_goals
+    generalize contractsExact :
+      context.machineImportCallContracts.filter
+        (fun candidate => candidate.imported == ‹ExternalTarget›) = contracts at found
+    cases contracts with
+    | nil => simp at found
+    | cons head tail =>
+        cases tail with
+        | nil => exact footprintBoundedContract?_sound found
+        | cons second rest => simp at found
+
+/-- Every reachable external transition resolves to one exact, validated
+machine-call contract whose complete write effect is represented by its
+footprints. Effects with non-footprint relational memory authority fail closed.
+-/
+def externalWriteInventoryChecked (context : OriginalDecodedStaticContext)
+    (reachableTargetIds : List Nat) : Bool :=
+  machineImportCallContractsValid context.imports
+      context.machineImportCallContracts &&
+    reachableTargetIds.all fun targetId =>
+      match normalizedRegionWriteInventory? context targetId with
+      | some (behavior, _) => externalOutcomeFootprintChecked context behavior
+      | none => false
+
 def Certificate.checked (certificate : Certificate)
     (context : OriginalDecodedStaticContext) : Bool :=
   match certificate.reachableTargetIds, certificate.allowedTargetIds,
@@ -347,6 +523,7 @@ def Certificate.checked (certificate : Certificate)
           allowedTargetIds regions &&
         noDuplicates guardedEdges && guardedEdges.all
           (GuardedNonzeroEdge.checked context certificate reachableTargetIds) &&
+        externalWriteInventoryChecked context reachableTargetIds &&
         indirectInventoryChecked context certificate reachableTargetIds
           allowedTargetIds indirectSites
   | _, _, _, _, _, _ => false
@@ -379,6 +556,8 @@ structure Certificate.CheckedFacts (certificate : Certificate)
     allowedTargetIds regions = true
   guardedChecked : guardedEdges.all
     (GuardedNonzeroEdge.checked context certificate reachableTargetIds) = true
+  externalChecked :
+    externalWriteInventoryChecked context reachableTargetIds = true
   indirectChecked : indirectInventoryChecked context certificate
     reachableTargetIds allowedTargetIds indirectSites = true
 
@@ -414,6 +593,7 @@ def Certificate.checkedFactsOfChecked
               simp only [Certificate.checked, reachableEq, allowedEq, regionsEq,
                 guardedEq, indirectEq, aliasesEq, Bool.and_eq_true] at checked
               rcases checked with ⟨checked, indirectChecked⟩
+              rcases checked with ⟨checked, externalChecked⟩
               rcases checked with ⟨checked, guardedChecked⟩
               rcases checked with ⟨checked, _guardedNodup⟩
               rcases checked with ⟨checked, regionChecked⟩
@@ -440,6 +620,7 @@ def Certificate.checkedFactsOfChecked
                 targetsChecked
                 regionChecked
                 guardedChecked
+                externalChecked
                 indirectChecked
               }
 
@@ -494,64 +675,229 @@ theorem initialZeroChecked_slot_nat_fits
   simp only [Bool.and_eq_true] at checked
   exact of_decide_eq_true checked.1.1.1.1.2
 
+def WriteSpanAvoidsWord
+    (slotAddress writeAddress : Word) (width : MemoryWidth) : Prop :=
+  forall slotOffset, slotOffset < 4 ->
+    forall writeOffset, writeOffset < width.bytes ->
+      ¬slotAddress + BitVec.ofNat 32 slotOffset =
+        writeAddress + BitVec.ofNat 32 writeOffset
+
+theorem writeSpanAvoidsWord_of_nat_disjoint
+    (slotAddress writeAddress : Word) (width : MemoryWidth)
+    (slotFits : slotAddress.toNat + 4 <= 2 ^ 32)
+    (writeFits : writeAddress.toNat + width.bytes <= 2 ^ 32)
+    (disjoint : slotAddress.toNat + 4 <= writeAddress.toNat ∨
+      writeAddress.toNat + width.bytes <= slotAddress.toNat) :
+    WriteSpanAvoidsWord slotAddress writeAddress width := by
+  intro slotOffset slotBefore writeOffset writeBefore overlap
+  have overlapNat := congrArg BitVec.toNat overlap
+  have slotOffsetSmall : slotOffset < 2 ^ 32 := by omega
+  have writeOffsetSmall : writeOffset < 2 ^ 32 := by
+    cases width <;> simp [MemoryWidth.bytes] at writeBefore <;> omega
+  have slotAddressBefore : slotAddress.toNat + slotOffset < 2 ^ 32 := by
+    omega
+  have writeAddressBefore :
+      writeAddress.toNat + writeOffset < 2 ^ 32 := by
+    omega
+  simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+    Nat.mod_eq_of_lt slotOffsetSmall, Nat.mod_eq_of_lt writeOffsetSmall,
+    Nat.mod_eq_of_lt slotAddressBefore,
+    Nat.mod_eq_of_lt writeAddressBefore] at overlapNat
+  omega
+
+theorem Memory.read32_writeMemory_of_avoids
+    (memory : Memory) (slotAddress writeAddress value : Word)
+    (width : MemoryWidth)
+    (avoids : WriteSpanAvoidsWord slotAddress writeAddress width) :
+    Memory.read32 (writeMemory memory writeAddress value width) slotAddress =
+      Memory.read32 memory slotAddress := by
+  have avoid (slotOffset writeOffset : Nat)
+      (slotBefore : slotOffset < 4) (writeBefore : writeOffset < width.bytes) :
+      ¬(slotAddress + BitVec.ofNat 32 slotOffset =
+        writeAddress + BitVec.ofNat 32 writeOffset) :=
+    avoids slotOffset slotBefore writeOffset writeBefore
+  cases width with
+  | byte =>
+      have h00 : slotAddress ≠ writeAddress := by
+        simpa using avoid 0 0 (by decide) (by decide)
+      have h10 : slotAddress + BitVec.ofNat 32 1 ≠ writeAddress := by
+        simpa using avoid 1 0 (by decide) (by decide)
+      have h20 : slotAddress + BitVec.ofNat 32 2 ≠ writeAddress := by
+        simpa using avoid 2 0 (by decide) (by decide)
+      have h30 : slotAddress + BitVec.ofNat 32 3 ≠ writeAddress := by
+        simpa using avoid 3 0 (by decide) (by decide)
+      simp [Memory.read32, writeMemory, writeMemoryByte, h00, h10, h20, h30]
+  | word =>
+      have h00 : slotAddress ≠ writeAddress := by
+        simpa using avoid 0 0 (by decide) (by decide)
+      have h01 : slotAddress ≠ writeAddress + BitVec.ofNat 32 1 := by
+        simpa using avoid 0 1 (by decide) (by decide)
+      have h10 : slotAddress + BitVec.ofNat 32 1 ≠ writeAddress := by
+        simpa using avoid 1 0 (by decide) (by decide)
+      have h11 : slotAddress + BitVec.ofNat 32 1 ≠
+          writeAddress + BitVec.ofNat 32 1 := by
+        simpa using avoid 1 1 (by decide) (by decide)
+      have h20 : slotAddress + BitVec.ofNat 32 2 ≠ writeAddress := by
+        simpa using avoid 2 0 (by decide) (by decide)
+      have h21 : slotAddress + BitVec.ofNat 32 2 ≠
+          writeAddress + BitVec.ofNat 32 1 := by
+        simpa using avoid 2 1 (by decide) (by decide)
+      have h30 : slotAddress + BitVec.ofNat 32 3 ≠ writeAddress := by
+        simpa using avoid 3 0 (by decide) (by decide)
+      have h31 : slotAddress + BitVec.ofNat 32 3 ≠
+          writeAddress + BitVec.ofNat 32 1 := by
+        simpa using avoid 3 1 (by decide) (by decide)
+      simp [Memory.read32, writeMemory, writeMemoryByte, h00, h01, h10, h11,
+        h20, h21, h30, h31]
+  | dword =>
+      have h00 : slotAddress ≠ writeAddress := by
+        simpa using avoid 0 0 (by decide) (by decide)
+      have h01 : slotAddress ≠ writeAddress + BitVec.ofNat 32 1 := by
+        simpa using avoid 0 1 (by decide) (by decide)
+      have h02 : slotAddress ≠ writeAddress + BitVec.ofNat 32 2 := by
+        simpa using avoid 0 2 (by decide) (by decide)
+      have h03 : slotAddress ≠ writeAddress + BitVec.ofNat 32 3 := by
+        simpa using avoid 0 3 (by decide) (by decide)
+      have h10 : slotAddress + BitVec.ofNat 32 1 ≠ writeAddress := by
+        simpa using avoid 1 0 (by decide) (by decide)
+      have h11 : slotAddress + BitVec.ofNat 32 1 ≠
+          writeAddress + BitVec.ofNat 32 1 := by
+        simpa using avoid 1 1 (by decide) (by decide)
+      have h12 : slotAddress + BitVec.ofNat 32 1 ≠
+          writeAddress + BitVec.ofNat 32 2 := by
+        simpa using avoid 1 2 (by decide) (by decide)
+      have h13 : slotAddress + BitVec.ofNat 32 1 ≠
+          writeAddress + BitVec.ofNat 32 3 := by
+        simpa using avoid 1 3 (by decide) (by decide)
+      have h20 : slotAddress + BitVec.ofNat 32 2 ≠ writeAddress := by
+        simpa using avoid 2 0 (by decide) (by decide)
+      have h21 : slotAddress + BitVec.ofNat 32 2 ≠
+          writeAddress + BitVec.ofNat 32 1 := by
+        simpa using avoid 2 1 (by decide) (by decide)
+      have h22 : slotAddress + BitVec.ofNat 32 2 ≠
+          writeAddress + BitVec.ofNat 32 2 := by
+        simpa using avoid 2 2 (by decide) (by decide)
+      have h23 : slotAddress + BitVec.ofNat 32 2 ≠
+          writeAddress + BitVec.ofNat 32 3 := by
+        simpa using avoid 2 3 (by decide) (by decide)
+      have h30 : slotAddress + BitVec.ofNat 32 3 ≠ writeAddress := by
+        simpa using avoid 3 0 (by decide) (by decide)
+      have h31 : slotAddress + BitVec.ofNat 32 3 ≠
+          writeAddress + BitVec.ofNat 32 1 := by
+        simpa using avoid 3 1 (by decide) (by decide)
+      have h32 : slotAddress + BitVec.ofNat 32 3 ≠
+          writeAddress + BitVec.ofNat 32 2 := by
+        simpa using avoid 3 2 (by decide) (by decide)
+      have h33 : slotAddress + BitVec.ofNat 32 3 ≠
+          writeAddress + BitVec.ofNat 32 3 := by
+        simpa using avoid 3 3 (by decide) (by decide)
+      simp [Memory.read32, writeMemory, writeMemoryByte, h00, h01, h02, h03,
+        h10, h11, h12, h13, h20, h21, h22, h23, h30, h31, h32, h33]
+
+theorem Memory.read32_writeMemory_dword_same_of_fits
+    (memory : Memory) (address value : Word)
+    (fits : address.toNat + 4 <= 2 ^ 32) :
+    Memory.read32 (writeMemory memory address value .dword) address = value := by
+  have memoryExact :
+      writeMemory memory address value .dword = memory.write32 address value := by
+    funext query
+    by_cases q0 : query = address
+    · subst query
+      simp [writeMemory, writeMemoryByte, Memory.write32]
+    by_cases q1 : query = address + BitVec.ofNat 32 1
+    · subst query
+      simp [writeMemory, writeMemoryByte, Memory.write32]
+    by_cases q2 : query = address + BitVec.ofNat 32 2
+    · subst query
+      simp [writeMemory, writeMemoryByte, Memory.write32]
+    by_cases q3 : query = address + BitVec.ofNat 32 3
+    · subst query
+      simp [writeMemory, writeMemoryByte, Memory.write32]
+    simp [writeMemory, writeMemoryByte, Memory.write32, q0, q1, q2, q3]
+  rw [memoryExact]
+  exact Memory.read32_write32_same_of_fits memory address value fits
+
+def RuntimeSeparation (context : OriginalDecodedStaticContext)
+    (certificate : Certificate) (state : MachineState)
+    (classification : WriteClassification) (write : Expr × Expr) : Prop :=
+  match classification with
+  | .runtimeSeparated width =>
+      WriteSpanAvoidsWord
+        (BitVec.ofNat 32 (slotAddress context certificate))
+        (write.1.eval state) width
+  | _ => True
+
 def RuntimeSeparations (context : OriginalDecodedStaticContext)
     (certificate : Certificate) (state : MachineState) :
     List WriteClassification -> List (Expr × Expr) -> Prop
   | [], [] => True
-  | .runtimeSeparated :: classifications, write :: writes =>
-      Write32AvoidsWord
-          (BitVec.ofNat 32 (slotAddress context certificate))
-          (write.1.eval state) /\
+  | classification :: classifications, write :: writes =>
+      RuntimeSeparation context certificate state classification write /\
         RuntimeSeparations context certificate state classifications writes
-  | _ :: classifications, _ :: writes =>
-      RuntimeSeparations context certificate state classifications writes
   | _, _ => False
 
-def writeAdmissible (context : OriginalDecodedStaticContext)
-    (certificate : Certificate) (allowedTargetIds : List Nat)
-    (state : MachineState) (write : Expr × Expr) : Prop :=
-  let slot := BitVec.ofNat 32 (slotAddress context certificate)
-  (write.1.eval state = slot /\
-      write.2.eval state ∈ allowedWords context allowedTargetIds) \/
-    Write32AvoidsWord slot (write.1.eval state)
+theorem RuntimeSeparations.head
+    {context : OriginalDecodedStaticContext} {certificate : Certificate}
+    {state : MachineState} {classification : WriteClassification}
+    {classifications : List WriteClassification} {write : Expr × Expr}
+    {writes : List (Expr × Expr)}
+    (runtime : RuntimeSeparations context certificate state
+      (classification :: classifications) (write :: writes)) :
+    RuntimeSeparation context certificate state classification write := by
+  simpa only [RuntimeSeparations] using runtime.1
 
-theorem WriteClassification.admissible_of_checked
+def widthWriteAdmissible (context : OriginalDecodedStaticContext)
+    (certificate : Certificate) (allowedTargetIds : List Nat)
+    (state : MachineState) (width : MemoryWidth) (write : Expr × Expr) : Prop :=
+  let slot := BitVec.ofNat 32 (slotAddress context certificate)
+  (width = .dword /\ write.1.eval state = slot /\
+      write.2.eval state ∈ allowedWords context allowedTargetIds) \/
+    WriteSpanAvoidsWord slot (write.1.eval state) width
+
+theorem WriteClassification.width_admissible_of_checked
     {context : OriginalDecodedStaticContext} {certificate : Certificate}
     {allowedTargetIds : List Nat} {classification : WriteClassification}
-    {write : Expr × Expr} {state : MachineState}
+    {width : MemoryWidth} {write : Expr × Expr} {state : MachineState}
+    (widthExact : classification.width = width)
     (checked : classification.checked context certificate allowedTargetIds write = true)
     (slotFits : (BitVec.ofNat 32 (slotAddress context certificate)).toNat + 4 <=
       2 ^ 32)
     (slotNatFits : slotAddress context certificate + 4 <= 2 ^ 32)
-    (runtime : match classification with
-      | .runtimeSeparated => Write32AvoidsWord
-          (BitVec.ofNat 32 (slotAddress context certificate))
-          (write.1.eval state)
-      | _ => True) :
-    writeAdmissible context certificate allowedTargetIds state write := by
+    (runtime : RuntimeSeparation context certificate state classification write) :
+    widthWriteAdmissible context certificate allowedTargetIds state width write := by
   cases classification with
-  | absoluteDisjoint =>
+  | absoluteDisjoint classificationWidth =>
+      simp only [WriteClassification.width] at widthExact
+      subst width
       rcases write with ⟨address, value⟩
       cases address <;> simp [WriteClassification.checked] at checked
       rename_i address
+      have widthPositive : 0 < classificationWidth.bytes := by
+        cases classificationWidth <;> decide
+      have addressBefore : address < 2 ^ 32 := by
+        omega
       right
-      apply write32AvoidsWord_of_nat_disjoint
+      apply writeSpanAvoidsWord_of_nat_disjoint
+        (BitVec.ofNat 32 (slotAddress context certificate))
+        (BitVec.ofNat 32 address) classificationWidth
       · exact slotFits
       · simp only [Expr.eval, BitVec.toNat_ofNat]
-        have addressBefore : address < 2 ^ 32 := by omega
         simpa [Nat.mod_eq_of_lt addressBefore] using checked.1
       · have slotBefore : slotAddress context certificate < 2 ^ 32 := by
           omega
-        have addressBefore : address < 2 ^ 32 := by omega
         simpa [Expr.eval, BitVec.toNat_ofNat, Nat.mod_eq_of_lt slotBefore,
-          Nat.mod_eq_of_lt addressBefore, natWordsDisjoint] using checked.2
+          Nat.mod_eq_of_lt addressBefore, natWriteSpanDisjoint] using checked.2
   | slotZero =>
+      simp only [WriteClassification.width] at widthExact
+      subst width
       rcases write with ⟨address, value⟩
       simp only [WriteClassification.checked, Bool.and_eq_true, beq_iff_eq] at checked
       rcases checked with ⟨rfl, rfl⟩
       left
       simp [allowedWords, Expr.eval]
   | slotCodeTarget targetId =>
+      simp only [WriteClassification.width] at widthExact
+      subst width
       rcases write with ⟨address, value⟩
       simp only [WriteClassification.checked, Bool.and_eq_true] at checked
       rcases checked with ⟨member, targetChecked⟩
@@ -562,117 +908,223 @@ theorem WriteClassification.admissible_of_checked
           rcases targetChecked with ⟨rfl, rfl⟩
           left
           constructor
-          · simp [Expr.eval]
+          · simp
           · simp only [Expr.eval, allowedWords, List.mem_cons]
+            constructor
+            · trivial
             right
             apply List.mem_map.mpr
             refine ⟨targetWord, ?_, rfl⟩
             apply List.mem_filterMap.mpr
             exact ⟨targetId, by simpa using member, found⟩
-  | runtimeSeparated =>
+  | runtimeSeparated runtimeWidth =>
+      simp only [WriteClassification.width] at widthExact
+      subst width
       exact Or.inr runtime
 
-theorem classifications_admissible_of_checked
+def applyWidthWrites (memory : Memory) (state : MachineState) :
+    List MemoryWidth -> List (Expr × Expr) -> Memory
+  | width :: widths, write :: writes =>
+      applyWidthWrites
+        (writeMemory memory (write.1.eval state) (write.2.eval state) width)
+        state widths writes
+  | _, _ => memory
+
+theorem apply_classified_width_writes_preserves_allowed
     (context : OriginalDecodedStaticContext) (certificate : Certificate)
     (allowedTargetIds : List Nat) (state : MachineState)
+    (memory : Memory)
     (slotFits : (BitVec.ofNat 32 (slotAddress context certificate)).toNat + 4 <=
       2 ^ 32)
     (slotNatFits : slotAddress context certificate + 4 <= 2 ^ 32) :
-    forall classifications writes,
+    forall (classifications : List WriteClassification)
+      (widths : List MemoryWidth) (writes : List (Expr × Expr)),
       classificationsChecked context certificate allowedTargetIds
-        classifications writes = true ->
+        classifications widths writes = true ->
       RuntimeSeparations context certificate state classifications writes ->
-      forall candidate, candidate ∈ writes ->
-        writeAdmissible context certificate allowedTargetIds state candidate := by
+      Memory.read32 memory
+          (BitVec.ofNat 32 (slotAddress context certificate)) ∈
+            allowedWords context allowedTargetIds ->
+      Memory.read32 (applyWidthWrites memory state widths writes)
+          (BitVec.ofNat 32 (slotAddress context certificate)) ∈
+            allowedWords context allowedTargetIds := by
   intro classifications
-  induction classifications with
+  induction classifications generalizing memory with
   | nil =>
-      intro writes checked runtime candidate member
-      cases writes <;> simp [classificationsChecked] at checked member
+      intro widths writes checked runtime prior
+      cases widths <;> cases writes <;>
+        simp [classificationsChecked, applyWidthWrites] at checked ⊢
+      exact prior
   | cons classification classifications induction =>
-      intro writes checked runtime candidate member
-      cases writes with
+      intro widths writes checked runtime prior
+      cases widths with
       | nil => simp [classificationsChecked] at checked
-      | cons head tail =>
+      | cons width widthTail =>
+        cases writes with
+        | nil => simp [classificationsChecked] at checked
+        | cons head tail =>
           simp only [classificationsChecked, Bool.and_eq_true] at checked
+          have tailChecked := checked.2
+          have widthExact : classification.width = width :=
+            of_decide_eq_true checked.1.1
+          have headRuntime :
+              RuntimeSeparation context certificate state classification head :=
+            RuntimeSeparations.head runtime
+          have headAdmissible :=
+            WriteClassification.width_admissible_of_checked
+              (classification := classification) (width := width)
+              (write := head) (state := state) widthExact checked.1.2
+              slotFits slotNatFits headRuntime
+          have nextAllowed :
+              Memory.read32
+                  (writeMemory memory (head.1.eval state) (head.2.eval state) width)
+                  (BitVec.ofNat 32 (slotAddress context certificate)) ∈
+                allowedWords context allowedTargetIds := by
+            rcases headAdmissible with ⟨widthExact, addressExact, valueAllowed⟩ |
+                avoids
+            · rw [widthExact, addressExact]
+              rw [Memory.read32_writeMemory_dword_same_of_fits _ _ _ slotFits]
+              exact valueAllowed
+            · rw [Memory.read32_writeMemory_of_avoids _ _ _ _ width avoids]
+              exact prior
           cases classification with
-          | absoluteDisjoint =>
+          | absoluteDisjoint classificationWidth =>
               simp only [RuntimeSeparations] at runtime
-              rcases List.mem_cons.mp member with same | member
-              · subst candidate
-                exact WriteClassification.admissible_of_checked checked.1
-                  slotFits slotNatFits trivial
-              · exact induction tail checked.2 runtime candidate member
+              exact induction
+                (writeMemory memory (head.1.eval state) (head.2.eval state) width)
+                widthTail tail tailChecked runtime.2 nextAllowed
           | slotZero =>
               simp only [RuntimeSeparations] at runtime
-              rcases List.mem_cons.mp member with same | member
-              · subst candidate
-                exact WriteClassification.admissible_of_checked checked.1
-                  slotFits slotNatFits trivial
-              · exact induction tail checked.2 runtime candidate member
+              exact induction
+                (writeMemory memory (head.1.eval state) (head.2.eval state) width)
+                widthTail tail tailChecked runtime.2 nextAllowed
           | slotCodeTarget targetId =>
               simp only [RuntimeSeparations] at runtime
-              rcases List.mem_cons.mp member with same | member
-              · subst candidate
-                exact WriteClassification.admissible_of_checked checked.1
-                  slotFits slotNatFits trivial
-              · exact induction tail checked.2 runtime candidate member
-          | runtimeSeparated =>
+              exact induction
+                (writeMemory memory (head.1.eval state) (head.2.eval state) width)
+                widthTail tail tailChecked runtime.2 nextAllowed
+          | runtimeSeparated classificationWidth =>
               simp only [RuntimeSeparations] at runtime
-              rcases runtime with ⟨headSeparated, tailSeparated⟩
-              rcases List.mem_cons.mp member with same | member
-              · subst candidate
-                exact WriteClassification.admissible_of_checked checked.1
-                  slotFits slotNatFits headSeparated
-              · exact induction tail checked.2 tailSeparated candidate member
+              exact induction
+                (writeMemory memory (head.1.eval state) (head.2.eval state) width)
+                widthTail tail tailChecked runtime.2 nextAllowed
 
-theorem apply_writes_preserves_allowed
+def nextBulkWriteAddress (address : Word) (direction : Bool) : Word :=
+  if direction then address - BitVec.ofNat 32 4
+  else address + BitVec.ofNat 32 4
+
+/-- Exact finite destination footprint of a decoded REP MOVSD/STOSD outcome. -/
+def BulkWritesAvoidWord (slotAddress : Word) (direction : Bool) :
+    Word -> Nat -> Prop
+  | _, 0 => True
+  | writeAddress, count + 1 =>
+      Write32AvoidsWord slotAddress writeAddress /\
+        BulkWritesAvoidWord slotAddress direction
+          (nextBulkWriteAddress writeAddress direction) count
+
+theorem Memory.read32_bulkFillDwords_of_avoids
+    (slotAddress destination value : Word) (direction : Bool) :
+    forall (count : Nat) (memory : Memory),
+      BulkWritesAvoidWord slotAddress direction destination count ->
+      Memory.read32
+          (Memory.bulkFillDwords memory destination value direction count)
+          slotAddress =
+        Memory.read32 memory slotAddress := by
+  intro count
+  induction count generalizing destination with
+  | zero =>
+      intro memory avoids
+      rfl
+  | succ count induction =>
+      intro memory avoids
+      simp only [BulkWritesAvoidWord] at avoids
+      unfold nextBulkWriteAddress at avoids
+      simp only [Memory.bulkFillDwords]
+      rw [induction _ (memory.write32 destination value) avoids.2]
+      exact Memory.read32_write32_of_avoids memory slotAddress destination value
+        avoids.1
+
+theorem Memory.read32_bulkCopyDwords_of_avoids
+    (slotAddress destination source : Word) (direction : Bool) :
+    forall (count : Nat) (memory : Memory),
+      BulkWritesAvoidWord slotAddress direction destination count ->
+      Memory.read32
+          (Memory.bulkCopyDwords memory destination source direction count)
+          slotAddress =
+        Memory.read32 memory slotAddress := by
+  intro count
+  induction count generalizing destination source with
+  | zero =>
+      intro memory avoids
+      rfl
+  | succ count induction =>
+      intro memory avoids
+      simp only [BulkWritesAvoidWord] at avoids
+      unfold nextBulkWriteAddress at avoids
+      simp only [Memory.bulkCopyDwords]
+      rw [induction _ _
+        (memory.write32 destination (Memory.read32 memory source)) avoids.2]
+      exact Memory.read32_write32_of_avoids memory slotAddress destination
+        (Memory.read32 memory source) avoids.1
+
+def OutcomeWriteSeparations (context : OriginalDecodedStaticContext)
+    (certificate : Certificate) (state : MachineState) :
+    NormalizedOutcomeExpr -> Prop
+  | .bulkCopy destination _ count direction _ |
+      .bulkFill destination _ count direction _ =>
+      BulkWritesAvoidWord
+        (BitVec.ofNat 32 (slotAddress context certificate))
+        (direction.eval state) (destination.eval state) (count.eval state).toNat
+  | _ => True
+
+def applyOutcomeWrites (memory : Memory) (state : MachineState) :
+    NormalizedOutcomeExpr -> Memory
+  | .bulkCopy destination source count direction _ =>
+      Memory.bulkCopyDwords memory (destination.eval state) (source.eval state)
+        (direction.eval state) (count.eval state).toNat
+  | .bulkFill destination value count direction _ =>
+      Memory.bulkFillDwords memory (destination.eval state) (value.eval state)
+        (direction.eval state) (count.eval state).toNat
+  | _ => memory
+
+theorem applyOutcomeWrites_preserves_word
     (context : OriginalDecodedStaticContext) (certificate : Certificate)
-    (allowedTargetIds : List Nat) (state : MachineState)
-    (memory : Memory) (writes : List (Expr × Expr))
-    (slotFits : (BitVec.ofNat 32 (slotAddress context certificate)).toNat + 4 <=
-      2 ^ 32)
-    (admissible : forall write, write ∈ writes ->
-      writeAdmissible context certificate allowedTargetIds state write)
-    (prior : Memory.read32 memory
-      (BitVec.ofNat 32 (slotAddress context certificate)) ∈
-        allowedWords context allowedTargetIds) :
-    Memory.read32 (applyConcreteWrites memory (evalNormalizedWrites state writes))
-      (BitVec.ofNat 32 (slotAddress context certificate)) ∈
-        allowedWords context allowedTargetIds := by
-  induction writes generalizing memory with
-  | nil => simpa [applyConcreteWrites, evalNormalizedWrites] using prior
-  | cons write writes induction =>
-      have head := admissible write (by simp)
-      have nextAllowed :
-          Memory.read32 (memory.write32 (write.1.eval state) (write.2.eval state))
-            (BitVec.ofNat 32 (slotAddress context certificate)) ∈
-              allowedWords context allowedTargetIds := by
-        rcases head with ⟨address, value⟩ | avoids
-        · rw [address]
-          rw [Memory.read32_write32_same_of_fits _ _ _ slotFits]
-          exact value
-        · rw [Memory.read32_write32_of_avoids _ _ _ _ avoids]
-          exact prior
-      simp only [evalNormalizedWrites, List.map_cons, applyConcreteWrites,
-        List.foldl_cons]
-      exact induction
-        (memory.write32 (write.1.eval state) (write.2.eval state))
-        (fun candidate candidateMember => admissible candidate (by
-          simp [candidateMember])) nextAllowed
+    (state : MachineState) (memory : Memory) (outcome : NormalizedOutcomeExpr)
+    (separated : OutcomeWriteSeparations context certificate state outcome) :
+    Memory.read32 (applyOutcomeWrites memory state outcome)
+        (BitVec.ofNat 32 (slotAddress context certificate)) =
+      Memory.read32 memory
+        (BitVec.ofNat 32 (slotAddress context certificate)) := by
+  cases outcome <;> try rfl
+  case bulkCopy destination source count direction continuation =>
+    exact Memory.read32_bulkCopyDwords_of_avoids
+      (BitVec.ofNat 32 (slotAddress context certificate))
+      (destination.eval state) (source.eval state) (direction.eval state)
+      (count.eval state).toNat memory separated
+  case bulkFill destination value count direction continuation =>
+    exact Memory.read32_bulkFillDwords_of_avoids
+      (BitVec.ofNat 32 (slotAddress context certificate))
+      (destination.eval state) (value.eval state) (direction.eval state)
+      (count.eval state).toNat memory separated
 
 def RegionTransition (context : OriginalDecodedStaticContext)
     (certificate : Certificate) (before after : Memory) : Prop :=
-  exists reachableTargetIds allowedTargetIds bindings targetId behavior state classifications,
+  exists (reachableTargetIds allowedTargetIds : List Nat)
+      (bindings : List RegionBinding) (targetId : Nat)
+      (behavior : NormalizedSymbolicBehavior) (inventory : DecodedWriteInventory)
+      (state : MachineState) (classifications : List WriteClassification),
     certificate.reachableTargetIds = .exact reachableTargetIds /\
     certificate.allowedTargetIds = .exact allowedTargetIds /\
     certificate.regions = .exact bindings /\
     targetId ∈ reachableTargetIds /\
-    normalizedRegionBehavior? context targetId = some behavior /\
-    regionClassifications? bindings targetId behavior = some classifications /\
+    normalizedRegionWriteInventory? context targetId = some (behavior, inventory) /\
+    regionClassifications? bindings targetId inventory = some classifications /\
     state.memory = before /\
     RuntimeSeparations context certificate state classifications behavior.writes /\
-    after = applyConcreteWrites before (evalNormalizedWrites state behavior.writes)
+    OutcomeWriteSeparations context certificate state behavior.outcome /\
+    after = applyOutcomeWrites
+      (applyWidthWrites before state inventory.scalarWidths behavior.writes)
+      state behavior.outcome
 
 theorem Certificate.transition_preserves
     {certificate : Certificate} {context : OriginalDecodedStaticContext}
@@ -681,9 +1133,9 @@ theorem Certificate.transition_preserves
     (transition : RegionTransition context certificate before after) :
     SlotValueAllowed context certificate after := by
   rcases transition with
-    ⟨reachableTargetIds, allowedTargetIds, bindings, targetId, behavior, state,
-      classifications, reachableExact, allowedExact, regionsExact, targetMember,
-      normalized, classificationsFound, stateMemory, runtime, rfl⟩
+    ⟨reachableTargetIds, allowedTargetIds, bindings, targetId, behavior, inventory,
+      state, classifications, reachableExact, allowedExact, regionsExact, targetMember,
+      normalized, classificationsFound, stateMemory, runtime, outcomeRuntime, rfl⟩
   let facts := certificate.checkedFactsOfChecked checked
   have reachableIds : facts.reachableTargetIds = reachableTargetIds := by
     rw [facts.reachableExact] at reachableExact
@@ -697,23 +1149,25 @@ theorem Certificate.transition_preserves
   subst reachableTargetIds
   subst allowedTargetIds
   subst bindings
-  have inventory := facts.regionChecked
-  unfold regionInventoryChecked at inventory
-  simp only [Bool.and_eq_true] at inventory
-  have rowsChecked := inventory.2
+  have regionChecked := facts.regionChecked
+  unfold regionInventoryChecked at regionChecked
+  simp only [Bool.and_eq_true] at regionChecked
+  have rowsChecked := regionChecked.2
   rw [List.all_eq_true] at rowsChecked
   have rowChecked := rowsChecked targetId targetMember
   simp only [normalized, classificationsFound] at rowChecked
   have classificationsOk := rowChecked
   have slotFits := initialZeroChecked_slot_fits facts.initialZero
   have slotNatFits := initialZeroChecked_slot_nat_fits facts.initialZero
-  have admissible := classifications_admissible_of_checked context certificate
-    facts.allowedTargetIds state slotFits slotNatFits classifications behavior.writes
-      classificationsOk runtime
   unfold SlotValueAllowed at prior ⊢
   rw [facts.allowedExact] at prior ⊢
-  exact apply_writes_preserves_allowed context certificate facts.allowedTargetIds
-    state before behavior.writes slotFits admissible prior
+  have scalarAllowed := apply_classified_width_writes_preserves_allowed context certificate
+    facts.allowedTargetIds state before slotFits slotNatFits classifications
+      inventory.scalarWidths behavior.writes classificationsOk runtime prior
+  rw [applyOutcomeWrites_preserves_word context certificate state
+    (applyWidthWrites before state inventory.scalarWidths behavior.writes)
+    behavior.outcome outcomeRuntime]
+  exact scalarAllowed
 
 inductive RegionTrace (context : OriginalDecodedStaticContext)
     (certificate : Certificate) : Memory -> Memory -> Prop where
@@ -743,7 +1197,7 @@ def hasSlotWriter : List RegionBinding -> Bool
           classifications.any fun classification =>
             match classification with
             | .slotZero | .slotCodeTarget _ => true
-            | _ => false
+            | .absoluteDisjoint _ | .runtimeSeparated _ => false
       || hasSlotWriter bindings
 
 theorem Certificate.no_writers_allowed_is_zero
@@ -879,6 +1333,8 @@ theorem IndirectSlotSite.target_is_finite
       | externalCall imported arguments continuation => simp [outcome] at shape
       | externalJump imported arguments => simp [outcome] at shape
       | bulkCopy destination source count direction continuation => simp [outcome] at shape
+      | bulkFill destination value count direction continuation =>
+          simp [outcome] at shape
       | checkedContinue valid continuation => simp [outcome] at shape
       | atomicCompareExchange address expected replacement continuation =>
           simp [outcome] at shape

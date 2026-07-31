@@ -132,6 +132,10 @@ _X87_FRAME_OFFSETS = {
     "input_x87": 20,
     "output_x87": 20 + _FNSAVE_IMAGE_SIZE,
 }
+_X87_REPLAY_INLINE_INSTRUCTION_OFFSET = 52
+_X87_REPLAY_INLINE_CAPTURE_OFFSET = 72
+_X87_REPLAY_INLINE_RETURN_OFFSET = 171
+_X87_REPLAY_INLINE_BODY_SIZE = 176
 
 
 @dataclass(frozen=True)
@@ -1803,6 +1807,15 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             "/* Qualified singleton x87 commands run from exact bound bytes. */",
         ])
     for replay in plan.x87_replays:
+        replay_padding = (
+            _X87_REPLAY_INLINE_CAPTURE_OFFSET
+            - _X87_REPLAY_INLINE_INSTRUCTION_OFFSET
+            - len(replay.instruction_bytes)
+        )
+        if replay_padding < 0:
+            raise StageAInputError(
+                f"x87 replay {replay.id} does not fit the fixed bridge slot"
+            )
         lines.extend([
             "",
             f"    .globl _stage_b_native_x87_bridge_{replay.id:04d}",
@@ -1812,41 +1825,56 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             "    push esi",
             "    push edi",
             "    mov eax, DWORD PTR [_stage_b_native_active_x87]",
-            "    test eax, eax",
-            f"    je _stage_b_native_x87_unavailable_{replay.id:04d}",
             f"    mov DWORD PTR [eax + {_X87_FRAME_OFFSETS['private_esp']}], esp",
             f"    frstor [eax + {_X87_FRAME_OFFSETS['input_x87']}]",
-            f"    mov ecx, DWORD PTR [eax + {_X87_FRAME_OFFSETS['input']}]",
-            f"    mov esp, DWORD PTR [ecx + {_STATE_OFFSETS['esp']}]",
-            *_restore_pushes("ecx"),
-            "    popad",
+            f"    mov eax, DWORD PTR [eax + {_X87_FRAME_OFFSETS['input']}]",
+            f"    mov ebx, DWORD PTR [eax + {_STATE_OFFSETS['ebx']}]",
+            f"    mov ecx, DWORD PTR [eax + {_STATE_OFFSETS['ecx']}]",
+            f"    mov esi, DWORD PTR [eax + {_STATE_OFFSETS['esi']}]",
+            f"    mov edi, DWORD PTR [eax + {_STATE_OFFSETS['edi']}]",
+            f"    mov ebp, DWORD PTR [eax + {_STATE_OFFSETS['ebp']}]",
+            f"    mov esp, DWORD PTR [eax + {_STATE_OFFSETS['esp']}]",
+            f"    push DWORD PTR [eax + {_STATE_OFFSETS['eflags']}]",
+            f"    push DWORD PTR [eax + {_STATE_OFFSETS['eax']}]",
+            f"    mov edx, DWORD PTR [eax + {_STATE_OFFSETS['edx']}]",
+            "    pop eax",
             "    popfd",
-            f"    jmp _stage_b_native_x87_instruction_{replay.id:04d}",
-            f"_stage_b_native_x87_unavailable_{replay.id:04d}:",
-            "    pop edi",
-            "    pop esi",
-            "    pop ebx",
-            "    pop ebp",
-            "    ret",
-            "    .section .stgbx,\"xr\"",
+            "    nop",
+            "    nop",
+            "    nop",
+            f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
+            f"!= {_X87_REPLAY_INLINE_INSTRUCTION_OFFSET}",
+            '    .error "x87 replay instruction offset changed"',
+            "    .endif",
             f"    .globl _stage_b_native_x87_instruction_{replay.id:04d}",
             f"_stage_b_native_x87_instruction_{replay.id:04d}:",
             *_x87_replay_instruction_lines(replay),
-            f"    jmp _stage_b_native_x87_capture_{replay.id:04d}",
-            "    .text",
+            *(["    nop"] * replay_padding),
+            f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
+            f"!= {_X87_REPLAY_INLINE_CAPTURE_OFFSET}",
+            '    .error "x87 replay capture offset changed"',
+            "    .endif",
             f"_stage_b_native_x87_capture_{replay.id:04d}:",
             "    pushfd",
-            "    pushad",
+            "    push eax",
             "    mov eax, DWORD PTR [_stage_b_native_active_x87]",
-            "    test eax, eax",
-            "    je _stage_b_native_halt",
             f"    fnsave [eax + {_X87_FRAME_OFFSETS['output_x87']}]",
             f"    mov edx, DWORD PTR [eax + {_X87_FRAME_OFFSETS['output']}]",
-            *_capture_pushad_registers("edx"),
-            f"    mov DWORD PTR [edx + {_STATE_OFFSETS['esp']}], ecx",
-            "    mov ecx, DWORD PTR [esp + 32]",
+            "    mov ecx, DWORD PTR [esp]",
+            f"    mov DWORD PTR [edx + {_STATE_OFFSETS['eax']}], ecx",
+            f"    setc BYTE PTR [edx + {_STATE_OFFSETS['cf']}]",
+            f"    setp BYTE PTR [edx + {_STATE_OFFSETS['pf']}]",
+            f"    setz BYTE PTR [edx + {_STATE_OFFSETS['zf']}]",
+            f"    sets BYTE PTR [edx + {_STATE_OFFSETS['sf']}]",
+            f"    seto BYTE PTR [edx + {_STATE_OFFSETS['of']}]",
+            "    mov ebx, DWORD PTR [esp + 4]",
+            f"    mov ecx, DWORD PTR [eax + {_X87_FRAME_OFFSETS['input']}]",
+            f"    mov ecx, DWORD PTR [ecx + {_STATE_OFFSETS['eflags']}]",
+            "    and ecx, 0xfffff32a",
+            "    and ebx, 0x00000cd5",
+            "    or ecx, ebx",
             f"    mov DWORD PTR [edx + {_STATE_OFFSETS['eflags']}], ecx",
-            *_capture_split_flags("edx"),
+            *(["    nop"] * 10),
             f"    mov DWORD PTR [eax + {_X87_FRAME_OFFSETS['status']}], 0",
             f"    mov esp, DWORD PTR [eax + {_X87_FRAME_OFFSETS['private_esp']}]",
             "    cld",
@@ -1854,7 +1882,20 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             "    pop esi",
             "    pop ebx",
             "    pop ebp",
+            f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
+            f"!= {_X87_REPLAY_INLINE_RETURN_OFFSET}",
+            '    .error "x87 replay return offset changed"',
+            "    .endif",
+            f"_stage_b_native_x87_return_{replay.id:04d}:",
             "    ret",
+            "    nop",
+            "    nop",
+            "    nop",
+            "    nop",
+            f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
+            f"!= {_X87_REPLAY_INLINE_BODY_SIZE}",
+            '    .error "x87 replay bridge size changed"',
+            "    .endif",
         ])
     return "\n".join(lines).rstrip() + "\n"
 
@@ -2439,14 +2480,31 @@ def _capture_split_flags(output_register: str) -> list[str]:
     return _capture_split_flags_from("esp", output_register, "ecx")
 
 
+def _capture_x87_result_flags(output_register: str) -> list[str]:
+    return _capture_split_flags_from(
+        "esp",
+        output_register,
+        "ecx",
+        fields=("cf", "pf", "zf"),
+        flags_offset=4,
+    )
+
+
 def _capture_split_flags_from(
-    stack_register: str, output_register: str, scratch_register: str
+    stack_register: str,
+    output_register: str,
+    scratch_register: str,
+    *,
+    fields: tuple[str, ...] = ("cf", "pf", "zf", "sf", "df", "of"),
+    flags_offset: int = 32,
 ) -> list[str]:
     bits = {"cf": 0, "pf": 2, "zf": 6, "sf": 7, "df": 10, "of": 11}
     lines: list[str] = []
-    for field, bit in bits.items():
+    for field in fields:
+        bit = bits[field]
         lines.extend([
-            f"    mov {scratch_register}, DWORD PTR [{stack_register} + 32]",
+            f"    mov {scratch_register}, DWORD PTR "
+            f"[{stack_register} + {flags_offset}]",
             f"    shr {scratch_register}, {bit}",
             f"    and {scratch_register}, 1",
             f"    mov DWORD PTR [{output_register} + {_STATE_OFFSETS[field]}], "

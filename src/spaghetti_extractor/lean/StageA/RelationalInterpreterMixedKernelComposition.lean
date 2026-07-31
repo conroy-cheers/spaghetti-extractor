@@ -70,6 +70,30 @@ def nativeExecutionAtRva (rva : Nat) : NativeWorldExecution -> Prop
   | .running current .. => current = rva
   | _ => False
 
+/-- The relational world extracted from the exact running candidate state
+selected by a source classifier.  There is no constructor for returned,
+terminated, faulted, or blocked states: callers must first prove that the
+candidate is running at the classified RVA. -/
+structure ExactNativeRunningWorldAtRva
+    (rva : Nat) (before : NativeWorldExecution) where
+  world : RelationalWorld
+  worldExact : nativeExecutionWorld? before = some world
+
+def exactNativeRunningWorldAtRva
+    (atRva : nativeExecutionAtRva rva before) :
+    ExactNativeRunningWorldAtRva rva before := by
+  cases before with
+  | running current undefinedSlot state calls eventIndex events world =>
+      exact ⟨world, rfl⟩
+  | returned state events world =>
+      simp [nativeExecutionAtRva] at atRva
+  | terminated events world =>
+      simp [nativeExecutionAtRva] at atRva
+  | fault cause =>
+      simp [nativeExecutionAtRva] at atRva
+  | blocked reason =>
+      simp [nativeExecutionAtRva] at atRva
+
 def nativeExecutionEvents? : NativeWorldExecution ->
     Option (List NativeExternalEvent)
   | .running _ _ _ _ _ events _ | .returned _ events _ |
@@ -296,6 +320,39 @@ structure MixedKernelSourceClassifier
       reachability candidate candidateAuthority program candidateRootRva
       originalBefore candidateBefore
 
+/-- Recurring composition may classify only runtime states.  Launch is a
+one-time prefix handled before `ChunkedRelationalBisimulation`; retaining this
+predicate on the classifier result prevents the launch arm from reappearing in
+any later chunk. -/
+def MixedKernelRelatedSourceCase.RuntimeOnly :
+    MixedKernelRelatedSourceCase originalContext originalAuthority launch
+      originalRoot reachability candidate candidateAuthority program
+      candidateRootRva originalBefore candidateBefore -> Prop
+  | .launchDispatch .. => False
+  | .semanticTransfer .. | .externalOperation .. | .externalBoundary .. |
+      .returned .. | .terminated .. | .fault .. => True
+
+/-- A source classifier whose result is checked to exclude the launch arm for
+every state admitted by the runtime invariant. -/
+structure MixedKernelRuntimeSourceClassifier
+    (originalContext : OriginalDecodedStaticContext)
+    (originalAuthority : ExactOriginalDecodedAuthority originalContext)
+    (launch : PE32ConsoleLaunchV2)
+    (originalRoot : DirectExactOriginalDecodedLaunchRoot originalContext launch)
+    (reachability : ExactOriginalDecodedReachability originalContext
+      originalAuthority launch originalRoot)
+    (candidate : ExactNativeWorldProgram)
+    (candidateAuthority : ExactNativeCandidateAuthority candidate)
+    (program : CompiledKernelProgram)
+    (candidateRootRva : Nat)
+    (invariant : MixedExecutionInvariant reachability.targetIds contract) where
+  classifier : MixedKernelSourceClassifier originalContext originalAuthority
+    launch originalRoot reachability candidate candidateAuthority program
+    candidateRootRva invariant
+  runtimeOnly : forall originalBefore candidateBefore
+      (related : invariant.holds originalBefore candidateBefore),
+    (classifier.classify originalBefore candidateBefore related).RuntimeOnly
+
 /-- All nonterminal local obligations, selected only after the closed source
 classifier has established the exact boundary shape. -/
 structure CheckedMixedKernelComponentCases
@@ -312,44 +369,67 @@ structure CheckedMixedKernelComponentCases
     (candidateRootRva : Nat)
     (program : CompiledKernelProgram)
     (abi : KernelABIRelation)
-    (dispatches : KernelDispatchRelation)
+    (dispatches : RelationalWorld -> KernelDispatchRelation)
     (invariant : MixedExecutionInvariant reachability.targetIds contract) where
-  classifier : MixedKernelSourceClassifier originalContext originalAuthority launch
-    originalRoot reachability candidate candidateAuthority program candidateRootRva invariant
-  launchChunk : forall originalBefore candidateBefore
-      (source : ExactOriginalSemanticSource originalContext originalAuthority
-        launch originalRoot reachability candidate candidateAuthority),
-    source.targetId = launch.rootTargetId ->
-    originalExecutionAtTargetId source.targetId originalBefore ->
-    nativeExecutionAtRva candidateRootRva candidateBefore ->
-    MixedKernelChunkPaths original candidate contract invariant
-      originalBefore candidateBefore
+  classifier : MixedKernelRuntimeSourceClassifier originalContext
+    originalAuthority launch originalRoot reachability candidate
+    candidateAuthority program candidateRootRva invariant
   semanticChunk : forall originalBefore candidateBefore
       (source : ExactOriginalSemanticSource originalContext originalAuthority
         launch originalRoot reachability candidate candidateAuthority)
-      (operation : KernelOperation) (entryRva : Nat),
-    originalExecutionAtTargetId source.targetId originalBefore ->
-    nativeExecutionAtRva entryRva candidateBefore ->
-    program.functionEntry? operation.role = some entryRva ->
+      (operation : KernelOperation) (entryRva : Nat)
+      (beforeRelated : invariant.holds originalBefore candidateBefore)
+      (originalAtSource :
+        originalExecutionAtTargetId source.targetId originalBefore)
+      (candidateAtEntry : nativeExecutionAtRva entryRva candidateBefore)
+      (candidateWorld : RelationalWorld)
+      (candidateWorldExact :
+        nativeExecutionWorld? candidateBefore = some candidateWorld)
+      (entryExact :
+        program.functionEntry? operation.role = some entryRva)
+      (classified :
+        classifier.classifier.classify originalBefore candidateBefore
+            beforeRelated =
+          .semanticTransfer source operation entryRva originalAtSource
+            candidateAtEntry entryExact),
     MixedKernelOperationComponentCertificate original candidate contract invariant
-      program abi dispatches candidateAuthority source.source.target.rva operation
-      entryRva originalBefore candidateBefore
+      program abi (dispatches candidateWorld) candidateAuthority
+      source.source.target.rva operation entryRva originalBefore candidateBefore
   externalOperationChunk : forall originalBefore candidateBefore
       (source : ExactOriginalSemanticSource originalContext originalAuthority
         launch originalRoot reachability candidate candidateAuthority)
-      (operation : KernelOperation) (entryRva : Nat),
-    originalExecutionAtBoundarySource source.targetId originalBefore ->
-    nativeExecutionAtRva entryRva candidateBefore ->
-    program.functionEntry? operation.role = some entryRva ->
+      (operation : KernelOperation) (entryRva : Nat)
+      (beforeRelated : invariant.holds originalBefore candidateBefore)
+      (originalAtSource :
+        originalExecutionAtBoundarySource source.targetId originalBefore)
+      (candidateAtEntry : nativeExecutionAtRva entryRva candidateBefore)
+      (candidateWorld : RelationalWorld)
+      (candidateWorldExact :
+        nativeExecutionWorld? candidateBefore = some candidateWorld)
+      (entryExact :
+        program.functionEntry? operation.role = some entryRva)
+      (classified :
+        classifier.classifier.classify originalBefore candidateBefore
+            beforeRelated =
+          .externalOperation source operation entryRva originalAtSource
+            candidateAtEntry entryExact),
     MixedKernelOperationComponentCertificate original candidate contract invariant
-      program abi dispatches candidateAuthority source.source.target.rva operation
-      entryRva originalBefore candidateBefore
+      program abi (dispatches candidateWorld) candidateAuthority
+      source.source.target.rva operation entryRva originalBefore candidateBefore
   externalBoundaryChunk : forall originalBefore candidateBefore
       (source : ExactOriginalSemanticSource originalContext originalAuthority
         launch originalRoot reachability candidate candidateAuthority)
-      (candidateRva : Nat),
-    originalExecutionAtBoundarySource source.targetId originalBefore ->
-    nativeExecutionAtRva candidateRva candidateBefore ->
+      (candidateRva : Nat)
+      (beforeRelated : invariant.holds originalBefore candidateBefore)
+      (originalAtSource :
+        originalExecutionAtBoundarySource source.targetId originalBefore)
+      (candidateAtSource :
+        nativeExecutionAtRva candidateRva candidateBefore)
+      (classified :
+        classifier.classifier.classify originalBefore candidateBefore
+            beforeRelated =
+          .externalBoundary source candidateRva originalAtSource
+            candidateAtSource),
     MixedKernelChunkPaths original candidate contract invariant
       originalBefore candidateBefore
 
@@ -437,23 +517,32 @@ def CheckedMixedKernelComponentCases.component
     (beforeRelated : invariant.holds originalBefore candidateBefore) :
     MixedWorldComponentChunkRefinement original candidate contract invariant
       originalBefore candidateBefore := by
-  cases cases.classifier.classify originalBefore candidateBefore beforeRelated with
+  have runtimeOnly := cases.classifier.runtimeOnly originalBefore candidateBefore
+    beforeRelated
+  cases classified : cases.classifier.classifier.classify originalBefore
+      candidateBefore beforeRelated with
   | launchDispatch source sourceIsRoot originalAtSource candidateAtRoot =>
-      exact (cases.launchChunk originalBefore candidateBefore source sourceIsRoot
-        originalAtSource candidateAtRoot).toComponent beforeRelated
+      rw [classified] at runtimeOnly
+      exact False.elim runtimeOnly
   | semanticTransfer source operation entryRva originalAtSource candidateAtEntry
       entryExact =>
+      let candidateRunning := exactNativeRunningWorldAtRva candidateAtEntry
       exact (cases.semanticChunk originalBefore candidateBefore source operation
-        entryRva originalAtSource candidateAtEntry entryExact).toComponent
+        entryRva beforeRelated originalAtSource candidateAtEntry
+        candidateRunning.world candidateRunning.worldExact entryExact classified).toComponent
           beforeRelated
   | externalOperation source operation entryRva originalAtSource candidateAtEntry
       entryExact =>
+      let candidateRunning := exactNativeRunningWorldAtRva candidateAtEntry
       exact (cases.externalOperationChunk originalBefore candidateBefore source
-        operation entryRva originalAtSource candidateAtEntry entryExact).toComponent
+        operation entryRva beforeRelated originalAtSource candidateAtEntry
+        candidateRunning.world candidateRunning.worldExact entryExact
+        classified).toComponent
           beforeRelated
   | externalBoundary source candidateRva originalAtSource candidateAtSource =>
       exact (cases.externalBoundaryChunk originalBefore candidateBefore source
-        candidateRva originalAtSource candidateAtSource).toComponent beforeRelated
+        candidateRva beforeRelated originalAtSource candidateAtSource
+        classified).toComponent beforeRelated
   | returned originalState candidateState originalWorld candidateWorld
       candidateEvents =>
       exact terminalReturnedComponent beforeRelated
@@ -468,25 +557,10 @@ def CheckedMixedKernelComponentCases.toMixedWorldChunkComposition
     (cases : CheckedMixedKernelComponentCases originalContext originalAuthority
       original candidate candidateAuthority contract launch originalRoot reachability
       candidateRootRva program abi dispatches invariant)
-    (candidateLaunchCalls : MachineState -> List NativeCallFrame)
-    (candidateLaunchCallsExact : forall candidateState,
-      candidateNativeLaunchCallFrames? candidate launch candidateState =
-        some (candidateLaunchCalls candidateState))
-    (rootsRelated : forall originalWorld candidateWorld originalState candidateState,
-      MixedLaunchStatesRelated originalContext candidate contract originalWorld
-          candidateWorld originalState candidateState ->
-        invariant.holds
-          (.running launch.rootTargetId originalState
-            launch.continuationTargetIds 0 originalWorld)
-          (.running candidateRootRva 0 candidateState
-            (candidateLaunchCalls candidateState) 0 [] candidateWorld)) :
-    MixedWorldChunkComposition originalContext originalAuthority original candidate
+    : MixedWorldChunkComposition originalContext originalAuthority original candidate
       candidateAuthority programBinding contract launch originalRoot reachability
       candidateRootRva candidateRoot := {
   invariant
-  candidateLaunchCalls
-  candidateLaunchCallsExact
-  rootsRelated
   component := cases.component
 }
 

@@ -7,6 +7,7 @@ invalidate static extraction, mapping, or proposal generation.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -163,6 +164,41 @@ def _manifest(
     )
 
 
+def _kernel_check_for_term(
+    out: Path,
+    term: Mapping[str, Any],
+    kernel_checks: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if kernel_checks is None:
+        return None
+    module = term.get("module")
+    if not isinstance(module, str) or not module.startswith("StageA."):
+        return None
+    module_name = module.removeprefix("StageA.")
+    source = out / "StageA" / f"{module_name}.lean"
+    row = kernel_checks.get(module)
+    if not source.is_file() or not isinstance(row, Mapping):
+        return None
+    source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+    olean_sha256 = row.get("olean_sha256")
+    if (
+        row.get("status") != "checked"
+        or row.get("source_sha256") != source_sha256
+        or row.get("term") != dict(term)
+        or not isinstance(olean_sha256, str)
+        or len(olean_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in olean_sha256)
+    ):
+        return None
+    return {
+        "module": module,
+        "olean_sha256": olean_sha256,
+        "source_sha256": source_sha256,
+        "status": "checked",
+        "term": dict(term),
+    }
+
+
 def write_mixed_original_direct_call_semantics(
     *,
     original: Path,
@@ -170,6 +206,7 @@ def write_mixed_original_direct_call_semantics(
     proposal_report: Path,
     out: Path,
     semantic_input: Path | None = None,
+    kernel_checks: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     """Emit checked-authority source adapters from a hash-bound proposal."""
 
@@ -243,6 +280,20 @@ def write_mixed_original_direct_call_semantics(
             isinstance(row, Mapping)
             and isinstance(row.get("callsite_rva"), int)
         )
+    }
+    # Chains describe the eventual fixed-point inventory. A stratified proof
+    # round emits semantics only for proposals whose entry authority is
+    # available in that round; deferred chain members remain diagnostics in
+    # the request plan and must not become conditional pseudo-contracts.
+    sites = {
+        callsite: site
+        for callsite, site in sites.items()
+        if callsite in modules_by_callsite
+    }
+    registers_by_callsite = {
+        callsite: registers
+        for callsite, registers in registers_by_callsite.items()
+        if callsite in modules_by_callsite
     }
     frame_words_by_callsite: dict[int, tuple[int, ...]] = {}
     for callsite, module_row in modules_by_callsite.items():
@@ -319,6 +370,8 @@ def write_mixed_original_direct_call_semantics(
             "source_rva": exact_site.get("source_rva"),
             "callsite_rva": callsite,
             "continuation_rva": exact_site.get("continuation_rva"),
+            "callee_target_id": exact_site.get("callee_target_id"),
+            "callee_rva": exact_site.get("callee_rva"),
             "preserved_registers": (
                 []
                 if exact_site.get("entry_kind") == "finite_origin_call"
@@ -789,6 +842,17 @@ def write_mixed_original_direct_call_semantics(
                 ),
             }
             row["remaining_semantic_premises"] = []
+        term = row.get("authorizing_lean_term")
+        if isinstance(term, Mapping) and not row["remaining_semantic_premises"]:
+            kernel_check = _kernel_check_for_term(
+                out, term, kernel_checks
+            )
+            if kernel_check is None:
+                row["remaining_semantic_premises"] = [
+                    "kernel_compile_required"
+                ]
+            else:
+                row["kernel_check"] = kernel_check
         contracts.append(row)
 
     authority_payload = {
@@ -805,6 +869,22 @@ def write_mixed_original_direct_call_semantics(
     write_json(
         out / "direct-call-authority-bindings.json",
         authority_payload,
+    )
+    write_json(
+        out / "kernel-check-requests.json",
+        {
+            "format": "stage-a-lean-kernel-check-requests-v1",
+            "requests": [
+                {"term": dict(term)}
+                for row in contracts
+                if isinstance(
+                    term := row.get("authorizing_lean_term"),
+                    Mapping,
+                )
+                and row.get("remaining_semantic_premises")
+                in ([], ["kernel_compile_required"])
+            ],
+        },
     )
     write_json(out / "module-resources.json", module_resources)
     _manifest(

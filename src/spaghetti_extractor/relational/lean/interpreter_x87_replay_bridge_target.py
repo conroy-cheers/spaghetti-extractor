@@ -39,12 +39,12 @@ X87_REPLAY_BRIDGE_DESCRIPTOR_SIZE = 36
 X87_REPLAY_BRIDGE_POINTER_OFFSETS = (16, 20, 24, 28, 32)
 X87_REPLAY_BRIDGE_FUNCTION_POINTER_OFFSET = 32
 X87_REPLAY_BRIDGE_PACK_SIZE = 8
-X87_REPLAY_BRIDGE_BODY_SIZE = 248
-X87_REPLAY_BRIDGE_CAPTURE_OFFSET = 66
-X87_REPLAY_BRIDGE_RETURN_OFFSET = 247
-X87_REPLAY_BRIDGE_ENTRY_JUMP_OFFSET = 56
+X87_REPLAY_BRIDGE_BODY_SIZE = 176
+X87_REPLAY_BRIDGE_INSTRUCTION_OFFSET = 52
+X87_REPLAY_BRIDGE_CAPTURE_OFFSET = 72
+X87_REPLAY_BRIDGE_RETURN_OFFSET = 171
 X87_REPLAY_BRIDGE_ENTRY_ACTIVE_OPERAND_OFFSET = 5
-X87_REPLAY_BRIDGE_CAPTURE_ACTIVE_OPERAND_OFFSET = 69
+X87_REPLAY_BRIDGE_CAPTURE_ACTIVE_OPERAND_OFFSET = 75
 
 _BUILD_MANIFEST_FORMAT = "stage-b-interpreter-native-build-v1"
 _ENGINE_PLAN_FORMAT = "stage-b-native-engine-plan-v1"
@@ -1114,20 +1114,39 @@ def _validate_bridge_frame_mapping(
 
     exact_slices = (
         (0, bytes.fromhex("55535657a1")),
-        (9, bytes.fromhex("85c07430")),
-        (13, bytes.fromhex("89600c")),
-        (16, bytes.fromhex("dd6014")),
-        (19, bytes.fromhex("8b4804")),
-        (22, bytes.fromhex("8b611c")),
-        (54, bytes.fromhex("619d")),
-        (61, bytes.fromhex("5f5e5b5dc3")),
-        (66, bytes.fromhex("9c60a1")),
-        (73, bytes.fromhex("85c00f84")),
-        (81, bytes.fromhex("ddb080000000")),
-        (87, bytes.fromhex("8b5008")),
-        (232, bytes.fromhex("c7401000000000")),
-        (239, bytes.fromhex("8b600c")),
-        (242, bytes.fromhex("fc5f5e5b5dc3")),
+        (9, bytes.fromhex("89600c")),
+        (12, bytes.fromhex("dd6014")),
+        (15, bytes.fromhex("8b4004")),
+        (18, bytes.fromhex("8b5804")),
+        (21, bytes.fromhex("8b4808")),
+        (24, bytes.fromhex("8b7010")),
+        (27, bytes.fromhex("8b7814")),
+        (30, bytes.fromhex("8b6818")),
+        (33, bytes.fromhex("8b601c")),
+        (36, bytes.fromhex("ffb0f0000000")),
+        (42, bytes.fromhex("ff30")),
+        (44, bytes.fromhex("8b500c")),
+        (47, bytes.fromhex("589d909090")),
+        (72, bytes.fromhex("9c50a1")),
+        (79, bytes.fromhex("ddb080000000")),
+        (85, bytes.fromhex("8b5008")),
+        (88, bytes.fromhex("8b0c24890a")),
+        (93, bytes.fromhex("0f924220")),
+        (97, bytes.fromhex("0f9a4230")),
+        (101, bytes.fromhex("0f944224")),
+        (105, bytes.fromhex("0f984228")),
+        (109, bytes.fromhex("0f90422c")),
+        (113, bytes.fromhex("8b5c2404")),
+        (117, bytes.fromhex("8b4804")),
+        (120, bytes.fromhex("8b89f0000000")),
+        (126, bytes.fromhex("81e12af3ffff")),
+        (132, bytes.fromhex("81e3d50c0000")),
+        (138, bytes.fromhex("09d9")),
+        (140, bytes.fromhex("898af0000000")),
+        (146, bytes.fromhex("90909090909090909090")),
+        (156, bytes.fromhex("c7401000000000")),
+        (163, bytes.fromhex("8b600c")),
+        (166, bytes.fromhex("fc5f5e5b5dc390909090")),
     )
     for offset, expected in exact_slices:
         if body[offset : offset + len(expected)] != expected:
@@ -1170,23 +1189,20 @@ def _validate_bridge_frame_mapping(
                 rva=operand_rva,
             )
 
-    if body[X87_REPLAY_BRIDGE_ENTRY_JUMP_OFFSET] != 0xE9:
-        _fail(
-            "x87_bridge_instruction_path_unresolved",
-            f"x87 bridge {descriptor.id} has no direct instruction-path jump",
-            rva=entry + X87_REPLAY_BRIDGE_ENTRY_JUMP_OFFSET,
-        )
-    instruction_rva = _rel32_target(
-        entry + X87_REPLAY_BRIDGE_ENTRY_JUMP_OFFSET,
-        body[X87_REPLAY_BRIDGE_ENTRY_JUMP_OFFSET + 1 :
-             X87_REPLAY_BRIDGE_ENTRY_JUMP_OFFSET + 5],
-    )
+    instruction_rva = entry + X87_REPLAY_BRIDGE_INSTRUCTION_OFFSET
     capture_rva = entry + X87_REPLAY_BRIDGE_CAPTURE_OFFSET
     return_rva = entry + X87_REPLAY_BRIDGE_RETURN_OFFSET
+    instruction_size = len(descriptor.instruction_bytes)
+    if instruction_rva + instruction_size > capture_rva:
+        _fail(
+            "x87_instruction_path_overlaps_capture",
+            f"x87 instruction path {descriptor.id} overlaps its capture path",
+            rva=instruction_rva,
+        )
     instruction_path = _immutable_bytes(
         binary,
         instruction_rva,
-        len(descriptor.instruction_bytes) + 5,
+        instruction_size,
         f"x87 instruction path {descriptor.id}",
     )
     instruction_section = _section_for_range(
@@ -1201,21 +1217,18 @@ def _validate_bridge_frame_mapping(
             f"x87 instruction path {descriptor.id} is not executable",
             rva=instruction_rva,
         )
-    instruction_size = len(descriptor.instruction_bytes)
-    if (
-        instruction_path[:instruction_size] != descriptor.instruction_bytes
-        or instruction_path[instruction_size] != 0xE9
-        or _rel32_target(
-            instruction_rva + instruction_size,
-            instruction_path[instruction_size + 1 : instruction_size + 5],
-        )
-        != capture_rva
+    padding = body[
+        X87_REPLAY_BRIDGE_INSTRUCTION_OFFSET + instruction_size :
+        X87_REPLAY_BRIDGE_CAPTURE_OFFSET
+    ]
+    if instruction_path != descriptor.instruction_bytes or padding != (
+        b"\x90" * len(padding)
     ):
         _fail(
             "x87_instruction_path_mapping_unproved",
             (
-                f"x87 instruction path {descriptor.id} does not execute the "
-                "descriptor bytes and return to its checked capture path"
+                f"x87 instruction path {descriptor.id} is not the exact "
+                "descriptor bytes followed by checked NOP padding"
             ),
             rva=instruction_rva,
         )

@@ -131,28 +131,67 @@ RELATIONAL_ACCEPTANCE_THEOREM = (
 RELATIONAL_LINKED_ACCEPTANCE_THEOREM = (
     "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentLinked"
 )
+RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_THEOREM = (
+    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentMixedChunked"
+)
+RELATIONAL_LINKED_ACCEPTANCE_PROFILE = "linked-raw-pe32"
+RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_PROFILE = (
+    "mixed-native-pe32-chunked-closed"
+)
+RELATIONAL_MIXED_CHUNKED_PROFILE_TERM = (
+    "StageA.GeneratedRelational.candidatePE32CanonicalMixedRelationFamily"
+)
+RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_PROPOSITION = (
+    "StageA.Relational.InterpreterMixedProfile."
+    "CanonicalMixedWorldProgramsChunkObservationallyEquivalentFamily"
+)
+RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_TYPE = (
+    f"{RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_PROPOSITION} "
+    f"{RELATIONAL_MIXED_CHUNKED_PROFILE_TERM}"
+)
 RELATIONAL_FINAL_ACCEPTANCE_THEOREM = RELATIONAL_LINKED_ACCEPTANCE_THEOREM
 RELATIONAL_ACCEPTANCE_THEOREM_INVENTORY = {
     RELATIONAL_ACCEPTANCE_THEOREM: {
         "proposition": "StageA.Relational.PE32RawProgramsObservationallyEquivalent",
         "certificate": "WholeProgramCertificate",
+        "profile": "ordinary-raw-pe32",
+        "authoritative": False,
     },
     RELATIONAL_LINKED_ACCEPTANCE_THEOREM: {
         "proposition": (
             "StageA.Relational.PE32RawProgramsLinkedObservationallyEquivalent"
         ),
         "certificate": "LinkedWholeProgramCertificate",
+        "profile": RELATIONAL_LINKED_ACCEPTANCE_PROFILE,
+        "authoritative": True,
+    },
+    RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_THEOREM: {
+        "proposition": RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_PROPOSITION,
+        "certificate": "CanonicalMixedWorldAcceptanceCertificate",
+        "profile": RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_PROFILE,
+        "canonical_type": RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_TYPE,
+        "authoritative": True,
     },
 }
 RELATIONAL_ACCEPTANCE_THEOREMS = frozenset(
     RELATIONAL_ACCEPTANCE_THEOREM_INVENTORY
 )
+RELATIONAL_AUTHORITATIVE_ACCEPTANCE_THEOREMS = frozenset(
+    theorem
+    for theorem, metadata in RELATIONAL_ACCEPTANCE_THEOREM_INVENTORY.items()
+    if metadata["authoritative"] is True
+)
 
 
 def choose_relational_acceptance_theorem(
-    *, ordinary_ready: bool, linked_ready: bool
+    *,
+    ordinary_ready: bool,
+    linked_ready: bool,
+    mixed_chunked_ready: bool = False,
 ) -> str | None:
-    """Select the linked concrete-EIP theorem that alone may authorize pass."""
+    """Select an exact whole-program theorem authorized for its proof profile."""
+    if mixed_chunked_ready:
+        return RELATIONAL_MIXED_CHUNKED_ACCEPTANCE_THEOREM
     if linked_ready:
         return RELATIONAL_FINAL_ACCEPTANCE_THEOREM
     return None
@@ -161,13 +200,26 @@ def choose_relational_acceptance_theorem(
 def selected_relational_acceptance_theorem(
     acceptance: Mapping[str, Any],
 ) -> str | None:
-    """Validate and return the sole theorem authorized by an acceptance artifact."""
+    """Validate and return the exact theorem authorized by an acceptance artifact."""
     status = acceptance.get("status")
     required = acceptance.get("required_theorem")
     theorem = acceptance.get("theorem")
-    if required != RELATIONAL_FINAL_ACCEPTANCE_THEOREM:
+    if (
+        not isinstance(required, str)
+        or required not in RELATIONAL_AUTHORITATIVE_ACCEPTANCE_THEOREMS
+    ):
+        raise SchemaError("whole-program acceptance requires an authoritative theorem")
+    metadata = RELATIONAL_ACCEPTANCE_THEOREM_INVENTORY[required]
+    expected_profile = metadata["profile"]
+    submitted_profile = acceptance.get("authority_profile")
+    if (
+        submitted_profile is None
+        and required == RELATIONAL_LINKED_ACCEPTANCE_THEOREM
+    ):
+        submitted_profile = RELATIONAL_LINKED_ACCEPTANCE_PROFILE
+    if submitted_profile != expected_profile:
         raise SchemaError(
-            "whole-program acceptance requires the linked final theorem"
+            "whole-program acceptance authority profile does not match its theorem"
         )
     if status == "incomplete":
         if theorem is not None:
@@ -181,15 +233,27 @@ def selected_relational_acceptance_theorem(
         raise SchemaError(
             "ready whole-program acceptance theorem does not match its requirement"
         )
-    linked = acceptance.get("linked_acceptance")
-    if (
-        not isinstance(linked, Mapping)
-        or linked.get("status") != "ready"
-        or linked.get("theorem") != theorem
-    ):
-        raise SchemaError(
-            "linked whole-program acceptance omits its checked linked authority"
-        )
+    if required == RELATIONAL_LINKED_ACCEPTANCE_THEOREM:
+        linked = acceptance.get("linked_acceptance")
+        if (
+            not isinstance(linked, Mapping)
+            or linked.get("status") != "ready"
+            or linked.get("theorem") != theorem
+        ):
+            raise SchemaError(
+                "linked whole-program acceptance omits its checked linked authority"
+            )
+    else:
+        mixed = acceptance.get("mixed_chunked_acceptance")
+        if (
+            not isinstance(mixed, Mapping)
+            or mixed.get("status") != "ready"
+            or mixed.get("theorem") != theorem
+            or mixed.get("profile") != expected_profile
+        ):
+            raise SchemaError(
+                "mixed whole-program acceptance omits its checked mixed authority"
+            )
     return str(theorem)
 
 
@@ -723,15 +787,13 @@ class StageAInterfaceManifest:
         supported_theorems = acceptance.get("supported_theorems")
         if not isinstance(supported_theorems, list) or any(
             not isinstance(row, Mapping)
+            or not isinstance(row.get("theorem"), str)
             or row.get("theorem") not in RELATIONAL_ACCEPTANCE_THEOREMS
-            or row.get("proposition")
-                != RELATIONAL_ACCEPTANCE_THEOREM_INVENTORY[row["theorem"]][
-                    "proposition"
-                ]
-            or row.get("certificate")
-                != RELATIONAL_ACCEPTANCE_THEOREM_INVENTORY[row["theorem"]][
-                    "certificate"
-                ]
+            or dict(row)
+                != {
+                    "theorem": row["theorem"],
+                    **RELATIONAL_ACCEPTANCE_THEOREM_INVENTORY[row["theorem"]],
+                }
             for row in supported_theorems
         ):
             raise SchemaError("interface manifest has an invalid acceptance theorem inventory")

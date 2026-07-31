@@ -20,10 +20,13 @@ if "tests" not in sys.modules:
 from tests.test_stage_b_interpreter_native_build import _Packages
 
 from spaghetti_extractor.relational.lean.interpreter_kernel_data import (
+    INTERPRETER_KERNEL_DATA_ACTION_CURSOR_BUNDLE,
+    INTERPRETER_KERNEL_DATA_ACTION_CURSOR_PACK_PREFIX,
     INTERPRETER_KERNEL_DATA_AUTHORITY,
     INTERPRETER_KERNEL_DATA_AUTHORITY_PACK_PREFIX,
     INTERPRETER_KERNEL_DATA_BASE,
     INTERPRETER_KERNEL_DATA_BUNDLE,
+    INTERPRETER_KERNEL_DATA_BYTE_CHUNK_SIZE,
     INTERPRETER_KERNEL_DATA_BYTE_PACK_PREFIX,
     INTERPRETER_KERNEL_DATA_BYTE_PACK_SIZE,
     INTERPRETER_KERNEL_DATA_CANDIDATE_AUTHORITY,
@@ -31,9 +34,11 @@ from spaghetti_extractor.relational.lean.interpreter_kernel_data import (
     INTERPRETER_KERNEL_DATA_CERTIFICATE_PACK_SIZE,
     INTERPRETER_KERNEL_DATA_FORMAT,
     INTERPRETER_KERNEL_DATA_LOCAL_CONTEXT,
+    INTERPRETER_KERNEL_DATA_NATIVE_PROJECTION_PACK_PREFIX,
     INTERPRETER_KERNEL_DATA_RELOCATION_BUNDLE,
     INTERPRETER_KERNEL_DATA_RELOCATION_CHAIN_PACK_SIZE,
     INTERPRETER_KERNEL_DATA_RELOCATION_PACK_SIZE,
+    INTERPRETER_KERNEL_DATA_SEMANTIC_RECORD_BUNDLE,
     INTERPRETER_KERNEL_DATA_SHARD_FACADE_PREFIX,
     InterpreterKernelDataGenerationError,
     generate_interpreter_kernel_data_bundle,
@@ -49,6 +54,7 @@ class StageARelationalInterpreterKernelDataArchitectureTests(unittest.TestCase):
     def test_default_byte_pack_count_keeps_pe_literal_leaves_bounded(self) -> None:
         candidate_size = 10 * 1024 * 1024
 
+        self.assertEqual(INTERPRETER_KERNEL_DATA_BYTE_CHUNK_SIZE, 1024)
         self.assertEqual(
             (candidate_size + INTERPRETER_KERNEL_DATA_BYTE_PACK_SIZE - 1)
             // INTERPRETER_KERNEL_DATA_BYTE_PACK_SIZE,
@@ -132,7 +138,12 @@ class StageARelationalInterpreterKernelDataGenerationTests(unittest.TestCase):
         roles = [row["role"] for row in first_inventory.modules]
         self.assertEqual(roles.count("transfer-certificate-pack"), 1)
         self.assertEqual(roles.count("candidate-data-authority-pack"), 1)
+        self.assertEqual(
+            roles.count("candidate-data-native-projection-pack"), 1
+        )
         self.assertEqual(roles.count("candidate-data-shard-facade"), 1)
+        self.assertEqual(roles.count("checked-semantic-record-pack"), 1)
+        self.assertEqual(roles.count("checked-semantic-record-bundle"), 1)
         self.assertNotIn("pointer-relocation-field", roles)
         self.assertNotIn("transfer-descriptor", roles)
         self.assertNotIn("transfer-component", roles)
@@ -148,6 +159,21 @@ class StageARelationalInterpreterKernelDataGenerationTests(unittest.TestCase):
         self.assertIn("RelationalPEBytePacks", standalone)
         self.assertEqual(first_inventory.standalone_module_count, len(standalone))
         self.assertLess(len(standalone), 100)
+        build_packs = json.loads(
+            (first / "module-build-packs.json").read_text()
+        )
+        self.assertEqual(
+            build_packs["format"], "stage-a-lean-build-packs-v1"
+        )
+        self.assertEqual(set(build_packs["modules"]), set(standalone))
+        self.assertEqual(
+            sorted(
+                module
+                for members in build_packs["packs"].values()
+                for module in members
+            ),
+            sorted(standalone),
+        )
 
         byte_pack_names = [
             name
@@ -244,7 +270,11 @@ class StageARelationalInterpreterKernelDataGenerationTests(unittest.TestCase):
         certificate_row = rows[certificate_name]
         certificate = (first / f"StageA/{certificate_name}.lean").read_text()
         self.assertEqual(
-            certificate_row["imports"], [INTERPRETER_KERNEL_DATA_LOCAL_CONTEXT]
+            certificate_row["imports"],
+            [
+                INTERPRETER_KERNEL_DATA_LOCAL_CONTEXT,
+                f"{INTERPRETER_KERNEL_DATA_BYTE_PACK_PREFIX}0000",
+            ],
         )
         self.assertEqual(certificate_row["transfer_start"], 0)
         self.assertEqual(certificate_row["transfer_count"], 1)
@@ -363,10 +393,33 @@ class StageARelationalInterpreterKernelDataGenerationTests(unittest.TestCase):
             authority_pack_row["source_rva_count"],
             authority_pack_row["transfer_count"],
         )
-        self.assertIn("generatedInterpreterKernelCandidateBytePackCatalog", authority_pack)
-        self.assertIn("ImmutableRangeBindingPlan", authority_pack)
-        self.assertIn("immutableRangeBindingsChecked", authority_pack)
-        self.assertNotIn("PEBytePackSliceChain", authority_pack)
+        self.assertNotIn(
+            "generatedInterpreterKernelCandidateBytePackCatalog", authority_pack
+        )
+        self.assertNotIn("ImmutableRangeBindingPlan", authority_pack)
+        self.assertNotIn("immutableRangeBindingsChecked", authority_pack)
+        self.assertIn("PEBytePackSliceChain", authority_pack)
+        self.assertIn("RawSlice0000Exact", certificate)
+        self.assertIn("RawSlice0000ChunkLocated", certificate)
+        self.assertIn("ByteTreePackAt", certificate)
+        self.assertIn("ByteTree.readBytes_leaf_eq_drop_take", certificate)
+        self.assertNotRegex(
+            certificate,
+            r"\.readBytes \d+ \d+ =\s*some \S+ := by\s*decide \+kernel",
+        )
+        self.assertIn("AuthoritySlice0000Read", authority_pack)
+        self.assertIn("ImmutableRangeMetadataCertificate", authority_pack)
+        self.assertIn("MetadataChecked", authority_pack)
+        self.assertIn("MetadataBatchChecked", authority_pack)
+        self.assertIn(
+            "ImmutableRangeMetadataBatchCertificate", authority_pack
+        )
+        self.assertNotRegex(
+            authority_pack,
+            r"theorem \S+AuthorityMetadataChecked[\s\S]{0,400}"
+            r"decide \+kernel",
+        )
+        self.assertNotIn("immutableRvaBytes_eq_slices", authority_pack)
         self.assertIn("generatedInterpreterKernelCandidateDataLayoutExact", authority_pack)
         self.assertIn(
             "generatedInterpreterKernelRelocationIndexCertificate", authority_pack
@@ -376,6 +429,52 @@ class StageARelationalInterpreterKernelDataGenerationTests(unittest.TestCase):
             "ProgramTableShardMetadataCertificate", authority_pack
         )
         self.assertIn("SourceRvasExact", authority_pack)
+        self.assertNotIn("SemanticRecordsChecked", authority_pack)
+
+        native_projection_name = (
+            f"{INTERPRETER_KERNEL_DATA_NATIVE_PROJECTION_PACK_PREFIX}0000"
+        )
+        native_projection_row = rows[native_projection_name]
+        native_projection = (
+            first / f"StageA/{native_projection_name}.lean"
+        ).read_text()
+        self.assertEqual(
+            native_projection_row["imports"],
+            [
+                "RelationalInterpreterKernelProgramTableProjection",
+                authority_pack_name,
+            ],
+        )
+        self.assertEqual(
+            native_projection_row["role"],
+            "candidate-data-native-projection-pack",
+        )
+        self.assertEqual(native_projection_row["transfer_count"], 1)
+        self.assertEqual(native_projection_row["boolean_certificate_count"], 1)
+        self.assertIn("NativeProjectionPack0000Checked", native_projection)
+        self.assertIn("transferActionsRangesChecked", native_projection)
+        self.assertIn("NativeTransferActionsChecked", native_projection)
+        self.assertIn(
+            "LoadedTransferActionsAt.of_ranges_checked", native_projection
+        )
+        self.assertIn("NativeDescriptorRangeExact", native_projection)
+        self.assertIn("NativeActionRangeExact", native_projection)
+        self.assertNotIn("transferActionsLoadedChecked", native_projection)
+        vertical_pack = build_packs["packs"][
+            build_packs["modules"][native_projection_name]
+        ]
+        self.assertEqual(vertical_pack, [native_projection_name])
+        self.assertNotEqual(
+            build_packs["modules"][native_projection_name],
+            build_packs["modules"][authority_pack_name],
+        )
+        authority_vertical_pack = build_packs["packs"][
+            build_packs["modules"][authority_pack_name]
+        ]
+        self.assertLess(
+            authority_vertical_pack.index(certificate_name),
+            authority_vertical_pack.index(authority_pack_name),
+        )
 
         resources = json.loads((first / "module-resources.json").read_text())
         self.assertEqual(set(resources), set(standalone))
@@ -429,7 +528,10 @@ class StageARelationalInterpreterKernelDataGenerationTests(unittest.TestCase):
         certificate_name = f"{INTERPRETER_KERNEL_DATA_CERTIFICATE_PACK_PREFIX}0000"
         self.assertEqual(
             original_rows[certificate_name]["imports"],
-            [INTERPRETER_KERNEL_DATA_LOCAL_CONTEXT],
+            [
+                INTERPRETER_KERNEL_DATA_LOCAL_CONTEXT,
+                f"{INTERPRETER_KERNEL_DATA_BYTE_PACK_PREFIX}0000",
+            ],
         )
         certificate = (
             self.root / "original" / f"StageA/{certificate_name}.lean"
@@ -437,6 +539,38 @@ class StageARelationalInterpreterKernelDataGenerationTests(unittest.TestCase):
         self.assertIn("Entry0000ByteRange0000", certificate)
         self.assertIn("Entry0000WordNodesDecoded", certificate)
         self.assertNotIn("ByteBindingsChecked", certificate)
+        semantic_rows = [
+            row
+            for row in original.modules
+            if row["role"] == "checked-semantic-record-pack"
+        ]
+        self.assertEqual(len(semantic_rows), 1)
+        self.assertEqual(semantic_rows[0]["semantic_record_count"], 1)
+        semantic_source = (
+            self.root
+            / "original"
+            / f"StageA/{semantic_rows[0]['name']}.lean"
+        ).read_text()
+        self.assertIn("checkedSemanticRecordOfShardMember", semantic_source)
+        self.assertIn("Entry0000Checked", semantic_source)
+        self.assertNotIn("ShardChecked", semantic_source)
+        self.assertNotIn("decodeTransferAt", semantic_source)
+        self.assertNotIn("lookupProgramRecord", semantic_source)
+        action_cursor_rows = [
+            row
+            for row in original.modules
+            if row["role"] == "checked-action-cursor-pack"
+        ]
+        self.assertEqual(len(action_cursor_rows), 1)
+        self.assertEqual(action_cursor_rows[0]["action_cursor_count"], 1)
+        action_cursor_source = (
+            self.root
+            / "original"
+            / f"StageA/{action_cursor_rows[0]['name']}.lean"
+        ).read_text()
+        self.assertIn("CheckedLoadedSemanticTransfer", action_cursor_source)
+        self.assertIn("recordExact := rfl", action_cursor_source)
+        self.assertIn("LoadedTransferActions", action_cursor_source)
 
     def test_packed_authority_and_bundle_compile(self) -> None:
         destination = self.root / "compiled-bundle"
@@ -444,6 +578,38 @@ class StageARelationalInterpreterKernelDataGenerationTests(unittest.TestCase):
 
         result = _run_lean_relational(
             destination, bundle=INTERPRETER_KERNEL_DATA_BUNDLE
+        )
+
+        self.assertEqual(result["status"], "checked", result)
+
+    def test_checked_semantic_record_bundle_compiles(self) -> None:
+        destination = self.root / "compiled-semantic-record-bundle"
+        self._generate(destination)
+
+        result = _run_lean_relational(
+            destination, bundle=INTERPRETER_KERNEL_DATA_SEMANTIC_RECORD_BUNDLE
+        )
+
+        self.assertEqual(result["status"], "checked", result)
+
+    def test_native_projection_pack_compiles(self) -> None:
+        destination = self.root / "compiled-native-projection"
+        self._generate(destination)
+
+        result = _run_lean_relational(
+            destination,
+            bundle=f"{INTERPRETER_KERNEL_DATA_NATIVE_PROJECTION_PACK_PREFIX}0000",
+        )
+
+        self.assertEqual(result["status"], "checked", result)
+
+    def test_checked_action_cursor_bundle_compiles(self) -> None:
+        destination = self.root / "compiled-action-cursor-bundle"
+        self._generate(destination)
+
+        result = _run_lean_relational(
+            destination,
+            bundle=INTERPRETER_KERNEL_DATA_ACTION_CURSOR_BUNDLE,
         )
 
         self.assertEqual(result["status"], "checked", result)
@@ -465,9 +631,11 @@ class StageARelationalInterpreterKernelDataGenerationTests(unittest.TestCase):
         certificate_name = f"{INTERPRETER_KERNEL_DATA_CERTIFICATE_PACK_PREFIX}0000"
         certificate_path = destination / f"StageA/{certificate_name}.lean"
         source = certificate_path.read_text()
-        marker = "bytes := [1, 0, 0, 0"
+        marker = "Bytes :=\n  [1, 0, 0, 0"
         self.assertIn(marker, source)
-        certificate_path.write_text(source.replace(marker, "bytes := [2, 0, 0, 0", 1))
+        certificate_path.write_text(
+            source.replace(marker, "Bytes :=\n  [2, 0, 0, 0", 1)
+        )
 
         result = _run_lean_relational(
             destination, bundle=INTERPRETER_KERNEL_DATA_BUNDLE

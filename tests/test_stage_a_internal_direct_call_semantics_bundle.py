@@ -13,6 +13,78 @@ from spaghetti_extractor.relational.lean.internal_direct_call_semantics_bundle i
 
 
 class StageAInternalDirectCallSemanticsBundleTests(unittest.TestCase):
+    def _kernel_checks(
+        self,
+        out: Path,
+        report: dict,
+    ) -> dict[str, dict]:
+        term = report["contracts"][0]["authorizing_lean_term"]
+        source = (
+            out
+            / "StageA"
+            / f"{term['module'].removeprefix('StageA.')}.lean"
+        )
+        return {
+            term["module"]: {
+                "status": "checked",
+                "source_sha256": sha256(source.read_bytes()).hexdigest(),
+                "olean_sha256": "a" * 64,
+                "term": term,
+            }
+        }
+
+    def test_deferred_chain_call_without_proposal_emits_no_contract(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            state_machine = root / "state-machine.jsonl"
+            proposal = root / "proposal.json"
+            out = root / "out"
+            original.write_bytes(b"test-pe")
+            state_machine.write_text("{}\n", encoding="utf-8")
+            proposal.write_text(json.dumps({
+                "format": (
+                    "stage-a-mixed-original-direct-call-proposals-v1"
+                ),
+                "inputs": {
+                    "original_sha256": sha256(
+                        original.read_bytes()
+                    ).hexdigest(),
+                    "state_machine_sha256": sha256(
+                        state_machine.read_bytes()
+                    ).hexdigest(),
+                },
+                "proposal_modules": [],
+                "request_plan": {
+                    "chains": [{
+                        "register": "ebx",
+                        "required_internal_calls": [],
+                        "required_finite_origin_calls": [{
+                            "callsite_rva": 0x18DB,
+                            "source_rva": 0x18D4,
+                            "continuation_rva": 0x18DD,
+                        }],
+                    }],
+                    "frontiers": [{
+                        "reason_code": (
+                            "finite_origin_entry_deferred_until_checked"
+                        ),
+                        "callsite_rva": 0x18DB,
+                    }],
+                },
+            }), encoding="utf-8")
+
+            report = write_mixed_original_direct_call_semantics(
+                original=original,
+                state_machine=state_machine,
+                proposal_report=proposal,
+                out=out,
+            )
+
+            self.assertEqual(report["contracts"], [])
+
     def test_frame_only_request_emits_named_checked_authority(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -67,11 +139,37 @@ class StageAInternalDirectCallSemanticsBundleTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
+            generated = write_mixed_original_direct_call_semantics(
+                original=original,
+                state_machine=state_machine,
+                proposal_report=proposal,
+                out=out,
+            )
+            self.assertEqual(
+                generated["contracts"][0]["remaining_semantic_premises"],
+                ["kernel_compile_required"],
+            )
+            stale_checks = self._kernel_checks(out, generated)
+            stale_checks[
+                generated["contracts"][0]["authorizing_lean_term"]["module"]
+            ]["source_sha256"] = "f" * 64
+            stale = write_mixed_original_direct_call_semantics(
+                original=original,
+                state_machine=state_machine,
+                proposal_report=proposal,
+                out=out,
+                kernel_checks=stale_checks,
+            )
+            self.assertEqual(
+                stale["contracts"][0]["remaining_semantic_premises"],
+                ["kernel_compile_required"],
+            )
             report = write_mixed_original_direct_call_semantics(
                 original=original,
                 state_machine=state_machine,
                 proposal_report=proposal,
                 out=out,
+                kernel_checks=self._kernel_checks(out, generated),
             )
 
             self.assertEqual(report["format"], (
@@ -193,11 +291,22 @@ class StageAInternalDirectCallSemanticsBundleTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
+            generated = write_mixed_original_direct_call_semantics(
+                original=original,
+                state_machine=state_machine,
+                proposal_report=proposal,
+                out=out,
+            )
+            self.assertEqual(
+                generated["contracts"][0]["remaining_semantic_premises"],
+                ["kernel_compile_required"],
+            )
             report = write_mixed_original_direct_call_semantics(
                 original=original,
                 state_machine=state_machine,
                 proposal_report=proposal,
                 out=out,
+                kernel_checks=self._kernel_checks(out, generated),
             )
 
             self.assertEqual(len(report["contracts"]), 1)
@@ -245,6 +354,11 @@ class StageAInternalDirectCallSemanticsBundleTests(unittest.TestCase):
             self.assertIn(
                 "generatedCheckedFiniteOriginCall"
                 "CallerFrameWordControlContract",
+                authority_source,
+            )
+            self.assertIn(
+                "requestedWords =\n"
+                "        generatedRequestedCallerFrameWords",
                 authority_source,
             )
             self.assertNotIn("sorry", authority_source)

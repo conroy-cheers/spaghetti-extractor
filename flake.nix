@@ -267,13 +267,83 @@
           ];
           relationalInterpreterNativeKernelModules = relationalLeanModuleClosure relationalInterpreterNativeKernelRoots;
           relationalProgramLookupNativeKernelRoots = [
-            "RelationalInterpreterKernelLookupNative"
+            "RelationalInterpreterKernelProgramLookupFrameExecutor"
           ];
           relationalProgramLookupNativeKernelModules = relationalLeanModuleClosure relationalProgramLookupNativeKernelRoots;
           relationalProgramLookupOperationKernelRoots = [
             "RelationalInterpreterKernelProgramLookupOperation"
           ];
           relationalProgramLookupOperationKernelModules = relationalLeanModuleClosure relationalProgramLookupOperationKernelRoots;
+          relationalRunIterationKernelRoots = [
+            "RelationalInterpreterKernelRunIteration"
+          ];
+          relationalRunIterationKernelModules =
+            relationalLeanModuleClosure relationalRunIterationKernelRoots;
+          relationalOperationStateRouteKernelRoots = [
+            "RelationalInterpreterKernelOperationStateRouteChecker"
+          ];
+          relationalOperationStateRouteKernelModules =
+            relationalLeanModuleClosure relationalOperationStateRouteKernelRoots;
+          relationalOperationRankedStateRouteKernelRoots = [
+            "RelationalInterpreterKernelOperationRankedStateRoute"
+          ];
+          relationalOperationRankedStateRouteKernelModules =
+            relationalLeanModuleClosure
+              relationalOperationRankedStateRouteKernelRoots;
+          relationalOperationRouteInvariantKernelRoots = [
+            "RelationalInterpreterKernelOperationRouteInvariant"
+          ];
+          relationalOperationRouteInvariantKernelModules =
+            relationalLeanModuleClosure
+              relationalOperationRouteInvariantKernelRoots;
+          relationalOperationPredicateRouteKernelRoots = [
+            "RelationalInterpreterKernelOperationPredicateRoute"
+          ];
+          relationalOperationPredicateRouteKernelModules =
+            relationalLeanModuleClosure
+              relationalOperationPredicateRouteKernelRoots;
+          relationalOperationEffectCheckerKernelRoots = [
+            "RelationalInterpreterKernelOperationEffectChecker"
+          ];
+          relationalOperationEffectCheckerKernelModules =
+            relationalLeanModuleClosure
+              relationalOperationEffectCheckerKernelRoots;
+          relationalOperationMemoryRouteKernelRoots = [
+            "RelationalInterpreterKernelOperationMemoryRoute"
+          ];
+          relationalOperationMemoryRouteKernelModules =
+            relationalLeanModuleClosure
+              relationalOperationMemoryRouteKernelRoots;
+          relationalCdeclStaticPreservationKernelRoots = [
+            "RelationalInterpreterKernelCdeclEpilogueStaticPreservation"
+          ];
+          relationalCdeclStaticPreservationKernelModules =
+            relationalLeanModuleClosure
+              relationalCdeclStaticPreservationKernelRoots;
+          relationalInterpreterKernelEngineCopyRoots = [
+            "RelationalInterpreterKernelEngineCopy"
+          ];
+          relationalInterpreterKernelEngineCopyModules =
+            relationalLeanModuleClosure
+              relationalInterpreterKernelEngineCopyRoots;
+          relationalOperationStateBoundaryKernelRoots = [
+            "RelationalInterpreterKernelOperationStateBoundaryChecker"
+          ];
+          relationalOperationStateBoundaryKernelModules =
+            relationalLeanModuleClosure
+              relationalOperationStateBoundaryKernelRoots;
+          relationalOperationStateRouteRunAdapterKernelRoots = [
+            "RelationalInterpreterKernelOperationStateRouteRunAdapter"
+          ];
+          relationalOperationStateRouteRunAdapterKernelModules =
+            relationalLeanModuleClosure
+              relationalOperationStateRouteRunAdapterKernelRoots;
+          relationalOperationStepRouteAdapterKernelRoots = [
+            "RelationalInterpreterKernelOperationStepRouteAdapter"
+          ];
+          relationalOperationStepRouteAdapterKernelModules =
+            relationalLeanModuleClosure
+              relationalOperationStepRouteAdapterKernelRoots;
           relationalRoundtripKernelResources = {
             RelationalEngine = {
               resource_class = "medium";
@@ -371,6 +441,7 @@
             ./src/spaghetti_extractor/contract_tools.py
             ./src/spaghetti_extractor/_contract_tools
             ./src/spaghetti_extractor/errors.py
+            ./src/spaghetti_extractor/isa_semantic_forms.py
             ./src/spaghetti_extractor/pe.py
             ./src/spaghetti_extractor/stage_binary.py
             ./src/spaghetti_extractor/util.py
@@ -665,6 +736,7 @@
               ./src/spaghetti_extractor/contract_tools.py
               ./src/spaghetti_extractor/_contract_tools
               ./src/spaghetti_extractor/errors.py
+              ./src/spaghetti_extractor/isa_semantic_forms.py
               ./src/spaghetti_extractor/pe.py
               ./src/spaghetti_extractor/stage_binary.py
               ./src/spaghetti_extractor/util.py
@@ -819,6 +891,7 @@
               ./src/spaghetti_extractor/contract_tools.py
               ./src/spaghetti_extractor/_contract_tools
               ./src/spaghetti_extractor/errors.py
+              ./src/spaghetti_extractor/isa_semantic_forms.py
               ./src/spaghetti_extractor/pe.py
               ./src/spaghetti_extractor/stage_binary.py
               ./src/spaghetti_extractor/util.py
@@ -930,6 +1003,7 @@
             ./src/spaghetti_extractor/contract_tools.py
             ./src/spaghetti_extractor/_contract_tools
             ./src/spaghetti_extractor/errors.py
+            ./src/spaghetti_extractor/isa_semantic_forms.py
             ./src/spaghetti_extractor/pe.py
             ./src/spaghetti_extractor/stage_binary.py
             ./src/spaghetti_extractor/util.py
@@ -3649,6 +3723,20 @@
           stage-a-roundtrip-lean-symbolic-soundness = mkStageARoundtripLeanTarget [
             "RelationalSymbolicSoundness"
           ];
+          stage-a-roundtrip-lean-mixed-replay = mkStageARoundtripLeanTarget [
+            "RelationalInterpreterKernelMixedReplay"
+          ];
+          stage-a-roundtrip-lean-mixed-replay-world = mkStageARoundtripLeanTarget [
+            "RelationalInterpreterKernelMixedReplayWorld"
+          ];
+          stage-a-roundtrip-lean-x87-replay-bridge-runtime =
+            mkStageARoundtripLeanTarget [
+              "RelationalInterpreterX87ReplayBridgeRuntime"
+            ];
+          stage-a-roundtrip-lean-x87-kernel-execution =
+            mkStageARoundtripLeanTarget [
+              "RelationalInterpreterKernelX87Execution"
+            ];
           stage-a-roundtrip-lean-environment = mkStageARoundtripLeanTarget [
             "RelationalLockstepEnvironment"
             "RelationalOpaqueLockstepEnvironment"
@@ -3696,6 +3784,13 @@
           gnuHelloRoundtrip = import ./nix/gnu-hello-roundtrip.nix {
             inherit pkgs pythonEnv mingw32;
             spaghettiExtractor = spaghetti-extractor;
+            sideTool = spaghetti-extractor-side;
+            analysisKernelCache = stage-a-relational-analysis-kernel-cache;
+            isaKernelCache = stage-a-isa-kernel-cache;
+            isaSemanticKernel = stage-a-isa-kernel-identity + "/kernel.json";
+            bochsRunner =
+              bochs-conformance
+              + "/bin/spaghetti-bochs-conformance-runner";
             sourceRoot = spaghettiExtractorCoreSource;
             leanSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
             originalFixture = stage-a-gnu-hello-original;
@@ -3706,6 +3801,36 @@
           stage-b-gnu-hello-roundtrip-native-engine = gnuHelloRoundtrip.nativeEngine;
           stage-b-gnu-hello-roundtrip-native-runtime = gnuHelloRoundtrip.nativeRuntime;
           stage-b-gnu-hello-roundtrip-candidate = gnuHelloRoundtrip.candidate;
+          stage-a-gnu-hello-roundtrip-original-inventory =
+            gnuHelloRoundtrip.originalInventory;
+          stage-a-gnu-hello-roundtrip-candidate-inventory =
+            gnuHelloRoundtrip.candidateInventory;
+          stage-a-gnu-hello-roundtrip-original-isa-request =
+            gnuHelloRoundtrip.originalIsaRequest;
+          stage-a-gnu-hello-roundtrip-candidate-isa-request =
+            gnuHelloRoundtrip.candidateIsaRequest;
+          stage-a-gnu-hello-roundtrip-original-isa =
+            gnuHelloRoundtrip.originalIsa;
+          stage-a-gnu-hello-roundtrip-candidate-isa =
+            gnuHelloRoundtrip.candidateIsa;
+          stage-a-gnu-hello-roundtrip-original-isa-summary =
+            gnuHelloRoundtrip.originalIsaSummary;
+          stage-a-gnu-hello-roundtrip-candidate-isa-summary =
+            gnuHelloRoundtrip.candidateIsaSummary;
+          stage-a-gnu-hello-roundtrip-side-isa-adapter =
+            gnuHelloRoundtrip.sideIsaQualificationAdapter;
+          stage-a-gnu-hello-roundtrip-side-isa-enrichment =
+            gnuHelloRoundtrip.sideIsaCatalogEnrichment;
+          stage-a-gnu-hello-roundtrip-side-isa-corpus =
+            gnuHelloRoundtrip.sideIsaCorpus;
+          stage-a-gnu-hello-roundtrip-side-isa-evidence =
+            gnuHelloRoundtrip.sideIsaQualificationEvidence;
+          stage-a-gnu-hello-roundtrip-side-isa-qualification =
+            gnuHelloRoundtrip.sideIsaQualificationBundle;
+          stage-a-gnu-hello-roundtrip-isa-coverage =
+            gnuHelloRoundtrip.isaCoverage;
+          stage-a-gnu-hello-roundtrip-semantic-coverage =
+            gnuHelloRoundtrip.semanticCoverage;
           stage-a-gnu-hello-roundtrip-engine-segments = gnuHelloRoundtrip.engineSegments;
           stage-a-gnu-hello-roundtrip-compiled-kernel-source = gnuHelloRoundtrip.kernelLean;
           stage-a-gnu-hello-roundtrip-static-machine-import-source =
@@ -3763,6 +3888,16 @@
             gnuHelloRoundtrip.mixedOriginalCarrierBindingProof;
           stage-a-gnu-hello-roundtrip-mixed-original-diagnostic = gnuHelloRoundtrip.mixedOriginalDiagnostic;
           stage-a-gnu-hello-roundtrip-kernel-data-source = gnuHelloRoundtrip.kernelDataLean;
+          stage-a-gnu-hello-roundtrip-kernel-data-native-projection-proof =
+            gnuHelloRoundtrip.kernelDataNativeProjectionProof;
+          stage-a-gnu-hello-roundtrip-kernel-data-native-projection-benchmark =
+            gnuHelloRoundtrip.kernelDataNativeProjectionBenchmark;
+          stage-a-gnu-hello-roundtrip-access-fault-qualification-source =
+            gnuHelloRoundtrip.accessFaultQualificationLean;
+          stage-a-gnu-hello-roundtrip-access-fault-qualification-proof-sources =
+            gnuHelloRoundtrip.accessFaultQualificationProofSources;
+          stage-a-gnu-hello-roundtrip-access-fault-qualification-proof =
+            gnuHelloRoundtrip.accessFaultQualificationProof;
           stage-a-gnu-hello-roundtrip-kernel-abi-source = gnuHelloRoundtrip.kernelAbiLean;
           stage-a-gnu-hello-roundtrip-constructive-source-coverage-source =
             gnuHelloRoundtrip.constructiveSourceCoverageLean;
@@ -3776,6 +3911,120 @@
             gnuHelloRoundtrip.canonicalRelationCoreProofSources;
           stage-a-gnu-hello-roundtrip-canonical-relation-core-proof =
             gnuHelloRoundtrip.canonicalRelationCoreProof;
+          stage-a-gnu-hello-roundtrip-acceptance-requirements-source =
+            gnuHelloRoundtrip.acceptanceRequirementsLean;
+          stage-a-gnu-hello-roundtrip-acceptance-requirements-proof-sources =
+            gnuHelloRoundtrip.acceptanceRequirementsProofSources;
+          stage-a-gnu-hello-roundtrip-acceptance-requirements-proof =
+            gnuHelloRoundtrip.acceptanceRequirementsProof;
+          stage-a-gnu-hello-roundtrip-runtime-foundation-source =
+            gnuHelloRoundtrip.runtimeFoundationLean;
+          stage-a-gnu-hello-roundtrip-runtime-foundation-proof-sources =
+            gnuHelloRoundtrip.runtimeFoundationProofSources;
+          stage-a-gnu-hello-roundtrip-runtime-foundation-proof =
+            gnuHelloRoundtrip.runtimeFoundationProof;
+          stage-a-gnu-hello-roundtrip-launch-binding-source =
+            gnuHelloRoundtrip.launchBindingLean;
+          stage-a-gnu-hello-roundtrip-launch-binding-proof-sources =
+            gnuHelloRoundtrip.launchBindingProofSources;
+          stage-a-gnu-hello-roundtrip-launch-binding-proof =
+            gnuHelloRoundtrip.launchBindingProof;
+          stage-a-gnu-hello-roundtrip-external-component-source =
+            gnuHelloRoundtrip.externalComponentLean;
+          stage-a-gnu-hello-roundtrip-external-component-proof-sources =
+            gnuHelloRoundtrip.externalComponentProofSources;
+          stage-a-gnu-hello-roundtrip-external-component-proof =
+            gnuHelloRoundtrip.externalComponentProof;
+          stage-a-gnu-hello-roundtrip-mixed-semantic-operation-component-source =
+            gnuHelloRoundtrip.mixedSemanticOperationComponentLean;
+          stage-a-gnu-hello-roundtrip-mixed-semantic-operation-component-proof-sources =
+            gnuHelloRoundtrip.mixedSemanticOperationComponentProofSources;
+          stage-a-gnu-hello-roundtrip-mixed-semantic-operation-component-proof =
+            gnuHelloRoundtrip.mixedSemanticOperationComponentProof;
+          stage-a-gnu-hello-roundtrip-mixed-fused-semantic-evidence-source =
+            gnuHelloRoundtrip.mixedFusedSemanticEvidenceLean;
+          stage-a-gnu-hello-roundtrip-mixed-fused-semantic-evidence-proof-sources =
+            gnuHelloRoundtrip.mixedFusedSemanticEvidenceProofSources;
+          stage-a-gnu-hello-roundtrip-mixed-fused-semantic-evidence-proof =
+            gnuHelloRoundtrip.mixedFusedSemanticEvidenceProof;
+          stage-a-gnu-hello-roundtrip-mixed-direct-call-semantic-evidence-source =
+            gnuHelloRoundtrip.mixedDirectCallSemanticEvidenceLean;
+          stage-a-gnu-hello-roundtrip-mixed-direct-call-semantic-evidence-proof-sources =
+            gnuHelloRoundtrip.mixedDirectCallSemanticEvidenceProofSources;
+          stage-a-gnu-hello-roundtrip-mixed-direct-call-semantic-evidence-proof =
+            gnuHelloRoundtrip.mixedDirectCallSemanticEvidenceProof;
+          stage-a-gnu-hello-roundtrip-mixed-indirect-import-call-semantic-evidence-source =
+            gnuHelloRoundtrip.mixedIndirectImportCallSemanticEvidenceLean;
+          stage-a-gnu-hello-roundtrip-mixed-indirect-import-call-semantic-evidence-proof-sources =
+            gnuHelloRoundtrip.mixedIndirectImportCallSemanticEvidenceProofSources;
+          stage-a-gnu-hello-roundtrip-mixed-indirect-import-call-semantic-evidence-proof =
+            gnuHelloRoundtrip.mixedIndirectImportCallSemanticEvidenceProof;
+          stage-a-gnu-hello-roundtrip-mixed-external-tail-semantic-evidence-source =
+            gnuHelloRoundtrip.mixedExternalTailSemanticEvidenceLean;
+          stage-a-gnu-hello-roundtrip-mixed-external-tail-semantic-evidence-proof-sources =
+            gnuHelloRoundtrip.mixedExternalTailSemanticEvidenceProofSources;
+          stage-a-gnu-hello-roundtrip-mixed-external-tail-semantic-evidence-proof =
+            gnuHelloRoundtrip.mixedExternalTailSemanticEvidenceProof;
+          stage-a-gnu-hello-roundtrip-runtime-indirect-composition-source =
+            gnuHelloRoundtrip.runtimeIndirectCompositionLean;
+          stage-a-gnu-hello-roundtrip-runtime-indirect-composition-proof-sources =
+            gnuHelloRoundtrip.runtimeIndirectCompositionProofSources;
+          stage-a-gnu-hello-roundtrip-runtime-indirect-composition-proof =
+            gnuHelloRoundtrip.runtimeIndirectCompositionProof;
+          stage-a-gnu-hello-roundtrip-program-lookup-native-world-bridge-source =
+            gnuHelloRoundtrip.programLookupNativeWorldBridgeLean;
+          stage-a-gnu-hello-roundtrip-program-lookup-native-world-bridge-proof-sources =
+            gnuHelloRoundtrip.programLookupNativeWorldBridgeProofSources;
+          stage-a-gnu-hello-roundtrip-program-lookup-native-world-bridge-proof =
+            gnuHelloRoundtrip.programLookupNativeWorldBridgeProof;
+          stage-a-gnu-hello-roundtrip-interpreter-step-world-program-lookup-source =
+            gnuHelloRoundtrip.interpreterStepWorldProgramLookupLean;
+          stage-a-gnu-hello-roundtrip-interpreter-step-program-lookup-call-behavior-extraction =
+            gnuHelloRoundtrip.interpreterStepProgramLookupCallBehaviorExtraction;
+          stage-a-gnu-hello-roundtrip-interpreter-step-program-lookup-call-behaviors-source =
+            gnuHelloRoundtrip.interpreterStepProgramLookupCallBehaviorsLean;
+          stage-a-gnu-hello-roundtrip-interpreter-step-program-lookup-projection-proof-sources =
+            gnuHelloRoundtrip.interpreterStepProgramLookupProjectionProofSources;
+          stage-a-gnu-hello-roundtrip-interpreter-step-program-lookup-projection-proof =
+            gnuHelloRoundtrip.interpreterStepProgramLookupProjectionProof;
+          stage-a-gnu-hello-roundtrip-interpreter-step-world-program-lookup-proof-sources =
+            gnuHelloRoundtrip.interpreterStepWorldProgramLookupProofSources;
+          stage-a-gnu-hello-roundtrip-interpreter-step-world-program-lookup-proof =
+            gnuHelloRoundtrip.interpreterStepWorldProgramLookupProof;
+          stage-a-gnu-hello-roundtrip-kernel-operation-instantiation-source =
+            gnuHelloRoundtrip.kernelOperationInstantiationLean;
+          stage-a-gnu-hello-roundtrip-kernel-operation-instantiation-proof-sources =
+            gnuHelloRoundtrip.kernelOperationInstantiationProofSources;
+          stage-a-gnu-hello-roundtrip-kernel-operation-instantiation-proof =
+            gnuHelloRoundtrip.kernelOperationInstantiationProof;
+          stage-a-gnu-hello-roundtrip-kernel-run-entry-route-source =
+            gnuHelloRoundtrip.kernelRunEntryRouteLean;
+          stage-a-gnu-hello-roundtrip-kernel-run-entry-route-proof-sources =
+            gnuHelloRoundtrip.kernelRunEntryRouteProofSources;
+          stage-a-gnu-hello-roundtrip-kernel-run-entry-route-proof =
+            gnuHelloRoundtrip.kernelRunEntryRouteProof;
+          stage-a-gnu-hello-roundtrip-kernel-run-entry-behavior-extraction =
+            gnuHelloRoundtrip.kernelRunEntryBehaviorExtraction;
+          stage-a-gnu-hello-roundtrip-kernel-run-entry-behaviors-source =
+            gnuHelloRoundtrip.kernelRunEntryBehaviorsLean;
+          stage-a-gnu-hello-roundtrip-kernel-run-entry-behaviors-proof-sources =
+            gnuHelloRoundtrip.kernelRunEntryBehaviorsProofSources;
+          stage-a-gnu-hello-roundtrip-kernel-run-entry-behaviors-proof =
+            gnuHelloRoundtrip.kernelRunEntryBehaviorsProof;
+          stage-a-gnu-hello-roundtrip-kernel-run-entry-abi-source =
+            gnuHelloRoundtrip.kernelRunEntryAbiLean;
+          stage-a-gnu-hello-roundtrip-kernel-run-entry-abi-proof-sources =
+            gnuHelloRoundtrip.kernelRunEntryAbiProofSources;
+          stage-a-gnu-hello-roundtrip-kernel-run-entry-abi-proof =
+            gnuHelloRoundtrip.kernelRunEntryAbiProof;
+          stage-a-gnu-hello-roundtrip-mixed-acceptance-source =
+            gnuHelloRoundtrip.gnuHelloMixedAcceptanceLean;
+          stage-a-gnu-hello-roundtrip-mixed-chunked-acceptance-source =
+            gnuHelloRoundtrip.mixedChunkedAcceptanceLean;
+          stage-a-gnu-hello-roundtrip-mixed-chunked-acceptance-proof-sources =
+            gnuHelloRoundtrip.mixedChunkedAcceptanceProofSources;
+          stage-a-gnu-hello-roundtrip-mixed-chunked-acceptance-proof =
+            gnuHelloRoundtrip.mixedChunkedAcceptanceProof;
           stage-a-gnu-hello-roundtrip-native-launch-graph-source = gnuHelloRoundtrip.nativeLaunchGraphLean;
           stage-a-gnu-hello-roundtrip-native-launch-graph-proof-sources =
             gnuHelloRoundtrip.nativeLaunchGraphProofSources;
@@ -3821,6 +4070,311 @@
           stage-a-gnu-hello-roundtrip-kernel-run-native-proof = gnuHelloRoundtrip.kernelRunNativeProof;
           stage-a-gnu-hello-roundtrip-kernel-run-operation-source = gnuHelloRoundtrip.kernelRunOperationLean;
           stage-a-gnu-hello-roundtrip-kernel-run-operation-proof = gnuHelloRoundtrip.kernelRunOperationProof;
+          stage-a-gnu-hello-roundtrip-kernel-run-iteration-proof =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              contentAddressed = true;
+              standaloneSourceRoot =
+                relationalLeanSource
+                + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules = relationalRunIterationKernelModules;
+              standaloneModuleResources =
+                relationalRoundtripKernelResources;
+              targetNodes = relationalRunIterationKernelRoots;
+              targetBundle = true;
+              targetAxiomAudit = {
+                module = "RelationalInterpreterKernelRunIteration";
+                declaration =
+                  "RunFunctionNativeCheckedLocalSemantics.executeHead";
+                approved_axioms = [
+                  "propext"
+                  "Classical.choice"
+                  "Quot.sound"
+                ];
+              };
+            };
+          stage-a-gnu-hello-roundtrip-kernel-operation-state-route-proof =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              contentAddressed = true;
+              standaloneSourceRoot =
+                relationalLeanSource
+                + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules = relationalOperationStateRouteKernelModules;
+              standaloneModuleResources =
+                relationalRoundtripKernelResources;
+              targetNodes = relationalOperationStateRouteKernelRoots;
+              targetBundle = true;
+              targetAxiomAudit = {
+                module =
+                  "RelationalInterpreterKernelOperationStateRouteChecker";
+                declaration = "CheckedNativeOperationStateRoute.path";
+                approved_axioms = [
+                  "propext"
+                  "Classical.choice"
+                  "Quot.sound"
+                ];
+              };
+            };
+          stage-a-gnu-hello-roundtrip-kernel-operation-ranked-state-route-proof =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              contentAddressed = true;
+              standaloneSourceRoot =
+                relationalLeanSource
+                + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules =
+                relationalOperationRankedStateRouteKernelModules;
+              standaloneModuleResources =
+                relationalRoundtripKernelResources;
+              targetNodes =
+                relationalOperationRankedStateRouteKernelRoots;
+              targetBundle = true;
+              targetAxiomAudit = {
+                module =
+                  "RelationalInterpreterKernelOperationRankedStateRoute";
+                declaration =
+                  "CheckedNativeOperationStateRouteToStop.path";
+                approved_axioms = [
+                  "propext"
+                  "Classical.choice"
+                  "Quot.sound"
+                ];
+              };
+            };
+          stage-a-gnu-hello-roundtrip-kernel-operation-route-invariant-proof =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              contentAddressed = true;
+              standaloneSourceRoot =
+                relationalLeanSource
+                + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules =
+                relationalOperationRouteInvariantKernelModules;
+              standaloneModuleResources =
+                relationalRoundtripKernelResources;
+              targetNodes =
+                relationalOperationRouteInvariantKernelRoots;
+              targetBundle = true;
+              targetAxiomAudit = {
+                module =
+                  "RelationalInterpreterKernelOperationRouteInvariant";
+                declaration =
+                  "CheckedNativeOperationStateRouteToStop.finalRvaExact";
+                approved_axioms = [
+                  "propext"
+                  "Classical.choice"
+                  "Quot.sound"
+                ];
+              };
+            };
+          stage-a-gnu-hello-roundtrip-kernel-operation-predicate-route-proof =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              contentAddressed = true;
+              standaloneSourceRoot =
+                relationalLeanSource
+                + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules =
+                relationalOperationPredicateRouteKernelModules;
+              standaloneModuleResources =
+                relationalRoundtripKernelResources;
+              targetNodes =
+                relationalOperationPredicateRouteKernelRoots;
+              targetBundle = true;
+              targetAxiomAudit = {
+                module =
+                  "RelationalInterpreterKernelOperationPredicateRoute";
+                declaration =
+                  "CheckedNativeOperationPredicateRoute.execute";
+                approved_axioms = [
+                  "propext"
+                  "Classical.choice"
+                  "Quot.sound"
+                ];
+              };
+            };
+          stage-a-gnu-hello-roundtrip-kernel-operation-effect-checker-proof =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              contentAddressed = true;
+              standaloneSourceRoot =
+                relationalLeanSource
+                + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules =
+                relationalOperationEffectCheckerKernelModules;
+              standaloneModuleResources =
+                relationalRoundtripKernelResources;
+              targetNodes =
+                relationalOperationEffectCheckerKernelRoots;
+              targetBundle = true;
+              targetAxiomAudit = {
+                module =
+                  "RelationalInterpreterKernelOperationEffectChecker";
+                declaration =
+                  "CheckedNativeOperationEffectfulBlockStep.execute";
+                approved_axioms = [
+                  "propext"
+                  "Classical.choice"
+                  "Quot.sound"
+                ];
+              };
+            };
+          stage-a-gnu-hello-roundtrip-kernel-operation-memory-route-proof =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              contentAddressed = true;
+              standaloneSourceRoot =
+                relationalLeanSource
+                + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules =
+                relationalOperationMemoryRouteKernelModules;
+              standaloneModuleResources =
+                relationalRoundtripKernelResources;
+              targetNodes =
+                relationalOperationMemoryRouteKernelRoots;
+              targetBundle = true;
+              targetAxiomAudit = {
+                module =
+                  "RelationalInterpreterKernelOperationMemoryRoute";
+                declaration =
+                  "checkedNativeOperationPredicateRoute_memoryAgreesOn";
+                approved_axioms = [
+                  "propext"
+                  "Classical.choice"
+                  "Quot.sound"
+                ];
+              };
+            };
+          stage-a-kernel-cdecl-static-preservation-proof =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              contentAddressed = true;
+              standaloneSourceRoot =
+                relationalLeanSource
+                + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules =
+                relationalCdeclStaticPreservationKernelModules;
+              standaloneModuleResources =
+                relationalRoundtripKernelResources;
+              targetNodes =
+                relationalCdeclStaticPreservationKernelRoots;
+              targetBundle = true;
+              targetAxiomAudit = {
+                module =
+                  "RelationalInterpreterKernelCdeclEpilogueStaticPreservation";
+                declaration =
+                  "workspaceFrame_preservesOriginalProgramTable";
+                approved_axioms = [
+                  "propext"
+                  "Quot.sound"
+                ];
+              };
+            };
+          stage-a-gnu-hello-roundtrip-kernel-engine-copy-proof =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              contentAddressed = true;
+              standaloneSourceRoot =
+                relationalLeanSource
+                + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules =
+                relationalInterpreterKernelEngineCopyModules;
+              standaloneModuleResources =
+                relationalRoundtripKernelResources;
+              targetNodes =
+                relationalInterpreterKernelEngineCopyRoots;
+              targetBundle = true;
+              targetAxiomAudit = {
+                module =
+                  "RelationalInterpreterKernelEngineCopy";
+                declaration =
+                  "EngineStateHolds.rebase";
+                approved_axioms = [
+                  "propext"
+                  "Classical.choice"
+                  "Quot.sound"
+                ];
+              };
+            };
+          stage-a-gnu-hello-roundtrip-kernel-operation-state-boundary-proof =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              contentAddressed = true;
+              standaloneSourceRoot =
+                relationalLeanSource
+                + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules =
+                relationalOperationStateBoundaryKernelModules;
+              standaloneModuleResources =
+                relationalRoundtripKernelResources;
+              targetNodes =
+                relationalOperationStateBoundaryKernelRoots;
+              targetBundle = true;
+              targetAxiomAudit = {
+                module =
+                  "RelationalInterpreterKernelOperationStateBoundaryChecker";
+                declaration =
+                  "CheckedNativeOperationStateBoundaryRoute.execute";
+                approved_axioms = [
+                  "propext"
+                  "Classical.choice"
+                  "Quot.sound"
+                ];
+              };
+            };
+          stage-a-gnu-hello-roundtrip-kernel-operation-state-route-run-adapter-proof =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              contentAddressed = true;
+              standaloneSourceRoot =
+                relationalLeanSource
+                + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules =
+                relationalOperationStateRouteRunAdapterKernelModules;
+              standaloneModuleResources =
+                relationalRoundtripKernelResources;
+              targetNodes =
+                relationalOperationStateRouteRunAdapterKernelRoots;
+              targetBundle = true;
+              targetAxiomAudit = {
+                module =
+                  "RelationalInterpreterKernelOperationStateRouteRunAdapter";
+                declaration =
+                  "runFunctionChunkOfStateRoute_resultExact";
+                approved_axioms = [
+                  "propext"
+                  "Classical.choice"
+                  "Quot.sound"
+                ];
+              };
+            };
+          stage-a-gnu-hello-roundtrip-kernel-operation-step-route-adapter-proof =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              contentAddressed = true;
+              standaloneSourceRoot =
+                relationalLeanSource
+                + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules =
+                relationalOperationStepRouteAdapterKernelModules;
+              standaloneModuleResources =
+                relationalRoundtripKernelResources;
+              targetNodes =
+                relationalOperationStepRouteAdapterKernelRoots;
+              targetBundle = true;
+              targetAxiomAudit = {
+                module =
+                  "RelationalInterpreterKernelOperationStepRouteAdapter";
+                declaration =
+                  "exactInterpreterStepProgramLookupCallReplayOfCheckedBlock";
+                approved_axioms = [
+                  "propext"
+                  "Classical.choice"
+                  "Quot.sound"
+                ];
+              };
+            };
           stage-a-gnu-hello-roundtrip-kernel-cdecl-epilogue-source =
             gnuHelloRoundtrip.kernelCdeclEpilogueLean;
           stage-a-gnu-hello-roundtrip-kernel-cdecl-epilogue-symbolic-closure-source =
@@ -5023,6 +5577,10 @@
             stage-a-roundtrip-lean-x87
             stage-a-roundtrip-lean-compiled-kernel
             stage-a-roundtrip-lean-symbolic-soundness
+            stage-a-roundtrip-lean-mixed-replay
+            stage-a-roundtrip-lean-mixed-replay-world
+            stage-a-roundtrip-lean-x87-replay-bridge-runtime
+            stage-a-roundtrip-lean-x87-kernel-execution
             stage-a-roundtrip-lean-environment
             stage-a-roundtrip-lean-kernel-cache
             stage-a-roundtrip-interpreter-kernel-cache
@@ -5035,6 +5593,21 @@
             stage-b-gnu-hello-roundtrip-native-engine
             stage-b-gnu-hello-roundtrip-native-runtime
             stage-b-gnu-hello-roundtrip-candidate
+            stage-a-gnu-hello-roundtrip-original-inventory
+            stage-a-gnu-hello-roundtrip-candidate-inventory
+            stage-a-gnu-hello-roundtrip-original-isa-request
+            stage-a-gnu-hello-roundtrip-candidate-isa-request
+            stage-a-gnu-hello-roundtrip-original-isa
+            stage-a-gnu-hello-roundtrip-candidate-isa
+            stage-a-gnu-hello-roundtrip-original-isa-summary
+            stage-a-gnu-hello-roundtrip-candidate-isa-summary
+            stage-a-gnu-hello-roundtrip-side-isa-adapter
+            stage-a-gnu-hello-roundtrip-side-isa-enrichment
+            stage-a-gnu-hello-roundtrip-side-isa-corpus
+            stage-a-gnu-hello-roundtrip-side-isa-evidence
+            stage-a-gnu-hello-roundtrip-side-isa-qualification
+            stage-a-gnu-hello-roundtrip-isa-coverage
+            stage-a-gnu-hello-roundtrip-semantic-coverage
             stage-a-gnu-hello-roundtrip-engine-segments
             stage-a-gnu-hello-roundtrip-compiled-kernel-source
             stage-a-gnu-hello-roundtrip-static-machine-import-source
@@ -5066,6 +5639,11 @@
             stage-a-gnu-hello-roundtrip-mixed-original-carrier-binding-proof
             stage-a-gnu-hello-roundtrip-mixed-original-diagnostic
             stage-a-gnu-hello-roundtrip-kernel-data-source
+            stage-a-gnu-hello-roundtrip-kernel-data-native-projection-benchmark
+            stage-a-gnu-hello-roundtrip-kernel-data-native-projection-proof
+            stage-a-gnu-hello-roundtrip-access-fault-qualification-source
+            stage-a-gnu-hello-roundtrip-access-fault-qualification-proof-sources
+            stage-a-gnu-hello-roundtrip-access-fault-qualification-proof
             stage-a-gnu-hello-roundtrip-kernel-abi-source
             stage-a-gnu-hello-roundtrip-constructive-source-coverage-source
             stage-a-gnu-hello-roundtrip-constructive-source-coverage-proof-sources
@@ -5073,6 +5651,63 @@
             stage-a-gnu-hello-roundtrip-canonical-relation-core-source
             stage-a-gnu-hello-roundtrip-canonical-relation-core-proof-sources
             stage-a-gnu-hello-roundtrip-canonical-relation-core-proof
+            stage-a-gnu-hello-roundtrip-acceptance-requirements-source
+            stage-a-gnu-hello-roundtrip-acceptance-requirements-proof-sources
+            stage-a-gnu-hello-roundtrip-acceptance-requirements-proof
+            stage-a-gnu-hello-roundtrip-runtime-foundation-source
+            stage-a-gnu-hello-roundtrip-runtime-foundation-proof-sources
+            stage-a-gnu-hello-roundtrip-runtime-foundation-proof
+            stage-a-gnu-hello-roundtrip-launch-binding-source
+            stage-a-gnu-hello-roundtrip-launch-binding-proof-sources
+            stage-a-gnu-hello-roundtrip-launch-binding-proof
+            stage-a-gnu-hello-roundtrip-external-component-source
+            stage-a-gnu-hello-roundtrip-external-component-proof-sources
+            stage-a-gnu-hello-roundtrip-external-component-proof
+            stage-a-gnu-hello-roundtrip-mixed-semantic-operation-component-source
+            stage-a-gnu-hello-roundtrip-mixed-semantic-operation-component-proof-sources
+            stage-a-gnu-hello-roundtrip-mixed-semantic-operation-component-proof
+            stage-a-gnu-hello-roundtrip-mixed-fused-semantic-evidence-source
+            stage-a-gnu-hello-roundtrip-mixed-fused-semantic-evidence-proof-sources
+            stage-a-gnu-hello-roundtrip-mixed-fused-semantic-evidence-proof
+            stage-a-gnu-hello-roundtrip-mixed-direct-call-semantic-evidence-source
+            stage-a-gnu-hello-roundtrip-mixed-direct-call-semantic-evidence-proof-sources
+            stage-a-gnu-hello-roundtrip-mixed-direct-call-semantic-evidence-proof
+            stage-a-gnu-hello-roundtrip-mixed-indirect-import-call-semantic-evidence-source
+            stage-a-gnu-hello-roundtrip-mixed-indirect-import-call-semantic-evidence-proof-sources
+            stage-a-gnu-hello-roundtrip-mixed-indirect-import-call-semantic-evidence-proof
+            stage-a-gnu-hello-roundtrip-mixed-external-tail-semantic-evidence-source
+            stage-a-gnu-hello-roundtrip-mixed-external-tail-semantic-evidence-proof-sources
+            stage-a-gnu-hello-roundtrip-mixed-external-tail-semantic-evidence-proof
+            stage-a-gnu-hello-roundtrip-runtime-indirect-composition-source
+            stage-a-gnu-hello-roundtrip-runtime-indirect-composition-proof-sources
+            stage-a-gnu-hello-roundtrip-runtime-indirect-composition-proof
+            stage-a-gnu-hello-roundtrip-program-lookup-native-world-bridge-source
+            stage-a-gnu-hello-roundtrip-program-lookup-native-world-bridge-proof-sources
+            stage-a-gnu-hello-roundtrip-program-lookup-native-world-bridge-proof
+            stage-a-gnu-hello-roundtrip-interpreter-step-world-program-lookup-source
+            stage-a-gnu-hello-roundtrip-interpreter-step-program-lookup-call-behavior-extraction
+            stage-a-gnu-hello-roundtrip-interpreter-step-program-lookup-call-behaviors-source
+            stage-a-gnu-hello-roundtrip-interpreter-step-program-lookup-projection-proof-sources
+            stage-a-gnu-hello-roundtrip-interpreter-step-program-lookup-projection-proof
+            stage-a-gnu-hello-roundtrip-interpreter-step-world-program-lookup-proof-sources
+            stage-a-gnu-hello-roundtrip-interpreter-step-world-program-lookup-proof
+            stage-a-gnu-hello-roundtrip-kernel-operation-instantiation-source
+            stage-a-gnu-hello-roundtrip-kernel-operation-instantiation-proof-sources
+            stage-a-gnu-hello-roundtrip-kernel-operation-instantiation-proof
+            stage-a-gnu-hello-roundtrip-kernel-run-entry-route-source
+            stage-a-gnu-hello-roundtrip-kernel-run-entry-route-proof-sources
+            stage-a-gnu-hello-roundtrip-kernel-run-entry-route-proof
+            stage-a-gnu-hello-roundtrip-kernel-run-entry-behavior-extraction
+            stage-a-gnu-hello-roundtrip-kernel-run-entry-behaviors-source
+            stage-a-gnu-hello-roundtrip-kernel-run-entry-behaviors-proof-sources
+            stage-a-gnu-hello-roundtrip-kernel-run-entry-behaviors-proof
+            stage-a-gnu-hello-roundtrip-kernel-run-entry-abi-source
+            stage-a-gnu-hello-roundtrip-kernel-run-entry-abi-proof-sources
+            stage-a-gnu-hello-roundtrip-kernel-run-entry-abi-proof
+            stage-a-gnu-hello-roundtrip-mixed-acceptance-source
+            stage-a-gnu-hello-roundtrip-mixed-chunked-acceptance-source
+            stage-a-gnu-hello-roundtrip-mixed-chunked-acceptance-proof-sources
+            stage-a-gnu-hello-roundtrip-mixed-chunked-acceptance-proof
             stage-a-gnu-hello-roundtrip-native-launch-graph-source
             stage-a-gnu-hello-roundtrip-native-launch-graph-proof-sources
             stage-a-gnu-hello-roundtrip-native-launch-graph-proof
@@ -5106,6 +5741,18 @@
             stage-a-gnu-hello-roundtrip-kernel-run-native-proof
             stage-a-gnu-hello-roundtrip-kernel-run-operation-source
             stage-a-gnu-hello-roundtrip-kernel-run-operation-proof
+            stage-a-gnu-hello-roundtrip-kernel-run-iteration-proof
+            stage-a-gnu-hello-roundtrip-kernel-operation-state-route-proof
+            stage-a-gnu-hello-roundtrip-kernel-operation-ranked-state-route-proof
+            stage-a-gnu-hello-roundtrip-kernel-operation-route-invariant-proof
+            stage-a-gnu-hello-roundtrip-kernel-operation-predicate-route-proof
+            stage-a-gnu-hello-roundtrip-kernel-operation-effect-checker-proof
+            stage-a-gnu-hello-roundtrip-kernel-operation-memory-route-proof
+            stage-a-kernel-cdecl-static-preservation-proof
+            stage-a-gnu-hello-roundtrip-kernel-engine-copy-proof
+            stage-a-gnu-hello-roundtrip-kernel-operation-state-boundary-proof
+            stage-a-gnu-hello-roundtrip-kernel-operation-state-route-run-adapter-proof
+            stage-a-gnu-hello-roundtrip-kernel-operation-step-route-adapter-proof
             stage-a-gnu-hello-roundtrip-kernel-cdecl-epilogue-source
             stage-a-gnu-hello-roundtrip-kernel-cdecl-epilogue-symbolic-closure-source
             stage-a-gnu-hello-roundtrip-kernel-cdecl-epilogue-symbolic-closure-proof
@@ -5292,6 +5939,13 @@
             stage-a-winapi-hello-check
             stage-a-gnu-hello-preflight
             stage-a-gnu-hello-roundtrip-smoke
+            stage-a-gnu-hello-roundtrip-runtime-foundation-proof
+            stage-a-gnu-hello-roundtrip-launch-binding-proof
+            stage-a-gnu-hello-roundtrip-external-component-proof
+            stage-a-gnu-hello-roundtrip-runtime-indirect-composition-proof
+            stage-a-gnu-hello-roundtrip-kernel-operation-instantiation-proof
+            stage-a-gnu-hello-roundtrip-x87-kernel-execution
+            stage-a-gnu-hello-roundtrip-mixed-chunked-acceptance-proof
             stage-a-minimal-hello-check
             stage-a-roundtrip-static-smoke
             stage-a-roundtrip-spike-check

@@ -27,17 +27,14 @@ from spaghetti_extractor.relational.lean.interpreter_kernel_run_native import (
     build_relational_interpreter_kernel_run_native_plan,
 )
 from spaghetti_extractor.relational.lean.interpreter_kernel_run_operation import (
+    INTERPRETER_KERNEL_RUN_ACCEPTANCE_REFINEMENT_THEOREM,
+    INTERPRETER_KERNEL_RUN_ENDPOINT_REPLAY_THEOREM,
     INTERPRETER_KERNEL_RUN_OPERATION_FORMAT,
     INTERPRETER_KERNEL_RUN_OPERATION_REMAINING_PREMISES,
     RelationalInterpreterKernelRunOperationGenerationError,
     build_relational_interpreter_kernel_run_operation_plan,
     relational_interpreter_kernel_run_operation_source,
     write_relational_interpreter_kernel_run_operation_bundle,
-)
-from spaghetti_extractor.relational.lean.interpreter_kernel_step_operation import (
-    INTERPRETER_KERNEL_STEP_OPERATION_FORMAT,
-    INTERPRETER_KERNEL_STEP_OPERATION_REMAINING_PREMISES,
-    INTERPRETER_KERNEL_STEP_OPERATION_THEOREM,
 )
 from spaghetti_extractor.util import sha256_file
 
@@ -120,9 +117,6 @@ class StageARelationalInterpreterKernelRunOperationTests(unittest.TestCase):
         self.data = self.root / "module-inventory.json"
         self.abi = self.root / "interpreter-kernel-abi-plan.json"
         self.run_native = self.root / "interpreter-kernel-run-native-plan.json"
-        self.step_operation = (
-            self.root / "interpreter-kernel-step-operation-plan.json"
-        )
 
         self.candidate.write_bytes(b"exact Run operation fixture" * 23)
         digest = sha256_file(self.candidate)
@@ -181,28 +175,6 @@ class StageARelationalInterpreterKernelRunOperationTests(unittest.TestCase):
         self.run_native.write_text(
             json.dumps(run_native.payload()), encoding="utf-8"
         )
-        self.step_operation.write_text(
-            json.dumps(
-                {
-                    "format": INTERPRETER_KERNEL_STEP_OPERATION_FORMAT,
-                    "acceptance_authority": False,
-                    "operation": "interpreterStep",
-                    "candidate": {"sha256": digest, "size": size},
-                    "checked_static_authority": {
-                        "entry_rva": _STEP_START,
-                    },
-                    "remaining_proof_premises": list(
-                        INTERPRETER_KERNEL_STEP_OPERATION_REMAINING_PREMISES
-                    ),
-                    "result": {
-                        "status": "typed-interface-ready",
-                        "theorem": INTERPRETER_KERNEL_STEP_OPERATION_THEOREM,
-                    },
-                    "failure_mode": "incomplete",
-                }
-            ),
-            encoding="utf-8",
-        )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -214,10 +186,9 @@ class StageARelationalInterpreterKernelRunOperationTests(unittest.TestCase):
             data_inventory=self.data,
             abi_plan=self.abi,
             run_native_plan=self.run_native,
-            step_operation_plan=self.step_operation,
         )
 
-    def test_plan_binds_static_authority_and_reports_six_dynamic_frontiers(
+    def test_plan_binds_static_authority_and_reports_checked_frontiers(
         self,
     ) -> None:
         payload = self._build().payload()
@@ -228,7 +199,7 @@ class StageARelationalInterpreterKernelRunOperationTests(unittest.TestCase):
             payload["remaining_proof_premises"],
             list(INTERPRETER_KERNEL_RUN_OPERATION_REMAINING_PREMISES),
         )
-        self.assertEqual(len(payload["proof_frontiers"]), 6)
+        self.assertEqual(len(payload["proof_frontiers"]), 4)
         self.assertEqual(
             payload["checked_static_authority"]["step_call_rva"],
             _RUN_START + 91,
@@ -238,45 +209,143 @@ class StageARelationalInterpreterKernelRunOperationTests(unittest.TestCase):
             _RUN_START + 180,
         )
         self.assertNotIn("status", payload["result"])
-        self.assertEqual(len(payload["inputs"]), 6)
+        self.assertEqual(len(payload["inputs"]), 5)
+        constructor = payload["checked_native_endpoint_constructor"]
+        self.assertEqual(
+            payload["result"]["checked_endpoint_replay"],
+            INTERPRETER_KERNEL_RUN_ENDPOINT_REPLAY_THEOREM,
+        )
+        self.assertEqual(
+            payload["result"]["acceptance_refinement_theorem"],
+            INTERPRETER_KERNEL_RUN_ACCEPTANCE_REFINEMENT_THEOREM,
+        )
+        self.assertEqual(
+            constructor["constructor"],
+            "RunFunctionNativeCheckedEndpointReplay.ofCanonicalChecked",
+        )
+        self.assertEqual(
+            constructor["lean_type"],
+            "RunFunctionNativeCheckedEndpointReplay "
+            "(generatedRunFunctionOperationStatic environment)",
+        )
+        self.assertIn(
+            "exact_candidate_function_bytes",
+            constructor["derived_facts"],
+        )
+        self.assertIn(
+            "checked_resolver_indirect_target_inventory",
+            constructor["derived_facts"],
+        )
+        self.assertEqual(
+            constructor["computed_phase_constructors"],
+            [
+                "RunFunctionNativeCheckedInternalSegment.terminalPhase",
+                "RunFunctionNativeCheckedInternalSegment.directContinuation",
+            ],
+        )
+        self.assertEqual(
+            constructor["residual_declarations"],
+            [
+                "RunFunctionNativeCheckedResultIndexedLocalSemantics.stepCall",
+                "RunFunctionNativeCheckedResultIndexedLocalSemantics.unavailableExit",
+                "RunFunctionNativeCheckedResultIndexedLocalSemantics.terminalExit",
+                "RunFunctionNativeCheckedResultIndexedLocalSemantics.continuation",
+                "RunFunctionNativeCheckedEntryAuthority.entry",
+                "RunFunctionNativeResultIndexedCDeclSuffixAuthority.suffix",
+            ],
+        )
 
-    def test_source_exposes_no_axiom_theorem_with_six_typed_inputs(self) -> None:
+    def test_source_exposes_checked_call_tree_certificate(self) -> None:
         source = relational_interpreter_kernel_run_operation_source(self._build())
         for required in (
             "generatedRunFunctionOperationStatic",
             "generatedRunFunctionOperationABIEntry",
-            "GeneratedRunFunctionFrameParametricStep",
-            "GeneratedRunFunctionLoopPrelude",
-            "GeneratedRunFunctionTerminalDispatch",
-            "GeneratedRunFunctionContinuation",
-            "GeneratedRunFunctionEntry",
-            "GeneratedRunFunctionEpilogue",
+            "GeneratedRunFunctionCallTree",
+            "GeneratedRunFunctionCheckedLocalSemantics",
+            "generatedRunFunctionLoopInvariant",
+            "GeneratedRunFunctionCheckedNativeEvidence",
+            "generatedRunFunctionOperationFunctionReplay",
+            "generatedRunFunctionOperationEndpointReplay",
+            "GeneratedRunFunctionResolverTargetInventoryGoal",
+            "runFunctionNativeResolverTargetInventoryChecked",
+            "generatedRunFunctionResolverTargetInventoryChecked",
+            "generatedRunFunctionResolverTargetInventoryGoal",
+            "generatedClosedKernelOperationNativeProgram",
+            "RunFunctionNativeCheckedEndpointReplay",
+            ".ofCanonicalChecked",
+            "generatedRunFunctionCheckedCertificate",
             "theorem generatedRunFunctionOperationRefinesUsing",
-            "RunFunctionNativeResultIndexedOperationCertificate.mk",
-            "CallResultEncodingResidual generatedConcreteInterpreterKernelABI",
+            "generatedRunFunctionCanonicalContinuationRva",
+            "generatedRunFunctionCanonicalReturnAddress",
+            "GeneratedRunFunctionCanonicalCheckedNativeEvidence",
+            "theorem generatedRunFunctionOperationRefinesUsingCheckedFamily",
+            "RunFunctionNativeCheckedResultIndexedOperationCertificate",
+            "RunFunctionNativeCheckedResultIndexedLocalSemantics",
+            "RunFunctionNativeResultIndexedCDeclSuffixAuthority",
+            "RunFunctionClosedCallTreeAuthority.ofClosure",
+            "checkedNativeWorldKernelOperationDispatchFamily",
         ):
             self.assertIn(required, source)
         theorem = source.split(
             "theorem generatedRunFunctionOperationRefinesUsing", 1
         )[1].split("#print axioms", 1)[0]
-        for premise in (
-            "stepFrameParametric",
-            "loop",
-            "terminal",
-            "continuation",
-            "entry",
-            "epilogue",
-        ):
+        for premise in ("callTree", "native"):
             self.assertIn(f"({premise} :", theorem)
+        self.assertNotIn("GeneratedRunFunctionFrameParametricStep", source)
+        self.assertNotIn("InterpreterKernelStepOperation", source)
+        self.assertIn(
+            "RelationalInterpreterKernelRunOperationResultBridge", source
+        )
         self.assertNotIn(
-            "(stepOperation : GeneratedRunFunctionNestedStepOperation",
-            theorem,
+            "(generatedInterpreterStepNativeProgram environment)", source
         )
         self.assertNotIn("RunFunctionNativeOperationCertificate.mk", theorem)
+        self.assertIn(
+            "GeneratedRunFunctionCheckedLocalSemantics environment", source
+        )
+        self.assertNotIn(
+            "GeneratedRelationalInterpreterKernelRunEntryABI", source
+        )
+        self.assertNotIn(
+            "generatedRunFunctionCheckedEntryAuthority", source
+        )
+        self.assertNotIn("stepABI := native", source)
+        self.assertEqual(source.count("KernelOperationRefinesUsing"), 2)
+        acceptance = source.split(
+            "theorem generatedRunFunctionOperationRefinesUsingCheckedFamily", 1
+        )[1].split("#print axioms", 1)[0]
+        self.assertIn(
+            "generatedFiniteCheckedSemanticFunctionBindings native",
+            acceptance,
+        )
+        self.assertIn(
+            "kernelOperationRefinesUsing_runFunction_mono",
+            acceptance,
+        )
+        self.assertIn(
+            "generatedRunFunctionCanonicalContinuationRva",
+            acceptance,
+        )
+        self.assertIn(
+            "generatedRunFunctionCanonicalReturnAddress",
+            acceptance,
+        )
+        self.assertNotIn("let continuationRva := 0", acceptance)
+        self.assertNotIn("let returnAddress : Word := 0", acceptance)
+        endpoint = source.split(
+            "def generatedRunFunctionOperationEndpointReplay", 1
+        )[1].split("def generatedRunFunctionOperationABIEntry", 1)[0]
+        for forbidden in (
+            "NonemptyRelatedPath",
+            "postState",
+            "afterState",
+            "CallStatus",
+        ):
+            self.assertNotIn(forbidden, endpoint)
         for marker in ("sorry", "axiom", "unsafe", "native_decide"):
             self.assertIsNone(re.search(rf"\b{marker}\b", source), marker)
 
-    def test_rejects_stale_native_step_and_abi_inputs(self) -> None:
+    def test_rejects_stale_native_and_abi_inputs(self) -> None:
         native = json.loads(self.run_native.read_text(encoding="utf-8"))
         native["template"]["entry_rva"] += 1
         self.run_native.write_text(json.dumps(native), encoding="utf-8")
@@ -288,17 +357,6 @@ class StageARelationalInterpreterKernelRunOperationTests(unittest.TestCase):
 
         native["template"]["entry_rva"] -= 1
         self.run_native.write_text(json.dumps(native), encoding="utf-8")
-        step = json.loads(self.step_operation.read_text(encoding="utf-8"))
-        step["checked_static_authority"]["entry_rva"] += 4
-        self.step_operation.write_text(json.dumps(step), encoding="utf-8")
-        with self.assertRaisesRegex(
-            RelationalInterpreterKernelRunOperationGenerationError,
-            "stale or incompatible",
-        ):
-            self._build()
-
-        step["checked_static_authority"]["entry_rva"] -= 4
-        self.step_operation.write_text(json.dumps(step), encoding="utf-8")
         abi = json.loads(self.abi.read_text(encoding="utf-8"))
         abi["operations"][0]["function_index"] = 0
         self.abi.write_text(json.dumps(abi), encoding="utf-8")
@@ -308,17 +366,14 @@ class StageARelationalInterpreterKernelRunOperationTests(unittest.TestCase):
         ):
             self._build()
 
-    def test_step_status_cannot_replace_frame_parametric_certificate(self) -> None:
-        step = json.loads(self.step_operation.read_text(encoding="utf-8"))
-        step["result"]["status"] = "pass"
-        self.step_operation.write_text(json.dumps(step), encoding="utf-8")
-
+    def test_no_step_operation_status_can_enter_run_plan(self) -> None:
         payload = self._build().payload()
         self.assertNotIn("status", payload["result"])
         self.assertEqual(
             payload["remaining_proof_premises"][0],
-            "frame_event_world_parametric_interpreter_step_certificate",
+            "finite_checked_semantic_call_tree",
         )
+        self.assertNotIn("step_operation_plan", payload["inputs"])
 
     def test_writer_is_deterministic_and_module_names_fail_closed(self) -> None:
         first = self.root / "first"
@@ -329,7 +384,6 @@ class StageARelationalInterpreterKernelRunOperationTests(unittest.TestCase):
             "data_inventory": self.data,
             "abi_plan": self.abi,
             "run_native_plan": self.run_native,
-            "step_operation_plan": self.step_operation,
         }
         write_relational_interpreter_kernel_run_operation_bundle(
             out=first, **kwargs

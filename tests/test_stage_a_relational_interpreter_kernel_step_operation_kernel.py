@@ -70,6 +70,43 @@ class StageARelationalInterpreterKernelStepOperationKernelTests(
             "InterpreterStepNativeActionLoopAuthority.compose",
             output,
         )
+        for theorem in (
+            "InterpreterStepNativeCheckedOperationCertificate.refinesDerivation",
+            "InterpreterStepNativeCheckedOperationCertificate.refines",
+            "InterpreterStepNativeOperationCertificate.toChecked",
+        ):
+            self.assertIn(theorem, output)
+
+    def test_checked_certificate_is_request_local(self) -> None:
+        source = (
+            Path(__file__).parents[1]
+            / "src/spaghetti_extractor/lean/StageA"
+            / "RelationalInterpreterKernelStepOperation.lean"
+        ).read_text(encoding="utf-8")
+
+        checked = source.split(
+            "structure InterpreterStepNativeCheckedOperationCertificate", 1
+        )[1].split(
+            "#print axioms concreteInterpreterStepRecordsExact", 1
+        )[0]
+        for required in (
+            "InterpreterStepClosedCallTreeAuthority",
+            "CheckedInterpreterStepDerivation",
+            "InterpreterStepNativeFramedRequestLocalInvokeEvidence",
+            "InterpreterStepNativeCheckedActionLoopAuthority",
+            "certificate.closedTree.close",
+            "certificate.refinesDerivation checked",
+        ):
+            self.assertIn(required, checked)
+        self.assertNotIn(
+            "InterpreterStepNativeInvokeCallAuthority program abi",
+            checked,
+        )
+        self.assertNotIn(
+            "KernelOperationRefinesUsing program abi\n"
+            "      (NativeWorldSubroutineDispatches",
+            checked,
+        )
 
 
 if __name__ == "__main__":

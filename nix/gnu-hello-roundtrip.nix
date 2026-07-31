@@ -1,6 +1,11 @@
 { pkgs
 , pythonEnv
 , spaghettiExtractor
+, sideTool
+, analysisKernelCache
+, isaKernelCache
+, isaSemanticKernel
+, bochsRunner
 , sourceRoot
 , leanSourceRoot
 , originalFixture
@@ -16,6 +21,8 @@ let
   directCallSemanticsDriver = ./gnu-hello-direct-call-semantics.py;
   directCallFixedPointDriver = ./gnu-hello-direct-call-fixed-point.py;
   stackDynamicAuthorityDriver = ./gnu-hello-stack-dynamic-authority.py;
+  leanTermReceiptDriver = ./stage-a-lean-term-receipts.py;
+  semanticCoverageDriver = ./stage-a-semantic-coverage.py;
   stackDynamicHints = ./gnu-hello-stack-dynamic-hints.json;
   proofSourceAggregateDriver = ./stage-a-proof-source-aggregate.py;
   kernelDataDriver = ./gnu-hello-kernel-data-driver.py;
@@ -24,8 +31,10 @@ let
   constructiveSourceCoverageDriver =
     ./gnu-hello-constructive-source-coverage.py;
   canonicalRelationCoreDriver = ./gnu-hello-canonical-relation-core.py;
+  acceptanceRequirementsDriver = ./gnu-hello-acceptance-requirements.py;
   nativeLaunchGraphDriver = ./gnu-hello-native-launch-graph.py;
   diagnosticDriver = ./gnu-hello-roundtrip-diagnostic.py;
+  accessFaultQualificationDriver = ./stage-a-access-domain-receipts.py;
   universalPairedExternalEnvironmentDriver =
     ./gnu-hello-universal-paired-external-environment.py;
   fixtureRoot =
@@ -52,11 +61,13 @@ let
     root = ../.;
     fileset = lib.fileset.unions [
       ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/artifact_formats.py
       ../src/spaghetti_extractor/errors.py
       ../src/spaghetti_extractor/util.py
       ../src/spaghetti_extractor/pe.py
       ../src/spaghetti_extractor/stage_binary.py
       ../src/spaghetti_extractor/contract_tools.py
+      ../src/spaghetti_extractor/_contract_tools
       ../src/spaghetti_extractor/roundtrip_fuzz/image_contract.py
       ../src/spaghetti_extractor/relational/__init__.py
       ../src/spaghetti_extractor/relational/definedness.py
@@ -79,10 +90,17 @@ let
     ../src/spaghetti_extractor/relational/lean/stack_dynamic_indirect_control.py
     ../src/spaghetti_extractor/relational/lean/original_stack_dynamic_control_closure.py
     ../src/spaghetti_extractor/relational/lean/runtime_value_carry.py
+    ../src/spaghetti_extractor/relational/lean/scanner.py
   ];
   directCallProposalProofPythonFiles = lib.fileset.unions [
     ../src/spaghetti_extractor/relational/lean/internal_direct_call_register_summary.py
     ../src/spaghetti_extractor/relational/lean/internal_direct_call_summary_proposal.py
+  ];
+  runEntryProofPythonFiles = lib.fileset.unions [
+    ../src/spaghetti_extractor/relational/lean/interpreter_kernel_run_entry_route.py
+    ../src/spaghetti_extractor/relational/lean/interpreter_kernel_operation_behavior_materialization.py
+    ../src/spaghetti_extractor/relational/lean/interpreter_kernel_run_entry_abi.py
+    ../src/spaghetti_extractor/relational/lean/interpreter_kernel_run_entry_projection.py
   ];
   proofPythonFiles = lib.fileset.difference
     (lib.fileset.intersection
@@ -93,7 +111,7 @@ let
     (lib.fileset.unions [
       stackDynamicProofPythonFiles
       directCallProposalProofPythonFiles
-      ../src/spaghetti_extractor/relational/build.py
+      runEntryProofPythonFiles
     ]);
   proofPythonSource = lib.fileset.toSource {
     root = ../.;
@@ -106,14 +124,19 @@ let
     root = ../.;
     fileset = lib.fileset.unions [
       ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/artifact_formats.py
       ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_binary.py
       ../src/spaghetti_extractor/util.py
       ../src/spaghetti_extractor/relational/__init__.py
       ../src/spaghetti_extractor/relational/original_cutpoint_graph_ir.py
       ../src/spaghetti_extractor/relational/runtime_value_carry_ir.py
+      ../src/spaghetti_extractor/relational/schema.py
       ../src/spaghetti_extractor/relational/stack_dynamic_control_ir.py
       ../src/spaghetti_extractor/relational/lean/__init__.py
       ../src/spaghetti_extractor/relational/lean/nullable_code_pointer_table.py
+      ../src/spaghetti_extractor/relational/lean/nullable_code_pointer_rooted_unreachability.py
       ../src/spaghetti_extractor/relational/lean/original_indirect_control_authority.py
       ../src/spaghetti_extractor/relational/lean/stack_fixed_code_pointer.py
       stackDynamicProofPythonFiles
@@ -126,6 +149,7 @@ let
     root = ../.;
     fileset = lib.fileset.unions [
       ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/artifact_formats.py
       ../src/spaghetti_extractor/errors.py
       ../src/spaghetti_extractor/util.py
       ../src/spaghetti_extractor/relational/__init__.py
@@ -151,6 +175,388 @@ let
     root = ../.;
     fileset = directCallFixedPointDriver;
   };
+  # The side-ISA adapter is an untrusted diagnostic boundary. Keep its source
+  # closure independent from the general CLI and proof emitters.
+  isaSideAdapterPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/isa_catalog.py
+      ../src/spaghetti_extractor/isa_conformance.py
+      ../src/spaghetti_extractor/isa_semantic_forms.py
+      ../src/spaghetti_extractor/isa_side_adapter.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_binary.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/lean/StageA/Formal.lean
+      ../src/spaghetti_extractor/lean/StageA/ISAQualification.lean
+      ../src/spaghetti_extractor/lean/StageA/X87.lean
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/isa_requirements.py
+      ../src/spaghetti_extractor/relational/preflight.py
+      ../src/spaghetti_extractor/relational/schema.py
+      ../src/spaghetti_extractor/relational/side_extraction_artifact.py
+      ../src/spaghetti_extractor/relational/side_isa_artifact.py
+      ../src/spaghetti_extractor/relational/x87_profile.py
+    ];
+  };
+  # Exact GNU encodings are enriched by replaying the reviewed Lean decoder.
+  # Keep this untrusted oracle-input phase independent from the whole proof
+  # emitter so proof-only edits do not invalidate the conformance campaign.
+  isaCatalogEnrichmentPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/isa_catalog.py
+      ../src/spaghetti_extractor/isa_catalog_enrichment.py
+      ../src/spaghetti_extractor/isa_conformance.py
+      ../src/spaghetti_extractor/isa_semantic_forms.py
+      ../src/spaghetti_extractor/isa_side_adapter.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_binary.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/lean/StageA/Formal.lean
+      ../src/spaghetti_extractor/lean/StageA/ISAQualification.lean
+      ../src/spaghetti_extractor/lean/StageA/X87.lean
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/isa_requirements.py
+      ../src/spaghetti_extractor/relational/preflight.py
+      ../src/spaghetti_extractor/relational/schema.py
+      ../src/spaghetti_extractor/relational/side_extraction_artifact.py
+      ../src/spaghetti_extractor/relational/side_isa_artifact.py
+      ../src/spaghetti_extractor/relational/x87_profile.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/compiler.py
+    ];
+  };
+  semanticCoveragePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_binary.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/schema.py
+      (lib.fileset.maybeMissing
+        ../src/spaghetti_extractor/relational/access_domain_receipts.py)
+      ../src/spaghetti_extractor/relational/side_extraction_artifact.py
+      ../src/spaghetti_extractor/relational/side_isa_artifact.py
+      ../src/spaghetti_extractor/relational/semantic_coverage.py
+      ../src/spaghetti_extractor/relational/semantic_coverage_registry.py
+    ];
+  };
+  # The concrete/static acceptance constructor is deliberately isolated from
+  # the lane driver. Dynamic proof work must not invalidate its 19 checked
+  # carrier, PE, launch-root, ABI, relation-core, and invariant bindings.
+  acceptanceRequirementsPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/interpreter_mixed_kernel_binding.py
+      ../src/spaghetti_extractor/relational/lean/gnu_hello_acceptance_requirements.py
+    ];
+  };
+  gnuHelloMixedAcceptancePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/schema.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/interpreter_mixed_kernel_binding.py
+      ../src/spaghetti_extractor/relational/lean/gnu_hello_acceptance_requirements.py
+      ../src/spaghetti_extractor/relational/lean/gnu_hello_mixed_acceptance.py
+      (lib.fileset.maybeMissing ./gnu-hello-mixed-acceptance.py)
+    ];
+  };
+  mixedChunkedAcceptancePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/schema.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/interpreter_mixed_chunked_acceptance.py
+      (lib.fileset.maybeMissing
+        ./interpreter-mixed-chunked-acceptance.py)
+    ];
+  };
+  gnuHelloStaticClosureCommonFiles = lib.fileset.unions [
+    ../src/spaghetti_extractor/__init__.py
+    ../src/spaghetti_extractor/errors.py
+    ../src/spaghetti_extractor/util.py
+    ../src/spaghetti_extractor/relational/__init__.py
+    ../src/spaghetti_extractor/relational/lean/__init__.py
+    (lib.fileset.maybeMissing ./gnu-hello-static-closure-producers.py)
+  ];
+  mkGnuHelloStaticClosurePythonSource = generator:
+    lib.fileset.toSource {
+      root = ../.;
+      fileset = lib.fileset.unions [
+        gnuHelloStaticClosureCommonFiles
+        (lib.fileset.maybeMissing generator)
+      ];
+    };
+  runtimeFoundationPythonSource =
+    mkGnuHelloStaticClosurePythonSource
+      ../src/spaghetti_extractor/relational/lean/gnu_hello_runtime_foundation.py;
+  launchBindingPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      gnuHelloStaticClosureCommonFiles
+      ../src/spaghetti_extractor/relational/lean/gnu_hello_acceptance_requirements.py
+      ../src/spaghetti_extractor/relational/lean/gnu_hello_launch_binding.py
+      ../src/spaghetti_extractor/relational/lean/interpreter_mixed_kernel_binding.py
+    ];
+  };
+  externalComponentPythonSource =
+    mkGnuHelloStaticClosurePythonSource
+      ../src/spaghetti_extractor/relational/lean/gnu_hello_external_component.py;
+  mixedSemanticOperationComponentPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/interpreter_mixed_semantic_operation_component.py
+    ];
+  };
+  mixedFusedSemanticEvidencePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_binary.py
+      ../src/spaghetti_extractor/stage_b_api_catalog.py
+      ../src/spaghetti_extractor/stage_b_c_backend.py
+      ../src/spaghetti_extractor/stage_b_interpreter_backend.py
+      ../src/spaghetti_extractor/stage_b_state_machine.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/definedness.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/interpreter_normalization.py
+      ../src/spaghetti_extractor/relational/lean/gnu_hello_mixed_fused_semantic_evidence.py
+      (lib.fileset.maybeMissing
+        ./gnu-hello-mixed-fused-semantic-evidence.py)
+    ];
+  };
+  mixedDirectCallSemanticEvidencePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_binary.py
+      ../src/spaghetti_extractor/stage_b_api_catalog.py
+      ../src/spaghetti_extractor/stage_b_c_backend.py
+      ../src/spaghetti_extractor/stage_b_interpreter_backend.py
+      ../src/spaghetti_extractor/stage_b_state_machine.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/definedness.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/interpreter_normalization.py
+      ../src/spaghetti_extractor/relational/lean/gnu_hello_mixed_fused_semantic_evidence.py
+      ../src/spaghetti_extractor/relational/lean/gnu_hello_mixed_direct_call_semantic_evidence.py
+      (lib.fileset.maybeMissing
+        ./gnu-hello-mixed-direct-call-semantic-evidence.py)
+    ];
+  };
+  mixedIndirectImportCallSemanticEvidencePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_binary.py
+      ../src/spaghetti_extractor/stage_b_api_catalog.py
+      ../src/spaghetti_extractor/stage_b_c_backend.py
+      ../src/spaghetti_extractor/stage_b_interpreter_backend.py
+      ../src/spaghetti_extractor/stage_b_state_machine.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/definedness.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/interpreter_normalization.py
+      ../src/spaghetti_extractor/relational/lean/gnu_hello_mixed_fused_semantic_evidence.py
+      ../src/spaghetti_extractor/relational/lean/gnu_hello_mixed_indirect_import_call_semantic_evidence.py
+      (lib.fileset.maybeMissing
+        ./gnu-hello-mixed-indirect-import-call-semantic-evidence.py)
+    ];
+  };
+  mixedExternalTailSemanticEvidencePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_binary.py
+      ../src/spaghetti_extractor/stage_b_api_catalog.py
+      ../src/spaghetti_extractor/stage_b_c_backend.py
+      ../src/spaghetti_extractor/stage_b_interpreter_backend.py
+      ../src/spaghetti_extractor/stage_b_state_machine.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/definedness.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/interpreter_normalization.py
+      ../src/spaghetti_extractor/relational/lean/gnu_hello_mixed_fused_semantic_evidence.py
+      ../src/spaghetti_extractor/relational/lean/gnu_hello_mixed_external_tail_semantic_evidence.py
+      (lib.fileset.maybeMissing
+        ./gnu-hello-mixed-external-tail-semantic-evidence.py)
+    ];
+  };
+  runtimeIndirectCompositionPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/original_cutpoint_graph_ir.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      (lib.fileset.maybeMissing
+        ../src/spaghetti_extractor/relational/lean/gnu_hello_runtime_indirect_composition.py)
+      (lib.fileset.maybeMissing
+        ./gnu-hello-runtime-indirect-composition.py)
+    ];
+  };
+  operationInstantiationPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      proofPythonFiles
+      (lib.fileset.maybeMissing
+        ../src/spaghetti_extractor/relational/lean/interpreter_kernel_closed_call_tree.py)
+      (lib.fileset.maybeMissing
+        ../src/spaghetti_extractor/relational/lean/interpreter_kernel_operation_instantiation.py)
+      (lib.fileset.maybeMissing ./gnu-hello-operation-instantiation.py)
+    ];
+  };
+  runEntryRoutePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/interpreter_kernel_run_entry_route.py
+      (lib.fileset.maybeMissing ./gnu-hello-run-entry-route.py)
+    ];
+  };
+  runEntryBehaviorsPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/interpreter_kernel_run_entry_route.py
+      ../src/spaghetti_extractor/relational/lean/interpreter_kernel_operation_behavior_materialization.py
+      (lib.fileset.maybeMissing ./gnu-hello-run-entry-behaviors.py)
+    ];
+  };
+  runEntryAbiPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/interpreter_kernel_run_entry_route.py
+      (lib.fileset.maybeMissing
+        ../src/spaghetti_extractor/relational/lean/interpreter_kernel_run_entry_abi.py)
+      (lib.fileset.maybeMissing
+        ../src/spaghetti_extractor/relational/lean/interpreter_kernel_run_entry_projection.py)
+      (lib.fileset.maybeMissing ./gnu-hello-run-entry-abi.py)
+    ];
+  };
+  programLookupNativeWorldBridgePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      proofPythonFiles
+      (lib.fileset.maybeMissing
+        ../src/spaghetti_extractor/relational/lean/interpreter_kernel_program_lookup_native_world_bridge.py)
+      (lib.fileset.maybeMissing
+        ./gnu-hello-program-lookup-native-world-bridge.py)
+    ];
+  };
+  interpreterStepWorldProgramLookupPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      proofPythonFiles
+      (lib.fileset.maybeMissing
+        ../src/spaghetti_extractor/relational/lean/interpreter_kernel_step_world_program_lookup.py)
+      (lib.fileset.maybeMissing
+        ./gnu-hello-interpreter-step-world-program-lookup.py)
+    ];
+  };
+  interpreterStepProgramLookupCallBehaviorsPythonSource =
+    lib.fileset.toSource {
+      root = ../.;
+      fileset = lib.fileset.unions [
+        proofPythonFiles
+        (lib.fileset.maybeMissing
+          ../src/spaghetti_extractor/relational/lean/interpreter_kernel_step_world_program_lookup.py)
+        (lib.fileset.maybeMissing
+          ../src/spaghetti_extractor/relational/lean/interpreter_kernel_operation_block_behavior.py)
+        (lib.fileset.maybeMissing
+          ../src/spaghetti_extractor/relational/lean/interpreter_kernel_step_program_lookup_projection.py)
+        (lib.fileset.maybeMissing
+          ./gnu-hello-step-program-lookup-call-behaviors.py)
+      ];
+    };
+  closureProofAggregatePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = proofSourceAggregateDriver;
+  };
+  staticClosureDriver =
+    "${runtimeFoundationPythonSource}/nix/gnu-hello-static-closure-producers.py";
+  launchBindingDriver =
+    "${launchBindingPythonSource}/nix/gnu-hello-static-closure-producers.py";
+  externalComponentDriver =
+    "${externalComponentPythonSource}/nix/gnu-hello-static-closure-producers.py";
+  runtimeIndirectCompositionDriver =
+    "${runtimeIndirectCompositionPythonSource}/nix/gnu-hello-runtime-indirect-composition.py";
+  operationInstantiationDriver =
+    "${operationInstantiationPythonSource}/nix/gnu-hello-operation-instantiation.py";
+  runEntryRouteDriver =
+    "${runEntryRoutePythonSource}/nix/gnu-hello-run-entry-route.py";
+  runEntryBehaviorsDriver =
+    "${runEntryBehaviorsPythonSource}/nix/gnu-hello-run-entry-behaviors.py";
+  runEntryAbiDriver =
+    "${runEntryAbiPythonSource}/nix/gnu-hello-run-entry-abi.py";
+  closureProofAggregateDriver =
+    "${closureProofAggregatePythonSource}/nix/stage-a-proof-source-aggregate.py";
+  # Typed access/fault source generation is a narrow proof-data phase. It
+  # consumes immutable GNU artifacts and emits only checked-certificate
+  # proposals; changing diagnostics or the final theorem must not regenerate
+  # these shards.
+  accessFaultQualificationPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/access_domain_receipts.py
+    ];
+  };
   # The exact-data phase emits hundreds of immutable Lean certificate packs.
   # Keep its Python closure independent from unrelated proof emitters so a new
   # composition theorem does not regenerate and recompile that entire graph.
@@ -158,6 +564,7 @@ let
     root = ../.;
     fileset = lib.fileset.unions [
       ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/artifact_formats.py
       ../src/spaghetti_extractor/errors.py
       ../src/spaghetti_extractor/pe.py
       ../src/spaghetti_extractor/stage_binary.py
@@ -196,8 +603,13 @@ let
       ../src/spaghetti_extractor/lean/StageA/Formal.lean
       ../src/spaghetti_extractor/lean/StageA/RelationalFiniteIndex.lean
       ../src/spaghetti_extractor/lean/StageA/RelationalInterpreter.lean
+      ../src/spaghetti_extractor/lean/StageA/RelationalInterpreterKernelActionAlignment.lean
       ../src/spaghetti_extractor/lean/StageA/RelationalInterpreterKernelData.lean
+      ../src/spaghetti_extractor/lean/StageA/RelationalInterpreterKernelLoadedImage.lean
+      ../src/spaghetti_extractor/lean/StageA/RelationalInterpreterKernelProgramIndex.lean
+      ../src/spaghetti_extractor/lean/StageA/RelationalInterpreterKernelProgramTableProjection.lean
       ../src/spaghetti_extractor/lean/StageA/RelationalLoader.lean
+      ../src/spaghetti_extractor/lean/StageA/RelationalMemory.lean
       ../src/spaghetti_extractor/lean/StageA/RelationalPEBytePacks.lean
       ../src/spaghetti_extractor/lean/StageA/X87.lean
     ];
@@ -585,7 +997,10 @@ let
       nativeBuildInputs = commonInputs ++ nativeBuildInputs;
       preferLocalBuild = false;
       allowSubstitutes = true;
-      __contentAddressed = true;
+      # Generated source manifests are read during evaluation to construct the
+      # independently content-addressed Lean DAG. Keep this inexpensive IFD
+      # boundary input-addressed: CA outputs do not have a stable path until
+      # realization, so making the manifest producer CA deadlocks evaluation.
     } ''
       set -euo pipefail
       ${commonEnvironment pythonSource}
@@ -605,6 +1020,223 @@ let
        then runtimePythonSource
        else roundTripPythonSource)
       name nativeBuildInputs script;
+  mkAnalysisPhase = name: nativeBuildInputs: script:
+    pkgs.runCommand name {
+      nativeBuildInputs = [
+        sideTool
+        pkgs.jq
+        pkgs.coreutils
+      ] ++ nativeBuildInputs;
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    } ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      ${script}
+    '';
+  mkGeneratedClosureProof =
+    {
+      name,
+      sources,
+      target,
+      declaration,
+    }:
+    let
+      sourceArguments = builtins.concatStringsSep " " (
+        map (
+          source:
+          "--source ${pkgs.lib.escapeShellArg (toString source)}"
+        ) sources
+      );
+      proofSources = mkPhaseWithSource closureProofAggregatePythonSource
+        "stage-a-gnu-hello-roundtrip-${name}-proof-sources" [] ''
+        ${aggregatePython} ${closureProofAggregateDriver} \
+          ${sourceArguments} \
+          --target ${pkgs.lib.escapeShellArg target} \
+          --explicit-targets-only \
+          --target-closure-only \
+          --coarse-build-packs \
+          --emit-module-graph \
+          --out "$out"
+        jq '. + {acceptance_authority: false}' \
+          "$out/phase-manifest.json" > "$out/phase-manifest.json.tmp"
+        mv "$out/phase-manifest.json.tmp" "$out/phase-manifest.json"
+        jq -e '
+          .status == "source-ready" and
+          (.acceptance_authority | not) and
+          .explicit_targets_only and
+          .target_closure_only
+        ' "$out/phase-manifest.json" >/dev/null
+      '';
+      proof = mkLeanGraph {
+        inherit pkgs;
+        # Recursive CA derivations serialize the complete dynamic graph while
+        # resolving each node. Build stable coarse packs input-addressed, then
+        # content-address the checked root bundle for substitution/provenance.
+        contentAddressed = false;
+        bundleContentAddressed = true;
+        graphFile = proofSources + "/module-graph.json";
+        sourceRoot = proofSources;
+        targetNodes = [ target ];
+        targetBundle = true;
+        targetAxiomAudit = {
+          module = target;
+          inherit declaration;
+          approved_axioms = [ "propext" "Classical.choice" "Quot.sound" ];
+        };
+      };
+    in
+    {
+      inherit proof proofSources;
+    };
+  mkLeanTermReceipts = name: source: proof:
+    pkgs.runCommand name {
+      nativeBuildInputs = [
+        sideTool
+        pkgs.jq
+        pkgs.coreutils
+      ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      # Receipts are a deterministic, checked adapter from the compiled proof
+      # bundle into a compact phase input. Give downstream phases a stable
+      # input-addressed path instead of forcing an IFD over the entire CA proof
+      # graph merely to discover this metadata path.
+    } ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      ${aggregatePython} ${leanTermReceiptDriver} \
+        --bundle ${proof}/bundle.json \
+        --source-root ${source} \
+        --requests ${source}/kernel-check-requests.json \
+        --out "$out"
+      jq -e '
+        .format == "stage-a-lean-kernel-check-receipts-v1" and
+        .status == "checked" and
+        (.receipts | length) > 0 and
+        ([.receipts[].status] | all(. == "checked"))
+      ' "$out/kernel-check-receipts.json" >/dev/null
+    '';
+  mkStaticBinaryInventory =
+    { name, side, binary, linkerMap ? null }:
+    mkAnalysisPhase name [] ''
+      mkdir -p "$out"
+      inventory_args=(
+        --binary "${binary}"
+        --side "${side}"
+        --out "$out/inventory.json"
+      )
+      ${lib.optionalString (linkerMap != null) ''
+        inventory_args+=(--linker-map "${linkerMap}")
+      ''}
+      spaghetti-extractor-side inventory-binary \
+        "''${inventory_args[@]}" \
+        > "$out/inventory.stdout"
+      jq -e \
+        --arg expected_sha256 \
+          "$(sha256sum "${binary}" | cut -d ' ' -f1)" '
+        .format == "stage-a-binary-cutpoint-inventory-v1" and
+        .status == "pass" and
+        .side == "${side}" and
+        .binary_sha256 == $expected_sha256 and
+        .counts.issues == 0 and
+        .counts.regions > 0 and
+        .counts.extraction_regions >= .counts.regions
+      ' "$out/inventory.json" >/dev/null
+    '';
+  mkSupersetIsaRequest =
+    { name, side, inventory }:
+    mkAnalysisPhase name [] ''
+      mkdir -p "$out"
+      spaghetti-extractor-side \
+        project-inventory-extraction-request \
+        --inventory "${inventory}/inventory.json" \
+        --scope superset \
+        --out "$out/isa-request.json" \
+        > "$out/isa-request.stdout"
+      jq -e \
+        --arg expected_sha256 \
+          "$(jq -r .binary_sha256 "${inventory}/inventory.json")" \
+        --argjson expected_regions \
+          "$(jq .counts.extraction_regions \
+            "${inventory}/inventory.json")" '
+        .format == "stage-a-relational-side-extraction-request-v1" and
+        .side == "${side}" and
+        .binary_sha256 == $expected_sha256 and
+        (.regions | length) == $expected_regions and
+        (.regions | length) > 0
+      ' "$out/isa-request.json" >/dev/null
+    '';
+  mkExactLeanIsa =
+    { name, side, binary, request }:
+    mkAnalysisPhase name [ pkgs.lean4 ] ''
+      export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${analysisKernelCache}"
+      export SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_MEMORY_MB=8192
+      export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$TMPDIR/relational-cache"
+      mkdir -p "$out"
+      spaghetti-extractor-side extract-side-isa \
+        --binary "${binary}" \
+        --request "${request}/isa-request.json" \
+        --out "$out/isa.json" \
+        > "$out/isa.stdout"
+      jq -e \
+        --arg expected_sha256 \
+          "$(jq -r .binary_sha256 "${request}/isa-request.json")" \
+        --argjson expected_regions \
+          "$(jq '.regions | length' \
+            "${request}/isa-request.json")" '
+        .format == "stage-a-relational-side-isa-v1" and
+        .status == "untrusted_proposal_requires_lean_decode_replay" and
+        .side == "${side}" and
+        .binary_sha256 == $expected_sha256 and
+        (.regions | length) == $expected_regions and
+        (.regions | length) > 0 and
+        ([.regions[].occurrences | length] | all(. > 0))
+      ' "$out/isa.json" >/dev/null
+    '';
+  mkIsaSummary =
+    { name, side, isa }:
+    mkAnalysisPhase name [] ''
+      mkdir -p "$out"
+      jq '{
+        format: "stage-a-relational-side-isa-summary-v1",
+        status: "lean-decoder-inventory-complete",
+        side,
+        binary_sha256,
+        classifier_sha256,
+        extractor_sha256,
+        counts: {
+          regions: (.regions | length),
+          occurrences: ([.regions[].occurrences[]] | length),
+          unique_forms: ([.regions[].occurrences[].form] | unique | length)
+        },
+        forms: ([.regions[].occurrences[].form] | unique | sort),
+        trust: {
+          lean_decoder_executed: true,
+          acceptance_exact_pe_decode_replay_required: true,
+          semantic_conformance_authority: false,
+          whole_program_acceptance_authority: false
+        }
+      }' "${isa}/isa.json" > "$out/summary.json"
+      jq -e '
+        .format == "stage-a-relational-side-isa-summary-v1" and
+        .status == "lean-decoder-inventory-complete" and
+        .side == "${side}" and
+        .counts.regions > 0 and
+        .counts.occurrences >= .counts.regions and
+        .counts.unique_forms == (.forms | length) and
+        .counts.unique_forms > 0 and
+        .trust.lean_decoder_executed and
+        .trust.acceptance_exact_pe_decode_replay_required and
+        (.trust.semantic_conformance_authority | not) and
+        (.trust.whole_program_acceptance_authority | not)
+      ' "$out/summary.json" >/dev/null
+    '';
 
   smoke = mkPhase "stage-a-gnu-hello-roundtrip-smoke" [] ''
     ${python} ${runtimeDriver} smoke \
@@ -689,6 +1321,340 @@ let
     ' "$out/interpreter-native-build-manifest.json" >/dev/null
     test -s "$out/candidate.exe"
     test -s "$out/payload.map"
+  '';
+
+  originalInventory = mkStaticBinaryInventory {
+    name = "stage-a-gnu-hello-roundtrip-original-inventory";
+    side = "original";
+    binary = originalPe;
+    linkerMap = originalMap;
+  };
+  candidateInventory = mkStaticBinaryInventory {
+    name = "stage-a-gnu-hello-roundtrip-candidate-inventory";
+    side = "candidate";
+    binary = "${candidate}/candidate.exe";
+    # payload.map describes only the generated payload. Whole-image static
+    # recovery is authoritative for the composed candidate's ISA inventory.
+  };
+  originalIsaRequest = mkSupersetIsaRequest {
+    name = "stage-a-gnu-hello-roundtrip-original-isa-request";
+    side = "original";
+    inventory = originalInventory;
+  };
+  candidateIsaRequest = mkSupersetIsaRequest {
+    name = "stage-a-gnu-hello-roundtrip-candidate-isa-request";
+    side = "candidate";
+    inventory = candidateInventory;
+  };
+  originalIsa = mkExactLeanIsa {
+    name = "stage-a-gnu-hello-roundtrip-original-isa";
+    side = "original";
+    binary = originalPe;
+    request = originalIsaRequest;
+  };
+  candidateIsa = mkExactLeanIsa {
+    name = "stage-a-gnu-hello-roundtrip-candidate-isa";
+    side = "candidate";
+    binary = "${candidate}/candidate.exe";
+    request = candidateIsaRequest;
+  };
+  originalIsaSummary = mkIsaSummary {
+    name = "stage-a-gnu-hello-roundtrip-original-isa-summary";
+    side = "original";
+    isa = originalIsa;
+  };
+  candidateIsaSummary = mkIsaSummary {
+    name = "stage-a-gnu-hello-roundtrip-candidate-isa-summary";
+    side = "candidate";
+    isa = candidateIsa;
+  };
+  sideIsaQualificationAdapter = mkPhaseWithSource isaSideAdapterPythonSource
+    "stage-a-gnu-hello-roundtrip-side-isa-adapter" [] ''
+    mkdir -p "$out"
+    ${python} - \
+      ${originalIsa}/isa.json ${originalPe} \
+      ${candidateIsa}/isa.json ${candidate}/candidate.exe \
+      "$out" <<'PY'
+    import pathlib
+    import sys
+
+    from spaghetti_extractor.isa_side_adapter import (
+        write_side_isa_qualification_inputs,
+    )
+    from spaghetti_extractor.util import write_json
+
+    output = pathlib.Path(sys.argv[5])
+    result = write_side_isa_qualification_inputs(
+        side_isa_artifacts=[pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[3])],
+        binaries=[pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[4])],
+        requirements_out=output / "requirements.json",
+        catalog_out=output / "catalog-proposal.json",
+    )
+    write_json(output / "adapter-result.json", result)
+    PY
+    original_sha256="$(sha256sum ${originalPe} | cut -d ' ' -f1)"
+    candidate_sha256="$(
+      sha256sum ${candidate}/candidate.exe | cut -d ' ' -f1
+    )"
+    original_isa_sha256="$(
+      sha256sum ${originalIsa}/isa.json | cut -d ' ' -f1
+    )"
+    candidate_isa_sha256="$(
+      sha256sum ${candidateIsa}/isa.json | cut -d ' ' -f1
+    )"
+    expected_nodes="$(
+      jq -s '[.[] | .regions[]] | length' \
+        ${originalIsa}/isa.json ${candidateIsa}/isa.json
+    )"
+    expected_occurrences="$(
+      jq -s '[.[] | .regions[].occurrences[]] | length' \
+        ${originalIsa}/isa.json ${candidateIsa}/isa.json
+    )"
+    jq -e \
+      --arg original_sha256 "$original_sha256" \
+      --arg candidate_sha256 "$candidate_sha256" \
+      --arg original_isa_sha256 "$original_isa_sha256" \
+      --arg candidate_isa_sha256 "$candidate_isa_sha256" \
+      --argjson expected_nodes "$expected_nodes" \
+      --argjson expected_occurrences "$expected_occurrences" '
+      .format == "stage-a-isa-requirement-inventory-v1" and
+      .status == "complete" and
+      .model == "x86-pe32-relational-v3" and
+      .inputs.original_sha256 == $original_sha256 and
+      .inputs.candidate_sha256 == $candidate_sha256 and
+      .inputs.side_isa_artifacts == [
+        {
+          side: "original",
+          binary_sha256: $original_sha256,
+          artifact_sha256: $original_isa_sha256
+        },
+        {
+          side: "candidate",
+          binary_sha256: $candidate_sha256,
+          artifact_sha256: $candidate_isa_sha256
+        }
+      ] and
+      .counts.canonical_nodes == $expected_nodes and
+      .counts.canonical_occurrences == $expected_occurrences and
+      .counts.canonical_forms == (.forms | length) and
+      .counts.canonical_occurrences == (.occurrences | length) and
+      .counts.conservative_required_nodes == .counts.canonical_nodes and
+      .counts.conservative_required_forms == .counts.canonical_forms and
+      .counts.conservative_required_occurrences ==
+        .counts.canonical_occurrences and
+      .counts.represented_rooted_occurrences == 0 and
+      .counts.unsupported_occurrences == 0 and
+      (.scope.control_closed | not) and
+      (.formal_binding.acceptance_certificate_checked | not) and
+      (.trust.proof_authority | not) and
+      (.trust.closes_stage_a_proof | not)
+    ' "$out/requirements.json" >/dev/null
+    jq -e --slurpfile requirements "$out/requirements.json" '
+      .format == "stage-a-side-isa-executable-catalog-proposal-v1" and
+      .status == "incomplete_missing_effect_enrichment" and
+      .profile == "pe32-i686-v1" and
+      .model == "x86-pe32-relational-v3" and
+      .counts.forms == $requirements[0].counts.canonical_forms and
+      .counts.occurrences ==
+        $requirements[0].counts.canonical_occurrences and
+      .counts.forms == (.forms | length) and
+      .counts.encodings == (.encodings | length) and
+      .counts.representatives == .counts.forms and
+      ([.encodings[] | select(.representative)] | length) ==
+        .counts.representatives and
+      ([.encodings[].enrichment.status] | all(. == "missing")) and
+      ([.encodings[].enrichment.missing_fields] |
+        all(. == ["defined_outputs", "effects", "required_features"])) and
+      .missing_enrichment == {
+        status: "required",
+        fields: ["defined_outputs", "effects", "required_features"],
+        encoding_count: .counts.encodings,
+        corpus_generation_allowed: false
+      } and
+      (.trust.proof_authority | not) and
+      (.trust.closes_stage_a_proof | not)
+    ' "$out/catalog-proposal.json" >/dev/null
+    jq -e --slurpfile catalog "$out/catalog-proposal.json" '
+      .format == "stage-a-side-isa-qualification-adapter-result-v1" and
+      .status == "generated" and
+      .catalog_status == "incomplete_missing_effect_enrichment" and
+      .counts == $catalog[0].counts and
+      (.proof_authority | not) and
+      (.closes_stage_a_proof | not)
+    ' "$out/adapter-result.json" >/dev/null
+    test "$(jq -r .requirements_sha256 "$out/adapter-result.json")" = \
+      "$(sha256sum "$out/requirements.json" | cut -d ' ' -f1)"
+    test "$(jq -r .catalog_sha256 "$out/adapter-result.json")" = \
+      "$(sha256sum "$out/catalog-proposal.json" | cut -d ' ' -f1)"
+  '';
+  sideIsaCatalogEnrichment = mkAnalysisPhase
+    "stage-a-gnu-hello-roundtrip-side-isa-enrichment"
+    [ pythonEnv pkgs.lean4 ] ''
+    export PYTHONPATH=${isaCatalogEnrichmentPythonSource}/src
+    export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE=off
+    mkdir -p "$out"
+    ${python} - \
+      ${sideIsaQualificationAdapter}/catalog-proposal.json \
+      "$out/catalog.json" "$out/result.json" <<'PY'
+    import pathlib
+    import sys
+
+    from spaghetti_extractor.isa_catalog_enrichment import (
+        write_enriched_side_isa_catalog,
+    )
+    from spaghetti_extractor.util import write_json
+
+    result = write_enriched_side_isa_catalog(
+        proposal=pathlib.Path(sys.argv[1]),
+        out=pathlib.Path(sys.argv[2]),
+        timeout_seconds=900,
+    )
+    write_json(pathlib.Path(sys.argv[3]), result)
+    PY
+    jq -e '
+      .format == "stage-a-side-isa-catalog-enrichment-result-v1"
+      and .status == "generated"
+      and (.proof_authority | not)
+      and (.closes_stage_a_proof | not)
+    ' "$out/result.json" >/dev/null
+    jq -e '
+      .format == "stage-a-side-isa-executable-catalog-enrichment-v1"
+      and .counts.forms > 0
+      and .counts.encodings > 0
+      and .counts.resolved + .counts.unresolved == .counts.encodings
+      and (.trust.proof_authority | not)
+      and (.trust.closes_stage_a_proof | not)
+    ' "$out/catalog.json" >/dev/null
+  '';
+  sideIsaCorpus = mkAnalysisPhase
+    "stage-a-gnu-hello-roundtrip-side-isa-corpus"
+    [ spaghettiExtractor ] ''
+    mkdir -p "$out"
+    spaghetti-extractor stage-a-generate-isa-corpus \
+      --catalog ${sideIsaCatalogEnrichment}/catalog.json \
+      --seed 0 \
+      --out "$out" \
+      > "$out/result.json"
+    jq -e '
+      .format == "stage-a-generated-isa-corpus-result-v1"
+      and .status == "generated"
+      and .case_count > 0
+      and (.proof_authority | not)
+      and (.closes_stage_a_proof | not)
+    ' "$out/result.json" >/dev/null
+  '';
+  sideIsaQualification = import ./stage-a-isa-qualification-graph.nix {
+    inherit pkgs spaghettiExtractor bochsRunner;
+    name = "stage-a-gnu-hello-roundtrip-side-isa";
+    kernelCache = isaKernelCache;
+    semanticKernel = isaSemanticKernel;
+    corpus = sideIsaCorpus + "/corpus.json";
+    generatedCorpus = sideIsaCorpus + "/generated-corpus.json";
+    requirements = sideIsaQualificationAdapter + "/requirements.json";
+    contentAddressed = true;
+  };
+  sideIsaQualificationEvidence = sideIsaQualification.qualification;
+  sideIsaQualificationBundle = sideIsaQualification.bundle;
+  isaCoverage = mkAnalysisPhase
+    "stage-a-gnu-hello-roundtrip-isa-coverage" [] ''
+    mkdir -p "$out"
+    jq -n \
+      --slurpfile original "${originalIsaSummary}/summary.json" \
+      --slurpfile candidate "${candidateIsaSummary}/summary.json" '
+      ($original[0]) as $original |
+      ($candidate[0]) as $candidate |
+      (($original.forms + $candidate.forms) | unique | sort) as $union |
+      {
+        format: "stage-a-gnu-hello-roundtrip-isa-coverage-v1",
+        status: "lean-decoder-coverage-inventory-complete",
+        original: {
+          binary_sha256: $original.binary_sha256,
+          counts: $original.counts
+        },
+        candidate: {
+          binary_sha256: $candidate.binary_sha256,
+          counts: $candidate.counts
+        },
+        counts: {
+          original_forms: ($original.forms | length),
+          candidate_forms: ($candidate.forms | length),
+          union_forms: ($union | length),
+          original_only_forms:
+            (($original.forms - $candidate.forms) | unique | length),
+          candidate_only_forms:
+            (($candidate.forms - $original.forms) | unique | length)
+        },
+        forms: {
+          union: $union,
+          shared:
+            (($original.forms - ($original.forms - $candidate.forms)) |
+              unique | sort),
+          original_only:
+            (($original.forms - $candidate.forms) | unique | sort),
+          candidate_only:
+            (($candidate.forms - $original.forms) | unique | sort)
+        },
+        trust: {
+          lean_decoder_executed: true,
+          acceptance_exact_pe_decode_replay_required: true,
+          semantic_conformance_authority: false,
+          whole_program_acceptance_authority: false
+        }
+      }
+    ' > "$out/coverage.json"
+    jq -e '
+      .format == "stage-a-gnu-hello-roundtrip-isa-coverage-v1" and
+      .status == "lean-decoder-coverage-inventory-complete" and
+      .counts.original_forms == .original.counts.unique_forms and
+      .counts.candidate_forms == .candidate.counts.unique_forms and
+      .counts.union_forms == (.forms.union | length) and
+      .counts.original_only_forms == (.forms.original_only | length) and
+      .counts.candidate_only_forms == (.forms.candidate_only | length) and
+      .counts.union_forms > 0 and
+      .trust.lean_decoder_executed and
+      .trust.acceptance_exact_pe_decode_replay_required and
+      (.trust.semantic_conformance_authority | not) and
+      (.trust.whole_program_acceptance_authority | not)
+      ' "$out/coverage.json" >/dev/null
+    '';
+  semanticCoverage = mkPhaseWithSource semanticCoveragePythonSource
+    "stage-a-gnu-hello-roundtrip-semantic-coverage" [] ''
+    ${python} ${semanticCoverageDriver} \
+      --original-isa ${originalIsa}/isa.json \
+      --candidate-isa ${candidateIsa}/isa.json \
+      --out "$out"
+    jq -e '
+      .format == "stage-a-relational-side-semantic-coverage-v1" and
+      (.status == "qualified" or .status == "blocked") and
+      .model == "x86-pe32-relational-v3" and
+      .profile == "x86-pe32-lean-relational-v3" and
+      .counts.raw_occurrences > 0 and
+      .counts.deduplicated_occurrences > 0 and
+      .counts.occurrence_refs == .counts.raw_occurrences and
+      (.trust.proof_authority | not) and
+      (.trust.closes_stage_a_proof | not) and
+      .trust.fail_closed
+    ' "$out/semantic-coverage.json" >/dev/null
+    jq -e '
+      .access_domain_receipts.status == "absent" and
+      .access_domain_receipts.input_sha256 == null and
+      .access_domain_receipts.accepted_receipts == [] and
+      .access_domain_receipts.counts == {
+        provided: 0,
+        accepted: 0,
+        rejected: 0,
+        by_code: {}
+      } and
+      .counts.by_access_fault_domain.complete == 0 and
+      .counts.by_access_fault_domain["requires-proof"] > 0 and
+      .counts.by_access_fault_domain.unsupported == 0 and
+      .counts.by_state_transition_support.unsupported == 0 and
+      .counts.by_relational_discharge.unsupported == 0
+    ' "$out/semantic-coverage.json" >/dev/null
+    jq -e '
+      .format == "stage-a-relational-semantic-coverage-blockers-v1" and
+      (.status == "qualified" or .status == "blocked")
+    ' "$out/semantic-blockers.json" >/dev/null
   '';
 
   # This phase binds the canonical entry/TLS source inventory to the exact
@@ -866,8 +1832,13 @@ let
       (.counts.candidate_pe_byte_packs > 0) and
       (.proved_by_generated_terms | index(
         "normalized_import_inventories_equal") != null) and
-      (.remaining_premises | index(
-        "each_returning_site_has_a_universally_sound_response_relation") != null) and
+      .remaining_premises == [] and
+      .route_authority == "mixed_component_composition" and
+      .conditional_environment_parameters == [
+        "each_returning_site_has_a_universally_sound_response_relation",
+        "both_selected_environments_implement_each_response_relation",
+        "protocol_and_callback_actions_have_separate_nested_frame_refinement"
+      ] and
       .targets == ["GeneratedGnuHelloUniversalPairedExternalEnvironment"]
     ' "$out/phase-manifest.json" >/dev/null
     test -s "$out/universal-paired-external-environment.json"
@@ -1181,7 +2152,7 @@ let
     targetBundle = true;
   };
 
-  mixedOriginalDirectCallSemanticsLean = mkPhaseWithSource
+  mixedOriginalDirectCallSemanticsDraftLean = mkPhaseWithSource
     directCallSemanticsPythonSource
     "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-semantics" [] ''
     ${python} ${directCallSemanticsDriver} \
@@ -1204,7 +2175,7 @@ let
   '';
   mixedOriginalDirectCallSemanticsTargets =
     (builtins.fromJSON (builtins.readFile
-      "${mixedOriginalDirectCallSemanticsLean}/phase-manifest.json")).modules;
+      "${mixedOriginalDirectCallSemanticsDraftLean}/phase-manifest.json")).modules;
   mixedOriginalDirectCallSemanticsTargetArgs =
     builtins.concatStringsSep " " (
       map (module: "--target ${pkgs.lib.escapeShellArg module}")
@@ -1218,7 +2189,7 @@ let
       --source ${staticMachineImportContractsLean} \
       --source ${mixedOriginalWritableSlotAuthorityLean} \
       --source ${mixedOriginalDirectCallProposalsLean} \
-      --source ${mixedOriginalDirectCallSemanticsLean} \
+      --source ${mixedOriginalDirectCallSemanticsDraftLean} \
       ${mixedOriginalDirectCallSemanticsTargetArgs} \
       --explicit-targets-only \
       --target-closure-only \
@@ -1235,6 +2206,7 @@ let
   mixedOriginalDirectCallSemanticsProof = mkLeanGraph {
     inherit pkgs;
     contentAddressed = true;
+    bundleContentAddressed = false;
     standaloneSourceRoot =
       mixedOriginalDirectCallSemanticsProofSources + "/StageA";
     standaloneModules = mixedOriginalDirectCallSemanticsProofModules;
@@ -1243,6 +2215,133 @@ let
     targetNodes = mixedOriginalDirectCallSemanticsTargets;
     targetBundle = true;
   };
+  mixedOriginalDirectCallSemanticsReceipts = mkLeanTermReceipts
+    "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-semantics-receipts"
+    mixedOriginalDirectCallSemanticsDraftLean
+    mixedOriginalDirectCallSemanticsProof;
+  mixedOriginalDirectCallSemanticsLean = mkPhaseWithSource
+    directCallSemanticsPythonSource
+    "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-semantics-final" [] ''
+    ${python} ${directCallSemanticsDriver} \
+      --original ${originalPe} \
+      --state-machine ${staticExport}/state-machine.jsonl \
+      --proposal-report \
+        ${mixedOriginalDirectCallProposalsLean}/internal-direct-call-summary-proposals.json \
+      --kernel-checks \
+        ${mixedOriginalDirectCallSemanticsReceipts}/kernel-checks.json \
+      --out "$out"
+    jq -e '
+      .phase == "mixed-original-direct-call-semantics" and
+      .status == "semantic-terms-ready" and
+      (.proof_authority | not) and
+      .counts.remaining_semantic_frontiers == 0
+    ' "$out/phase-manifest.json" >/dev/null
+    jq -e '
+      .format == "stage-a-mixed-original-direct-call-authority-bindings-v2" and
+      ([.contracts[].kernel_check.status] | all(. == "checked")) and
+      ([.contracts[].remaining_semantic_premises] | all(length == 0))
+    ' "$out/direct-call-authority-bindings.json" >/dev/null
+  '';
+
+  # Compile the static stack-target authority before requesting a semantic
+  # summary for the indirect call that consumes it. The generated entry
+  # inventory is accepted only after its exact source and `.olean` are bound
+  # by the generic kernel-receipt phase.
+  mixedOriginalStaticStackAuthorityDraftLean =
+    mkPhaseWithSource stackDynamicAuthorityPythonSource
+    "stage-a-gnu-hello-roundtrip-mixed-original-static-stack-authority-draft" [] ''
+    ${python} ${stackDynamicAuthorityDriver} \
+      --original ${originalPe} \
+      --state-machine ${staticExport}/state-machine.jsonl \
+      --proof-input \
+        ${mixedOriginalDirectCallProposalsLean}/stack-dynamic-control-input.json \
+      --cutpoint-graph \
+        ${mixedOriginalDirectCallProposalsLean}/original-cutpoint-graph-ir.json \
+      --hints ${stackDynamicHints} \
+      --static-only \
+      --out "$out"
+    jq -e '
+      .phase == "mixed-original-stack-dynamic-authority-lean" and
+      .status == "kernel_compile_required" and
+      .counts.stack_entries == 1 and
+      .counts.kernel_checked_stack_entries == 0 and
+      .counts.kernel_checked_indirect_exit_entries == 0
+    ' "$out/phase-manifest.json" >/dev/null
+  '';
+  mixedOriginalStaticStackAuthorityTargets =
+    (builtins.fromJSON (builtins.readFile
+      "${mixedOriginalStaticStackAuthorityDraftLean}/phase-manifest.json")).modules;
+  mixedOriginalStaticStackAuthorityTargetArgs =
+    builtins.concatStringsSep " " (
+      map (module: "--target ${pkgs.lib.escapeShellArg module}")
+        mixedOriginalStaticStackAuthorityTargets
+    );
+  mixedOriginalStaticStackAuthorityProofSources = mkPhase
+    "stage-a-gnu-hello-roundtrip-mixed-original-static-stack-authority-proof-sources" [] ''
+    ${aggregatePython} ${proofSourceAggregateDriver} \
+      --source ${leanSourceRoot} \
+      --source ${originalPeLean} \
+      --source ${staticMachineImportContractsLean} \
+      --source ${mixedOriginalWritableSlotAuthorityLean} \
+      --source ${mixedOriginalStaticStackAuthorityDraftLean} \
+      ${mixedOriginalStaticStackAuthorityTargetArgs} \
+      --explicit-targets-only \
+      --target-closure-only \
+      --out "$out"
+  '';
+  mixedOriginalStaticStackAuthorityProofModules =
+    builtins.fromJSON (builtins.readFile
+      "${mixedOriginalStaticStackAuthorityProofSources}/standalone-modules.json");
+  mixedOriginalStaticStackAuthorityProofResources =
+    builtins.fromJSON (builtins.readFile
+      "${mixedOriginalStaticStackAuthorityProofSources}/module-resources.json");
+  mixedOriginalStaticStackAuthorityProof = mkLeanGraph {
+    inherit pkgs;
+    contentAddressed = true;
+    bundleContentAddressed = false;
+    standaloneSourceRoot =
+      mixedOriginalStaticStackAuthorityProofSources + "/StageA";
+    standaloneModules = mixedOriginalStaticStackAuthorityProofModules;
+    standaloneModuleResources =
+      mixedOriginalStaticStackAuthorityProofResources;
+    targetNodes = mixedOriginalStaticStackAuthorityTargets;
+    targetBundle = true;
+  };
+  mixedOriginalStaticStackAuthorityReceipts = mkLeanTermReceipts
+    "stage-a-gnu-hello-roundtrip-mixed-original-static-stack-authority-receipts"
+    mixedOriginalStaticStackAuthorityDraftLean
+    mixedOriginalStaticStackAuthorityProof;
+  mixedOriginalStaticStackAuthorityLean =
+    mkPhaseWithSource stackDynamicAuthorityPythonSource
+    "stage-a-gnu-hello-roundtrip-mixed-original-static-stack-authority" [] ''
+    ${python} ${stackDynamicAuthorityDriver} \
+      --original ${originalPe} \
+      --state-machine ${staticExport}/state-machine.jsonl \
+      --proof-input \
+        ${mixedOriginalDirectCallProposalsLean}/stack-dynamic-control-input.json \
+      --cutpoint-graph \
+        ${mixedOriginalDirectCallProposalsLean}/original-cutpoint-graph-ir.json \
+      --hints ${stackDynamicHints} \
+      --kernel-checks \
+        ${mixedOriginalStaticStackAuthorityReceipts}/kernel-checks.json \
+      --static-only \
+      --out "$out"
+    jq -e '
+      .phase == "mixed-original-stack-dynamic-authority-lean" and
+      .status == "checked" and
+      .counts.stack_entries == 1 and
+      .counts.kernel_checked_stack_entries == 1 and
+      .counts.kernel_checked_indirect_exit_entries == 1
+    ' "$out/phase-manifest.json" >/dev/null
+    jq -e '
+      .format ==
+        "stage-a-checked-stack-finite-origin-call-entry-authorities-v1" and
+      .status == "checked" and
+      (.entries | length) == 1 and
+      .entries[0].static_stack_authority_kernel_check.status == "checked" and
+      .entries[0].indirect_exit_authority_kernel_check.status == "checked"
+    ' "$out/checked-stack-finite-origin-call-entry-authorities.json" >/dev/null
+  '';
 
   # A later round may use only already Lean-checked call summaries to recover
   # additional finite-origin call entries.  Keeping the round explicit in the
@@ -1272,13 +2371,15 @@ let
         ${mixedOriginalDirectCallSemanticsLean}/direct-call-authority-bindings.json \
       --runtime-value-carry-hints \
         ${./gnu-hello-stack-dynamic-hints.json} \
+      --checked-stack-entry-authority \
+        ${mixedOriginalStaticStackAuthorityLean}/checked-stack-finite-origin-call-entry-authorities.json \
       --shard-size 128 \
       --out "$out"
     jq -e '
       .phase == "mixed-original-direct-call-proposals" and
       .status == "proposal-source-ready" and
       (.proof_authority | not) and
-      .counts.recovered_finite_origin_entry_authorities > 0
+      .counts.checked_stack_finite_origin_entry_authorities == 1
     ' "$out/phase-manifest.json" >/dev/null
   '';
   mixedOriginalDirectCallClosureProposalTargets =
@@ -1298,6 +2399,7 @@ let
       --source ${mixedOriginalWritableSlotAuthorityLean} \
       --source ${mixedOriginalDirectCallProposalsLean} \
       --source ${mixedOriginalDirectCallSemanticsLean} \
+      --source ${mixedOriginalStaticStackAuthorityLean} \
       --source ${mixedOriginalDirectCallClosureProposalsLean} \
       ${mixedOriginalDirectCallClosureProposalTargetArgs} \
       --explicit-targets-only \
@@ -1322,7 +2424,7 @@ let
     targetBundle = true;
   };
 
-  mixedOriginalDirectCallClosureSemanticsLean = mkPhaseWithSource
+  mixedOriginalDirectCallClosureSemanticsDraftLean = mkPhaseWithSource
     directCallSemanticsPythonSource
     "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-closure-semantics" [] ''
     ${python} ${directCallSemanticsDriver} \
@@ -1333,14 +2435,15 @@ let
       --out "$out"
     jq -e '
       .phase == "mixed-original-direct-call-semantics" and
-      .status == "semantic-terms-ready" and
+      (.status == "semantic-terms-ready" or
+        .status == "semantic-premises-pending") and
       (.proof_authority | not) and
-      .counts.remaining_semantic_frontiers == 0
+      .counts.remaining_semantic_frontiers >= 0
     ' "$out/phase-manifest.json" >/dev/null
   '';
   mixedOriginalDirectCallClosureSemanticsTargets =
     (builtins.fromJSON (builtins.readFile
-      "${mixedOriginalDirectCallClosureSemanticsLean}/phase-manifest.json")).modules;
+      "${mixedOriginalDirectCallClosureSemanticsDraftLean}/phase-manifest.json")).modules;
   mixedOriginalDirectCallClosureSemanticsTargetArgs =
     builtins.concatStringsSep " " (
       map (module: "--target ${pkgs.lib.escapeShellArg module}")
@@ -1355,30 +2458,56 @@ let
       --source ${mixedOriginalWritableSlotAuthorityLean} \
       --source ${mixedOriginalDirectCallProposalsLean} \
       --source ${mixedOriginalDirectCallSemanticsLean} \
+      --source ${mixedOriginalStaticStackAuthorityLean} \
       --source ${mixedOriginalDirectCallClosureProposalsLean} \
-      --source ${mixedOriginalDirectCallClosureSemanticsLean} \
+      --source ${mixedOriginalDirectCallClosureSemanticsDraftLean} \
       ${mixedOriginalDirectCallClosureSemanticsTargetArgs} \
       --explicit-targets-only \
       --target-closure-only \
+      --coarse-build-packs \
+      --emit-module-graph \
       --out "$out"
   '';
-  mixedOriginalDirectCallClosureSemanticsProofModules =
-    builtins.fromJSON (builtins.readFile
-      "${mixedOriginalDirectCallClosureSemanticsProofSources}/standalone-modules.json");
-  mixedOriginalDirectCallClosureSemanticsProofResources =
-    builtins.fromJSON (builtins.readFile
-      "${mixedOriginalDirectCallClosureSemanticsProofSources}/module-resources.json");
   mixedOriginalDirectCallClosureSemanticsProof = mkLeanGraph {
     inherit pkgs;
-    contentAddressed = true;
-    standaloneSourceRoot =
-      mixedOriginalDirectCallClosureSemanticsProofSources + "/StageA";
-    standaloneModules = mixedOriginalDirectCallClosureSemanticsProofModules;
-    standaloneModuleResources =
-      mixedOriginalDirectCallClosureSemanticsProofResources;
+    # Recursive CA derivations cause Nix to re-serialize the entire generated
+    # proof graph while resolving each dynamic dependency. Build the static
+    # Lean DAG input-addressed, then content-address its checked root bundle.
+    contentAddressed = false;
+    bundleContentAddressed = true;
+    graphFile =
+      mixedOriginalDirectCallClosureSemanticsProofSources + "/module-graph.json";
+    sourceRoot = mixedOriginalDirectCallClosureSemanticsProofSources;
     targetNodes = mixedOriginalDirectCallClosureSemanticsTargets;
     targetBundle = true;
   };
+  mixedOriginalDirectCallClosureSemanticsReceipts = mkLeanTermReceipts
+    "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-closure-semantics-receipts"
+    mixedOriginalDirectCallClosureSemanticsDraftLean
+    mixedOriginalDirectCallClosureSemanticsProof;
+  mixedOriginalDirectCallClosureSemanticsLean = mkPhaseWithSource
+    directCallSemanticsPythonSource
+    "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-closure-semantics-final" [] ''
+    ${python} ${directCallSemanticsDriver} \
+      --original ${originalPe} \
+      --state-machine ${staticExport}/state-machine.jsonl \
+      --proposal-report \
+        ${mixedOriginalDirectCallClosureProposalsLean}/internal-direct-call-summary-proposals.json \
+      --kernel-checks \
+        ${mixedOriginalDirectCallClosureSemanticsReceipts}/kernel-checks.json \
+      --out "$out"
+    jq -e '
+      .phase == "mixed-original-direct-call-semantics" and
+      .status == "semantic-terms-ready" and
+      (.proof_authority | not) and
+      .counts.remaining_semantic_frontiers == 0
+    ' "$out/phase-manifest.json" >/dev/null
+    jq -e '
+      .format == "stage-a-mixed-original-direct-call-authority-bindings-v2" and
+      ([.contracts[].kernel_check.status] | all(. == "checked")) and
+      ([.contracts[].remaining_semantic_premises] | all(length == 0))
+    ' "$out/direct-call-authority-bindings.json" >/dev/null
+  '';
 
   # The register-authority report is already a finite exact inventory of every
   # call boundary that needs a preservation contract. Once the closure round
@@ -1398,6 +2527,8 @@ let
         ${mixedOriginalDirectCallClosureProposalsLean}/internal-direct-call-summary-proposals.json \
       --authority-report \
         ${mixedOriginalDirectCallClosureSemanticsLean}/direct-call-authority-bindings.json \
+      --stack-dynamic-input \
+        ${mixedOriginalDirectCallClosureProposalsLean}/stack-dynamic-control-input.json \
       --out "$out"
     jq -e '
       .format == "stage-a-direct-call-closure-fixed-point-v2" and
@@ -1405,13 +2536,14 @@ let
       (.proof_authority | not) and
       (.acceptance_authority | not) and
       .counts.remaining_frontiers == 0 and
+      .counts.delegated_stack_dynamic_frontiers == 0 and
       .counts.proposal_modules ==
         (.counts.ordinary_requests + .counts.finite_origin_requests) and
       .counts.semantic_contracts == .counts.proposal_modules
     ' "$out/direct-call-fixed-point.json" >/dev/null
   '';
 
-  mixedOriginalStackDynamicAuthorityLean =
+  mixedOriginalStackDynamicAuthorityDraftLean =
     mkPhaseWithSource stackDynamicAuthorityPythonSource
     "stage-a-gnu-hello-roundtrip-mixed-original-stack-dynamic-authority-lean" [] ''
     test -e ${mixedOriginalDirectCallFixedPointCheck}
@@ -1437,9 +2569,10 @@ let
       .counts.runtime_premises_required == .counts.sites and
       .counts.stack_sites == 1 and
       .counts.indexed_table_sites == 1 and
+      .counts.rooted_unreachability_sites == 1 and
       .counts.dynamic_callback_sites == 1
       and .counts.runtime_value_carry_routes == 1
-      and .counts.runtime_value_carry_required_transfers == 1
+      and .counts.runtime_value_carry_required_transfers == 0
     ' "$out/phase-manifest.json" >/dev/null
     jq -e '
       .format == "stage-a-original-stack-dynamic-control-closure-v1" and
@@ -1450,26 +2583,29 @@ let
     ' "$out/original-stack-dynamic-control-closure.json" >/dev/null
     jq -e '
       .format == "stage-a-runtime-value-carry-ir-v1" and
-      (.proof_ready | not) and
+      .proof_ready and
       (.routes | length) == 1 and
       ([.routes[].transfers[] |
-        select(.authority_status == "required")] | length) == 1
+        select(.authority_status == "required")] | length) == 0
     ' "$out/runtime-value-carry-ir.json" >/dev/null
     jq -e '
       .format == "stage-a-runtime-value-carry-lean-v1" and
       (.proof_authority | not) and
       (.semantic_authority_complete | not) and
+      .kernel_compile_required and
       (.routes | length) == 1 and
-      .routes[0].semantic_authority == null
+      (.routes[0].semantic_authority | length) > 0
     ' "$out/runtime-value-carry-lean.json" >/dev/null
     test -s \
       "$out/StageA/GeneratedRelationalRuntimeValueCarryStructure.lean"
     test -s \
       "$out/StageA/GeneratedRelationalRuntimeValueCarryBinding.lean"
+    test -s \
+      "$out/StageA/GeneratedRelationalRuntimeValueCarrySemantics.lean"
   '';
   mixedOriginalStackDynamicAuthorityTargets =
     (builtins.fromJSON (builtins.readFile
-      "${mixedOriginalStackDynamicAuthorityLean}/phase-manifest.json")).targets;
+      "${mixedOriginalStackDynamicAuthorityDraftLean}/phase-manifest.json")).modules;
   mixedOriginalStackDynamicAuthorityTargetArgs =
     builtins.concatStringsSep " " (
       map (module: "--target ${pkgs.lib.escapeShellArg module}")
@@ -1482,7 +2618,8 @@ let
       --source ${originalPeLean} \
       --source ${staticMachineImportContractsLean} \
       --source ${mixedOriginalWritableSlotAuthorityLean} \
-      --source ${mixedOriginalStackDynamicAuthorityLean} \
+      --source ${mixedOriginalDirectCallClosureSemanticsProofSources} \
+      --source ${mixedOriginalStackDynamicAuthorityDraftLean} \
       ${mixedOriginalStackDynamicAuthorityTargetArgs} \
       --explicit-targets-only \
       --target-closure-only \
@@ -1497,6 +2634,7 @@ let
   mixedOriginalStackDynamicAuthorityProof = mkLeanGraph {
     inherit pkgs;
     contentAddressed = true;
+    bundleContentAddressed = false;
     standaloneSourceRoot =
       mixedOriginalStackDynamicAuthorityProofSources + "/StageA";
     standaloneModules = mixedOriginalStackDynamicAuthorityProofModules;
@@ -1505,6 +2643,58 @@ let
     targetNodes = mixedOriginalStackDynamicAuthorityTargets;
     targetBundle = true;
   };
+  mixedOriginalStackDynamicAuthorityReceipts = mkLeanTermReceipts
+    "stage-a-gnu-hello-roundtrip-mixed-original-stack-dynamic-authority-receipts"
+    mixedOriginalStackDynamicAuthorityDraftLean
+    mixedOriginalStackDynamicAuthorityProof;
+  mixedOriginalStackDynamicAuthorityLean =
+    mkPhaseWithSource stackDynamicAuthorityPythonSource
+    "stage-a-gnu-hello-roundtrip-mixed-original-stack-dynamic-authority-lean-final" [] ''
+    test -e ${mixedOriginalDirectCallFixedPointCheck}
+    ${python} ${stackDynamicAuthorityDriver} \
+      --original ${originalPe} \
+      --state-machine ${staticExport}/state-machine.jsonl \
+      --proof-input \
+        ${mixedOriginalDirectCallFixedPointProposalsLean}/stack-dynamic-control-input.json \
+      --cutpoint-graph \
+        ${mixedOriginalDirectCallFixedPointProposalsLean}/original-cutpoint-graph-ir.json \
+      --direct-call-authority \
+        ${mixedOriginalDirectCallClosureSemanticsLean}/direct-call-authority-bindings.json \
+      --hints ${stackDynamicHints} \
+      --kernel-checks \
+        ${mixedOriginalStackDynamicAuthorityReceipts}/kernel-checks.json \
+      --out "$out"
+    jq -e '
+      .phase == "mixed-original-stack-dynamic-authority-lean" and
+      .status == "runtime-premises-required" and
+      (.proof_authority | not) and
+      (.report_status_is_authority | not) and
+      .runtime_closure_required and
+      .counts.sites == 3 and
+      .counts.static_authorities == .counts.sites and
+      .counts.runtime_premises_required == .counts.sites and
+      .counts.stack_sites == 1 and
+      .counts.indexed_table_sites == 1 and
+      .counts.rooted_unreachability_sites == 1 and
+      .counts.dynamic_callback_sites == 1 and
+      .counts.runtime_value_carry_routes == 1 and
+      .counts.runtime_value_carry_required_transfers == 0
+    ' "$out/phase-manifest.json" >/dev/null
+    jq -e '
+      .format == "stage-a-runtime-value-carry-ir-v1" and
+      .proof_ready and
+      ([.routes[].transfers[] |
+        select(.authority_status == "required")] | length) == 0
+    ' "$out/runtime-value-carry-ir.json" >/dev/null
+    jq -e '
+      .format == "stage-a-runtime-value-carry-lean-v1" and
+      (.proof_authority | not) and
+      .semantic_authority_complete and
+      (.kernel_compile_required | not) and
+      ([.routes[].semantic_authority_status] |
+        all(. == "closed"))
+    ' "$out/runtime-value-carry-lean.json" >/dev/null
+  '';
 
   mixedOriginalLean = mkPhase
     "stage-a-gnu-hello-roundtrip-mixed-original-lean" [] ''
@@ -1682,6 +2872,214 @@ let
       --shard-size 48 --out "$out"
   '';
 
+  mixedFusedSemanticEvidenceLean =
+    mkPhaseWithSource mixedFusedSemanticEvidencePythonSource
+      "stage-a-gnu-hello-roundtrip-mixed-fused-semantic-evidence-source" [] ''
+      ${python} \
+        ${mixedFusedSemanticEvidencePythonSource}/nix/gnu-hello-mixed-fused-semantic-evidence.py \
+        --state-machine ${staticExport}/state-machine.jsonl \
+        --out "$out"
+      jq -e '
+        .format ==
+          "stage-a-gnu-hello-mixed-fused-semantic-evidence-v1" and
+        (.proof_authority | not) and
+        (.acceptance_authority | not) and
+        (.classification_authority | not) and
+        .input_rows == 5697 and
+        .non_x87_binding_rows == 5384 and
+        .ordinary_one_step_evidence_rows == 4310 and
+        .x87_rows == 313 and
+        .family_counts["ordinary-one-step"] == 4310 and
+        .residual_factory_counts["dedicated-direct-call-return"] == 858 and
+        .residual_factory_counts["dedicated-indirect-or-import-call"] == 161 and
+        .residual_factory_counts["dedicated-external-boundary"] == 55 and
+        .residual_factory_counts["dedicated-x87-replay"] == 313 and
+        .target == "GeneratedGnuHelloMixedFusedSemanticEvidenceBundle" and
+        .validation_required == "lean-kernel-check"
+      ' "$out/gnu-hello-mixed-fused-semantic-evidence.json" >/dev/null
+      test "$(find "$out/StageA" -maxdepth 1 -name \
+        'GeneratedGnuHelloMixedFusedSemanticEvidence*.lean' | wc -l)" -eq 114
+    '';
+
+  mixedFusedSemanticEvidenceClosure = mkGeneratedClosureProof {
+    name = "mixed-fused-semantic-evidence";
+    sources = [
+      leanSourceRoot
+      originalPeLean
+      programLean
+      normalizationLean
+      semanticRefinementLean
+      mixedFusedSemanticEvidenceLean
+    ];
+    target = "GeneratedGnuHelloMixedFusedSemanticEvidenceBundle";
+    declaration =
+      "StageA.GeneratedRelational.generatedGnuHelloOrdinarySemanticEvidenceNameCount";
+  };
+  mixedFusedSemanticEvidenceProofSources =
+    mixedFusedSemanticEvidenceClosure.proofSources;
+  mixedFusedSemanticEvidenceProof =
+    mixedFusedSemanticEvidenceClosure.proof;
+
+  mixedDirectCallSemanticEvidenceLean =
+    mkPhaseWithSource mixedDirectCallSemanticEvidencePythonSource
+      "stage-a-gnu-hello-roundtrip-mixed-direct-call-semantic-evidence-source" [] ''
+      ${python} \
+        ${mixedDirectCallSemanticEvidencePythonSource}/nix/gnu-hello-mixed-direct-call-semantic-evidence.py \
+        --state-machine ${staticExport}/state-machine.jsonl \
+        --out "$out"
+      jq -e '
+        .format ==
+          "stage-a-gnu-hello-mixed-direct-call-semantic-evidence-v1" and
+        (.proof_authority | not) and
+        (.acceptance_authority | not) and
+        (.classification_authority | not) and
+        .input_rows == 5697 and
+        .direct_call_return_rows == 858 and
+        .generated_direct_call_evidence_adapters == 858 and
+        .family_counts["ordinary-one-step"] == 4310 and
+        .family_counts["dedicated-direct-call-return"] == 858 and
+        .unowned_family_counts["dedicated-indirect-or-import-call"] == 161 and
+        .unowned_family_counts["dedicated-external-boundary"] == 55 and
+        .unowned_family_counts["dedicated-x87-replay"] == 313 and
+        .target ==
+          "GeneratedGnuHelloMixedDirectCallSemanticEvidenceBundle" and
+        .validation_required == "lean-kernel-check"
+      ' "$out/gnu-hello-mixed-direct-call-semantic-evidence.json" >/dev/null
+      test "$(find "$out/StageA" -maxdepth 1 -name \
+        'GeneratedGnuHelloMixedDirectCallSemanticEvidence*.lean' | wc -l)" -eq 28
+    '';
+
+  mixedDirectCallSemanticEvidenceClosure = mkGeneratedClosureProof {
+    name = "mixed-direct-call-semantic-evidence";
+    sources = [
+      leanSourceRoot
+      originalPeLean
+      programLean
+      normalizationLean
+      semanticRefinementLean
+      mixedFusedSemanticEvidenceLean
+      mixedDirectCallSemanticEvidenceLean
+    ];
+    target = "GeneratedGnuHelloMixedDirectCallSemanticEvidenceBundle";
+    declaration =
+      "StageA.GeneratedRelational.generatedGnuHelloDirectCallSemanticEvidenceNameCount";
+  };
+  mixedDirectCallSemanticEvidenceProofSources =
+    mixedDirectCallSemanticEvidenceClosure.proofSources;
+  mixedDirectCallSemanticEvidenceProof =
+    mixedDirectCallSemanticEvidenceClosure.proof;
+
+  mixedIndirectImportCallSemanticEvidenceLean =
+    mkPhaseWithSource mixedIndirectImportCallSemanticEvidencePythonSource
+      "stage-a-gnu-hello-roundtrip-mixed-indirect-import-call-semantic-evidence-source" [] ''
+      ${python} \
+        ${mixedIndirectImportCallSemanticEvidencePythonSource}/nix/gnu-hello-mixed-indirect-import-call-semantic-evidence.py \
+        --state-machine ${staticExport}/state-machine.jsonl \
+        --out "$out"
+      jq -e '
+        .format ==
+          "stage-a-gnu-hello-mixed-indirect-import-call-semantic-evidence-v1" and
+        (.proof_authority | not) and
+        (.acceptance_authority | not) and
+        (.classification_authority | not) and
+        .input_rows == 5697 and
+        .indirect_import_call_rows == 161 and
+        .generated_indirect_import_call_evidence_adapters == 161 and
+        .semantic_call_kind_counts == {
+          external_call: 77,
+          indirect_call: 83,
+          internal_call: 1
+        } and
+        .family_counts["dedicated-indirect-or-import-call"] == 161 and
+        .unowned_family_counts["ordinary-one-step"] == 4310 and
+        .unowned_family_counts["dedicated-direct-call-return"] == 858 and
+        .unowned_family_counts["dedicated-external-boundary"] == 55 and
+        .unowned_family_counts["dedicated-x87-replay"] == 313 and
+        .target ==
+          "GeneratedGnuHelloMixedIndirectImportCallSemanticEvidenceBundle" and
+        .validation_required == "lean-kernel-check"
+      ' "$out/gnu-hello-mixed-indirect-import-call-semantic-evidence.json" >/dev/null
+      test "$(find "$out/StageA" -maxdepth 1 -name \
+        'GeneratedGnuHelloMixedIndirectImportCallSemanticEvidence*.lean' | wc -l)" -eq 8
+    '';
+
+  mixedIndirectImportCallSemanticEvidenceClosure = mkGeneratedClosureProof {
+    name = "mixed-indirect-import-call-semantic-evidence";
+    sources = [
+      leanSourceRoot
+      originalPeLean
+      programLean
+      normalizationLean
+      semanticRefinementLean
+      mixedFusedSemanticEvidenceLean
+      mixedIndirectImportCallSemanticEvidenceLean
+    ];
+    target =
+      "GeneratedGnuHelloMixedIndirectImportCallSemanticEvidenceBundle";
+    declaration =
+      "StageA.GeneratedRelational.generatedGnuHelloIndirectImportCallSemanticEvidenceNameCount";
+  };
+  mixedIndirectImportCallSemanticEvidenceProofSources =
+    mixedIndirectImportCallSemanticEvidenceClosure.proofSources;
+  mixedIndirectImportCallSemanticEvidenceProof =
+    mixedIndirectImportCallSemanticEvidenceClosure.proof;
+
+  mixedExternalTailSemanticEvidenceLean =
+    mkPhaseWithSource mixedExternalTailSemanticEvidencePythonSource
+      "stage-a-gnu-hello-roundtrip-mixed-external-tail-semantic-evidence-source" [] ''
+      ${python} \
+        ${mixedExternalTailSemanticEvidencePythonSource}/nix/gnu-hello-mixed-external-tail-semantic-evidence.py \
+        --state-machine ${staticExport}/state-machine.jsonl \
+        --out "$out"
+      jq -e '
+        .format ==
+          "stage-a-gnu-hello-mixed-external-tail-semantic-evidence-v1" and
+        (.proof_authority | not) and
+        (.acceptance_authority | not) and
+        (.classification_authority | not) and
+        .input_rows == 5697 and
+        .external_tail_rows == 55 and
+        .generated_external_tail_evidence_adapters == 55 and
+        .route_kind_counts == {
+          direct: 5,
+          indirect: 50
+        } and
+        .family_counts["dedicated-external-boundary"] == 55 and
+        .unowned_family_counts["ordinary-one-step"] == 4310 and
+        .unowned_family_counts["dedicated-direct-call-return"] == 858 and
+        .unowned_family_counts["dedicated-indirect-or-import-call"] == 161 and
+        .unowned_family_counts["dedicated-x87-replay"] == 313 and
+        .checked_boundary.classifier_remains_semantic_transfer and
+        (.checked_boundary.external_operation_classifier_used | not) and
+        (.checked_boundary.external_boundary_classifier_used | not) and
+        .target ==
+          "GeneratedGnuHelloMixedExternalTailSemanticEvidenceBundle" and
+        .validation_required == "lean-kernel-check"
+      ' "$out/gnu-hello-mixed-external-tail-semantic-evidence.json" >/dev/null
+      test "$(find "$out/StageA" -maxdepth 1 -name \
+        'GeneratedGnuHelloMixedExternalTailSemanticEvidence*.lean' | wc -l)" -eq 5
+    '';
+
+  mixedExternalTailSemanticEvidenceClosure = mkGeneratedClosureProof {
+    name = "mixed-external-tail-semantic-evidence";
+    sources = [
+      leanSourceRoot
+      originalPeLean
+      programLean
+      normalizationLean
+      semanticRefinementLean
+      mixedFusedSemanticEvidenceLean
+      mixedExternalTailSemanticEvidenceLean
+    ];
+    target = "GeneratedGnuHelloMixedExternalTailSemanticEvidenceBundle";
+    declaration =
+      "StageA.GeneratedRelational.generatedGnuHelloExternalTailSemanticEvidenceNameCount";
+  };
+  mixedExternalTailSemanticEvidenceProofSources =
+    mixedExternalTailSemanticEvidenceClosure.proofSources;
+  mixedExternalTailSemanticEvidenceProof =
+    mixedExternalTailSemanticEvidenceClosure.proof;
+
   x87Lean = mkPhase "stage-a-gnu-hello-roundtrip-x87-lean" [] ''
     ${python} ${driver} x87-sources \
       --state-machine ${staticExport}/state-machine.jsonl \
@@ -1755,6 +3153,132 @@ let
       --shard-size 8 --out "$out"
   '';
 
+  kernelDataStandaloneModules = builtins.fromJSON (
+    builtins.readFile "${kernelDataLean}/standalone-modules.json"
+  );
+  kernelDataStandaloneResources = builtins.fromJSON (
+    builtins.readFile "${kernelDataLean}/module-resources.json"
+  );
+  kernelDataInventory = builtins.fromJSON (
+    builtins.readFile "${kernelDataLean}/module-inventory.json"
+  );
+  kernelDataNativeProjectionTargets = map
+    (row: row.name)
+    (builtins.filter
+      (row: row.role == "candidate-data-native-projection-pack")
+      kernelDataInventory.modules);
+  kernelDataNativeProjectionProof = mkLeanGraph {
+    inherit pkgs;
+    contentAddressed = true;
+    standaloneSourceRoot = kernelDataLean + "/StageA";
+    standaloneModules = kernelDataStandaloneModules;
+    standaloneModuleResources = kernelDataStandaloneResources;
+    targetNodes = kernelDataNativeProjectionTargets;
+    targetBundle = true;
+  };
+  # A sparse, representative latency target: the selected packs contain 21,
+  # 197, and 490 actions respectively in the pinned GNU hello fixture.
+  kernelDataNativeProjectionBenchmark = mkLeanGraph {
+    inherit pkgs;
+    contentAddressed = true;
+    standaloneSourceRoot = kernelDataLean + "/StageA";
+    standaloneModules = kernelDataStandaloneModules;
+    standaloneModuleResources = kernelDataStandaloneResources;
+    targetNodes = [
+      "GeneratedInterpreterKernelDataNativeProjectionPack0533"
+      "GeneratedInterpreterKernelDataNativeProjectionPack0637"
+      "GeneratedInterpreterKernelDataNativeProjectionPack0148"
+    ];
+    targetBundle = true;
+  };
+
+  accessFaultQualificationLean =
+    mkPhaseWithSource accessFaultQualificationPythonSource
+      "stage-a-gnu-hello-roundtrip-access-fault-qualification-lean" [] ''
+      ${python} ${accessFaultQualificationDriver} \
+        --original-isa ${originalIsa}/isa.json \
+        --state-machine ${staticExport}/state-machine.jsonl \
+        --reachability-plan \
+          ${mixedOriginalBaseLean}/interpreter-mixed-original-base-plan.json \
+        --kernel-data-inventory ${kernelDataLean}/module-inventory.json \
+        --certificate-pack-size 8 \
+        --out "$out"
+      jq -e '
+        .format == "stage-a-typed-access-fault-qualification-v1" and
+        .status == "source-ready-with-frontiers" and
+        .side == "original" and
+        .counts.reachable_regions ==
+          (.counts.typed_qualification_regions +
+            .counts.blocked_regions) and
+        .counts.typed_qualification_regions > 0 and
+        .counts.remaining_state_admissibility_premises ==
+          .counts.typed_qualification_regions and
+        .counts.by_qualification_kind.ordinary > 0 and
+        .counts.by_qualification_kind.x87 > 0 and
+        .counts.blocked_regions == 0 and
+        .counts.shards > 0 and
+        .counts.by_blocker_reason == {} and
+        (.trust.proof_authority | not) and
+        (.trust.closes_stage_a_proof | not) and
+        .trust.exact_pe_decode_required and
+        .trust.checked_semantic_transfer_required and
+        .trust.runtime_state_admissibility_required and
+        .trust.fail_closed
+      ' "$out/typed-access-fault-qualification.json" >/dev/null
+      jq -e '
+        .format ==
+          "stage-a-typed-access-fault-qualification-manifest-v1" and
+        .phase == "typed-access-fault-qualification" and
+        .status == "source-ready-with-frontiers" and
+        (.targets | length) == .counts.shards and
+        (.remaining_premises | length) ==
+          .counts.remaining_state_admissibility_premises and
+        (.blockers | length) == .counts.blocked_regions
+      ' "$out/phase-manifest.json" >/dev/null
+      test "$(jq 'length' "$out/proof-targets.json")" -gt 0
+      test "$(find "$out/StageA" -name '*.lean' | wc -l)" \
+        -eq "$(jq 'length' "$out/proof-targets.json")"
+    '';
+  accessFaultQualificationTargets = builtins.fromJSON (
+    builtins.readFile "${accessFaultQualificationLean}/proof-targets.json"
+  );
+  accessFaultQualificationProofSources = mkPhase
+    "stage-a-gnu-hello-roundtrip-access-fault-qualification-proof-sources" [] ''
+    target_args=()
+    while IFS= read -r target; do
+      target_args+=(--target "$target")
+    done < <(jq -r '.[]' ${accessFaultQualificationLean}/proof-targets.json)
+    ${aggregatePython} ${proofSourceAggregateDriver} \
+      --source ${leanSourceRoot} \
+      --source ${originalPeLean} \
+      --source ${staticMachineImportContractsLean} \
+      --source ${mixedOriginalBaseLean} \
+      --source ${kernelDataLean} \
+      --source ${accessFaultQualificationLean} \
+      --explicit-targets-only \
+      --target-closure-only \
+      "''${target_args[@]}" \
+      --out "$out"
+  '';
+  accessFaultQualificationProofModules = builtins.fromJSON (
+    builtins.readFile
+      "${accessFaultQualificationProofSources}/standalone-modules.json"
+  );
+  accessFaultQualificationProofResources = builtins.fromJSON (
+    builtins.readFile
+      "${accessFaultQualificationProofSources}/module-resources.json"
+  );
+  accessFaultQualificationProof = mkLeanGraph {
+    inherit pkgs;
+    contentAddressed = true;
+    standaloneSourceRoot =
+      accessFaultQualificationProofSources + "/StageA";
+    standaloneModules = accessFaultQualificationProofModules;
+    standaloneModuleResources = accessFaultQualificationProofResources;
+    targetNodes = accessFaultQualificationTargets;
+    targetBundle = true;
+  };
+
   kernelAbiLean = mkPhase "stage-a-gnu-hello-roundtrip-kernel-abi-lean" [] ''
     ${python} ${driver} kernel-abi \
       --kernel-plan ${kernelLean}/interpreter-kernel-plan.json \
@@ -1779,10 +3303,14 @@ let
       .public_outputs.plan == "interpreter-kernel-abi-plan.json" and
       .public_outputs.lean_module ==
         "StageA/GeneratedRelationalInterpreterKernelABI.lean" and
+      .public_outputs.parameters_lean_module ==
+        "StageA/GeneratedRelationalInterpreterKernelABIParameters.lean" and
       .targets == ["GeneratedRelationalInterpreterKernelABI"]
     ' "$out/phase-manifest.json" >/dev/null
     test -s "$out/interpreter-kernel-abi-plan.json"
     test -s "$out/StageA/GeneratedRelationalInterpreterKernelABI.lean"
+    test -s \
+      "$out/StageA/GeneratedRelationalInterpreterKernelABIParameters.lean"
   '';
 
   x87CandidateReplayLean = mkPhase
@@ -1835,8 +3363,13 @@ let
       "$(jq '.counts.descriptors' \
         ${x87ReplayBridgeTargetLean}/phase-manifest.json)" '
       .phase == "x87-replay-bridge-runtime-lean" and
+      .status == "source-ready" and
+      .diagnostic_status == "kernel_execution_closed" and
       (.proof_authority | not) and
+      .static_evidence and
       (.candidate_sha256 | test("^[0-9a-f]{64}$")) and
+      (.conditional_theorem | endswith(".executeKernelReduction")) and
+      .remaining_proof_premises == [] and
       .counts.runtime_targets == $targetCount and
       .counts.relocated_operands > 0 and
       .counts.unbound_relocated_operands == 0 and
@@ -1848,7 +3381,12 @@ let
       "$(jq '.counts.descriptors' \
         ${x87ReplayBridgeTargetLean}/phase-manifest.json)" '
       .format == "stage-a-relational-x87-replay-bridge-runtime-plan-v1" and
+      .status == "complete" and
+      .diagnostic_status == "kernel_execution_closed" and
       (.acceptance_authority | not) and
+      .static_evidence and
+      (.conditional_theorem | endswith(".executeKernelReduction")) and
+      .remaining_proof_premises == [] and
       .counts.runtime_targets == $targetCount and
       .counts.relocated_operands > 0 and
       .counts.unbound_relocated_operands == 0
@@ -1857,7 +3395,7 @@ let
       "$out/StageA/GeneratedRelationalInterpreterX87ReplayBridgeRuntime.lean"
   '';
 
-  x87KernelExecutionLean = mkPhase
+  x87KernelExecutionLean = mkPhaseWithSource proofPythonSource
     "stage-a-gnu-hello-roundtrip-x87-kernel-execution-lean" [] ''
     ${python} ${driver} x87-kernel-execution-sources \
       --runtime-plan \
@@ -1868,24 +3406,12 @@ let
         ${x87ReplayBridgeRuntimeLean}/phase-manifest.json)" '
       .phase == "x87-kernel-execution-lean" and
       .status == "source-ready" and
-      .diagnostic_status == "semantic_premises_required" and
+      .diagnostic_status == "kernel_execution_closed" and
       (.proof_authority | not) and
-      .failure_mode == "incomplete" and
+      .failure_mode == "none" and
       (.candidate_sha256 | test("^[0-9a-f]{64}$")) and
       .runtime_targets == $runtimeCount and
-      .remaining_proof_premises == [
-        "program_binding.peExact",
-        "program_binding.importsExact",
-        "program_binding.targetInventory",
-        "endpoint_certificate.handlerResult",
-        "endpoint_certificate.callTarget",
-        "endpoint_certificate.callRun",
-        "endpoint_certificate.entryRun",
-        "endpoint_certificate.instructionRun",
-        "endpoint_certificate.captureRun",
-        "endpoint_certificate.returnRun",
-        "endpoint_certificate.frameEffect"
-      ] and
+      .remaining_proof_premises == [] and
       .targets == [
         "GeneratedRelationalInterpreterKernelX87Execution"
       ]
@@ -1894,19 +3420,20 @@ let
       "$(jq '.counts.runtime_targets' \
         ${x87ReplayBridgeRuntimeLean}/phase-manifest.json)" '
       .format == "stage-a-gnu-hello-x87-kernel-execution-frontier-v1" and
-      .status == "semantic_premises_required" and
+      .status == "closed" and
       (.acceptance_authority | not) and
-      .failure_mode == "incomplete" and
+      .failure_mode == "none" and
       .runtime_targets == $runtimeCount and
-      .remaining_authority.program_binding_fields == [
+      .remaining_authority.authority_fields == [] and
+      .remaining_authority.structurally_derived_program_binding_fields == [
         "peExact", "importsExact", "targetInventory"
       ] and
-      (.remaining_authority.endpoint_certificate_proof_fields
-        | index("callRun") != null) and
-      (.remaining_authority.endpoint_certificate_proof_fields
-        | index("returnRun") != null) and
-      (.remaining_authority.endpoint_certificate_proof_fields
-        | index("frameEffect") != null)
+      .remaining_authority.structurally_derived_handler_fields == [
+        "handlerInventory"
+      ] and
+      .remaining_authority.fixed_template_certificate_proof_fields == [] and
+      (.remaining_authority.required_checked_target_terms | length) ==
+        $runtimeCount
     ' "$out/x87-kernel-execution-frontier.json" >/dev/null
     test -s \
       "$out/StageA/GeneratedRelationalInterpreterKernelX87Execution.lean"
@@ -2100,12 +3627,12 @@ let
       (.proof_authority | not) and
       .failure_mode == "incomplete" and
       .remaining_proof_premises == [
-        "program_lookup_world_subroutine_composition",
-        "per_action_loop_chunks",
-        "direct_helper_subroutine_refinements",
-        "invoke_call_subroutine_operation_refinement",
-        "x87_replay_nested_callback_refinement",
-        "cdecl_epilogue_response_and_memory_frame"
+    "finite_checked_semantic_call_tree",
+    "program_lookup_world_subroutine_composition",
+    "per_action_loop_chunks",
+    "request_local_invoke_call_refinement",
+    "x87_replay_nested_callback_refinement",
+    "cdecl_epilogue_response_and_memory_frame"
       ] and
       .theorem ==
         "StageA.GeneratedRelational.InterpreterKernelStepOperation.generatedInterpreterStepOperationRefinesUsing" and
@@ -2133,6 +3660,8 @@ let
       .targets == ["GeneratedRelationalInterpreterKernelStepOperation"]
     ' "$out/phase-manifest.json" >/dev/null
     test -s "$out/interpreter-kernel-step-operation-plan.json"
+    test -s \
+      "$out/StageA/GeneratedRelationalInterpreterKernelStepOperationInterface.lean"
     test -s \
       "$out/StageA/GeneratedRelationalInterpreterKernelStepOperation.lean"
     test -s "$out/module-resources.json"
@@ -2181,6 +3710,253 @@ let
     test -s \
       "$out/StageA/GeneratedRelationalInterpreterKernelStepProgramLookupCall.lean"
   '';
+
+  programLookupNativeWorldBridgeLean =
+    mkPhaseWithSource programLookupNativeWorldBridgePythonSource
+      "stage-a-gnu-hello-roundtrip-program-lookup-native-world-bridge-source" [] ''
+      ${python} \
+        ${programLookupNativeWorldBridgePythonSource}/nix/gnu-hello-program-lookup-native-world-bridge.py \
+        --candidate ${candidate}/candidate.exe \
+        --lookup-native-plan \
+          ${kernelLookupNativeLean}/interpreter-kernel-lookup-native-plan.json \
+        --lookup-operation-plan \
+          ${kernelLookupOperationLean}/interpreter-kernel-program-lookup-operation-plan.json \
+        --step-call-plan \
+          ${kernelStepProgramLookupCallLean}/interpreter-kernel-step-program-lookup-call-plan.json \
+        --out "$out"
+      jq -e \
+        --slurpfile lookup \
+          ${kernelLookupNativeLean}/interpreter-kernel-lookup-native-plan.json \
+        --slurpfile step \
+          ${kernelStepProgramLookupCallLean}/interpreter-kernel-step-program-lookup-call-plan.json \
+        '
+        .format ==
+          "stage-a-relational-interpreter-kernel-program-lookup-native-world-bridge-v1" and
+        (.acceptance_authority | not) and
+        .operation == "programLookup" and
+        .checked_static_authority == {
+          entry_rva: $lookup[0].template.entry_rva,
+          step_call_site_rva:
+            $step[0].checked_static_authority.call_site_rva,
+          step_call_target_rva:
+            $step[0].checked_static_authority.target_rva,
+          step_continuation_rva:
+            $step[0].checked_static_authority.continuation_rva
+        } and
+        .world_contract == {
+          mode: "caller-parametric",
+          successor: "same-relational-world",
+          mixed_acceptance_launch_world_assumed: false
+        } and
+        .remaining_proof_premises == [] and
+        .result.theorem ==
+          "StageA.GeneratedRelational.InterpreterKernelProgramLookupNativeWorldBridge.generatedProgramLookupNativeWorldRefines"
+      ' "$out/interpreter-kernel-program-lookup-native-world-bridge.json" >/dev/null
+      test -s \
+        "$out/StageA/GeneratedRelationalInterpreterKernelProgramLookupNativeWorldBridge.lean"
+    '';
+
+  programLookupNativeWorldBridgeClosure = mkGeneratedClosureProof {
+    name = "program-lookup-native-world-bridge";
+    sources = candidateKernelProofSourceInputs ++ [
+      kernelStepProgramLookupCallLean
+      programLookupNativeWorldBridgeLean
+    ];
+    target =
+      "GeneratedRelationalInterpreterKernelProgramLookupNativeWorldBridge";
+    declaration =
+      "StageA.GeneratedRelational.InterpreterKernelProgramLookupNativeWorldBridge.generatedProgramLookupNativeWorldRefines";
+  };
+  programLookupNativeWorldBridgeProofSources =
+    programLookupNativeWorldBridgeClosure.proofSources;
+  programLookupNativeWorldBridgeProof =
+    programLookupNativeWorldBridgeClosure.proof;
+
+  interpreterStepWorldProgramLookupLean =
+    mkPhaseWithSource interpreterStepWorldProgramLookupPythonSource
+      "stage-a-gnu-hello-roundtrip-interpreter-step-world-program-lookup-source" [] ''
+      ${python} \
+        ${interpreterStepWorldProgramLookupPythonSource}/nix/gnu-hello-interpreter-step-world-program-lookup.py \
+        --candidate ${candidate}/candidate.exe \
+        --program-lookup-native-world-bridge-plan \
+          ${programLookupNativeWorldBridgeLean}/interpreter-kernel-program-lookup-native-world-bridge.json \
+        --step-operation-plan \
+          ${kernelStepOperationLean}/interpreter-kernel-step-operation-plan.json \
+        --operation-instantiation-plan \
+          ${kernelOperationInstantiationLean}/interpreter-kernel-operation-instantiation.json \
+        --out "$out"
+      jq -e \
+        --slurpfile bridge \
+          ${programLookupNativeWorldBridgeLean}/interpreter-kernel-program-lookup-native-world-bridge.json \
+        --slurpfile step \
+          ${kernelStepOperationLean}/interpreter-kernel-step-operation-plan.json \
+        '
+        .format ==
+          "stage-a-relational-interpreter-kernel-step-world-program-lookup-v2" and
+        (.acceptance_authority | not) and
+        .operation == "interpreterStep.programLookupCall" and
+        (.checked_static_authority as $static |
+          $static.prefix_kind == "direct_entry_call" and
+          $static.step_entry_rva ==
+            $step[0].checked_static_authority.entry_rva and
+          $static.call_site_rva ==
+            $step[0].checked_static_authority.program_lookup_call_rva and
+          $static.target_rva ==
+            $step[0].checked_static_authority.program_lookup_target_rva and
+          $static.call_site_rva ==
+            $bridge[0].checked_static_authority.step_call_site_rva and
+          $static.target_rva ==
+            $bridge[0].checked_static_authority.step_call_target_rva and
+          $static.continuation_rva ==
+            $bridge[0].checked_static_authority.step_continuation_rva and
+          $static.call_block_entry_rva == $static.step_entry_rva and
+          $static.call_block_ordinal == $static.step_entry_block_ordinal and
+          $static.call_block_instruction_count ==
+            $static.step_entry_instruction_count and
+          $static.step_entry_instruction_count > 0 and
+          $static.helper_target_rva == null and
+          $static.helper_continuation_rva == null and
+          $static.helper_function_ordinal == null and
+          $static.helper_entry_block_ordinal == null and
+          $static.helper_return_block_ordinal == null and
+          $static.helper_return_block_rva == null and
+          $static.helper_block_ordinals == []) and
+        .closed_components == [
+          "world_indexed_step_prefix_composition_interface",
+          "checked_program_lookup_call_chunk",
+          "per_call_kernel_abi_relation",
+          "nested_program_lookup_response",
+          "exact_return_to_step_continuation",
+          "step_response_and_memory_frame_composition"
+        ] and
+        .remaining_proof_premises == [] and
+        .proof_frontiers == [] and
+        .result.theorem ==
+          "StageA.GeneratedRelational.InterpreterKernelStepWorldProgramLookup.generatedInterpreterStepWorldProgramLookupCallAuthority" and
+        .result.requested_step_theorem_constructed and
+        .failure_mode == "none"
+      ' "$out/interpreter-kernel-step-world-program-lookup.json" >/dev/null
+      test -s \
+        "$out/StageA/GeneratedRelationalInterpreterKernelStepWorldProgramLookup.lean"
+      test -s \
+        "$out/StageA/GeneratedRelationalInterpreterKernelStepWorldProgramLookupCertificate.lean"
+      test -s \
+        "$out/interpreter-step-program-lookup-call-behavior-request.json"
+    '';
+
+  interpreterStepProgramLookupCallBehaviorExtraction = mkAnalysisPhase
+    "stage-a-gnu-hello-roundtrip-interpreter-step-program-lookup-call-behavior-extraction"
+    [ sideTool pkgs.lean4 ] ''
+      mkdir -p "$out"
+      export SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_THREAD_STACK_KB=524288
+      ulimit -s 524288
+      spaghetti-extractor-side extract-side \
+        --binary ${candidate}/candidate.exe \
+        --request \
+          ${interpreterStepWorldProgramLookupLean}/interpreter-step-program-lookup-call-behavior-request.json \
+        --out "$out/extraction.json" \
+        > "$out/result.json"
+      requested_regions="$(
+        jq '.regions | length' \
+          ${interpreterStepWorldProgramLookupLean}/interpreter-step-program-lookup-call-behavior-request.json
+      )"
+      jq -e --argjson requested_regions "$requested_regions" '
+        .format == "stage-a-relational-side-extraction-result-v1" and
+        .status == "extracted" and
+        .side == "candidate" and
+        .regions == $requested_regions
+      ' "$out/result.json" >/dev/null
+      jq -e --argjson requested_regions "$requested_regions" '
+        .format == "stage-a-relational-side-extraction-v1" and
+        .status == "untrusted_proposal_requires_lean_decode_replay" and
+        .side == "candidate" and
+        (.regions | length) == $requested_regions
+      ' "$out/extraction.json" >/dev/null
+    '';
+
+  interpreterStepProgramLookupCallBehaviorsLean =
+    mkPhaseWithSource
+      interpreterStepProgramLookupCallBehaviorsPythonSource
+      "stage-a-gnu-hello-roundtrip-interpreter-step-program-lookup-call-behaviors-source"
+      [] ''
+        ${python} \
+          ${interpreterStepProgramLookupCallBehaviorsPythonSource}/nix/gnu-hello-step-program-lookup-call-behaviors.py \
+          --candidate ${candidate}/candidate.exe \
+          --program-lookup-native-world-bridge-plan \
+            ${programLookupNativeWorldBridgeLean}/interpreter-kernel-program-lookup-native-world-bridge.json \
+          --step-operation-plan \
+            ${kernelStepOperationLean}/interpreter-kernel-step-operation-plan.json \
+          --operation-instantiation-plan \
+            ${kernelOperationInstantiationLean}/interpreter-kernel-operation-instantiation.json \
+          --extraction \
+            ${interpreterStepProgramLookupCallBehaviorExtraction}/extraction.json \
+          --out "$out"
+        test -s \
+          "$out/StageA/GeneratedRelationalInterpreterStepProgramLookupCallBehaviors.lean"
+        test -s \
+          "$out/StageA/GeneratedRelationalInterpreterStepProgramLookupProjection.lean"
+      '';
+
+  # Candidate-kernel closure proofs must not depend on the whole Stage A proof
+  # aggregate.  Keep this boundary explicit so a local candidate operation
+  # change cannot force evaluation of original-image and mixed-composition
+  # artifacts.  The target-closure aggregate below still selects only imported
+  # modules from these source roots.
+  candidateKernelProofSourceInputs = [
+    leanSourceRoot
+    kernelLean
+    kernelDataLean
+    kernelAbiLean
+    x87ReplayBridgeTargetLean
+    kernelCallbackLean
+    kernelLookupLean
+    kernelLookupNativeLean
+    kernelLookupOperationLean
+    kernelStepLean
+    kernelStepNativeLean
+    kernelInvokeLean
+    kernelInvokeNativeLean
+    kernelStepOperationLean
+    kernelOperationInstantiationLean
+  ];
+  candidateKernelOperationProofSourceInputs =
+    candidateKernelProofSourceInputs ++ [
+      kernelRunLean
+      kernelRunNativeLean
+      kernelRunOperationLean
+      kernelInvokeOperationLean
+    ];
+
+  interpreterStepProgramLookupProjectionClosure = mkGeneratedClosureProof {
+    name = "interpreter-step-program-lookup-projection";
+    sources = candidateKernelProofSourceInputs ++ [
+      interpreterStepProgramLookupCallBehaviorsLean
+    ];
+    target =
+      "GeneratedRelationalInterpreterStepProgramLookupProjection";
+    declaration =
+      "StageA.GeneratedRelational.InterpreterStepProgramLookupProjection.generatedInterpreterStepProgramLookupProjectionBlockEndpointExact";
+  };
+  interpreterStepProgramLookupProjectionProofSources =
+    interpreterStepProgramLookupProjectionClosure.proofSources;
+  interpreterStepProgramLookupProjectionProof =
+    interpreterStepProgramLookupProjectionClosure.proof;
+
+  interpreterStepWorldProgramLookupClosure = mkGeneratedClosureProof {
+    name = "interpreter-step-world-program-lookup";
+    sources = candidateKernelProofSourceInputs ++ [
+      interpreterStepProgramLookupCallBehaviorsLean
+      interpreterStepWorldProgramLookupLean
+    ];
+    target =
+      "GeneratedRelationalInterpreterKernelStepWorldProgramLookup";
+    declaration =
+      "StageA.GeneratedRelational.InterpreterKernelStepWorldProgramLookup.generatedInterpreterStepWorldProgramLookupCallAuthority";
+  };
+  interpreterStepWorldProgramLookupProofSources =
+    interpreterStepWorldProgramLookupClosure.proofSources;
+  interpreterStepWorldProgramLookupProof =
+    interpreterStepWorldProgramLookupClosure.proof;
 
   kernelStepProgramLookupCallClosureLean = mkPhase
     "stage-a-gnu-hello-roundtrip-kernel-step-program-lookup-call-closure-lean" [] ''
@@ -2260,8 +4036,8 @@ let
       (.proof_authority | not) and
       .failure_mode == "incomplete" and
       .remaining_proof_premises == [
-        "standalone_interpreter_step_operation_for_every_world",
-        "frame_event_world_context_path_refinement"
+        "producer_coupled_canonical_interpreter_step_path_for_compatible_contexts",
+        "producer_selected_path_context_refinement"
       ] and
       .theorem ==
         "StageA.GeneratedRelational.InterpreterKernelOperationFrameParametric.generatedInterpreterStepFrameParametricCertificate" and
@@ -2294,10 +4070,9 @@ let
       (.proof_authority | not) and
       .failure_mode == "incomplete" and
       .remaining_proof_premises == [
-        "standalone_interpreter_step_operation_for_every_world",
-        "imported_environment_shift_footprint_and_world_update_contract",
-        "imported_footprint_disjoint_from_caller_return_slot",
-        "exact_prefix_event_index_and_return_word_trace"
+        "producer_coupled_canonical_interpreter_step_path_for_compatible_contexts",
+        "imported_environment_footprint_and_world_update_contract",
+        "imported_footprint_disjoint_from_caller_return_slot"
       ] and
       .theorem ==
         "StageA.GeneratedRelational.InterpreterKernelFrameExecutor.generatedInterpreterStepFrameExecutorCertificate" and
@@ -2323,8 +4098,6 @@ let
       --abi-plan ${kernelAbiLean}/interpreter-kernel-abi-plan.json \
       --run-native-plan \
         ${kernelRunNativeLean}/interpreter-kernel-run-native-plan.json \
-      --step-operation-plan \
-        ${kernelStepOperationLean}/interpreter-kernel-step-operation-plan.json \
       --out "$out"
     jq -e '
       .phase == "compiled-kernel-run-function-operation" and
@@ -2332,13 +4105,11 @@ let
       (.proof_authority | not) and
       .failure_mode == "incomplete" and
       .remaining_proof_premises == [
-        "frame_event_world_parametric_interpreter_step_certificate",
-        "loop_invariant_and_step_prelude",
-        "terminal_completion_dispatch_chunks",
-        "continuation_and_resolver_callback_refinement",
-        "entry_chunk_and_outer_frame",
-        "cdecl_epilogue_response_and_memory_frame"
-      ] and
+    "finite_checked_semantic_call_tree",
+    "checked_local_step_and_control_paths",
+    "entry_frame_and_loop_invariant",
+    "cdecl_epilogue_response_and_memory_frame"
+  ] and
       .theorem ==
         "StageA.GeneratedRelational.InterpreterKernelRunOperation.generatedRunFunctionOperationRefinesUsing" and
       (.inputs | keys) == [
@@ -2346,8 +4117,7 @@ let
         "candidate",
         "kernel_data_inventory",
         "kernel_plan",
-        "run_native_plan",
-        "step_operation_plan"
+        "run_native_plan"
       ] and
       ([.inputs[]] | all(
         (.sha256 | test("^[0-9a-f]{64}$")) and
@@ -2564,18 +4334,21 @@ let
         ${kernelCallbackLean}/interpreter-kernel-callback-plan.json \
       --invoke-native-plan \
         ${kernelInvokeNativeLean}/interpreter-kernel-invoke-native-plan.json \
+      --run-operation-plan \
+        ${kernelRunOperationLean}/interpreter-kernel-run-operation-plan.json \
       --out "$out"
     jq -e '
       .phase == "compiled-kernel-invoke-call-operation" and
       .status == "source-ready" and
       (.proof_authority | not) and
       .failure_mode == "incomplete" and
+      .plan_format ==
+        "stage-a-relational-interpreter-kernel-invoke-operation-plan-v4" and
       .remaining_proof_premises == [
-        "run_function_internal_and_indirect_frame_certificates",
-        "external_helper_path_certificate_and_wrapper_completion",
-        "external_environment_abi_frame_refinement",
-        "internal_run_function_arm_composition",
-        "indirect_callback_run_function_arm_composition"
+        "finite_checked_semantic_call_tree",
+        "external_arm_exact_route_and_result_closure",
+        "internal_arm_exact_route_run_and_result_closure",
+        "indirect_arm_exact_resolver_callback_run_and_result_closure"
       ] and
       .theorem ==
         "StageA.GeneratedRelational.InterpreterKernelInvokeOperation.generatedInvokeCallOperationRefinesUsing" and
@@ -2585,7 +4358,8 @@ let
         "candidate",
         "invoke_native_plan",
         "kernel_data_inventory",
-        "kernel_plan"
+        "kernel_plan",
+        "run_operation_plan"
       ] and
       ([.inputs[]] | all(
         (.sha256 | test("^[0-9a-f]{64}$")) and
@@ -2762,6 +4536,673 @@ let
       approved_axioms = [ "propext" "Classical.choice" "Quot.sound" ];
     };
   };
+
+  acceptanceRequirementsLean = mkPhaseWithSource
+    acceptanceRequirementsPythonSource
+    "stage-a-gnu-hello-roundtrip-acceptance-requirements-lean" [] ''
+    ${python} ${acceptanceRequirementsDriver} --out "$out"
+    jq -e '
+      .format == "stage-a-gnu-hello-acceptance-requirements-v1" and
+      (.acceptance_authority | not) and
+      (.report_authority | not) and
+      .lean_check_required and
+      (.constructed_static_fields | length) == 19 and
+      (.dynamic_evidence_fields | length) == 13 and
+      .output_module ==
+        "StageA/GeneratedGnuHelloAcceptanceRequirements.lean"
+    ' "$out/gnu-hello-acceptance-requirements.json" >/dev/null
+    test -s "$out/StageA/GeneratedGnuHelloAcceptanceRequirements.lean"
+  '';
+
+  acceptanceRequirementsProofSources = mkPhase
+    "stage-a-gnu-hello-roundtrip-acceptance-requirements-proof-sources" [] ''
+    ${aggregatePython} ${proofSourceAggregateDriver} \
+      --source ${leanSourceRoot} \
+      --source ${originalPeLean} \
+      --source ${staticMachineImportContractsLean} \
+      --source ${mixedOriginalWritableSlotAuthorityLean} \
+      --source ${mixedOriginalRegisterIndirectAuthorityLean} \
+      --source ${mixedOriginalDirectCallProposalsLean} \
+      --source ${mixedOriginalDirectCallSemanticsLean} \
+      --source ${mixedOriginalDirectCallClosureProposalsLean} \
+      --source ${mixedOriginalDirectCallClosureSemanticsLean} \
+      --source ${mixedOriginalLean} \
+      --source ${mixedOriginalStaticReachabilityLean} \
+      --source ${mixedOriginalCarrierBindingLean} \
+      --source ${programLean} \
+      --source ${kernelDataLean} \
+      --source ${kernelLean} \
+      --source ${kernelAbiLean} \
+      --source ${mixedCandidateAuthorityLean} \
+      --source ${constructiveSourceCoverageLean} \
+      --source ${canonicalRelationCoreLean} \
+      --source ${acceptanceRequirementsLean} \
+      --target GeneratedGnuHelloAcceptanceRequirements \
+      --out "$out"
+  '';
+  acceptanceRequirementsProofModules = builtins.fromJSON (
+    builtins.readFile
+      "${acceptanceRequirementsProofSources}/standalone-modules.json"
+  );
+  acceptanceRequirementsProofResources = builtins.fromJSON (
+    builtins.readFile
+      "${acceptanceRequirementsProofSources}/module-resources.json"
+  );
+  acceptanceRequirementsProof = mkLeanGraph {
+    inherit pkgs;
+    contentAddressed = true;
+    standaloneSourceRoot = acceptanceRequirementsProofSources + "/StageA";
+    standaloneModules = acceptanceRequirementsProofModules;
+    standaloneModuleResources = acceptanceRequirementsProofResources;
+    targetNodes = [ "GeneratedGnuHelloAcceptanceRequirements" ];
+    targetBundle = true;
+    targetAxiomAudit = {
+      module = "GeneratedGnuHelloAcceptanceRequirements";
+      declaration =
+        "StageA.GeneratedRelational.GnuHelloAcceptanceRequirements.generatedRequirements";
+      approved_axioms = [ "propext" "Classical.choice" "Quot.sound" ];
+    };
+  };
+
+  runtimeFoundationLean = mkPhaseWithSource runtimeFoundationPythonSource
+    "stage-a-gnu-hello-roundtrip-runtime-foundation-source" [] ''
+    ${python} ${staticClosureDriver} runtime-foundation --out "$out"
+    jq -e '
+      .format == "stage-a-gnu-hello-runtime-foundation-v1" and
+      .phase == "gnu-hello-runtime-foundation" and
+      .complete and
+      .status == "source-ready" and
+      (.acceptance_authority | not) and
+      (.report_authority | not) and
+      .lean_check_required and
+      (.executes_original_binary | not) and
+      (.executes_candidate_binary | not) and
+      .failure_mode == "fail-closed" and
+      .outputs.lean_module ==
+        "StageA/GeneratedGnuHelloRuntimeFoundation.lean" and
+      .blocking_obligations == []
+    ' "$out/gnu-hello-runtime-foundation.json" >/dev/null
+    test -s "$out/StageA/GeneratedGnuHelloRuntimeFoundation.lean"
+  '';
+  runtimeFoundationClosure = mkGeneratedClosureProof {
+    name = "runtime-foundation";
+    sources = [
+      proofSources
+      acceptanceRequirementsLean
+      runtimeFoundationLean
+    ];
+    target = "GeneratedGnuHelloRuntimeFoundation";
+    declaration =
+      "StageA.GeneratedRelational.GnuHelloRuntimeFoundation.generatedLaunchRealizable";
+  };
+  runtimeFoundationProofSources = runtimeFoundationClosure.proofSources;
+  runtimeFoundationProof = runtimeFoundationClosure.proof;
+
+  launchBindingLean = mkPhaseWithSource launchBindingPythonSource
+    "stage-a-gnu-hello-roundtrip-launch-binding-source" [] ''
+    ${python} ${launchBindingDriver} launch-binding --out "$out"
+    jq -e '
+      .format == "stage-a-gnu-hello-launch-binding-v1" and
+      .phase == "gnu-hello-launch-binding" and
+      .complete and
+      .status == "source-ready" and
+      (.acceptance_authority | not) and
+      .lean_check_required and
+      (.executes_original_binary | not) and
+      (.executes_candidate_binary | not) and
+      .failure_mode == "fail-closed" and
+      .outputs.lean_module ==
+        "StageA/GeneratedGnuHelloLaunchBinding.lean" and
+      .blocking_obligations == []
+    ' "$out/gnu-hello-launch-binding.json" >/dev/null
+    test -s "$out/StageA/GeneratedGnuHelloLaunchBinding.lean"
+  '';
+  launchBindingClosure = mkGeneratedClosureProof {
+    name = "launch-binding";
+    sources = [
+      proofSources
+      acceptanceRequirementsLean
+      runtimeFoundationLean
+      launchBindingLean
+    ];
+    target = "GeneratedGnuHelloLaunchBinding";
+    declaration =
+      "StageA.GeneratedRelational.GnuHelloLaunchBinding.generatedExactCanonicalLaunchWrapperBinding";
+  };
+  launchBindingProofSources = launchBindingClosure.proofSources;
+  launchBindingProof = launchBindingClosure.proof;
+
+  externalComponentLean = mkPhaseWithSource externalComponentPythonSource
+    "stage-a-gnu-hello-roundtrip-external-component-source" [] ''
+    ${python} ${externalComponentDriver} external-component --out "$out"
+    jq -e '
+      .format == "stage-a-gnu-hello-external-component-v3" and
+      .phase == "gnu-hello-external-component" and
+      (.complete | not) and
+      (.acceptance_authority | not) and
+      (.proof_authority | not) and
+      (.executes_original_binary | not) and
+      (.executes_candidate_binary | not) and
+      .outputs.lean_module ==
+        "StageA/GeneratedGnuHelloExternalComponent.lean" and
+      (.remaining_premises | length) == 1 and
+      (.blocking_obligations | length) == 1 and
+      .constructed_terms.bridge_factory_type ==
+        "GeneratedRootBoundaryToOperationBridgeFactory" and
+      .constructed_terms.chunk_constructor ==
+        "generatedExternalBoundaryChunkFactoryOfOperationBridge"
+    ' "$out/gnu-hello-external-component.json" >/dev/null
+    test -s "$out/StageA/GeneratedGnuHelloExternalComponent.lean"
+  '';
+  externalComponentInterfaceProof = mkGeneratedClosureProof {
+    name = "external-component";
+    sources = [
+      proofSources
+      externalComponentLean
+    ];
+    target = "GeneratedGnuHelloExternalComponent";
+    declaration =
+      "StageA.GeneratedRelational.GnuHelloExternalComponent.generatedExternalBoundaryChunkFactoryOfOperationBridge";
+  };
+  externalComponentProofSources =
+    externalComponentInterfaceProof.proofSources;
+  externalComponentProof = externalComponentInterfaceProof.proof;
+
+  # Compile the generic semantic-operation bridge independently from GNU
+  # acceptance. The generated Requirements structure contains proof-valued
+  # fields; this node checks the bridge once but does not construct those
+  # fields or claim final evidence.
+  mixedSemanticOperationComponentLean = pkgs.runCommand
+    "stage-a-gnu-hello-roundtrip-mixed-semantic-operation-component-source"
+    {
+      nativeBuildInputs = [
+        pythonEnv
+        pkgs.jq
+        pkgs.coreutils
+      ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    } ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH="${mixedSemanticOperationComponentPythonSource}/src"
+      ${python} - "$out" <<'PY'
+      import json
+      import shutil
+      import sys
+      from pathlib import Path
+
+      from spaghetti_extractor.relational.lean.interpreter_mixed_semantic_operation_component import (
+          INTERPRETER_MIXED_SEMANTIC_OPERATION_COMPONENT_MODULE,
+          InterpreterMixedSemanticOperationComponentSpec,
+          MixedSemanticOperationComponentTerms,
+          build_mixed_semantic_operation_component_plan,
+          write_mixed_semantic_operation_component_bundle,
+      )
+
+      out = Path(sys.argv[1])
+      stage_a = out / "StageA"
+      stage_a.mkdir(parents=True, exist_ok=True)
+      binding_module = "GnuHelloMixedSemanticOperationComponentRequirements"
+      binding_namespace = (
+          "StageA.GnuHelloMixedSemanticOperationComponentRequirements"
+      )
+      (stage_a / f"{binding_module}.lean").write_text(
+          r"""import StageA.RelationalInterpreterMixedSemanticOperationComponent
+
+      namespace StageA.GnuHelloMixedSemanticOperationComponentRequirements
+
+      open StageA.Relational
+      open StageA.Relational.InterpreterKernel
+      open StageA.Relational.InterpreterMixedContext
+      open StageA.Relational.InterpreterMixedKernelComposition
+      open StageA.Relational.InterpreterMixedSemanticOperationComponent
+      open StageA.Relational.InterpreterMixedWorldBridge
+      open StageA.Relational.InterpreterNativeLaunch
+      open StageA.Relational.InterpreterNativeWorld
+
+      /-- Proof-valued inputs still required to instantiate the generic
+      semantic-operation bridge for GNU hello. -/
+      structure Requirements where
+        originalContext : OriginalDecodedStaticContext
+        originalAuthority : ExactOriginalDecodedAuthority originalContext
+        launch : PE32ConsoleLaunchV2
+        originalRoot :
+          DirectExactOriginalDecodedLaunchRoot originalContext launch
+        reachability : ExactOriginalDecodedReachability originalContext
+          originalAuthority launch originalRoot
+        originalProgram : DecodedWorldProgram
+        candidate : ExactNativeWorldProgram
+        candidateAuthority : ExactNativeCandidateAuthority candidate
+        contract : MixedRelationContract
+        invariant : MixedExecutionInvariant reachability.targetIds contract
+        program : CompiledKernelProgram
+        abi : KernelABIRelation
+        dispatches : KernelDispatchRelation
+        candidateRootRva : Nat
+        classifier : MixedKernelRuntimeSourceClassifier originalContext
+          originalAuthority launch originalRoot reachability candidate
+          candidateAuthority program candidateRootRva invariant
+        sourceBindingFactory : forall source :
+            ExactOriginalSemanticSource originalContext originalAuthority launch
+              originalRoot reachability candidate candidateAuthority,
+          ExactOriginalSemanticTransferBinding originalContext
+            originalAuthority launch originalRoot reachability candidate
+            candidateAuthority source
+        semanticEvidenceFactory : forall originalBefore candidateBefore
+            (source : ExactOriginalSemanticSource originalContext
+              originalAuthority launch originalRoot reachability candidate
+              candidateAuthority)
+            (operation : KernelOperation) (entryRva : Nat)
+            (beforeRelated :
+              invariant.holds originalBefore candidateBefore)
+            (originalAtSource :
+              originalExecutionAtTargetId source.targetId originalBefore)
+            (candidateAtEntry :
+              nativeExecutionAtRva entryRva candidateBefore)
+            (entryExact :
+              program.functionEntry? operation.role = some entryRva)
+            (classified :
+              classifier.classifier.classify originalBefore candidateBefore
+                    beforeRelated =
+                .semanticTransfer source operation entryRva originalAtSource
+                  candidateAtEntry entryExact),
+          CheckedMixedSemanticOperationEvidence originalProgram candidate
+            candidateAuthority contract invariant program abi dispatches
+            source.source.target.rva source.record operation entryRva
+            originalBefore candidateBefore
+            (classifier.classifier.classify originalBefore candidateBefore
+                beforeRelated =
+              .semanticTransfer source operation entryRva originalAtSource
+                candidateAtEntry entryExact)
+            beforeRelated classified
+        externalOperationEvidenceFactory :
+          forall originalBefore candidateBefore
+            (source : ExactOriginalSemanticSource originalContext
+              originalAuthority launch originalRoot reachability candidate
+              candidateAuthority)
+            (operation : KernelOperation) (entryRva : Nat)
+            (beforeRelated :
+              invariant.holds originalBefore candidateBefore)
+            (originalAtSource :
+              originalExecutionAtBoundarySource source.targetId originalBefore)
+            (candidateAtEntry :
+              nativeExecutionAtRva entryRva candidateBefore)
+            (entryExact :
+              program.functionEntry? operation.role = some entryRva)
+            (classified :
+              classifier.classifier.classify originalBefore candidateBefore
+                    beforeRelated =
+                .externalOperation source operation entryRva originalAtSource
+                  candidateAtEntry entryExact),
+          CheckedMixedSemanticOperationEvidence originalProgram candidate
+            candidateAuthority contract invariant program abi dispatches
+            source.source.target.rva source.record operation entryRva
+            originalBefore candidateBefore
+            (classifier.classifier.classify originalBefore candidateBefore
+                beforeRelated =
+              .externalOperation source operation entryRva originalAtSource
+                candidateAtEntry entryExact)
+            beforeRelated classified
+
+      end StageA.GnuHelloMixedSemanticOperationComponentRequirements
+      """,
+          encoding="ascii",
+      )
+      terms = MixedSemanticOperationComponentTerms(
+          original_context="requirements.originalContext",
+          original_authority="requirements.originalAuthority",
+          launch="requirements.launch",
+          original_root="requirements.originalRoot",
+          reachability="requirements.reachability",
+          original_program="requirements.originalProgram",
+          candidate="requirements.candidate",
+          candidate_authority="requirements.candidateAuthority",
+          relation_contract="requirements.contract",
+          invariant="requirements.invariant",
+          compiled_program="requirements.program",
+          kernel_abi="requirements.abi",
+          kernel_dispatches="requirements.dispatches",
+          classifier="requirements.classifier",
+          source_binding_factory="requirements.sourceBindingFactory",
+          semantic_evidence_factory="requirements.semanticEvidenceFactory",
+          external_operation_evidence_factory=(
+              "requirements.externalOperationEvidenceFactory"
+          ),
+      )
+      spec = InterpreterMixedSemanticOperationComponentSpec(
+          binding_module=f"StageA.{binding_module}",
+          namespace=(
+              "StageA.GeneratedRelational."
+              "GnuHelloMixedSemanticOperationComponent"
+          ),
+          parameter_name="requirements",
+          parameter_type=f"{binding_namespace}.Requirements",
+          terms=terms,
+      )
+      plan = build_mixed_semantic_operation_component_plan(spec)
+      plan_path, lean_path = write_mixed_semantic_operation_component_bundle(
+          out, plan
+      )
+      shutil.move(
+          lean_path,
+          stage_a / f"{INTERPRETER_MIXED_SEMANTIC_OPERATION_COMPONENT_MODULE}.lean",
+      )
+      payload = plan.payload()
+      manifest = {
+          "format": (
+              "stage-a-relational-mixed-semantic-operation-component-phase-v1"
+          ),
+          "phase": "mixed-semantic-operation-component",
+          "status": "incomplete",
+          "acceptance_authority": False,
+          "proof_authority": False,
+          "lean_check_required": True,
+          "executes_original_binary": False,
+          "executes_candidate_binary": False,
+          "failure_mode": "incomplete",
+          "remaining_proof_premises": payload["residual_evidence"],
+          "outputs": {
+              "plan": plan_path.name,
+              "binding_module": f"StageA/{binding_module}.lean",
+              "lean_module": (
+                  "StageA/"
+                  f"{INTERPRETER_MIXED_SEMANTIC_OPERATION_COMPONENT_MODULE}.lean"
+              ),
+          },
+          "targets": [
+              INTERPRETER_MIXED_SEMANTIC_OPERATION_COMPONENT_MODULE
+          ],
+      }
+      (out / "phase-manifest.json").write_text(
+          json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+          encoding="utf-8",
+      )
+      resources = {
+          binding_module: {
+              "resource_class": "small",
+              "estimated_memory_mb": 1024,
+          },
+          INTERPRETER_MIXED_SEMANTIC_OPERATION_COMPONENT_MODULE: {
+              "resource_class": "medium",
+              "estimated_memory_mb": 4096,
+          },
+      }
+      (out / "module-resources.json").write_text(
+          json.dumps(resources, indent=2, sort_keys=True) + "\n",
+          encoding="utf-8",
+      )
+      PY
+      jq -e '
+        .format ==
+          "stage-a-relational-mixed-semantic-operation-component-phase-v1" and
+        .phase == "mixed-semantic-operation-component" and
+        .status == "incomplete" and
+        (.acceptance_authority | not) and
+        (.proof_authority | not) and
+        .lean_check_required and
+        (.executes_original_binary | not) and
+        (.executes_candidate_binary | not) and
+        .failure_mode == "incomplete" and
+        (.remaining_proof_premises | length) == 7 and
+        .targets == [
+          "GeneratedRelationalInterpreterMixedSemanticOperationComponent"
+        ]
+      ' "$out/phase-manifest.json" >/dev/null
+      test -s \
+        "$out/StageA/GnuHelloMixedSemanticOperationComponentRequirements.lean"
+      test -s \
+        "$out/StageA/GeneratedRelationalInterpreterMixedSemanticOperationComponent.lean"
+      test -s \
+        "$out/interpreter-mixed-semantic-operation-component.json"
+      test -s "$out/module-resources.json"
+    '';
+  mixedSemanticOperationComponentInterfaceProof =
+    mkGeneratedClosureProof {
+      name = "mixed-semantic-operation-component";
+      sources = [
+        leanSourceRoot
+        mixedSemanticOperationComponentLean
+      ];
+      target =
+        "GeneratedRelationalInterpreterMixedSemanticOperationComponent";
+      declaration =
+        "StageA.GeneratedRelational.GnuHelloMixedSemanticOperationComponent.generatedSemanticChunkFactory";
+    };
+  mixedSemanticOperationComponentProofSources =
+    mixedSemanticOperationComponentInterfaceProof.proofSources;
+  mixedSemanticOperationComponentProof =
+    mixedSemanticOperationComponentInterfaceProof.proof;
+
+  runtimeIndirectCompositionLean =
+    mkPhaseWithSource runtimeIndirectCompositionPythonSource
+      "stage-a-gnu-hello-roundtrip-runtime-indirect-composition-source" [] ''
+      ${python} ${runtimeIndirectCompositionDriver} \
+        --cutpoint-graph \
+          ${mixedOriginalStackDynamicAuthorityLean}/original-cutpoint-graph-ir.json \
+        --stack-dynamic-closure \
+          ${mixedOriginalStackDynamicAuthorityLean}/original-stack-dynamic-control-closure.json \
+        --runtime-value-carry \
+          ${mixedOriginalStackDynamicAuthorityLean}/runtime-value-carry-ir.json \
+        --rooted-unreachability \
+          ${mixedOriginalStackDynamicAuthorityLean}/nullable-code-pointer-rooted-unreachability.json \
+        --out "$out"
+      jq -e '
+        .format ==
+          "stage-a-gnu-hello-runtime-indirect-composition-v1" and
+        .phase == "gnu-hello-runtime-indirect-composition" and
+        .status == "incomplete" and
+        (.acceptance_authority | not) and
+        (.proof_authority | not) and
+        .lean_check_required and
+        (.executes_original_binary | not) and
+        (.executes_candidate_binary | not) and
+        .failure_mode == "incomplete" and
+        .outputs.lean_module ==
+          "StageA/GeneratedRelationalGNUHelloRuntimeIndirectComposition.lean" and
+        (.evidence_gaps | length) > 0 and
+        .targets == [
+          "GeneratedRelationalGNUHelloRuntimeIndirectComposition"
+        ]
+      ' "$out/gnu-hello-runtime-indirect-composition.json" >/dev/null
+      test -s \
+        "$out/StageA/GeneratedRelationalGNUHelloRuntimeIndirectComposition.lean"
+    '';
+  runtimeIndirectCompositionClosure = mkGeneratedClosureProof {
+    name = "runtime-indirect-composition";
+    sources = [
+      proofSources
+      acceptanceRequirementsLean
+      runtimeIndirectCompositionLean
+    ];
+    target = "GeneratedRelationalGNUHelloRuntimeIndirectComposition";
+    declaration =
+      "StageA.GeneratedRelational.GNUHelloRuntimeIndirectComposition.generatedCheckedArtifactBundle";
+  };
+  runtimeIndirectCompositionProofSources =
+    runtimeIndirectCompositionClosure.proofSources;
+  runtimeIndirectCompositionProof = runtimeIndirectCompositionClosure.proof;
+
+  kernelOperationInstantiationLean =
+    mkPhaseWithSource operationInstantiationPythonSource
+      "stage-a-gnu-hello-roundtrip-kernel-operation-instantiation-source" [] ''
+      ${python} ${operationInstantiationDriver} \
+        --candidate ${candidate}/candidate.exe \
+        --kernel-plan ${kernelLean}/interpreter-kernel-plan.json \
+        --state-machine ${staticExport}/state-machine.jsonl \
+        --data-inventory ${kernelDataLean}/module-inventory.json \
+        --step-operation-plan \
+          ${kernelStepOperationLean}/interpreter-kernel-step-operation-plan.json \
+        --run-operation-plan \
+          ${kernelRunOperationLean}/interpreter-kernel-run-operation-plan.json \
+        --invoke-operation-plan \
+          ${kernelInvokeOperationLean}/interpreter-kernel-invoke-operation-plan.json \
+        --out "$out"
+      jq -e '
+        .format ==
+          "stage-a-relational-interpreter-kernel-operation-instantiation-v1" and
+        (.acceptance_authority | not) and
+        (.proof_authority | not) and
+        (.status == "incomplete" or .status == "locally_closed") and
+        (.status != "pass") and
+        .checked_semantic_inventory.records > 0 and
+        .checked_native_replay_inventory.functions > 0 and
+        .checked_native_replay_inventory.execution_equalities_submitted == 0 and
+        .checked_native_replay_inventory.path_equalities_submitted == 0 and
+        .checked_native_replay_inventory.post_state_equalities_submitted == 0 and
+        .remaining_proof_premises == []
+      ' "$out/interpreter-kernel-operation-instantiation.json" >/dev/null
+      test -s \
+        "$out/StageA/GeneratedRelationalInterpreterKernelOperationInstantiation.lean"
+      test -s \
+        "$out/StageA/GeneratedRelationalInterpreterKernelClosedCallTree.lean"
+      test -s \
+        "$out/finite-checked-semantic-function-inventory.json"
+    '';
+  kernelOperationInstantiationClosure = mkGeneratedClosureProof {
+    name = "kernel-operation-instantiation";
+    sources = candidateKernelOperationProofSourceInputs;
+    target = "GeneratedRelationalInterpreterKernelOperationInstantiation";
+    declaration =
+      "StageA.GeneratedRelational.InterpreterKernelOperationInstantiation.generatedSemanticCallTreeClosure";
+  };
+  kernelOperationInstantiationProofSources =
+    kernelOperationInstantiationClosure.proofSources;
+  kernelOperationInstantiationProof =
+    kernelOperationInstantiationClosure.proof;
+  kernelRunEntryRouteLean =
+    mkPhaseWithSource runEntryRoutePythonSource
+      "stage-a-gnu-hello-roundtrip-kernel-run-entry-route-source" [] ''
+      ${python} ${runEntryRouteDriver} \
+        --operation-manifest \
+          ${kernelOperationInstantiationLean}/interpreter-kernel-operation-instantiation.json \
+        --out "$out"
+      jq -e '
+        .format ==
+          "stage-a-relational-interpreter-kernel-run-entry-route-v1" and
+        (.acceptance_authority | not) and
+        (.proof_authority | not) and
+        .status == "locally_closed" and
+        (.control_block_rvas | length) > 0 and
+        .bulk_block_rva >= 0 and
+        .loop_block_rva >= 0 and
+        .remaining_proof_premises == []
+      ' "$out/interpreter-kernel-run-entry-route.json" >/dev/null
+      test -s \
+        "$out/StageA/GeneratedRelationalInterpreterKernelRunEntryRoute.lean"
+    '';
+  kernelRunEntryRouteClosure = mkGeneratedClosureProof {
+    name = "kernel-run-entry-route";
+    sources = candidateKernelOperationProofSourceInputs ++ [
+      kernelRunEntryRouteLean
+    ];
+    target = "GeneratedRelationalInterpreterKernelRunEntryRoute";
+    declaration =
+      "StageA.GeneratedRelational.InterpreterKernelOperationInstantiation.generatedRunEntryToLoopPath";
+  };
+  kernelRunEntryRouteProofSources =
+    kernelRunEntryRouteClosure.proofSources;
+  kernelRunEntryRouteProof = kernelRunEntryRouteClosure.proof;
+  kernelRunEntryBehaviorExtraction = mkAnalysisPhase
+    "stage-a-gnu-hello-roundtrip-kernel-run-entry-behavior-extraction"
+    [ sideTool pkgs.lean4 ] ''
+    mkdir -p "$out"
+    # Exact extraction constructs the balanced ByteTree for the complete
+    # multi-megabyte candidate before checking the requested instruction
+    # spans. Its interpreter recursion is proportional to the deterministic
+    # 1 KiB leaf count, so classify this one-thread node explicitly rather
+    # than inflating every downstream proof shard.
+    export SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_THREAD_STACK_KB=524288
+    ulimit -s 524288
+    spaghetti-extractor-side extract-side \
+      --binary ${candidate}/candidate.exe \
+      --request \
+        ${kernelRunEntryRouteLean}/interpreter-kernel-run-entry-behavior-request.json \
+      --out "$out/extraction.json" \
+      > "$out/result.json"
+    requested_regions="$(
+      jq '.regions | length' \
+        ${kernelRunEntryRouteLean}/interpreter-kernel-run-entry-behavior-request.json
+    )"
+    jq -e --argjson requested_regions "$requested_regions" '
+      .format == "stage-a-relational-side-extraction-result-v1" and
+      .status == "extracted" and
+      .side == "candidate" and
+      .regions == $requested_regions
+    ' "$out/result.json" >/dev/null
+    jq -e --argjson requested_regions "$requested_regions" '
+      .format == "stage-a-relational-side-extraction-v1" and
+      .status == "untrusted_proposal_requires_lean_decode_replay" and
+      .side == "candidate" and
+      (.regions | length) == $requested_regions
+    ' "$out/extraction.json" >/dev/null
+  '';
+  kernelRunEntryBehaviorsLean =
+    mkPhaseWithSource runEntryBehaviorsPythonSource
+      "stage-a-gnu-hello-roundtrip-kernel-run-entry-behaviors-source" [] ''
+      ${python} ${runEntryBehaviorsDriver} \
+        --operation-manifest \
+          ${kernelOperationInstantiationLean}/interpreter-kernel-operation-instantiation.json \
+        --extraction ${kernelRunEntryBehaviorExtraction}/extraction.json \
+        --out "$out"
+      test -s \
+        "$out/StageA/GeneratedRelationalInterpreterKernelRunEntryBehaviors.lean"
+    '';
+  kernelRunEntryBehaviorsClosure = mkGeneratedClosureProof {
+    name = "kernel-run-entry-behaviors";
+    sources = candidateKernelOperationProofSourceInputs ++ [
+      kernelRunEntryBehaviorsLean
+    ];
+    target = "GeneratedRelationalInterpreterKernelRunEntryBehaviors";
+    declaration =
+      "StageA.GeneratedRelational.InterpreterKernelOperationInstantiation.generatedRunEntryBlock2Instruction0006MaterializedBehaviorExact";
+  };
+  kernelRunEntryBehaviorsProofSources =
+    kernelRunEntryBehaviorsClosure.proofSources;
+  kernelRunEntryBehaviorsProof = kernelRunEntryBehaviorsClosure.proof;
+  kernelRunEntryAbiLean =
+    mkPhaseWithSource runEntryAbiPythonSource
+      "stage-a-gnu-hello-roundtrip-kernel-run-entry-abi-source" [] ''
+      ${python} ${runEntryAbiDriver} \
+        --operation-manifest \
+          ${kernelOperationInstantiationLean}/interpreter-kernel-operation-instantiation.json \
+        --abi-plan ${kernelAbiLean}/interpreter-kernel-abi-plan.json \
+        --out "$out"
+      test -s \
+        "$out/StageA/GeneratedRelationalInterpreterKernelRunEntryProjectionBlock0.lean"
+      test -s \
+        "$out/StageA/GeneratedRelationalInterpreterKernelRunEntryProjectionBlock1.lean"
+      test -s \
+        "$out/StageA/GeneratedRelationalInterpreterKernelRunEntryProjectionBlock2Base.lean"
+      for step in 0 1 2 3 4 5 6; do
+        test -s \
+          "$out/StageA/GeneratedRelationalInterpreterKernelRunEntryProjectionBlock2Step$step.lean"
+      done
+      test -s \
+        "$out/StageA/GeneratedRelationalInterpreterKernelRunEntryProjectionBlock2.lean"
+      test -s \
+        "$out/StageA/GeneratedRelationalInterpreterKernelRunEntryFootprints.lean"
+      test -s \
+        "$out/StageA/GeneratedRelationalInterpreterKernelRunEntryABIBase.lean"
+      test -s \
+        "$out/StageA/GeneratedRelationalInterpreterKernelRunEntryABI.lean"
+    '';
+  kernelRunEntryAbiClosure = mkGeneratedClosureProof {
+    name = "kernel-run-entry-abi";
+    sources = candidateKernelOperationProofSourceInputs ++ [
+      kernelRunEntryRouteLean
+      kernelRunEntryBehaviorsLean
+      kernelRunEntryAbiLean
+    ];
+    target = "GeneratedRelationalInterpreterKernelRunEntryABI";
+    declaration = "generatedRunEntryABIBulkSourceFacts";
+  };
+  kernelRunEntryAbiProofSources =
+    kernelRunEntryAbiClosure.proofSources;
+  kernelRunEntryAbiProof = kernelRunEntryAbiClosure.proof;
 
   proofSources = mkPhase "stage-a-gnu-hello-roundtrip-proof-sources" [] ''
     ${aggregatePython} ${proofSourceAggregateDriver} \
@@ -3008,7 +5449,10 @@ let
     "stage-a-gnu-hello-roundtrip-x87-replay-bridge-runtime-proof-sources" [] ''
     ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
+      --source ${originalPeLean} \
       --source ${kernelDataLean} \
+      --source ${x87Lean} \
+      --source ${x87CandidateReplayLean} \
       --source ${x87ReplayBridgeTargetLean} \
       --source ${x87ReplayBridgeRuntimeLean} \
       --target GeneratedRelationalInterpreterX87ReplayBridgeRuntime \
@@ -3036,12 +5480,22 @@ let
     "stage-a-gnu-hello-roundtrip-x87-kernel-execution-proof-sources" [] ''
     ${aggregatePython} ${proofSourceAggregateDriver} \
       --source ${leanSourceRoot} \
+      --source ${originalPeLean} \
       --source ${kernelDataLean} \
+      --source ${x87Lean} \
+      --source ${x87CandidateReplayLean} \
       --source ${x87ReplayBridgeTargetLean} \
       --source ${x87ReplayBridgeRuntimeLean} \
       --source ${x87KernelExecutionLean} \
       --target GeneratedRelationalInterpreterKernelX87Execution \
       --out "$out"
+    jq '. + {acceptance_authority: false}' \
+      "$out/phase-manifest.json" > "$out/phase-manifest.json.tmp"
+    mv "$out/phase-manifest.json.tmp" "$out/phase-manifest.json"
+    jq -e '
+      .status == "source-ready" and
+      (.acceptance_authority | not)
+    ' "$out/phase-manifest.json" >/dev/null
   '';
   x87KernelExecutionProofModules = builtins.fromJSON (
     builtins.readFile
@@ -3059,7 +5513,101 @@ let
     standaloneModuleResources = x87KernelExecutionProofResources;
     targetNodes = [ "GeneratedRelationalInterpreterKernelX87Execution" ];
     targetBundle = true;
+    targetAxiomAudit = {
+      module = "GeneratedRelationalInterpreterKernelX87Execution";
+      declaration =
+        "StageA.GeneratedRelational.InterpreterKernelX87Execution.generatedX87ReplayBridgeKernelExecutionClosed";
+      approved_axioms = [ "propext" "Classical.choice" "Quot.sound" ];
+    };
   };
+
+  gnuHelloMixedAcceptanceLean =
+    mkPhaseWithSource gnuHelloMixedAcceptancePythonSource
+      "stage-a-gnu-hello-roundtrip-mixed-acceptance-source" [] ''
+      ${python} \
+        ${gnuHelloMixedAcceptancePythonSource}/nix/gnu-hello-mixed-acceptance.py \
+        --out "$out"
+      jq -e '
+        .format == "stage-a-gnu-hello-mixed-acceptance-v1" and
+        .status == "ready_for_lean_check" and
+        (.acceptance_authority | not) and
+        (.proof_authority | not) and
+        (.report_authority | not) and
+        .lean_check_required and
+        (.accepts_manifest | not) and
+        (.accepts_proof_inputs | not) and
+        (.accepts_lean_name_inputs | not) and
+        .output_module ==
+          "StageA/GeneratedGnuHelloMixedAcceptance.lean" and
+        .profile ==
+          "StageA.GeneratedRelational.GnuHelloMixedAcceptance.candidatePE32CanonicalMixedRelationProfile" and
+        .source_theorem ==
+          "StageA.GeneratedRelational.GnuHelloMixedAcceptance.generatedGNUHelloMixedWorldProgramsEquivalent" and
+        .missing_dynamic_evidence == []
+      ' "$out/gnu-hello-mixed-acceptance.json" >/dev/null
+      test -s "$out/StageA/GeneratedGnuHelloMixedAcceptance.lean"
+    '';
+
+  mixedChunkedAcceptanceLean =
+    mkPhaseWithSource mixedChunkedAcceptancePythonSource
+      "stage-a-gnu-hello-roundtrip-mixed-chunked-acceptance-source" [] ''
+      ${python} \
+        ${mixedChunkedAcceptancePythonSource}/nix/interpreter-mixed-chunked-acceptance.py \
+        --binding-module StageA.GeneratedGnuHelloMixedAcceptance \
+        --source-parameter-type \
+          StageA.GeneratedRelational.GnuHelloMixedAcceptance.Parameters \
+        --source-profile \
+          StageA.GeneratedRelational.GnuHelloMixedAcceptance.candidatePE32CanonicalMixedRelationProfile \
+        --source-theorem \
+          StageA.GeneratedRelational.GnuHelloMixedAcceptance.generatedGNUHelloMixedWorldProgramsEquivalent \
+        --out "$out"
+      jq -e '
+        .format ==
+          "stage-a-relational-mixed-chunked-acceptance-v1" and
+        .status == "ready_for_lean_check" and
+        (.acceptance_authority | not) and
+        (.report_authority | not) and
+        .lean_check_required and
+        .output_module ==
+          "StageA/GeneratedRelationalMixedChunkedAcceptance.lean" and
+        .theorem ==
+          "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentMixedChunked" and
+        .profile == "mixed-native-pe32-chunked-closed" and
+        .profile_term ==
+          "StageA.GeneratedRelational.candidatePE32CanonicalMixedRelationFamily" and
+        .source_parameter_type ==
+          "StageA.GeneratedRelational.GnuHelloMixedAcceptance.Parameters" and
+        .source_profile ==
+          "StageA.GeneratedRelational.GnuHelloMixedAcceptance.candidatePE32CanonicalMixedRelationProfile" and
+        .source_theorem ==
+          "StageA.GeneratedRelational.GnuHelloMixedAcceptance.generatedGNUHelloMixedWorldProgramsEquivalent"
+      ' "$out/mixed-chunked-acceptance.json" >/dev/null
+      test -s \
+        "$out/StageA/GeneratedRelationalMixedChunkedAcceptance.lean"
+    '';
+
+  mixedChunkedAcceptanceClosure = mkGeneratedClosureProof {
+    name = "mixed-chunked-acceptance";
+    sources = [
+      proofSources
+      acceptanceRequirementsLean
+      runtimeFoundationLean
+      launchBindingLean
+      externalComponentLean
+      runtimeIndirectCompositionLean
+      kernelOperationInstantiationLean
+      programLookupNativeWorldBridgeLean
+      x87KernelExecutionLean
+      gnuHelloMixedAcceptanceLean
+      mixedChunkedAcceptanceLean
+    ];
+    target = "GeneratedRelationalMixedChunkedAcceptance";
+    declaration =
+      "StageA.GeneratedRelational.candidatePE32ProgramsEquivalentMixedChunked";
+  };
+  mixedChunkedAcceptanceProofSources =
+    mixedChunkedAcceptanceClosure.proofSources;
+  mixedChunkedAcceptanceProof = mixedChunkedAcceptanceClosure.proof;
 
   acceptanceLean = mkPhase "stage-a-gnu-hello-roundtrip-acceptance-lean" [] ''
     ${python} ${driver} acceptance-sources \
@@ -3069,6 +5617,24 @@ let
         ${mixedOriginalCarrierBindingLean}/phase-manifest.json \
       --native-launch-request \
         ${nativeLaunchRequest}/native-launch-route-request.json \
+      --static-reachability-manifest \
+        ${mixedOriginalStaticReachabilityLean}/phase-manifest.json \
+      --native-launch-graph-manifest \
+        ${nativeLaunchGraphLean}/phase-manifest.json \
+      --universal-paired-external-environment-manifest \
+        ${universalPairedExternalEnvironmentLean}/phase-manifest.json \
+      --constructive-source-coverage-manifest \
+        ${constructiveSourceCoverageLean}/phase-manifest.json \
+      --canonical-relation-core-manifest \
+        ${canonicalRelationCoreLean}/phase-manifest.json \
+      --kernel-program-lookup-operation-manifest \
+        ${kernelLookupOperationLean}/phase-manifest.json \
+      --kernel-step-operation-manifest \
+        ${kernelStepOperationLean}/phase-manifest.json \
+      --kernel-run-operation-manifest \
+        ${kernelRunOperationLean}/phase-manifest.json \
+      --kernel-invoke-operation-manifest \
+        ${kernelInvokeOperationLean}/phase-manifest.json \
       --x87-kernel-execution-manifest \
         ${x87KernelExecutionLean}/phase-manifest.json \
       --out "$out"
@@ -3080,13 +5646,11 @@ let
       .diagnostic_status == "incomplete" and
       .acceptance_theorem == null and
       (.counts.remaining_original_control_frontiers > 0) and
-      ([.semantic_blockers[].id] | index(
-        "exact_candidate_native_launch_wrapper_missing") != null) and
-      ([.semantic_blockers[].id] | index(
-        "universal_paired_environment_refinement_missing") != null) and
-      ([.semantic_blockers[].id] | index(
-        "x87_replay_kernel_execution_premises_missing") != null) and
-      .counts.remaining_x87_kernel_execution_premises == 11 and
+      .counts.diagnostic_blockers == (.semantic_blockers | length) and
+      .counts.remaining_diagnostic_items ==
+        ([.counts.remaining_diagnostic_items_by_phase[]] | add) and
+      (.validated_phase_manifests | length) == 10 and
+      .counts.remaining_x87_kernel_execution_premises == 0 and
       .counts.x87_runtime_targets == $runtimeCount
     ' "$out/phase-manifest.json" >/dev/null
   '';
@@ -3121,15 +5685,41 @@ let
     ln -s ${proofFragments} "$out/lean-fragments"
     ln -s ${proofSources} "$out/proof-sources"
     ln -s ${engineSegments} "$out/engine-segments"
+    ln -s ${isaCoverage} "$out/isa-coverage"
+    ln -s ${sideIsaQualificationAdapter} \
+      "$out/side-isa-qualification-adapter"
+    ln -s ${sideIsaQualificationBundle} \
+      "$out/side-isa-qualification"
+    ln -s ${semanticCoverage} "$out/semantic-coverage"
     ln -s ${acceptanceLean} "$out/acceptance-source"
     ${python} - "$out/proof-result.json" \
       ${proofSources}/phase-manifest.json \
       ${proofFragments}/bundle.json \
-      ${acceptanceLean}/phase-manifest.json <<'PY'
+      ${acceptanceLean}/phase-manifest.json \
+      ${sideIsaQualificationAdapter}/adapter-result.json \
+      ${sideIsaQualificationBundle}/selection-policy.json <<'PY'
     import json, pathlib, sys
     sources = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
     bundle = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
     acceptance = json.loads(pathlib.Path(sys.argv[4]).read_text(encoding="utf-8"))
+    side_isa_adapter = json.loads(
+        pathlib.Path(sys.argv[5]).read_text(encoding="utf-8")
+    )
+    side_isa_policy = json.loads(
+        pathlib.Path(sys.argv[6]).read_text(encoding="utf-8")
+    )
+    if (
+        side_isa_policy.get("format")
+        != "stage-a-isa-selection-evidence-policy-v1"
+        or side_isa_policy.get("status")
+        not in {"qualified", "usable-incomplete"}
+        or side_isa_policy.get("counts", {}).get("disputed") != 0
+        or side_isa_policy.get("counts", {}).get("vetoed") != 0
+        or side_isa_policy.get("trust", {}).get("proof_authority") is not False
+        or side_isa_policy.get("trust", {}).get("closes_stage_a_proof")
+        is not False
+    ):
+        raise SystemExit("ISA qualification evidence policy is malformed")
     result = {
       "format": "stage-a-gnu-hello-roundtrip-proof-result-v1",
       "status": "incomplete",
@@ -3139,6 +5729,16 @@ let
       "compiled_modules": len(bundle["nodes"]),
       "generated_modules": sources["counts"]["modules"],
       "frontiers": acceptance["semantic_blockers"],
+      "diagnostic_evidence": {
+        "side_isa_qualification_adapter": {
+          "status": side_isa_adapter["status"],
+          "catalog_status": side_isa_adapter["catalog_status"],
+          "counts": side_isa_adapter["counts"],
+          "proof_authority": side_isa_adapter["proof_authority"],
+          "closes_stage_a_proof": side_isa_adapter["closes_stage_a_proof"],
+        },
+        "side_isa_qualification": side_isa_policy,
+      },
     }
     pathlib.Path(sys.argv[1]).write_text(
       json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -3155,6 +5755,21 @@ in
     nativeEngine
     nativeRuntime
     candidate
+    originalInventory
+    candidateInventory
+    originalIsaRequest
+    candidateIsaRequest
+    originalIsa
+    candidateIsa
+    originalIsaSummary
+    candidateIsaSummary
+    sideIsaQualificationAdapter
+    sideIsaCatalogEnrichment
+    sideIsaCorpus
+    sideIsaQualificationEvidence
+    sideIsaQualificationBundle
+    isaCoverage
+    semanticCoverage
     nativeLaunchRequest
     engineSegments
     nativeLaunchGraphLean
@@ -3199,12 +5814,29 @@ in
     programLean
     normalizationLean
     semanticRefinementLean
+    mixedFusedSemanticEvidenceLean
+    mixedFusedSemanticEvidenceProofSources
+    mixedFusedSemanticEvidenceProof
+    mixedDirectCallSemanticEvidenceLean
+    mixedDirectCallSemanticEvidenceProofSources
+    mixedDirectCallSemanticEvidenceProof
+    mixedIndirectImportCallSemanticEvidenceLean
+    mixedIndirectImportCallSemanticEvidenceProofSources
+    mixedIndirectImportCallSemanticEvidenceProof
+    mixedExternalTailSemanticEvidenceLean
+    mixedExternalTailSemanticEvidenceProofSources
+    mixedExternalTailSemanticEvidenceProof
     x87Lean
     x87ScheduleBenchmarkSources
     x87ScheduleBenchmark
     definednessLean
     kernelLean
     kernelDataLean
+    kernelDataNativeProjectionBenchmark
+    kernelDataNativeProjectionProof
+    accessFaultQualificationLean
+    accessFaultQualificationProofSources
+    accessFaultQualificationProof
     kernelAbiLean
     x87CandidateReplayLean
     x87ReplayBridgeTargetLean
@@ -3216,6 +5848,16 @@ in
     kernelLookupLean
     kernelLookupNativeLean
     kernelLookupOperationLean
+    programLookupNativeWorldBridgeLean
+    programLookupNativeWorldBridgeProofSources
+    programLookupNativeWorldBridgeProof
+    interpreterStepWorldProgramLookupLean
+    interpreterStepProgramLookupCallBehaviorExtraction
+    interpreterStepProgramLookupCallBehaviorsLean
+    interpreterStepProgramLookupProjectionProofSources
+    interpreterStepProgramLookupProjectionProof
+    interpreterStepWorldProgramLookupProofSources
+    interpreterStepWorldProgramLookupProof
     kernelStepLean
     kernelStepNativeLean
     kernelRunLean
@@ -3253,6 +5895,37 @@ in
     canonicalRelationCoreLean
     canonicalRelationCoreProofSources
     canonicalRelationCoreProof
+    acceptanceRequirementsLean
+    acceptanceRequirementsProofSources
+    acceptanceRequirementsProof
+    runtimeFoundationLean
+    runtimeFoundationProofSources
+    runtimeFoundationProof
+    launchBindingLean
+    launchBindingProofSources
+    launchBindingProof
+    externalComponentLean
+    externalComponentProofSources
+    externalComponentProof
+    mixedSemanticOperationComponentLean
+    mixedSemanticOperationComponentProofSources
+    mixedSemanticOperationComponentProof
+    runtimeIndirectCompositionLean
+    runtimeIndirectCompositionProofSources
+    runtimeIndirectCompositionProof
+    kernelOperationInstantiationLean
+    kernelOperationInstantiationProofSources
+    kernelOperationInstantiationProof
+    kernelRunEntryRouteLean
+    kernelRunEntryRouteProofSources
+    kernelRunEntryRouteProof
+    kernelRunEntryBehaviorExtraction
+    kernelRunEntryBehaviorsLean
+    kernelRunEntryBehaviorsProofSources
+    kernelRunEntryBehaviorsProof
+    kernelRunEntryAbiLean
+    kernelRunEntryAbiProofSources
+    kernelRunEntryAbiProof
     proofSources
     proofFragments
     ordinaryRefinementFragments
@@ -3263,6 +5936,10 @@ in
     x87ReplayBridgeRuntimeFragments
     x87KernelExecutionProofSources
     x87KernelExecutionFragments
+    gnuHelloMixedAcceptanceLean
+    mixedChunkedAcceptanceLean
+    mixedChunkedAcceptanceProofSources
+    mixedChunkedAcceptanceProof
     acceptanceLean
     finalProofSources
     proofReport

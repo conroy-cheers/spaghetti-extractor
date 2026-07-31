@@ -16,6 +16,7 @@ from ..artifacts import write_text_if_changed as _write_text_if_changed
 from ..schema import (
     FLAG_BITS,
     RELATIONAL_LINKED_ACCEPTANCE_THEOREM,
+    RELATIONAL_LINKED_ACCEPTANCE_PROFILE,
     choose_relational_acceptance_theorem,
 )
 from .expressions import (
@@ -3815,6 +3816,7 @@ def _write_relational_acceptance_modules(
         else:
             plan["required_theorem"] = selected_theorem
             plan["theorem"] = selected_theorem
+            plan["authority_profile"] = RELATIONAL_LINKED_ACCEPTANCE_PROFILE
     write_json(lean_dir.parent / "whole-program-acceptance.json", plan)
     acceptance_ready = plan["status"] == "ready"
     root_invariant = _lean_region_input_invariant(root_region)

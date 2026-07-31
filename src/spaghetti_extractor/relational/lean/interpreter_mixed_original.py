@@ -58,6 +58,9 @@ INTERPRETER_MIXED_REGISTER_CONTROL_LEAN_ADAPTER_FORMAT = (
 INTERPRETER_MIXED_DIRECT_CALL_AUTHORITY_FORMAT = (
     "stage-a-mixed-original-direct-call-authority-bindings-v2"
 )
+CHECKED_STACK_FINITE_ORIGIN_ENTRY_AUTHORITY_FORMAT = (
+    "stage-a-checked-stack-finite-origin-call-entry-authorities-v1"
+)
 
 _REGISTER_CONTROL_REGISTERS = (
     "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp",
@@ -1287,12 +1290,288 @@ class MixedOriginalDirectCallSummaryRequestPlan:
         }
 
 
+def stage_finite_origin_entry_requests(
+    plan: MixedOriginalDirectCallSummaryRequestPlan,
+    *,
+    available_instruction_rvas: Iterable[int],
+) -> MixedOriginalDirectCallSummaryRequestPlan:
+    """Select the finite-origin calls whose entry authorities exist now.
+
+    Register provenance can cross internal calls only after those calls have
+    checked preservation summaries. A proof round must therefore compile the
+    currently grounded entries and defer the rest, rather than treating a
+    fixed-point dependency as a semantic failure. Later rounds call this same
+    function with the newly checked entry inventory.
+    """
+
+    available = frozenset(available_instruction_rvas)
+    for instruction_rva in available:
+        if (
+            not isinstance(instruction_rva, int)
+            or isinstance(instruction_rva, bool)
+            or not 0 <= instruction_rva < 2**32
+        ):
+            raise InterpreterMixedOriginalGenerationError(
+                "available finite-origin entry RVAs must be PE32 integers"
+            )
+    active = tuple(
+        request
+        for request in plan.finite_origin_entry_requests
+        if request.callsite_rva in available
+    )
+    deferred = tuple(
+        request
+        for request in plan.finite_origin_entry_requests
+        if request.callsite_rva not in available
+    )
+    deferred_frontiers = tuple({
+        "reason_code": "finite_origin_entry_deferred_until_checked",
+        "detail": (
+            "the entry target is carried through a call or loop whose checked "
+            "preservation summary belongs to an earlier proof round"
+        ),
+        "callsite_rva": request.callsite_rva,
+        "caller_rva": request.caller_rva,
+        "registers": list(request.registers),
+        "caller_frame_word_offsets": list(
+            request.caller_frame_word_offsets
+        ),
+    } for request in deferred)
+    return MixedOriginalDirectCallSummaryRequestPlan(
+        state_machine_sha256=plan.state_machine_sha256,
+        requests=plan.requests,
+        chains=plan.chains,
+        frontiers=(*plan.frontiers, *deferred_frontiers),
+        finite_origin_entry_requests=active,
+    )
+
+
+def _checked_stack_finite_origin_entries(
+    report: Mapping[str, Any] | None,
+    *,
+    original_sha256: str,
+    state_machine_sha256: str,
+) -> dict[tuple[int, int, int], Mapping[str, Any]]:
+    if report is None:
+        return {}
+    if report.get("format") != (
+        CHECKED_STACK_FINITE_ORIGIN_ENTRY_AUTHORITY_FORMAT
+    ):
+        raise InterpreterMixedOriginalGenerationError(
+            "checked stack finite-origin entry authority has the wrong format"
+        )
+    inputs = report.get("inputs")
+    if not isinstance(inputs, Mapping):
+        raise InterpreterMixedOriginalGenerationError(
+            "checked stack finite-origin entry authority has no inputs"
+        )
+    for field, expected in (
+        ("original_sha256", original_sha256),
+        ("state_machine_sha256", state_machine_sha256),
+    ):
+        if inputs.get(field) != expected:
+            raise InterpreterMixedOriginalGenerationError(
+                "checked stack finite-origin entry authority "
+                f"{field} does not match"
+            )
+    rows = report.get("entries")
+    if not isinstance(rows, list):
+        raise InterpreterMixedOriginalGenerationError(
+            "checked stack finite-origin entry authority has no entries"
+        )
+    result: dict[tuple[int, int, int], Mapping[str, Any]] = {}
+    constructor = (
+        "StageA.Relational.IndirectExitAdapters."
+        "checkedStackFixedIndirectCertificate"
+    )
+    for index, item in enumerate(rows):
+        if not isinstance(item, Mapping):
+            raise InterpreterMixedOriginalGenerationError(
+                f"checked stack finite-origin entry {index} is malformed"
+            )
+        source_rva = _u32(
+            item.get("source_rva"),
+            f"checked stack finite-origin entry {index} source RVA",
+        )
+        instruction_rva = _u32(
+            item.get("instruction_rva"),
+            f"checked stack finite-origin entry {index} instruction RVA",
+        )
+        continuation_rva = _u32(
+            item.get("continuation_rva"),
+            f"checked stack finite-origin entry {index} continuation RVA",
+        )
+        for field in (
+            "source_target_id",
+            "continuation_target_id",
+            "callee_target_id",
+            "callee_rva",
+            "caller_frame_word_offset",
+        ):
+            _u32(
+                item.get(field),
+                f"checked stack finite-origin entry {index} {field}",
+            )
+        static_term = item.get("static_stack_authority_term")
+        if not isinstance(static_term, Mapping):
+            raise InterpreterMixedOriginalGenerationError(
+                f"checked stack finite-origin entry {index} has no named "
+                "static stack authority"
+            )
+        QualifiedLeanSymbol(
+            module=str(static_term.get("module", "")),
+            namespace=str(static_term.get("namespace", "")),
+            symbol=str(static_term.get("symbol", "")),
+        ).validate(
+            f"checked_stack_finite_origin_entries[{index}]"
+            ".static_stack_authority_term"
+        )
+        kernel_check = item.get("static_stack_authority_kernel_check")
+        if (
+            not isinstance(kernel_check, Mapping)
+            or kernel_check.get("status") != "checked"
+            or kernel_check.get("module") != static_term.get("module")
+            or kernel_check.get("term") != static_term
+            or not isinstance(kernel_check.get("source_sha256"), str)
+            or re.fullmatch(
+                r"[0-9a-f]{64}", str(kernel_check.get("source_sha256"))
+            )
+            is None
+            or not isinstance(kernel_check.get("olean_sha256"), str)
+            or re.fullmatch(
+                r"[0-9a-f]{64}", str(kernel_check.get("olean_sha256"))
+            )
+            is None
+        ):
+            raise InterpreterMixedOriginalGenerationError(
+                f"checked stack finite-origin entry {index} static authority "
+                "was not kernel-compiled"
+            )
+        if item.get("certificate_constructor") != constructor:
+            raise InterpreterMixedOriginalGenerationError(
+                f"checked stack finite-origin entry {index} does not use "
+                "checkedStackFixedIndirectCertificate"
+            )
+        entry_term = item.get("indirect_exit_authority_term")
+        if not isinstance(entry_term, Mapping):
+            raise InterpreterMixedOriginalGenerationError(
+                f"checked stack finite-origin entry {index} has no checked "
+                "indirect-exit authority"
+            )
+        entry_symbol = QualifiedLeanSymbol(
+            module=str(entry_term.get("module", "")),
+            namespace=str(entry_term.get("namespace", "")),
+            symbol=str(entry_term.get("symbol", "")),
+        )
+        entry_symbol.validate(
+            f"checked_stack_finite_origin_entries[{index}]"
+            ".indirect_exit_authority_term"
+        )
+        if item.get("indirect_exit_authority_module") != entry_symbol.module:
+            raise InterpreterMixedOriginalGenerationError(
+                f"checked stack finite-origin entry {index} authority module "
+                "does not match its Lean term"
+            )
+        exact_term = item.get("indirect_exit_certificate_exact_term")
+        if (
+            not isinstance(exact_term, str)
+            or re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_']*"
+                r"(?:\.[A-Za-z_][A-Za-z0-9_']*)*",
+                exact_term,
+            )
+            is None
+        ):
+            raise InterpreterMixedOriginalGenerationError(
+                f"checked stack finite-origin entry {index} has no exact "
+                "certificate projection theorem"
+            )
+        entry_kernel_check = item.get(
+            "indirect_exit_authority_kernel_check"
+        )
+        if (
+            not isinstance(entry_kernel_check, Mapping)
+            or entry_kernel_check.get("status") != "checked"
+            or entry_kernel_check.get("module") != entry_symbol.module
+            or entry_kernel_check.get("term") != entry_term
+            or not isinstance(
+                entry_kernel_check.get("source_sha256"), str
+            )
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(entry_kernel_check.get("source_sha256")),
+            )
+            is None
+            or not isinstance(
+                entry_kernel_check.get("olean_sha256"), str
+            )
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(entry_kernel_check.get("olean_sha256")),
+            )
+            is None
+        ):
+            raise InterpreterMixedOriginalGenerationError(
+                f"checked stack finite-origin entry {index} indirect-exit "
+                "authority was not kernel-compiled"
+            )
+        key = (source_rva, instruction_rva, continuation_rva)
+        if key in result:
+            raise InterpreterMixedOriginalGenerationError(
+                "checked stack finite-origin entry authority duplicates an "
+                "exact callsite"
+            )
+        result[key] = item
+    return result
+
+
+def load_checked_stack_finite_origin_call_entry_authorities(
+    report: Mapping[str, Any],
+    *,
+    original_sha256: str,
+    state_machine_sha256: str,
+) -> tuple[OriginalRegisterFiniteOriginCallEntryAuthority, ...]:
+    """Load stack-derived call entries only after both Lean terms are checked."""
+
+    entries = _checked_stack_finite_origin_entries(
+        report,
+        original_sha256=original_sha256,
+        state_machine_sha256=state_machine_sha256,
+    )
+    return tuple(
+        OriginalRegisterFiniteOriginCallEntryAuthority(
+            source_rva=source_rva,
+            instruction_rva=instruction_rva,
+            continuation_rva=continuation_rva,
+            continuation_target_id=int(item["continuation_target_id"]),
+            target_ids=(int(item["callee_target_id"]),),
+            module=str(item["indirect_exit_authority_module"]),
+            namespace=str(
+                item["indirect_exit_authority_term"]["namespace"]
+            ),
+            indirect_exit_authority_term=(
+                f"{item['indirect_exit_authority_term']['namespace']}."
+                f"{item['indirect_exit_authority_term']['symbol']}"
+            ),
+            indirect_exit_certificate_exact_term=str(
+                item["indirect_exit_certificate_exact_term"]
+            ),
+        )
+        for (
+            source_rva,
+            instruction_rva,
+            continuation_rva,
+        ), item in sorted(entries.items())
+    )
+
+
 def augment_direct_call_summary_requests_from_runtime_value_carry_hints(
     plan: MixedOriginalDirectCallSummaryRequestPlan,
     hints: Mapping[str, Any],
     proposal_ir: DirectCallProposalIR,
     *,
     original_sha256: str,
+    checked_stack_entry_authority: Mapping[str, Any] | None = None,
 ) -> MixedOriginalDirectCallSummaryRequestPlan:
     """Add caller-frame preservation requests from an untrusted route hint.
 
@@ -1327,6 +1606,24 @@ def augment_direct_call_summary_requests_from_runtime_value_carry_hints(
     chains = list(plan.chains)
     frontiers = list(plan.frontiers)
     target_ids_by_rva = proposal_ir.target_ids_by_rva
+    target_rvas = getattr(proposal_ir, "target_rvas", None)
+    if target_rvas is None:
+        target_rvas = {
+            target_id: rva for rva, target_id in target_ids_by_rva.items()
+        }
+    stack_entries = _checked_stack_finite_origin_entries(
+        checked_stack_entry_authority,
+        original_sha256=original_sha256,
+        state_machine_sha256=plan.state_machine_sha256,
+    )
+    finite_requests_by_site = {
+        (request.callsite_rva, request.caller_rva): request
+        for request in plan.finite_origin_entry_requests
+    }
+    if len(finite_requests_by_site) != len(plan.finite_origin_entry_requests):
+        raise InterpreterMixedOriginalGenerationError(
+            "finite-origin direct-call request plan contains duplicate callsites"
+        )
 
     for route_index, route_item in enumerate(route_rows):
         if not isinstance(route_item, Mapping):
@@ -1469,6 +1766,74 @@ def augment_direct_call_summary_requests_from_runtime_value_carry_hints(
                     f"runtime value-carry route {route_index} transfer "
                     f"{transfer_index} has ambiguous call metadata"
                 )
+            if indirect_sites:
+                site = indirect_sites[0]
+                entry = stack_entries.get(
+                    (source_rva, site.instruction_rva, target_rva)
+                )
+                if entry is not None:
+                    expected_source_id = target_ids_by_rva[source_rva]
+                    expected_continuation_id = target_ids_by_rva[target_rva]
+                    callee_target_id = int(entry["callee_target_id"])
+                    callee_rva = int(entry["callee_rva"])
+                    if (
+                        entry["source_target_id"] != expected_source_id
+                        or entry["continuation_target_id"]
+                        != expected_continuation_id
+                        or entry["caller_frame_word_offset"] != offset
+                        or target_rvas.get(callee_target_id) != callee_rva
+                    ):
+                        raise InterpreterMixedOriginalGenerationError(
+                            f"runtime value-carry route {route_index} transfer "
+                            f"{transfer_index} does not match its checked stack "
+                            "entry authority"
+                        )
+                    key = (site.instruction_rva, source_rva)
+                    prior = finite_requests_by_site.get(key)
+                    registers = () if prior is None else prior.registers
+                    offsets = set(
+                        ()
+                        if prior is None
+                        else prior.caller_frame_word_offsets
+                    )
+                    offsets.add(offset)
+                    finite_requests_by_site[key] = DirectCallSummaryRequest(
+                        callsite_rva=site.instruction_rva,
+                        caller_rva=source_rva,
+                        registers=registers,
+                        caller_frame_word_offsets=tuple(sorted(offsets)),
+                    ).checked()
+                    chains.append({
+                        "source": (
+                            "checked_stack_finite_origin_entry_authority"
+                        ),
+                        "stable_id": stable_id,
+                        "use_source_rva": target_rva,
+                        "use_instruction_rva": target_rva,
+                        "register": "esp",
+                        "caller_frame_word_offset": offset,
+                        "required_internal_calls": [],
+                        "required_finite_origin_calls": [{
+                            "callsite_rva": site.instruction_rva,
+                            "caller_rva": source_rva,
+                            "source_rva": source_rva,
+                            "source_target_id": expected_source_id,
+                            "continuation_rva": target_rva,
+                            "continuation_target_id": (
+                                expected_continuation_id
+                            ),
+                            "callee_rva": callee_rva,
+                            "callee_target_id": callee_target_id,
+                            "static_stack_authority_term": dict(
+                                entry["static_stack_authority_term"]
+                            ),
+                            "certificate_constructor": (
+                                entry["certificate_constructor"]
+                            ),
+                        }],
+                        "machine_import_carries": [],
+                    })
+                    continue
             frontiers.append({
                 "reason_code": (
                     "caller_frame_word_requires_finite_origin_entry_authority"
@@ -1506,7 +1871,15 @@ def augment_direct_call_summary_requests_from_runtime_value_carry_hints(
         requests=requests,
         chains=tuple(chains),
         frontiers=tuple(frontiers),
-        finite_origin_entry_requests=plan.finite_origin_entry_requests,
+        finite_origin_entry_requests=tuple(sorted(
+            finite_requests_by_site.values(),
+            key=lambda request: (
+                request.callsite_rva,
+                -1 if request.caller_rva is None else request.caller_rva,
+                request.registers,
+                request.caller_frame_word_offsets,
+            ),
+        )),
     )
 
 
@@ -9812,6 +10185,7 @@ def _positive_int(value: Any, context: str) -> int:
 
 
 __all__ = [
+    "CHECKED_STACK_FINITE_ORIGIN_ENTRY_AUTHORITY_FORMAT",
     "INTERPRETER_MIXED_DIRECT_CALL_AUTHORITY_FORMAT",
     "INTERPRETER_MIXED_ORIGINAL_FORMAT",
     "INTERPRETER_MIXED_ORIGINAL_BASE_MODULE",
@@ -9852,11 +10226,13 @@ __all__ = [
     "derive_direct_call_summary_requests_from_register_authority",
     "derive_mixed_original_direct_call_summary_requests",
     "load_checked_direct_call_summary_contract_proposals",
+    "load_checked_stack_finite_origin_call_entry_authorities",
     "load_original_iat_import_proposals",
     "load_original_pe_recovery_input",
     "load_original_register_control_call_contract_proposals",
     "interpreter_mixed_original_register_control_lean_adapter",
     "plan_interpreter_mixed_original",
+    "stage_finite_origin_entry_requests",
     "write_relational_interpreter_mixed_original",
     "write_relational_interpreter_mixed_original_base",
     "write_relational_interpreter_mixed_original_final",
