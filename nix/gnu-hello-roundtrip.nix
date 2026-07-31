@@ -1265,6 +1265,27 @@ let
     ' "$out/phase-manifest.json" >/dev/null
   '';
 
+  sourceC0 = mkPhase "stage-b-gnu-hello-c0-source-v1" [ staticExport ] ''
+    entry_rva="$(jq -r .identity.entry_rva ${staticExport}/load-image-contract.json)"
+    set +e
+    ${spaghettiExtractor}/bin/spaghetti-extractor \
+      stage-b-generate-semantic-c \
+      --dialect c0-v1 \
+      --state-machine ${staticExport}/state-machine.jsonl \
+      --entry-rva "$entry_rva" \
+      --out-dir "$out"
+    result=$?
+    set -e
+    test "$result" -eq 0 -o "$result" -eq 1
+    jq -e '
+      .format == "stage-b-c0-source-manifest-v1" and
+      .dialect == "c0-v1" and
+      .transfer_count > 0 and
+      (.trust.original_instruction_bytes_embedded | not) and
+      .trust.lean_exact_source_check_required
+    ' "$out/source-manifest.json" >/dev/null
+  '';
+
   interpreter = mkPhase "stage-b-gnu-hello-roundtrip-interpreter" [] ''
     ${python} ${runtimeDriver} interpreter \
       --state-machine ${staticExport}/state-machine.jsonl \
@@ -5751,6 +5772,7 @@ in
   inherit
     smoke
     staticExport
+    sourceC0
     interpreter
     nativeEngine
     nativeRuntime

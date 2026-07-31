@@ -26,14 +26,24 @@ _SIMPLIFIER_DEFINITIONS = """ExactNormalizedTransferPath.instructions,
       SemanticTransfer.execute, SemanticTransfer.executeBody,
       SemanticTransfer.executeAction, SemanticWordNode.evaluate,
       SemanticOutcome.complete, halted, evalPrimitive,
-      RuntimeState.setWord, Register.ofIndex?, formalRegister,
-      machineFromFormal, exactResult, concreteBehaviorNextMachineState,
+      RuntimeState.setWord, Register.ofIndex?,
+      StageA.Relational.InterpreterMachineBridge.formalRegister,
+      MemoryWidth.ofBytes?, machineFromFormal,
+      StageA.Relational.InterpreterMachineBridge.machineFromFormal,
+      exactResult, exactReadEvent, exactWriteEvent,
+      concreteBehaviorNextMachineState,
       SymbolicBehavior.eval, initialSymbolic, initialSymbolicX87,
       Addressing.expression, Registers.set, Registers.get,
       Expr.addNormalized, StageA.Formal.Expr.eval,
+      evalInputRegisterOffset, symbolicRead32,
+      exactWrite32WithDisjointTail?,
       StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval,
       StageA.Formal.FlagsExpr.eval, StageA.Formal.applyWrites,
-      readMemory, InterpreterMachine.setRegister, reconstructedInputFlags"""
+      readMemory, InterpreterMachine.setRegister,
+      StageA.Relational.InterpreterMachineBridge.machineFromFormal_syncEflags,
+      StageA.Relational.InterpreterMachineBridge.flagsFromEflags_syncEflags,
+      Memory.read32,
+      reconstructedInputFlags"""
 
 _FUSED_SYMBOLIC_SIMPLIFIER_DEFINITIONS = """executePE32SymbolicSpan,
       runPE32SymbolicSpanFuel, Span.stop,
@@ -45,7 +55,8 @@ _FUSED_SYMBOLIC_SIMPLIFIER_DEFINITIONS = """executePE32SymbolicSpan,
 _FUSED_TRANSFER_SIMPLIFIER_DEFINITIONS = """SemanticTransfer.execute,
       SemanticTransfer.executeBody, SemanticTransfer.executeAction,
       SemanticWordNode.evaluate, SemanticOutcome.complete, halted,
-      evalPrimitive, RuntimeState.setWord, Register.ofIndex?, formalRegister,
+      evalPrimitive, RuntimeState.setWord, Register.ofIndex?,
+      StageA.Relational.InterpreterMachineBridge.formalRegister,
       machineFromFormal, InterpreterMachine.setRegister"""
 
 _FUSED_MACHINE_SIMPLIFIER_DEFINITIONS = """NormalizedSymbolicBehavior.eval,
@@ -57,8 +68,10 @@ _FUSED_MACHINE_SIMPLIFIER_DEFINITIONS = """NormalizedSymbolicBehavior.eval,
       StageA.Formal.FlagsExpr.eval, Expr.addNormalized, signExtendImmediate8,
       reconstructedInputFlags"""
 
-_REGISTER_FUNCTION_SIMPLIFIER_DEFINITIONS = """Registers.get, formalRegister,
-      Expr.addNormalized, signExtendImmediate8, StageA.Formal.Expr.eval"""
+_REGISTER_FUNCTION_SIMPLIFIER_DEFINITIONS = """Registers.get,
+      StageA.Relational.InterpreterMachineBridge.formalRegister,
+      Expr.addNormalized, signExtendImmediate8, StageA.Formal.Expr.eval,
+      BitVec.add_comm"""
 
 
 def _exact_byte_facts(item: Mapping[str, Any]) -> tuple[str, list[str]]:
@@ -116,7 +129,9 @@ def _exact_window_facts(
     return "\n".join(definitions), names
 
 
-def _theorem(source_index: int, item: Mapping[str, Any]) -> str:
+def _theorem(
+    source_index: int, item: Mapping[str, Any], *, emit_fused: bool
+) -> str:
     path = f"exactNormalizedTransferPath{source_index}"
     transfer = f"semanticInterpreterTransfer{source_index}"
     exact_facts, exact_names = _exact_byte_facts(item)
@@ -127,7 +142,7 @@ def _theorem(source_index: int, item: Mapping[str, Any]) -> str:
     fused_symbolic_inputs = ",\n      ".join(
         [*exact_window_names, _FUSED_SYMBOLIC_SIMPLIFIER_DEFINITIONS]
     )
-    return f"""set_option maxHeartbeats 0 in
+    exact_theorem = f"""set_option maxHeartbeats 0 in
 theorem exactNormalizedTransferSemanticRefinement{source_index} :
     SemanticTransferRefinesExactPath originalPe {path} {transfer} := by
   apply semanticTransferRefinesOfExactExecution originalPe originalImports
@@ -142,7 +157,11 @@ theorem exactNormalizedTransferSemanticRefinement{source_index} :
       funext register
       cases register <;>
         simp [{_REGISTER_FUNCTION_SIMPLIFIER_DEFINITIONS}]
+"""
+    if not emit_fused:
+        return exact_theorem
 
+    return exact_theorem + f"""
 set_option maxHeartbeats 0 in
 theorem exactNormalizedTransferFusedMachineRefinement{source_index} :
     ExactSemanticTransferFusedMachineRefinement originalPe originalImports
@@ -186,15 +205,18 @@ def relational_interpreter_semantic_refinement_bundle_sources(
     path_module_prefix: str = "GeneratedInterpreterNormalizationShard",
     module_prefix: str = "GeneratedInterpreterSemanticRefinement",
     shard_size: int = 48,
+    emit_fused: bool = True,
 ) -> dict[str, str]:
     """Emit Lean-checked ordinary transfer refinements in deterministic shards.
 
     Python only validates and renders immutable terms.  Every emitted theorem
     universally quantifies over machine state and external environment; Lean
-    re-reads the PE bytes and checks both the exact-path and fused-span
-    reductions. A semantic form that does not reduce through the reviewed
-    runners leaves its shard unbuildable. X87 schedule rows remain owned by the
-    separate exact X87 replay pipeline.
+    re-reads the PE bytes and checks the exact-path reduction. By default it
+    also checks the fused-span reduction used by binary-to-binary composition.
+    Source equivalence may disable that unrelated layer and import only the
+    lightweight exact-refinement kernel. A semantic form that does not reduce
+    through the reviewed runners leaves its shard unbuildable. X87 schedule
+    rows remain owned by the separate exact X87 replay pipeline.
     """
 
     pe_module, _ = _stage_a_module(pe_module, "pe_module")
@@ -217,14 +239,21 @@ def relational_interpreter_semantic_refinement_bundle_sources(
             f"exactNormalizedTransferSemanticRefinement{source_index}"
             for source_index, _ in shard
         )
-        fused_theorem_names.extend(
-            f"exactNormalizedTransferFusedMachineRefinement{source_index}"
-            for source_index, _ in shard
-        )
+        if emit_fused:
+            fused_theorem_names.extend(
+                f"exactNormalizedTransferFusedMachineRefinement{source_index}"
+                for source_index, _ in shard
+            )
         theorems = "\n".join(
-            _theorem(source_index, item) for source_index, item in shard
+            _theorem(source_index, item, emit_fused=emit_fused)
+            for source_index, item in shard
         )
-        sources[module] = f"""import StageA.RelationalInterpreterSemanticRefinement
+        refinement_kernel = (
+            "StageA.RelationalInterpreterSemanticRefinement"
+            if emit_fused
+            else "StageA.RelationalInterpreterExactRefinement"
+        )
+        sources[module] = f"""import {refinement_kernel}
 import {pe_module}
 import StageA.{path_module}
 

@@ -22,6 +22,13 @@ Stage B must not execute or trace the original binary during repair iteration.
 Original runtime output is not an oracle. If a candidate satisfies Stage A but
 fails public behavior checks, that is a Stage A/toolchain problem to investigate.
 
+The `experiment/source-equivalence` branch also contains a deliberately
+separate source-relative path. It proves an exact original PE equivalent to
+canonical C0 semantics and derives only a `conditional_pass` for the compiled
+artifact under an explicit pinned-toolchain correctness premise. It cannot
+authorize the ordinary binary-to-binary `pass`. See
+[the source-equivalence experiment](docs/stage-a-source-equivalence-experiment.md).
+
 For `contract-guided-c`, `state-machine.jsonl` is the canonical generation
 authority. It preserves each block pre-state, symbolic register and flag
 writes, memory and external events, edge guards, control outcome, stack delta,

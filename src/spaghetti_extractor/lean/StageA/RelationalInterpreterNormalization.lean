@@ -1,11 +1,12 @@
 import StageA.RelationalInterpreterTransfer
-import StageA.RelationalPEExecution
+import StageA.RelationalPEMachineStep
 
 namespace StageA.Relational.InterpreterNormalization
 
 open StageA.Formal StageA.Relational
 open StageA.Relational.Interpreter
 open StageA.Relational.InterpreterTransfer
+open StageA.Relational.InterpreterMachineBridge
 
 /-!
 The data in this module is intentionally boring.  An extractor may propose an
@@ -388,27 +389,6 @@ def diagnosticTransferShapeChecked (pe : PE32)
 `ProgramRecord`: every step starts from exact PE bytes and the reviewed Formal
 instruction semantics. -/
 
-private def formalFromInterpreter (prior : MachineState)
-    (state : InterpreterMachine) : MachineState := {
-  registers := {
-    eax := state.registers .eax
-    ebx := state.registers .ebx
-    ecx := state.registers .ecx
-    edx := state.registers .edx
-    esi := state.registers .esi
-    edi := state.registers .edi
-    ebp := state.registers .ebp
-    esp := state.registers .esp
-  }
-  memory := state.memory
-  undefinedValue := prior.undefinedValue
-  x87 := prior.x87
-  x87Physical := prior.x87Physical
-  x87Semantics := prior.x87Semantics
-  eflags := state.eflags
-  fsBase := prior.fsBase
-}
-
 private def addressOf (state : MachineState) (addressing : Addressing) : Word :=
   (addressing.expression initialSymbolic.registers).eval state
 
@@ -420,13 +400,18 @@ private def operand8Address? (state : MachineState) : Operand8 -> Option Word
   | .memory addressing => some (addressOf state addressing)
   | .register _ | .immediate _ => none
 
-private def readEvent (state : MachineState) (address : Word)
+/-- Canonical ordinary-memory read observation used by exact path replay. -/
+def exactReadEvent (state : MachineState) (address : Word)
     (width : MemoryWidth) : InterpreterEvent :=
   .memoryRead address width (readMemory state.memory address width)
 
-private def writeEvent (state : MachineState) (address : Word)
+/-- Canonical ordinary-memory write observation used by exact path replay. -/
+def exactWriteEvent (state : MachineState) (address : Word)
     (width : MemoryWidth) : InterpreterEvent :=
   .memoryWrite address width (readMemory state.memory address width)
+
+private abbrev readEvent := exactReadEvent
+private abbrev writeEvent := exactWriteEvent
 
 private def operand32ReadEvents (state : MachineState)
     (operand : Operand32) : List InterpreterEvent :=

@@ -473,6 +473,7 @@ def relational_interpreter_normalization_bundle_sources(
     shard_size: int = 48,
     semantic_refinement_module: str | None = None,
     semantic_refinement_prefix: str = "exactNormalizedTransferSemanticRefinement",
+    emit_acceptance_inventory: bool = True,
 ) -> dict[str, str]:
     """Emit deterministic exact-path shards and, when bound, certificates.
 
@@ -480,8 +481,9 @@ def relational_interpreter_normalization_bundle_sources(
     provide one universal ``SemanticTransferRefinesExactPath`` theorem per
     ordinary transfer.  Lean checks every supplied theorem against the exact
     PE/path/transfer type before this generator can construct an acceptance
-    inventory.  Omitting the module retains the data-only extraction mode and
-    cannot create an ``ExactOriginalTransferInventory``.
+    inventory.  Omitting the module retains the data-only extraction mode.
+    ``emit_acceptance_inventory=False`` still emits exact certificates while
+    leaving product-graph acceptance packaging to another proof architecture.
     """
 
     source_module, _ = _stage_a_module(source_module, "source_module")
@@ -601,8 +603,9 @@ end StageA.GeneratedRelational
             shard_path_names = ", ".join(
                 member for _, member, _ in shard_members
             )
-            certificate_definitions.append(
-                f"""def {refinement_source_shard} : List Nat :=
+            if emit_acceptance_inventory:
+                certificate_definitions.append(
+                    f"""def {refinement_source_shard} : List Nat :=
   [{shard_source_rvas}]
 
 def {refinement_shard} (context : StaticProofContext) :
@@ -617,17 +620,26 @@ theorem {refinement_source_map} (context : StaticProofContext) :
       {refinement_source_shard} := by
   simp [{refinement_shard}, {refinement_source_shard}, {shard_path_names}]
 """
-            )
+                )
             certificate_body = "\n".join(certificate_definitions)
+            acceptance_import = (
+                "import StageA.RelationalInterpreterAcceptance\n"
+                if emit_acceptance_inventory
+                else ""
+            )
+            acceptance_open = (
+                "open StageA.Relational.InterpreterAcceptance\n"
+                if emit_acceptance_inventory
+                else ""
+            )
             sources[module] = f"""import StageA.{data_module}
-import StageA.RelationalInterpreterAcceptance
-import {semantic_refinement_module}
+{acceptance_import}import {semantic_refinement_module}
 
 namespace StageA.GeneratedRelational
 
 open StageA.Relational
 open StageA.Relational.InterpreterNormalization
-open StageA.Relational.InterpreterAcceptance
+{acceptance_open}
 
 {certificate_body}
 end StageA.GeneratedRelational
@@ -646,7 +658,7 @@ end StageA.GeneratedRelational
     members = " ++\n  ".join(path_shard_names)
     acceptance = ""
     acceptance_open = ""
-    if semantic_refinement_module is not None:
+    if semantic_refinement_module is not None and emit_acceptance_inventory:
         acceptance_open = "open StageA.Relational.InterpreterAcceptance\n"
         refinements = " ++\n      ".join(
             f"{name} context" for name in refinement_shard_names

@@ -1,0 +1,42 @@
+{
+  "format": "stage-a-c0-toolchain-profile-v1",
+  "id": "i686-mingw-freestanding-c0-v1",
+  "target": "i686-w64-mingw32",
+  "tools": {
+    "compiler": {
+      "path": "@CC@/bin/i686-w64-mingw32-gcc",
+      "sha256": "@CC_SHA256@"
+    },
+    "assembler": {
+      "path": "@BINUTILS@/bin/i686-w64-mingw32-as",
+      "sha256": "@AS_SHA256@"
+    },
+    "linker": {
+      "path": "@BINUTILS@/bin/i686-w64-mingw32-ld",
+      "sha256": "@LD_SHA256@"
+    }
+  },
+  "flags": [
+    "-std=c11",
+    "-O0",
+    "-ffreestanding",
+    "-fno-builtin",
+    "-fno-asynchronous-unwind-tables",
+    "-nostdlib",
+    "-Wl,--entry,_mainCRTStartup",
+    "-Wl,--subsystem,console",
+    "-Wl,--no-insert-timestamp"
+  ],
+  "runtime": {
+    "profile": "spaghetti-c0-runtime-v1",
+    "sha256": "@RUNTIME_SHA256@"
+  },
+  "policy": {
+    "crt": false,
+    "threads": false,
+    "inline_assembly": false,
+    "undefined_behavior": false,
+    "windows_apis_are_external_events": true,
+    "correctness_is_a_lean_theorem_parameter": true
+  }
+}

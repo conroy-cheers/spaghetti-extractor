@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pefile
+
 from .isa_conformance import (
     ReportQualification,
     parse_isa_conformance_corpus,
@@ -88,9 +90,18 @@ from .stage_b_functional import (
 )
 from .stage_b_provenance import StageBProvenanceInputError, stage_b_generate_candidate_provenance
 from .stage_b_c_backend import stage_b_generate_semantic_c_from_state_machine
+from .source_equivalence import (
+    attest_c0_compilation,
+    build_source_equivalence_report,
+    generate_c0_proof_sources,
+    generate_c0_source_project,
+)
 from .stage_b_interpreter_backend import write_stage_b_interpreter_package
 from .stage_b_interpreter_native_build import (
     build_stage_b_interpreter_native_candidate,
+)
+from .stage_b_state_machine import (
+    write_stage_b_state_machine_from_stage_a_export,
 )
 from .stage_b_native_engine import write_stage_b_native_engine_package
 from .stage_b_native_runtime import write_stage_b_native_runtime_package
@@ -820,11 +831,72 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     semantic_c.add_argument("--state-machine", type=Path, required=True)
     semantic_c.add_argument("--out-dir", type=Path, required=True)
     semantic_c.add_argument(
+        "--dialect",
+        choices=["semantic-c-v1", "c0-v1"],
+        default="semantic-c-v1",
+    )
+    semantic_c.add_argument(
+        "--entry-rva",
+        type=_auto_int,
+        help="required for --dialect c0-v1",
+    )
+    semantic_c.add_argument(
         "--machine-call-catalog",
         type=Path,
         help="checked relation contract or stage-b-machine-call-catalog-v1 JSON used to emit exact import adapters",
     )
     semantic_c.set_defaults(func=_cmd_stage_b_generate_semantic_c)
+
+    prepare_source = subcommands.add_parser(
+        "stage-a-prepare-source-equivalence",
+        help="emit canonical C0 source and Lean source-attestation inputs",
+    )
+    prepare_source.add_argument("--original", type=Path, required=True)
+    prepare_source.add_argument("--linker-map", type=Path)
+    prepare_source.add_argument("--state-machine", type=Path)
+    prepare_source.add_argument("--entry-rva", type=_auto_int)
+    prepare_source.add_argument("--out-dir", type=Path, required=True)
+    prepare_source.set_defaults(func=_cmd_stage_a_prepare_source_equivalence)
+
+    attest_source = subcommands.add_parser(
+        "stage-a-attest-c0-compilation",
+        help="bind a reproducible pinned C0 build to its source and PE output",
+    )
+    attest_source.add_argument("--source-manifest", type=Path, required=True)
+    attest_source.add_argument("--toolchain-profile", type=Path, required=True)
+    attest_source.add_argument("--candidate", type=Path, required=True)
+    attest_source.add_argument(
+        "--derivation", help="optional expected Nix derivation assertion"
+    )
+    attest_source.add_argument(
+        "--nar-hash", help="optional expected Nix NAR hash assertion"
+    )
+    attest_source.add_argument("--out", type=Path, required=True)
+    attest_source.set_defaults(func=_cmd_stage_a_attest_c0_compilation)
+
+    build_source = subcommands.add_parser(
+        "stage-a-build-source-equivalence",
+        help="validate source proof and compilation evidence and emit a conditional verdict",
+    )
+    build_source.add_argument("--original", type=Path, required=True)
+    build_source.add_argument("--source-manifest", type=Path, required=True)
+    build_source.add_argument("--compilation-attestation", type=Path, required=True)
+    build_source.add_argument("--lean-proof-bundle", type=Path, required=True)
+    build_source.add_argument("--out", type=Path, required=True)
+    build_source.set_defaults(func=_cmd_stage_a_build_source_equivalence)
+
+    proof_source = subcommands.add_parser(
+        "stage-a-generate-c0-proof-sources",
+        help="emit exact PE, normalization, and conditional source theorem modules",
+    )
+    proof_source.add_argument("--original", type=Path, required=True)
+    proof_source.add_argument("--candidate", type=Path, required=True)
+    proof_source.add_argument("--state-machine", type=Path, required=True)
+    proof_source.add_argument("--source-manifest", type=Path, required=True)
+    proof_source.add_argument("--toolchain-profile", type=Path, required=True)
+    proof_source.add_argument("--candidate-build-identity", required=True)
+    proof_source.add_argument("--out-dir", type=Path, required=True)
+    proof_source.set_defaults(func=_cmd_stage_a_generate_c0_proof_sources)
 
     reachable_slice = subcommands.add_parser(
         "stage-b-select-reachable-transfers",
@@ -1506,6 +1578,18 @@ def _cmd_stage_b_generate_skeleton(args: Any) -> dict[str, Any]:
 
 
 def _cmd_stage_b_generate_semantic_c(args: Any) -> dict[str, Any]:
+    if args.dialect == "c0-v1":
+        if args.entry_rva is None:
+            raise StageAInputError("--entry-rva is required with --dialect c0-v1")
+        if args.machine_call_catalog is not None:
+            raise StageAInputError(
+                "--machine-call-catalog is not consumed by canonical C0 v1"
+            )
+        return generate_c0_source_project(
+            state_machine=args.state_machine,
+            entry_rva=args.entry_rva,
+            out_dir=args.out_dir,
+        )
     report = stage_b_generate_semantic_c_from_state_machine(
         state_machine=args.state_machine,
         out_dir=args.out_dir,
@@ -1525,6 +1609,101 @@ def _cmd_stage_b_generate_semantic_c(args: Any) -> dict[str, Any]:
         "report": report.get("report"),
         "artifacts": report.get("artifacts"),
     }
+
+
+def _cmd_stage_a_prepare_source_equivalence(args: Any) -> dict[str, Any]:
+    # PE parsing is deliberately static. It rejects accidental non-PE inputs
+    # without executing or tracing the original.
+    try:
+        pe = pefile.PE(data=args.original.read_bytes(), fast_load=True)
+    except (OSError, pefile.PEFormatError) as exc:
+        raise StageAInputError(f"original is not a PE: {exc}") from exc
+    if int(pe.FILE_HEADER.Machine) != 0x14C or int(pe.OPTIONAL_HEADER.Magic) != 0x10B:
+        raise StageAInputError("source equivalence currently requires an i386 PE32 original")
+    entry_rva = int(pe.OPTIONAL_HEADER.AddressOfEntryPoint)
+    state_machine = args.state_machine
+    if state_machine is None:
+        if args.linker_map is None:
+            raise StageAInputError(
+                "--linker-map is required when --state-machine is omitted"
+            )
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        mapping = args.out_dir / "original-self-map.json"
+        mapped = stage_a_generate_map(
+            original=args.original,
+            candidate=args.original,
+            linker_map_original=args.linker_map,
+            linker_map_candidate=args.linker_map,
+            out=mapping,
+            original_flags="source-equivalence-original",
+            candidate_flags="source-equivalence-static-reference",
+        )
+        if mapped.get("status") != "pass":
+            raise StageAInputError("Stage A could not map the source original to itself")
+        reference = args.out_dir / "reference-contract.json"
+        stage_a_export_reference_contract(
+            original=args.original,
+            out=reference,
+            mapping=mapping,
+            sidecar_dir=args.out_dir,
+            unit_contract_dir=args.out_dir,
+        )
+        state_machine = args.out_dir / "state-machine.jsonl"
+        write_stage_b_state_machine_from_stage_a_export(
+            reference_contract=reference,
+            semantic_transfer_contracts=(
+                args.out_dir / "semantic-transfer-contracts.jsonl"
+            ),
+            original_pe=args.original,
+            out=state_machine,
+        )
+    elif args.linker_map is not None:
+        raise StageAInputError("--linker-map and --state-machine are mutually exclusive")
+    if args.entry_rva is not None and args.entry_rva != entry_rva:
+        raise StageAInputError("declared entry RVA differs from the original PE")
+    result = generate_c0_source_project(
+        state_machine=state_machine,
+        entry_rva=entry_rva,
+        out_dir=args.out_dir,
+    )
+    result["original"] = {
+        "path": args.original.name,
+        "sha256": sha256_file(args.original),
+    }
+    return result
+
+
+def _cmd_stage_a_attest_c0_compilation(args: Any) -> dict[str, Any]:
+    return attest_c0_compilation(
+        source_manifest=args.source_manifest,
+        toolchain_profile=args.toolchain_profile,
+        candidate=args.candidate,
+        derivation=args.derivation,
+        nar_hash=args.nar_hash,
+        out=args.out,
+    )
+
+
+def _cmd_stage_a_build_source_equivalence(args: Any) -> dict[str, Any]:
+    return build_source_equivalence_report(
+        original=args.original,
+        source_manifest=args.source_manifest,
+        compilation_attestation=args.compilation_attestation,
+        lean_proof_bundle=args.lean_proof_bundle,
+        out=args.out,
+    )
+
+
+def _cmd_stage_a_generate_c0_proof_sources(args: Any) -> dict[str, Any]:
+    return generate_c0_proof_sources(
+        original=args.original,
+        candidate=args.candidate,
+        state_machine=args.state_machine,
+        source_manifest=args.source_manifest,
+        toolchain_profile=args.toolchain_profile,
+        candidate_build_identity=args.candidate_build_identity,
+        out_dir=args.out_dir,
+    )
 
 
 def _cmd_stage_b_generate_link_roots(args: Any) -> dict[str, Any]:
@@ -1789,6 +1968,7 @@ def _exit_status(result: dict[str, Any]) -> int:
         "ready",
         "satisfied",
         "qualified",
+        "conditional_pass",
     }:
         return 0
     if verdict == "pass":

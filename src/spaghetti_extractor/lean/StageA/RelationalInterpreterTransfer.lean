@@ -1,11 +1,31 @@
 import StageA.RelationalDecode
 import StageA.RelationalInterpreter
+import StageA.RelationalInterpreterMachineBridge
 import StageA.RelationalEnvironment
 
 namespace StageA.Relational.InterpreterTransfer
 
 open StageA.Formal StageA.Relational
 open StageA.Relational.Interpreter
+open StageA.Relational.InterpreterMachineBridge
+
+abbrev formalRegister :=
+  StageA.Relational.InterpreterMachineBridge.formalRegister
+
+abbrev formalFlagBit :=
+  StageA.Relational.InterpreterMachineBridge.formalFlagBit
+
+def machineFromFormal (state : MachineState) : InterpreterMachine := {
+  registers := fun register => state.registers.get (formalRegister register)
+  flags := StageA.Relational.InterpreterMachineBridge.flagsFromEflags state.eflags
+  memory := state.memory
+  eflags := state.eflags
+}
+
+theorem machineFromFormal_eq_bridge (state : MachineState) :
+    machineFromFormal state =
+      StageA.Relational.InterpreterMachineBridge.machineFromFormal state := by
+  rfl
 
 /-! A small, reviewed SHA-256 implementation used only to bind immutable proof
 artifacts.  The semantic theorem below is based on exact typed equality; hashes
@@ -152,21 +172,6 @@ def checkedHex (bytes : Bytes) (claimed : String) : Bool :=
   inputValid bytes && hex bytes == claimed
 
 end SHA256
-
-def formalRegister : Register -> Reg
-  | .eax => .eax | .ebx => .ebx | .ecx => .ecx | .edx => .edx
-  | .esi => .esi | .edi => .edi | .ebp => .ebp | .esp => .esp
-
-def formalFlagBit : Flag -> Nat
-  | .cf => 0 | .zf => 6 | .sf => 7 | .ofl => 11 | .pf => 2 | .df => 10
-
-def machineFromFormal (state : MachineState) : InterpreterMachine := {
-  registers := fun register => state.registers.get (formalRegister register)
-  flags := fun flag => BitVec.zeroExtend 32
-    (state.eflags.extractLsb' (formalFlagBit flag) 1)
-  memory := state.memory
-  eflags := state.eflags
-}
 
 def evalRegisters (state : MachineState) (registers : Registers Expr) :
     Register -> Word

@@ -14,6 +14,7 @@
     {
       lib = {
         mkStageALeanGraph = import ./nix/stage-a-lean-graph.nix;
+        mkStageASourceEquivalence = import ./nix/stage-a-source-equivalence.nix;
         mkStageAISAQualificationGraph = import ./nix/stage-a-isa-qualification-graph.nix;
         mkStageARelationalAnalysisGraph = import ./nix/stage-a-relational-analysis-graph.nix;
         mkStageARoundtripCorpus = import ./nix/stage-a-roundtrip-corpus.nix;
@@ -3781,6 +3782,186 @@
             targetNodes = relationalProgramLookupOperationKernelRoots;
             targetBundle = true;
           };
+          tinyC0Assembly = pkgs.writeText "tiny-c0-original.S" ''
+            .text
+            .globl _mainCRTStartup
+            _mainCRTStartup:
+              movl $7, %eax
+              ret
+          '';
+          stage-a-tiny-c0-original = pkgs.runCommand
+            "stage-a-tiny-c0-original-pe32"
+            {
+              nativeBuildInputs = [ mingw32.stdenv.cc ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+              __contentAddressed = true;
+            }
+            ''
+              mkdir -p "$out"
+              i686-w64-mingw32-gcc \
+                -nostdlib -Wl,--entry,_mainCRTStartup \
+                -Wl,--subsystem,console -Wl,--no-insert-timestamp \
+                -Wl,-Map,"$out/original.map" \
+                -o "$out/original.exe" ${tinyC0Assembly}
+            '';
+          stage-b-tiny-c0-source = pkgs.runCommand
+            "stage-b-tiny-c0-source-v1"
+            ({
+              nativeBuildInputs = [ spaghetti-extractor ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+              __contentAddressed = true;
+            })
+            ''
+              set +e
+              spaghetti-extractor stage-a-prepare-source-equivalence \
+                --original ${stage-a-tiny-c0-original}/original.exe \
+                --linker-map ${stage-a-tiny-c0-original}/original.map \
+                --out-dir "$out"
+              result=$?
+              set -e
+              test "$result" -eq 0 -o "$result" -eq 1
+              test -f "$out/source-manifest.json"
+            '';
+          tinyC0SourceEquivalence = import ./nix/stage-a-source-equivalence.nix {
+            inherit pkgs;
+            sourceProject = stage-b-tiny-c0-source;
+            name = "stage-a-tiny-c0-source-equivalence";
+            contentAddressed = true;
+          };
+          stage-a-tiny-c0-toolchain-profile =
+            tinyC0SourceEquivalence.toolchainProfile;
+          stage-b-tiny-c0-candidate = tinyC0SourceEquivalence.candidate;
+          tinyC0GeneratedProofSources = pkgs.runCommand
+            "stage-a-tiny-c0-generated-proof-sources-v1"
+            {
+              nativeBuildInputs = [ spaghetti-extractor ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+              __contentAddressed = true;
+            }
+            ''
+              spaghetti-extractor stage-a-generate-c0-proof-sources \
+                --original ${stage-a-tiny-c0-original}/original.exe \
+                --candidate ${stage-b-tiny-c0-candidate}/bin/candidate.exe \
+                --state-machine ${stage-b-tiny-c0-source}/state-machine.jsonl \
+                --source-manifest ${stage-b-tiny-c0-source}/source-manifest.json \
+                --toolchain-profile \
+                  ${stage-a-tiny-c0-toolchain-profile}/profile.json \
+                --candidate-build-identity \
+                  ${stage-b-tiny-c0-candidate.drvPath} \
+                --out-dir "$out"
+            '';
+          tinyC0LeanSource = pkgs.runCommand
+            "stage-a-tiny-c0-lean-source-v1"
+            {
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+              __contentAddressed = true;
+            }
+            ''
+              mkdir -p "$out"
+              cp ${relationalLeanSource}/src/spaghetti_extractor/lean/StageA/*.lean "$out/"
+              cp ${stage-b-tiny-c0-source}/GeneratedC0Program.lean \
+                "$out/GeneratedC0Program.lean"
+              cp ${tinyC0GeneratedProofSources}/StageA/*.lean "$out/"
+            '';
+          tinyC0GeneratedProofModules = builtins.fromJSON (
+            builtins.readFile
+              "${tinyC0GeneratedProofSources}/generated-modules.json"
+          );
+          tinyC0LeanModules = pkgs.lib.unique (
+            relationalLeanModuleClosure [
+              "RelationalSource"
+              "RelationalInterpreterSemanticRefinement"
+              "RelationalPEBytePacks"
+            ] ++ [ "GeneratedC0Program" ] ++ tinyC0GeneratedProofModules
+          );
+          tinyC0LeanGraph = import ./nix/stage-a-lean-graph.nix {
+            inherit pkgs;
+            contentAddressed = true;
+            standaloneSourceRoot = tinyC0LeanSource;
+            standaloneModules = tinyC0LeanModules;
+            targetNodes = [ "GeneratedC0SourceAcceptanceAudit" ];
+            targetBundle = true;
+          };
+          stage-a-tiny-c0-source-proof = pkgs.runCommand
+            "stage-a-tiny-c0-source-proof-v1"
+            {
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+              __contentAddressed = true;
+            }
+            ''
+              mkdir -p "$out"
+              cp ${tinyC0LeanGraph}/bundle.json "$out/bundle.json"
+              cp -r ${tinyC0LeanGraph}/node-results "$out/node-results"
+              cp ${tinyC0GeneratedProofSources}/proof-binding.json \
+                "$out/proof-binding.json"
+            '';
+          stage-a-tiny-c0-source-behavior-smoke = pkgs.runCommand
+            "stage-a-tiny-c0-source-behavior-smoke-v1"
+            {
+              nativeBuildInputs = [
+                pkgs.jq
+                pkgs.wineWow64Packages.stable
+                pkgs.xvfb-run
+              ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+              __contentAddressed = true;
+            }
+            ''
+              jq -e '
+                .acceptance_theorem ==
+                  "StageA.GeneratedRelational.generatedOriginalCompiledEquivalent"
+              ' ${stage-a-tiny-c0-source-proof}/proof-binding.json >/dev/null
+              jq -e '
+                any(.nodes[].outputs[];
+                  (.axiom_audit.complete // false) and
+                  ((.axiom_audit.requested // []) | index(
+                    "StageA.GeneratedRelational.generatedOriginalCompiledEquivalent"
+                  ) != null) and
+                  ((.axiom_audit.inventories[
+                    "StageA.GeneratedRelational.generatedOriginalCompiledEquivalent"
+                  ] // []) | all(. == "propext" or
+                    . == "Classical.choice" or . == "Quot.sound")))
+              ' ${stage-a-tiny-c0-source-proof}/bundle.json >/dev/null
+              jq -e '.status == "complete" and .omitted_transfer_count == 0' \
+                ${stage-b-tiny-c0-source}/source-manifest.json >/dev/null
+              binding=${stage-a-tiny-c0-source-proof}/proof-binding.json
+              test "$(jq -r .candidate_sha256 "$binding")" = \
+                "$(sha256sum ${stage-b-tiny-c0-candidate}/bin/candidate.exe | cut -d ' ' -f 1)"
+              test "$(jq -r .source_manifest_sha256 "$binding")" = \
+                "$(sha256sum ${stage-b-tiny-c0-source}/source-manifest.json | cut -d ' ' -f 1)"
+              test "$(jq -r .toolchain_profile_sha256 "$binding")" = \
+                "$(sha256sum ${stage-a-tiny-c0-toolchain-profile}/profile.json | cut -d ' ' -f 1)"
+              test "$(jq -r .candidate_build_identity "$binding")" = \
+                '${stage-b-tiny-c0-candidate.drvPath}'
+              export HOME="$TMPDIR/home"
+              export WINEPREFIX="$TMPDIR/wine"
+              export WINEDEBUG=-all
+              export WINEDLLOVERRIDES="mscoree,mshtml="
+              mkdir -p "$HOME"
+              set +e
+              xvfb-run -a wine \
+                ${stage-b-tiny-c0-candidate}/bin/candidate.exe \
+                > "$TMPDIR/stdout" 2> "$TMPDIR/stderr"
+              status=$?
+              set -e
+              if [ "$status" -ne 7 ]; then
+                cat "$TMPDIR/stdout" >&2
+                cat "$TMPDIR/stderr" >&2
+                echo "candidate exit status was $status, expected 7" >&2
+                exit 1
+              fi
+              test ! -s "$TMPDIR/stdout"
+              mkdir -p "$out"
+              cp ${stage-a-tiny-c0-source-proof}/proof-binding.json \
+                "$out/proof-binding.json"
+              printf '%s\n' 7 > "$out/candidate-exit-status"
+            '';
           gnuHelloRoundtrip = import ./nix/gnu-hello-roundtrip.nix {
             inherit pkgs pythonEnv mingw32;
             spaghettiExtractor = spaghetti-extractor;
@@ -3797,6 +3978,7 @@
           };
           stage-a-gnu-hello-roundtrip-smoke = gnuHelloRoundtrip.smoke;
           stage-a-gnu-hello-roundtrip-static-export = gnuHelloRoundtrip.staticExport;
+          stage-b-gnu-hello-c0-source = gnuHelloRoundtrip.sourceC0;
           stage-b-gnu-hello-roundtrip-interpreter = gnuHelloRoundtrip.interpreter;
           stage-b-gnu-hello-roundtrip-native-engine = gnuHelloRoundtrip.nativeEngine;
           stage-b-gnu-hello-roundtrip-native-runtime = gnuHelloRoundtrip.nativeRuntime;
@@ -5463,6 +5645,12 @@
             spaghetti-extractor-semantic-products
             spaghetti-extractor-region-facts
             spaghetti-extractor-side
+            stage-b-tiny-c0-source
+            stage-a-tiny-c0-toolchain-profile
+            stage-a-tiny-c0-original
+            stage-b-tiny-c0-candidate
+            stage-a-tiny-c0-source-proof
+            stage-a-tiny-c0-source-behavior-smoke
             stage-a-analysis-source-boundary-check
             stage-a-isa-conformance-bochs-80386
             stage-a-isa-kernel-cache
@@ -5589,6 +5777,7 @@
             stage-a-roundtrip-lean-program-lookup-operation
             stage-a-gnu-hello-roundtrip-smoke
             stage-a-gnu-hello-roundtrip-static-export
+            stage-b-gnu-hello-c0-source
             stage-b-gnu-hello-roundtrip-interpreter
             stage-b-gnu-hello-roundtrip-native-engine
             stage-b-gnu-hello-roundtrip-native-runtime

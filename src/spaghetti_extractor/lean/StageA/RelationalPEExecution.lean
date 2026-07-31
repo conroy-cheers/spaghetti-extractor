@@ -1,3 +1,4 @@
+import StageA.RelationalPEMachineStep
 import StageA.RelationalX87Machine
 
 namespace StageA.Relational
@@ -15,32 +16,6 @@ def executableInstructionWindow (pe : PE32) (rva : Nat) : Option Bytes :=
       let available := sec.virtualAddress + sec.mappedSize - rva
       spanBytes pe { start := rva, size := min 15 available }
   | _ => none
-
-def concreteBehaviorNextMachineState
-    (behavior : ConcreteBehavior) (input : MachineState) : MachineState := {
-  registers := behavior.registers
-  memory := behavior.memory
-  undefinedValue := input.undefinedValue
-  x87 := {
-    stack := fun index =>
-      (behavior.x87.stack.drop index).head?.getD (BitVec.ofNat 80 0)
-    control := behavior.x87.control
-    status := behavior.x87.status
-    semantics := input.x87.semantics
-  }
-  x87Physical := input.x87Physical
-  x87Semantics := input.x87Semantics
-  eflags := behavior.eflags
-  fsBase := input.fsBase
-}
-
-/-- One exact instruction step selected by a concrete PE-relative program
-counter. Internal fallthrough remains `running`; every decoded control effect
-is exposed as a concrete outcome for the world semantics to handle. -/
-inductive PE32InstructionExecution where
-  | running (rva undefinedSlot : Nat) (state : MachineState)
-  | stopped (outcome : ConcreteOutcome) (state : MachineState)
-  | fault
 
 def stepPE32Instruction (pe : PE32) (imports : List PEImport) :
     PE32InstructionExecution -> PE32InstructionExecution
