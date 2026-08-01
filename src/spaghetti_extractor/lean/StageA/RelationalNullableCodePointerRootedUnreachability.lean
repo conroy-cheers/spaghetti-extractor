@@ -72,6 +72,7 @@ structure OriginalScannerExecutionDecoded where
   scanner : NormalizedSymbolicBehavior
   bridge : NormalizedSymbolicBehavior
   gate : NormalizedSymbolicBehavior
+  dispatchBridge : Option NormalizedSymbolicBehavior
 deriving Repr, DecidableEq
 
 structure OriginalScannerExecutionClaim where
@@ -84,6 +85,7 @@ structure OriginalScannerExecutionClaim where
   scannerRegion : OriginalDecodedRegionRef
   bridgeRegion : OriginalDecodedRegionRef
   gateRegion : OriginalDecodedRegionRef
+  dispatchBridgeRegion : Option OriginalDecodedRegionRef
   dispatchSourceTargetId : Nat
   dispatchBypassTargetId : Nat
 deriving Repr, DecidableEq
@@ -109,7 +111,20 @@ def OriginalScannerExecutionClaim.decode?
   let scanner <- claim.scannerRegion.decode? context
   let bridge <- claim.bridgeRegion.decode? context
   let gate <- claim.gateRegion.decode? context
-  pure { selector, zero, scanner, bridge, gate }
+  let dispatchBridge <- match claim.dispatchBridgeRegion with
+    | none => some none
+    | some region => some (some (<- region.decode? context))
+  pure { selector, zero, scanner, bridge, gate, dispatchBridge }
+
+def OriginalScannerExecutionClaim.dispatchEntryTargetId
+    (claim : OriginalScannerExecutionClaim) : Nat :=
+  claim.dispatchBridgeRegion.map (fun region => region.targetId)
+    |>.getD claim.dispatchSourceTargetId
+
+def OriginalScannerExecutionClaim.dispatchPredecessorTargetId
+    (claim : OriginalScannerExecutionClaim) : Nat :=
+  claim.dispatchBridgeRegion.map (fun region => region.targetId)
+    |>.getD claim.gateRegion.targetId
 
 def zeroTestExpressionChecked (expression : BoolExpr) (value : Expr) : Bool :=
   expression == .equal value (.constant 0) ||
@@ -290,11 +305,19 @@ def OriginalScannerExecutionClaim.gateChecked
       .inputReg claim.countRegister &&
     behavior.writes.isEmpty &&
     NormalizedOutcomeExpr.guardForTarget behavior.outcome
-        claim.dispatchSourceTargetId ==
+        claim.dispatchEntryTargetId ==
       some (registerNonzeroGuard claim.countRegister) &&
     NormalizedOutcomeExpr.bypassForTarget behavior.outcome
-        claim.dispatchSourceTargetId ==
+        claim.dispatchEntryTargetId ==
       some claim.dispatchBypassTargetId
+
+def OriginalScannerExecutionClaim.dispatchBridgeChecked
+    (claim : OriginalScannerExecutionClaim)
+    (behavior : NormalizedSymbolicBehavior) : Bool :=
+  behavior.registers.get claim.countRegister ==
+      .inputReg claim.countRegister &&
+    behavior.writes.isEmpty &&
+    behavior.outcome == .jump claim.dispatchSourceTargetId
 
 def OriginalScannerExecutionClaim.topologyChecked
     (context : OriginalDecodedStaticContext)
@@ -313,7 +336,22 @@ def OriginalScannerExecutionClaim.topologyChecked
       [claim.gateRegion.targetId] &&
     NullableCodePointerTable.sameFiniteSet
       (originalSuccessorTargetIds context claim.gateRegion.targetId)
-      [claim.dispatchSourceTargetId, claim.dispatchBypassTargetId] &&
+      [claim.dispatchEntryTargetId, claim.dispatchBypassTargetId] &&
+    (match claim.dispatchBridgeRegion with
+      | none => true
+      | some bridge =>
+          bridge.targetId != claim.gateRegion.targetId &&
+          bridge.targetId != claim.dispatchSourceTargetId &&
+          bridge.targetId != claim.dispatchBypassTargetId &&
+          NullableCodePointerTable.sameFiniteSet
+            (originalSuccessorTargetIds context bridge.targetId)
+            [claim.dispatchSourceTargetId] &&
+          NullableCodePointerTable.sameFiniteSet
+            (originalIncomingEdgesForTarget context bridge.targetId)
+            [{
+              sourceTargetId := claim.gateRegion.targetId
+              targetTargetId := bridge.targetId
+            }]) &&
     NullableCodePointerTable.sameFiniteSet
       (originalIncomingEdgesForTarget context claim.zeroRegion.targetId)
       [{
@@ -365,9 +403,13 @@ def OriginalScannerExecutionClaim.semanticChecked
     (decoded : OriginalScannerExecutionDecoded) : Bool :=
   claim.selectorChecked decoded.selector &&
     claim.zeroChecked decoded.zero &&
-    claim.scannerChecked decoded.scanner &&
-    claim.bridgeChecked decoded.bridge &&
-    claim.gateChecked decoded.gate
+  claim.scannerChecked decoded.scanner &&
+  claim.bridgeChecked decoded.bridge &&
+  claim.gateChecked decoded.gate &&
+  match claim.dispatchBridgeRegion, decoded.dispatchBridge with
+  | none, none => true
+  | some _, some behavior => claim.dispatchBridgeChecked behavior
+  | _, _ => false
 
 def OriginalScannerExecutionClaim.checked
     (context : OriginalDecodedStaticContext)
@@ -459,8 +501,8 @@ theorem CheckedOriginalScannerExecution.executes
       simp only [OriginalScannerExecutionClaim.semanticChecked,
         Bool.and_eq_true] at decodedChecked
       rcases decodedChecked with
-        ⟨⟨⟨⟨selectorChecked, zeroChecked⟩, scannerChecked⟩,
-          bridgeChecked⟩, gateChecked⟩
+        ⟨⟨⟨⟨⟨selectorChecked, zeroChecked⟩, scannerChecked⟩,
+          bridgeChecked⟩, gateChecked⟩, _dispatchBridgeChecked⟩
       simp only [OriginalScannerExecutionClaim.identityChecked,
         Bool.and_eq_true, beq_iff_eq] at identityChecked
       have headerWord := identityChecked.1.1.2
@@ -617,7 +659,7 @@ theorem CheckedOriginalScannerExecution.executes
               NormalizedOutcomeExpr.eval, selectedPureOutcomeTarget?]
           · exact selectedTarget_of_guardForTarget_false
               decoded.gate.outcome gateState
-              authority.claim.dispatchSourceTargetId
+              authority.claim.dispatchEntryTargetId
               authority.claim.dispatchBypassTargetId
               (registerNonzeroGuard authority.claim.countRegister)
               gateGuard gateBypass gateCondition
@@ -627,7 +669,10 @@ theorem CheckedOriginalScannerExecution.executes
 def scannerPhaseTargetIds
     (claim : OriginalScannerExecutionClaim) : List Nat :=
   [claim.zeroRegion.targetId, claim.scannerRegion.targetId,
-    claim.bridgeRegion.targetId, claim.gateRegion.targetId]
+    claim.bridgeRegion.targetId, claim.gateRegion.targetId] ++
+      match claim.dispatchBridgeRegion with
+      | none => []
+      | some region => [region.targetId]
 
 def rootedSccScannerBoundaryChecked
     (certificate : RootedSccCertificate)
@@ -639,7 +684,7 @@ def rootedSccScannerBoundaryChecked
       !certificate.rootTargetIds.contains targetId) &&
     certificate.incomingEdges.all fun edge =>
       certificate.sccTargetIds.contains edge.sourceTargetId ||
-        (edge.sourceTargetId == claim.gateRegion.targetId &&
+        (edge.sourceTargetId == claim.dispatchPredecessorTargetId &&
           edge.targetTargetId == claim.dispatchSourceTargetId)
 
 structure CheckedRootedScannerSccExecution
@@ -783,7 +828,12 @@ theorem CheckedRootedScannerSccExecution.sccUnreachable
       · exact induction (List.contains_iff_mem.mp sourceInScc)
       · rw [blocked.1] at sourceReachable
         exact authority.phaseUnreachable sourceReachable
-          (by simp [scannerPhaseTargetIds])
+          (by
+            cases bridgeExact :
+                authority.scanner.claim.dispatchBridgeRegion <;>
+              simp [scannerPhaseTargetIds,
+                OriginalScannerExecutionClaim.dispatchPredecessorTargetId,
+                bridgeExact])
   | scannerPath selectorState scannerEntryState decoded _selectorReachable
       _decodedExact _execution _induction =>
       intro bypassInScc

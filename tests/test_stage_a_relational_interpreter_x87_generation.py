@@ -222,6 +222,9 @@ class StageARelationalInterpreterX87GenerationTests(unittest.TestCase):
             "checkedInterpreterX87ScheduleExactCertificate",
             "checkedInterpreterX87ScheduleMacroStepRefines",
             "checkedInterpreterX87ScheduleWitness",
+            "checkedInterpreterX87ScheduleSingletonDecoded",
+            "checkedInterpreterX87ScheduleSingletonFacts",
+            "ExactX87SingletonScheduleFacts.ofDecoded",
             "ExactInterpreterX87ReplayActionWitness",
             "checkedInterpreterX87ScheduleReplayAction0000Witness",
             "utf8Bytes \"{\\\"",
@@ -246,6 +249,10 @@ class StageARelationalInterpreterX87GenerationTests(unittest.TestCase):
         self.assertNotIn("Digests", exact_certificate)
         self.assertIn("recordMember := by decide +kernel", source)
         self.assertIn("actionFound := by decide +kernel", source)
+        singleton_facts = source.split(
+            "def checkedInterpreterX87ScheduleSingletonFacts", 1
+        )[1].split("def checkedInterpreterX87ScheduleReplayAction", 1)[0]
+        self.assertNotIn("inputValid :=", singleton_facts)
 
     def test_bundle_uses_canonical_nix_module_names_and_typed_witnesses(self) -> None:
         rows = [_row(), _row(mixed=True, start=16)]
@@ -335,6 +342,36 @@ class StageARelationalInterpreterX87GenerationTests(unittest.TestCase):
                 "ordinary_instruction_records": 1,
             },
         )
+
+    def test_source_only_bundle_excludes_binary_pair_acceptance_surface(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            machine = Path(temporary) / "state-machine.jsonl"
+            _write_machine(machine, [_row()])
+            sources = relational_interpreter_x87_bundle_sources(
+                machine,
+                source_module="StageA.X87ScheduleFixture",
+                pe_name="StageA.X87ScheduleFixture.pe",
+                source_only=True,
+            )
+            inventory = relational_interpreter_x87_module_inventory(
+                machine,
+                source_module="StageA.X87ScheduleFixture",
+                pe_name="StageA.X87ScheduleFixture.pe",
+                source_only=True,
+            )
+
+        bundle = sources["GeneratedInterpreterX87ScheduleBundle"]
+        self.assertNotIn("RelationalInterpreterAcceptance", bundle)
+        self.assertNotIn("ExactOriginalX87Inventory", bundle)
+        self.assertNotIn("CandidateReplayObligation", bundle)
+        self.assertIn("BundleWitnesses", bundle)
+        self.assertIn("BundleSourceRvasNodup", bundle)
+        self.assertIn("BundleMemberMacroStepRefines", bundle)
+        singleton = sources["GeneratedInterpreterX87Schedule0000"]
+        self.assertIn("checkedInterpreterX87Schedule0000SingletonFacts", singleton)
+        self.assertTrue(inventory["source_only"])
+        self.assertIsNone(inventory["targets"]["exact_original_inventory"])
+        self.assertIsNone(inventory["targets"]["candidate_replay_obligation"])
 
     def test_candidate_replay_graph_is_sharded_and_keeps_native_bridge_open(self) -> None:
         rows = [_row(), _row(mixed=True, start=16)]

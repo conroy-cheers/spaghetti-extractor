@@ -17,8 +17,10 @@ from spaghetti_extractor.source_equivalence import (
     generate_c0_source_project,
 )
 from spaghetti_extractor.stage_b_state_machine import (
+    augment_state_machine_with_padding_bridges,
     normalize_stage_a_semantic_transfer,
 )
+from stage_a_relational_support import _pe32_image
 
 
 def _tiny_transfer() -> dict:
@@ -59,6 +61,130 @@ def _write_state_machine(path: Path) -> None:
 
 
 class SourceEquivalenceTests(unittest.TestCase):
+    def test_padding_bridge_closes_direct_noop_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            original.write_bytes(_pe32_image(bytes.fromhex("eb039090909090c3")))
+            jump = _tiny_transfer()
+            jump.update({
+                "id": "semantic-transfer:jump-to-padding",
+                "block_id": "jump-to-padding",
+                "original": {"rva_start": 0x1000, "rva_end": 0x1002},
+                "instructions": [{
+                    "rva": 0x1000, "size": 2, "bytes": "eb03",
+                    "mnemonic": "jmp", "op_str": "0x401005",
+                }],
+                "instruction_bytes_sha256": hashlib.sha256(
+                    bytes.fromhex("eb03")
+                ).hexdigest(),
+                "register_writes": [],
+                "flag_writes": [],
+                "edge_conditions": [
+                    {"condition": {"op": "true"}, "target_rva": 0x1005}
+                ],
+                "outcome": {"kind": "jump", "target_rva": 0x1005},
+            })
+            returned = _tiny_transfer()
+            returned.update({
+                "id": "semantic-transfer:return-after-padding",
+                "block_id": "return-after-padding",
+                "original": {"rva_start": 0x1007, "rva_end": 0x1008},
+                "instructions": [{
+                    "rva": 0x1007, "size": 1, "bytes": "c3",
+                    "mnemonic": "ret", "op_str": "",
+                }],
+                "instruction_bytes_sha256": hashlib.sha256(b"\xc3").hexdigest(),
+            })
+            state_machine = root / "state-machine.jsonl"
+            state_machine.write_text(
+                "".join(
+                    json.dumps(normalize_stage_a_semantic_transfer(row), sort_keys=True)
+                    + "\n"
+                    for row in (jump, returned)
+                ),
+                encoding="utf-8",
+            )
+            block_map = root / "map.json"
+            block_map.write_text(json.dumps({
+                "waivers": [{
+                    "id": "original-padding-1005-1007",
+                    "binary": "original",
+                    "rva": 0x1005,
+                    "size": 2,
+                }]
+            }), encoding="utf-8")
+
+            result = augment_state_machine_with_padding_bridges(
+                state_machine=state_machine,
+                original_pe=original,
+                block_map=block_map,
+                out=root / "augmented.jsonl",
+            )
+
+            self.assertEqual(result.padding_bridge_count, 1)
+            self.assertEqual(result.bridged_rvas, (0x1005,))
+            rows = [
+                json.loads(line)
+                for line in (root / "augmented.jsonl").read_text().splitlines()
+            ]
+            bridge = next(row for row in rows if row["original"]["rva_start"] == 0x1005)
+            self.assertEqual(bridge["outcome"], {
+                "kind": "fallthrough", "target_rva": 0x1007,
+            })
+            self.assertEqual([item["mnemonic"] for item in bridge["instructions"]], [
+                "nop", "nop",
+            ])
+
+    def test_padding_bridge_rejects_non_noop_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            original.write_bytes(_pe32_image(bytes.fromhex("eb039090904090c3")))
+            jump = _tiny_transfer()
+            jump.update({
+                "id": "semantic-transfer:jump-to-code",
+                "block_id": "jump-to-code",
+                "original": {"rva_start": 0x1000, "rva_end": 0x1002},
+                "instructions": [{"rva": 0x1000, "size": 2, "bytes": "eb03"}],
+                "instruction_bytes_sha256": hashlib.sha256(
+                    bytes.fromhex("eb03")
+                ).hexdigest(),
+                "register_writes": [],
+                "flag_writes": [],
+                "outcome": {"kind": "jump", "target_rva": 0x1005},
+            })
+            returned = _tiny_transfer()
+            returned.update({
+                "id": "semantic-transfer:return-after-code",
+                "block_id": "return-after-code",
+                "original": {"rva_start": 0x1007, "rva_end": 0x1008},
+                "instructions": [{"rva": 0x1007, "size": 1, "bytes": "c3"}],
+                "instruction_bytes_sha256": hashlib.sha256(b"\xc3").hexdigest(),
+            })
+            state_machine = root / "state-machine.jsonl"
+            state_machine.write_text(
+                "".join(
+                    json.dumps(normalize_stage_a_semantic_transfer(row), sort_keys=True)
+                    + "\n"
+                    for row in (jump, returned)
+                ),
+                encoding="utf-8",
+            )
+            block_map = root / "map.json"
+            block_map.write_text(json.dumps({"waivers": [{
+                "id": "invalid-padding", "binary": "original",
+                "rva": 0x1005, "size": 2,
+            }]}), encoding="utf-8")
+
+            with self.assertRaisesRegex(Exception, "non-no-op instruction"):
+                augment_state_machine_with_padding_bridges(
+                    state_machine=state_machine,
+                    original_pe=original,
+                    block_map=block_map,
+                    out=root / "augmented.jsonl",
+                )
+
     def test_c0_toolchain_profile_rejects_flag_drift(self) -> None:
         payload = {
             "format": "stage-a-c0-toolchain-profile-v1",

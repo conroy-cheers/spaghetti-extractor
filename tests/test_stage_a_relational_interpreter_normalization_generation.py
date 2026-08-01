@@ -286,6 +286,25 @@ class StageARelationalInterpreterNormalizationGenerationTests(unittest.TestCase)
             ],
         )
 
+    def test_source_binding_inventory_avoids_acceptance_layer(self) -> None:
+        sources = relational_interpreter_normalization_bundle_sources(
+            [_ret_row()],
+            source_module="StageA.GeneratedSemanticInterpreterProgram",
+            pe_name="StageA.GeneratedRelational.originalPe",
+            shard_size=1,
+            semantic_refinement_module="StageA.GeneratedOrdinaryRefinements",
+            emit_acceptance_inventory=False,
+            emit_source_binding_inventory=True,
+        )
+
+        shard = sources["GeneratedInterpreterNormalizationShard0000"]
+        bundle = sources["GeneratedInterpreterNormalizationBundle"]
+        self.assertIn("import StageA.RelationalSourceInterpreterKernel", shard)
+        self.assertNotIn("RelationalInterpreterAcceptance", shard)
+        self.assertIn("ExactOrdinaryRecordBinding", shard)
+        self.assertIn("exactNormalizedOrdinaryRecordBindings", bundle)
+        self.assertNotIn("ExactOriginalTransferInventory", bundle)
+
     def test_bundle_rejects_ambiguous_inventory_and_bad_terminal_shape(self) -> None:
         duplicate_id = copy.deepcopy(_ret_row())
         duplicate_id["original"] = {

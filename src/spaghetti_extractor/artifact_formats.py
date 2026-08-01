@@ -22,6 +22,10 @@ C0_SOURCE_MANIFEST_FORMAT = "stage-b-c0-source-manifest-v1"
 C0_COMPILATION_ATTESTATION_FORMAT = "stage-a-c0-compilation-attestation-v1"
 SOURCE_EQUIVALENCE_REPORT_FORMAT = "stage-a-source-equivalence-report-v1"
 C0_TOOLCHAIN_PROFILE_FORMAT = "stage-a-c0-toolchain-profile-v1"
+NATIVE_SOURCE_BUNDLE_FORMAT = "stage-b-native-interpreter-source-bundle-v1"
+NATIVE_SOURCE_COMPILATION_ATTESTATION_FORMAT = (
+    "stage-b-native-interpreter-compilation-attestation-v1"
+)
 
 
 __all__ = [
@@ -30,6 +34,8 @@ __all__ = [
     "C0_TOOLCHAIN_PROFILE_FORMAT",
     "INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT",
     "NORMALIZED_BEHAVIOR_FORMAT",
+    "NATIVE_SOURCE_BUNDLE_FORMAT",
+    "NATIVE_SOURCE_COMPILATION_ATTESTATION_FORMAT",
     "RELATIONAL_NIX_BUILD_REPORT_FORMAT",
     "RELATIONAL_PHASE_FORMAT",
     "SEMANTIC_IR_FORMAT",

@@ -3975,10 +3975,138 @@
             sourceRoot = spaghettiExtractorCoreSource;
             leanSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
             originalFixture = stage-a-gnu-hello-original;
+            nativeSourceApprovedToolchainAxiom =
+              "StageA.GeneratedRelational.GnuHelloNativeSourceEnvironmentFamily.pinnedCompilerLoweringCorrect";
           };
           stage-a-gnu-hello-roundtrip-smoke = gnuHelloRoundtrip.smoke;
           stage-a-gnu-hello-roundtrip-static-export = gnuHelloRoundtrip.staticExport;
+          stage-b-gnu-hello-source-state-machine =
+            gnuHelloRoundtrip.sourceStateMachine;
           stage-b-gnu-hello-c0-source = gnuHelloRoundtrip.sourceC0;
+          stage-b-gnu-hello-native-source-interpreter =
+            gnuHelloRoundtrip.sourceInterpreter;
+          stage-b-gnu-hello-native-source-engine =
+            gnuHelloRoundtrip.sourceNativeEngine;
+          stage-b-gnu-hello-native-source-runtime =
+            gnuHelloRoundtrip.sourceNativeRuntime;
+          stage-b-gnu-hello-native-source-candidate =
+            gnuHelloRoundtrip.sourceCandidate;
+          stage-a-gnu-hello-native-source-candidate-kernel-data =
+            gnuHelloRoundtrip.sourceCandidateKernelDataLean;
+          stage-a-gnu-hello-native-source-candidate-static-authority =
+            gnuHelloRoundtrip.sourceCandidateStaticAuthorityLean;
+          stage-a-gnu-hello-native-source-candidate-static-authority-proof-sources =
+            gnuHelloRoundtrip.sourceCandidateStaticAuthorityProofSources;
+          stage-a-gnu-hello-native-source-candidate-static-authority-proof =
+            gnuHelloRoundtrip.sourceCandidateStaticAuthorityProof;
+          stage-a-gnu-hello-native-source-bundle =
+            gnuHelloRoundtrip.sourceBundle;
+          stage-a-gnu-hello-native-source-compilation-attestation =
+            gnuHelloRoundtrip.sourceCompilationAttestation;
+          stage-a-gnu-hello-native-source-program =
+            gnuHelloRoundtrip.sourceProgramLean;
+          stage-a-gnu-hello-native-source-normalization =
+            gnuHelloRoundtrip.sourceNormalizationLean;
+          stage-a-gnu-hello-native-source-semantic-refinement =
+            gnuHelloRoundtrip.sourceSemanticRefinementLean;
+          stage-a-gnu-hello-native-source-x87 =
+            gnuHelloRoundtrip.sourceX87Lean;
+          stage-a-gnu-hello-native-source-machine-import-contracts =
+            gnuHelloRoundtrip.sourceStaticMachineImportContractsLean;
+          stage-a-gnu-hello-native-source-original-base =
+            gnuHelloRoundtrip.sourceOriginalBaseLean;
+          stage-a-gnu-hello-native-source-original =
+            gnuHelloRoundtrip.sourceOriginalLean;
+          stage-a-gnu-hello-native-source-original-static-reachability =
+            gnuHelloRoundtrip.sourceOriginalStaticReachabilityLean;
+          stage-a-gnu-hello-native-source-original-static-reachability-proof-sources =
+            gnuHelloRoundtrip.sourceOriginalStaticReachabilityProofSources;
+          stage-a-gnu-hello-native-source-original-static-reachability-proof =
+            gnuHelloRoundtrip.sourceOriginalStaticReachabilityProof;
+          stage-a-gnu-hello-native-source-original-carrier-binding =
+            gnuHelloRoundtrip.sourceOriginalCarrierBindingLean;
+          stage-a-gnu-hello-native-source-original-carrier-binding-proof-sources =
+            gnuHelloRoundtrip.sourceOriginalCarrierBindingProofSources;
+          stage-a-gnu-hello-native-source-original-carrier-binding-proof =
+            gnuHelloRoundtrip.sourceOriginalCarrierBindingProof;
+          stage-a-gnu-hello-native-source-original-combined-declarations =
+            gnuHelloRoundtrip.sourceOriginalCombinedDeclarations;
+          stage-a-gnu-hello-native-source-original-combined-inventory =
+            gnuHelloRoundtrip.sourceOriginalCombinedInventoryLean;
+          stage-a-gnu-hello-native-source-original-combined-inventory-proof-sources =
+            gnuHelloRoundtrip.sourceOriginalCombinedInventoryProofSources;
+          stage-a-gnu-hello-native-source-original-combined-inventory-proof =
+            gnuHelloRoundtrip.sourceOriginalCombinedInventoryProof;
+          stage-a-gnu-hello-native-source-target-effect-inputs =
+            gnuHelloRoundtrip.sourceTargetEffectInputsLean;
+          stage-a-gnu-hello-native-source-target-effects =
+            gnuHelloRoundtrip.sourceTargetEffectsLean;
+          stage-a-gnu-hello-native-source-transition-index =
+            gnuHelloRoundtrip.sourceTransitionIndexLean;
+          stage-a-gnu-hello-native-source-transition-index-proof-sources =
+            gnuHelloRoundtrip.sourceTransitionIndexProofSources;
+          stage-a-gnu-hello-native-source-transition-index-proof =
+            gnuHelloRoundtrip.sourceTransitionIndexProof;
+          stage-a-gnu-hello-native-source-runtime-memory-access-proposal =
+            gnuHelloRoundtrip.sourceRuntimeMemoryAccessProposal;
+          stage-a-gnu-hello-native-source-original-target-control =
+            gnuHelloRoundtrip.sourceOriginalTargetControlEvidence;
+          stage-a-gnu-hello-native-source-original-target-control-proof-sources =
+            gnuHelloRoundtrip.sourceOriginalTargetControlProofSources;
+          stage-a-gnu-hello-native-source-original-target-control-proof =
+            gnuHelloRoundtrip.sourceOriginalTargetControlProof;
+          stage-a-gnu-hello-native-source-original-target-control-audit =
+            gnuHelloRoundtrip.sourceOriginalTargetControlAudit;
+          stage-a-gnu-hello-native-source-ordinary-semantic-proof-sources =
+            gnuHelloRoundtrip.sourceOrdinarySemanticProofSources;
+          stage-a-gnu-hello-native-source-ordinary-semantic-proof =
+            gnuHelloRoundtrip.sourceOrdinarySemanticProof;
+          stage-a-gnu-hello-native-source-x87-semantic-proof-sources =
+            gnuHelloRoundtrip.sourceX87SemanticProofSources;
+          stage-a-gnu-hello-native-source-x87-semantic-proof =
+            gnuHelloRoundtrip.sourceX87SemanticProof;
+          stage-a-gnu-hello-native-source-program-assembly =
+            gnuHelloRoundtrip.sourceProgramAssemblyLean;
+          stage-a-gnu-hello-native-source-program-assembly-proof-sources =
+            gnuHelloRoundtrip.sourceProgramAssemblyProofSources;
+          stage-a-gnu-hello-native-source-program-assembly-proof =
+            gnuHelloRoundtrip.sourceProgramAssemblyProof;
+          stage-a-gnu-hello-native-source-original-execution-evidence =
+            gnuHelloRoundtrip.sourceOriginalExecutionEvidence;
+          stage-a-gnu-hello-native-source-execution =
+            gnuHelloRoundtrip.sourceExecutionLean;
+          stage-a-gnu-hello-native-source-execution-proof-sources =
+            gnuHelloRoundtrip.sourceExecutionProofSources;
+          stage-a-gnu-hello-native-source-execution-proof =
+            gnuHelloRoundtrip.sourceExecutionProof;
+          stage-a-gnu-hello-native-source-execution-audit =
+            gnuHelloRoundtrip.sourceExecutionAudit;
+          stage-a-gnu-hello-native-source-compiled-authority-evidence =
+            gnuHelloRoundtrip.sourceCompiledAuthorityEvidence;
+          stage-a-gnu-hello-native-source-compiled-authority =
+            gnuHelloRoundtrip.sourceCompiledAuthorityLean;
+          stage-a-gnu-hello-native-source-compiled-authority-proof-sources =
+            gnuHelloRoundtrip.sourceCompiledAuthorityProofSources;
+          stage-a-gnu-hello-native-source-compiled-authority-proof =
+            gnuHelloRoundtrip.sourceCompiledAuthorityProof;
+          stage-a-gnu-hello-native-source-compiled-authority-audit =
+            gnuHelloRoundtrip.sourceCompiledAuthorityAudit;
+          stage-a-gnu-hello-native-source-environment-family-evidence =
+            gnuHelloRoundtrip.sourceEnvironmentFamilyEvidence;
+          stage-a-gnu-hello-native-source-conditional-acceptance =
+            gnuHelloRoundtrip.sourceConditionalAcceptanceLean;
+          stage-a-gnu-hello-native-source-conditional-acceptance-proof-sources =
+            gnuHelloRoundtrip.sourceConditionalAcceptanceProofSources;
+          stage-a-gnu-hello-native-source-conditional-acceptance-proof =
+            gnuHelloRoundtrip.sourceConditionalAcceptanceProof;
+          stage-a-gnu-hello-native-source-conditional-acceptance-audit =
+            gnuHelloRoundtrip.sourceConditionalAcceptanceAudit;
+          stage-a-gnu-hello-native-source-conditional-acceptance-checked =
+            gnuHelloRoundtrip.sourceConditionalAcceptanceChecked;
+          stage-b-gnu-hello-native-source-functional-suite =
+            gnuHelloRoundtrip.sourceRuntimeFunctionalSuite;
+          stage-a-gnu-hello-native-source-equivalence-report =
+            gnuHelloRoundtrip.sourceEquivalenceFinalReport;
           stage-b-gnu-hello-roundtrip-interpreter = gnuHelloRoundtrip.interpreter;
           stage-b-gnu-hello-roundtrip-native-engine = gnuHelloRoundtrip.nativeEngine;
           stage-b-gnu-hello-roundtrip-native-runtime = gnuHelloRoundtrip.nativeRuntime;
@@ -5777,7 +5905,70 @@
             stage-a-roundtrip-lean-program-lookup-operation
             stage-a-gnu-hello-roundtrip-smoke
             stage-a-gnu-hello-roundtrip-static-export
+            stage-b-gnu-hello-source-state-machine
             stage-b-gnu-hello-c0-source
+            stage-b-gnu-hello-native-source-interpreter
+            stage-b-gnu-hello-native-source-engine
+            stage-b-gnu-hello-native-source-runtime
+            stage-b-gnu-hello-native-source-candidate
+            stage-a-gnu-hello-native-source-candidate-kernel-data
+            stage-a-gnu-hello-native-source-candidate-static-authority
+            stage-a-gnu-hello-native-source-candidate-static-authority-proof-sources
+            stage-a-gnu-hello-native-source-candidate-static-authority-proof
+            stage-a-gnu-hello-native-source-bundle
+            stage-a-gnu-hello-native-source-compilation-attestation
+            stage-a-gnu-hello-native-source-program
+            stage-a-gnu-hello-native-source-normalization
+            stage-a-gnu-hello-native-source-semantic-refinement
+            stage-a-gnu-hello-native-source-x87
+            stage-a-gnu-hello-native-source-machine-import-contracts
+            stage-a-gnu-hello-native-source-original-base
+            stage-a-gnu-hello-native-source-original
+            stage-a-gnu-hello-native-source-original-static-reachability
+            stage-a-gnu-hello-native-source-original-static-reachability-proof-sources
+            stage-a-gnu-hello-native-source-original-static-reachability-proof
+            stage-a-gnu-hello-native-source-original-carrier-binding
+            stage-a-gnu-hello-native-source-original-carrier-binding-proof-sources
+            stage-a-gnu-hello-native-source-original-carrier-binding-proof
+            stage-a-gnu-hello-native-source-original-combined-declarations
+            stage-a-gnu-hello-native-source-original-combined-inventory
+            stage-a-gnu-hello-native-source-original-combined-inventory-proof-sources
+            stage-a-gnu-hello-native-source-original-combined-inventory-proof
+            stage-a-gnu-hello-native-source-target-effect-inputs
+            stage-a-gnu-hello-native-source-target-effects
+            stage-a-gnu-hello-native-source-transition-index
+            stage-a-gnu-hello-native-source-transition-index-proof-sources
+            stage-a-gnu-hello-native-source-transition-index-proof
+            stage-a-gnu-hello-native-source-runtime-memory-access-proposal
+            stage-a-gnu-hello-native-source-original-target-control
+            stage-a-gnu-hello-native-source-original-target-control-proof-sources
+            stage-a-gnu-hello-native-source-original-target-control-proof
+            stage-a-gnu-hello-native-source-original-target-control-audit
+            stage-a-gnu-hello-native-source-ordinary-semantic-proof-sources
+            stage-a-gnu-hello-native-source-ordinary-semantic-proof
+            stage-a-gnu-hello-native-source-x87-semantic-proof-sources
+            stage-a-gnu-hello-native-source-x87-semantic-proof
+            stage-a-gnu-hello-native-source-program-assembly
+            stage-a-gnu-hello-native-source-program-assembly-proof-sources
+            stage-a-gnu-hello-native-source-program-assembly-proof
+            stage-a-gnu-hello-native-source-original-execution-evidence
+            stage-a-gnu-hello-native-source-execution
+            stage-a-gnu-hello-native-source-execution-proof-sources
+            stage-a-gnu-hello-native-source-execution-proof
+            stage-a-gnu-hello-native-source-execution-audit
+            stage-a-gnu-hello-native-source-compiled-authority-evidence
+            stage-a-gnu-hello-native-source-compiled-authority
+            stage-a-gnu-hello-native-source-compiled-authority-proof-sources
+            stage-a-gnu-hello-native-source-compiled-authority-proof
+            stage-a-gnu-hello-native-source-compiled-authority-audit
+            stage-a-gnu-hello-native-source-environment-family-evidence
+            stage-a-gnu-hello-native-source-conditional-acceptance
+            stage-a-gnu-hello-native-source-conditional-acceptance-proof-sources
+            stage-a-gnu-hello-native-source-conditional-acceptance-proof
+            stage-a-gnu-hello-native-source-conditional-acceptance-audit
+            stage-a-gnu-hello-native-source-conditional-acceptance-checked
+            stage-a-gnu-hello-native-source-equivalence-report
+            stage-b-gnu-hello-native-source-functional-suite
             stage-b-gnu-hello-roundtrip-interpreter
             stage-b-gnu-hello-roundtrip-native-engine
             stage-b-gnu-hello-roundtrip-native-runtime

@@ -8,6 +8,7 @@ from pathlib import Path
 from spaghetti_extractor.relational.lean.gnu_hello_runtime_indirect_composition import (
     CONSTRUCTOR_FRONTIER_ID,
     DYNAMIC_FRONTIER_ID,
+    DYNAMIC_HEAD_SLOT_RVA,
     GNUHelloRuntimeIndirectCompositionGenerationError,
     STACK_FRONTIER_ID,
     gnu_hello_runtime_indirect_composition_source,
@@ -23,31 +24,68 @@ from spaghetti_extractor.relational.original_cutpoint_graph_ir import (
 
 _ORIGINAL_SHA256 = "1" * 64
 _STATE_MACHINE_SHA256 = "2" * 64
-_STACK_SITE_STABLE_ID = "stack-dynamic-ad0bad06992a9b2c16c0"
+_STACK_SITE_STABLE_ID = "stack-dynamic-8174534cc03bae3851d1"
+_SEMANTIC_RVAS = {
+    291: 0x202E,
+    292: 0x2033,
+    293: 0x2040,
+    2594: 0xA20F,
+    2595: 0xA220,
+    2596: 0xA227,
+    2786: 0xAB54,
+    2787: 0xAB61,
+    2791: 0xAB82,
+    2792: 0xAB86,
+}
 
 
-def _graph(*, omit_constructor_loopback: bool = False) -> OriginalCutpointGraphIR:
-    successors = {
+def _graph(
+    *,
+    omit_constructor_loopback: bool = False,
+    omit_dynamic_guard: bool = False,
+    target_id_shift: int = 0,
+) -> OriginalCutpointGraphIR:
+    base_successors = {
         291: (292,),
         292: (293,),
         2594: (2595,),
         2595: (2596,),
         2596: (() if omit_constructor_loopback else (2595,)),
+        2786: (() if omit_dynamic_guard else (2787,)),
         2791: (2792,),
+    }
+
+    def shifted(target_id: int) -> int:
+        return target_id + target_id_shift
+
+    successors = {
+        shifted(source): tuple(shifted(target) for target in targets)
+        for source, targets in base_successors.items()
     }
     regions = tuple(
         OriginalCutpointRegion(
             target_id=target_id,
-            rva=0x1000 + target_id * 0x10,
+            rva=(
+                0x1000 + target_id * 0x10
+                if target_id < target_id_shift
+                else _SEMANTIC_RVAS.get(
+                    target_id - target_id_shift,
+                    0x100000 + (target_id - target_id_shift) * 0x10,
+                )
+            ),
             size=1,
-            alias_rvas=(),
+            alias_rvas=(
+                (0xA213,)
+                if target_id == shifted(2595)
+                else ()
+            ),
             successor_target_ids=successors.get(target_id, ()),
-            root=target_id == 0,
+            root=target_id == shifted(0),
             synthetic_terminal_padding=False,
             semantic_contract_sha256=f"{target_id + 1:064x}",
             instruction_bytes_sha256=f"{target_id + 2:064x}",
         )
-        for target_id in range(2793)
+        for target_id in range(2793 + target_id_shift)
     )
     pairs = [
         (291, 292),
@@ -58,11 +96,13 @@ def _graph(*, omit_constructor_loopback: bool = False) -> OriginalCutpointGraphI
     ]
     if not omit_constructor_loopback:
         pairs.append((2596, 2595))
+    if not omit_dynamic_guard:
+        pairs.append((2786, 2787))
     edges = tuple(
         OriginalCutpointEdge(
             edge_index=index,
-            source_target_id=source,
-            target_target_id=target,
+            source_target_id=shifted(source),
+            target_target_id=shifted(target),
             kind="direct",
             machine_contract_id=None,
             transition_role="immediate",
@@ -75,8 +115,10 @@ def _graph(*, omit_constructor_loopback: bool = False) -> OriginalCutpointGraphI
         state_machine_sha256=_STATE_MACHINE_SHA256,
         regions=regions,
         edges=edges,
-        root_target_ids=(0,),
-        reachable_target_ids=tuple(range(2793)),
+        root_target_ids=(shifted(0),),
+        reachable_target_ids=tuple(
+            range(target_id_shift, 2793 + target_id_shift)
+        ),
     )
 
 
@@ -87,8 +129,18 @@ def _artifacts(
     constructor_stable_id: str = CONSTRUCTOR_FRONTIER_ID,
     dynamic_stable_id: str = DYNAMIC_FRONTIER_ID,
     omit_constructor_loopback: bool = False,
+    omit_dynamic_guard: bool = False,
+    target_id_shift: int = 0,
 ) -> dict[str, Path]:
-    graph = _graph(omit_constructor_loopback=omit_constructor_loopback)
+    graph = _graph(
+        omit_constructor_loopback=omit_constructor_loopback,
+        omit_dynamic_guard=omit_dynamic_guard,
+        target_id_shift=target_id_shift,
+    )
+
+    def shifted(target_id: int) -> int:
+        return target_id + target_id_shift
+
     graph_path = root / "original-cutpoint-graph-ir.json"
     graph_path.write_text(json.dumps(graph.to_json()), encoding="utf-8")
     identity = {
@@ -104,19 +156,19 @@ def _artifacts(
         "sites": [
             {
                 "closure_mode": "finite_stack_target",
-                "source_target_id": 292,
+                "source_target_id": shifted(292),
                 "stable_id": _STACK_SITE_STABLE_ID,
-                "allowed_target_ids": [5621],
+                "allowed_target_ids": [shifted(5621)],
             },
             {
                 "closure_mode": "empty_indexed_source",
-                "source_target_id": 2595,
+                "source_target_id": shifted(2595),
                 "stable_id": constructor_stable_id,
                 "allowed_target_ids": [],
             },
             {
                 "closure_mode": "uninhabited_dynamic_source",
-                "source_target_id": 2792,
+                "source_target_id": shifted(2792),
                 "stable_id": dynamic_stable_id,
                 "allowed_target_ids": [],
             },
@@ -135,21 +187,24 @@ def _artifacts(
             "stable_id": route_stable_id,
             "origin": {
                 "kind": "static_code_target",
-                "target_id": 5621,
+                "target_id": shifted(5621),
                 "offset": 0,
             },
-            "target_fact": {"target_id": 292, "location_id": 0},
+            "target_fact": {
+                "target_id": shifted(292),
+                "location_id": 0,
+            },
             "facts": [
-                {"target_id": 292, "location_id": 0},
-                {"target_id": 293, "location_id": 0},
+                {"target_id": shifted(292), "location_id": 0},
+                {"target_id": shifted(293), "location_id": 0},
             ],
             "transfers": [
                 {
                     "edge_index": 0,
                     "kind": "decoded_preserve",
                     "authority_origin": None,
-                    "source_target_id": 291,
-                    "target_target_id": 292,
+                    "source_target_id": shifted(291),
+                    "target_target_id": shifted(292),
                 },
                 {
                     "edge_index": 1,
@@ -172,8 +227,8 @@ def _artifacts(
                             "CallerFrameWordControlContract"
                         ),
                     },
-                    "source_target_id": 292,
-                    "target_target_id": 293,
+                    "source_target_id": shifted(292),
+                    "target_target_id": shifted(293),
                 },
             ],
         }],
@@ -188,7 +243,7 @@ def _artifacts(
         "counts": {"ignored": 1},
         "status": "runtime-premise-required",
         "entries": [{
-            "source_target_id": 2595,
+            "source_target_id": shifted(2595),
             "stable_id": constructor_stable_id,
             "module": (
                 "StageA."
@@ -206,9 +261,18 @@ def _artifacts(
                 "EmptyIndexedAuthority"
             ),
             "incoming_edges": [
-                {"source_target_id": 2594, "target_target_id": 2595},
-                {"source_target_id": 2596, "target_target_id": 2595},
-                {"source_target_id": 2595, "target_target_id": 2596},
+                {
+                    "source_target_id": shifted(2594),
+                    "target_target_id": shifted(2595),
+                },
+                {
+                    "source_target_id": shifted(2596),
+                    "target_target_id": shifted(2595),
+                },
+                {
+                    "source_target_id": shifted(2595),
+                    "target_target_id": shifted(2596),
+                },
             ],
         }],
     }), encoding="utf-8")
@@ -233,6 +297,12 @@ class StageAGNUHelloRuntimeIndirectCompositionTests(unittest.TestCase):
         self.assertEqual(plan.stack_site_index, 0)
         self.assertEqual(plan.constructor_site_index, 1)
         self.assertEqual(plan.dynamic_site_index, 2)
+        self.assertEqual(plan.stack_source_target_id, 292)
+        self.assertEqual(plan.stack_successor_target_id, 293)
+        self.assertEqual(plan.constructor_source_target_id, 2595)
+        self.assertEqual(plan.dynamic_source_target_id, 2792)
+        self.assertEqual(plan.dynamic_guard_source_target_id, 2786)
+        self.assertEqual(plan.dynamic_guard_nonzero_target_id, 2787)
         self.assertEqual(
             plan.constructor_incoming,
             ((2594, 2595), (2596, 2595)),
@@ -261,7 +331,19 @@ class StageAGNUHelloRuntimeIndirectCompositionTests(unittest.TestCase):
             "generatedConstructorRootedEvidenceExact",
             "generatedConstructorRootedExecutionAuthority",
             "generatedConstructorRootedSourceExcluded",
+            "generatedConstructorSelectedSourceUninhabited",
+            "generatedConstructorSelectedComposition",
             "RootedScannerOperationalReachable",
+            "structure CheckedGuardedZeroSelectedSourceProjection",
+            "CompleteWriteFootprintTrace generatedContext certificate",
+            "CheckedGuardedZeroSelectedSourceProjection.sourceUninhabited",
+            f"def generatedDynamicHeadRva : Nat := {DYNAMIC_HEAD_SLOT_RVA}",
+            "generatedDynamicHeadInitialZeroChecked",
+            f"sourceTargetId := {plan.dynamic_guard_source_target_id}",
+            f"nonzeroTargetId := {plan.dynamic_guard_nonzero_target_id}",
+            "generatedDynamicGuardEdgeChecked",
+            "generatedDynamicSelectedSourceUninhabited",
+            "generatedDynamicSelectedComposition",
             "noncomputable def generatedStackSeed",
             "checkedStackCarryRouteSeedValue_of_relocatedOrigin",
             "generatedStackTransfer0Authority",
@@ -319,6 +401,64 @@ class StageAGNUHelloRuntimeIndirectCompositionTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source)
 
+    def test_unrelated_earlier_regions_shift_ids_without_breaking_planning(
+        self,
+    ) -> None:
+        target_id_shift = 7
+        shifted_graph = _graph(target_id_shift=target_id_shift)
+        for original_target_id, rva in _SEMANTIC_RVAS.items():
+            self.assertEqual(
+                shifted_graph.regions[
+                    original_target_id + target_id_shift
+                ].rva,
+                rva,
+            )
+        with tempfile.TemporaryDirectory() as temporary:
+            plan = plan_gnu_hello_runtime_indirect_composition(
+                **_artifacts(
+                    Path(temporary),
+                    target_id_shift=target_id_shift,
+                )
+            )
+        self.assertEqual(plan.stack_source_target_id, 292 + target_id_shift)
+        self.assertEqual(
+            plan.stack_successor_target_id,
+            293 + target_id_shift,
+        )
+        self.assertEqual(
+            plan.constructor_source_target_id,
+            2595 + target_id_shift,
+        )
+        self.assertEqual(
+            plan.dynamic_source_target_id,
+            2792 + target_id_shift,
+        )
+        self.assertEqual(
+            plan.constructor_incoming,
+            (
+                (2594 + target_id_shift, 2595 + target_id_shift),
+                (2596 + target_id_shift, 2595 + target_id_shift),
+            ),
+        )
+        self.assertEqual(
+            plan.dynamic_incoming,
+            ((2791 + target_id_shift, 2792 + target_id_shift),),
+        )
+
+        source = gnu_hello_runtime_indirect_composition_source(plan)
+        for fragment in (
+            f"sourceTargetId := {292 + target_id_shift}",
+            f"sourceTargetId := {2595 + target_id_shift}",
+            f"sourceTargetId := {2792 + target_id_shift}",
+            f"sourceTargetId := {2786 + target_id_shift}",
+            f"nonzeroTargetId := {2787 + target_id_shift}",
+            (
+                f"sourceTargetId := {2594 + target_id_shift}, "
+                f"targetTargetId := {2595 + target_id_shift}"
+            ),
+        ):
+            self.assertIn(fragment, source)
+
     def test_current_static_artifacts_report_exact_operational_gaps(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             plan = plan_gnu_hello_runtime_indirect_composition(
@@ -331,21 +471,27 @@ class StageAGNUHelloRuntimeIndirectCompositionTests(unittest.TestCase):
         self.assertEqual(
             [gap.extractor_field for gap in plan.evidence_gaps],
             [
-                "mixed_component.rooted_scanner_phase_replay",
-                "reachable_static_slot.write_preservation",
+                "mixed_component.rooted_scanner_selected_projection",
+                "reachable_static_slot.selected_zero_guard_projection",
             ],
         )
         self.assertEqual(
             [gap.checker_type for gap in plan.evidence_gaps],
             [
-                (
-                    "CheckedMixedKernelSelectedInvariantClosure "
-                    "(rooted scanner phase closure)"
-                ),
-                (
-                    "OriginalWorldExecutionInvariant "
-                    "(BSS dtor-head zero and preservation)"
-                ),
+                "CheckedRootedScannerSelectedSourceProjection",
+                "CheckedGuardedZeroSelectedSourceProjection",
+            ],
+        )
+        self.assertEqual(
+            [evidence.source_target_id for evidence in plan.checked_evidence],
+            [292, 2595, 2792],
+        )
+        self.assertEqual(
+            [evidence.evidence_kind for evidence in plan.checked_evidence],
+            [
+                "selected-stack-route-and-frame-window",
+                "rooted-scanner-scc-execution-exclusion",
+                "launch-zero-and-decoded-nonzero-guard",
             ],
         )
         source = gnu_hello_runtime_indirect_composition_source(plan)
@@ -393,9 +539,9 @@ class StageAGNUHelloRuntimeIndirectCompositionTests(unittest.TestCase):
 
     def test_target_292_route_execution_inventory_fails_closed(self) -> None:
         for mutation, message in (
-            ("missing", "no unique target-292-to-293 transfer"),
+            ("missing", "no unique stack-source-to-successor transfer"),
             ("wrong-contract", "wrong contract symbol"),
-            ("duplicate", "no unique target-292-to-293 transfer"),
+            ("duplicate", "no unique stack-source-to-successor transfer"),
         ):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
                 paths = _artifacts(Path(temporary))
@@ -441,7 +587,7 @@ class StageAGNUHelloRuntimeIndirectCompositionTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 GNUHelloRuntimeIndirectCompositionGenerationError,
-                "incoming inventory is not exact GNU hello data",
+                "constructor incoming inventory does not match its RVAs",
             ):
                 plan_gnu_hello_runtime_indirect_composition(**paths)
 
@@ -459,6 +605,18 @@ class StageAGNUHelloRuntimeIndirectCompositionTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 GNUHelloRuntimeIndirectCompositionGenerationError,
                 "not an exact cutpoint-graph edge",
+            ):
+                plan_gnu_hello_runtime_indirect_composition(**paths)
+
+    def test_missing_dynamic_guard_edge_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = _artifacts(
+                Path(temporary),
+                omit_dynamic_guard=True,
+            )
+            with self.assertRaisesRegex(
+                GNUHelloRuntimeIndirectCompositionGenerationError,
+                "dynamic guarded predecessor edge is absent",
             ):
                 plan_gnu_hello_runtime_indirect_composition(**paths)
 

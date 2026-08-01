@@ -183,6 +183,55 @@ theorem exactScheduleRvaBytes_eq_readExactSectionRvaSpan
     PEBytePacks.sectionContainsExactRvaSpan, Nat.not_lt_of_ge afterHeaders]
   rfl
 
+/-- Connect one checked raw section mapping to the executable-span reader used
+by the x87 decoder.  The generated `selected` proof reduces only PE metadata;
+the actual bytes remain supplied by a separately cached byte-pack theorem. -/
+theorem PEBytePacks.PESectionRvaSpanCertificate.spanBytes_eq_raw
+    {pe : PE32} {sec : Section} {rva size rawOffset : Nat}
+    (certificate : PEBytePacks.PESectionRvaSpanCertificate pe sec rva size
+      rawOffset)
+    (selected : pe.sections.find? (fun candidate =>
+      candidate.executable && candidate.virtualAddress <=
+        ({ start := rva, size := size } : Span).start &&
+        ({ start := rva, size := size } : Span).stop <=
+          candidate.virtualAddress + candidate.mappedSize) =
+      some sec) :
+    spanBytes pe { start := rva, size := size } =
+      pe.bytes.readBytes rawOffset size := by
+  have selectedByExactSpan :
+      sec ∈ pe.sections.filter (fun candidate =>
+        PEBytePacks.sectionContainsExactRvaSpan candidate rva size) := by
+    rw [certificate.uniqueSection]
+    simp
+  have contains := (List.mem_filter.mp selectedByExactSpan).2
+  simp only [PEBytePacks.sectionContainsExactRvaSpan, Bool.and_eq_true,
+    decide_eq_true_eq] at contains
+  have rvaEq :
+      sec.virtualAddress + (rva - sec.virtualAddress) = rva :=
+    Nat.add_sub_of_le contains.1
+  have sizePositive : 0 < size := Nat.pos_of_ne_zero certificate.nonempty
+  have mappedBound :
+      rva - sec.virtualAddress + size <= sec.mappedSize := by
+    have spanBound := contains.2
+    rw [← rvaEq, Nat.add_sub_add_left] at spanBound
+    have offsetBound : rva - sec.virtualAddress <= sec.mappedSize := by
+      have remainingPositive :
+          0 < sec.mappedSize - (rva - sec.virtualAddress) :=
+        Nat.lt_of_lt_of_le sizePositive spanBound
+      exact Nat.le_of_lt (Nat.sub_pos_iff_lt.mp remainingPositive)
+    simpa [Nat.add_comm] using
+      Nat.add_le_of_le_sub offsetBound spanBound
+  have rawInside : rva - sec.virtualAddress < sec.rawSize := by
+    have differencePositive :
+        0 < sec.rawSize - (rva - sec.virtualAddress) :=
+      Nat.lt_of_lt_of_le sizePositive certificate.rawSizeBounded
+    exact Nat.sub_pos_iff_lt.mp differencePositive
+  simp [spanBytes, selected]
+  rw [if_neg (Nat.not_lt_of_ge mappedBound)]
+  rw [if_pos rawInside]
+  rw [Nat.min_eq_left certificate.rawSizeBounded]
+  simp [certificate.rawOffsetExact]
+
 inductive InstructionClass where
   | ordinary
   | x87Singleton
@@ -1227,6 +1276,82 @@ theorem ExactInterpreterX87ScheduleCertificate.macroStepRefines
 structure ExactInterpreterX87ScheduleWitness (pe : PE32) where
   schedule : RawInstructionSchedule
   certificate : ExactInterpreterX87ScheduleCertificate pe schedule
+
+/-! ## Checked singleton schedules
+
+The source-only exporter emits one schedule per architectural x87 instruction.
+These facts bind that schedule to its single exact decoded command.  Input
+validity is not an extra generated premise: the concrete flat-memory reader is
+total, and the checked decoder only produces the finite operand widths covered
+by `commandStepInput_valid`. -/
+
+structure ExactX87SingletonScheduleFacts
+    (pe : PE32) (witness : ExactInterpreterX87ScheduleWitness pe) where
+  record : RawInstructionRecord
+  descriptor : StageA.Relational.X87.DecodedCommand
+  recordsExact : witness.schedule.records = [record]
+  recordSpanExact : record.span = {
+    start := witness.schedule.sourceRva
+    size := witness.schedule.transferBytes.length
+  }
+  recordClass : record.decodeClass = some .x87Singleton
+  decoded : StageA.Relational.X87.decodeSingletonCommand pe record.span =
+    some descriptor
+  inputValid : forall state,
+    (StageA.Relational.X87.commandStepInput pe record.span.start descriptor
+      state).validFor descriptor.command
+
+/-- Assemble the universal input-validity field from the generic x87 machine
+theorem.  Generated schedules provide only finite record/decode equalities. -/
+def ExactX87SingletonScheduleFacts.ofDecoded
+    {pe : PE32} {witness : ExactInterpreterX87ScheduleWitness pe}
+    (record : RawInstructionRecord)
+    (recordsExact : witness.schedule.records = [record])
+    (recordSpanExact : record.span = {
+      start := witness.schedule.sourceRva
+      size := witness.schedule.transferBytes.length
+    })
+    (recordClass : record.decodeClass = some .x87Singleton)
+    (decodedSome :
+      (StageA.Relational.X87.decodeSingletonCommand pe record.span).isSome) :
+    ExactX87SingletonScheduleFacts pe witness where
+  record := record
+  descriptor := (StageA.Relational.X87.decodeSingletonCommand pe
+    record.span).get decodedSome
+  recordsExact := recordsExact
+  recordSpanExact := recordSpanExact
+  recordClass := recordClass
+  decoded := (Option.some_get decodedSome).symm
+  inputValid := fun state =>
+    StageA.Relational.X87.commandStepInput_valid pe record.span.start
+      ((StageA.Relational.X87.decodeSingletonCommand pe record.span).get
+        decodedSome) state
+
+theorem ExactX87SingletonScheduleFacts.stepRefines
+    {pe : PE32} {witness : ExactInterpreterX87ScheduleWitness pe}
+    (facts : ExactX87SingletonScheduleFacts pe witness)
+    (state : MachineState) :
+    exactInterpreterStep pe witness.schedule facts.record state =
+      executeX87Singleton pe facts.record state := by
+  symm
+  simpa [authoritativeStep, facts.recordClass] using
+    witness.certificate.stepRefines facts.record
+      (by simp [facts.recordsExact]) state
+
+theorem ExactX87SingletonScheduleFacts.runExactInterpreter_of_step
+    {pe : PE32} {witness : ExactInterpreterX87ScheduleWitness pe}
+    (facts : ExactX87SingletonScheduleFacts pe witness)
+    (state : MachineState) (result : StepResult)
+    (executed : executeX87Singleton pe facts.record state = some result) :
+    runExactInterpreter pe witness.schedule state = some {
+      state := result.state
+      trace := ({} : ExecutionTrace).appendStep result
+    } := by
+  have exactStep :
+      exactInterpreterStep pe witness.schedule facts.record state = some result := by
+    rw [facts.stepRefines state]
+    exact executed
+  simp [runExactInterpreter, facts.recordsExact, runRecords, exactStep]
 
 /-- One explicitly inventoried opcode-25 action and its exact original x87
 record.  Keeping this witness separate from the schedule certificate gives

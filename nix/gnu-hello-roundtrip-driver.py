@@ -21,6 +21,10 @@ from spaghetti_extractor.contract_tools import (
     stage_a_export_reference_contract,
     stage_a_generate_map,
 )
+from spaghetti_extractor.native_source_equivalence import (
+    validate_native_source_bundle_manifest,
+    validate_native_source_compilation_attestation,
+)
 from spaghetti_extractor.relational.lean.definedness import (
     relational_definedness_preflight,
     relational_definedness_source,
@@ -267,9 +271,82 @@ from spaghetti_extractor.relational.lean.interpreter_mixed_terminal import (
     load_interpreter_mixed_terminal_proposals,
 )
 from spaghetti_extractor.relational.lean.interpreter_normalization import (
+    is_x87_row,
     relational_interpreter_normalization_bundle_sources,
     relational_interpreter_normalization_inventory,
     relational_interpreter_normalization_module_inventory,
+)
+from spaghetti_extractor.relational.lean.native_source_program import (
+    NativeSourceProgramSpec,
+    write_native_source_program,
+)
+from spaghetti_extractor.relational.lean.gnu_hello_source_execution import (
+    write_gnu_hello_source_execution_from_artifacts,
+)
+from spaghetti_extractor.relational.lean.gnu_hello_source_transition_index import (
+    generate_gnu_hello_source_transition_index,
+)
+from spaghetti_extractor.relational.lean.gnu_hello_source_target_effect_inputs import (
+    generate_gnu_hello_source_target_effect_inputs,
+)
+from spaghetti_extractor.relational.lean.gnu_hello_source_target_effects import (
+    ArtifactSet as GnuHelloSourceTargetEffectArtifacts,
+    generate_gnu_hello_source_target_effects,
+)
+from spaghetti_extractor.relational.lean.gnu_hello_original_combined_declarations import (
+    write_gnu_hello_original_combined_declarations,
+)
+from spaghetti_extractor.relational.lean.gnu_hello_original_execution_evidence import (
+    generate_gnu_hello_original_execution_evidence,
+)
+from spaghetti_extractor.relational.lean.gnu_hello_original_target_preservation import (
+    generate_gnu_hello_original_target_preservation,
+)
+from spaghetti_extractor.relational.lean.gnu_hello_checked_response_family import (
+    write_gnu_hello_checked_response_family,
+)
+from spaghetti_extractor.relational.lean.original_combined_inventory import (
+    write_original_combined_inventory,
+)
+from spaghetti_extractor.relational.lean.original_target_control_evidence import (
+    generate_original_target_control_evidence,
+)
+from spaghetti_extractor.relational.lean.original_source_launch_context import (
+    generate_original_source_launch_context,
+)
+from spaghetti_extractor.relational.lean.runtime_memory_access_proposal import (
+    generate_runtime_memory_access_proposal,
+)
+from spaghetti_extractor.relational.lean.source_equivalence_final_report import (
+    write_source_equivalence_final_report,
+)
+from spaghetti_extractor.relational.lean.gnu_hello_native_source_compiled_authority_evidence import (
+    NixRealizationIdentity,
+    write_gnu_hello_native_source_compiled_authority_evidence,
+)
+from spaghetti_extractor.relational.lean.gnu_hello_native_source_environment_family_inputs import (
+    write_gnu_hello_native_source_environment_family_inputs,
+)
+from spaghetti_extractor.relational.lean.gnu_hello_native_source_environment_family import (
+    write_gnu_hello_native_source_environment_family,
+)
+from spaghetti_extractor.relational.lean.native_source_acceptance import (
+    NativeSourceAcceptanceSpec,
+    write_native_source_acceptance,
+)
+from spaghetti_extractor.relational.lean.native_source_nested_acceptance import (
+    NativeSourceNestedAcceptanceSpec,
+    write_native_source_nested_acceptance,
+)
+from spaghetti_extractor.relational.lean.native_source_nested_compiler_premise import (
+    NativeSourceNestedCompilerPremiseSpec,
+    write_native_source_nested_compiler_premise,
+)
+from spaghetti_extractor.relational.lean.native_source_compiled_authority import (
+    NativeSourceCompiledAuthoritySpec,
+    NixRealizationSpec,
+    PinnedToolArtifactSpec,
+    write_native_source_compiled_authority,
 )
 from spaghetti_extractor.relational.lean.interpreter_semantic_refinement import (
     relational_interpreter_semantic_refinement_bundle_sources,
@@ -339,6 +416,14 @@ X87_KERNEL_EXECUTION_FRONTIER_FILENAME = (
 X87_KERNEL_EXECUTION_REMAINING_PROOF_PREMISES: tuple[str, ...] = ()
 X87_KERNEL_EXECUTION_PREMISE_DETAILS: dict[str, tuple[str, ...]] = {}
 
+NATIVE_SOURCE_COMPILED_AUTHORITY_DECLARATIONS_FORMAT = (
+    "stage-a-gnu-hello-native-source-compiled-authority-declarations-v1"
+)
+NATIVE_SOURCE_ACCEPTANCE_DECLARATIONS_FORMAT = (
+    "stage-a-gnu-hello-native-source-acceptance-declarations-v3"
+)
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+
 
 def _direct_call_integration_module(
     callsite_rva: int,
@@ -379,6 +464,178 @@ def _manifest(out: Path, phase: str, inputs: Mapping[str, Path], **extra: Any) -
             },
             **extra,
         },
+    )
+
+
+def _strict_json_object(
+    path: Path, label: str, expected_keys: set[str]
+) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read {label} {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    actual_keys = set(value)
+    if actual_keys != expected_keys:
+        missing = sorted(expected_keys - actual_keys)
+        unexpected = sorted(actual_keys - expected_keys)
+        raise ValueError(
+            f"{label} has a non-canonical schema: missing={missing}, "
+            f"unexpected={unexpected}"
+        )
+    return value
+
+
+def _strict_mapping(
+    value: object, label: str, expected_keys: set[str]
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be an object")
+    result = dict(value)
+    if set(result) != expected_keys:
+        missing = sorted(expected_keys - set(result))
+        unexpected = sorted(set(result) - expected_keys)
+        raise ValueError(
+            f"{label} has a non-canonical schema: missing={missing}, "
+            f"unexpected={unexpected}"
+        )
+    return result
+
+
+def _strict_string(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value or "\n" in value or "\r" in value:
+        raise ValueError(f"{label} must be a non-empty single-line string")
+    return value
+
+
+def _strict_sha256(value: object, label: str) -> str:
+    digest = _strict_string(value, label)
+    if _SHA256_PATTERN.fullmatch(digest) is None:
+        raise ValueError(f"{label} must be a lowercase SHA-256 digest")
+    return digest
+
+
+def _strict_natural(value: object, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{label} must be a natural number")
+    return value
+
+
+def _strict_string_tuple(value: object, label: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{label} must be a non-empty array")
+    result = tuple(
+        _strict_string(item, f"{label}[{index}]")
+        for index, item in enumerate(value)
+    )
+    if len(set(result)) != len(result):
+        raise ValueError(f"{label} must not contain duplicates")
+    return result
+
+
+def _canonical_json_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
+    return sha256(encoded).hexdigest()
+
+
+def _nix_realization_from_provenance(
+    path: Path,
+    label: str,
+    *,
+    expected_output: Path | None = None,
+    expected_nar_hash: str | None = None,
+) -> NixRealizationSpec:
+    payload = _strict_json_object(
+        path,
+        label,
+        {"output", "derivation", "registered_deriver", "nar_hash"},
+    )
+    output = Path(_strict_string(payload["output"], f"{label} output"))
+    derivation = Path(
+        _strict_string(payload["derivation"], f"{label} derivation")
+    )
+    registered = Path(
+        _strict_string(
+            payload["registered_deriver"], f"{label} registered deriver"
+        )
+    )
+    nar_hash = _strict_string(payload["nar_hash"], f"{label} NAR hash")
+    if not output.is_absolute() or not output.is_dir():
+        raise ValueError(f"{label} output is not a realized absolute directory")
+    if not derivation.is_absolute() or derivation.suffix != ".drv":
+        raise ValueError(f"{label} derivation is not an absolute .drv path")
+    if not derivation.is_file() or registered != derivation:
+        raise ValueError(f"{label} planned and registered derivations differ")
+    if expected_output is not None and output.resolve() != expected_output.resolve():
+        raise ValueError(f"{label} output does not match the bound artifact")
+    if expected_nar_hash is not None and nar_hash != expected_nar_hash:
+        raise ValueError(f"{label} NAR hash does not match the bound artifact")
+    spec = NixRealizationSpec(
+        derivation_path=str(derivation.resolve()),
+        derivation_sha256=sha256_file(derivation),
+        output_path=str(output.resolve()),
+        nar_hash=nar_hash,
+    )
+    spec.validate(label)
+    return spec
+
+
+def _candidate_import_inventory(binary: object) -> list[dict[str, object]]:
+    return [
+        {
+            "dll": item.dll,
+            "symbol": item.symbol,
+            "ordinal": item.ordinal,
+            "thunk_rva": item.thunk_rva,
+        }
+        for item in binary.imports
+    ]
+
+
+def _source_bundle_digests(bundle: Mapping[str, Any], path: Path) -> set[str]:
+    digests = {
+        sha256_file(path),
+        _strict_sha256(
+            bundle["hashes"]["source_bundle_sha256"],
+            "source bundle closure digest",
+        ),
+        _strict_sha256(
+            bundle["state_machine"]["sha256"], "state-machine digest"
+        ),
+        _strict_sha256(
+            bundle["load_image_contract"]["artifact_sha256"],
+            "load-image artifact digest",
+        ),
+    }
+    for package in bundle["packages"].values():
+        digests.add(_strict_sha256(package["manifest"]["sha256"], "package manifest"))
+        for artifact in package["artifacts"]:
+            digests.add(_strict_sha256(artifact["sha256"], "source artifact"))
+    return digests
+
+
+def _pinned_tool_spec(
+    raw: object,
+    label: str,
+    *,
+    allowed_digests: set[str],
+) -> PinnedToolArtifactSpec:
+    value = _strict_mapping(
+        raw,
+        label,
+        {"identifier", "exact_artifact", "evidence_sha256"},
+    )
+    digest = _strict_sha256(value["evidence_sha256"], f"{label} evidence")
+    if digest not in allowed_digests:
+        raise ValueError(f"{label} evidence is outside the exact source/build closure")
+    return PinnedToolArtifactSpec(
+        identifier=_strict_string(value["identifier"], f"{label} identifier"),
+        exact_artifact=_strict_string(
+            value["exact_artifact"], f"{label} exact artifact"
+        ),
     )
 
 
@@ -584,8 +841,16 @@ def _program_source(args: argparse.Namespace) -> None:
     ordinary = [
         transfer
         for row, transfer in zip(raw_rows, compiled, strict=True)
-        if row.get("fpu_state") is None
+        if not is_x87_row(row)
     ]
+    x87 = [
+        transfer
+        for row, transfer in zip(raw_rows, compiled, strict=True)
+        if is_x87_row(row)
+    ]
+    # Keep ordinary indices stable because normalization shards name records by
+    # this prefix.  x87 behavior belongs exclusively to the checked provider;
+    # including synthetic replay records here would create a second authority.
     source = relational_interpreter_program_source(ordinary)
     destination = stage_a / "GeneratedSemanticInterpreterProgram.lean"
     destination.write_text(source, encoding="utf-8")
@@ -595,7 +860,11 @@ def _program_source(args: argparse.Namespace) -> None:
         {"state_machine": machine},
         status="source-ready",
         modules=[destination.stem],
-        counts={"ordinary_transfers": len(ordinary)},
+        counts={
+            "transfers": len(compiled),
+            "ordinary_transfers": len(ordinary),
+            "x87_transfers": len(x87),
+        },
     )
 
 
@@ -604,7 +873,7 @@ def _normalization_sources(args: argparse.Namespace) -> None:
     out = Path(args.out)
     stage_a = out / "StageA"
     stage_a.mkdir(parents=True, exist_ok=True)
-    ordinary = [row for row in _jsonl(machine) if row.get("fpu_state") is None]
+    ordinary = [row for row in _jsonl(machine) if not is_x87_row(row)]
     sources = relational_interpreter_normalization_bundle_sources(
         ordinary,
         source_module="StageA.GeneratedSemanticInterpreterProgram",
@@ -613,6 +882,8 @@ def _normalization_sources(args: argparse.Namespace) -> None:
         semantic_refinement_module=(
             "StageA.GeneratedInterpreterSemanticRefinementBundle"
         ),
+        emit_acceptance_inventory=not args.source_bindings_only,
+        emit_source_binding_inventory=args.source_bindings_only,
     )
     for module, source in sources.items():
         (stage_a / f"{module}.lean").write_text(source, encoding="utf-8")
@@ -641,7 +912,7 @@ def _semantic_refinement_sources(args: argparse.Namespace) -> None:
     stage_a = out / "StageA"
     stage_a.mkdir(parents=True, exist_ok=True)
     rows = _jsonl(machine)
-    ordinary_count = sum(row.get("fpu_state") is None for row in rows)
+    ordinary_count = sum(not is_x87_row(row) for row in rows)
     sources = relational_interpreter_semantic_refinement_bundle_sources(
         rows,
         pe_module="StageA.GeneratedGnuHelloOriginalPE",
@@ -670,6 +941,922 @@ def _semantic_refinement_sources(args: argparse.Namespace) -> None:
     )
 
 
+def _native_source_program(args: argparse.Namespace) -> None:
+    out = Path(args.out)
+    destination = write_native_source_program(
+        out,
+        NativeSourceProgramSpec(
+            decoded_original_module="StageA.GeneratedGnuHelloOriginalPE",
+            # These fixed-world declarations are unused in the polymorphic
+            # form, but remain validated for one stable generator schema.
+            decoded_original_program="StageA.GeneratedRelational.originalProgram",
+            decoded_original_side="StageA.GeneratedRelational.originalProgramSide",
+            original_pe="StageA.GeneratedRelational.originalPe",
+            decoded_original_pe_exact=(
+                "StageA.GeneratedRelational.originalProgramPeExact"
+            ),
+            semantic_program_module=(
+                "StageA.GeneratedSemanticInterpreterProgram"
+            ),
+            semantic_program_records=(
+                "StageA.GeneratedRelational.semanticInterpreterProgramRecords"
+            ),
+            semantic_program_records_unique=(
+                "StageA.GeneratedRelational."
+                "semanticInterpreterProgramSourceRvasUnique"
+            ),
+            normalization_module=(
+                "StageA.GeneratedInterpreterNormalizationBundle"
+            ),
+            ordinary_record_bindings=(
+                "StageA.GeneratedRelational."
+                "exactNormalizedOrdinaryRecordBindings"
+            ),
+            x87_schedule_module=(
+                "StageA.GeneratedInterpreterX87ScheduleBundle"
+            ),
+            x87_witnesses=(
+                "StageA.GeneratedRelational."
+                "checkedInterpreterX87ScheduleBundleWitnesses"
+            ),
+            x87_source_rvas=(
+                "StageA.GeneratedRelational."
+                "checkedInterpreterX87ScheduleBundleSourceRvas"
+            ),
+            x87_source_rvas_nodup=(
+                "StageA.GeneratedRelational."
+                "checkedInterpreterX87ScheduleBundleSourceRvasNodup"
+            ),
+            namespace=(
+                "StageA.GeneratedRelational.GnuHelloNativeSourceProgram"
+            ),
+            output_module="GeneratedGnuHelloNativeSourceProgram",
+            parameterize_world_program=True,
+        ),
+    )
+    _manifest(
+        out,
+        "native-source-program",
+        {},
+        status="source-ready",
+        modules=[destination.stem],
+        targets=[destination.stem],
+    )
+
+
+def _native_source_compiled_authority(args: argparse.Namespace) -> None:
+    """Assemble exact compiled authority from closed static evidence only."""
+
+    source_bundle_path = Path(args.source_bundle)
+    attestation_path = Path(args.compilation_attestation)
+    declarations_path = Path(args.declarations)
+    project_nix_path = Path(args.project_nix_provenance)
+    profile_nix_path = Path(args.profile_nix_provenance)
+    build_nix_path = Path(args.build_nix_provenance)
+    out = Path(args.out)
+
+    bundle = validate_native_source_bundle_manifest(source_bundle_path)
+    attestation = validate_native_source_compilation_attestation(attestation_path)
+    source_binding = _strict_mapping(
+        attestation["source_bundle"],
+        "compilation attestation source bundle",
+        {"path", "size", "artifact_sha256", "source_bundle_sha256"},
+    )
+    if Path(source_binding["path"]).resolve() != source_bundle_path.resolve():
+        raise ValueError("compilation attestation binds a different source bundle")
+    if source_binding["artifact_sha256"] != sha256_file(source_bundle_path):
+        raise ValueError("compilation attestation source-bundle hash mismatch")
+    if source_binding["source_bundle_sha256"] != bundle["hashes"][
+        "source_bundle_sha256"
+    ]:
+        raise ValueError("compilation attestation source closure mismatch")
+
+    candidate_binding = _strict_mapping(
+        attestation["candidate"],
+        "compiled candidate binding",
+        {"path", "sha256", "size"},
+    )
+    candidate = Path(_strict_string(candidate_binding["path"], "candidate path"))
+    if (
+        sha256_file(candidate)
+        != _strict_sha256(candidate_binding["sha256"], "candidate SHA-256")
+        or candidate.stat().st_size
+        != _strict_natural(candidate_binding["size"], "candidate size")
+    ):
+        raise ValueError("compiled candidate bytes differ from the attestation")
+
+    declaration_manifest = _strict_json_object(
+        declarations_path,
+        "native-source compiled-authority declarations",
+        {"format", "bindings", "lean"},
+    )
+    if (
+        declaration_manifest["format"]
+        != NATIVE_SOURCE_COMPILED_AUTHORITY_DECLARATIONS_FORMAT
+    ):
+        raise ValueError("unsupported native-source compiled-authority declarations")
+    bindings = _strict_mapping(
+        declaration_manifest["bindings"],
+        "compiled-authority bindings",
+        {
+            "source_bundle_sha256",
+            "source_bundle_artifact_sha256",
+            "attestation_core_sha256",
+            "attestation_artifact_sha256",
+            "candidate_sha256",
+            "candidate_size",
+            "candidate_entry_rva",
+            "candidate_image_base",
+            "candidate_imports",
+            "relocation_inventory",
+            "project_nar_hash",
+            "profile_nar_hash",
+            "build_nar_hash",
+        },
+    )
+    exact_bindings = {
+        "source_bundle_sha256": bundle["hashes"]["source_bundle_sha256"],
+        "source_bundle_artifact_sha256": sha256_file(source_bundle_path),
+        "attestation_core_sha256": attestation["hashes"][
+            "attestation_core_sha256"
+        ],
+        "attestation_artifact_sha256": sha256_file(attestation_path),
+        "candidate_sha256": candidate_binding["sha256"],
+        "candidate_size": candidate_binding["size"],
+    }
+    for field, expected in exact_bindings.items():
+        if bindings[field] != expected:
+            raise ValueError(f"compiled-authority {field} binding mismatch")
+
+    binary = _parse_stage_a_pe(candidate)
+    try:
+        if binary.machine != "i386" or binary.bitness != 32:
+            raise ValueError("compiled authority requires an i386 PE32 candidate")
+        if bindings["candidate_entry_rva"] != binary.entrypoint_rva:
+            raise ValueError("compiled-authority candidate entry RVA mismatch")
+        if bindings["candidate_image_base"] != binary.image_base:
+            raise ValueError("compiled-authority candidate image-base mismatch")
+        if bindings["candidate_imports"] != _candidate_import_inventory(binary):
+            raise ValueError("compiled-authority candidate import inventory mismatch")
+    finally:
+        binary.pe.close()
+
+    relocation = _strict_mapping(
+        attestation["relocations"],
+        "compilation attestation relocation inventory",
+        {
+            "path",
+            "size",
+            "sha256",
+            "format",
+            "canonical_sha256",
+            "payload_sha256",
+            "count",
+            "complete",
+        },
+    )
+    expected_relocation = {
+        key: relocation[key]
+        for key in (
+            "sha256",
+            "canonical_sha256",
+            "payload_sha256",
+            "count",
+            "complete",
+        )
+    }
+    if bindings["relocation_inventory"] != expected_relocation:
+        raise ValueError("compiled-authority relocation inventory mismatch")
+    if relocation["complete"] is not True:
+        raise ValueError("compiled-authority relocation inventory is incomplete")
+
+    project_nix = _nix_realization_from_provenance(
+        project_nix_path,
+        "native-source project Nix provenance",
+        expected_output=source_bundle_path.parent,
+        expected_nar_hash=_strict_string(
+            bindings["project_nar_hash"], "project NAR binding"
+        ),
+    )
+    profile_nix = _nix_realization_from_provenance(
+        profile_nix_path,
+        "native-source profile Nix provenance",
+        expected_nar_hash=_strict_string(
+            bindings["profile_nar_hash"], "profile NAR binding"
+        ),
+    )
+    build_nix = _nix_realization_from_provenance(
+        build_nix_path,
+        "native-source build Nix provenance",
+        expected_output=candidate.parent,
+        expected_nar_hash=_strict_string(
+            bindings["build_nar_hash"], "build NAR binding"
+        ),
+    )
+    if (
+        build_nix.derivation_path != attestation["nix"]["derivation"]
+        or build_nix.output_path != attestation["nix"]["output"]
+        or build_nix.nar_hash != attestation["nix"]["nar_hash"]
+    ):
+        raise ValueError("compiled-authority build Nix identity mismatch")
+
+    lean = _strict_mapping(
+        declaration_manifest["lean"],
+        "compiled-authority Lean declarations",
+        {
+            "imports",
+            "world_program",
+            "checked_input",
+            "checked_input_nonempty",
+            "bundle_manifest_artifact",
+            "renderer_input_artifact",
+            "source_artifacts",
+            "source_artifact_evidence_sha256s",
+            "source_artifact_roles_nodup",
+            "profile_identifier",
+            "tools",
+            "compiled_identity",
+            "compiled_identity_valid",
+            "compiled_bytes",
+            "compiled_pe",
+            "compiled_byte_length_exact",
+            "compiled_pe_parsed_exact",
+            "compiled_pe_bytes_exact",
+            "import_certificate",
+            "imports_parsed",
+            "relocations",
+            "relocations_parsed",
+            "loader_image_valid",
+            "environment",
+            "indirect_targets",
+            "indirect_targets_valid",
+            "callable_external",
+            "callable_bound",
+            "namespace",
+            "output_module",
+            "audit_output_module",
+        },
+    )
+    source_artifacts = _strict_string_tuple(
+        lean["source_artifacts"], "source artifact declarations"
+    )
+    evidence = lean["source_artifact_evidence_sha256s"]
+    if not isinstance(evidence, list) or len(evidence) != len(source_artifacts):
+        raise ValueError("source artifact declarations and evidence differ in length")
+    source_digests = _source_bundle_digests(bundle, source_bundle_path)
+    source_evidence = tuple(
+        _strict_sha256(value, f"source artifact evidence[{index}]")
+        for index, value in enumerate(evidence)
+    )
+    if len(set(source_evidence)) != len(source_evidence):
+        raise ValueError("source artifact evidence must be one-to-one")
+    if any(digest not in source_digests for digest in source_evidence):
+        raise ValueError("source artifact evidence is outside the source bundle")
+
+    tool_rows = _strict_mapping(
+        lean["tools"],
+        "pinned tool declarations",
+        {"renderer", "lowering", "runtime", "compiler", "assembler", "linker", "abi"},
+    )
+    attested_tools = {
+        row["role"]: row["sha256"] for row in attestation["tools"]
+    }
+    allowed_tool_digests = source_digests | set(attested_tools.values())
+    tools = {
+        role: _pinned_tool_spec(
+            tool_rows[role], role, allowed_digests=allowed_tool_digests
+        )
+        for role in tool_rows
+    }
+    for role in ("compiler", "assembler", "linker"):
+        evidence_digest = tool_rows[role]["evidence_sha256"]
+        if attested_tools.get(role) != evidence_digest:
+            raise ValueError(f"{role} declaration does not bind the attested tool")
+
+    callable_external = lean["callable_external"]
+    callable_bound = lean["callable_bound"]
+    if callable_external is not None:
+        callable_external = _strict_string(callable_external, "callable external")
+    if callable_bound is not None:
+        callable_bound = _strict_string(callable_bound, "callable bound")
+
+    spec = NativeSourceCompiledAuthoritySpec(
+        imports=_strict_string_tuple(lean["imports"], "authority imports"),
+        world_program=_strict_string(lean["world_program"], "world program"),
+        checked_input=_strict_string(lean["checked_input"], "checked input"),
+        checked_input_nonempty=_strict_string(
+            lean["checked_input_nonempty"], "checked-input proof"
+        ),
+        bundle_manifest_artifact=_strict_string(
+            lean["bundle_manifest_artifact"], "bundle-manifest artifact"
+        ),
+        renderer_input_artifact=_strict_string(
+            lean["renderer_input_artifact"], "renderer-input artifact"
+        ),
+        source_artifacts=source_artifacts,
+        source_artifact_roles_nodup=_strict_string(
+            lean["source_artifact_roles_nodup"], "source-role uniqueness proof"
+        ),
+        project_nix=project_nix,
+        profile_identifier=_strict_string(
+            lean["profile_identifier"], "profile identifier"
+        ),
+        profile_nix=profile_nix,
+        renderer=tools["renderer"],
+        lowering=tools["lowering"],
+        runtime=tools["runtime"],
+        compiler=tools["compiler"],
+        assembler=tools["assembler"],
+        linker=tools["linker"],
+        abi=tools["abi"],
+        compiled_identity=_strict_string(
+            lean["compiled_identity"], "compiled identity"
+        ),
+        compiled_identity_valid=_strict_string(
+            lean["compiled_identity_valid"], "compiled identity proof"
+        ),
+        compiled_bytes=_strict_string(lean["compiled_bytes"], "compiled bytes"),
+        compiled_pe=_strict_string(lean["compiled_pe"], "compiled PE"),
+        compiled_byte_length_exact=_strict_string(
+            lean["compiled_byte_length_exact"], "byte-length proof"
+        ),
+        compiled_pe_parsed_exact=_strict_string(
+            lean["compiled_pe_parsed_exact"], "PE-parse proof"
+        ),
+        compiled_pe_bytes_exact=_strict_string(
+            lean["compiled_pe_bytes_exact"], "PE-bytes proof"
+        ),
+        build_nix=build_nix,
+        import_certificate=_strict_string(
+            lean["import_certificate"], "import certificate"
+        ),
+        imports_parsed=_strict_string(lean["imports_parsed"], "imports proof"),
+        relocations=_strict_string(lean["relocations"], "relocations"),
+        relocations_parsed=_strict_string(
+            lean["relocations_parsed"], "relocations proof"
+        ),
+        loader_image_valid=_strict_string(
+            lean["loader_image_valid"], "loader-image proof"
+        ),
+        environment=_strict_string(lean["environment"], "environment"),
+        indirect_targets=_strict_string(
+            lean["indirect_targets"], "indirect-target inventory"
+        ),
+        indirect_targets_valid=_strict_string(
+            lean["indirect_targets_valid"], "indirect-target proof"
+        ),
+        callable_external=callable_external,
+        callable_bound=callable_bound,
+        namespace=_strict_string(lean["namespace"], "authority namespace"),
+        output_module=_strict_string(lean["output_module"], "authority module"),
+        audit_output_module=_strict_string(
+            lean["audit_output_module"], "authority audit module"
+        ),
+    )
+    authority_path, audit_path = write_native_source_compiled_authority(out, spec)
+    exports = {
+        "profile": f"{spec.namespace}.{spec.profile_name}",
+        "project": f"{spec.namespace}.{spec.project_name}",
+        "artifact": f"{spec.namespace}.{spec.artifact_name}",
+        "machine_authority": f"{spec.namespace}.{spec.authority_name}",
+        "project_valid": f"{spec.namespace}.{spec.project_valid_name}",
+        "profile_pinned": f"{spec.namespace}.{spec.profile_pinned_name}",
+        "profile_matches": f"{spec.namespace}.{spec.profile_matches_name}",
+        "built_from": f"{spec.namespace}.{spec.built_from_name}",
+        "exact_compilation": f"{spec.namespace}.{spec.compilation_constructor_name}",
+    }
+    out.mkdir(parents=True, exist_ok=True)
+    _manifest(
+        out,
+        "native-source-compiled-authority",
+        {
+            "source_bundle": source_bundle_path,
+            "compilation_attestation": attestation_path,
+            "declarations": declarations_path,
+            "project_nix_provenance": project_nix_path,
+            "profile_nix_provenance": profile_nix_path,
+            "build_nix_provenance": build_nix_path,
+            "authority_module": authority_path,
+            "audit_module": audit_path,
+        },
+        proof_authority=False,
+        acceptance_authority=False,
+        modules=[authority_path.stem, audit_path.stem],
+        exports=exports,
+        bindings={
+            "source_bundle_sha256": exact_bindings["source_bundle_sha256"],
+            "attestation_core_sha256": exact_bindings["attestation_core_sha256"],
+            "candidate_sha256": exact_bindings["candidate_sha256"],
+            "candidate_entry_rva": bindings["candidate_entry_rva"],
+            "candidate_imports_sha256": _canonical_json_sha256(
+                bindings["candidate_imports"]
+            ),
+            "relocation_inventory_sha256": _canonical_json_sha256(
+                expected_relocation
+            ),
+        },
+    )
+
+
+def _native_source_acceptance(args: argparse.Namespace) -> None:
+    """Assemble environment-family acceptance without status metadata."""
+
+    source_bundle_path = Path(args.source_bundle)
+    attestation_path = Path(args.compilation_attestation)
+    authority_manifest_path = Path(args.compiled_authority_manifest)
+    declarations_path = Path(args.declarations)
+    out = Path(args.out)
+
+    bundle = validate_native_source_bundle_manifest(source_bundle_path)
+    attestation = validate_native_source_compilation_attestation(attestation_path)
+    authority_manifest = json.loads(
+        authority_manifest_path.read_text(encoding="utf-8")
+    )
+    if not isinstance(authority_manifest, Mapping):
+        raise ValueError("compiled-authority phase manifest must be an object")
+    if (
+        authority_manifest.get("format") != "stage-a-relational-phase-v1"
+        or authority_manifest.get("phase") != "native-source-compiled-authority"
+        or authority_manifest.get("proof_authority") is not False
+        or authority_manifest.get("acceptance_authority") is not False
+        or authority_manifest.get("executes_original_binary") is not False
+        or authority_manifest.get("executes_candidate_binary") is not False
+    ):
+        raise ValueError("compiled-authority phase manifest has an invalid trust role")
+    authority_bindings = _strict_mapping(
+        authority_manifest.get("bindings"),
+        "compiled-authority phase bindings",
+        {
+            "source_bundle_sha256",
+            "attestation_core_sha256",
+            "candidate_sha256",
+            "candidate_entry_rva",
+            "candidate_imports_sha256",
+            "relocation_inventory_sha256",
+        },
+    )
+    expected_authority_bindings = {
+        "source_bundle_sha256": bundle["hashes"]["source_bundle_sha256"],
+        "attestation_core_sha256": attestation["hashes"][
+            "attestation_core_sha256"
+        ],
+        "candidate_sha256": attestation["candidate"]["sha256"],
+    }
+    for field, expected in expected_authority_bindings.items():
+        if authority_bindings[field] != expected:
+            raise ValueError(f"acceptance authority {field} mismatch")
+
+    declaration_manifest = _strict_json_object(
+        declarations_path,
+        "native-source acceptance declarations",
+        {"format", "bindings", "lean"},
+    )
+    if declaration_manifest["format"] != NATIVE_SOURCE_ACCEPTANCE_DECLARATIONS_FORMAT:
+        raise ValueError("unsupported native-source acceptance declarations")
+    bindings = _strict_mapping(
+        declaration_manifest["bindings"],
+        "native-source acceptance bindings",
+        {
+            "compiled_authority_manifest_sha256",
+            "source_bundle_sha256",
+            "attestation_core_sha256",
+            "candidate_sha256",
+            "source_entry_rva",
+            "compiled_entry_rva",
+        },
+    )
+    expected = {
+        "compiled_authority_manifest_sha256": sha256_file(
+            authority_manifest_path
+        ),
+        "source_bundle_sha256": bundle["hashes"]["source_bundle_sha256"],
+        "attestation_core_sha256": attestation["hashes"][
+            "attestation_core_sha256"
+        ],
+        "candidate_sha256": attestation["candidate"]["sha256"],
+        "source_entry_rva": bundle["entry_rva"],
+    }
+    for field, value in expected.items():
+        if bindings[field] != value:
+            raise ValueError(f"native-source acceptance {field} mismatch")
+
+    candidate = Path(attestation["candidate"]["path"])
+    binary = _parse_stage_a_pe(candidate)
+    try:
+        if binary.machine != "i386" or binary.bitness != 32:
+            raise ValueError("native-source acceptance requires i386 PE32")
+        if bindings["compiled_entry_rva"] != binary.entrypoint_rva:
+            raise ValueError("native-source acceptance compiled entry mismatch")
+        if authority_bindings["candidate_entry_rva"] != binary.entrypoint_rva:
+            raise ValueError("compiled authority and acceptance launch entries differ")
+    finally:
+        binary.pe.close()
+
+    lean = _strict_mapping(
+        declaration_manifest["lean"],
+        "native-source acceptance Lean declarations",
+        {
+            "imports",
+            "context",
+            "sites",
+            "static_compilation",
+            "static_authority",
+            "pair_relation",
+            "admitted_pair_evidence",
+            "toolchain_correct",
+            "namespace",
+            "output_module",
+            "audit_output_module",
+            "compilation_name",
+            "environment_family_name",
+            "theorem_name",
+        },
+    )
+    _strict_mapping(
+        authority_manifest.get("exports"),
+        "compiled-authority exports",
+        {
+            "profile",
+            "project",
+            "artifact",
+            "machine_authority",
+            "project_valid",
+            "profile_pinned",
+            "profile_matches",
+            "built_from",
+            "exact_compilation",
+        },
+    )
+
+    spec = NativeSourceAcceptanceSpec(
+        imports=_strict_string_tuple(lean["imports"], "acceptance imports"),
+        context=_strict_string(lean["context"], "static proof context"),
+        sites=_strict_string(lean["sites"], "lockstep call sites"),
+        static_compilation=_strict_string(
+            lean["static_compilation"], "exact static compilation"
+        ),
+        static_authority=_strict_string(
+            lean["static_authority"], "static environment-family authority"
+        ),
+        pair_relation=_strict_string(
+            lean["pair_relation"], "admitted environment-pair relation"
+        ),
+        admitted_pair_evidence=_strict_string(
+            lean["admitted_pair_evidence"], "checked admitted-pair evidence"
+        ),
+        toolchain_correct=_strict_string(
+            lean["toolchain_correct"], "pair-indexed toolchain premise"
+        ),
+        namespace=_strict_string(lean["namespace"], "acceptance namespace"),
+        output_module=_strict_string(lean["output_module"], "acceptance module"),
+        audit_output_module=_strict_string(
+            lean["audit_output_module"], "acceptance audit module"
+        ),
+        compilation_name=_strict_string(
+            lean["compilation_name"], "compilation name"
+        ),
+        environment_family_name=_strict_string(
+            lean["environment_family_name"], "environment-family name"
+        ),
+        theorem_name=_strict_string(lean["theorem_name"], "theorem name"),
+    )
+    acceptance_path, audit_path = write_native_source_acceptance(out, spec)
+    out.mkdir(parents=True, exist_ok=True)
+    _manifest(
+        out,
+        "native-source-conditional-acceptance",
+        {
+            "source_bundle": source_bundle_path,
+            "compilation_attestation": attestation_path,
+            "compiled_authority_manifest": authority_manifest_path,
+            "declarations": declarations_path,
+            "acceptance_module": acceptance_path,
+            "audit_module": audit_path,
+        },
+        proof_authority=False,
+        acceptance_authority=False,
+        conditional_on=_strict_string(
+            spec.toolchain_correct, "pair-indexed toolchain premise"
+        ),
+        modules=[acceptance_path.stem, audit_path.stem],
+        theorem=f"{spec.namespace}.{spec.theorem_name}",
+        bindings=expected,
+    )
+
+
+def _native_source_nested_compiler_premise(args: argparse.Namespace) -> None:
+    """Emit the sole approved callback-capable compiler premise."""
+
+    write_native_source_nested_compiler_premise(
+        args.out,
+        NativeSourceNestedCompilerPremiseSpec(
+            response_family_module=args.response_family_module,
+            premise_type=args.premise_type,
+        ),
+    )
+
+
+def _native_source_nested_acceptance(args: argparse.Namespace) -> None:
+    """Assemble callback-capable final acceptance from exact Lean terms."""
+
+    write_native_source_nested_acceptance(
+        args.out,
+        NativeSourceNestedAcceptanceSpec(
+            imports=tuple(args.imports),
+            context=args.context,
+            classified_sites=args.classified_sites,
+            ordinary_sites=args.ordinary_sites,
+            static_compilation=args.static_compilation,
+            mixed_contract=args.mixed_contract,
+            nested_frames=args.nested_frames,
+            checked_response_family=args.checked_response_family,
+            checked_response_family_completion=(
+                args.checked_response_family_completion
+            ),
+            toolchain_correct=args.toolchain_correct,
+        ),
+    )
+
+
+def _native_source_execution(args: argparse.Namespace) -> None:
+    """Assemble the complete checked GNU hello source-launch family."""
+
+    result = write_gnu_hello_source_execution_from_artifacts(
+        args.out,
+        args.mixed_original_plan,
+        args.writable_authority_report,
+        args.register_authority_report,
+        args.stack_dynamic_authority_report,
+        args.evidence_manifest,
+    )
+    if not result.launch_family_complete:
+        raise ValueError(
+            "GNU hello source execution family is incomplete; see "
+            f"{result.manifest}"
+        )
+
+
+def _source_transition_index(args: argparse.Namespace) -> None:
+    """Generate the exact original/source transition index."""
+
+    generate_gnu_hello_source_transition_index(
+        args.out,
+        mixed_original_manifest=args.mixed_original_manifest,
+        source_program_manifest=args.source_program_manifest,
+        normalization_manifest=args.normalization_manifest,
+        x87_manifest=args.x87_manifest,
+        declaration_inventory=args.declaration_inventory,
+    )
+
+
+def _source_target_effect_inputs(args: argparse.Namespace) -> None:
+    """Generate exact authority inputs for reachable GNU target effects."""
+
+    generate_gnu_hello_source_target_effect_inputs(
+        args.out,
+        state_machine=args.state_machine,
+        mixed_original_plan=args.mixed_original_plan,
+        source_program_root=args.source_program_root,
+        source_program_manifest=args.source_program_manifest,
+        normalization_root=args.normalization_root,
+        normalization_inventory=args.normalization_inventory,
+        semantic_refinement_root=args.semantic_refinement_root,
+        semantic_refinement_inventory=args.semantic_refinement_inventory,
+        x87_root=args.x87_root,
+        x87_inventory=args.x87_inventory,
+        exact_original_root=args.exact_original_root,
+        shard_span=args.shard_span,
+    )
+
+
+def _source_target_effects(args: argparse.Namespace) -> None:
+    """Generate exact per-target transition effects for reachable GNU code."""
+
+    generate_gnu_hello_source_target_effects(
+        args.out,
+        artifacts=GnuHelloSourceTargetEffectArtifacts(
+            state_machine=Path(args.state_machine),
+            mixed_plan=Path(args.mixed_original_plan),
+            source_program_root=Path(args.source_program_root),
+            source_program_manifest=Path(args.source_program_manifest),
+            normalization_root=Path(args.normalization_root),
+            normalization_inventory=Path(args.normalization_inventory),
+            semantic_refinement_root=Path(args.semantic_refinement_root),
+            semantic_refinement_inventory=Path(
+                args.semantic_refinement_inventory
+            ),
+            x87_root=Path(args.x87_root),
+            x87_inventory=Path(args.x87_inventory),
+            exact_original_root=Path(args.exact_original_root),
+        ),
+        authority_inventory=Path(args.authority_inventory),
+    )
+
+
+def _original_combined_declarations(args: argparse.Namespace) -> None:
+    """Derive hash-bound declaration inputs for the combined invariant."""
+
+    write_gnu_hello_original_combined_declarations(
+        mixed_original_plan=args.mixed_original_plan,
+        mixed_original_manifest=args.mixed_original_manifest,
+        static_reachability_plan=args.static_reachability_plan,
+        static_reachability_manifest=args.static_reachability_manifest,
+        carrier_binding_manifest=args.carrier_binding_manifest,
+        direct_call_authority_report=args.direct_call_authority_report,
+        stack_dynamic_authority_report=args.stack_dynamic_authority_report,
+        stack_dynamic_authority_manifest=args.stack_dynamic_authority_manifest,
+        stack_combined_evidence_report=args.stack_combined_evidence_report,
+        value_provenance_ir=args.value_provenance_ir,
+        value_provenance_report=args.value_provenance_report,
+        out=args.out,
+    )
+
+
+def _original_combined_inventory(args: argparse.Namespace) -> None:
+    """Generate the checked combined original-state inventory."""
+
+    write_original_combined_inventory(
+        Path(args.out),
+        mixed_original_plan=Path(args.mixed_original_plan),
+        writable_authority_report=Path(args.writable_authority_report),
+        writable_authority_manifest=Path(args.writable_authority_manifest),
+        register_authority_report=Path(args.register_authority_report),
+        register_authority_manifest=Path(args.register_authority_manifest),
+        stack_dynamic_authority_report=Path(args.stack_dynamic_authority_report),
+        stack_dynamic_authority_manifest=Path(
+            args.stack_dynamic_authority_manifest
+        ),
+        stack_combined_evidence_report=Path(args.stack_combined_evidence_report),
+        reachability_declarations=Path(args.reachability_declarations),
+        call_frame_declarations=Path(args.call_frame_declarations),
+        value_flow_declarations=Path(args.value_flow_declarations),
+        shard_size=args.shard_size,
+    )
+
+
+def _original_execution_evidence(args: argparse.Namespace) -> None:
+    """Assemble target-complete original execution evidence."""
+
+    generate_gnu_hello_original_execution_evidence(
+        args.out,
+        combined_inventory_manifest=args.combined_inventory_manifest,
+        source_target_effect_declarations=args.source_target_effect_declarations,
+        transition_index_manifest=args.transition_index_manifest,
+        preservation_inputs=args.preservation_inputs,
+        mixed_original_plan=args.mixed_original_plan,
+        writable_authority_report=args.writable_authority_report,
+        register_authority_report=args.register_authority_report,
+        stack_dynamic_authority_report=args.stack_dynamic_authority_report,
+    )
+
+
+def _runtime_memory_access_proposal(args: argparse.Namespace) -> None:
+    """Classify exact target writes for subsequent Lean checking."""
+
+    generate_runtime_memory_access_proposal(
+        args.out,
+        state_machine=args.state_machine,
+        mixed_original_plan=args.mixed_original_plan,
+        source_target_effect_declarations=(
+            args.source_target_effect_declarations
+        ),
+    )
+
+
+def _original_target_control_evidence(args: argparse.Namespace) -> None:
+    """Generate checked control adapters for every reachable target."""
+
+    generate_original_target_control_evidence(
+        args.out,
+        source_target_effect_declarations=(
+            args.source_target_effect_declarations
+        ),
+        transition_index_manifest=args.transition_index_manifest,
+        state_machine=args.state_machine,
+        combined_target_inventory=args.combined_target_inventory,
+        shard_size=args.shard_size,
+    )
+
+
+def _named_paths(values: list[str], label: str) -> dict[str, str]:
+    """Parse deterministic ``name=path`` arguments without silent overwrite."""
+
+    result: dict[str, str] = {}
+    for value in values:
+        name, separator, path = value.partition("=")
+        if not separator or not name or not path:
+            raise ValueError(f"{label} must use name=path")
+        if name in result:
+            raise ValueError(f"duplicate {label} name {name!r}")
+        result[name] = path
+    return result
+
+
+def _original_target_preservation(args: argparse.Namespace) -> None:
+    """Generate exact target-local preservation providers and frontiers."""
+
+    generate_gnu_hello_original_target_preservation(
+        args.out,
+        state_machine=args.state_machine,
+        source_target_effect_declarations=(
+            args.source_target_effect_declarations
+        ),
+        transition_index_manifest=args.transition_index_manifest,
+        combined_inventory_manifest=args.combined_inventory_manifest,
+        authority_artifacts=_named_paths(args.authority, "authority"),
+        shard_size=args.shard_size,
+    )
+
+
+def _original_source_launch_context(args: argparse.Namespace) -> None:
+    """Assemble the closed original/source launch context from checked terms."""
+
+    generate_original_source_launch_context(
+        args.out,
+        combined_inventory_manifest=args.combined_inventory_manifest,
+        transition_index_manifest=args.transition_index_manifest,
+        compiled_authority_declarations=args.compiled_authority_declarations,
+        runtime_foundation_manifest=args.runtime_foundation_manifest,
+        target_step_manifest=args.target_step_manifest,
+        protocol_responses_declarations=args.protocol_responses_declarations,
+        preservation_inputs=_named_paths(
+            args.preservation_input, "preservation-input"
+        ),
+    )
+
+
+def _checked_response_family(args: argparse.Namespace) -> None:
+    """Package the checked GNU external response admission family."""
+
+    write_gnu_hello_checked_response_family(
+        args.out, input_manifest=args.input_manifest
+    )
+
+
+def _source_equivalence_final_report(args: argparse.Namespace) -> None:
+    """Consolidate already checked proof and candidate-runtime evidence."""
+
+    write_source_equivalence_final_report(
+        out=args.out,
+        checked_acceptance=args.checked_acceptance,
+        detached_axiom_audit=args.detached_axiom_audit,
+        source_bundle=args.source_bundle,
+        compilation_attestation=args.compilation_attestation,
+        candidate_pe_metadata=args.candidate_pe_metadata,
+        functional_report=args.functional_report,
+        approved_toolchain_axiom=args.approved_toolchain_axiom,
+    )
+
+
+def _native_source_compiled_authority_evidence(
+    args: argparse.Namespace,
+) -> None:
+    """Generate exact declarations for the compiled-source authority phase."""
+
+    write_gnu_hello_native_source_compiled_authority_evidence(
+        source_bundle=args.source_bundle,
+        compilation_attestation=args.compilation_attestation,
+        project_declarations=args.project_declarations,
+        candidate_static_authority=args.candidate_static_authority,
+        runtime_declarations=args.runtime_declarations,
+        project_realization=NixRealizationIdentity.from_json(
+            args.project_realization
+        ),
+        profile_realization=NixRealizationIdentity.from_json(
+            args.profile_realization
+        ),
+        build_realization=NixRealizationIdentity.from_json(args.build_realization),
+        out=args.out,
+    )
+
+
+def _native_source_environment_family_inputs(
+    args: argparse.Namespace,
+) -> None:
+    """Generate exact GNU hello environment-family inputs."""
+
+    write_gnu_hello_native_source_environment_family_inputs(
+        args.out,
+        source_execution_manifest=args.source_execution_manifest,
+        compiled_authority_manifest=args.compiled_authority_manifest,
+        source_bundle_manifest=args.source_bundle_manifest,
+        candidate_runtime_declarations=args.candidate_runtime_declarations,
+        candidate_static_authority=args.candidate_static_authority,
+    )
+
+
+def _native_source_environment_family(args: argparse.Namespace) -> None:
+    """Generate checked environment-family evidence and acceptance inputs."""
+
+    write_gnu_hello_native_source_environment_family(
+        args.out,
+        compiled_authority_manifest=args.compiled_authority_manifest,
+        source_execution_manifest=args.source_execution_manifest,
+        source_bundle_manifest=args.source_bundle_manifest,
+        environment_inputs=args.environment_inputs,
+    )
+
+
 def _x87_sources(args: argparse.Namespace) -> None:
     machine = Path(args.state_machine)
     original = Path(args.original)
@@ -685,6 +1872,7 @@ def _x87_sources(args: argparse.Namespace) -> None:
         source_module="StageA.GeneratedGnuHelloOriginalPE",
         pe_name="StageA.GeneratedRelational.originalPe",
         pe_byte_pack_inventory=pack_inventory,
+        source_only=args.source_only,
     )
     for module, source in sources.items():
         (stage_a / f"{module}.lean").write_text(source, encoding="utf-8")
@@ -693,6 +1881,7 @@ def _x87_sources(args: argparse.Namespace) -> None:
         source_module="StageA.GeneratedGnuHelloOriginalPE",
         pe_name="StageA.GeneratedRelational.originalPe",
         pe_byte_pack_inventory=pack_inventory,
+        source_only=args.source_only,
     )
     write_json(out / "module-inventory.json", inventory)
     _manifest(
@@ -1731,6 +2920,7 @@ def _mixed_original_base(args: argparse.Namespace) -> None:
         targets=[INTERPRETER_MIXED_ORIGINAL_BASE_MODULE],
         counts={
             "regions": len(plan.regions),
+            "addresses": len(plan.regions) + len(plan.recovered_aliases),
             "reachable_targets": len(plan.reachable_target_ids),
             "diagnostic_blockers": len(plan.blockers),
         },
@@ -3206,8 +4396,19 @@ def _mixed_original_carrier_binding(args: argparse.Namespace) -> None:
     manifest_path = mixed_original / "phase-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     counts = manifest.get("counts")
+    carrier_variants = {
+        "mixed-original-base-lean": (
+            INTERPRETER_MIXED_ORIGINAL_BASE_MODULE,
+            "StageA.GeneratedRelational.InterpreterMixedOriginalBase",
+        ),
+        "mixed-original-final-lean": (
+            INTERPRETER_MIXED_ORIGINAL_MODULE,
+            "StageA.GeneratedRelational.InterpreterMixedOriginal",
+        ),
+    }
+    variant = carrier_variants.get(manifest.get("phase"))
     if (
-        manifest.get("phase") != "mixed-original-final-lean"
+        variant is None
         or manifest.get("proof_authority") is not False
         or not isinstance(counts, Mapping)
     ):
@@ -3223,17 +4424,14 @@ def _mixed_original_carrier_binding(args: argparse.Namespace) -> None:
         or address_count < target_count
     ):
         raise ValueError("mixed-original carrier inventory counts are malformed")
-    original_module_path = (
-        mixed_original / "StageA" / f"{INTERPRETER_MIXED_ORIGINAL_MODULE}.lean"
-    )
+    original_module, original_namespace = variant
+    original_module_path = mixed_original / "StageA" / f"{original_module}.lean"
     if not original_module_path.is_file():
         raise ValueError("mixed-original carrier input module is missing")
 
     spec = OriginalCarrierBindingSpec(
-        original_module=f"StageA.{INTERPRETER_MIXED_ORIGINAL_MODULE}",
-        original_namespace=(
-            "StageA.GeneratedRelational.InterpreterMixedOriginal"
-        ),
+        original_module=f"StageA.{original_module}",
+        original_namespace=original_namespace,
         target_count=target_count,
         address_count=address_count,
     )
@@ -5408,6 +6606,223 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("--out", required=True)
     command.set_defaults(run=_program_source)
 
+    command = sub.add_parser("native-source-program")
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_native_source_program)
+
+    command = sub.add_parser("native-source-compiled-authority")
+    command.add_argument("--source-bundle", required=True)
+    command.add_argument("--compilation-attestation", required=True)
+    command.add_argument("--declarations", required=True)
+    command.add_argument("--project-nix-provenance", required=True)
+    command.add_argument("--profile-nix-provenance", required=True)
+    command.add_argument("--build-nix-provenance", required=True)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_native_source_compiled_authority)
+
+    command = sub.add_parser("native-source-execution")
+    command.add_argument("--mixed-original-plan", required=True)
+    command.add_argument("--writable-authority-report", required=True)
+    command.add_argument("--register-authority-report", required=True)
+    command.add_argument("--stack-dynamic-authority-report", required=True)
+    command.add_argument("--evidence-manifest", required=True)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_native_source_execution)
+
+    command = sub.add_parser("native-source-acceptance")
+    command.add_argument("--source-bundle", required=True)
+    command.add_argument("--compilation-attestation", required=True)
+    command.add_argument("--compiled-authority-manifest", required=True)
+    command.add_argument("--declarations", required=True)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_native_source_acceptance)
+
+    command = sub.add_parser("native-source-nested-compiler-premise")
+    command.add_argument("--response-family-module", required=True)
+    command.add_argument("--premise-type", required=True)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_native_source_nested_compiler_premise)
+
+    command = sub.add_parser("native-source-nested-acceptance")
+    command.add_argument("--import", dest="imports", action="append", required=True)
+    command.add_argument("--context", required=True)
+    command.add_argument("--classified-sites", required=True)
+    command.add_argument("--ordinary-sites", required=True)
+    command.add_argument("--static-compilation", required=True)
+    command.add_argument("--mixed-contract", required=True)
+    command.add_argument("--nested-frames", required=True)
+    command.add_argument("--checked-response-family", required=True)
+    command.add_argument("--checked-response-family-completion", required=True)
+    command.add_argument("--toolchain-correct", required=True)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_native_source_nested_acceptance)
+
+    command = sub.add_parser("source-transition-index")
+    command.add_argument("--mixed-original-manifest", required=True)
+    command.add_argument("--source-program-manifest", required=True)
+    command.add_argument("--normalization-manifest", required=True)
+    command.add_argument("--x87-manifest", required=True)
+    command.add_argument("--declaration-inventory", required=True)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_source_transition_index)
+
+    command = sub.add_parser("source-target-effect-inputs")
+    command.add_argument("--state-machine", required=True)
+    command.add_argument("--mixed-original-plan", required=True)
+    command.add_argument("--source-program-root", required=True)
+    command.add_argument("--source-program-manifest", required=True)
+    command.add_argument("--normalization-root", required=True)
+    command.add_argument("--normalization-inventory", required=True)
+    command.add_argument("--semantic-refinement-root", required=True)
+    command.add_argument("--semantic-refinement-inventory", required=True)
+    command.add_argument("--x87-root", required=True)
+    command.add_argument("--x87-inventory", required=True)
+    command.add_argument("--exact-original-root", required=True)
+    command.add_argument("--shard-span", type=int, default=64)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_source_target_effect_inputs)
+
+    command = sub.add_parser("source-target-effects")
+    command.add_argument("--state-machine", required=True)
+    command.add_argument("--mixed-original-plan", required=True)
+    command.add_argument("--source-program-root", required=True)
+    command.add_argument("--source-program-manifest", required=True)
+    command.add_argument("--normalization-root", required=True)
+    command.add_argument("--normalization-inventory", required=True)
+    command.add_argument("--semantic-refinement-root", required=True)
+    command.add_argument("--semantic-refinement-inventory", required=True)
+    command.add_argument("--x87-root", required=True)
+    command.add_argument("--x87-inventory", required=True)
+    command.add_argument("--exact-original-root", required=True)
+    command.add_argument("--authority-inventory", required=True)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_source_target_effects)
+
+    command = sub.add_parser("original-combined-declarations")
+    command.add_argument("--mixed-original-plan", required=True)
+    command.add_argument("--mixed-original-manifest", required=True)
+    command.add_argument("--static-reachability-plan", required=True)
+    command.add_argument("--static-reachability-manifest", required=True)
+    command.add_argument("--carrier-binding-manifest", required=True)
+    command.add_argument("--direct-call-authority-report", required=True)
+    command.add_argument("--stack-dynamic-authority-report", required=True)
+    command.add_argument("--stack-dynamic-authority-manifest", required=True)
+    command.add_argument("--stack-combined-evidence-report", required=True)
+    command.add_argument("--value-provenance-ir", required=True)
+    command.add_argument("--value-provenance-report", required=True)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_original_combined_declarations)
+
+    command = sub.add_parser("original-combined-inventory")
+    command.add_argument("--mixed-original-plan", required=True)
+    command.add_argument("--writable-authority-report", required=True)
+    command.add_argument("--writable-authority-manifest", required=True)
+    command.add_argument("--register-authority-report", required=True)
+    command.add_argument("--register-authority-manifest", required=True)
+    command.add_argument("--stack-dynamic-authority-report", required=True)
+    command.add_argument("--stack-dynamic-authority-manifest", required=True)
+    command.add_argument("--stack-combined-evidence-report", required=True)
+    command.add_argument("--reachability-declarations", required=True)
+    command.add_argument("--call-frame-declarations", required=True)
+    command.add_argument("--value-flow-declarations", required=True)
+    command.add_argument("--shard-size", type=int, default=512)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_original_combined_inventory)
+
+    command = sub.add_parser("original-execution-evidence")
+    command.add_argument("--combined-inventory-manifest", required=True)
+    command.add_argument("--source-target-effect-declarations", required=True)
+    command.add_argument("--transition-index-manifest", required=True)
+    command.add_argument("--preservation-inputs", required=True)
+    command.add_argument("--mixed-original-plan", required=True)
+    command.add_argument("--writable-authority-report", required=True)
+    command.add_argument("--register-authority-report", required=True)
+    command.add_argument("--stack-dynamic-authority-report", required=True)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_original_execution_evidence)
+
+    command = sub.add_parser("runtime-memory-access-proposal")
+    command.add_argument("--state-machine", required=True)
+    command.add_argument("--mixed-original-plan", required=True)
+    command.add_argument("--source-target-effect-declarations", required=True)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_runtime_memory_access_proposal)
+
+    command = sub.add_parser("original-target-control-evidence")
+    command.add_argument("--source-target-effect-declarations", required=True)
+    command.add_argument("--transition-index-manifest", required=True)
+    command.add_argument("--state-machine", required=True)
+    command.add_argument("--combined-target-inventory", required=True)
+    command.add_argument("--shard-size", type=int, default=64)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_original_target_control_evidence)
+
+    command = sub.add_parser("original-target-preservation")
+    command.add_argument("--state-machine", required=True)
+    command.add_argument("--source-target-effect-declarations", required=True)
+    command.add_argument("--transition-index-manifest", required=True)
+    command.add_argument("--combined-inventory-manifest", required=True)
+    command.add_argument("--authority", action="append", default=[])
+    command.add_argument("--shard-size", type=int, default=64)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_original_target_preservation)
+
+    command = sub.add_parser("original-source-launch-context")
+    command.add_argument("--combined-inventory-manifest", required=True)
+    command.add_argument("--transition-index-manifest", required=True)
+    command.add_argument("--compiled-authority-declarations", required=True)
+    command.add_argument("--runtime-foundation-manifest", required=True)
+    command.add_argument("--target-step-manifest", required=True)
+    command.add_argument("--protocol-responses-declarations", required=True)
+    command.add_argument("--preservation-input", action="append", default=[])
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_original_source_launch_context)
+
+    command = sub.add_parser("checked-response-family")
+    command.add_argument("--input-manifest", required=True)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_checked_response_family)
+
+    command = sub.add_parser("source-equivalence-final-report")
+    command.add_argument("--checked-acceptance", required=True)
+    command.add_argument("--detached-axiom-audit", required=True)
+    command.add_argument("--source-bundle", required=True)
+    command.add_argument("--compilation-attestation", required=True)
+    command.add_argument("--candidate-pe-metadata", required=True)
+    command.add_argument("--functional-report", required=True)
+    command.add_argument("--approved-toolchain-axiom", required=True)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_source_equivalence_final_report)
+
+    command = sub.add_parser("native-source-compiled-authority-evidence")
+    command.add_argument("--source-bundle", required=True)
+    command.add_argument("--compilation-attestation", required=True)
+    command.add_argument("--project-declarations", required=True)
+    command.add_argument("--candidate-static-authority", required=True)
+    command.add_argument("--runtime-declarations", required=True)
+    command.add_argument("--project-realization", required=True)
+    command.add_argument("--profile-realization", required=True)
+    command.add_argument("--build-realization", required=True)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_native_source_compiled_authority_evidence)
+
+    command = sub.add_parser("native-source-environment-family-inputs")
+    command.add_argument("--source-execution-manifest", required=True)
+    command.add_argument("--compiled-authority-manifest", required=True)
+    command.add_argument("--source-bundle-manifest", required=True)
+    command.add_argument("--candidate-runtime-declarations", required=True)
+    command.add_argument("--candidate-static-authority", required=True)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_native_source_environment_family_inputs)
+
+    command = sub.add_parser("native-source-environment-family")
+    command.add_argument("--compiled-authority-manifest", required=True)
+    command.add_argument("--source-execution-manifest", required=True)
+    command.add_argument("--source-bundle-manifest", required=True)
+    command.add_argument("--environment-inputs", required=True)
+    command.add_argument("--out", required=True)
+    command.set_defaults(run=_native_source_environment_family)
+
     for name, runner in (
         ("normalization-sources", _normalization_sources),
         ("semantic-refinement-sources", _semantic_refinement_sources),
@@ -5420,6 +6835,10 @@ def _parser() -> argparse.ArgumentParser:
         command.set_defaults(run=runner)
         if name in {"normalization-sources", "semantic-refinement-sources"}:
             command.add_argument("--state-machine", required=True)
+            if name == "normalization-sources":
+                command.add_argument(
+                    "--source-bindings-only", action="store_true"
+                )
         elif name == "kernel-block":
             command.add_argument("--candidate", required=True)
             command.add_argument("--kernel-plan", required=True)
@@ -5433,6 +6852,7 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("--state-machine", required=True)
     command.add_argument("--original", required=True)
     command.add_argument("--pe-byte-pack-inventory", required=True)
+    command.add_argument("--source-only", action="store_true")
     command.add_argument("--out", required=True)
     command.set_defaults(run=_x87_sources)
 

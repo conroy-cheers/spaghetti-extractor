@@ -556,6 +556,167 @@ class StageARoundtripNixTests(unittest.TestCase):
             invoke,
         )
 
+    def test_native_source_proof_lane_has_explicit_fail_closed_inputs(
+        self,
+    ) -> None:
+        lane = self.gnu_hello_nix.read_text(encoding="utf-8")
+
+        for argument in (
+            "nativeSourceOriginalExecutionEvidence ? null",
+            "nativeSourceCompiledAuthorityEvidence ? null",
+            "nativeSourceEnvironmentFamilyEvidence ? null",
+            "nativeSourceApprovedToolchainAxiom ?",
+        ):
+            self.assertIn(argument, lane)
+        self.assertIn("mkMissingNativeSourceEvidence =", lane)
+        self.assertIn(
+            "stage-a-gnu-hello-source-execution-evidence-v2; exact combined invariant",
+            lane,
+        )
+        self.assertIn(
+            "stage-a-gnu-hello-native-source-compiled-authority-evidence-v1",
+            lane,
+        )
+        self.assertIn(
+            "sourceCompiledAuthorityProducedEvidence = mkPhase",
+            lane,
+        )
+        self.assertIn(
+            "else\n      sourceCompiledAuthorityProducedEvidence;",
+            lane,
+        )
+        self.assertIn("--offline-nix-inspection", lane)
+        self.assertIn(
+            "stage-a-gnu-hello-native-source-acceptance-declarations-v3",
+            lane,
+        )
+        self.assertIn(
+            "sole approved toolchain axiom ${nativeSourceApprovedToolchainAxiom}",
+            lane,
+        )
+        self.assertIn(
+            "JSON status\" >&2",
+            lane,
+        )
+        self.assertNotIn("fakeNativeSource", lane)
+
+    def test_native_source_execution_and_acceptance_are_checked_dag_nodes(
+        self,
+    ) -> None:
+        lane = self.gnu_hello_nix.read_text(encoding="utf-8")
+        execution_start = lane.index("sourceExecutionLean =")
+        compiled_start = lane.index("sourceCompiledAuthorityLean =")
+        acceptance_start = lane.index("sourceConditionalAcceptanceLean =")
+        runtime_start = lane.index("sourceRuntimeFunctionalSuite =")
+
+        execution = lane[execution_start:compiled_start]
+        compiled = lane[compiled_start:acceptance_start]
+        acceptance = lane[acceptance_start:runtime_start]
+        self.assertIn("native-source-execution", execution)
+        self.assertIn("--evidence-manifest", execution)
+        self.assertIn(".counts.frontiers == 31", execution)
+        self.assertIn("sourceExecutionClosure = mkGeneratedClosureProof", execution)
+        self.assertIn("sourceExecutionAudit = mkCheckedProofAudit", execution)
+
+        self.assertIn("native-source-compiled-authority", compiled)
+        self.assertIn("--project-nix-provenance", compiled)
+        self.assertIn("--profile-nix-provenance", compiled)
+        self.assertIn("--build-nix-provenance", compiled)
+        self.assertIn(
+            "sourceCompiledAuthorityClosure = mkGeneratedClosureProof",
+            compiled,
+        )
+        self.assertIn(
+            "sourceCompiledAuthorityAudit = mkCheckedProofAudit",
+            compiled,
+        )
+
+        self.assertIn("native-source-acceptance", acceptance)
+        self.assertIn(
+            "generatedNativeSourceWholeProgramEnvironmentFamilyEquivalence",
+            acceptance,
+        )
+        self.assertIn(
+            "sourceConditionalAcceptanceClosure = mkGeneratedClosureProof",
+            acceptance,
+        )
+        self.assertIn(
+            "sourceConditionalAcceptanceAudit = mkCheckedProofAudit",
+            acceptance,
+        )
+        self.assertIn(
+            "standardLogicalAxioms ++ [ nativeSourceApprovedToolchainAxiom ]",
+            acceptance,
+        )
+        self.assertIn(
+            "requiredAxioms = [ nativeSourceApprovedToolchainAxiom ]",
+            acceptance,
+        )
+        self.assertIn(
+            "approved_toolchain_axiom: $approved_toolchain_axiom",
+            acceptance,
+        )
+        self.assertIn("sourceConditionalAcceptanceChecked =", acceptance)
+        self.assertIn("__contentAddressed = true;", acceptance)
+
+    def test_native_source_runtime_is_candidate_only_and_theorem_gated(
+        self,
+    ) -> None:
+        lane = self.gnu_hello_nix.read_text(encoding="utf-8")
+        start = lane.index("sourceRuntimeFunctionalSuite =")
+        end = lane.index(
+            'interpreter = mkPhase "stage-b-gnu-hello-roundtrip-interpreter"',
+            start,
+        )
+        runtime = lane[start:end]
+        cli = (self.repo / "src/spaghetti_extractor/cli.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("${sourceConditionalAcceptanceChecked}", runtime)
+        self.assertIn("stage-b-run-functional-suite", runtime)
+        self.assertIn("--candidate-binary ${sourceCandidate}/candidate.exe", runtime)
+        self.assertIn("-- xvfb-run -a wine ${sourceCandidate}/candidate.exe", runtime)
+        self.assertIn(".oracle.original_runtime_observations | not", runtime)
+        self.assertIn(".counts.cases == 9", runtime)
+        self.assertIn(
+            'functional.add_argument("--candidate-binary", type=Path)',
+            cli,
+        )
+        self.assertIn(
+            'functional.add_argument("candidate_command", nargs=argparse.REMAINDER)',
+            cli,
+        )
+        for forbidden in ("${originalPe}", "${originalMap}", "reference-contract"):
+            self.assertNotIn(forbidden, runtime)
+        self.assertIn("sourceEquivalenceFinalReport =", runtime)
+        self.assertIn('verdict == "conditional_pass"', runtime)
+        self.assertIn("${sourceRuntimeFunctionalSuite}", runtime)
+        self.assertIn("original_runtime_executions == 0", runtime)
+
+    def test_flake_exposes_complete_native_source_proof_lane(self) -> None:
+        flake = self.flake_nix.read_text(encoding="utf-8")
+        self.assertIn(
+            'nativeSourceApprovedToolchainAxiom =\n'
+            '              "StageA.GeneratedRelational.'
+            'GnuHelloNativeSourceEnvironmentFamily.'
+            'pinnedCompilerLoweringCorrect";',
+            flake,
+        )
+        for attribute in (
+            "stage-a-gnu-hello-native-source-original-execution-evidence",
+            "stage-a-gnu-hello-native-source-execution-proof",
+            "stage-a-gnu-hello-native-source-execution-audit",
+            "stage-a-gnu-hello-native-source-compiled-authority-proof",
+            "stage-a-gnu-hello-native-source-compiled-authority-audit",
+            "stage-a-gnu-hello-native-source-conditional-acceptance-proof",
+            "stage-a-gnu-hello-native-source-conditional-acceptance-audit",
+            "stage-a-gnu-hello-native-source-conditional-acceptance-checked",
+            "stage-a-gnu-hello-native-source-equivalence-report",
+            "stage-b-gnu-hello-native-source-functional-suite",
+        ):
+            self.assertGreaterEqual(flake.count(attribute), 2, attribute)
+
     def test_gnu_hello_kernel_abi_is_a_narrow_deterministic_phase(self) -> None:
         lane = self.gnu_hello_nix.read_text(encoding="utf-8")
         driver = self.gnu_hello_driver.read_text(encoding="utf-8")
@@ -843,7 +1004,7 @@ class StageARoundtripNixTests(unittest.TestCase):
         access_phase = lane[access_phase_start:access_phase_end]
         for required in (
             "--original-isa ${originalIsa}/isa.json",
-            "--state-machine ${staticExport}/state-machine.jsonl",
+            "--state-machine ${proofStateMachinePath}",
             "${mixedOriginalBaseLean}/interpreter-mixed-original-base-plan.json",
             "--kernel-data-inventory ${kernelDataLean}/module-inventory.json",
             "stage-a-typed-access-fault-qualification-v1",
@@ -858,7 +1019,7 @@ class StageARoundtripNixTests(unittest.TestCase):
             self.assertIn(required, access_phase)
         self.assertIn(
             "accessFaultQualificationProof",
-            lane[lane.index("in\n{"):],
+            lane[lane.rindex("\nin\n"):],
         )
 
     def test_gnu_hello_rooted_import_and_mixed_original_phases_are_narrow(
@@ -895,7 +1056,7 @@ class StageARoundtripNixTests(unittest.TestCase):
         for required in (
             "--original ${originalPe}",
             "--reference-contract ${staticExport}/reference-contract.json",
-            "--state-machine ${staticExport}/state-machine.jsonl",
+            "--state-machine ${proofStateMachinePath}",
             "--load-image-contract ${staticExport}/load-image-contract.json",
             "--profile ${machineRuntimeProfile}",
             "GeneratedStaticMachineImportContracts.lean",
@@ -1625,6 +1786,93 @@ class StageARoundtripNixTests(unittest.TestCase):
         self.assertIn("generatedOriginalExactMixedProgramBinding", source)
         self.assertNotIn("native_decide", source)
 
+    def test_gnu_hello_carrier_binding_accepts_checked_base_carrier(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mixed_original = root / "mixed-original"
+            stage_a = mixed_original / "StageA"
+            stage_a.mkdir(parents=True)
+            module = "GeneratedRelationalInterpreterMixedOriginalBase"
+            (stage_a / f"{module}.lean").write_text(
+                "namespace StageA\nend StageA\n", encoding="ascii"
+            )
+            (mixed_original / "phase-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "phase": "mixed-original-base-lean",
+                        "proof_authority": False,
+                        "counts": {"regions": 5790, "addresses": 5792},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output = root / "carrier"
+            process = subprocess.run(
+                [
+                    sys.executable,
+                    str(self.gnu_hello_driver),
+                    "mixed-original-carrier-binding",
+                    "--mixed-original",
+                    str(mixed_original),
+                    "--out",
+                    str(output),
+                ],
+                cwd=self.repo,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(process.returncode, 0, process.stderr)
+            source = (
+                output
+                / "StageA/GeneratedRelationalInterpreterOriginalCarrierBinding.lean"
+            ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "import StageA.GeneratedRelationalInterpreterMixedOriginalBase",
+            source,
+        )
+        self.assertIn(
+            "InterpreterMixedOriginalBase.generatedOriginalStaticContext",
+            source,
+        )
+
+    def test_gnu_hello_carrier_binding_rejects_unknown_carrier_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mixed_original = root / "mixed-original"
+            mixed_original.mkdir()
+            (mixed_original / "phase-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "phase": "untrusted-carrier",
+                        "proof_authority": False,
+                        "counts": {"regions": 1, "addresses": 1},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            process = subprocess.run(
+                [
+                    sys.executable,
+                    str(self.gnu_hello_driver),
+                    "mixed-original-carrier-binding",
+                    "--mixed-original",
+                    str(mixed_original),
+                    "--out",
+                    str(root / "carrier"),
+                ],
+                cwd=self.repo,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("carrier input manifest is malformed", process.stderr)
+
     def test_gnu_hello_smoke_is_lazy_and_does_not_reference_heavy_phases(
         self,
     ) -> None:
@@ -2272,7 +2520,7 @@ class StageARoundtripNixTests(unittest.TestCase):
             and "benchmark" in line.split()[5].split(",")
         ]
         self.assertEqual(len(memory_lanes), 2)
-        self.assertTrue(all(fields[3] == "10" for fields in memory_lanes))
+        self.assertTrue(all(fields[3] == "16" for fields in memory_lanes))
         self.assertTrue(all(fields[6] == "-" for fields in memory_lanes))
         self.assertTrue(all("ca-derivations" in line for line in builders))
         self.assertIn("stage-a-roundtrip-lean-remote-smoke", flake)

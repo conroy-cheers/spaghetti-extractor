@@ -63,7 +63,18 @@ def main() -> None:
                     + GNU_HELLO_RUNTIME_INDIRECT_COMPOSITION_LEAN_FILENAME
                 ),
             },
+            "checked_evidence": [
+                asdict(evidence) for evidence in plan.checked_evidence
+            ],
             "evidence_gaps": [asdict(gap) for gap in plan.evidence_gaps],
+            "remaining_theorems": [
+                {
+                    "source_target_id": gap.source_target_id,
+                    "lean_type": gap.checker_type,
+                    "extractor_field": gap.extractor_field,
+                }
+                for gap in plan.evidence_gaps
+            ],
             "targets": [
                 "GeneratedRelationalGNUHelloRuntimeIndirectComposition"
             ],

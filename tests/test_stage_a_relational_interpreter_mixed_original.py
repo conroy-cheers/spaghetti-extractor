@@ -27,6 +27,7 @@ from spaghetti_extractor.relational.lean.interpreter_mixed_original import (
     OriginalRegisterStaticWordSeedAuthority,
     OriginalStaticWordSlotBinding,
     QualifiedLeanSymbol,
+    _balanced_shards,
     _lean_index_ref_tree,
     load_original_iat_import_proposals,
     load_original_pe_recovery_input,
@@ -950,6 +951,19 @@ class StageARelationalInterpreterMixedOriginalTests(unittest.TestCase):
         self.assertEqual(tree.height, 7)
         self.assertLessEqual(tree.maximum_balance, 1)
         self.assertIn(".branch 396", tree.expression)
+
+    def test_balanced_shards_avoid_a_short_final_index(self) -> None:
+        shards = _balanced_shards(tuple(range(5790)), 128)
+
+        self.assertEqual(len(shards), 46)
+        self.assertEqual(sum(map(len, shards)), 5790)
+        self.assertEqual({len(shard) for shard in shards}, {125, 126})
+        tree = _lean_index_ref_tree(
+            [(f"shard{index}", len(shard))
+             for index, shard in enumerate(shards)]
+        )
+        self.assertEqual(tree.size, 5790)
+        self.assertLessEqual(tree.maximum_balance, 1)
 
     def test_shard_index_composition_rejects_unbalanceable_forest(self) -> None:
         with self.assertRaisesRegex(
@@ -2434,11 +2448,38 @@ class StageARelationalInterpreterMixedOriginalTests(unittest.TestCase):
         self.assertIn(b"generatedExactOriginalDecodedAuthority", lean_sources)
         self.assertIn(b"generatedExactOriginalDecodedReachability", lean_sources)
         self.assertIn(b"generatedExactMixedProgramBinding", lean_sources)
+        self.assertIn(b"generatedOriginalCombinedProgram", lean_sources)
+        self.assertIn(
+            b"generatedOriginalCombinedReachableTargetRoundTrips",
+            lean_sources,
+        )
         self.assertNotIn(b"native_decide", lean_sources)
         self.assertIn(b"decide +kernel", lean_sources)
         self.assertNotIn(b"candidate mapping", lean_sources.lower())
         self.assertEqual(
             len([path for path in first_bytes if "Shard" in path.name]), 2
+        )
+        final_plan = json.loads(
+            first_bytes[Path("interpreter-mixed-original-plan.json")]
+        )
+        declarations = final_plan[
+            "original_combined_reachability_declarations"
+        ]
+        self.assertEqual(
+            declarations["program"],
+            {
+                "module": (
+                    "StageA.GeneratedRelationalInterpreterMixedOriginal"
+                ),
+                "namespace": (
+                    "StageA.GeneratedRelational.InterpreterMixedOriginal"
+                ),
+                "symbol": "generatedOriginalCombinedProgram",
+            },
+        )
+        self.assertEqual(
+            declarations["target_round_trips"]["symbol"],
+            "generatedOriginalCombinedReachableTargetRoundTrips",
         )
 
     def test_two_tls_callbacks_emit_two_launch_frame_inventories(self) -> None:

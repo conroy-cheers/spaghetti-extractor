@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
 import re
+import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from spaghetti_extractor.relational.lean.original_indirect_control_authority import (
     OriginalIndirectControlAuthorityBinding,
@@ -13,6 +16,7 @@ from spaghetti_extractor.relational.lean.stack_dynamic_indirect_control import (
     StackDynamicBlocker,
     StackDynamicIndirectControlPlan,
     StackDynamicSiteFinding,
+    stable_stack_dynamic_site_id,
     stack_dynamic_indirect_control_source,
 )
 from spaghetti_extractor.relational.lean.stack_fixed_code_pointer import (
@@ -96,7 +100,37 @@ def _plan() -> StackDynamicIndirectControlPlan:
     )
 
 
+def _load_gnu_hello_driver():
+    path = (
+        Path(__file__).parents[1]
+        / "nix/gnu-hello-stack-dynamic-authority.py"
+    )
+    name = "test_gnu_hello_stack_dynamic_authority_driver"
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 class StageAStackDynamicIndirectControlTests(unittest.TestCase):
+    def test_stable_site_id_does_not_depend_on_target_numbering(self) -> None:
+        expected = "stack-dynamic-8174534cc03bae3851d1"
+        for _unrelated_target_id in (17, 298, 9001):
+            self.assertEqual(
+                stable_stack_dynamic_site_id(
+                    original_pe_sha256=(
+                        "71b228f2babc9d3b4095ecf355db676c8ed8b45a7c8a7d350f47e962b4bf554c"
+                    ),
+                    source_rva=8243,
+                    instruction_rva=8252,
+                    instruction_bytes=bytes.fromhex("ff542420"),
+                    provenance_class="stack_slot",
+                ),
+                expected,
+            )
+
     def test_report_is_proposal_only_and_keeps_each_runtime_gap(self) -> None:
         payload = _plan().to_json()
         self.assertEqual(payload["status"], "incomplete")
@@ -171,6 +205,64 @@ class StageAStackDynamicIndirectControlTests(unittest.TestCase):
             self.assertIn(required, closure)
         for marker in ("sorry", "axiom", "unsafe", "native_decide"):
             self.assertIsNone(re.search(rf"\b{marker}\b", source), marker)
+
+    def test_gnu_hello_combined_evidence_uses_checked_generic_kernels(self) -> None:
+        driver = _load_gnu_hello_driver()
+        plan = driver._CombinedEvidencePlan(
+            stack_site_index=0,
+            constructor_site_index=1,
+            dynamic_site_index=2,
+            stack_source_target_id=7,
+            stack_continuation_target_id=8,
+            stack_target_id=9,
+            stack_route_index=3,
+            stack_call_frame_transfer_index=4,
+            constructor_source_target_id=10,
+            constructor_table_rva=0x280E8,
+            constructor_branch_target_ids=(11, 12),
+            constructor_decoded_outcomes=((11, (0xA248, 0xA20F)),),
+            dynamic_source_target_id=13,
+            dynamic_head_rva=0x30364,
+            entry_target_id=14,
+            tls_target_ids=(15, 16),
+            dynamic_branch_target_ids=(17, 18),
+            dynamic_decoded_outcomes=((17, (0xAB95, 0xAB61)),),
+            registration_target_ids=(19, 20),
+            registration_writer_target_ids=(21, 22),
+            zero_writer_target_id=23,
+        )
+        graph = SimpleNamespace(
+            regions=tuple(
+                SimpleNamespace(target_id=target_id, rva=0x1000 + target_id)
+                for target_id in range(7, 24)
+            )
+        )
+
+        source = driver._combined_evidence_source(plan, graph)
+
+        for required in (
+            "RelationalOriginalCombinedExecutionInvariant",
+            "OriginalStackDynamicTargetRequirement",
+            "StackRelocatedCodePointerRuntime",
+            "generatedStackCallFrameTransferAuthority",
+            "generatedDecodedOutcomeTargetRvas?",
+            "generatedConstructorDecodedOutcomesExact",
+            "ImmutableImageWordMemory.read32_of_checked",
+            "PreferredBaseImageMemory",
+            "PE32TlsProcessAttachArgumentsHold",
+            "PE32ConsoleLaunchWorldV1.Valid",
+            "KnownCallbackRuntime",
+            "generatedExactLaunchRootTargetIds",
+            "generatedNoRegistrationEntriesChecked",
+            "generatedCombinedRequirements",
+            "generatedCombinedEvidenceChecked",
+        ):
+            self.assertIn(required, source)
+        for marker in ("sorry", "axiom", "unsafe", "native_decide"):
+            self.assertIsNone(re.search(rf"\b{marker}\b", source), marker)
+        driver_source = Path(driver.__file__).read_text(encoding="utf-8")
+        self.assertIn('status=combined_evidence["status"]', driver_source)
+        self.assertNotIn('status="checked"', driver_source)
 
 
 if __name__ == "__main__":

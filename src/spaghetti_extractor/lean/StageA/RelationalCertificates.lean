@@ -450,6 +450,18 @@ def WorldExternalSuspension.request
   world := suspension.world
 }
 
+/-- Machine-call event at the current protocol phase.  The call identity and
+arguments remain fixed while callback return supplies a new current state and
+world. -/
+def WorldExternalSuspension.currentEvent
+    (suspension : WorldExternalSuspension) : WorldExternalEvent := {
+  siteId := suspension.siteId
+  imported := suspension.imported
+  arguments := suspension.arguments
+  state := suspension.state
+  world := suspension.world
+}
+
 def resumeWorldExecution (callbacks : List WorldExternalCallbackRuntime)
     (targetId : Nat) (state : MachineState) (calls : List Nat)
     (eventIndex : Nat) (world : RelationalWorld) : WorldExecution :=

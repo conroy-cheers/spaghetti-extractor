@@ -105,11 +105,15 @@ class _Artifact:
 @dataclass(frozen=True)
 class _Toolchain:
     compiler: Path
+    assembler: Path
+    linker: Path
     nm: Path
     target: str
     compiler_version: str
     linker_version: str
     compiler_sha256: str
+    assembler_sha256: str
+    linker_sha256: str
     nm_sha256: str
 
     def payload(self) -> dict[str, Any]:
@@ -117,6 +121,10 @@ class _Toolchain:
             "compiler": str(self.compiler),
             "compiler_sha256": self.compiler_sha256,
             "compiler_version": self.compiler_version,
+            "assembler": str(self.assembler),
+            "assembler_sha256": self.assembler_sha256,
+            "linker": str(self.linker),
+            "linker_sha256": self.linker_sha256,
             "linker_version": self.linker_version,
             "nm": str(self.nm),
             "nm_sha256": self.nm_sha256,
@@ -849,15 +857,24 @@ def _select_toolchain(compiler: Path | str) -> _Toolchain:
             f"selected compiler target is {target!r}, expected i686-w64-mingw32"
         )
     prefix = Path(compiler_path).name.rsplit("gcc", 1)[0]
-    nm_path = shutil.which(prefix + "nm")
-    if nm_path is None:
-        candidate = Path(compiler_path).parent / (prefix + "nm")
-        nm_path = str(candidate) if candidate.is_file() else None
-    if nm_path is None:
-        raise StageBNativeBuildError("selected MinGW toolchain has no matching nm")
-    nm_real = Path(nm_path).resolve()
+    def matching_tool(name: str) -> Path:
+        path = shutil.which(prefix + name)
+        if path is None:
+            candidate = Path(compiler_path).parent / (prefix + name)
+            path = str(candidate) if candidate.is_file() else None
+        if path is None:
+            raise StageBNativeBuildError(
+                f"selected MinGW toolchain has no matching {name}"
+            )
+        return Path(path).resolve()
+
+    assembler_real = matching_tool("as")
+    linker_real = matching_tool("ld")
+    nm_real = matching_tool("nm")
     return _Toolchain(
         compiler=compiler_real,
+        assembler=assembler_real,
+        linker=linker_real,
         nm=nm_real,
         target=target,
         compiler_version=_tool_output(
@@ -865,6 +882,8 @@ def _select_toolchain(compiler: Path | str) -> _Toolchain:
         ),
         linker_version=_tool_output([str(compiler_real), "-Wl,--version"], first_line=True),
         compiler_sha256=sha256_file(compiler_real),
+        assembler_sha256=sha256_file(assembler_real),
+        linker_sha256=sha256_file(linker_real),
         nm_sha256=sha256_file(nm_real),
     )
 

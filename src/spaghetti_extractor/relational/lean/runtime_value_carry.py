@@ -62,6 +62,20 @@ def _location(kind: str, register: str, offset: int) -> str:
     raise ValueError(f"unsupported runtime value-carry location {kind}")
 
 
+def _control_value_location(kind: str, register: str, offset: int) -> str:
+    """Render the corresponding original-only provenance location."""
+
+    if register not in _REGISTERS:
+        raise ValueError(f"unsupported runtime value-carry register {register}")
+    if kind == "register":
+        if offset != 0:
+            raise ValueError("register value-carry location has an offset")
+        return f".register .{register}"
+    if kind == "frame_word":
+        return f".frameWord .{register} (.add {offset})"
+    raise ValueError(f"unsupported runtime value-carry location {kind}")
+
+
 def _fact(target_id: int, location_id: int) -> str:
     return (
         "{ targetId := "
@@ -524,7 +538,7 @@ def {prefix}Authority :
 def _semantics_source(
     value: RuntimeValueCarryIR,
     graph: OriginalCutpointGraphIR | None,
-) -> tuple[str, list[dict[str, Any]]]:
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     imports = {
         transfer.authority_lean_term.module
         for route in value.routes
@@ -542,6 +556,7 @@ def _semantics_source(
     }
     definitions: list[str] = []
     authorities: list[dict[str, Any]] = []
+    value_flow_facts: list[dict[str, Any]] = []
     for route_index, route in enumerate(value.routes):
         for transfer in route.transfers:
             generated = None
@@ -596,12 +611,114 @@ def _semantics_source(
 
 #print axioms {route_name}ExecutionInvariant"""
         )
+        origin_checked = f"{route_name}OriginalValueOriginChecked"
+        definitions.append(
+            f"""theorem {origin_checked} :
+    (StageA.Relational.ValueOriginAtom.staticCodeTarget {route.origin.target_id}
+      {route.origin.offset}).checked generatedCarrierContext = true := by
+  native_decide"""
+        )
+        facts_by_location: dict[int, list[int]] = {}
+        for fact in route.facts:
+            facts_by_location.setdefault(fact.location_id, []).append(
+                fact.target_id
+            )
+        for location_id in sorted(facts_by_location):
+            target_ids = sorted(facts_by_location[location_id])
+            if len(target_ids) != len(set(target_ids)):
+                raise ValueError(
+                    f"runtime value-carry route {route.stable_id} repeats a "
+                    f"target at location {location_id}"
+                )
+            try:
+                location = route.locations[location_id]
+            except IndexError as error:
+                raise ValueError(
+                    f"runtime value-carry route {route.stable_id} references "
+                    f"unknown location {location_id}"
+                ) from error
+            fact_id = len(value_flow_facts)
+            fact_name = f"generatedOriginalValueFlowFact{fact_id:04d}"
+            fact_id_exact = f"{fact_name}IdExact"
+            definitions.append(
+                f"""def {fact_name} :
+    OriginalFiniteValueFlowFact generatedCarrierContext := {{
+  id := {fact_id}
+  targetIds := {_nat_list(target_ids)}
+  targetIdsNonempty := by decide +kernel
+  targetIdsUnique := by decide +kernel
+  location := {_control_value_location(
+      location.kind, location.register, location.offset
+  )}
+  locationChecked := by decide +kernel
+  finiteAlternativeBudget := 1
+  finiteAlternativeBudgetPositive := by decide +kernel
+  alternatives := [
+    .staticCodeTarget {route.origin.target_id} {route.origin.offset}
+  ]
+  alternativesNonempty := by decide +kernel
+  alternativesUnique := by decide +kernel
+  alternativesWithinBudget := by decide +kernel
+  alternativesChecked := by
+    intro origin member
+    simp only [List.mem_singleton] at member
+    subst origin
+    exact {origin_checked}
+}}
+
+theorem {fact_id_exact} : {fact_name}.id = {fact_id} := by
+  rfl"""
+            )
+            value_flow_facts.append(
+                {
+                    "route_stable_id": route.stable_id,
+                    "fact_stable_id": (
+                        f"{route.stable_id}:location:{location_id}"
+                    ),
+                    "location_id": location_id,
+                    "target_ids": target_ids,
+                    "id": fact_id,
+                    "term": {
+                        "module": f"StageA.{SEMANTICS_MODULE}",
+                        "namespace": (
+                            "StageA.GeneratedRelational.RuntimeValueCarry"
+                        ),
+                        "symbol": fact_name,
+                    },
+                    "id_exact": {
+                        "module": f"StageA.{SEMANTICS_MODULE}",
+                        "namespace": (
+                            "StageA.GeneratedRelational.RuntimeValueCarry"
+                        ),
+                        "symbol": fact_id_exact,
+                    },
+                }
+            )
+    fact_names = [
+        row["term"]["symbol"] for row in value_flow_facts
+    ]
+    if not fact_names:
+        raise ValueError("runtime value-carry produced no original value-flow facts")
+    definitions.append(
+        f"""def generatedOriginalValueFlowInventory :
+    OriginalValueFlowInventory generatedCarrierContext := {{
+  facts := [{", ".join(fact_names)}]
+  factIdsUnique := by
+    simp [{", ".join(fact_names)}]
+}}
+
+theorem generatedOriginalValueFlowFactsExact :
+    generatedOriginalValueFlowInventory.facts =
+      [{", ".join(fact_names)}] := by
+  rfl"""
+    )
     imported = "\n".join(
         f"import {module}" for module in sorted(imports)
     )
     return f"""import StageA.{BINDING_MODULE}
 import StageA.{CONTEXT_MODULE}
 import StageA.RelationalRuntimeValueCarrySemantics
+import StageA.RelationalOriginalValueFlowExecutionInvariant
 {imported}
 
 namespace StageA.GeneratedRelational.RuntimeValueCarry
@@ -610,6 +727,8 @@ open StageA.Relational
 open StageA.Relational.InterpreterMixedWorldBridge
 open StageA.Relational.RuntimeValueCarry
 open StageA.Relational.RuntimeValueCarrySemantics
+open StageA.Relational.OriginalValueFlowExecutionInvariant
+open StageA.Relational.ValueProvenance
 
 def generatedOriginalContext := {CONTEXT_NAME}
 def generatedCarrierContext := {CARRIER_CONTEXT_NAME}
@@ -617,7 +736,19 @@ def generatedCarrierContext := {CARRIER_CONTEXT_NAME}
 {"\n\n".join(definitions)}
 
 end StageA.GeneratedRelational.RuntimeValueCarry
-""", authorities
+""", authorities, {
+        "inventory": {
+            "module": f"StageA.{SEMANTICS_MODULE}",
+            "namespace": "StageA.GeneratedRelational.RuntimeValueCarry",
+            "symbol": "generatedOriginalValueFlowInventory",
+        },
+        "facts_exact": {
+            "module": f"StageA.{SEMANTICS_MODULE}",
+            "namespace": "StageA.GeneratedRelational.RuntimeValueCarry",
+            "symbol": "generatedOriginalValueFlowFactsExact",
+        },
+        "facts": value_flow_facts,
+    }
 
 
 def _kernel_checked(
@@ -654,7 +785,11 @@ def write_runtime_value_carry_lean(
     semantics = stage_a / f"{SEMANTICS_MODULE}.lean"
     structure.write_text(_structure_source(value, graph), encoding="utf-8")
     binding.write_text(_binding_source(value), encoding="utf-8")
-    semantics_source, semantic_authorities = _semantics_source(value, graph)
+    (
+        semantics_source,
+        semantic_authorities,
+        value_flow_exports,
+    ) = _semantics_source(value, graph)
     semantics.write_text(semantics_source, encoding="utf-8")
     semantic_kernel_checked = _kernel_checked(semantics, kernel_checks)
     authorities_by_route = {
@@ -735,6 +870,7 @@ def write_runtime_value_carry_lean(
                 }
                 for index, route in enumerate(value.routes)
             ],
+            "original_combined_value_flow_declarations": value_flow_exports,
             "proof_authority": False,
             "semantic_authority_complete": (
                 value.proof_ready

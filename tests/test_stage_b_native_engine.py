@@ -672,20 +672,55 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertIn("push eax", x87_capture)
             self.assertNotIn("pushad", x87_capture)
             self.assertIn("mov ecx, DWORD PTR [esp]", x87_capture)
-            self.assertIn("mov ecx, DWORD PTR [esp + 4]", x87_capture)
+            self.assertIn("mov ebx, DWORD PTR [esp + 4]", x87_capture)
             self.assertIn("mov DWORD PTR [edx + 0], ecx", x87_capture)
             for offset in (4, 8, 12, 16, 20, 24, 28):
                 self.assertNotIn(
                     f"mov DWORD PTR [edx + {offset}], ecx", x87_capture
                 )
-            for offset in (32, 36, 48):
+            for flag, offset in (("setc", 32), ("setz", 36), ("sets", 40),
+                                 ("seto", 44), ("setp", 48)):
                 self.assertIn(
-                    f"mov DWORD PTR [edx + {offset}], ecx", x87_capture
+                    f"{flag} BYTE PTR [edx + {offset}]", x87_capture
                 )
-            for offset in (40, 44, 52):
-                self.assertNotIn(
-                    f"mov DWORD PTR [edx + {offset}], ecx", x87_capture
-                )
+            self.assertIn("and ebx, 0x00000cd5", x87_capture)
+            self.assertIn("mov DWORD PTR [edx + 240], ecx", x87_capture)
+
+    def test_x87_callback_passes_preserved_input_fnsave_pointer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            machine = self._write(root, [_x87_replay_transfer()])
+            package = root / "package"
+            write_stage_b_native_engine_package(
+                state_machine=machine,
+                entry_rva=0x1420,
+                callback_targets=[{
+                    "rva": 0x1420,
+                    "kind": "tls_callback",
+                    "stack_cleanup_bytes": 12,
+                }],
+                out=package,
+            )
+            assembly = (package / "native-engine-bridges.S").read_text(
+                encoding="ascii"
+            )
+            callback_call = assembly.split(
+                "_stage_b_native_callback_x87_buffers_ready_0000:", 1
+            )[1].split(
+                "_stage_b_native_callback_dispatch_return_00001420:", 1
+            )[0]
+            self.assertIn("    mov esi, ecx", callback_call)
+            self.assertIn(
+                "    push eax\n"
+                "    push esi\n"
+                "    push ebx\n"
+                "    push edx\n"
+                "    push 12\n"
+                "    push 0x00001420\n"
+                "    call _stage_b_native_run_callback",
+                callback_call,
+            )
+            self.assertNotIn("    push eax\n    push ecx\n", callback_call)
 
     def test_x87_absolute_disp32_replay_is_rejected_for_dynamicbase(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -776,6 +811,18 @@ class StageBNativeEngineTests(unittest.TestCase):
                         reference_contract_sha256="e" * 64
                     ),
                 )
+
+    def test_relocation_evidence_does_not_require_export_on_non_x87_rows(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = plan_stage_b_native_engine(
+                state_machine=self._write(root, [_transfer()]),
+                entry_rva=0x1420,
+                base_relocation_evidence=_relocation_evidence(),
+            )
+            self.assertEqual(plan.status, "ready", plan.blockers)
 
     def test_x87_relocation_evidence_rejects_unqualified_cells(self) -> None:
         base = {

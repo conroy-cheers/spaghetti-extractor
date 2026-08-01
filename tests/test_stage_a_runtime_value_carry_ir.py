@@ -554,6 +554,19 @@ class StageARuntimeValueCarryIRTests(unittest.TestCase):
             )
             self.assertIn("CheckedRouteExecutionInvariant", source)
             self.assertIn("ExecutionInvariant", source)
+            self.assertIn("OriginalValueFlowInventory", source)
+            self.assertIn("generatedOriginalValueFlowFact0000", source)
+            self.assertIn("generatedOriginalValueFlowFact0001", source)
+            self.assertIn("targetIds := [1, 2]", source)
+            self.assertIn("targetIds := [3, 4]", source)
+            self.assertIn("location := .register .ebx", source)
+            self.assertIn("location := .frameWord .esp (.add 32)", source)
+            self.assertIn(
+                "StageA.Relational.ValueOriginAtom.staticCodeTarget",
+                source,
+            )
+            for forbidden in ("axiom ", "admit", "sorry"):
+                self.assertNotIn(forbidden, source)
             self.assertIn("ExactIncomingChecked", binding_source)
             self.assertIn("CheckedRoute", binding_source)
             self.assertIn("decodedIncoming := true", structure_source)
@@ -567,6 +580,27 @@ class StageARuntimeValueCarryIRTests(unittest.TestCase):
                 "kernel_compile_required",
             )
             self.assertFalse(pending["semantic_authority_complete"])
+            declarations = pending[
+                "original_combined_value_flow_declarations"
+            ]
+            self.assertEqual(
+                declarations["inventory"]["symbol"],
+                "generatedOriginalValueFlowInventory",
+            )
+            self.assertEqual(
+                [row["id"] for row in declarations["facts"]], [0, 1]
+            )
+            self.assertEqual(
+                [row["fact_stable_id"] for row in declarations["facts"]],
+                [
+                    "gnu.callback.slot:location:0",
+                    "gnu.callback.slot:location:1",
+                ],
+            )
+            self.assertEqual(
+                [row["target_ids"] for row in declarations["facts"]],
+                [[1, 2], [3, 4]],
+            )
 
             source_sha256 = hashlib.sha256(
                 semantics.read_bytes()

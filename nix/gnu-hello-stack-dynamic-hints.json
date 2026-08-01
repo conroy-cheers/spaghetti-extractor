@@ -3,7 +3,7 @@
     {
       "allowed_target_rvas": [],
       "mode": "source_uninhabited",
-      "stable_id": "stack-dynamic-11c19b6c127dedbf5fd7"
+      "stable_id": "stack-dynamic-ca2114f8215f7e5a27bd"
     }
   ],
   "format": "stage-a-stack-dynamic-closure-hints-v2",
@@ -12,7 +12,7 @@
     {
       "seed_slot_rva": 131280,
       "seed_target_rva": 82848,
-      "stable_id": "stack-dynamic-ad0bad06992a9b2c16c0"
+      "stable_id": "stack-dynamic-8174534cc03bae3851d1"
     }
   ],
   "runtime_value_carry_routes": [

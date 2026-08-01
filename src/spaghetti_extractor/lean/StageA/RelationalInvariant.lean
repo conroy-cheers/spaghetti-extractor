@@ -2583,6 +2583,7 @@ theorem Expr.eval_substituteRegisters (behavior : NormalizedSymbolicBehavior)
   induction expression using Expr.rec (motive_2 := fun _ => True) <;>
     simp_all [Expr.pureInvariant, Expr.substituteRegisters, Expr.eval,
       RelationalBehavior.nextMachineState, evalNormalizedRegisters_get]
+  all_goals rfl
 
 def _root_.StageA.Formal.Expr.pullbackMemoryExpression
     (behavior : NormalizedSymbolicBehavior) : Expr → Option Expr
@@ -3005,7 +3006,8 @@ theorem _root_.StageA.Formal.Expr.eval_pullbackX87LoadControl_low16
     subst pulled
     simp [Expr.eval, RelationalBehavior.nextMachineState,
       NormalizedSymbolicBehavior.eval, evalNormalizedX87]
-    bv_decide
+    rw [BitVec.extractLsb'_setWidth_of_le (by decide),
+      BitVec.extractLsb'_extractLsb'_of_le (by decide)]
   all_goals
     have sound := Expr.eval_pullbackMemoryExpression behavior state _ pulled checked
     exact congrArg (fun value : Word => value.extractLsb' 0 16) sound

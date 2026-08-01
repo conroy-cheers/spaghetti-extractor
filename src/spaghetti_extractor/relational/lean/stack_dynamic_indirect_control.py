@@ -201,6 +201,25 @@ class _StateRow:
     instructions: tuple[Mapping[str, Any], ...]
 
 
+def stable_stack_dynamic_site_id(
+    *,
+    original_pe_sha256: str,
+    source_rva: int,
+    instruction_rva: int,
+    instruction_bytes: bytes,
+    provenance_class: str,
+) -> str:
+    """Identify a semantic site independently of decoded-inventory numbering."""
+
+    payload = (
+        f"{original_pe_sha256}:{source_rva}:{instruction_rva}:"
+        f"{instruction_bytes.hex()}:{provenance_class}"
+    )
+    return "stack-dynamic-" + hashlib.sha256(
+        payload.encode("ascii")
+    ).hexdigest()[:20]
+
+
 def analyze_stack_dynamic_indirect_controls(
     original_pe: Path | str,
     state_machine: Path | str,
@@ -275,14 +294,18 @@ def analyze_stack_dynamic_indirect_controls(
         provenance, target, facts, empty_table, blockers = _classify_site(
             pe, site
         )
-        stable_payload = (
-            f"{pe_hash}:{region.target_id}:{site.instruction_rva}:"
-            f"{instruction_bytes.hex()}:{provenance}"
-        )
+        # Target identifiers are allocation details of the current decoded
+        # inventory.  Source and instruction RVAs remain stable when an
+        # unrelated region is inserted, so reviewed authority hints must be
+        # keyed by those semantic locations instead.
         findings.append(StackDynamicSiteFinding(
-            stable_id="stack-dynamic-" + hashlib.sha256(
-                stable_payload.encode("ascii")
-            ).hexdigest()[:20],
+            stable_id=stable_stack_dynamic_site_id(
+                original_pe_sha256=pe_hash,
+                source_rva=site.source_rva,
+                instruction_rva=site.instruction_rva,
+                instruction_bytes=instruction_bytes,
+                provenance_class=provenance,
+            ),
             source_target_id=region.target_id,
             source_rva=site.source_rva,
             instruction_rva=site.instruction_rva,

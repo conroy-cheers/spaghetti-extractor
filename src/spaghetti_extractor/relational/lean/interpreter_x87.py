@@ -700,12 +700,37 @@ def _relational_interpreter_x87_schedule_source(
     records_literal = ",\n    ".join(record_names)
     actions_literal = ",\n    ".join(action_names)
     replay_witnesses = "\n\n".join(rendered_replay_witnesses)
+    singleton_facts = ""
+    if len(records) == 1 and records[0]["instruction_class"] == _X87_CLASS:
+        record_name = record_names[0]
+        singleton_facts = f"""
+theorem {definition_prefix}SingletonDecoded :
+    (StageA.Relational.X87.decodeSingletonCommand {pe_name}
+      {record_name}.span).isSome := by
+  unfold StageA.Relational.X87.decodeSingletonCommand
+  rw [{definition_prefix}SingletonSpanBytesExact]
+  decide +kernel
+
+def {definition_prefix}SingletonFacts :
+    ExactX87SingletonScheduleFacts {pe_name} {definition_prefix}Witness :=
+  ExactX87SingletonScheduleFacts.ofDecoded {record_name}
+    (by decide +kernel) (by decide +kernel) (by decide +kernel)
+    {definition_prefix}SingletonDecoded
+"""
     import_source = "\n".join(f"import {module}" for module in dict.fromkeys(imports))
     pack_source = "" if pack_proof is None else f"{pack_proof.source}\n\n"
     if pack_proof is None:
         exact_pe_proof = "by decide +kernel"
         ordinary_local = ""
         ordinary_proof = "by decide +kernel"
+        singleton_span_exact = ""
+        if len(records) == 1 and records[0]["instruction_class"] == _X87_CLASS:
+            record_name = record_names[0]
+            singleton_span_exact = f"""
+theorem {definition_prefix}SingletonSpanBytesExact :
+    spanBytes {pe_name} {record_name}.span = some {record_name}.bytes := by
+  decide +kernel
+"""
     else:
         transfer_literal = _bytes_literal(schedule["transfer_bytes"])
         exact_pe_proof = f"""by
@@ -730,6 +755,38 @@ theorem {local_theorem} :
   exact RawInstructionSchedule.ordinaryExecutableChecked_of_importsParsed
     {definition_prefix} {pe_name} {imports_name} {imports_parsed}
     {local_theorem}"""
+        singleton_span_exact = ""
+        if len(records) == 1 and records[0]["instruction_class"] == _X87_CLASS:
+            span_name = f"{definition_prefix}PEByteSpan"
+            record_name = record_names[0]
+            singleton_span_exact = f"""
+def {definition_prefix}SingletonRvaMapping :
+    PESectionRvaSpanCertificate {pe_name} {span_name}Section
+      {schedule['start']} {len(schedule['transfer_bytes'])}
+      {pack_proof.raw_offset} :=
+  PESectionRvaSpanCertificate.of_checked {pe_name} {span_name}Section
+    {schedule['start']} {len(schedule['transfer_bytes'])}
+    {pack_proof.raw_offset} {span_name}RvaMappingChecked
+
+theorem {definition_prefix}SingletonExecutableSectionSelected :
+    {pe_name}.sections.find? (fun candidate =>
+      candidate.executable && candidate.virtualAddress <=
+        ({{ start := {schedule['start']}, size := {len(schedule['transfer_bytes'])} }} : Span).start &&
+        ({{ start := {schedule['start']}, size := {len(schedule['transfer_bytes'])} }} : Span).stop <=
+          candidate.virtualAddress + candidate.mappedSize) =
+      some {span_name}Section := by
+  decide +kernel
+
+theorem {definition_prefix}SingletonSpanBytesExact :
+    spanBytes {pe_name} {record_name}.span = some {record_name}.bytes := by
+  change spanBytes {pe_name}
+    {{ start := {schedule['start']}, size := {len(schedule['transfer_bytes'])} }} =
+      some {_bytes_literal(schedule['transfer_bytes'])}
+  rw [{definition_prefix}SingletonRvaMapping.spanBytes_eq_raw
+    {definition_prefix}SingletonExecutableSectionSelected]
+  rw [← {definition_prefix}SingletonRvaMapping.read_eq_raw]
+  exact {pack_proof.exact_theorem}
+"""
     return f"""{import_source}
 
 namespace StageA.GeneratedRelational
@@ -759,7 +816,8 @@ def {definition_prefix} : RawInstructionSchedule := {{
   ]
 }}
 
-{pack_source}theorem {definition_prefix}OrderAndReplay :
+{pack_source}{singleton_span_exact}
+theorem {definition_prefix}OrderAndReplay :
     {definition_prefix}.orderAndReplayChecked = true := by decide +kernel
 
 theorem {definition_prefix}ExactPEBytes :
@@ -800,6 +858,7 @@ def {definition_prefix}Witness :
   certificate := {definition_prefix}ExactCertificate
 }}
 
+{singleton_facts}
 {replay_witnesses}
 
 #print axioms {definition_prefix}ExactPEBytes
@@ -817,6 +876,7 @@ def relational_interpreter_x87_bundle_sources(
     module_prefix: str = "GeneratedInterpreterX87Schedule",
     definition_prefix: str = "checkedInterpreterX87Schedule",
     pe_byte_pack_inventory: PEBytePackInventory | None = None,
+    source_only: bool = False,
 ) -> dict[str, str]:
     """Emit one semantic proof shard per exact schedule plus a typed bundle.
 
@@ -876,53 +936,17 @@ def relational_interpreter_x87_bundle_sources(
     replay_witnesses = ",\n  ".join(replay_witness_names)
     source_rvas_literal = ", ".join(str(source_rva) for source_rva in source_rvas)
     bundle_prefix = f"{definition_prefix}Bundle"
-    sources[bundle_module] = f"""{imports}
-import StageA.RelationalInterpreterAcceptance
-
-namespace StageA.GeneratedRelational
-
-open StageA.Formal StageA.Relational
-open StageA.Relational.Interpreter
-open StageA.Relational.InterpreterX87
-open StageA.Relational.InterpreterKernelData
-open StageA.Relational.InterpreterAcceptance
-
-set_option maxRecDepth 100000
-set_option maxHeartbeats 0
-
-def {bundle_prefix}Witnesses :
-    List (ExactInterpreterX87ScheduleWitness {pe_name}) := [
-  {witnesses}
-]
-
-def {bundle_prefix}SourceRvas : List Nat :=
-  {bundle_prefix}Witnesses.map (fun witness => witness.schedule.sourceRva)
-
-theorem {bundle_prefix}Count :
-    {bundle_prefix}Witnesses.length = {len(schedules)} := by decide +kernel
-
-def {bundle_prefix}ReplayActionWitnesses :
-    List (ExactInterpreterX87ReplayActionWitness {pe_name}) := [
-  {replay_witnesses}
-]
-
-theorem {bundle_prefix}ReplayActionCount :
-    {bundle_prefix}ReplayActionWitnesses.length = {len(replay_witness_names)} := by decide +kernel
-
-theorem {bundle_prefix}MemberReplayActionRefines
-    (witness : ExactInterpreterX87ReplayActionWitness {pe_name})
-    (_member : witness ∈ {bundle_prefix}ReplayActionWitnesses)
-    (state : MachineState) :
-    executeX87Singleton {pe_name} witness.record state =
-      executeReplayOpcode25 {pe_name} witness.schedule witness.record state :=
-  witness.stepRefines state
-
-theorem {bundle_prefix}ExactSourceInventory :
-    {bundle_prefix}SourceRvas = [{source_rvas_literal}] := by decide +kernel
-
-theorem {bundle_prefix}SourceRvasNodup :
-    {bundle_prefix}SourceRvas.Nodup := by decide +kernel
-
+    acceptance_import = (
+        "" if source_only else "import StageA.RelationalInterpreterAcceptance\n"
+    )
+    acceptance_open = (
+        ""
+        if source_only
+        else "open StageA.Relational.InterpreterAcceptance\n"
+    )
+    acceptance_definitions = ""
+    if not source_only:
+        acceptance_definitions = f"""
 /-- The acceptance inventory is constructed from the exact schedule witnesses,
 not from generator status or counts.  The equality premise ties this reusable
 bundle to the canonical original PE in the final static context. -/
@@ -961,6 +985,55 @@ def {bundle_prefix}CandidateReplayObligation
       countRva semanticRecords) (handler : CandidateReplayHandler) : Prop :=
   ExactCandidateX87ReplayInventory {pe_name} candidatePe imports relocations
     tableRva countRva semanticRecords {bundle_prefix}Witnesses table handler
+"""
+    sources[bundle_module] = f"""{imports}
+{acceptance_import}
+
+namespace StageA.GeneratedRelational
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.Interpreter
+open StageA.Relational.InterpreterX87
+open StageA.Relational.InterpreterKernelData
+{acceptance_open}
+
+set_option maxRecDepth 100000
+set_option maxHeartbeats 0
+
+def {bundle_prefix}Witnesses :
+    List (ExactInterpreterX87ScheduleWitness {pe_name}) := [
+  {witnesses}
+]
+
+def {bundle_prefix}SourceRvas : List Nat :=
+  {bundle_prefix}Witnesses.map (fun witness => witness.schedule.sourceRva)
+
+theorem {bundle_prefix}Count :
+    {bundle_prefix}Witnesses.length = {len(schedules)} := by decide +kernel
+
+def {bundle_prefix}ReplayActionWitnesses :
+    List (ExactInterpreterX87ReplayActionWitness {pe_name}) := [
+  {replay_witnesses}
+]
+
+theorem {bundle_prefix}ReplayActionCount :
+    {bundle_prefix}ReplayActionWitnesses.length = {len(replay_witness_names)} := by decide +kernel
+
+theorem {bundle_prefix}MemberReplayActionRefines
+    (witness : ExactInterpreterX87ReplayActionWitness {pe_name})
+    (_member : witness ∈ {bundle_prefix}ReplayActionWitnesses)
+    (state : MachineState) :
+    executeX87Singleton {pe_name} witness.record state =
+      executeReplayOpcode25 {pe_name} witness.schedule witness.record state :=
+  witness.stepRefines state
+
+theorem {bundle_prefix}ExactSourceInventory :
+    {bundle_prefix}SourceRvas = [{source_rvas_literal}] := by decide +kernel
+
+theorem {bundle_prefix}SourceRvasNodup :
+    {bundle_prefix}SourceRvas.Nodup := by decide +kernel
+
+{acceptance_definitions}
 
 theorem {bundle_prefix}MemberMacroStepRefines
     (witness : ExactInterpreterX87ScheduleWitness {pe_name})
@@ -1384,6 +1457,7 @@ def relational_interpreter_x87_module_inventory(
     module_prefix: str = "GeneratedInterpreterX87Schedule",
     definition_prefix: str = "checkedInterpreterX87Schedule",
     pe_byte_pack_inventory: PEBytePackInventory | None = None,
+    source_only: bool = False,
 ) -> dict[str, Any]:
     """Describe generated shards in the canonical Nix module-graph vocabulary.
 
@@ -1403,6 +1477,7 @@ def relational_interpreter_x87_module_inventory(
         module_prefix=module_prefix,
         definition_prefix=definition_prefix,
         pe_byte_pack_inventory=pe_byte_pack_inventory,
+        source_only=source_only,
     )
     bundle_module = f"{module_prefix}Bundle"
     shard_modules = [module for module in sources if module != bundle_module]
@@ -1438,6 +1513,7 @@ def relational_interpreter_x87_module_inventory(
         "source_module": source_module,
         "pe_name": pe_name,
         "module_prefix": module_prefix,
+        "source_only": source_only,
         "pe_byte_packs": (
             None
             if pe_byte_pack_inventory is None
@@ -1463,12 +1539,14 @@ def relational_interpreter_x87_module_inventory(
             "schedule_nodes": shard_modules,
             "bundle_node": bundle_module,
             "exact_original_inventory": (
+                None if source_only else
                 f"{definition_prefix}BundleExactOriginalInventory"
             ),
             "exact_replay_action_inventory": (
                 f"{definition_prefix}BundleReplayActionWitnesses"
             ),
             "candidate_replay_obligation": (
+                None if source_only else
                 f"{definition_prefix}BundleCandidateReplayObligation"
             ),
         },

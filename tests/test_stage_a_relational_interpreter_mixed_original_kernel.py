@@ -166,6 +166,16 @@ class StageARelationalInterpreterMixedOriginalKernelTests(unittest.TestCase):
                 stage_a,
                 "RelationalInterpreterOriginalCarrierBinding",
             )
+            _copy_module_closure(
+                source_root,
+                stage_a,
+                "RelationalPEWorldExecution",
+            )
+            _copy_module_closure(
+                source_root,
+                stage_a,
+                "RelationalOriginalCombinedExecutionInvariant",
+            )
             pe_path = root / "tiny.exe"
             iat_rva = 0x2040
             iat_va = 0x400000 + iat_rva
@@ -673,8 +683,17 @@ end StageA.GeneratedRelational.TinyMachineContracts
 
 
 _AUDIT = r"""import StageA.GeneratedRelationalInterpreterMixedOriginal
+import StageA.RelationalOriginalCombinedExecutionInvariant
 
 open StageA.GeneratedRelational.InterpreterMixedOriginal
+open StageA.Relational.OriginalCombinedExecutionInvariant
+
+def generatedOriginalCombinedReachableTargets :
+    ExactOriginalReachableTargetInventory generatedOriginalCombinedProgram := {
+  targetIds := generatedOriginalCombinedReachableTargetIds
+  targetIdsUnique := generatedOriginalCombinedReachableTargetIdsUnique
+  targetRoundTrips := generatedOriginalCombinedReachableTargetRoundTrips
+}
 
 #print axioms generatedExactOriginalDecodedAuthority
 #print axioms generatedExactOriginalCodeMapCertificate
@@ -684,6 +703,10 @@ open StageA.GeneratedRelational.InterpreterMixedOriginal
 #print axioms generatedOriginalMachineContractsCoverImports
 #print axioms generatedOriginalLaunchFrameCountChecked
 #print axioms generatedOriginalIATCallSiteBindingsChecked
+#print axioms generatedOriginalCombinedReachableTargetIdsExact
+#print axioms generatedOriginalCombinedReachableTargetIdsUnique
+#print axioms generatedOriginalCombinedReachableTargetRoundTrips
+#print axioms generatedOriginalCombinedReachableTargets
 """
 
 

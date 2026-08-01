@@ -6,11 +6,11 @@ module imports the canonical GNU acceptance requirements and the checked
 runtime-value-carry modules directly; it never accepts names of proof terms
 from JSON.
 
-Target 292 is closed by binding every route edge to the selected component's
-computed execution and deriving its stack range from the finite-origin call's
-checked source relation. The plan records the remaining constructor and
-dynamic-slot obligations without manufacturing closure from report status or
-caller-supplied terms.
+The callback stack source is closed by binding every route edge to the selected
+component's computed execution and deriving its stack range from the
+finite-origin call's checked source relation. The plan records the remaining
+constructor and dynamic-slot obligations without manufacturing closure from
+report status or caller-supplied terms.
 """
 
 from __future__ import annotations
@@ -36,19 +36,21 @@ GNU_HELLO_RUNTIME_INDIRECT_COMPOSITION_LEAN_FILENAME = (
     "GeneratedRelationalGNUHelloRuntimeIndirectComposition.lean"
 )
 
-STACK_SOURCE_TARGET_ID = 292
-CONSTRUCTOR_SOURCE_TARGET_ID = 2595
-DYNAMIC_SOURCE_TARGET_ID = 2792
-CONSTRUCTOR_INCOMING = (
-    (2594, CONSTRUCTOR_SOURCE_TARGET_ID),
-    (2596, CONSTRUCTOR_SOURCE_TARGET_ID),
-)
-DYNAMIC_INCOMING = ((2791, DYNAMIC_SOURCE_TARGET_ID),)
+DYNAMIC_HEAD_SLOT_RVA = 0x30364
+
+_STACK_SOURCE_RVA = 0x2033
+_STACK_SUCCESSOR_RVA = 0x2040
+_CONSTRUCTOR_SOURCE_RVA = 0xA220
+_CONSTRUCTOR_INCOMING_SOURCE_RVAS = (0xA20F, 0xA227)
+_DYNAMIC_SOURCE_RVA = 0xAB86
+_DYNAMIC_INCOMING_SOURCE_RVAS = (0xAB82,)
+_DYNAMIC_GUARD_SOURCE_RVA = 0xAB54
+_DYNAMIC_GUARD_NONZERO_RVA = 0xAB61
 
 STACK_FRONTIER_ID = "gnu.original.callback-stack-slot"
-STACK_SITE_STABLE_ID = "stack-dynamic-ad0bad06992a9b2c16c0"
+STACK_SITE_STABLE_ID = "stack-dynamic-8174534cc03bae3851d1"
 CONSTRUCTOR_FRONTIER_ID = "stack-dynamic-c50fbcca964899c32624"
-DYNAMIC_FRONTIER_ID = "stack-dynamic-11c19b6c127dedbf5fd7"
+DYNAMIC_FRONTIER_ID = "stack-dynamic-ca2114f8215f7e5a27bd"
 
 _CLOSURE_FORMAT = "stage-a-original-stack-dynamic-control-closure-v1"
 _RUNTIME_VALUE_CARRY_FORMAT = "stage-a-runtime-value-carry-ir-v1"
@@ -97,6 +99,13 @@ class RuntimeIndirectEvidenceGap:
     reason: str
 
 
+@dataclass(frozen=True)
+class RuntimeIndirectCheckedEvidence:
+    source_target_id: int
+    evidence_kind: str
+    lean_terms: tuple[str, ...]
+
+
 _ROUTE_AUTHORITY_CONSTRUCTORS = {
     ("decoded_preserve", None): "decoded",
     ("decoded_register_to_frame", None): "decoded",
@@ -119,40 +128,85 @@ _ROUTE_AUTHORITY_CONSTRUCTORS = {
 }
 
 
-_UNRESOLVED_OPERATIONAL_FRONTIERS = (
-    RuntimeIndirectEvidenceGap(
-        frontier_id=CONSTRUCTOR_FRONTIER_ID,
-        source_target_id=CONSTRUCTOR_SOURCE_TARGET_ID,
-        extractor_field="mixed_component.rooted_scanner_phase_replay",
-        checker_type=(
-            "CheckedMixedKernelSelectedInvariantClosure "
-            "(rooted scanner phase closure)"
+def _checked_static_evidence(
+    *,
+    stack_source_target_id: int,
+    constructor_source_target_id: int,
+    dynamic_source_target_id: int,
+) -> tuple[RuntimeIndirectCheckedEvidence, ...]:
+    return (
+        RuntimeIndirectCheckedEvidence(
+            source_target_id=stack_source_target_id,
+            evidence_kind="selected-stack-route-and-frame-window",
+            lean_terms=(
+                "generatedStackTransferInventory",
+                "generatedTarget292StackRangeWitness",
+                "generatedTarget292SelectedExecution",
+            ),
         ),
-        reason=(
-            "the exact scanner decoder, zero/bypass semantics, rooted SCC, and "
-            "source-exclusion theorem are checked; the selected mixed component "
-            "still needs a phase-preserving replay from selector through "
-            "zero/scanner/bridge/gate before the SCC {2595, 2596} is operationally "
-            "excluded"
+        RuntimeIndirectCheckedEvidence(
+            source_target_id=constructor_source_target_id,
+            evidence_kind="rooted-scanner-scc-execution-exclusion",
+            lean_terms=(
+                "generatedConstructorRootedExecutionAuthority",
+                "generatedConstructorRootedSourceExcluded",
+                "generatedConstructorSelectedSourceUninhabited",
+                "generatedConstructorSelectedComposition",
+            ),
         ),
-    ),
-    RuntimeIndirectEvidenceGap(
-        frontier_id=DYNAMIC_FRONTIER_ID,
-        source_target_id=DYNAMIC_SOURCE_TARGET_ID,
-        extractor_field="reachable_static_slot.write_preservation",
-        checker_type=(
-            "OriginalWorldExecutionInvariant "
-            "(BSS dtor-head zero and preservation)"
+        RuntimeIndirectCheckedEvidence(
+            source_target_id=dynamic_source_target_id,
+            evidence_kind="launch-zero-and-decoded-nonzero-guard",
+            lean_terms=(
+                "generatedDynamicHeadInitialZeroChecked",
+                "generatedDynamicGuardEdgeChecked",
+                "generatedDynamicSelectedSourceUninhabited",
+                "generatedDynamicSelectedComposition",
+            ),
         ),
-        reason=(
-            "the BSS head at RVA 0x30364 is launch-zero and a generic complete "
-            "write-trace theorem now carries that zero to the final state; "
-            "the exact artifacts still lack a CompleteWriteFootprintTrace "
-            "covering every reachable decoded/external write and checked "
-            "separation from runtime-owned ranges"
+    )
+
+
+def _remaining_operational_frontiers(
+    *,
+    constructor_source_target_id: int,
+    dynamic_source_target_id: int,
+) -> tuple[RuntimeIndirectEvidenceGap, ...]:
+    """Return only premises that the imported checked artifacts do not prove."""
+
+    return (
+        RuntimeIndirectEvidenceGap(
+            frontier_id=CONSTRUCTOR_FRONTIER_ID,
+            source_target_id=constructor_source_target_id,
+            extractor_field=(
+                "mixed_component.rooted_scanner_selected_projection"
+            ),
+            checker_type="CheckedRootedScannerSelectedSourceProjection",
+            reason=(
+                "the exact scanner decoder, zero/bypass semantics, rooted SCC, "
+                "execution authority, and source-exclusion theorem are checked; "
+                "the remaining term must project every classifier-selected "
+                "source state into RootedScannerOperationalReachable, including "
+                "the selector-to-bypass scanner macro-step"
+            ),
         ),
-    ),
-)
+        RuntimeIndirectEvidenceGap(
+            frontier_id=DYNAMIC_FRONTIER_ID,
+            source_target_id=dynamic_source_target_id,
+            extractor_field=(
+                "reachable_static_slot.selected_zero_guard_projection"
+            ),
+            checker_type="CheckedGuardedZeroSelectedSourceProjection",
+            reason=(
+                "Lean checks the BSS head at RVA 0x30364 is launch-zero and "
+                "that the guard site reaches the destructor path only through "
+                "its nonzero guard; the remaining term must provide a "
+                "CompleteWriteFootprintTrace for each admitted selected source "
+                "and prove that reaching the dynamic source entails selection "
+                "of that guarded edge"
+            ),
+        ),
+    )
 
 
 def _mapping(value: Any, field: str) -> Mapping[str, Any]:
@@ -211,7 +265,7 @@ def _site(
     closure: Mapping[str, Any],
     *,
     mode: str,
-    source_target_id: int,
+    expected_source_target_id: int,
     stable_id: str,
 ) -> tuple[int, Mapping[str, Any]]:
     matches: list[tuple[int, Mapping[str, Any]]] = []
@@ -225,10 +279,10 @@ def _site(
         )
     index, row = matches[0]
     if _natural(row.get("source_target_id"), f"{mode} source target ID") != (
-        source_target_id
+        expected_source_target_id
     ):
         raise GNUHelloRuntimeIndirectCompositionGenerationError(
-            f"{mode} site is not exact GNU hello target {source_target_id}"
+            f"{mode} site does not resolve to its GNU hello RVA"
         )
     if _string(row.get("stable_id"), f"{mode} stable ID") != stable_id:
         raise GNUHelloRuntimeIndirectCompositionGenerationError(
@@ -237,9 +291,29 @@ def _site(
     return index, row
 
 
-def _decoded_incoming(
+def _target_id_at_rva(
     graph: OriginalCutpointGraphIR,
+    rva: int,
+    field: str,
+) -> int:
+    matches = [
+        region.target_id
+        for region in graph.regions
+        if rva == region.rva or rva in region.alias_rvas
+    ]
+    if len(matches) != 1:
+        raise GNUHelloRuntimeIndirectCompositionGenerationError(
+            f"GNU hello {field} RVA 0x{rva:x} does not resolve uniquely"
+        )
+    return matches[0]
+
+
+def _decoded_incoming_from_rvas(
+    graph: OriginalCutpointGraphIR,
+    *,
     target_id: int,
+    source_rvas: tuple[int, ...],
+    field: str,
 ) -> tuple[tuple[int, int], ...]:
     pairs = tuple(sorted(
         (region.target_id, target_id)
@@ -253,6 +327,14 @@ def _decoded_incoming(
     if len(set(pairs)) != len(pairs):
         raise GNUHelloRuntimeIndirectCompositionGenerationError(
             f"target {target_id} has ambiguous decoded incoming edges"
+        )
+    expected = tuple(sorted(
+        (_target_id_at_rva(graph, rva, f"{field} incoming source"), target_id)
+        for rva in source_rvas
+    ))
+    if pairs != expected:
+        raise GNUHelloRuntimeIndirectCompositionGenerationError(
+            f"GNU hello {field} incoming inventory does not match its RVAs"
         )
     return pairs
 
@@ -271,6 +353,12 @@ def _same_identity(
 
 @dataclass(frozen=True)
 class GNUHelloRuntimeIndirectCompositionPlan:
+    stack_source_target_id: int
+    stack_successor_target_id: int
+    constructor_source_target_id: int
+    dynamic_source_target_id: int
+    dynamic_guard_source_target_id: int
+    dynamic_guard_nonzero_target_id: int
     stack_route_index: int
     stack_site_index: int
     constructor_site_index: int
@@ -285,9 +373,8 @@ class GNUHelloRuntimeIndirectCompositionPlan:
     stack_transfer_authority_constructors: tuple[str, ...]
     stack_target_transfer_index: int
     stack_target_contract_name: str
-    evidence_gaps: tuple[RuntimeIndirectEvidenceGap, ...] = (
-        _UNRESOLVED_OPERATIONAL_FRONTIERS
-    )
+    checked_evidence: tuple[RuntimeIndirectCheckedEvidence, ...]
+    evidence_gaps: tuple[RuntimeIndirectEvidenceGap, ...]
 
     @property
     def stack_route_authority_name(self) -> str:
@@ -322,6 +409,21 @@ class GNUHelloRuntimeIndirectCompositionPlan:
 
     def validate(self) -> None:
         for field, value in (
+            ("stack source target ID", self.stack_source_target_id),
+            ("stack successor target ID", self.stack_successor_target_id),
+            (
+                "constructor source target ID",
+                self.constructor_source_target_id,
+            ),
+            ("dynamic source target ID", self.dynamic_source_target_id),
+            (
+                "dynamic guard source target ID",
+                self.dynamic_guard_source_target_id,
+            ),
+            (
+                "dynamic guard nonzero target ID",
+                self.dynamic_guard_nonzero_target_id,
+            ),
             ("stack route index", self.stack_route_index),
             ("stack site index", self.stack_site_index),
             ("constructor site index", self.constructor_site_index),
@@ -364,7 +466,7 @@ class GNUHelloRuntimeIndirectCompositionPlan:
             self.stack_transfer_authority_names
         ):
             raise GNUHelloRuntimeIndirectCompositionGenerationError(
-                "target-292 transfer index is outside the exact route"
+                "stack-source transfer index is outside the exact route"
             )
         if (
             self.stack_transfer_authority_constructors[
@@ -373,15 +475,16 @@ class GNUHelloRuntimeIndirectCompositionPlan:
             != "finiteFrame"
         ):
             raise GNUHelloRuntimeIndirectCompositionGenerationError(
-                "target-292 transfer is not a finite-origin caller-frame edge"
+                "stack-source transfer is not a finite-origin "
+                "caller-frame edge"
             )
         _lean_name(
             self.stack_target_contract_name,
-            "target-292 caller-frame contract",
+            "stack-source caller-frame contract",
         )
         expected = {
-            CONSTRUCTOR_SOURCE_TARGET_ID: self.constructor_incoming,
-            DYNAMIC_SOURCE_TARGET_ID: self.dynamic_incoming,
+            self.constructor_source_target_id: self.constructor_incoming,
+            self.dynamic_source_target_id: self.dynamic_incoming,
         }
         for target_id, incoming in expected.items():
             if not incoming or tuple(sorted(set(incoming))) != incoming:
@@ -392,23 +495,28 @@ class GNUHelloRuntimeIndirectCompositionPlan:
                 raise GNUHelloRuntimeIndirectCompositionGenerationError(
                     f"target {target_id} incoming inventory crosses cuts"
                 )
-        if self.constructor_incoming != CONSTRUCTOR_INCOMING:
+        expected_evidence = _checked_static_evidence(
+            stack_source_target_id=self.stack_source_target_id,
+            constructor_source_target_id=self.constructor_source_target_id,
+            dynamic_source_target_id=self.dynamic_source_target_id,
+        )
+        if self.checked_evidence != expected_evidence:
             raise GNUHelloRuntimeIndirectCompositionGenerationError(
-                "constructor incoming inventory is not exact GNU hello data"
+                "runtime-indirect checked evidence is not canonical"
             )
-        if self.dynamic_incoming != DYNAMIC_INCOMING:
-            raise GNUHelloRuntimeIndirectCompositionGenerationError(
-                "dynamic incoming inventory is not exact GNU hello data"
-            )
-        if self.evidence_gaps != _UNRESOLVED_OPERATIONAL_FRONTIERS:
+        expected_gaps = _remaining_operational_frontiers(
+            constructor_source_target_id=self.constructor_source_target_id,
+            dynamic_source_target_id=self.dynamic_source_target_id,
+        )
+        if self.evidence_gaps != expected_gaps:
             raise GNUHelloRuntimeIndirectCompositionGenerationError(
                 "runtime-indirect evidence gaps are not canonical"
             )
         for gap in self.evidence_gaps:
             if gap.source_target_id not in {
-                STACK_SOURCE_TARGET_ID,
-                CONSTRUCTOR_SOURCE_TARGET_ID,
-                DYNAMIC_SOURCE_TARGET_ID,
+                self.stack_source_target_id,
+                self.constructor_source_target_id,
+                self.dynamic_source_target_id,
             }:
                 raise GNUHelloRuntimeIndirectCompositionGenerationError(
                     "runtime-indirect evidence gap names an unknown source"
@@ -464,22 +572,40 @@ def plan_gnu_hello_runtime_indirect_composition(
         raise GNUHelloRuntimeIndirectCompositionGenerationError(
             "rooted unreachability is not bound to the exact cutpoint graph"
         )
+    stack_source_target_id = _target_id_at_rva(
+        graph, _STACK_SOURCE_RVA, "stack source"
+    )
+    stack_successor_target_id = _target_id_at_rva(
+        graph, _STACK_SUCCESSOR_RVA, "stack successor"
+    )
+    constructor_source_target_id = _target_id_at_rva(
+        graph, _CONSTRUCTOR_SOURCE_RVA, "constructor source"
+    )
+    dynamic_source_target_id = _target_id_at_rva(
+        graph, _DYNAMIC_SOURCE_RVA, "dynamic source"
+    )
+    dynamic_guard_source_target_id = _target_id_at_rva(
+        graph, _DYNAMIC_GUARD_SOURCE_RVA, "dynamic guard source"
+    )
+    dynamic_guard_nonzero_target_id = _target_id_at_rva(
+        graph, _DYNAMIC_GUARD_NONZERO_RVA, "dynamic guard nonzero target"
+    )
     stack_site_index, stack_site = _site(
         closure,
         mode="finite_stack_target",
-        source_target_id=STACK_SOURCE_TARGET_ID,
+        expected_source_target_id=stack_source_target_id,
         stable_id=STACK_SITE_STABLE_ID,
     )
     constructor_site_index, _constructor_site = _site(
         closure,
         mode="empty_indexed_source",
-        source_target_id=CONSTRUCTOR_SOURCE_TARGET_ID,
+        expected_source_target_id=constructor_source_target_id,
         stable_id=CONSTRUCTOR_FRONTIER_ID,
     )
     dynamic_site_index, _dynamic_site = _site(
         closure,
         mode="uninhabited_dynamic_source",
-        source_target_id=DYNAMIC_SOURCE_TARGET_ID,
+        expected_source_target_id=dynamic_source_target_id,
         stable_id=DYNAMIC_FRONTIER_ID,
     )
 
@@ -504,7 +630,7 @@ def plan_gnu_hello_runtime_indirect_composition(
             f"runtime value-carry route {index} origin",
         )
         if (
-            target_fact.get("target_id") == STACK_SOURCE_TARGET_ID
+            target_fact.get("target_id") == stack_source_target_id
             and origin.get("target_id") == allowed[0]
         ):
             route_matches.append(index)
@@ -587,7 +713,10 @@ def plan_gnu_hello_runtime_indirect_composition(
                 f"constructor: {authority_key!r}"
             ) from error
         stack_transfer_authority_constructors.append(constructor)
-        if edge[1:] == (STACK_SOURCE_TARGET_ID, 293):
+        if edge[1:] == (
+            stack_source_target_id,
+            stack_successor_target_id,
+        ):
             if (
                 authority_key
                 != (
@@ -596,36 +725,36 @@ def plan_gnu_hello_runtime_indirect_composition(
                 )
             ):
                 raise GNUHelloRuntimeIndirectCompositionGenerationError(
-                    "target-292 route edge has the wrong semantic authority"
+                    "stack-source route edge has the wrong semantic authority"
                 )
             stack_target_transfer_indices.append(transfer_index)
             authority_term = _mapping(
                 transfer.get("authority_lean_term"),
-                "target-292 route authority Lean term",
+                "stack-source route authority Lean term",
             )
             namespace = _lean_name(
                 authority_term.get("namespace"),
-                "target-292 route authority namespace",
+                "stack-source route authority namespace",
             )
             symbol = _lean_name(
                 authority_term.get("symbol"),
-                "target-292 route authority symbol",
+                "stack-source route authority symbol",
             )
             if (
                 symbol
                 != "generatedCheckedFiniteOriginCallCallerFrameWordControlContract"
             ):
                 raise GNUHelloRuntimeIndirectCompositionGenerationError(
-                    "target-292 route authority has the wrong contract symbol"
+                    "stack-source route authority has the wrong contract symbol"
                 )
             stack_target_contract_names.append(f"{namespace}.{symbol}")
     if len(stack_target_transfer_indices) != 1:
         raise GNUHelloRuntimeIndirectCompositionGenerationError(
-            "GNU hello route has no unique target-292-to-293 transfer"
+            "GNU hello route has no unique stack-source-to-successor transfer"
         )
     if len(stack_target_contract_names) != 1:
         raise GNUHelloRuntimeIndirectCompositionGenerationError(
-            "GNU hello route has no unique target-292 caller-frame contract"
+            "GNU hello route has no unique stack-source caller-frame contract"
         )
 
     rooted_entries = _rows(rooted.get("entries"), "rooted entries")
@@ -634,7 +763,7 @@ def plan_gnu_hello_runtime_indirect_composition(
         for index, raw in enumerate(rooted_entries)
         if (
             isinstance(raw, Mapping)
-            and raw.get("source_target_id") == CONSTRUCTOR_SOURCE_TARGET_ID
+            and raw.get("stable_id") == CONSTRUCTOR_FRONTIER_ID
         )
     ]
     if len(rooted_matches) != 1:
@@ -642,9 +771,10 @@ def plan_gnu_hello_runtime_indirect_composition(
             "GNU hello constructor has no unique rooted certificate"
         )
     rooted_entry = rooted_matches[0]
-    if rooted_entry.get("stable_id") != CONSTRUCTOR_FRONTIER_ID:
+    if rooted_entry.get("source_target_id") != constructor_source_target_id:
         raise GNUHelloRuntimeIndirectCompositionGenerationError(
-            "GNU hello rooted constructor certificate has the wrong stable ID"
+            "rooted constructor certificate does not resolve to its "
+            "GNU hello RVA"
         )
     expected_constructor_authority = (
         "StageA.GeneratedRelational.OriginalStackDynamicControlClosure."
@@ -669,10 +799,33 @@ def plan_gnu_hello_runtime_indirect_composition(
         )
     rooted_definition_name = rooted_authority_name.removesuffix("Authority")
 
-    constructor_incoming = _decoded_incoming(
-        graph, CONSTRUCTOR_SOURCE_TARGET_ID
+    constructor_incoming = _decoded_incoming_from_rvas(
+        graph,
+        target_id=constructor_source_target_id,
+        source_rvas=_CONSTRUCTOR_INCOMING_SOURCE_RVAS,
+        field="constructor",
     )
-    dynamic_incoming = _decoded_incoming(graph, DYNAMIC_SOURCE_TARGET_ID)
+    dynamic_incoming = _decoded_incoming_from_rvas(
+        graph,
+        target_id=dynamic_source_target_id,
+        source_rvas=_DYNAMIC_INCOMING_SOURCE_RVAS,
+        field="dynamic",
+    )
+    graph_pairs = {
+        (edge.source_target_id, edge.target_target_id)
+        for edge in graph.edges
+    }
+    if (
+        dynamic_guard_source_target_id,
+        dynamic_guard_nonzero_target_id,
+    ) not in graph_pairs:
+        raise GNUHelloRuntimeIndirectCompositionGenerationError(
+            "GNU hello dynamic guarded predecessor edge is absent"
+        )
+    if dynamic_guard_nonzero_target_id not in graph.reachable_target_ids:
+        raise GNUHelloRuntimeIndirectCompositionGenerationError(
+            "GNU hello dynamic guarded predecessor is not reachable"
+        )
     rooted_pairs = {
         (
             _natural(
@@ -692,6 +845,12 @@ def plan_gnu_hello_runtime_indirect_composition(
         )
 
     plan = GNUHelloRuntimeIndirectCompositionPlan(
+        stack_source_target_id=stack_source_target_id,
+        stack_successor_target_id=stack_successor_target_id,
+        constructor_source_target_id=constructor_source_target_id,
+        dynamic_source_target_id=dynamic_source_target_id,
+        dynamic_guard_source_target_id=dynamic_guard_source_target_id,
+        dynamic_guard_nonzero_target_id=dynamic_guard_nonzero_target_id,
         stack_route_index=stack_route_index,
         stack_site_index=stack_site_index,
         constructor_site_index=constructor_site_index,
@@ -716,6 +875,15 @@ def plan_gnu_hello_runtime_indirect_composition(
         ),
         stack_target_transfer_index=stack_target_transfer_indices[0],
         stack_target_contract_name=stack_target_contract_names[0],
+        checked_evidence=_checked_static_evidence(
+            stack_source_target_id=stack_source_target_id,
+            constructor_source_target_id=constructor_source_target_id,
+            dynamic_source_target_id=dynamic_source_target_id,
+        ),
+        evidence_gaps=_remaining_operational_frontiers(
+            constructor_source_target_id=constructor_source_target_id,
+            dynamic_source_target_id=dynamic_source_target_id,
+        ),
     )
     plan.validate()
     return plan
@@ -861,7 +1029,9 @@ open StageA.Relational.InterpreterNativeWorld
 open StageA.Relational.NullableCodePointerDispatch
 open StageA.Relational.NullableCodePointerRootedUnreachability
 open StageA.Relational.OriginalStackDynamicControlClosure
+open StageA.Relational.ReachableStaticPointerSlot
 open StageA.Relational.RuntimeIndirectComposition
+open StageA.Relational.RuntimeIndirectEffects
 open StageA.Relational.RuntimeValueCarrySemantics
 open StageA.Relational.StackDynamicIndirectMixedOriginalComposition
 
@@ -887,6 +1057,163 @@ theorem generatedConstructorRootedSourceExcluded
       generatedConstructorAuthority.site.sourceTargetId) :
     False :=
   {plan.constructor_rooted_source_excluded_name} reachable
+
+/-- The imported rooted scanner authority closes the constructor source once
+the selected mixed-component invariant supplies the operational projection.
+The projection is the only remaining premise; no endpoint or reachability
+status is accepted here. -/
+noncomputable def generatedConstructorSelectedSourceUninhabited
+    {{originalAuthority : ExactOriginalDecodedAuthority generatedContext}}
+    {{original : DecodedWorldProgram}}
+    {{candidate : ExactNativeWorldProgram}}
+    {{candidateAuthority : ExactNativeCandidateAuthority candidate}}
+    {{contract : MixedRelationContract}}
+    {{launch : PE32ConsoleLaunchV2}}
+    {{originalRoot :
+      DirectExactOriginalDecodedLaunchRoot generatedContext launch}}
+    {{reachability : ExactOriginalDecodedReachability generatedContext
+      originalAuthority launch originalRoot}}
+    {{candidateRootRva : Nat}}
+    {{program : CompiledKernelProgram}}
+    {{abi : KernelABIRelation}}
+    {{dispatches : RelationalWorld -> KernelDispatchRelation}}
+    {{invariant : MixedExecutionInvariant reachability.targetIds contract}}
+    {{cases : CheckedMixedKernelComponentCases generatedContext
+      originalAuthority original candidate candidateAuthority contract launch
+      originalRoot reachability candidateRootRva program abi dispatches
+      invariant}}
+    {{closure : CheckedMixedKernelSelectedInvariantClosure cases}}
+    (projection : CheckedRootedScannerSelectedSourceProjection closure
+      generatedConstructorRootedExecutionAuthority) :
+    ActualMixedOriginalStackDynamicSourceUninhabited
+      closure.strengthenedInvariant
+      generatedConstructorAuthority.site.sourceTargetId :=
+  projection.sourceUninhabited
+
+noncomputable def generatedConstructorSelectedComposition
+    {{originalAuthority : ExactOriginalDecodedAuthority generatedContext}}
+    {{original : DecodedWorldProgram}}
+    {{candidate : ExactNativeWorldProgram}}
+    {{candidateAuthority : ExactNativeCandidateAuthority candidate}}
+    {{contract : MixedRelationContract}}
+    {{launch : PE32ConsoleLaunchV2}}
+    {{originalRoot :
+      DirectExactOriginalDecodedLaunchRoot generatedContext launch}}
+    {{reachability : ExactOriginalDecodedReachability generatedContext
+      originalAuthority launch originalRoot}}
+    {{candidateRootRva : Nat}}
+    {{program : CompiledKernelProgram}}
+    {{abi : KernelABIRelation}}
+    {{dispatches : RelationalWorld -> KernelDispatchRelation}}
+    {{invariant : MixedExecutionInvariant reachability.targetIds contract}}
+    {{cases : CheckedMixedKernelComponentCases generatedContext
+      originalAuthority original candidate candidateAuthority contract launch
+      originalRoot reachability candidateRootRva program abi dispatches
+      invariant}}
+    {{closure : CheckedMixedKernelSelectedInvariantClosure cases}}
+    (projection : CheckedRootedScannerSelectedSourceProjection closure
+      generatedConstructorRootedExecutionAuthority) :
+    IndexedTableMixedOriginalComposition generatedConstructorAuthority
+      closure.strengthenedInvariant :=
+  .unreachable (generatedConstructorSelectedSourceUninhabited projection)
+
+/-- Generic history-sensitive bridge for a zero-initialized word guarding a
+later source. Static checking establishes the exact slot and branch shape;
+the selected invariant must provide a complete write trace and show that
+reaching the later source entails selection of the nonzero edge. -/
+structure CheckedGuardedZeroSelectedSourceProjection
+    {{originalAuthority : ExactOriginalDecodedAuthority generatedContext}}
+    {{original : DecodedWorldProgram}}
+    {{candidate : ExactNativeWorldProgram}}
+    {{candidateAuthority : ExactNativeCandidateAuthority candidate}}
+    {{contract : MixedRelationContract}}
+    {{launch : PE32ConsoleLaunchV2}}
+    {{originalRoot :
+      DirectExactOriginalDecodedLaunchRoot generatedContext launch}}
+    {{reachability : ExactOriginalDecodedReachability generatedContext
+      originalAuthority launch originalRoot}}
+    {{candidateRootRva : Nat}}
+    {{program : CompiledKernelProgram}}
+    {{abi : KernelABIRelation}}
+    {{dispatches : RelationalWorld -> KernelDispatchRelation}}
+    {{invariant : MixedExecutionInvariant reachability.targetIds contract}}
+    {{cases : CheckedMixedKernelComponentCases generatedContext
+      originalAuthority original candidate candidateAuthority contract launch
+      originalRoot reachability candidateRootRva program abi dispatches
+      invariant}}
+    (closure : CheckedMixedKernelSelectedInvariantClosure cases)
+    (certificate : ReachableStaticPointerSlot.Certificate)
+    (reachableTargetIds : List Nat)
+    (guardedEdge : ReachableStaticPointerSlot.GuardedNonzeroEdge)
+    (guardBehavior : NormalizedSymbolicBehavior)
+    (sourceTargetId : Nat) : Prop where
+  certificateChecked : certificate.checked generatedContext = true
+  noTargets : certificate.allowedTargetIds = .exact []
+  reachableExact : certificate.reachableTargetIds = .exact reachableTargetIds
+  guardNormalized : normalizedRegionBehavior? generatedContext
+    guardedEdge.sourceTargetId = some guardBehavior
+  guardChecked : guardedEdge.checked generatedContext certificate
+    reachableTargetIds = true
+  project : forall originalExecution candidateExecution,
+    closure.strengthenedInvariant.holds originalExecution candidateExecution ->
+      originalExecutionAtTargetId sourceTargetId originalExecution ->
+      exists initialMemory guardState,
+        LaunchSlotInitialized generatedContext certificate initialMemory /\
+          CompleteWriteFootprintTrace generatedContext certificate
+            generatedCarrierContext false initialMemory guardState.memory /\
+          selectedBranchTarget guardState guardBehavior.outcome =
+            some guardedEdge.nonzeroTargetId
+
+theorem CheckedGuardedZeroSelectedSourceProjection.sourceUninhabited
+    {{originalAuthority : ExactOriginalDecodedAuthority generatedContext}}
+    {{original : DecodedWorldProgram}}
+    {{candidate : ExactNativeWorldProgram}}
+    {{candidateAuthority : ExactNativeCandidateAuthority candidate}}
+    {{contract : MixedRelationContract}}
+    {{launch : PE32ConsoleLaunchV2}}
+    {{originalRoot :
+      DirectExactOriginalDecodedLaunchRoot generatedContext launch}}
+    {{reachability : ExactOriginalDecodedReachability generatedContext
+      originalAuthority launch originalRoot}}
+    {{candidateRootRva : Nat}}
+    {{program : CompiledKernelProgram}}
+    {{abi : KernelABIRelation}}
+    {{dispatches : RelationalWorld -> KernelDispatchRelation}}
+    {{invariant : MixedExecutionInvariant reachability.targetIds contract}}
+    {{cases : CheckedMixedKernelComponentCases generatedContext
+      originalAuthority original candidate candidateAuthority contract launch
+      originalRoot reachability candidateRootRva program abi dispatches
+      invariant}}
+    {{closure : CheckedMixedKernelSelectedInvariantClosure cases}}
+    {{certificate : ReachableStaticPointerSlot.Certificate}}
+    {{reachableTargetIds : List Nat}}
+    {{guardedEdge : ReachableStaticPointerSlot.GuardedNonzeroEdge}}
+    {{guardBehavior : NormalizedSymbolicBehavior}}
+    {{sourceTargetId : Nat}}
+    (projection : CheckedGuardedZeroSelectedSourceProjection closure
+      certificate reachableTargetIds guardedEdge guardBehavior sourceTargetId) :
+    ActualMixedOriginalStackDynamicSourceUninhabited
+      closure.strengthenedInvariant sourceTargetId := by
+  rintro ⟨world, state, reached⟩
+  rcases reached with
+    ⟨calls, eventIndex, candidateExecution, related⟩ |
+    ⟨calls, eventIndex, callbacks, candidateExecution, related⟩
+  · rcases projection.project
+        (.running sourceTargetId state calls eventIndex world)
+        candidateExecution related.2 rfl with
+      ⟨initialMemory, guardState, initialized, trace, selected⟩
+    have zero := completeWriteFootprintTrace_from_launch_is_zero
+      projection.certificateChecked projection.noTargets initialized trace
+    exact (guardedEdge.not_selected_when_zero projection.guardChecked
+      projection.guardNormalized guardState zero) selected
+  · rcases projection.project
+        (.callbackRunning sourceTargetId state calls eventIndex world callbacks)
+        candidateExecution related.2 rfl with
+      ⟨initialMemory, guardState, initialized, trace, selected⟩
+    have zero := completeWriteFootprintTrace_from_launch_is_zero
+      projection.certificateChecked projection.noTargets initialized trace
+    exact (guardedEdge.not_selected_when_zero projection.guardChecked
+      projection.guardNormalized guardState zero) selected
 
 {transfer_aliases}
 
@@ -914,7 +1241,7 @@ def generatedStackTransferInventory :
 
 def generatedConstructorCut : Certificate := {{
   frontierId := "{CONSTRUCTOR_FRONTIER_ID}"
-  sourceTargetId := {CONSTRUCTOR_SOURCE_TARGET_ID}
+  sourceTargetId := {plan.constructor_source_target_id}
   incomingGuards := [{constructor_guards}]
 }}
 
@@ -931,7 +1258,7 @@ def generatedConstructorCutAuthority :
 
 def generatedDynamicCut : Certificate := {{
   frontierId := "{DYNAMIC_FRONTIER_ID}"
-  sourceTargetId := {DYNAMIC_SOURCE_TARGET_ID}
+  sourceTargetId := {plan.dynamic_source_target_id}
   incomingGuards := [{dynamic_guards}]
 }}
 
@@ -946,14 +1273,116 @@ def generatedDynamicCutAuthority :
   checked := generatedDynamicCutChecked
 }}
 
+def generatedDynamicHeadRva : Nat := {DYNAMIC_HEAD_SLOT_RVA}
+
+/-- This shape value is not a full writable-slot certificate. It exists only
+to make the PE-backed launch-zero and decoded-guard checks independent of the
+still-missing complete write trace. -/
+def generatedDynamicHeadShape : ReachableStaticPointerSlot.Certificate := {{
+  slotRva := generatedDynamicHeadRva
+  reachableTargetIds := .exact Requirements.generatedReachability.targetIds
+  allowedTargetIds := .unknown
+  regions := .unknown
+  guardedNonzeroEdges := .unknown
+  indirectSlotSites := .unknown
+  aliases := .unknown
+}}
+
+theorem generatedDynamicHeadInitialZeroChecked :
+    initialZeroChecked generatedContext generatedDynamicHeadShape = true := by
+  decide +kernel
+
+def generatedDynamicGuardEdge :
+    ReachableStaticPointerSlot.GuardedNonzeroEdge := {{
+  sourceTargetId := {plan.dynamic_guard_source_target_id}
+  nonzeroTargetId := {plan.dynamic_guard_nonzero_target_id}
+}}
+
+theorem generatedDynamicGuardEdgeChecked :
+    generatedDynamicGuardEdge.checked generatedContext
+      generatedDynamicHeadShape Requirements.generatedReachability.targetIds =
+        true := by
+  decide +kernel
+
+/-- The checked zero-word/guard projection rules out the dynamic source and
+constructs the standard composition. A complete certificate and selected
+history projection remain explicit inputs. -/
+noncomputable def generatedDynamicSelectedSourceUninhabited
+    {{originalAuthority : ExactOriginalDecodedAuthority generatedContext}}
+    {{original : DecodedWorldProgram}}
+    {{candidate : ExactNativeWorldProgram}}
+    {{candidateAuthority : ExactNativeCandidateAuthority candidate}}
+    {{contract : MixedRelationContract}}
+    {{launch : PE32ConsoleLaunchV2}}
+    {{originalRoot :
+      DirectExactOriginalDecodedLaunchRoot generatedContext launch}}
+    {{reachability : ExactOriginalDecodedReachability generatedContext
+      originalAuthority launch originalRoot}}
+    {{candidateRootRva : Nat}}
+    {{program : CompiledKernelProgram}}
+    {{abi : KernelABIRelation}}
+    {{dispatches : RelationalWorld -> KernelDispatchRelation}}
+    {{invariant : MixedExecutionInvariant reachability.targetIds contract}}
+    {{cases : CheckedMixedKernelComponentCases generatedContext
+      originalAuthority original candidate candidateAuthority contract launch
+      originalRoot reachability candidateRootRva program abi dispatches
+      invariant}}
+    {{closure : CheckedMixedKernelSelectedInvariantClosure cases}}
+    {{certificate : ReachableStaticPointerSlot.Certificate}}
+    {{reachableTargetIds : List Nat}}
+    {{guardBehavior : NormalizedSymbolicBehavior}}
+    (slotExact : certificate.slotRva = generatedDynamicHeadRva)
+    (projection : CheckedGuardedZeroSelectedSourceProjection closure
+      certificate reachableTargetIds generatedDynamicGuardEdge guardBehavior
+      generatedDynamicSite.site.sourceTargetId) :
+    ActualMixedOriginalStackDynamicSourceUninhabited
+      closure.strengthenedInvariant generatedDynamicSite.site.sourceTargetId := by
+  have _slotExact := slotExact
+  exact projection.sourceUninhabited
+
+noncomputable def generatedDynamicSelectedComposition
+    {{originalAuthority : ExactOriginalDecodedAuthority generatedContext}}
+    {{original : DecodedWorldProgram}}
+    {{candidate : ExactNativeWorldProgram}}
+    {{candidateAuthority : ExactNativeCandidateAuthority candidate}}
+    {{contract : MixedRelationContract}}
+    {{launch : PE32ConsoleLaunchV2}}
+    {{originalRoot :
+      DirectExactOriginalDecodedLaunchRoot generatedContext launch}}
+    {{reachability : ExactOriginalDecodedReachability generatedContext
+      originalAuthority launch originalRoot}}
+    {{candidateRootRva : Nat}}
+    {{program : CompiledKernelProgram}}
+    {{abi : KernelABIRelation}}
+    {{dispatches : RelationalWorld -> KernelDispatchRelation}}
+    {{invariant : MixedExecutionInvariant reachability.targetIds contract}}
+    {{cases : CheckedMixedKernelComponentCases generatedContext
+      originalAuthority original candidate candidateAuthority contract launch
+      originalRoot reachability candidateRootRva program abi dispatches
+      invariant}}
+    {{closure : CheckedMixedKernelSelectedInvariantClosure cases}}
+    {{certificate : ReachableStaticPointerSlot.Certificate}}
+    {{reachableTargetIds : List Nat}}
+    {{guardBehavior : NormalizedSymbolicBehavior}}
+    (slotExact : certificate.slotRva = generatedDynamicHeadRva)
+    (projection : CheckedGuardedZeroSelectedSourceProjection closure
+      certificate reachableTargetIds generatedDynamicGuardEdge guardBehavior
+      generatedDynamicSite.site.sourceTargetId) :
+    DynamicSourceMixedOriginalComposition generatedDynamicSite
+      closure.strengthenedInvariant where
+  complete := {{
+    sourceUninhabited :=
+      generatedDynamicSelectedSourceUninhabited slotExact projection
+  }}
+
 def generatedFrontierInventory : FrontierInventory := {{
   frontiers := [
     {{ stableId := "{STACK_FRONTIER_ID}", kind := .stackFinite,
-      sourceTargetId := {STACK_SOURCE_TARGET_ID} }},
+      sourceTargetId := {plan.stack_source_target_id} }},
     {{ stableId := "{CONSTRUCTOR_FRONTIER_ID}", kind := .indexedGuarded,
-      sourceTargetId := {CONSTRUCTOR_SOURCE_TARGET_ID} }},
+      sourceTargetId := {plan.constructor_source_target_id} }},
     {{ stableId := "{DYNAMIC_FRONTIER_ID}", kind := .dynamicGuarded,
-      sourceTargetId := {DYNAMIC_SOURCE_TARGET_ID} }}
+      sourceTargetId := {plan.dynamic_source_target_id} }}
   ]
 }}
 
@@ -981,8 +1410,8 @@ def FrontierSourcesExact : Prop :=
     [generatedStackAuthority.static.claim.site.sourceTargetId,
       generatedConstructorAuthority.site.sourceTargetId,
       generatedDynamicSite.site.sourceTargetId] =
-    [{STACK_SOURCE_TARGET_ID}, {CONSTRUCTOR_SOURCE_TARGET_ID},
-      {DYNAMIC_SOURCE_TARGET_ID}]
+    [{plan.stack_source_target_id}, {plan.constructor_source_target_id},
+      {plan.dynamic_source_target_id}]
 
 theorem generatedFrontierSourcesExact : FrontierSourcesExact := by
   decide +kernel
@@ -995,7 +1424,7 @@ theorem generatedRootExclusionChecked :
 
 def ConstructorRootedEvidenceExact : Prop :=
     generatedConstructorRootedAuthority.certificate.sccTargetIds.contains
-        {CONSTRUCTOR_SOURCE_TARGET_ID} = true /\\
+        {plan.constructor_source_target_id} = true /\\
       {rooted_members}
 
 theorem generatedConstructorRootedEvidenceExact :
@@ -1036,7 +1465,7 @@ def generatedTarget292CallContract :=
   {plan.stack_target_contract_name}
 
 /-- The checked finite-origin execution retained by the selected mixed
-component supplies both the 292-to-293 route transfer and the canonical
+component supplies both the stack-source route transfer and the canonical
 [ESP+32, ESP+36) stack-range witness. -/
 noncomputable def generatedTarget292StackRangeWitness
     {{originalProgram summaryCandidateProgram : DecodedWorldProgram}}
@@ -1097,7 +1526,7 @@ noncomputable def generatedTarget292SelectedExecution
 
 /-- This bundle is the complete authority currently derivable from the four
 input artifacts. Operational route executions remain attached to the exact
-classifier-selected chunks; their authority indices and target-292 stack
+classifier-selected chunks; their authority indices and stack-source
 window are checked here without accepting endpoints or status fields. -/
 structure CheckedArtifactBundle : Prop where
   constructorCutChecked :
@@ -1124,6 +1553,12 @@ structure CheckedArtifactBundle : Prop where
       generatedConstructorRootedExecutionAuthority
       generatedConstructorAuthority.site.sourceTargetId,
       False
+  dynamicHeadInitialZeroChecked :
+    initialZeroChecked generatedContext generatedDynamicHeadShape = true
+  dynamicGuardEdgeChecked :
+    generatedDynamicGuardEdge.checked generatedContext
+      generatedDynamicHeadShape Requirements.generatedReachability.targetIds =
+        true
   target292StackRangeChecked :
     finiteOriginCallerFrameStackRangeChecked
       generatedStackTransfer{target_transfer_index}Authority generatedStackSeed
@@ -1139,6 +1574,8 @@ def generatedCheckedArtifactBundle : CheckedArtifactBundle := {{
   constructorRootedEvidenceExact := generatedConstructorRootedEvidenceExact
   constructorRootedSourceExcluded :=
     generatedConstructorRootedSourceExcluded
+  dynamicHeadInitialZeroChecked := generatedDynamicHeadInitialZeroChecked
+  dynamicGuardEdgeChecked := generatedDynamicGuardEdgeChecked
   target292StackRangeChecked := generatedTarget292StackRangeChecked
 }}
 
@@ -1149,6 +1586,13 @@ def generatedCheckedArtifactBundle : CheckedArtifactBundle := {{
 #print axioms generatedRootExclusionChecked
 #print axioms generatedConstructorRootedEvidenceExact
 #print axioms generatedConstructorRootedSourceExcluded
+#print axioms generatedConstructorSelectedSourceUninhabited
+#print axioms generatedConstructorSelectedComposition
+#print axioms CheckedGuardedZeroSelectedSourceProjection.sourceUninhabited
+#print axioms generatedDynamicHeadInitialZeroChecked
+#print axioms generatedDynamicGuardEdgeChecked
+#print axioms generatedDynamicSelectedSourceUninhabited
+#print axioms generatedDynamicSelectedComposition
 #print axioms generatedStackSeed
 {transfer_axioms}
 {selected_authority_axioms}
@@ -1179,19 +1623,16 @@ def write_gnu_hello_runtime_indirect_composition_module(
 
 __all__ = [
     "CONSTRUCTOR_FRONTIER_ID",
-    "CONSTRUCTOR_INCOMING",
-    "CONSTRUCTOR_SOURCE_TARGET_ID",
     "DYNAMIC_FRONTIER_ID",
-    "DYNAMIC_INCOMING",
-    "DYNAMIC_SOURCE_TARGET_ID",
+    "DYNAMIC_HEAD_SLOT_RVA",
     "GNU_HELLO_RUNTIME_INDIRECT_COMPOSITION_FORMAT",
     "GNU_HELLO_RUNTIME_INDIRECT_COMPOSITION_LEAN_FILENAME",
     "GNUHelloRuntimeIndirectCompositionGenerationError",
     "GNUHelloRuntimeIndirectCompositionPlan",
+    "RuntimeIndirectCheckedEvidence",
     "RuntimeIndirectEvidenceGap",
     "STACK_FRONTIER_ID",
     "STACK_SITE_STABLE_ID",
-    "STACK_SOURCE_TARGET_ID",
     "gnu_hello_runtime_indirect_composition_source",
     "plan_gnu_hello_runtime_indirect_composition",
     "write_gnu_hello_runtime_indirect_composition_module",

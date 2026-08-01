@@ -61,6 +61,42 @@ class RootedUnreachabilityDriverError(ValueError):
     """Canonical graph evidence cannot support one rooted certificate."""
 
 
+COMBINED_EVIDENCE_MODULE = (
+    "GeneratedRelationalGNUHelloStackDynamicCombinedEvidence"
+)
+COMBINED_EVIDENCE_FORMAT = (
+    "stage-a-gnu-hello-stack-dynamic-combined-evidence-v1"
+)
+COMBINED_EVIDENCE_REPORT = (
+    "gnu-hello-stack-dynamic-combined-evidence.json"
+)
+
+
+@dataclass(frozen=True)
+class _CombinedEvidencePlan:
+    stack_site_index: int
+    constructor_site_index: int
+    dynamic_site_index: int
+    stack_source_target_id: int
+    stack_continuation_target_id: int
+    stack_target_id: int
+    stack_route_index: int
+    stack_call_frame_transfer_index: int
+    constructor_source_target_id: int
+    constructor_table_rva: int
+    constructor_branch_target_ids: tuple[int, ...]
+    constructor_decoded_outcomes: tuple[tuple[int, tuple[int, ...]], ...]
+    dynamic_source_target_id: int
+    dynamic_head_rva: int
+    entry_target_id: int
+    tls_target_ids: tuple[int, int]
+    dynamic_branch_target_ids: tuple[int, ...]
+    dynamic_decoded_outcomes: tuple[tuple[int, tuple[int, ...]], ...]
+    registration_target_ids: tuple[int, int]
+    registration_writer_target_ids: tuple[int, int]
+    zero_writer_target_id: int
+
+
 @dataclass(frozen=True)
 class _RootedUnreachabilityAuthority:
     site_index: int
@@ -136,6 +172,11 @@ class _RootedUnreachabilityAuthority:
                 ),
                 "gate_target_id": (
                     self.scanner_execution.gate_region.target_id
+                ),
+                "dispatch_bridge_target_id": (
+                    None
+                    if self.scanner_execution.dispatch_bridge_region is None
+                    else self.scanner_execution.dispatch_bridge_region.target_id
                 ),
                 "dispatch_bypass_target_id": (
                     self.scanner_execution.dispatch_bypass_target_id
@@ -448,10 +489,30 @@ def _rooted_scanner_execution(
         raise RootedUnreachabilityDriverError(
             "nullable dispatch SCC must have one outside gate edge"
         )
-    gate = regions[outside_incoming[0].source_target_id]
+    dispatch_predecessor = regions[outside_incoming[0].source_target_id]
+    dispatch_bridge = None
+    if tuple(dispatch_predecessor.successor_target_ids) == (source_target_id,):
+        dispatch_bridge = dispatch_predecessor
+        bridge_predecessors = [
+            region
+            for region in graph.regions
+            if dispatch_bridge.target_id in region.successor_target_ids
+        ]
+        if len(bridge_predecessors) != 1:
+            raise RootedUnreachabilityDriverError(
+                "nullable dispatch bridge has no unique gate predecessor"
+            )
+        gate = bridge_predecessors[0]
+    else:
+        gate = dispatch_predecessor
     gate_successors = set(gate.successor_target_ids)
+    dispatch_entry_target_id = (
+        source_target_id
+        if dispatch_bridge is None
+        else dispatch_bridge.target_id
+    )
     if (
-        source_target_id not in gate_successors
+        dispatch_entry_target_id not in gate_successors
         or len(gate_successors) != 2
     ):
         raise RootedUnreachabilityDriverError(
@@ -460,7 +521,7 @@ def _rooted_scanner_execution(
     bypass_target_id = next(
         target_id
         for target_id in gate_successors
-        if target_id != source_target_id
+        if target_id != dispatch_entry_target_id
     )
 
     gate_predecessors = [
@@ -592,6 +653,11 @@ def _rooted_scanner_execution(
         gate_region=_scanner_region_proposal(gate),
         dispatch_source_target_id=source_target_id,
         dispatch_bypass_target_id=bypass_target_id,
+        dispatch_bridge_region=(
+            None
+            if dispatch_bridge is None
+            else _scanner_region_proposal(dispatch_bridge)
+        ),
     )
 
 
@@ -1835,6 +1901,1024 @@ def _runtime_value_carry_ir(
     )
 
 
+def _region_at_rva(
+    graph: OriginalCutpointGraphIR,
+    rva: int,
+    context: str,
+) -> Any:
+    matches = [region for region in graph.regions if region.rva == rva]
+    if len(matches) != 1:
+        raise ValueError(f"{context} has no unique canonical region at 0x{rva:x}")
+    return matches[0]
+
+
+def _closure_site_index(
+    closure: Any,
+    *,
+    instruction_rva: int,
+    closure_mode: str,
+) -> int:
+    matches = [
+        index
+        for index, site in enumerate(closure.sites)
+        if site.finding.instruction_rva == instruction_rva
+        and site.closure_mode == closure_mode
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"GNU hello requires one {closure_mode} site at "
+            f"RVA 0x{instruction_rva:x}"
+        )
+    return matches[0]
+
+
+def _require_semantic_block(
+    semantic_transfers: Mapping[int, Mapping[str, Any]],
+    *,
+    rva: int,
+    instruction_bytes: str,
+    outcome: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    row = semantic_transfers.get(rva)
+    if row is None:
+        raise ValueError(f"semantic block 0x{rva:x} is absent")
+    instructions = row.get("instructions")
+    if not isinstance(instructions, list) or any(
+        not isinstance(instruction, Mapping) for instruction in instructions
+    ):
+        raise ValueError(f"semantic block 0x{rva:x} has no instruction inventory")
+    actual_bytes = "".join(str(instruction.get("bytes")) for instruction in instructions)
+    if actual_bytes != instruction_bytes:
+        raise ValueError(
+            f"semantic block 0x{rva:x} has unexpected exact instruction bytes"
+        )
+    actual_outcome = row.get("outcome")
+    if not isinstance(actual_outcome, Mapping) or any(
+        actual_outcome.get(key) != value for key, value in outcome.items()
+    ):
+        raise ValueError(f"semantic block 0x{rva:x} has an unexpected outcome")
+    return row
+
+
+def _require_exact_edge_by_rva(
+    graph: OriginalCutpointGraphIR,
+    source_rva: int,
+    target_rva: int,
+    context: str,
+) -> None:
+    source = _region_at_rva(graph, source_rva, f"{context} source")
+    target = _region_at_rva(graph, target_rva, f"{context} target")
+    _require_canonical_edge(
+        graph,
+        source.target_id,
+        target.target_id,
+        context=context,
+    )
+
+
+def _preferred_image_zero_word(
+    original: Path,
+    rva: int,
+) -> None:
+    import pefile
+
+    image = pefile.PE(str(original), fast_load=True)
+    try:
+        section = image.get_section_by_rva(rva)
+        if section is None:
+            raise ValueError(f"RVA 0x{rva:x} is not mapped by the exact PE")
+        offset = rva - int(section.VirtualAddress)
+        mapped_size = max(
+            int(section.Misc_VirtualSize),
+            int(section.SizeOfRawData),
+        )
+        if offset < 0 or offset + 4 > mapped_size:
+            raise ValueError(f"RVA 0x{rva:x} is not a complete mapped PE word")
+        raw_size = int(section.SizeOfRawData)
+        if offset < raw_size and image.get_data(rva, 4) != b"\x00" * 4:
+            raise ValueError(f"RVA 0x{rva:x} is not launch-zero in the exact PE")
+    finally:
+        image.close()
+
+
+def _immutable_pe_words(
+    original: Path,
+    rva: int,
+    expected: bytes,
+) -> None:
+    import pefile
+
+    image = pefile.PE(str(original), fast_load=True)
+    try:
+        section = image.get_section_by_rva(rva)
+        if section is None or image.get_data(rva, len(expected)) != expected:
+            raise ValueError(
+                f"immutable table at RVA 0x{rva:x} has unexpected exact bytes"
+            )
+        if int(section.Characteristics) & 0x80000000:
+            raise ValueError(
+                f"table at RVA 0x{rva:x} is in a writable PE section"
+            )
+    finally:
+        image.close()
+
+
+def _combined_evidence_plan(
+    *,
+    original: Path,
+    closure: Any,
+    graph: OriginalCutpointGraphIR,
+    semantic_transfers: Mapping[int, Mapping[str, Any]],
+    runtime_value_carry: RuntimeValueCarryIR,
+) -> _CombinedEvidencePlan:
+    stack_site_index = _closure_site_index(
+        closure,
+        instruction_rva=0x203C,
+        closure_mode="finite_stack_target",
+    )
+    constructor_site_index = _closure_site_index(
+        closure,
+        instruction_rva=0xA220,
+        closure_mode="empty_indexed_source",
+    )
+    dynamic_site_index = _closure_site_index(
+        closure,
+        instruction_rva=0xAB8C,
+        closure_mode="uninhabited_dynamic_source",
+    )
+    stack_site = closure.sites[stack_site_index]
+    constructor_site = closure.sites[constructor_site_index]
+    dynamic_site = closure.sites[dynamic_site_index]
+    if len(stack_site.allowed_target_ids) != 1:
+        raise ValueError("GNU hello stack site does not have one finite target")
+
+    stack_source = _region_at_rva(graph, 0x2033, "stack source")
+    stack_continuation = _region_at_rva(graph, 0x2040, "stack continuation")
+    if (
+        stack_site.finding.source_target_id != stack_source.target_id
+        or stack_site.finding.continuation_target_id
+        != stack_continuation.target_id
+    ):
+        raise ValueError("GNU hello stack site is not bound to its exact call edge")
+    route_matches = [
+        (index, route)
+        for index, route in enumerate(runtime_value_carry.routes)
+        if route.target_fact.target_id == stack_source.target_id
+        and route.origin.target_id == stack_site.allowed_target_ids[0]
+    ]
+    if len(route_matches) != 1:
+        raise ValueError("GNU hello stack site has no unique exact value-carry route")
+    stack_route_index, stack_route = route_matches[0]
+    stack_transfers = [
+        (index, transfer)
+        for index, transfer in enumerate(stack_route.transfers)
+        if transfer.source_target_id == stack_source.target_id
+        and transfer.target_target_id == stack_continuation.target_id
+        and transfer.kind == "call_frame_word_preserve"
+        and transfer.authority_origin
+        == "checked_finite_origin_call_caller_frame_word_summary"
+        and transfer.authority_status == "checked_dependency"
+    ]
+    if len(stack_transfers) != 1:
+        raise ValueError(
+            "GNU hello stack route has no unique checked finite-origin "
+            "caller-frame transfer"
+        )
+    stack_transfer_index, _stack_transfer = stack_transfers[0]
+
+    constructor_source = _region_at_rva(graph, 0xA220, "constructor source")
+    if constructor_site.finding.source_target_id != constructor_source.target_id:
+        raise ValueError("GNU hello constructor site has the wrong source target")
+    constructor_path_rvas = (
+        0xA200,
+        0xA248,
+        0xA250,
+        0xA260,
+        0xA20F,
+        0xA22C,
+        0xA220,
+        0xA227,
+    )
+    _immutable_pe_words(
+        original,
+        0x280E8,
+        bytes.fromhex("ffffffff00000000"),
+    )
+    _require_semantic_block(
+        semantic_transfers,
+        rva=0xA200,
+        instruction_bytes="5383ec188b1de880420083fbff7439",
+        outcome={
+            "kind": "branch",
+            "true_target_rva": 0xA248,
+            "false_target_rva": 0xA20F,
+        },
+    )
+    _require_semantic_block(
+        semantic_transfers,
+        rva=0xA248,
+        instruction_bytes="31c08db600000000",
+        outcome={"kind": "fallthrough", "target_rva": 0xA250},
+    )
+    _require_semantic_block(
+        semantic_transfers,
+        rva=0xA250,
+        instruction_bytes="89c383c0018b1485e880420085d275f0",
+        outcome={
+            "kind": "branch",
+            "true_target_rva": 0xA250,
+            "false_target_rva": 0xA260,
+        },
+    )
+    _require_semantic_block(
+        semantic_transfers,
+        rva=0xA260,
+        instruction_bytes="ebad",
+        outcome={"kind": "jump", "target_rva": 0xA20F},
+    )
+    _require_semantic_block(
+        semantic_transfers,
+        rva=0xA20F,
+        instruction_bytes="85db7419",
+        outcome={
+            "kind": "branch",
+            "true_target_rva": 0xA22C,
+            "false_target_rva": 0xA213,
+        },
+    )
+    for source_rva, target_rva in (
+        (0xA200, 0xA248),
+        (0xA248, 0xA250),
+        (0xA250, 0xA260),
+        (0xA260, 0xA20F),
+        (0xA20F, 0xA22C),
+    ):
+        _require_exact_edge_by_rva(
+            graph,
+            source_rva,
+            target_rva,
+            "constructor immutable-word path",
+        )
+
+    dynamic_source = _region_at_rva(graph, 0xAB86, "dynamic source")
+    if dynamic_site.finding.source_target_id != dynamic_source.target_id:
+        raise ValueError("GNU hello dynamic site has the wrong source target")
+    entry_roots = [
+        region for region in graph.regions if region.root and region.rva == 0x1420
+    ]
+    if len(entry_roots) != 1:
+        raise ValueError("GNU hello has no unique PE entry root")
+    tls_regions = tuple(
+        _region_at_rva(graph, rva, "TLS callback")
+        for rva in (0xA2F0, 0xA2A0)
+    )
+    if not all(region.root for region in tls_regions):
+        raise ValueError("GNU hello TLS callbacks are not exact graph roots")
+    exact_roots = {entry_roots[0].target_id, *(r.target_id for r in tls_regions)}
+    if set(graph.root_target_ids) != exact_roots:
+        raise ValueError("GNU hello cutpoint graph has unexpected launch roots")
+
+    _preferred_image_zero_word(original, 0x30364)
+    for rva, instruction_bytes, outcome in (
+        (
+            0xA2A0,
+            "83ec1c8b44242483f8037414",
+            {
+                "kind": "branch",
+                "true_target_rva": 0xA2C0,
+                "false_target_rva": 0xA2AC,
+            },
+        ),
+        (
+            0xA2AC,
+            "85c07410",
+            {
+                "kind": "branch",
+                "true_target_rva": 0xA2C0,
+                "false_target_rva": 0xA2B0,
+            },
+        ),
+        (
+            0xA310,
+            "83f801743b",
+            {
+                "kind": "branch",
+                "true_target_rva": 0xA350,
+                "false_target_rva": 0xA315,
+            },
+        ),
+        (
+            0xACD0,
+            "83ec2c8b44243483f8020f84b8000000",
+            {
+                "kind": "branch",
+                "true_target_rva": 0xAD98,
+                "false_target_rva": 0xACE0,
+            },
+        ),
+        (
+            0xACE2,
+            "85c07442",
+            {
+                "kind": "branch",
+                "true_target_rva": 0xAD28,
+                "false_target_rva": 0xACE6,
+            },
+        ),
+        (
+            0xAB54,
+            "8b1d6403430083ec0485db7434",
+            {
+                "kind": "branch",
+                "true_target_rva": 0xAB95,
+                "false_target_rva": 0xAB61,
+            },
+        ),
+    ):
+        _require_semantic_block(
+            semantic_transfers,
+            rva=rva,
+            instruction_bytes=instruction_bytes,
+            outcome=outcome,
+        )
+
+    registration_regions = tuple(
+        _region_at_rva(graph, rva, "callback-list mutator")
+        for rva in (0xABB0, 0xAC30)
+    )
+    for region in registration_regions:
+        incoming = [
+            edge
+            for edge in graph.edges
+            if edge.target_target_id == region.target_id
+            and edge.transition_role != "dataflow"
+        ]
+        if incoming or region.target_id in graph.reachable_target_ids or region.root:
+            raise ValueError(
+                "callback-list mutator is reachable in the exact launch graph"
+            )
+    head_address = 0x400000 + 0x30364
+    writer_rvas: set[int] = set()
+    for block_rva, row in semantic_transfers.items():
+        memory_events = row.get("memory_events")
+        if not isinstance(memory_events, list):
+            raise ValueError(f"semantic block 0x{block_rva:x} has no memory events")
+        for event in memory_events:
+            if (
+                isinstance(event, Mapping)
+                and event.get("kind") == "write"
+                and event.get("address") == _semantic_constant(head_address)
+            ):
+                writer_rvas.add(block_rva)
+    if writer_rvas != {0xABF9, 0xACC0, 0xAD69}:
+        raise ValueError("dynamic head has an unexpected exact static writer set")
+    registration_writer_regions = tuple(
+        _region_at_rva(graph, rva, "callback-list writer")
+        for rva in (0xABF9, 0xACC0)
+    )
+    if any(
+        region.target_id in graph.reachable_target_ids
+        for region in registration_writer_regions
+    ):
+        raise ValueError("a callback-list nonzero writer is statically reachable")
+    zero_writer = _region_at_rva(graph, 0xAD69, "TLS zero writer")
+
+    dynamic_branch_rvas = (
+        0xA2A0,
+        0xA2AC,
+        0xA2B0,
+        0xA2F0,
+        0xA310,
+        0xA350,
+        0xACD0,
+        0xACE0,
+        0xACE2,
+        0xACE6,
+        0xACFD,
+        0xAB54,
+        0xAB61,
+        0xAB86,
+        0xAB95,
+    )
+    return _CombinedEvidencePlan(
+        stack_site_index=stack_site_index,
+        constructor_site_index=constructor_site_index,
+        dynamic_site_index=dynamic_site_index,
+        stack_source_target_id=stack_source.target_id,
+        stack_continuation_target_id=stack_continuation.target_id,
+        stack_target_id=stack_site.allowed_target_ids[0],
+        stack_route_index=stack_route_index,
+        stack_call_frame_transfer_index=stack_transfer_index,
+        constructor_source_target_id=constructor_source.target_id,
+        constructor_table_rva=0x280E8,
+        constructor_branch_target_ids=tuple(
+            _region_at_rva(graph, rva, "constructor branch").target_id
+            for rva in constructor_path_rvas
+        ),
+        constructor_decoded_outcomes=tuple(
+            (
+                _region_at_rva(graph, source_rva, "constructor outcome").target_id,
+                target_rvas,
+            )
+            for source_rva, target_rvas in (
+                (0xA200, (0xA248, 0xA20F)),
+                (0xA248, (0xA250,)),
+                (0xA250, (0xA250, 0xA260)),
+                (0xA260, (0xA20F,)),
+                (0xA20F, (0xA22C, 0xA213)),
+            )
+        ),
+        dynamic_source_target_id=dynamic_source.target_id,
+        dynamic_head_rva=0x30364,
+        entry_target_id=entry_roots[0].target_id,
+        tls_target_ids=(tls_regions[0].target_id, tls_regions[1].target_id),
+        dynamic_branch_target_ids=tuple(
+            _region_at_rva(graph, rva, "dynamic branch").target_id
+            for rva in dynamic_branch_rvas
+        ),
+        dynamic_decoded_outcomes=tuple(
+            (
+                _region_at_rva(graph, source_rva, "dynamic outcome").target_id,
+                target_rvas,
+            )
+            for source_rva, target_rvas in (
+                (0xA2A0, (0xA2C0, 0xA2AC)),
+                (0xA2AC, (0xA2C0, 0xA2B0)),
+                (0xA310, (0xA350, 0xA315)),
+                (0xACD0, (0xAD98, 0xACE0)),
+                (0xACE2, (0xAD28, 0xACE6)),
+                (0xAB54, (0xAB95, 0xAB61)),
+            )
+        ),
+        registration_target_ids=(
+            registration_regions[0].target_id,
+            registration_regions[1].target_id,
+        ),
+        registration_writer_target_ids=(
+            registration_writer_regions[0].target_id,
+            registration_writer_regions[1].target_id,
+        ),
+        zero_writer_target_id=zero_writer.target_id,
+    )
+
+
+def _lean_target_rva_pairs(
+    graph: OriginalCutpointGraphIR,
+    target_ids: tuple[int, ...],
+) -> str:
+    regions = _canonical_regions(graph)
+    return ", ".join(
+        f"({target_id}, {regions[target_id].rva})" for target_id in target_ids
+    )
+
+
+def _lean_decoded_outcomes(
+    outcomes: tuple[tuple[int, tuple[int, ...]], ...],
+) -> str:
+    return ", ".join(
+        f"({target_id}, [{', '.join(str(rva) for rva in target_rvas)}])"
+        for target_id, target_rvas in outcomes
+    )
+
+
+def _combined_evidence_source(
+    plan: _CombinedEvidencePlan,
+    graph: OriginalCutpointGraphIR,
+) -> str:
+    namespace = "StageA.GeneratedRelational.GNUHelloStackDynamicCombinedEvidence"
+    closure_namespace = (
+        "StageA.GeneratedRelational.OriginalStackDynamicControlClosure"
+    )
+    stack_entry_module = (
+        "GeneratedRelationalStackFiniteOriginCallEntry"
+        f"{plan.stack_source_target_id:08d}"
+    )
+    stack_entry_namespace = (
+        "StageA.Generated.StackFiniteOriginCallEntry"
+        f"{plan.stack_source_target_id:08d}"
+    )
+    constructor_pairs = _lean_target_rva_pairs(
+        graph, plan.constructor_branch_target_ids
+    )
+    dynamic_pairs = _lean_target_rva_pairs(
+        graph,
+        (
+            *plan.dynamic_branch_target_ids,
+            *plan.registration_target_ids,
+            *plan.registration_writer_target_ids,
+            plan.zero_writer_target_id,
+        ),
+    )
+    constructor_outcomes = _lean_decoded_outcomes(
+        plan.constructor_decoded_outcomes
+    )
+    dynamic_outcomes = _lean_decoded_outcomes(plan.dynamic_decoded_outcomes)
+    tls0, tls1 = plan.tls_target_ids
+    table_address = 0x400000 + plan.constructor_table_rva
+    head_rva = plan.dynamic_head_rva
+    return f"""import StageA.RelationalOriginalCombinedExecutionInvariant
+import StageA.GeneratedRelationalOriginalStackDynamicControlClosure
+import StageA.GeneratedRelationalRuntimeValueCarrySemantics
+import StageA.{stack_entry_module}
+
+namespace {namespace}
+
+open StageA.Formal StageA.Relational
+open StageA.Relational.OriginalCallFrameExecutionInvariant
+open StageA.Relational.OriginalCombinedExecutionInvariant
+open StageA.Relational.OriginalStackDynamicControlClosure
+open StageA.Relational.StackDynamicIndirectControl
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+def generatedContext :=
+  StageA.GeneratedRelational.InterpreterMixedOriginalBase.generatedOriginalStaticContext
+
+def generatedCarrierContext :=
+  StageA.GeneratedRelational.InterpreterMixedOriginalBase.generatedOriginalCarrierContext
+
+def generatedStackAuthority :=
+  {closure_namespace}.generatedOriginalStackDynamicClosure{plan.stack_site_index}StackAuthority
+
+def generatedConstructorAuthority :=
+  {closure_namespace}.generatedOriginalStackDynamicClosure{plan.constructor_site_index}EmptyIndexedAuthority
+
+def generatedDynamicSite :=
+  {closure_namespace}.generatedOriginalStackDynamicClosure{plan.dynamic_site_index}Site
+
+def generatedStackCallEntryCertificate :=
+  {stack_entry_namespace}.generatedIndirectExitCertificate
+
+def generatedStackCallFrameTransferAuthority :=
+  StageA.GeneratedRelational.RuntimeValueCarry.generatedRuntimeValueCarryRoute{plan.stack_route_index}Transfer{plan.stack_call_frame_transfer_index}Authority
+
+def generatedCodeTargetRvaChecked (targetId rva : Nat) : Bool :=
+  match generatedContext.codeMap.get? targetId with
+  | none => false
+  | some target => target.rva == rva
+
+def generatedDecodedOutcomeTargetRvas? (targetId : Nat) : Option (List Nat) := do
+  let source <- generatedContext.source? targetId
+  let behavior <- regionBehaviorWithMachineCallContracts generatedContext.pe
+    generatedContext.imports generatedContext.machineImportCallContracts
+    source.region.span
+  let outcome <- behavior.outcome
+  match outcome with
+  | .jump targetRva => some [targetRva]
+  | .branch _ trueTargetRva falseTargetRva =>
+      some [trueTargetRva, falseTargetRva]
+  | _ => none
+
+def generatedDecodedOutcomesChecked
+    (expected : List (Nat × List Nat)) : Bool :=
+  expected.all fun row =>
+    generatedDecodedOutcomeTargetRvas? row.1 == some row.2
+
+def generatedExactLaunchRootTargetIds : List Nat :=
+  generatedContext.regions.toList.filterMap fun region =>
+    if region.root then some region.id else none
+
+def generatedTargetHasIncomingControlEdge (targetId : Nat) : Bool :=
+  generatedContext.regions.toList.any fun region =>
+    region.targets.contains targetId
+
+def generatedStackRuntimeFact (world : RelationalWorld)
+    (state : MachineState) : Prop :=
+  StackRelocatedCodePointerRuntime generatedContext
+    generatedStackAuthority.static.claim world state
+
+def generatedStackRequirement :
+    OriginalStackDynamicTargetRequirement generatedContext := {{
+  site := generatedStackAuthority.static.claim.site
+  allowedTargetIds := [generatedStackAuthority.static.claim.seed.targetId]
+  allowedTargetsChecked := generatedStackAuthority.allowedTargetsChecked
+  sourceFact := generatedStackRuntimeFact
+  sourceFactResolves := by
+    intro world state runtime
+    obtain ⟨resolved, targetIdExact⟩ :=
+      originalResolvedCodeTarget_of_checked generatedContext
+        generatedStackAuthority.static.claim.site state
+        generatedStackAuthority.static.claim.seed.targetId
+        (generatedStackAuthority.static.claim.seed.word generatedContext)
+        runtime.targetValue generatedStackAuthority.targetAddressChecked
+    exact ⟨resolved, by simpa [targetIdExact]⟩
+}}
+
+def generatedConstructorRequirement :
+    OriginalStackDynamicTargetRequirement generatedContext := {{
+  site := generatedConstructorAuthority.site
+  allowedTargetIds := []
+  allowedTargetsChecked := by decide +kernel
+  sourceFact := fun _world _state => False
+  sourceFactResolves := by
+    intro _world _state impossible
+    exact False.elim impossible
+}}
+
+def generatedDynamicRequirement :
+    OriginalStackDynamicTargetRequirement generatedContext := {{
+  site := generatedDynamicSite
+  allowedTargetIds := []
+  allowedTargetsChecked := by decide +kernel
+  sourceFact := fun _world _state => False
+  sourceFactResolves := by
+    intro _world _state impossible
+    exact False.elim impossible
+}}
+
+def generatedCombinedRequirements :
+    List (OriginalStackDynamicTargetRequirement generatedContext) :=
+  [generatedStackRequirement, generatedConstructorRequirement,
+    generatedDynamicRequirement]
+
+def generatedStackCallFrameRouteChecked : Bool :=
+  let route :=
+    StageA.GeneratedRelational.RuntimeValueCarry.generatedRuntimeValueCarryRoute{plan.stack_route_index}
+  route.originTargetId == {plan.stack_target_id} &&
+    route.targetFact.targetId == {plan.stack_source_target_id} &&
+    route.locations[route.targetFact.locationId]? ==
+      some (.inFrameWord .esp (.add 32)) &&
+    match route.transfers[{plan.stack_call_frame_transfer_index}]? with
+    | none => false
+    | some transfer =>
+        transfer.sourceTargetId == {plan.stack_source_target_id} &&
+          transfer.targetTargetId == {plan.stack_continuation_target_id} &&
+          transfer.kind == .callFrameWordPreserve
+
+theorem generatedStackEvidenceChecked :
+    generatedStackCallFrameRouteChecked = true /\\
+      generatedStackRequirement.site.sourceTargetId = {plan.stack_source_target_id} /\\
+      generatedStackRequirement.allowedTargetIds = [{plan.stack_target_id}] /\\
+      generatedStackCallFrameTransferAuthority.transfer.sourceTargetId =
+        {plan.stack_source_target_id} := by
+  decide +kernel
+
+def generatedConstructorBranchTargets : List (Nat × Nat) :=
+  [{constructor_pairs}]
+
+def generatedConstructorBranchTargetsChecked : Bool :=
+  generatedConstructorBranchTargets.all fun pair =>
+    generatedCodeTargetRvaChecked pair.1 pair.2
+
+def generatedConstructorDecodedOutcomes : List (Nat × List Nat) :=
+  [{constructor_outcomes}]
+
+theorem generatedConstructorDecodedOutcomesExact :
+    generatedDecodedOutcomesChecked generatedConstructorDecodedOutcomes = true := by
+  decide +kernel
+
+theorem generatedConstructorImageWordsExact :
+    readImmutableImageWord generatedContext.pe {table_address} 4 =
+        some 4294967295 /\\
+      readImmutableImageWord generatedContext.pe {table_address + 4} 4 =
+        some 0 := by
+  decide +kernel
+
+theorem generatedConstructorImageWordsHold (memory : Memory)
+    (immutable : ImmutableImageWordMemory generatedContext.pe memory) :
+    Memory.read32 memory (BitVec.ofNat 32 {table_address}) =
+        BitVec.ofNat 32 4294967295 /\\
+      Memory.read32 memory (BitVec.ofNat 32 {table_address + 4}) =
+        BitVec.ofNat 32 0 := by
+  exact ⟨
+    ImmutableImageWordMemory.read32_of_checked generatedContext.pe memory
+      {table_address} 4294967295 immutable generatedConstructorImageWordsExact.1,
+    ImmutableImageWordMemory.read32_of_checked generatedContext.pe memory
+      {table_address + 4} 0 immutable generatedConstructorImageWordsExact.2⟩
+
+theorem generatedConstructorEvidenceChecked :
+    generatedConstructorBranchTargetsChecked = true /\\
+      generatedDecodedOutcomesChecked generatedConstructorDecodedOutcomes = true /\\
+      generatedConstructorRequirement.site.sourceTargetId =
+        {plan.constructor_source_target_id} /\\
+      generatedConstructorRequirement.allowedTargetIds = [] := by
+  decide +kernel
+
+def generatedDynamicBranchTargets : List (Nat × Nat) :=
+  [{dynamic_pairs}]
+
+def generatedDynamicBranchTargetsChecked : Bool :=
+  generatedDynamicBranchTargets.all fun pair =>
+    generatedCodeTargetRvaChecked pair.1 pair.2
+
+def generatedDynamicDecodedOutcomes : List (Nat × List Nat) :=
+  [{dynamic_outcomes}]
+
+theorem generatedDynamicDecodedOutcomesExact :
+    generatedDecodedOutcomesChecked generatedDynamicDecodedOutcomes = true := by
+  decide +kernel
+
+def generatedLaunchRootTargetIds : List Nat :=
+  [{plan.entry_target_id}, {tls0}, {tls1}]
+
+def generatedNoRegistrationTargetIds : List Nat :=
+  [{plan.registration_target_ids[0]}, {plan.registration_target_ids[1]}]
+
+def generatedNoRegistrationWriterTargetIds : List Nat :=
+  [{plan.registration_writer_target_ids[0]},
+    {plan.registration_writer_target_ids[1]}]
+
+def generatedLaunchRootsChecked : Bool :=
+  generatedExactLaunchRootTargetIds.length ==
+      generatedLaunchRootTargetIds.length &&
+    generatedLaunchRootTargetIds.all
+      generatedExactLaunchRootTargetIds.contains
+
+def generatedNoRegistrationEntriesChecked : Bool :=
+  generatedNoRegistrationTargetIds.all fun targetId =>
+    !generatedExactLaunchRootTargetIds.contains targetId &&
+      !generatedTargetHasIncomingControlEdge targetId
+
+theorem generatedDynamicHeadImageBytesZero :
+    rvaByte generatedCarrierContext.originalPe {head_rva} = some 0 /\\
+      rvaByte generatedCarrierContext.originalPe {head_rva + 1} = some 0 /\\
+      rvaByte generatedCarrierContext.originalPe {head_rva + 2} = some 0 /\\
+      rvaByte generatedCarrierContext.originalPe {head_rva + 3} = some 0 := by
+  decide +kernel
+
+theorem generatedDynamicHeadLaunchZero (memory : Memory)
+    (mapped : PreferredBaseImageMemory generatedCarrierContext.originalPe
+      generatedCarrierContext.originalImports memory) :
+    Memory.read32 memory
+      (BitVec.ofNat 32
+        (generatedCarrierContext.originalPe.imageBase + {head_rva})) =
+      BitVec.ofNat 32 0 := by
+  have byte0 := mapped {head_rva} 0 (by decide +kernel)
+    (by decide +kernel) generatedDynamicHeadImageBytesZero.1
+  have byte1 := mapped {head_rva + 1} 0 (by decide +kernel)
+    (by decide +kernel) generatedDynamicHeadImageBytesZero.2.1
+  have byte2 := mapped {head_rva + 2} 0 (by decide +kernel)
+    (by decide +kernel) generatedDynamicHeadImageBytesZero.2.2.1
+  have byte3 := mapped {head_rva + 3} 0 (by decide +kernel)
+    (by decide +kernel) generatedDynamicHeadImageBytesZero.2.2.2
+  simp only [Memory.read32]
+  rw [byte0]
+  have address1 :
+      BitVec.ofNat 32
+          (generatedCarrierContext.originalPe.imageBase + {head_rva}) +
+          BitVec.ofNat 32 1 =
+        BitVec.ofNat 32
+          (generatedCarrierContext.originalPe.imageBase + {head_rva + 1}) := by
+    decide +kernel
+  have address2 :
+      BitVec.ofNat 32
+          (generatedCarrierContext.originalPe.imageBase + {head_rva}) +
+          BitVec.ofNat 32 2 =
+        BitVec.ofNat 32
+          (generatedCarrierContext.originalPe.imageBase + {head_rva + 2}) := by
+    decide +kernel
+  have address3 :
+      BitVec.ofNat 32
+          (generatedCarrierContext.originalPe.imageBase + {head_rva}) +
+          BitVec.ofNat 32 3 =
+        BitVec.ofNat 32
+          (generatedCarrierContext.originalPe.imageBase + {head_rva + 3}) := by
+    decide +kernel
+  rw [address1, address2, address3, byte1, byte2, byte3]
+  decide +kernel
+
+theorem generatedTlsHeadReasonIsProcessAttach
+    (original candidate : MachineState)
+    (targetIds : List Nat) (frame : RelationalRuntimeCallFrame)
+    (frames : List RelationalRuntimeCallFrame)
+    (holds : PE32TlsProcessAttachArgumentsHold generatedCarrierContext
+      original candidate ({tls0} :: targetIds) (frame :: frames)) :
+    Memory.read32 original.memory
+      (frame.originalStackAddress + BitVec.ofNat 32 8) = BitVec.ofNat 32 1 :=
+  holds.2.2.1
+
+theorem generatedLaunchHasNoRegisteredCallbacks (world : RelationalWorld)
+    (valid : PE32ConsoleLaunchWorldV1.Valid generatedCarrierContext world) :
+    world.registeredCallbacks = [] :=
+  valid.2.2.2.2.1
+
+theorem generatedUnknownCallbackRejected
+    (callback : WorldExternalCallbackRuntime)
+    (empty : callback.suspension.world.registeredCallbacks = []) :
+    Not (KnownCallbackRuntime generatedCarrierContext callback) := by
+  rintro ⟨registered, member, _target, _valid⟩
+  rw [empty] at member
+  exact List.not_mem_nil registered member
+
+theorem generatedDynamicEvidenceChecked :
+    generatedDynamicBranchTargetsChecked = true /\\
+      generatedDecodedOutcomesChecked generatedDynamicDecodedOutcomes = true /\\
+      generatedCarrierContext.tlsCallbackTargetIds = [{tls0}, {tls1}] /\\
+      generatedLaunchRootsChecked = true /\\
+      generatedNoRegistrationEntriesChecked = true /\\
+      generatedNoRegistrationWriterTargetIds.all
+        (fun targetId => !generatedLaunchRootTargetIds.contains targetId) = true /\\
+      generatedDynamicRequirement.site.sourceTargetId =
+        {plan.dynamic_source_target_id} /\\
+      generatedDynamicRequirement.allowedTargetIds = [] := by
+  decide +kernel
+
+theorem generatedCombinedRequirementsChecked :
+    generatedCombinedRequirements.length = 3 /\\
+      generatedCombinedRequirements.map
+        (fun requirement => requirement.site.sourceTargetId) =
+        [{plan.stack_source_target_id}, {plan.constructor_source_target_id},
+          {plan.dynamic_source_target_id}] := by
+  decide +kernel
+
+theorem generatedCombinedEvidenceChecked :
+    generatedStackCallFrameRouteChecked = true /\\
+      generatedConstructorBranchTargetsChecked = true /\\
+      generatedDecodedOutcomesChecked generatedConstructorDecodedOutcomes = true /\\
+      generatedDynamicBranchTargetsChecked = true /\\
+      generatedDecodedOutcomesChecked generatedDynamicDecodedOutcomes = true /\\
+      generatedLaunchRootsChecked = true /\\
+      generatedNoRegistrationEntriesChecked = true /\\
+      generatedCombinedRequirements.length = 3 := by
+  exact ⟨generatedStackEvidenceChecked.1,
+    generatedConstructorEvidenceChecked.1,
+    generatedConstructorEvidenceChecked.2.1,
+    generatedDynamicEvidenceChecked.1,
+    generatedDynamicEvidenceChecked.2.1,
+    generatedDynamicEvidenceChecked.2.2.2.1,
+    generatedDynamicEvidenceChecked.2.2.2.2.1,
+    generatedCombinedRequirementsChecked.1⟩
+
+#print axioms generatedStackEvidenceChecked
+#print axioms generatedConstructorImageWordsExact
+#print axioms generatedConstructorImageWordsHold
+#print axioms generatedConstructorDecodedOutcomesExact
+#print axioms generatedDynamicHeadLaunchZero
+#print axioms generatedDynamicDecodedOutcomesExact
+#print axioms generatedTlsHeadReasonIsProcessAttach
+#print axioms generatedUnknownCallbackRejected
+#print axioms generatedCombinedEvidenceChecked
+
+end {namespace}
+"""
+
+
+def _append_kernel_check_requests(
+    out: Path,
+    terms: list[Mapping[str, str]],
+) -> None:
+    path = out / "kernel-check-requests.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping) or not isinstance(
+        payload.get("requests"), list
+    ):
+        raise ValueError("kernel-check request inventory is malformed")
+    requests = list(payload["requests"])
+    seen = {
+        json.dumps(request.get("term"), sort_keys=True)
+        for request in requests
+        if isinstance(request, Mapping)
+    }
+    for term in terms:
+        key = json.dumps(dict(term), sort_keys=True)
+        if key not in seen:
+            requests.append({"term": dict(term)})
+            seen.add(key)
+    write_json(
+        path,
+        {
+            "format": "stage-a-lean-kernel-check-requests-v1",
+            "requests": requests,
+        },
+    )
+
+
+def _write_combined_evidence(
+    *,
+    out: Path,
+    plan: _CombinedEvidencePlan,
+    graph: OriginalCutpointGraphIR,
+    stack_entry_authorities: Mapping[str, Any],
+    runtime_value_carry_report: Path,
+    kernel_checks: Mapping[str, Any] | None,
+) -> Mapping[str, Any]:
+    source_path = out / "StageA" / f"{COMBINED_EVIDENCE_MODULE}.lean"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text(
+        _combined_evidence_source(plan, graph),
+        encoding="utf-8",
+    )
+    term = {
+        "module": f"StageA.{COMBINED_EVIDENCE_MODULE}",
+        "namespace": (
+            "StageA.GeneratedRelational."
+            "GNUHelloStackDynamicCombinedEvidence"
+        ),
+        "symbol": "generatedCombinedEvidenceChecked",
+    }
+    stack_terms = [
+        entry[term_field]
+        for entry in stack_entry_authorities["entries"]
+        for term_field in (
+            "static_stack_authority_term",
+            "indirect_exit_authority_term",
+        )
+    ]
+    _append_kernel_check_requests(out, [*stack_terms, term])
+    kernel_check = _kernel_check_for_term(
+        out=out,
+        term=term,
+        kernel_checks=kernel_checks,
+    )
+    runtime_report = json.loads(runtime_value_carry_report.read_text(encoding="utf-8"))
+    if not isinstance(runtime_report, Mapping):
+        raise ValueError("runtime value-carry Lean report is malformed")
+    stack_checked = stack_entry_authorities.get("status") == "checked"
+    route_checked = runtime_report.get("semantic_authority_complete") is True
+    evidence_checked = kernel_check is not None
+    status = (
+        "checked"
+        if stack_checked and route_checked and evidence_checked
+        else "kernel_compile_required"
+    )
+    kernel_row = (
+        {
+            "module": term["module"],
+            "status": "kernel_compile_required",
+            "term": term,
+        }
+        if kernel_check is None
+        else kernel_check
+    )
+    sites = [
+        {
+            "instruction_rva": 0x203C,
+            "source_target_id": plan.stack_source_target_id,
+            "proof_path": "finite-origin-carry-and-call-frame",
+            "combined_requirement_term": (
+                f"{term['namespace']}.generatedStackRequirement"
+            ),
+            "checked_dependencies": [
+                f"{term['namespace']}.generatedStackCallEntryCertificate",
+                f"{term['namespace']}.generatedStackCallFrameTransferAuthority",
+            ],
+            "runtime_callback_or_allocation_invariant_required": False,
+            "kernel_check": kernel_row,
+        },
+        {
+            "instruction_rva": 0xA220,
+            "source_target_id": plan.constructor_source_target_id,
+            "proof_path": "immutable-image-static-word-unreachability",
+            "combined_requirement_term": (
+                f"{term['namespace']}.generatedConstructorRequirement"
+            ),
+            "checked_dependencies": [
+                f"{term['namespace']}.generatedConstructorImageWordsExact",
+                f"{term['namespace']}.generatedConstructorImageWordsHold",
+                f"{term['namespace']}.generatedConstructorDecodedOutcomesExact",
+            ],
+            "static_words": [
+                {"rva": plan.constructor_table_rva, "value": 0xFFFFFFFF},
+                {"rva": plan.constructor_table_rva + 4, "value": 0},
+            ],
+            "branch_target_ids": list(plan.constructor_branch_target_ids),
+            "reachability_assumed": False,
+            "runtime_callback_or_allocation_invariant_required": False,
+            "kernel_check": kernel_row,
+        },
+        {
+            "instruction_rva": 0xAB8C,
+            "source_target_id": plan.dynamic_source_target_id,
+            "proof_path": "launch-tls-arguments-and-no-registration",
+            "combined_requirement_term": (
+                f"{term['namespace']}.generatedDynamicRequirement"
+            ),
+            "checked_dependencies": [
+                f"{term['namespace']}.generatedDynamicHeadLaunchZero",
+                f"{term['namespace']}.generatedDynamicDecodedOutcomesExact",
+                f"{term['namespace']}.generatedTlsHeadReasonIsProcessAttach",
+                f"{term['namespace']}.generatedLaunchHasNoRegisteredCallbacks",
+                f"{term['namespace']}.generatedUnknownCallbackRejected",
+            ],
+            "head_rva": plan.dynamic_head_rva,
+            "tls_target_ids": list(plan.tls_target_ids),
+            "tls_reason": 1,
+            "registration_target_ids": list(plan.registration_target_ids),
+            "registration_writer_target_ids": list(
+                plan.registration_writer_target_ids
+            ),
+            "zero_writer_target_id": plan.zero_writer_target_id,
+            "reachability_assumed": False,
+            "runtime_callback_or_allocation_invariant_required": False,
+            "kernel_check": kernel_row,
+        },
+    ]
+    payload = {
+        "format": COMBINED_EVIDENCE_FORMAT,
+        "status": status,
+        "proof_authority": False,
+        "report_status_is_authority": False,
+        "combined_invariant_compatible": True,
+        "combined_invariant_step_closure_required": True,
+        "runtime_premises_required": 0,
+        "kernel_check": kernel_row,
+        "sites": sites,
+    }
+    write_json(out / COMBINED_EVIDENCE_REPORT, payload)
+    return payload
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--original", required=True)
@@ -1920,6 +3004,7 @@ def main() -> None:
         closure,
         binding,
     )
+    semantic_transfers = _semantic_transfers_by_rva(state_machine)
     (
         rooted_authorities,
         rooted_report,
@@ -1928,12 +3013,8 @@ def main() -> None:
         out=out,
         closure=closure,
         graph=cutpoint_graph,
-        semantic_transfers=_semantic_transfers_by_rva(state_machine),
+        semantic_transfers=semantic_transfers,
     )
-    # The rooted authority combines exact decoded scanner execution with an
-    # operational SCC induction. Runtime composition consumes that proof term
-    # when it constructs the strengthened mixed invariant.
-    runtime_frontiers = _runtime_frontiers(closure, rooted_authorities)
     kernel_checks: Mapping[str, Any] | None = None
     if args.kernel_checks is not None:
         kernel_checks_value = json.loads(
@@ -2051,6 +3132,21 @@ def main() -> None:
         kernel_checks=kernel_checks,
         graph=cutpoint_graph,
     )
+    combined_plan = _combined_evidence_plan(
+        original=original,
+        closure=closure,
+        graph=cutpoint_graph,
+        semantic_transfers=semantic_transfers,
+        runtime_value_carry=runtime_value_carry,
+    )
+    combined_evidence = _write_combined_evidence(
+        out=out,
+        plan=combined_plan,
+        graph=cutpoint_graph,
+        stack_entry_authorities=stack_entry_authorities,
+        runtime_value_carry_report=runtime_value_carry_lean_report,
+        kernel_checks=kernel_checks,
+    )
     resources = {
         **static_resources,
         RUNTIME_VALUE_CARRY_STRUCTURE_MODULE: {
@@ -2064,6 +3160,10 @@ def main() -> None:
         "GeneratedRelationalRuntimeValueCarrySemantics": {
             "resource_class": "medium",
             "estimated_memory_mb": 2048,
+        },
+        COMBINED_EVIDENCE_MODULE: {
+            "resource_class": "medium",
+            "estimated_memory_mb": 4096,
         },
     }
     write_json(out / "module-resources.json", resources)
@@ -2081,15 +3181,17 @@ def main() -> None:
             "runtime_value_carry_binding": runtime_value_carry_binding,
             "runtime_value_carry_lean_report": runtime_value_carry_lean_report,
         },
-        status="runtime-premises-required",
+        status=combined_evidence["status"],
         proof_authority=False,
         report_status_is_authority=False,
-        runtime_closure_required=True,
+        runtime_closure_required=False,
+        combined_invariant_step_closure_required=True,
         public_outputs={
             "proposal": proposal_report.name,
             "closure": closure_report.name,
             "runtime_value_carry": runtime_value_carry_path.name,
             "runtime_value_carry_lean": runtime_value_carry_lean_report.name,
+            "combined_evidence": COMBINED_EVIDENCE_REPORT,
             "checked_stack_entries": (
                 "checked-stack-finite-origin-call-entry-authorities.json"
             ),
@@ -2102,7 +3204,13 @@ def main() -> None:
         counts={
             "sites": len(closure.sites),
             "static_authorities": len(closure.sites),
-            "runtime_premises_required": len(closure.sites),
+            "runtime_premises_required": combined_evidence[
+                "runtime_premises_required"
+            ],
+            "kernel_checked_combined_evidence_sites": sum(
+                site["kernel_check"]["status"] == "checked"
+                for site in combined_evidence["sites"]
+            ),
             "cutpoint_regions": len(cutpoint_graph.regions),
             "cutpoint_edges": len(cutpoint_graph.edges),
             "stack_sites": sum(
@@ -2129,7 +3237,8 @@ def main() -> None:
                 for transfer in route.transfers
             ),
         },
-        runtime_frontiers=runtime_frontiers,
+        runtime_frontiers=[],
+        combined_invariant_requirements=combined_evidence["sites"],
         cutpoint_graph_sha256=(
             canonical_original_cutpoint_graph_sha256(cutpoint_graph)
         ),

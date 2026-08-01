@@ -636,6 +636,19 @@ def NativeWorldExternalSuspension.request
   world := suspension.world
 }
 
+/-- World-event view of the current protocol phase.  Callback return replaces
+the current machine state and world without changing the initiating event's
+import identity or arguments. -/
+def NativeWorldExternalSuspension.currentWorldEvent
+    (suspension : NativeWorldExternalSuspension) (siteId : Nat) :
+    WorldExternalEvent := {
+  siteId
+  imported := normalizeImport suspension.event.imported
+  arguments := suspension.event.arguments
+  state := suspension.state
+  world := suspension.world
+}
+
 structure NativeWorldExternalCallbackRuntime where
   suspension : NativeWorldExternalSuspension
   entry : NativeWorldExternalCallbackAction

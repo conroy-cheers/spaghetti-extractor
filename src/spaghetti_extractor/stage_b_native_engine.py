@@ -423,23 +423,6 @@ def plan_stage_b_native_engine(
     relocation_evidence = _parse_pe_base_relocation_evidence(
         base_relocation_evidence
     )
-    if relocation_evidence is not None:
-        for row_index, row in enumerate(rows):
-            export = row.get("stage_a_export")
-            if not isinstance(export, Mapping):
-                raise StageAInputError(
-                    f"transfer {row_index} lacks its Stage A export binding"
-                )
-            bound_contract = _required_sha256(
-                export.get("reference_contract_sha256"),
-                f"transfer {row_index} Stage A reference-contract SHA-256",
-            )
-            if bound_contract != relocation_evidence.reference_contract_sha256:
-                raise StageAInputError(
-                    f"transfer {row_index} and PE relocation evidence bind different "
-                    "reference contracts"
-                )
-
     for row_index, row in enumerate(rows):
         transfer_id = _required_string(row.get("id"), f"transfer {row_index} id")
         original = row.get("original")
@@ -472,6 +455,24 @@ def plan_stage_b_native_engine(
 
         fpu_state = row.get("fpu_state")
         if fpu_state is not None:
+            if relocation_evidence is not None:
+                export = row.get("stage_a_export")
+                if not isinstance(export, Mapping):
+                    raise StageAInputError(
+                        f"transfer {row_index} lacks its Stage A export binding"
+                    )
+                bound_contract = _required_sha256(
+                    export.get("reference_contract_sha256"),
+                    f"transfer {row_index} Stage A reference-contract SHA-256",
+                )
+                if (
+                    bound_contract
+                    != relocation_evidence.reference_contract_sha256
+                ):
+                    raise StageAInputError(
+                        f"transfer {row_index} and PE relocation evidence bind "
+                        "different reference contracts"
+                    )
             try:
                 qualified = _qualified_x87_replays(
                     row=row,
@@ -1701,7 +1702,7 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
                 else []
             ),
             *(
-                ["    push eax", "    push ecx"]
+                ["    push eax", "    push esi"]
                 if plan.x87_replays
                 else ["    push 0", "    push 0"]
             ),

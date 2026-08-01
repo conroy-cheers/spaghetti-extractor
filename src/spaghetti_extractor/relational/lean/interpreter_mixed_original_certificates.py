@@ -8,6 +8,8 @@ from typing import Mapping, Sequence
 from .interpreter_mixed_original import (
     INTERPRETER_MIXED_ORIGINAL_BASE_MODULE,
     InterpreterMixedOriginalPlan,
+    _balanced_shard_sizes,
+    _balanced_shards,
     _lean_finite_index_height,
     _lean_index_refs,
 )
@@ -85,10 +87,7 @@ def decompose_interpreter_mixed_original_base(
     base_path = stage_a / f"{INTERPRETER_MIXED_ORIGINAL_BASE_MODULE}.lean"
     source = base_path.read_text(encoding="utf-8")
     namespace = f"{plan.spec.namespace}Base"
-    shard_regions = [
-        plan.regions[offset : offset + plan.spec.shard_size]
-        for offset in range(0, len(plan.regions), plan.spec.shard_size)
-    ]
+    shard_regions = _balanced_shards(plan.regions, plan.spec.shard_size)
     if not shard_regions:
         raise InterpreterMixedOriginalCertificateDecompositionError(
             "mixed-original certificate decomposition requires at least one shard"
@@ -767,8 +766,10 @@ def _write_reachability_certificates(
     paths: list[Path] = []
     resources: dict[str, Mapping[str, object]] = {}
     modules: list[str] = []
-    for index, start in enumerate(range(0, target_count, shard_size)):
-        size = min(shard_size, target_count - start)
+    start = 0
+    for index, size in enumerate(
+        _balanced_shard_sizes(target_count, shard_size)
+    ):
         module = (
             f"{INTERPRETER_MIXED_ORIGINAL_BASE_MODULE}"
             f"ReachabilityShard{index:04d}"
@@ -804,6 +805,7 @@ theorem {checked_name} :
         modules.append(module)
         resources[module] = _resource("medium", 4096)
         leaves.append(_RangeProof(start, size, range_name, checked_name))
+        start += size
 
     certificate_module = (
         f"{INTERPRETER_MIXED_ORIGINAL_BASE_MODULE}ReachabilityCertificate"

@@ -11,6 +11,12 @@
 , originalFixture
 , mingw32
 , mkLeanGraph ? import ./stage-a-lean-graph.nix
+, proofStateMachine ? null
+, nativeSourceOriginalExecutionEvidence ? null
+, nativeSourceCompiledAuthorityEvidence ? null
+, nativeSourceEnvironmentFamilyEvidence ? null
+, nativeSourceApprovedToolchainAxiom ?
+    "StageA.GeneratedRelational.GnuHelloNativeSourceEnvironmentFamily.pinnedCompilerLoweringCorrect"
 }:
 
 let
@@ -26,6 +32,8 @@ let
   stackDynamicHints = ./gnu-hello-stack-dynamic-hints.json;
   proofSourceAggregateDriver = ./stage-a-proof-source-aggregate.py;
   kernelDataDriver = ./gnu-hello-kernel-data-driver.py;
+  nativeSourceStaticAuthorityDriver =
+    ./gnu-hello-native-source-static-authority.py;
   compiledKernelDriver = ./gnu-hello-compiled-kernel.py;
   proofClosureDriver = ./gnu-hello-proof-closure-driver.py;
   constructiveSourceCoverageDriver =
@@ -41,6 +49,11 @@ let
     "${originalFixture}/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/original";
   originalPe = "${fixtureRoot}/hello.exe";
   originalMap = "${fixtureRoot}/hello.map";
+  proofStateMachinePath =
+    if proofStateMachine == null then
+      "${staticExport}/state-machine.jsonl"
+    else
+      "${proofStateMachine}/state-machine.jsonl";
   machineRuntimeProfileSource = lib.fileset.toSource {
     root = ../profiles;
     fileset = lib.fileset.unions [
@@ -1037,12 +1050,14 @@ let
       export SOURCE_DATE_EPOCH=1
       ${script}
     '';
+  standardLogicalAxioms = [ "propext" "Classical.choice" "Quot.sound" ];
   mkGeneratedClosureProof =
     {
       name,
       sources,
       target,
       declaration,
+      approvedAxioms ? standardLogicalAxioms,
     }:
     let
       sourceArguments = builtins.concatStringsSep " " (
@@ -1085,13 +1100,106 @@ let
         targetAxiomAudit = {
           module = target;
           inherit declaration;
-          approved_axioms = [ "propext" "Classical.choice" "Quot.sound" ];
+          approved_axioms = approvedAxioms;
         };
       };
     in
     {
       inherit proof proofSources;
     };
+  mkCheckedProofAudit =
+    {
+      name,
+      proof,
+      declaration,
+      approvedAxioms ? standardLogicalAxioms,
+      requiredAxioms ? [ ],
+    }:
+    pkgs.runCommand "stage-a-gnu-hello-roundtrip-${name}-axiom-audit" {
+      nativeBuildInputs = [ pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    } ''
+      set -euo pipefail
+      mkdir -p "$out"
+      jq --arg declaration ${lib.escapeShellArg declaration} \
+        --argjson approved \
+          ${lib.escapeShellArg (builtins.toJSON approvedAxioms)} \
+        --argjson required \
+          ${lib.escapeShellArg (builtins.toJSON requiredAxioms)} '
+        [
+          .nodes[].outputs[]?
+          | select(
+              (.axiom_audit.complete // false) and
+              ((.axiom_audit.requested // []) | index($declaration) != null)
+            )
+          | .axiom_audit
+        ] as $audits
+        | ($audits[0].inventories[$declaration] // []) as $inventory
+        | (($inventory - $approved) | unique) as $unexpected
+        | (($required - $inventory) | unique) as $missing
+        | if ($audits | length) != 1 then
+            error("expected exactly one detached axiom audit")
+          elif ($unexpected | length) != 0 then
+            error("detached axiom audit contains an unapproved axiom")
+          elif ($missing | length) != 0 then
+            error("detached axiom audit omits a required trusted hypothesis")
+          else
+            {
+              format: "stage-a-checked-detached-axiom-audit-v1",
+              status: "checked",
+              declaration: $declaration,
+              inventory: $inventory,
+              approved_axioms: $approved,
+              required_axioms: $required,
+              proof_bundle: ${builtins.toJSON (toString proof)}
+            }
+          end
+      ' ${proof}/bundle.json > "$out/axiom-audit.json"
+    '';
+  mkMissingNativeSourceEvidence =
+    {
+      name,
+      requiredFiles,
+      contract,
+    }:
+    pkgs.runCommand "stage-a-gnu-hello-${name}-required" {
+      preferLocalBuild = true;
+      allowSubstitutes = false;
+      __contentAddressed = true;
+    } ''
+      set -euo pipefail
+      echo "missing checked native-source evidence package: ${name}" >&2
+      echo "required contract: ${contract}" >&2
+      echo "required files: ${builtins.concatStringsSep ", " requiredFiles}" >&2
+      echo "the package may contain StageA/*.lean providers, but JSON status" >&2
+      echo "fields and invented declaration names cannot authorize this phase" >&2
+      exit 1
+    '';
+  mkNixRealizationIdentity = name: realized:
+    pkgs.runCommand "stage-a-gnu-hello-${name}-nix-realization-v1" {
+      nativeBuildInputs = [ pkgs.nix pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    } ''
+      set -euo pipefail
+      nar_hash="$(${pkgs.nix}/bin/nix --extra-experimental-features nix-command \
+        --offline hash path --sri ${realized})"
+      mkdir -p "$out"
+      jq -n \
+        --arg output ${lib.escapeShellArg (toString realized)} \
+        --arg derivation ${lib.escapeShellArg (toString realized.drvPath)} \
+        --arg nar_hash "$nar_hash" '
+        {
+          format: "stage-a-nix-realization-identity-v1",
+          output: $output,
+          derivation: $derivation,
+          nar_hash: $nar_hash
+        }
+      ' > "$out/realization.json"
+    '';
   mkLeanTermReceipts = name: source: proof:
     pkgs.runCommand name {
       nativeBuildInputs = [
@@ -1265,13 +1373,45 @@ let
     ' "$out/phase-manifest.json" >/dev/null
   '';
 
-  sourceC0 = mkPhase "stage-b-gnu-hello-c0-source-v1" [ staticExport ] ''
+  sourceStateMachine = pkgs.runCommand
+    "stage-b-gnu-hello-source-state-machine-v1"
+    {
+      nativeBuildInputs = [ spaghettiExtractor pkgs.jq ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      mkdir -p "$out"
+      spaghetti-extractor stage-b-augment-padding-bridges \
+        --state-machine ${staticExport}/state-machine.jsonl \
+        --original ${originalPe} \
+        --block-map ${staticExport}/original-self-map.json \
+        --external-profile \
+          ${machineRuntimeProfileSource}/pe32-msvcrt-lockstep-v1.json \
+        --out "$out/state-machine.jsonl" \
+        --report "$out/padding-bridge-report.json"
+      jq -e '
+        .format == "stage-b-padding-bridge-augmentation-v1" and
+        .status == "complete" and
+        .counts.input_transfers == 5697 and
+        .counts.padding_bridges == 85 and
+        .counts.output_transfers == 5782 and
+        .counts.terminating_transfers == 17 and
+        (.trust.proposal_authority | not) and
+        .trust.lean_exact_decode_required and
+        .trust.lean_semantic_normalization_required and
+        (.trust.executes_original_binary | not)
+      ' "$out/padding-bridge-report.json" >/dev/null
+    '';
+
+  sourceC0 = mkPhase "stage-b-gnu-hello-c0-source-v1" [ staticExport sourceStateMachine ] ''
     entry_rva="$(jq -r .identity.entry_rva ${staticExport}/load-image-contract.json)"
     set +e
     ${spaghettiExtractor}/bin/spaghetti-extractor \
       stage-b-generate-semantic-c \
       --dialect c0-v1 \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${sourceStateMachine}/state-machine.jsonl \
       --entry-rva "$entry_rva" \
       --out-dir "$out"
     result=$?
@@ -1286,9 +1426,1201 @@ let
     ' "$out/source-manifest.json" >/dev/null
   '';
 
+  sourceInterpreter = mkPhase
+    "stage-b-gnu-hello-native-source-interpreter-v1" [] ''
+    ${python} ${runtimeDriver} interpreter \
+      --state-machine ${sourceStateMachine}/state-machine.jsonl \
+      --out "$out"
+    jq -e '
+      .format == "stage-b-semantic-interpreter-package-v1" and
+      .status == "ready" and .counts.blocked_transfers == 0 and
+      .counts.input_transfers == 5782 and .counts.transfers == 5782 and
+      .counts.x87_replays == 313
+    ' "$out/state-machine-interpreter-package.json" >/dev/null
+  '';
+
+  sourceNativeEngine = mkPhase
+    "stage-b-gnu-hello-native-source-engine-v1" [] ''
+    entry_rva="$(jq -r .identity.entry_rva ${staticExport}/load-image-contract.json)"
+    ${python} ${runtimeDriver} native-engine \
+      --state-machine ${sourceStateMachine}/state-machine.jsonl \
+      --entry-rva "$entry_rva" \
+      --load-image-contract ${staticExport}/load-image-contract.json \
+      --reference-contract ${staticExport}/reference-contract.json \
+      --termination-profile \
+        ${machineRuntimeProfileSource}/pe32-msvcrt-lockstep-v1.json \
+      --termination-dll msvcrt.dll \
+      --termination-symbol _amsg_exit \
+      --out "$out"
+    jq -e '
+      .format == "stage-b-native-engine-package-v1" and
+      .status == "ready" and .counts.blockers == 0 and
+      .counts.transfers == 5782
+    ' "$out/native-engine-package.json" >/dev/null
+    jq -e '
+      .format == "stage-b-native-engine-plan-v1" and
+      (.x87_replays | length) == 313
+    ' "$out/native-engine-plan.json" >/dev/null
+  '';
+
+  sourceNativeRuntime = mkPhase
+    "stage-b-gnu-hello-native-source-runtime-v1" [] ''
+    ${python} ${runtimeDriver} native-runtime \
+      --interpreter-package ${sourceInterpreter} \
+      --native-engine-package ${sourceNativeEngine} \
+      --out "$out"
+    jq -e '
+      .format == "stage-b-native-runtime-package-v1" and .status == "ready"
+    ' "$out/native-runtime-package.json" >/dev/null
+  '';
+
+  sourceBundle = mkPhase
+    "stage-a-gnu-hello-native-source-bundle-v1" [] ''
+    mkdir -p "$out"
+    ${spaghettiExtractor}/bin/spaghetti-extractor \
+      stage-a-prepare-native-source-equivalence \
+      --state-machine ${sourceStateMachine}/state-machine.jsonl \
+      --interpreter-package ${sourceInterpreter} \
+      --native-engine-package ${sourceNativeEngine} \
+      --native-runtime-package ${sourceNativeRuntime} \
+      --load-image-contract ${staticExport}/load-image-contract.json \
+      --out "$out/native-source-bundle.json" >/dev/null
+    jq -e '
+      .format == "stage-b-native-interpreter-source-bundle-v1" and
+      .status == "ready" and .entry_rva > 0 and
+      .transfer_inventory.count == 5782 and
+      .transfer_inventory.x87_transfer_count == 313 and
+      .transfer_inventory.x87_replay_count == 313 and
+      (.trust.acceptance_authority | not) and
+      .trust.lean_whole_program_proof_required
+    ' "$out/native-source-bundle.json" >/dev/null
+  '';
+
+  sourceCandidate = mkPhase "stage-b-gnu-hello-native-source-candidate-v1" [
+    mingw32.stdenv.cc
+    mingw32.binutils
+  ] ''
+    ${python} ${runtimeDriver} candidate \
+      --interpreter-package ${sourceInterpreter} \
+      --native-engine-package ${sourceNativeEngine} \
+      --native-runtime-package ${sourceNativeRuntime} \
+      --load-image-contract ${staticExport}/load-image-contract.json \
+      --compiler ${compiler} \
+      --out "$out"
+    jq -e '
+      .format == "stage-b-interpreter-native-build-v1" and
+      .status == "candidate-generated"
+    ' "$out/interpreter-native-build-manifest.json" >/dev/null
+    test -s "$out/candidate.exe"
+    test -s "$out/payload.map"
+  '';
+
+  # Bind the composed source candidate itself, rather than the payload linked
+  # into it.  This reuses the isolated exact-data graph, so PE bytes, imports,
+  # and the complete relocation directory are all parsed from candidate.exe.
+  sourceCandidateKernelDataLean = mkPhaseWithSource kernelDataPythonSource
+    "stage-a-gnu-hello-native-source-candidate-kernel-data-v1" [] ''
+    ${python} ${kernelDataDriver} \
+      --candidate ${sourceCandidate}/candidate.exe \
+      --linker-map ${sourceCandidate}/payload.map \
+      --state-machine ${sourceStateMachine}/state-machine.jsonl \
+      --lean-source-root \
+        ${kernelDataLeanSource}/src/spaghetti_extractor/lean/StageA \
+      --shard-size 8 --out "$out"
+    jq -e '
+      .format == "stage-a-interpreter-kernel-data-inventory-v9" and
+      .candidate_bytes > 0 and
+      .counts.byte_packs > 0 and
+      .counts.relocation_packs > 0 and
+      .counts.relocation_blocks > 0 and
+      .candidate_authority.module ==
+        "GeneratedInterpreterKernelCandidateAuthority" and
+      (.acceptance_authority | not)
+    ' "$out/module-inventory.json" >/dev/null
+  '';
+
+  sourceCandidateStaticAuthorityLean = pkgs.runCommand
+    "stage-a-gnu-hello-native-source-candidate-static-authority-v1"
+    {
+      nativeBuildInputs = [ pkgs.python3 pkgs.jq ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      ${pkgs.python3}/bin/python3 ${nativeSourceStaticAuthorityDriver} \
+        --candidate ${sourceCandidate}/candidate.exe \
+        --kernel-data-inventory \
+          ${sourceCandidateKernelDataLean}/module-inventory.json \
+        --out "$out"
+      jq -e '
+        .format == "stage-a-native-source-candidate-static-authority-v1" and
+        .status == "source-ready" and
+        .candidate.size > 0 and
+        .kernel_data.relocation_packs > 0 and
+        .kernel_data.relocation_blocks > 0 and
+        .trust.exact_candidate_bytes_checked_in_lean and
+        .trust.imports_parsed_from_candidate_exe and
+        .trust.relocations_parsed_from_candidate_exe and
+        .trust.environment_parameterized and
+        (.trust.indirect_target_shape_is_completeness | not) and
+        (.trust.indirect_target_completeness_proved | not) and
+        (.trust.whole_program_acceptance_authority | not)
+      ' "$out/phase-manifest.json" >/dev/null
+    '';
+
+  sourceCandidateStaticAuthorityClosure = mkGeneratedClosureProof {
+    name = "native-source-candidate-static-authority";
+    sources = [
+      leanSourceRoot
+      sourceCandidateKernelDataLean
+      sourceCandidateStaticAuthorityLean
+    ];
+    target = "GeneratedGnuHelloNativeSourceCandidateStaticAuthority";
+    declaration =
+      "StageA.GeneratedRelational.GnuHelloNativeSourceCandidateStaticAuthority.generatedCandidateMachineAuthority";
+  };
+  sourceCandidateStaticAuthorityProofSources =
+    sourceCandidateStaticAuthorityClosure.proofSources;
+  sourceCandidateStaticAuthorityProof =
+    sourceCandidateStaticAuthorityClosure.proof;
+
+  sourceCompilationAttestation = mkPhase
+    "stage-a-gnu-hello-native-source-compilation-attestation-v1"
+    [ pkgs.nix ] ''
+    mkdir -p "$out"
+    nar_hash="$(${pkgs.nix}/bin/nix --extra-experimental-features nix-command \
+      --offline hash path --sri ${sourceCandidate})"
+    jq -n \
+      --arg output '${sourceCandidate}' \
+      --arg derivation '${sourceCandidate.drvPath}' \
+      --arg registered_deriver '${sourceCandidate.drvPath}' \
+      --arg nar_hash "$nar_hash" \
+      '{ output: $output, derivation: $derivation,
+         registered_deriver: $registered_deriver, nar_hash: $nar_hash }' \
+      > "$out/nix-provenance.json"
+    ${spaghettiExtractor}/bin/spaghetti-extractor \
+      stage-a-attest-native-source-compilation \
+      --source-bundle ${sourceBundle}/native-source-bundle.json \
+      --native-build-manifest \
+        ${sourceCandidate}/interpreter-native-build-manifest.json \
+      --nix-provenance "$out/nix-provenance.json" \
+      --out "$out/native-source-compilation-attestation.json" >/dev/null
+    jq -e '
+      .format == "stage-b-native-interpreter-compilation-attestation-v1" and
+      .status == "complete" and
+      .candidate.path == "${sourceCandidate}/candidate.exe" and
+      (.tools | map(.role) | sort) ==
+        ["assembler", "compiler", "compiler_runtime", "linker", "nm"] and
+      (.trust.acceptance_authority | not) and
+      .trust.lean_whole_program_proof_required
+    ' "$out/native-source-compilation-attestation.json" >/dev/null
+  '';
+
+  sourceProgramLean = mkPhase
+    "stage-a-gnu-hello-native-source-program-lean-v1" [] ''
+    ${python} ${driver} program-source \
+      --state-machine ${sourceStateMachine}/state-machine.jsonl \
+      --out "$out"
+    jq -e '
+      .phase == "semantic-program-lean" and .status == "source-ready" and
+      .counts.transfers == 5782 and .counts.ordinary_transfers == 5469 and
+      .counts.x87_transfers == 313
+    ' "$out/phase-manifest.json" >/dev/null
+  '';
+
+  sourceNormalizationLean = mkPhase
+    "stage-a-gnu-hello-native-source-normalization-lean-v1" [] ''
+    ${python} ${driver} normalization-sources \
+      --state-machine ${sourceStateMachine}/state-machine.jsonl \
+      --shard-size 48 --source-bindings-only --out "$out"
+    jq -e '
+      .phase == "normalization-lean" and .status == "source-ready"
+    ' "$out/phase-manifest.json" >/dev/null
+  '';
+
+  sourceSemanticRefinementLean = mkPhase
+    "stage-a-gnu-hello-native-source-semantic-refinement-lean-v1" [] ''
+    ${python} ${driver} semantic-refinement-sources \
+      --state-machine ${sourceStateMachine}/state-machine.jsonl \
+      --shard-size 48 --out "$out"
+    jq -e '
+      .phase == "semantic-refinement-lean" and .status == "source-ready" and
+      .counts.ordinary_transfers == 5469
+    ' "$out/phase-manifest.json" >/dev/null
+  '';
+
+  sourceX87Lean = mkPhase
+    "stage-a-gnu-hello-native-source-x87-lean-v1" [] ''
+    ${python} ${driver} x87-sources \
+      --state-machine ${sourceStateMachine}/state-machine.jsonl \
+      --original ${originalPe} \
+      --pe-byte-pack-inventory ${originalPeLean}/pe-byte-packs.json \
+      --source-only \
+      --out "$out"
+    jq -e '
+      (.targets.schedule_nodes | length) == 313 and
+      .targets.bundle_node == "GeneratedInterpreterX87ScheduleBundle" and
+      .source_only and .targets.exact_original_inventory == null and
+      .targets.candidate_replay_obligation == null
+    ' "$out/module-inventory.json" >/dev/null
+  '';
+
+  sourceStaticMachineImportContractsLean = mkPhase
+    "stage-a-gnu-hello-native-source-machine-import-contracts-lean-v1" [] ''
+    ${python} ${driver} static-machine-import-contracts \
+      --original ${originalPe} \
+      --reference-contract ${staticExport}/reference-contract.json \
+      --state-machine ${sourceStateMachine}/state-machine.jsonl \
+      --load-image-contract ${staticExport}/load-image-contract.json \
+      --profile ${machineRuntimeProfile} \
+      --profile \
+        ${machineRuntimeProfileSource}/pe32-kernel32-lockstep-v1.json \
+      --profile \
+        ${machineRuntimeProfileSource}/pe32-msvcrt-lockstep-v1.json \
+      --shard-size 128 \
+      --out "$out"
+    jq -e '
+      .phase == "rooted-static-machine-import-contracts" and
+      .status == "source-ready" and
+      (.proof_authority | not) and
+      .rooted_counts.reachable_targets > 0 and
+      .rooted_counts.required_imports > 0 and
+      .rooted_counts.blockers == 0
+    ' "$out/phase-manifest.json" >/dev/null
+  '';
+
+  # The source theorem needs the augmented semantic inventory on the original
+  # side as well.  In particular, direct branches into checked executable
+  # padding must execute their exact no-op records instead of falling out of the
+  # authoritative decoded carrier.
+  sourceOriginalBaseLean = mkPhase
+    "stage-a-gnu-hello-native-source-original-base-lean-v1" [] ''
+    ${python} ${driver} mixed-original-base \
+      --original ${originalPe} \
+      --reference-contract ${staticExport}/reference-contract.json \
+      --state-machine ${sourceStateMachine}/state-machine.jsonl \
+      --load-image-contract ${staticExport}/load-image-contract.json \
+      --machine-import-report \
+        ${sourceStaticMachineImportContractsLean}/machine-import-contract-report.json \
+      --callable-resolver-profile \
+        ${machineRuntimeProfileSource}/pe32-kernel32-callable-resolvers-v1.json \
+      --shard-size 64 \
+      --out "$out"
+    jq -e '
+      .phase == "mixed-original-base-lean" and
+      .status == "base-source-ready" and
+      (.proof_authority | not) and
+      (.exact_reachability_emitted | not) and
+      .targets == ["GeneratedRelationalInterpreterMixedOriginalBase"] and
+      .counts.regions == 5790 and .counts.reachable_targets > 0
+    ' "$out/phase-manifest.json" >/dev/null
+  '';
+
+  # Original control safety is independent of the compiled candidate, but it
+  # still needs the complete one-sided authority ladder: writable slots,
+  # register provenance through calls, and stack/dynamic targets.  Instantiate
+  # that existing generic ladder against the augmented source inventory.  Nix
+  # remains lazy, so none of the binary-pair candidate/composition outputs are
+  # dependencies of these selected attributes.
+  sourceOriginalAuthorityPipeline = import ./gnu-hello-roundtrip.nix {
+    inherit
+      pkgs
+      pythonEnv
+      spaghettiExtractor
+      sideTool
+      analysisKernelCache
+      isaKernelCache
+      isaSemanticKernel
+      bochsRunner
+      sourceRoot
+      leanSourceRoot
+      originalFixture
+      mingw32
+      mkLeanGraph
+      ;
+    proofStateMachine = sourceStateMachine;
+  };
+  sourceOriginalLean = sourceOriginalAuthorityPipeline.mixedOriginalLean;
+
+  sourceOriginalStaticReachabilityLean = mkPhase
+    "stage-a-gnu-hello-native-source-original-static-reachability-v1" [] ''
+    ${python} ${driver} mixed-original-static-reachability \
+      --mixed-original-plan \
+        ${sourceOriginalLean}/interpreter-mixed-original-plan.json \
+      --out "$out"
+    jq -e '
+      .phase == "mixed-original-static-reachability" and
+      .status == "typed-interface-ready" and
+      (.proof_authority | not) and
+      .failure_mode == "incomplete" and
+      .runtime_indirect_control.closed_by_this_artifact == false and
+      .counts.reachable_targets > 0 and
+      .targets == [
+        "GeneratedRelationalInterpreterMixedOriginalStaticReachability"
+      ]
+    ' "$out/phase-manifest.json" >/dev/null
+  '';
+  sourceOriginalStaticReachabilityClosure = mkGeneratedClosureProof {
+    name = "native-source-original-static-reachability";
+    sources = [
+      leanSourceRoot
+      originalPeLean
+      sourceStaticMachineImportContractsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalWritableSlotAuthorityLean
+      sourceOriginalAuthorityPipeline.mixedOriginalRegisterIndirectAuthorityLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallProposalsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallSemanticsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallClosureProposalsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallClosureSemanticsLean
+      sourceOriginalLean
+      sourceOriginalStaticReachabilityLean
+    ];
+    target = "GeneratedRelationalInterpreterMixedOriginalStaticReachability";
+    declaration =
+      "StageA.GeneratedRelational.InterpreterMixedOriginalStaticReachability.generatedExactOriginalDecodedStaticReachability";
+  };
+  sourceOriginalStaticReachabilityProofSources =
+    sourceOriginalStaticReachabilityClosure.proofSources;
+  sourceOriginalStaticReachabilityProof =
+    sourceOriginalStaticReachabilityClosure.proof;
+
+  sourceOriginalCarrierBindingLean = mkPhase
+    "stage-a-gnu-hello-native-source-original-carrier-binding-v1" [] ''
+    ${python} ${driver} mixed-original-carrier-binding \
+      --mixed-original ${sourceOriginalLean} \
+      --out "$out"
+    jq -e '
+      .phase == "mixed-original-carrier-binding-lean" and
+      .status == "source-ready" and
+      (.proof_authority | not) and
+      .targets == ["GeneratedRelationalInterpreterOriginalCarrierBinding"] and
+      .counts.targets == 5790 and .counts.addresses == 5792
+    ' "$out/phase-manifest.json" >/dev/null
+  '';
+  sourceOriginalCarrierBindingClosure = mkGeneratedClosureProof {
+    name = "native-source-original-carrier-binding";
+    sources = [
+      leanSourceRoot
+      originalPeLean
+      sourceStaticMachineImportContractsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalWritableSlotAuthorityLean
+      sourceOriginalAuthorityPipeline.mixedOriginalRegisterIndirectAuthorityLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallProposalsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallSemanticsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallClosureProposalsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallClosureSemanticsLean
+      sourceOriginalLean
+      sourceOriginalCarrierBindingLean
+    ];
+    target = "GeneratedRelationalInterpreterOriginalCarrierBinding";
+    declaration =
+      "StageA.GeneratedRelational.InterpreterOriginalCarrierBinding.generatedOriginalExactMixedProgramBinding";
+  };
+  sourceOriginalCarrierBindingProofSources =
+    sourceOriginalCarrierBindingClosure.proofSources;
+  sourceOriginalCarrierBindingProof = sourceOriginalCarrierBindingClosure.proof;
+
+  sourceOriginalCombinedDeclarations = mkPhase
+    "stage-a-gnu-hello-native-source-original-combined-declarations-v1" [] ''
+    ${python} ${driver} original-combined-declarations \
+      --mixed-original-plan \
+        ${sourceOriginalLean}/interpreter-mixed-original-plan.json \
+      --mixed-original-manifest ${sourceOriginalLean}/phase-manifest.json \
+      --static-reachability-plan \
+        ${sourceOriginalStaticReachabilityLean}/interpreter-mixed-original-static-reachability.json \
+      --static-reachability-manifest \
+        ${sourceOriginalStaticReachabilityLean}/phase-manifest.json \
+      --carrier-binding-manifest \
+        ${sourceOriginalCarrierBindingLean}/phase-manifest.json \
+      --direct-call-authority-report \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalDirectCallClosureSemanticsLean}/direct-call-authority-bindings.json \
+      --stack-dynamic-authority-report \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalStackDynamicAuthorityLean}/original-stack-dynamic-control-closure.json \
+      --stack-dynamic-authority-manifest \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalStackDynamicAuthorityLean}/phase-manifest.json \
+      --stack-combined-evidence-report \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalStackDynamicAuthorityLean}/gnu-hello-stack-dynamic-combined-evidence.json \
+      --value-provenance-ir \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalStackDynamicAuthorityLean}/runtime-value-carry-ir.json \
+      --value-provenance-report \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalStackDynamicAuthorityLean}/runtime-value-carry-lean.json \
+      --out "$out"
+    test -s "$out/original-combined-reachability-declarations.json"
+    test -s "$out/original-combined-call-frame-declarations.json"
+    test -s "$out/original-combined-value-flow-declarations.json"
+  '';
+
+  sourceOriginalCombinedInventoryLean = mkPhase
+    "stage-a-gnu-hello-native-source-original-combined-inventory-v1" [] ''
+    ${python} ${driver} original-combined-inventory \
+      --mixed-original-plan \
+        ${sourceOriginalLean}/interpreter-mixed-original-plan.json \
+      --writable-authority-report \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalWritableSlotAuthorityLean}/relocated-writable-static-pointer-slot-authorities.json \
+      --writable-authority-manifest \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalWritableSlotAuthorityLean}/phase-manifest.json \
+      --register-authority-report \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalRegisterIndirectAuthorityLean}/register-indirect-control-authorities.json \
+      --register-authority-manifest \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalRegisterIndirectAuthorityLean}/phase-manifest.json \
+      --stack-dynamic-authority-report \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalStackDynamicAuthorityLean}/original-stack-dynamic-control-closure.json \
+      --stack-dynamic-authority-manifest \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalStackDynamicAuthorityLean}/phase-manifest.json \
+      --stack-combined-evidence-report \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalStackDynamicAuthorityLean}/gnu-hello-stack-dynamic-combined-evidence.json \
+      --reachability-declarations \
+        ${sourceOriginalCombinedDeclarations}/original-combined-reachability-declarations.json \
+      --call-frame-declarations \
+        ${sourceOriginalCombinedDeclarations}/original-combined-call-frame-declarations.json \
+      --value-flow-declarations \
+        ${sourceOriginalCombinedDeclarations}/original-combined-value-flow-declarations.json \
+      --shard-size 512 \
+      --out "$out"
+    jq -e '
+      .format ==
+        "stage-a-original-combined-execution-inventory-declarations-v1" and
+      .counts.reachable_targets == 3490 and
+      .counts.static_word_slots == 3 and
+      .counts.register_requirements == 9 and
+      .counts.stack_dynamic_requirements == 3 and
+      .counts.call_frame_facts > 0 and .counts.value_flow_facts > 0 and
+      .lean.module ==
+        "StageA.GeneratedRelationalOriginalCombinedInventory"
+    ' "$out/original-combined-execution-inventory-declarations.json" >/dev/null
+  '';
+  sourceOriginalCombinedInventoryClosure = mkGeneratedClosureProof {
+    name = "native-source-original-combined-inventory";
+    sources = [
+      leanSourceRoot
+      originalPeLean
+      sourceStaticMachineImportContractsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalWritableSlotAuthorityLean
+      sourceOriginalAuthorityPipeline.mixedOriginalRegisterIndirectAuthorityLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallProposalsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallSemanticsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallClosureProposalsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallClosureSemanticsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalStackDynamicAuthorityLean
+      sourceOriginalLean
+      sourceOriginalStaticReachabilityLean
+      sourceOriginalCarrierBindingLean
+      sourceOriginalCombinedInventoryLean
+    ];
+    target = "GeneratedRelationalOriginalCombinedInventory";
+    declaration =
+      "StageA.GeneratedRelational.OriginalCombinedInventory.generatedInventory";
+  };
+  sourceOriginalCombinedInventoryProofSources =
+    sourceOriginalCombinedInventoryClosure.proofSources;
+  sourceOriginalCombinedInventoryProof =
+    sourceOriginalCombinedInventoryClosure.proof;
+
+  sourceTargetEffectInputsLean = mkPhase
+    "stage-a-gnu-hello-native-source-target-effect-inputs-v1" [] ''
+    ${python} ${driver} source-target-effect-inputs \
+      --state-machine ${sourceStateMachine}/state-machine.jsonl \
+      --mixed-original-plan \
+        ${sourceOriginalLean}/interpreter-mixed-original-plan.json \
+      --source-program-root ${sourceProgramLean} \
+      --source-program-manifest ${sourceProgramLean}/phase-manifest.json \
+      --normalization-root ${sourceNormalizationLean} \
+      --normalization-inventory \
+        ${sourceNormalizationLean}/module-inventory.json \
+      --semantic-refinement-root ${sourceSemanticRefinementLean} \
+      --semantic-refinement-inventory \
+        ${sourceSemanticRefinementLean}/semantic-refinement-inventory.json \
+      --x87-root ${sourceX87Lean} \
+      --x87-inventory ${sourceX87Lean}/module-inventory.json \
+      --exact-original-root ${sourceOriginalLean} \
+      --shard-span 64 \
+      --out "$out"
+    jq -e '
+      .format ==
+        "stage-a-gnu-hello-source-target-effect-inputs-manifest-v1" and
+      (.proof_authority | not) and (.acceptance_authority | not) and
+      .counts.targets == 3490 and .counts.ordinary > 0 and .counts.x87 > 0 and
+      (.counts.ordinary + .counts.x87) == .counts.targets and
+      .counts.shards > 0
+    ' "$out/source-target-effect-inputs-manifest.json" >/dev/null
+  '';
+
+  sourceTargetEffectsLean = mkPhase
+    "stage-a-gnu-hello-native-source-target-effects-v1" [] ''
+    ${python} ${driver} source-target-effects \
+      --state-machine ${sourceStateMachine}/state-machine.jsonl \
+      --mixed-original-plan \
+        ${sourceOriginalLean}/interpreter-mixed-original-plan.json \
+      --source-program-root ${sourceProgramLean} \
+      --source-program-manifest ${sourceProgramLean}/phase-manifest.json \
+      --normalization-root ${sourceNormalizationLean} \
+      --normalization-inventory \
+        ${sourceNormalizationLean}/module-inventory.json \
+      --semantic-refinement-root ${sourceSemanticRefinementLean} \
+      --semantic-refinement-inventory \
+        ${sourceSemanticRefinementLean}/semantic-refinement-inventory.json \
+      --x87-root ${sourceX87Lean} \
+      --x87-inventory ${sourceX87Lean}/module-inventory.json \
+      --exact-original-root ${sourceOriginalLean} \
+      --authority-inventory \
+        ${sourceTargetEffectInputsLean}/source-target-effect-inputs.json \
+      --out "$out"
+    jq -e '
+      .format == "stage-a-gnu-hello-source-target-effects-v1" and
+      (.proof_authority | not) and (.acceptance_authority | not) and
+      .counts.targets == 3490 and .counts.ordinary > 0 and .counts.x87 > 0 and
+      (.counts.ordinary + .counts.x87) == .counts.targets
+    ' "$out/source-target-effects.json" >/dev/null
+    jq -e '.ready and .blockers == [] and .reachable_targets == 3490' \
+      "$out/source-target-effects-frontier.json" >/dev/null
+  '';
+
+  sourceTransitionIndexLean = mkPhase
+    "stage-a-gnu-hello-native-source-transition-index-v1" [] ''
+    ${python} ${driver} source-transition-index \
+      --mixed-original-manifest ${sourceOriginalLean}/phase-manifest.json \
+      --source-program-manifest ${sourceProgramLean}/phase-manifest.json \
+      --normalization-manifest \
+        ${sourceNormalizationLean}/normalization-inventory.json \
+      --x87-manifest ${sourceX87Lean}/phase-manifest.json \
+      --declaration-inventory \
+        ${sourceTargetEffectsLean}/source-target-effect-declarations.json \
+      --out "$out"
+    jq -e '
+      .format == "stage-a-gnu-hello-source-transition-index-v1" and
+      (.executes_original_binary | not) and
+      (.executes_candidate_binary | not) and
+      .counts.targets == 3490 and
+      .exports.active_target_transition_index ==
+        "StageA.GeneratedRelational.GnuHelloSourceTransitionIndex.generatedActiveTargetTransitionIndex" and
+      .exports.active_target_ids_exact ==
+        "StageA.GeneratedRelational.GnuHelloSourceTransitionIndex.generatedActiveTargetIdsExact"
+    ' "$out/source-transition-index.json" >/dev/null
+  '';
+
+  sourceTransitionIndexClosure = mkGeneratedClosureProof {
+    name = "native-source-transition-index";
+    sources = [
+      sourceOriginalCombinedInventoryProofSources
+      sourceProgramLean
+      sourceNormalizationLean
+      sourceSemanticRefinementLean
+      sourceX87Lean
+      sourceTargetEffectInputsLean
+      sourceTargetEffectsLean
+      sourceTransitionIndexLean
+    ];
+    target = "GeneratedGnuHelloSourceTransitionIndex";
+    declaration =
+      "StageA.GeneratedRelational.GnuHelloSourceTransitionIndex.generatedActiveTargetTransitionIndex";
+  };
+  sourceTransitionIndexProofSources =
+    sourceTransitionIndexClosure.proofSources;
+  sourceTransitionIndexProof = sourceTransitionIndexClosure.proof;
+
+  sourceRuntimeMemoryAccessProposal = mkPhase
+    "stage-a-gnu-hello-native-source-runtime-memory-access-proposal-v1" [] ''
+    ${python} ${driver} runtime-memory-access-proposal \
+      --state-machine ${sourceStateMachine}/state-machine.jsonl \
+      --mixed-original-plan \
+        ${sourceOriginalLean}/interpreter-mixed-original-plan.json \
+      --source-target-effect-declarations \
+        ${sourceTargetEffectsLean}/source-target-effect-declarations.json \
+      --out "$out"
+    jq -e '
+      .format == "stage-a-runtime-memory-access-proposal-v1" and
+      (.artifact_role.proof_authority | not) and
+      (.artifact_role.acceptance_authority | not) and
+      .artifact_role.proposal_only and
+      .artifact_role.lean_checker_must_recheck and
+      .counts.targets == 3490 and .counts.writes > 0 and
+      (.targets | length) == .counts.targets
+    ' "$out/runtime-memory-access-proposal.json" >/dev/null
+    jq -e '
+      .format == "stage-a-runtime-memory-partition-check-inputs-v1" and
+      (.artifact_role.proof_authority | not) and
+      (.artifact_role.acceptance_authority | not) and
+      .artifact_role.checker_input_only and
+      (.targets | length) == 3490
+    ' "$out/runtime-memory-partition-check-inputs.json" >/dev/null
+  '';
+
+  sourceOriginalTargetControlEvidence = mkPhase
+    "stage-a-gnu-hello-native-source-original-target-control-evidence-v1" [] ''
+    ${python} ${driver} original-target-control-evidence \
+      --source-target-effect-declarations \
+        ${sourceTargetEffectsLean}/source-target-effect-declarations.json \
+      --transition-index-manifest \
+        ${sourceTransitionIndexLean}/source-transition-index.json \
+      --state-machine ${sourceStateMachine}/state-machine.jsonl \
+      --combined-target-inventory \
+        ${sourceOriginalCombinedInventoryLean}/original-combined-execution-inventory-declarations.json \
+      --shard-size 64 \
+      --out "$out"
+    jq -e '
+      .format == "stage-a-original-target-control-evidence-v1" and
+      (.executes_original_binary | not) and
+      (.executes_candidate_binary | not) and
+      .counts.targets == 3490 and .counts.emitted == 3490 and
+      .counts.blocked == 0 and .counts.shards > 0
+    ' "$out/original-target-control-evidence.json" >/dev/null
+    jq -e '
+      .format == "stage-a-original-target-control-evidence-blockers-v1" and
+      .blockers == []
+    ' "$out/original-target-control-blockers.json" >/dev/null
+  '';
+  sourceOriginalTargetControlClosure = mkGeneratedClosureProof {
+    name = "native-source-original-target-control";
+    sources = [
+      leanSourceRoot
+      originalPeLean
+      sourceOriginalCombinedInventoryProofSources
+      sourceTransitionIndexProofSources
+      sourceTargetEffectsLean
+      sourceOriginalTargetControlEvidence
+    ];
+    target = "GeneratedOriginalTargetControlEvidence";
+    declaration =
+      "StageA.GeneratedRelational.GnuHelloOriginalTargetControlEvidence.generatedTarget0CheckedTransition";
+  };
+  sourceOriginalTargetControlProofSources =
+    sourceOriginalTargetControlClosure.proofSources;
+  sourceOriginalTargetControlProof = sourceOriginalTargetControlClosure.proof;
+  sourceOriginalTargetControlAudit = mkCheckedProofAudit {
+    name = "native-source-original-target-control";
+    proof = sourceOriginalTargetControlProof;
+    declaration =
+      "StageA.GeneratedRelational.GnuHelloOriginalTargetControlEvidence.generatedTarget0CheckedTransition";
+  };
+
+  sourceOrdinarySemanticClosure = mkGeneratedClosureProof {
+    name = "native-source-ordinary-semantics";
+    sources = [
+      leanSourceRoot
+      originalPeLean
+      sourceProgramLean
+      sourceSemanticRefinementLean
+      sourceNormalizationLean
+    ];
+    target = "GeneratedInterpreterNormalizationBundle";
+    declaration =
+      "StageA.GeneratedRelational.exactNormalizedOrdinaryRecordBindings";
+  };
+  sourceOrdinarySemanticProofSources =
+    sourceOrdinarySemanticClosure.proofSources;
+  sourceOrdinarySemanticProof = sourceOrdinarySemanticClosure.proof;
+
+  sourceX87SemanticClosure = mkGeneratedClosureProof {
+    name = "native-source-x87-semantics";
+    sources = [ leanSourceRoot originalPeLean sourceX87Lean ];
+    target = "GeneratedInterpreterX87ScheduleBundle";
+    declaration =
+      "StageA.GeneratedRelational.checkedInterpreterX87ScheduleBundleSourceRvasNodup";
+  };
+  sourceX87SemanticProofSources = sourceX87SemanticClosure.proofSources;
+  sourceX87SemanticProof = sourceX87SemanticClosure.proof;
+
+  sourceProgramAssemblyLean = mkPhase
+    "stage-a-gnu-hello-native-source-program-assembly-v1" [] ''
+    ${python} ${driver} native-source-program --out "$out"
+    jq -e '
+      .phase == "native-source-program" and .status == "source-ready" and
+      .targets == ["GeneratedGnuHelloNativeSourceProgram"]
+    ' "$out/phase-manifest.json" >/dev/null
+  '';
+
+  sourceProgramAssemblyClosure = mkGeneratedClosureProof {
+    name = "native-source-program-assembly";
+    sources = [
+      leanSourceRoot
+      originalPeLean
+      sourceProgramLean
+      sourceSemanticRefinementLean
+      sourceNormalizationLean
+      sourceX87Lean
+      sourceProgramAssemblyLean
+    ];
+    target = "GeneratedGnuHelloNativeSourceProgram";
+    declaration =
+      "StageA.GeneratedRelational.GnuHelloNativeSourceProgram.generatedNativeSourceExactBinding";
+  };
+  sourceProgramAssemblyProofSources =
+    sourceProgramAssemblyClosure.proofSources;
+  sourceProgramAssemblyProof = sourceProgramAssemblyClosure.proof;
+
+  sourceCandidateSeedRuntimeSource = pkgs.writeText
+    "GeneratedGnuHelloNativeSourceSeedRuntime.lean" ''
+      import StageA.GeneratedGnuHelloNativeSourceCandidateStaticAuthority
+
+      namespace StageA.GeneratedRelational.GnuHelloNativeSourceSeedRuntime
+
+      open StageA.Relational
+      open StageA.Relational.InterpreterNativeWorld
+
+      def environment : NativeWorldEnvironment := {
+        action := fun _ _ _ => .blocked .missingRuntimeContinuation
+      }
+
+      def indirectTargets : NativeIndirectTargetInventory := {}
+
+      theorem indirectTargetsValid :
+          indirectTargets.valid
+            StageA.GeneratedRelational.GnuHelloNativeSourceCandidateStaticAuthority.generatedCandidatePe =
+            true := by
+        rfl
+
+      end StageA.GeneratedRelational.GnuHelloNativeSourceSeedRuntime
+    '';
+
+  sourceCompiledAuthorityInputs = mkPhase
+    "stage-a-gnu-hello-native-source-compiled-authority-inputs-v1" [] ''
+    ${python} -m \
+      spaghetti_extractor.relational.lean.gnu_hello_native_source_compiled_authority_inputs \
+      --source-bundle ${sourceBundle}/native-source-bundle.json \
+      --compilation-attestation \
+        ${sourceCompilationAttestation}/native-source-compilation-attestation.json \
+      --native-source-program-manifest \
+        ${sourceProgramAssemblyLean}/phase-manifest.json \
+      --candidate-static-authority \
+        ${sourceCandidateStaticAuthorityLean}/phase-manifest.json \
+      --runtime-module StageA.GeneratedGnuHelloNativeSourceSeedRuntime \
+      --runtime-source ${sourceCandidateSeedRuntimeSource} \
+      --runtime-environment \
+        StageA.GeneratedRelational.GnuHelloNativeSourceSeedRuntime.environment \
+      --runtime-indirect-targets \
+        StageA.GeneratedRelational.GnuHelloNativeSourceSeedRuntime.indirectTargets \
+      --runtime-indirect-targets-valid \
+        StageA.GeneratedRelational.GnuHelloNativeSourceSeedRuntime.indirectTargetsValid \
+      --out "$out"
+    jq -e '
+      .format == "stage-a-gnu-hello-native-source-compiled-authority-inputs-v1" and
+      .outputs.project_declarations == "project-declarations.json" and
+      .outputs.runtime_declarations == "runtime-declarations.json" and
+      .outputs.toolchain_profile == "native-source-toolchain-profile.json"
+    ' "$out/compiled-authority-inputs.json" >/dev/null
+  '';
+  sourceProjectRealization =
+    mkNixRealizationIdentity "native-source-project" sourceBundle;
+  sourceProfileRealization =
+    mkNixRealizationIdentity "native-source-profile" sourceCompiledAuthorityInputs;
+  sourceBuildRealization =
+    mkNixRealizationIdentity "native-source-build" sourceCandidate;
+
+  sourceCompiledAuthorityProducedEvidence = mkPhase
+    "stage-a-gnu-hello-native-source-compiled-authority-evidence-v1"
+    [ pkgs.nix ] ''
+    ${python} -m \
+      spaghetti_extractor.relational.lean.gnu_hello_native_source_compiled_authority_evidence \
+      --source-bundle ${sourceBundle}/native-source-bundle.json \
+      --compilation-attestation \
+        ${sourceCompilationAttestation}/native-source-compilation-attestation.json \
+      --project-declarations \
+        ${sourceCompiledAuthorityInputs}/project-declarations.json \
+      --candidate-static-authority \
+        ${sourceCandidateStaticAuthorityLean}/phase-manifest.json \
+      --runtime-declarations \
+        ${sourceCompiledAuthorityInputs}/runtime-declarations.json \
+      --project-realization ${sourceProjectRealization}/realization.json \
+      --profile-realization ${sourceProfileRealization}/realization.json \
+      --build-realization ${sourceBuildRealization}/realization.json \
+      --offline-nix-inspection \
+      --out "$out"
+    test -s "$out/compiled-authority-declarations.json"
+    test -s "$out/project-nix-provenance.json"
+    test -s "$out/profile-nix-provenance.json"
+    test -s "$out/build-nix-provenance.json"
+  '';
+
+  # Original execution and the paired external-environment family remain
+  # explicit proof inputs until their checked producers are wired below.  The
+  # compiled-authority evidence is generated automatically from exact source,
+  # candidate, toolchain, and content-addressed Nix realization identities.
+  # None of these boundaries permits a manifest status to become a theorem.
+  sourceOriginalExecutionEvidence =
+    if nativeSourceOriginalExecutionEvidence != null then
+      nativeSourceOriginalExecutionEvidence
+    else
+      mkMissingNativeSourceEvidence {
+        name = "native-source-original-execution-evidence";
+        requiredFiles = [
+          "source-execution-evidence.json"
+          "StageA/*.lean"
+        ];
+        contract =
+          "stage-a-gnu-hello-source-execution-evidence-v2; exact combined invariant, all-launch root, and 31 frontier projections";
+      };
+  sourceCompiledAuthorityEvidence =
+    if nativeSourceCompiledAuthorityEvidence != null then
+      nativeSourceCompiledAuthorityEvidence
+    else
+      sourceCompiledAuthorityProducedEvidence;
+  sourceEnvironmentFamilyEvidence =
+    if nativeSourceEnvironmentFamilyEvidence != null then
+      nativeSourceEnvironmentFamilyEvidence
+    else
+      mkMissingNativeSourceEvidence {
+        name = "native-source-environment-family-evidence";
+        requiredFiles = [
+          "acceptance-declarations.json"
+          "StageA/*.lean"
+        ];
+        contract =
+          "stage-a-gnu-hello-native-source-acceptance-declarations-v3; nonempty admitted pairs, exact external evidence, pair-indexed launch evidence, and sole approved toolchain axiom ${nativeSourceApprovedToolchainAxiom}";
+      };
+
+  sourceExecutionLean = mkPhase
+    "stage-a-gnu-hello-native-source-execution-evidence-v2" [] ''
+    ${python} ${driver} native-source-execution \
+      --mixed-original-plan \
+        ${sourceOriginalLean}/interpreter-mixed-original-plan.json \
+      --writable-authority-report \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalWritableSlotAuthorityLean}/relocated-writable-static-pointer-slot-authorities.json \
+      --register-authority-report \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalRegisterIndirectAuthorityLean}/register-indirect-control-authorities.json \
+      --stack-dynamic-authority-report \
+        ${sourceOriginalAuthorityPipeline.mixedOriginalStackDynamicAuthorityLean}/original-stack-dynamic-control-closure.json \
+      --evidence-manifest \
+        ${sourceOriginalExecutionEvidence}/source-execution-evidence.json \
+      --out "$out"
+    jq -e '
+      .format == "stage-a-gnu-hello-source-execution-assembly-v2" and
+      .launch_scope == "all_checked_pe32_console_launches" and
+      .launch_family_complete and
+      (.acceptance_authority | not) and
+      .counts.frontiers == 31 and
+      .counts.writable_static_slot == 19 and
+      .counts.register_target == 9 and
+      .counts.stack_dynamic == 3 and
+      .blockers == [] and
+      .lean.proof_module == "StageA.GeneratedGnuHelloSourceExecution" and
+      .lean.audit_module == "StageA.GeneratedGnuHelloSourceExecutionAudit"
+    ' "$out/gnu-hello-source-execution-assembly.json" >/dev/null
+  '';
+  sourceExecutionClosure = mkGeneratedClosureProof {
+    name = "native-source-execution";
+    sources = [
+      leanSourceRoot
+      originalPeLean
+      sourceStaticMachineImportContractsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalWritableSlotAuthorityLean
+      sourceOriginalAuthorityPipeline.mixedOriginalRegisterIndirectAuthorityLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallProposalsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallSemanticsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallClosureProposalsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalDirectCallClosureSemanticsLean
+      sourceOriginalAuthorityPipeline.mixedOriginalStackDynamicAuthorityLean
+      sourceOriginalLean
+      sourceOriginalStaticReachabilityLean
+      sourceOriginalCarrierBindingLean
+      sourceProgramAssemblyProofSources
+      sourceOriginalExecutionEvidence
+      sourceExecutionLean
+    ];
+    target = "GeneratedGnuHelloSourceExecution";
+    declaration =
+      "StageA.GeneratedRelational.GnuHelloSourceExecution.generatedCheckedNativeSourceLaunchFamily";
+  };
+  sourceExecutionProofSources = sourceExecutionClosure.proofSources;
+  sourceExecutionProof = sourceExecutionClosure.proof;
+  sourceExecutionAudit = mkCheckedProofAudit {
+    name = "native-source-execution";
+    proof = sourceExecutionProof;
+    declaration =
+      "StageA.GeneratedRelational.GnuHelloSourceExecution.generatedCheckedNativeSourceLaunchFamily";
+  };
+
+  sourceCompiledAuthorityLean = mkPhase
+    "stage-a-gnu-hello-native-source-compiled-authority-v1" [] ''
+    ${python} ${driver} native-source-compiled-authority \
+      --source-bundle ${sourceBundle}/native-source-bundle.json \
+      --compilation-attestation \
+        ${sourceCompilationAttestation}/native-source-compilation-attestation.json \
+      --declarations \
+        ${sourceCompiledAuthorityEvidence}/compiled-authority-declarations.json \
+      --project-nix-provenance \
+        ${sourceCompiledAuthorityEvidence}/project-nix-provenance.json \
+      --profile-nix-provenance \
+        ${sourceCompiledAuthorityEvidence}/profile-nix-provenance.json \
+      --build-nix-provenance \
+        ${sourceCompiledAuthorityEvidence}/build-nix-provenance.json \
+      --out "$out"
+    jq -e '
+      .phase == "native-source-compiled-authority" and
+      (.proof_authority | not) and
+      (.acceptance_authority | not) and
+      (.executes_original_binary | not) and
+      (.executes_candidate_binary | not) and
+      .modules == [
+        "GeneratedGnuHelloNativeSourceCompiledAuthority",
+        "GeneratedGnuHelloNativeSourceCompiledAuthorityAudit"
+      ] and
+      .exports.exact_compilation ==
+        "StageA.GeneratedRelational.GnuHelloNativeSourceCompiledAuthority.exactNativeSourceCompilation"
+    ' "$out/phase-manifest.json" >/dev/null
+  '';
+  sourceCompiledAuthorityClosure = mkGeneratedClosureProof {
+    name = "native-source-compiled-authority";
+    sources = [
+      leanSourceRoot
+      sourceProgramAssemblyProofSources
+      sourceCandidateStaticAuthorityProofSources
+      sourceCompiledAuthorityInputs
+      (sourceCompiledAuthorityInputs + "/runtime-modules")
+      sourceCompiledAuthorityEvidence
+      sourceCompiledAuthorityLean
+    ];
+    target = "GeneratedGnuHelloNativeSourceCompiledAuthority";
+    declaration =
+      "StageA.GeneratedRelational.GnuHelloNativeSourceCompiledAuthority.exactNativeSourceCompilation";
+  };
+  sourceCompiledAuthorityProofSources =
+    sourceCompiledAuthorityClosure.proofSources;
+  sourceCompiledAuthorityProof = sourceCompiledAuthorityClosure.proof;
+  sourceCompiledAuthorityAudit = mkCheckedProofAudit {
+    name = "native-source-compiled-authority";
+    proof = sourceCompiledAuthorityProof;
+    declaration =
+      "StageA.GeneratedRelational.GnuHelloNativeSourceCompiledAuthority.exactNativeSourceCompilation";
+  };
+
+  sourceConditionalAcceptanceLean = mkPhase
+    "stage-a-gnu-hello-native-source-environment-family-acceptance-v2" [] ''
+    ${python} ${driver} native-source-acceptance \
+      --source-bundle ${sourceBundle}/native-source-bundle.json \
+      --compilation-attestation \
+        ${sourceCompilationAttestation}/native-source-compilation-attestation.json \
+      --compiled-authority-manifest \
+        ${sourceCompiledAuthorityLean}/phase-manifest.json \
+      --declarations \
+        ${sourceEnvironmentFamilyEvidence}/acceptance-declarations.json \
+      --out "$out"
+    jq -e '
+      .phase == "native-source-conditional-acceptance" and
+      (.proof_authority | not) and
+      (.acceptance_authority | not) and
+      (.executes_original_binary | not) and
+      (.executes_candidate_binary | not) and
+      (.conditional_on | type == "string" and length > 0) and
+      .modules == [
+        "GeneratedGnuHelloNativeSourceAcceptance",
+        "GeneratedGnuHelloNativeSourceAcceptanceAudit"
+      ] and
+      .theorem ==
+        "StageA.GeneratedRelational.GnuHelloNativeSourceAcceptance.generatedNativeSourceWholeProgramEnvironmentFamilyEquivalence"
+    ' "$out/phase-manifest.json" >/dev/null
+  '';
+  sourceConditionalAcceptanceClosure = mkGeneratedClosureProof {
+    name = "native-source-environment-family-acceptance";
+    sources = [
+      leanSourceRoot
+      sourceExecutionProofSources
+      sourceCompiledAuthorityProofSources
+      sourceEnvironmentFamilyEvidence
+      sourceConditionalAcceptanceLean
+    ];
+    target = "GeneratedGnuHelloNativeSourceAcceptance";
+    declaration =
+      "StageA.GeneratedRelational.GnuHelloNativeSourceAcceptance.generatedNativeSourceWholeProgramEnvironmentFamilyEquivalence";
+    approvedAxioms =
+      standardLogicalAxioms ++ [ nativeSourceApprovedToolchainAxiom ];
+  };
+  sourceConditionalAcceptanceProofSources =
+    sourceConditionalAcceptanceClosure.proofSources;
+  sourceConditionalAcceptanceProof = sourceConditionalAcceptanceClosure.proof;
+  sourceConditionalAcceptanceAudit = mkCheckedProofAudit {
+    name = "native-source-environment-family-acceptance";
+    proof = sourceConditionalAcceptanceProof;
+    declaration =
+      "StageA.GeneratedRelational.GnuHelloNativeSourceAcceptance.generatedNativeSourceWholeProgramEnvironmentFamilyEquivalence";
+    approvedAxioms =
+      standardLogicalAxioms ++ [ nativeSourceApprovedToolchainAxiom ];
+    requiredAxioms = [ nativeSourceApprovedToolchainAxiom ];
+  };
+  sourceConditionalAcceptanceChecked = pkgs.runCommand
+    "stage-a-gnu-hello-native-source-environment-family-acceptance-checked-v1"
+    {
+      nativeBuildInputs = [ pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      theorem="StageA.GeneratedRelational.GnuHelloNativeSourceAcceptance.generatedNativeSourceWholeProgramEnvironmentFamilyEquivalence"
+      jq -e --arg theorem "$theorem" '
+        .phase == "native-source-conditional-acceptance" and
+        .theorem == $theorem and
+        (.conditional_on | type == "string" and length > 0)
+      ' ${sourceConditionalAcceptanceLean}/phase-manifest.json >/dev/null
+      jq -e --arg theorem "$theorem" \
+        --arg toolchain_axiom \
+          ${lib.escapeShellArg nativeSourceApprovedToolchainAxiom} '
+        .format == "stage-a-checked-detached-axiom-audit-v1" and
+        .status == "checked" and .declaration == $theorem and
+        (.required_axioms == [$toolchain_axiom]) and
+        (.inventory | index($toolchain_axiom) != null) and
+        (.inventory | all(. == "propext" or . == "Classical.choice" or
+          . == "Quot.sound" or . == $toolchain_axiom))
+      ' ${sourceConditionalAcceptanceAudit}/axiom-audit.json >/dev/null
+      test -s ${sourceConditionalAcceptanceProof}/bundle.json
+      mkdir -p "$out"
+      source_bundle_artifact_sha256="$(sha256sum \
+        ${sourceBundle}/native-source-bundle.json | cut -d' ' -f1)"
+      compilation_attestation_artifact_sha256="$(sha256sum \
+        ${sourceCompilationAttestation}/native-source-compilation-attestation.json \
+        | cut -d' ' -f1)"
+      source_bundle_sha256="$(jq -r '.hashes.source_bundle_sha256' \
+        ${sourceBundle}/native-source-bundle.json)"
+      attestation_core_sha256="$(jq -r '.hashes.attestation_core_sha256' \
+        ${sourceCompilationAttestation}/native-source-compilation-attestation.json)"
+      original_pe_sha256="$(jq -r '.load_image_contract.bound_original_pe_sha256' \
+        ${sourceBundle}/native-source-bundle.json)"
+      candidate_pe_sha256="$(jq -r '.candidate.sha256' \
+        ${sourceCandidateStaticAuthorityLean}/phase-manifest.json)"
+      candidate_pe_size="$(jq -r '.candidate.size' \
+        ${sourceCandidateStaticAuthorityLean}/phase-manifest.json)"
+      jq -n --arg theorem "$theorem" \
+        --arg approved_toolchain_axiom \
+          ${lib.escapeShellArg nativeSourceApprovedToolchainAxiom} \
+        --arg proof_bundle ${lib.escapeShellArg (toString sourceConditionalAcceptanceProof)} \
+        --arg axiom_audit ${lib.escapeShellArg (toString sourceConditionalAcceptanceAudit)} \
+        --arg source_bundle_artifact_sha256 "$source_bundle_artifact_sha256" \
+        --arg source_bundle_sha256 "$source_bundle_sha256" \
+        --arg compilation_attestation_artifact_sha256 \
+          "$compilation_attestation_artifact_sha256" \
+        --arg attestation_core_sha256 "$attestation_core_sha256" \
+        --arg original_pe_sha256 "$original_pe_sha256" \
+        --arg candidate_pe_sha256 "$candidate_pe_sha256" \
+        --argjson candidate_pe_size "$candidate_pe_size" '
+        {
+          format: "stage-a-native-source-conditional-acceptance-checked-v1",
+          status: "checked",
+          theorem: $theorem,
+          approved_toolchain_axiom: $approved_toolchain_axiom,
+          proof_bundle: $proof_bundle,
+          detached_axiom_audit: $axiom_audit,
+          runtime_authority: false,
+          execution: {
+            original_binary_executed: false,
+            candidate_binary_executed: false
+          },
+          bindings: {
+            source_bundle_artifact_sha256: $source_bundle_artifact_sha256,
+            source_bundle_sha256: $source_bundle_sha256,
+            compilation_attestation_artifact_sha256:
+              $compilation_attestation_artifact_sha256,
+            attestation_core_sha256: $attestation_core_sha256,
+            original_pe_sha256: $original_pe_sha256,
+            candidate_pe_sha256: $candidate_pe_sha256,
+            candidate_pe_size: $candidate_pe_size
+          }
+        }
+      ' > "$out/checked-acceptance.json"
+    '';
+
+  sourceRuntimeFunctionalSuiteSpec = pkgs.writeText
+    "gnu-hello-native-source-functional-suite.json"
+    (builtins.toJSON (import ./gnu-hello-native-source-runtime-suite.nix {
+      programName = "hello.exe";
+    }));
+  sourceRuntimeFunctionalSuite = pkgs.runCommand
+    "stage-b-gnu-hello-native-source-functional-suite-v1"
+    {
+      nativeBuildInputs = [
+        spaghettiExtractor
+        pkgs.jq
+        pkgs.coreutils
+        pkgs.wineWow64Packages.stable
+        pkgs.xvfb-run
+      ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      jq -e '
+        .format == "stage-a-native-source-conditional-acceptance-checked-v1" and
+        .status == "checked" and
+        (.approved_toolchain_axiom | type == "string" and length > 0) and
+        (.runtime_authority | not)
+      ' ${sourceConditionalAcceptanceChecked}/checked-acceptance.json >/dev/null
+      export HOME="$TMPDIR/home"
+      export WINEPREFIX="$TMPDIR/wine"
+      export WINEDEBUG=-all
+      export WINEDLLOVERRIDES="mscoree,mshtml="
+      mkdir -p "$HOME"
+      spaghetti-extractor stage-b-run-functional-suite \
+        --suite ${sourceRuntimeFunctionalSuiteSpec} \
+        --candidate-binary ${sourceCandidate}/candidate.exe \
+        --timeout-seconds 30 \
+        --out "$out" \
+        -- xvfb-run -a wine ${sourceCandidate}/candidate.exe >/dev/null
+      jq -e '
+        .format == "stage-b-functional-report-v1" and
+        .status == "pass" and .target_name == "gnu-hello" and
+        .suite_id == "gnu-hello-2.12.3-candidate-functional" and
+        .upstream_suite and
+        .oracle.kind == "expected_output" and
+        (.oracle.original_runtime_observations | not) and
+        .counts.cases == 9 and .counts.passed == 9 and .counts.failed == 0 and
+        .commands.candidate[0:3] == ["xvfb-run", "-a", "wine"]
+      ' "$out/functional-report.json" >/dev/null
+    '';
+
+  sourceEquivalenceFinalReport = pkgs.runCommand
+    "stage-a-gnu-hello-native-source-equivalence-report-v1"
+    {
+      nativeBuildInputs = [ pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      ${python} ${driver} source-equivalence-final-report \
+        --checked-acceptance \
+          ${sourceConditionalAcceptanceChecked}/checked-acceptance.json \
+        --detached-axiom-audit \
+          ${sourceConditionalAcceptanceAudit}/axiom-audit.json \
+        --source-bundle ${sourceBundle}/native-source-bundle.json \
+        --compilation-attestation \
+          ${sourceCompilationAttestation}/native-source-compilation-attestation.json \
+        --candidate-pe-metadata \
+          ${sourceCandidateStaticAuthorityLean}/phase-manifest.json \
+        --functional-report \
+          ${sourceRuntimeFunctionalSuite}/functional-report.json \
+        --approved-toolchain-axiom \
+          ${lib.escapeShellArg nativeSourceApprovedToolchainAxiom} \
+        --out "$out"
+      jq -e --arg toolchain_axiom \
+        ${lib.escapeShellArg nativeSourceApprovedToolchainAxiom} '
+        .format == "stage-a-source-equivalence-report-v1" and
+        .verdict == "conditional_pass" and
+        .status == "conditional_pass" and
+        .approved_premise.lean_axiom == $toolchain_axiom and
+        .approved_premise.only_nonlogical_axiom and
+        .runtime_validation.status == "pass" and
+        .runtime_validation.candidate_only and
+        .runtime_validation.cases == 9 and
+        .runtime_validation.original_runtime_executions == 0 and
+        (.runtime_validation.runtime_authority | not) and
+        .zero_original_runtime.asserted and
+        .zero_original_runtime.original_runtime_executions == 0 and
+        (.acceptance_authority | not) and (.proof_authority | not) and
+        (.trust.generated_json_is_authority | not) and
+        .trust.lean_checked_theorem_is_authority
+      ' "$out/source-equivalence-report.json" >/dev/null
+    '';
+
   interpreter = mkPhase "stage-b-gnu-hello-roundtrip-interpreter" [] ''
     ${python} ${runtimeDriver} interpreter \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --out "$out"
     jq -e '
       .format == "stage-b-semantic-interpreter-package-v1" and
@@ -1300,7 +2632,7 @@ let
   nativeEngine = mkPhase "stage-b-gnu-hello-roundtrip-native-engine" [] ''
     entry_rva="$(jq -r .identity.entry_rva ${staticExport}/load-image-contract.json)"
     ${python} ${runtimeDriver} native-engine \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --entry-rva "$entry_rva" \
       --load-image-contract ${staticExport}/load-image-contract.json \
       --reference-contract ${staticExport}/reference-contract.json \
@@ -1708,7 +3040,7 @@ let
     ' ${staticExport}/load-image-contract.json)
     segment_status=0
     ${python} -m spaghetti_extractor stage-a-generate-engine-segments \
-      --semantic-transfers ${staticExport}/state-machine.jsonl \
+      --semantic-transfers ${proofStateMachinePath} \
       --interpreter-program ${interpreter}/state-machine-interpreter-program.json \
       --interpreter-package ${interpreter}/state-machine-interpreter-package.json \
       --candidate ${candidate}/candidate.exe \
@@ -1807,7 +3139,7 @@ let
     ${python} ${driver} static-machine-import-contracts \
       --original ${originalPe} \
       --reference-contract ${staticExport}/reference-contract.json \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --load-image-contract ${staticExport}/load-image-contract.json \
       --profile ${machineRuntimeProfile} \
       --profile \
@@ -1901,7 +3233,7 @@ let
       --driver ${driver} \
       --original ${originalPe} \
       --reference-contract ${staticExport}/reference-contract.json \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --load-image-contract ${staticExport}/load-image-contract.json \
       --machine-import-report \
         ${staticMachineImportContractsLean}/machine-import-contract-report.json \
@@ -1925,7 +3257,7 @@ let
     ${python} ${driver} mixed-original-base \
       --original ${originalPe} \
       --reference-contract ${staticExport}/reference-contract.json \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --load-image-contract ${staticExport}/load-image-contract.json \
       --machine-import-report \
         ${staticMachineImportContractsLean}/machine-import-contract-report.json \
@@ -1966,7 +3298,7 @@ let
     ${python} ${driver} mixed-original-writable-slot-authority \
       --original ${originalPe} \
       --reference-contract ${staticExport}/reference-contract.json \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --load-image-contract ${staticExport}/load-image-contract.json \
       --machine-import-report \
         ${staticMachineImportContractsLean}/machine-import-contract-report.json \
@@ -2023,7 +3355,7 @@ let
     ${python} ${driver} mixed-original-register-indirect-authority \
       --original ${originalPe} \
       --reference-contract ${staticExport}/reference-contract.json \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --load-image-contract ${staticExport}/load-image-contract.json \
       --machine-import-report \
         ${staticMachineImportContractsLean}/machine-import-contract-report.json \
@@ -2104,7 +3436,7 @@ let
     ${python} ${driver} mixed-original-direct-call-proposals \
       --original ${originalPe} \
       --reference-contract ${staticExport}/reference-contract.json \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --load-image-contract ${staticExport}/load-image-contract.json \
       --machine-import-report \
         ${staticMachineImportContractsLean}/machine-import-contract-report.json \
@@ -2178,7 +3510,7 @@ let
     "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-semantics" [] ''
     ${python} ${directCallSemanticsDriver} \
       --original ${originalPe} \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --proposal-report \
         ${mixedOriginalDirectCallProposalsLean}/internal-direct-call-summary-proposals.json \
       --out "$out"
@@ -2245,7 +3577,7 @@ let
     "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-semantics-final" [] ''
     ${python} ${directCallSemanticsDriver} \
       --original ${originalPe} \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --proposal-report \
         ${mixedOriginalDirectCallProposalsLean}/internal-direct-call-summary-proposals.json \
       --kernel-checks \
@@ -2273,7 +3605,7 @@ let
     "stage-a-gnu-hello-roundtrip-mixed-original-static-stack-authority-draft" [] ''
     ${python} ${stackDynamicAuthorityDriver} \
       --original ${originalPe} \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --proof-input \
         ${mixedOriginalDirectCallProposalsLean}/stack-dynamic-control-input.json \
       --cutpoint-graph \
@@ -2337,7 +3669,7 @@ let
     "stage-a-gnu-hello-roundtrip-mixed-original-static-stack-authority" [] ''
     ${python} ${stackDynamicAuthorityDriver} \
       --original ${originalPe} \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --proof-input \
         ${mixedOriginalDirectCallProposalsLean}/stack-dynamic-control-input.json \
       --cutpoint-graph \
@@ -2374,7 +3706,7 @@ let
     ${python} ${driver} mixed-original-direct-call-proposals \
       --original ${originalPe} \
       --reference-contract ${staticExport}/reference-contract.json \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --load-image-contract ${staticExport}/load-image-contract.json \
       --machine-import-report \
         ${staticMachineImportContractsLean}/machine-import-contract-report.json \
@@ -2450,7 +3782,7 @@ let
     "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-closure-semantics" [] ''
     ${python} ${directCallSemanticsDriver} \
       --original ${originalPe} \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --proposal-report \
         ${mixedOriginalDirectCallClosureProposalsLean}/internal-direct-call-summary-proposals.json \
       --out "$out"
@@ -2511,7 +3843,7 @@ let
     "stage-a-gnu-hello-roundtrip-mixed-original-direct-call-closure-semantics-final" [] ''
     ${python} ${directCallSemanticsDriver} \
       --original ${originalPe} \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --proposal-report \
         ${mixedOriginalDirectCallClosureProposalsLean}/internal-direct-call-summary-proposals.json \
       --kernel-checks \
@@ -2570,7 +3902,7 @@ let
     test -e ${mixedOriginalDirectCallFixedPointCheck}
     ${python} ${stackDynamicAuthorityDriver} \
       --original ${originalPe} \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --proof-input \
         ${mixedOriginalDirectCallFixedPointProposalsLean}/stack-dynamic-control-input.json \
       --cutpoint-graph \
@@ -2581,13 +3913,13 @@ let
       --out "$out"
     jq -e '
       .phase == "mixed-original-stack-dynamic-authority-lean" and
-      .status == "runtime-premises-required" and
+      .status == "kernel_compile_required" and
       (.proof_authority | not) and
       (.report_status_is_authority | not) and
-      .runtime_closure_required and
+      (.runtime_closure_required | not) and
       .counts.sites == 3 and
       .counts.static_authorities == .counts.sites and
-      .counts.runtime_premises_required == .counts.sites and
+      .counts.runtime_premises_required == 0 and
       .counts.stack_sites == 1 and
       .counts.indexed_table_sites == 1 and
       .counts.rooted_unreachability_sites == 1 and
@@ -2674,7 +4006,7 @@ let
     test -e ${mixedOriginalDirectCallFixedPointCheck}
     ${python} ${stackDynamicAuthorityDriver} \
       --original ${originalPe} \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --proof-input \
         ${mixedOriginalDirectCallFixedPointProposalsLean}/stack-dynamic-control-input.json \
       --cutpoint-graph \
@@ -2724,7 +4056,7 @@ let
     ${python} ${driver} mixed-original-final \
       --original ${originalPe} \
       --reference-contract ${staticExport}/reference-contract.json \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --load-image-contract ${staticExport}/load-image-contract.json \
       --machine-import-report \
         ${staticMachineImportContractsLean}/machine-import-contract-report.json \
@@ -2878,18 +4210,18 @@ let
 
   programLean = mkPhase "stage-a-gnu-hello-roundtrip-program-lean" [] ''
     ${python} ${driver} program-source \
-      --state-machine ${staticExport}/state-machine.jsonl --out "$out"
+      --state-machine ${proofStateMachinePath} --out "$out"
   '';
 
   normalizationLean = mkPhase "stage-a-gnu-hello-roundtrip-normalization-lean" [] ''
     ${python} ${driver} normalization-sources \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --shard-size 48 --out "$out"
   '';
 
   semanticRefinementLean = mkPhase "stage-a-gnu-hello-roundtrip-semantic-refinement-lean" [] ''
     ${python} ${driver} semantic-refinement-sources \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --shard-size 48 --out "$out"
   '';
 
@@ -2898,7 +4230,7 @@ let
       "stage-a-gnu-hello-roundtrip-mixed-fused-semantic-evidence-source" [] ''
       ${python} \
         ${mixedFusedSemanticEvidencePythonSource}/nix/gnu-hello-mixed-fused-semantic-evidence.py \
-        --state-machine ${staticExport}/state-machine.jsonl \
+        --state-machine ${proofStateMachinePath} \
         --out "$out"
       jq -e '
         .format ==
@@ -2946,7 +4278,7 @@ let
       "stage-a-gnu-hello-roundtrip-mixed-direct-call-semantic-evidence-source" [] ''
       ${python} \
         ${mixedDirectCallSemanticEvidencePythonSource}/nix/gnu-hello-mixed-direct-call-semantic-evidence.py \
-        --state-machine ${staticExport}/state-machine.jsonl \
+        --state-machine ${proofStateMachinePath} \
         --out "$out"
       jq -e '
         .format ==
@@ -2995,7 +4327,7 @@ let
       "stage-a-gnu-hello-roundtrip-mixed-indirect-import-call-semantic-evidence-source" [] ''
       ${python} \
         ${mixedIndirectImportCallSemanticEvidencePythonSource}/nix/gnu-hello-mixed-indirect-import-call-semantic-evidence.py \
-        --state-machine ${staticExport}/state-machine.jsonl \
+        --state-machine ${proofStateMachinePath} \
         --out "$out"
       jq -e '
         .format ==
@@ -3050,7 +4382,7 @@ let
       "stage-a-gnu-hello-roundtrip-mixed-external-tail-semantic-evidence-source" [] ''
       ${python} \
         ${mixedExternalTailSemanticEvidencePythonSource}/nix/gnu-hello-mixed-external-tail-semantic-evidence.py \
-        --state-machine ${staticExport}/state-machine.jsonl \
+        --state-machine ${proofStateMachinePath} \
         --out "$out"
       jq -e '
         .format ==
@@ -3103,7 +4435,7 @@ let
 
   x87Lean = mkPhase "stage-a-gnu-hello-roundtrip-x87-lean" [] ''
     ${python} ${driver} x87-sources \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --original ${originalPe} \
       --pe-byte-pack-inventory ${originalPeLean}/pe-byte-packs.json \
       --out "$out"
@@ -3149,7 +4481,7 @@ let
 
   definednessLean = mkPhase "stage-a-gnu-hello-roundtrip-definedness-lean" [] ''
     ${python} ${driver} definedness-source \
-      --state-machine ${staticExport}/state-machine.jsonl --out "$out"
+      --state-machine ${proofStateMachinePath} --out "$out"
   '';
 
   kernelLean = mkPhaseWithSource kernelDataPythonSource
@@ -3168,7 +4500,7 @@ let
     ${python} ${kernelDataDriver} \
       --candidate ${candidate}/candidate.exe \
       --linker-map ${candidate}/payload.map \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --lean-source-root \
         ${kernelDataLeanSource}/src/spaghetti_extractor/lean/StageA \
       --shard-size 8 --out "$out"
@@ -3218,7 +4550,7 @@ let
       "stage-a-gnu-hello-roundtrip-access-fault-qualification-lean" [] ''
       ${python} ${accessFaultQualificationDriver} \
         --original-isa ${originalIsa}/isa.json \
-        --state-machine ${staticExport}/state-machine.jsonl \
+        --state-machine ${proofStateMachinePath} \
         --reachability-plan \
           ${mixedOriginalBaseLean}/interpreter-mixed-original-base-plan.json \
         --kernel-data-inventory ${kernelDataLean}/module-inventory.json \
@@ -3337,7 +4669,7 @@ let
   x87CandidateReplayLean = mkPhase
     "stage-a-gnu-hello-roundtrip-x87-candidate-replay-lean" [] ''
     ${python} ${driver} x87-candidate-replay-sources \
-      --state-machine ${staticExport}/state-machine.jsonl \
+      --state-machine ${proofStateMachinePath} \
       --kernel-data-inventory ${kernelDataLean}/module-inventory.json \
       --out "$out"
   '';
@@ -5053,7 +6385,7 @@ let
       ${python} ${operationInstantiationDriver} \
         --candidate ${candidate}/candidate.exe \
         --kernel-plan ${kernelLean}/interpreter-kernel-plan.json \
-        --state-machine ${staticExport}/state-machine.jsonl \
+        --state-machine ${proofStateMachinePath} \
         --data-inventory ${kernelDataLean}/module-inventory.json \
         --step-operation-plan \
           ${kernelStepOperationLean}/interpreter-kernel-step-operation-plan.json \
@@ -5768,11 +7100,77 @@ let
   '';
 
 in
+assert builtins.isString nativeSourceApprovedToolchainAxiom;
+assert nativeSourceApprovedToolchainAxiom != "";
+assert !(builtins.elem nativeSourceApprovedToolchainAxiom standardLogicalAxioms);
 {
   inherit
     smoke
     staticExport
+    sourceStateMachine
     sourceC0
+    sourceInterpreter
+    sourceNativeEngine
+    sourceNativeRuntime
+    sourceBundle
+    sourceCandidate
+    sourceCandidateKernelDataLean
+    sourceCandidateStaticAuthorityLean
+    sourceCandidateStaticAuthorityProofSources
+    sourceCandidateStaticAuthorityProof
+    sourceCompilationAttestation
+    sourceProgramLean
+    sourceNormalizationLean
+    sourceSemanticRefinementLean
+    sourceX87Lean
+    sourceStaticMachineImportContractsLean
+    sourceOriginalBaseLean
+    sourceOriginalLean
+    sourceOriginalStaticReachabilityLean
+    sourceOriginalStaticReachabilityProofSources
+    sourceOriginalStaticReachabilityProof
+    sourceOriginalCarrierBindingLean
+    sourceOriginalCarrierBindingProofSources
+    sourceOriginalCarrierBindingProof
+    sourceOriginalCombinedDeclarations
+    sourceOriginalCombinedInventoryLean
+    sourceOriginalCombinedInventoryProofSources
+    sourceOriginalCombinedInventoryProof
+    sourceTargetEffectInputsLean
+    sourceTargetEffectsLean
+    sourceTransitionIndexLean
+    sourceTransitionIndexProofSources
+    sourceTransitionIndexProof
+    sourceRuntimeMemoryAccessProposal
+    sourceOriginalTargetControlEvidence
+    sourceOriginalTargetControlProofSources
+    sourceOriginalTargetControlProof
+    sourceOriginalTargetControlAudit
+    sourceOrdinarySemanticProofSources
+    sourceOrdinarySemanticProof
+    sourceX87SemanticProofSources
+    sourceX87SemanticProof
+    sourceProgramAssemblyLean
+    sourceProgramAssemblyProofSources
+    sourceProgramAssemblyProof
+    sourceOriginalExecutionEvidence
+    sourceExecutionLean
+    sourceExecutionProofSources
+    sourceExecutionProof
+    sourceExecutionAudit
+    sourceCompiledAuthorityEvidence
+    sourceCompiledAuthorityLean
+    sourceCompiledAuthorityProofSources
+    sourceCompiledAuthorityProof
+    sourceCompiledAuthorityAudit
+    sourceEnvironmentFamilyEvidence
+    sourceConditionalAcceptanceLean
+    sourceConditionalAcceptanceProofSources
+    sourceConditionalAcceptanceProof
+    sourceConditionalAcceptanceAudit
+    sourceConditionalAcceptanceChecked
+    sourceRuntimeFunctionalSuite
+    sourceEquivalenceFinalReport
     interpreter
     nativeEngine
     nativeRuntime

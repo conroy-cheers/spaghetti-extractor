@@ -1074,14 +1074,18 @@ class InterpreterMixedOriginalPlan:
             for successor_rva in region.missing_successor_rvas
         )
 
-    def to_json(self) -> dict[str, Any]:
+    def to_json(
+        self,
+        *,
+        include_original_combined_reachability_declarations: bool = False,
+    ) -> dict[str, Any]:
         recovered_indirect = [
             site
             for region in self.regions
             for site in region.indirect_sites
             if site.static_binding is not None
         ]
-        return {
+        payload = {
             "format": INTERPRETER_MIXED_ORIGINAL_FORMAT,
             "status": "ready" if self.complete else "incomplete",
             "state_machine_sha256": self.state_machine_sha256,
@@ -1236,6 +1240,41 @@ class InterpreterMixedOriginalPlan:
                 )
             ),
         }
+        if include_original_combined_reachability_declarations:
+            if not self.complete:
+                raise InterpreterMixedOriginalGenerationError(
+                    "original-combined reachability declarations require a "
+                    "complete rooted mixed-original inventory"
+                )
+            module = f"StageA.{self.spec.output_module}"
+            namespace = self.spec.namespace
+
+            def declaration(symbol: str) -> dict[str, str]:
+                return {
+                    "module": module,
+                    "namespace": namespace,
+                    "symbol": symbol,
+                }
+
+            payload["original_combined_reachability_declarations"] = {
+                "program": declaration("generatedOriginalCombinedProgram"),
+                "original_context": declaration(
+                    "generatedOriginalStaticContext"
+                ),
+                "target_ids": declaration(
+                    "generatedOriginalCombinedReachableTargetIds"
+                ),
+                "target_ids_exact": declaration(
+                    "generatedOriginalCombinedReachableTargetIdsExact"
+                ),
+                "target_ids_unique": declaration(
+                    "generatedOriginalCombinedReachableTargetIdsUnique"
+                ),
+                "target_round_trips": declaration(
+                    "generatedOriginalCombinedReachableTargetRoundTrips"
+                ),
+            }
+        return payload
 
 
 @dataclass(frozen=True)
@@ -2925,6 +2964,46 @@ def write_relational_interpreter_mixed_original(
     return write_relational_interpreter_mixed_original_final(out, plan)
 
 
+def _balanced_shard_sizes(row_count: int, maximum_size: int) -> list[int]:
+    """Choose deterministic near-equal shard sizes below an upper bound."""
+
+    if row_count < 0:
+        raise InterpreterMixedOriginalGenerationError(
+            "finite-index row count must be nonnegative"
+        )
+    if maximum_size <= 0:
+        raise InterpreterMixedOriginalGenerationError(
+            "finite-index shard size must be positive"
+        )
+    if row_count == 0:
+        return []
+    shard_count = (row_count + maximum_size - 1) // maximum_size
+    base_size, larger_count = divmod(row_count, shard_count)
+    return [
+        base_size + (1 if index < larger_count else 0)
+        for index in range(shard_count)
+    ]
+
+
+def _balanced_shards[T](rows: Sequence[T], maximum_size: int) -> list[Sequence[T]]:
+    """Partition rows without leaving an anomalously small final shard.
+
+    The generated shard indexes are composed as checked AVL trees.  A naive
+    fixed-width split can leave one short index whose height differs by more
+    than one from every other shard, making an otherwise valid inventory
+    impossible to compose.  Distributing the remainder deterministically
+    keeps shard heights comparable while preserving the requested upper bound.
+    """
+
+    shards: list[Sequence[T]] = []
+    offset = 0
+    for size in _balanced_shard_sizes(len(rows), maximum_size):
+        shards.append(rows[offset : offset + size])
+        offset += size
+    assert offset == len(rows)
+    return shards
+
+
 def _mixed_original_base_plan(
     plan: InterpreterMixedOriginalPlan,
 ) -> InterpreterMixedOriginalPlan:
@@ -2948,10 +3027,7 @@ def write_relational_interpreter_mixed_original_base(
     stage_a.mkdir(parents=True, exist_ok=True)
     spec = plan.spec
     spec.validate()
-    shard_regions = [
-        plan.regions[offset : offset + spec.shard_size]
-        for offset in range(0, len(plan.regions), spec.shard_size)
-    ]
+    shard_regions = _balanced_shards(plan.regions, spec.shard_size)
     written: list[Path] = []
     shard_modules: list[str] = []
     for index, regions in enumerate(shard_regions):
@@ -2992,10 +3068,7 @@ def write_relational_interpreter_mixed_original_final(
     stage_a.mkdir(parents=True, exist_ok=True)
     spec = plan.spec
     spec.validate()
-    shard_regions = [
-        plan.regions[offset : offset + spec.shard_size]
-        for offset in range(0, len(plan.regions), spec.shard_size)
-    ]
+    shard_regions = _balanced_shards(plan.regions, spec.shard_size)
     written: list[Path] = []
     shard_modules: list[str] = []
     for index, regions in enumerate(shard_regions):
@@ -3015,7 +3088,14 @@ def write_relational_interpreter_mixed_original_final(
     written.append(bundle_path)
     manifest = root / "interpreter-mixed-original-plan.json"
     manifest.write_text(
-        json.dumps(plan.to_json(), indent=2, sort_keys=True) + "\n",
+        json.dumps(
+            plan.to_json(
+                include_original_combined_reachability_declarations=True
+            ),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
         encoding="utf-8",
     )
     written.append(manifest)
@@ -3474,6 +3554,7 @@ def _final_bundle_source(
     imported_modules = [
         "StageA.RelationalInterpreterMixedOriginal",
         "StageA.RelationalIndirectExitAdapters",
+        "StageA.RelationalPEWorldExecution",
         *(
             ["StageA.RelationalInternalDirectCallMixedOriginalIntegration"]
             if any(
@@ -3535,6 +3616,7 @@ def _final_bundle_source(
     )
     reachable = ""
     exact_bindings = ""
+    original_combined_reachability = ""
     if plan.complete:
         reachable = f"""
 def generatedExactOriginalDecodedReachability :
@@ -3591,6 +3673,97 @@ def generatedExactMixedProgramBinding
     ExactMixedProgramBinding generatedOriginalStaticContext
       (generatedOriginalDecodedProgram environment protocolEnvironment
         externalCallSites) := { original := binding }
+"""
+        original_combined_reachability = f"""
+def generatedOriginalCombinedEnvironment : WorldExternalEnvironment := {{
+  result := fun _ event => {{ state := event.state, world := event.world }}
+}}
+
+def generatedOriginalCombinedProtocolEnvironment :
+    WorldExternalProtocolEnvironment := {{
+  action := fun request =>
+    .returned {{ state := request.state, world := request.world }}
+}}
+
+def generatedOriginalCombinedExternalCallSites :
+    List ExternalCallSiteContract := []
+
+/-- The concrete original program used by the combined execution inventory.
+Its code map is the checked carrier map; environment-family adapters may
+retarget the external resolver without changing the raw-EIP facts below. -/
+def generatedOriginalCombinedProgram : DecodedWorldProgram :=
+  generatedOriginalDecodedProgram generatedOriginalCombinedEnvironment
+    generatedOriginalCombinedProtocolEnvironment
+    generatedOriginalCombinedExternalCallSites
+
+def generatedOriginalCombinedReachableTargetIds : List Nat :=
+  {list(plan.reachable_target_ids)}
+
+theorem generatedOriginalCombinedReachableTargetIdsExact :
+    generatedOriginalCombinedReachableTargetIds = generatedReachableTargetIds :=
+  rfl
+
+theorem generatedOriginalCombinedReachableTargetIdsUnique :
+    generatedOriginalCombinedReachableTargetIds.Nodup := by
+  rw [generatedOriginalCombinedReachableTargetIdsExact]
+  exact generatedExactOriginalDecodedReachability.unique
+
+theorem generatedOriginalCombinedRegionTargetCountExact :
+    generatedOriginalStaticContext.codeMap.entries.size =
+      generatedOriginalCarrierContext.codeMap.entries.size := by
+  decide +kernel
+
+theorem generatedOriginalCombinedReachableTargetRoundTrips :
+    forall targetId,
+      targetId ∈ generatedOriginalCombinedReachableTargetIds ->
+        exists eip,
+          generatedOriginalCombinedProgram.canonicalRawEip? targetId = some eip /\\
+            generatedOriginalCombinedProgram.resolveRawEip eip = some targetId := by
+  intro targetId member
+  rw [generatedOriginalCombinedReachableTargetIdsExact] at member
+  obtain ⟨source, sourceFound⟩ :=
+    originalReachabilityInventoryValid_sources
+      generatedOriginalReachabilityInventoryChecked member
+  cases originalTargetFound :
+      generatedOriginalStaticContext.codeMap.get? targetId with
+  | none =>
+      simp [OriginalDecodedStaticContext.source?, originalTargetFound]
+        at sourceFound
+  | some originalTarget =>
+      have originalTargetBefore :=
+        FiniteIndex.get?_eq_some_implies_lt_size
+          generatedOriginalStaticContext.codeMap.entries targetId
+          originalTarget originalTargetFound
+      have targetBefore :
+          targetId < generatedOriginalCarrierContext.codeMap.entries.size := by
+        rw [← generatedOriginalCombinedRegionTargetCountExact]
+        exact originalTargetBefore
+      have contextValid :
+          generatedOriginalCarrierContext.StructurallyValid := by
+        simpa [generatedOriginalCarrierContext] using
+          {base_namespace}.generatedOriginalCarrierContextStructurallyValid
+      have indexed := StaticProofContext.codeMapIndexed_of_structurallyValid
+        generatedOriginalCarrierContext contextValid
+      rcases indexed with
+        ⟨_entriesStructural, _originalAddressesStructural,
+          _candidateAddressesStructural, entryValid, _originalAddressCount,
+          _candidateAddressCount, _originalAddressesValid,
+          _candidateAddressesValid, originalRoundTrips,
+          _candidateRoundTrips⟩
+      have targetValid := entryValid targetId targetBefore
+      cases targetFound : generatedOriginalCarrierContext.codeMap.get? targetId with
+      | none =>
+          simp [StaticCodeMap.entryAtValid, targetFound] at targetValid
+      | some target =>
+          have roundTrip := StaticCodeMap.canonicalRawEip_roundTrip false
+            generatedOriginalCarrierContext.originalPe.imageBase
+            generatedOriginalCarrierContext.codeMap originalRoundTrips
+            targetId target targetFound
+          simpa [generatedOriginalCombinedProgram,
+            generatedOriginalDecodedProgram,
+            DecodedWorldProgram.canonicalRawEip?,
+            DecodedWorldProgram.resolveRawEip,
+            DecodedWorldProgram.sideImageBase] using roundTrip
 """
     return f"""{imports}
 
@@ -3717,6 +3890,7 @@ theorem generatedOriginalReachabilityInventoryChecked :
 
 {reachable}
 {exact_bindings}
+{original_combined_reachability}
 -- Final authority is absent while any exact frontier remains.
 {blocker_comment}
 -- Unreachable diagnostics remain non-authoritative.

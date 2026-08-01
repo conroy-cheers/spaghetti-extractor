@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+import capstone
 import pefile
+from capstone.x86 import X86_OP_MEM, X86_OP_REG
 
 from .artifact_formats import (
     SEMANTIC_IR_FORMAT,
@@ -74,6 +76,17 @@ class StageBStateMachineBinding:
     reference_contract_sha256: str
     semantic_transfer_contracts_sha256: str
     transfer_count: int
+
+
+@dataclass(frozen=True)
+class StageBPaddingBridgeResult:
+    path: Path
+    sha256: str
+    input_transfer_count: int
+    padding_bridge_count: int
+    output_transfer_count: int
+    bridged_rvas: tuple[int, ...]
+    terminating_transfer_rvas: tuple[int, ...]
 
 
 def load_stage_a_reference_contract_binding(
@@ -331,6 +344,350 @@ def write_stage_b_state_machine(path: Path, rows: Iterable[dict[str, Any]]) -> N
     )
 
 
+def augment_state_machine_with_padding_bridges(
+    *,
+    state_machine: Path,
+    original_pe: Path,
+    block_map: Path,
+    external_profile: Path | None = None,
+    out: Path,
+) -> StageBPaddingBridgeResult:
+    """Close direct control targets that enter checked semantic no-op padding.
+
+    The block map and Capstone decode are untrusted proposal inputs.  Generated
+    rows retain the exact bytes so the ordinary Lean decode/normalization path
+    must independently prove that every bridge preserves the machine state.
+    """
+
+    state_machine = Path(state_machine).resolve()
+    original_pe = Path(original_pe).resolve()
+    block_map = Path(block_map).resolve()
+    rows = _read_state_machine_rows(state_machine)
+    if not rows:
+        raise StageAInputError("padding bridge input state machine is empty")
+    starts = {_transfer_start(row) for row in rows}
+    if len(starts) != len(rows):
+        raise StageAInputError("padding bridge input has duplicate transfer RVAs")
+    terminating_imports = _terminating_imports(external_profile)
+    terminating_rows = {
+        _transfer_start(row)
+        for row in rows
+        if _row_calls_terminating_import(row, terminating_imports)
+    }
+    direct_targets = {
+        target
+        for row in rows
+        if _transfer_start(row) not in terminating_rows
+        for target in _semantic_direct_targets(row)
+    }
+    missing = sorted(direct_targets - starts)
+
+    try:
+        pe_data = original_pe.read_bytes()
+        pe = pefile.PE(data=pe_data, fast_load=True)
+    except (OSError, pefile.PEFormatError) as exc:
+        raise StageAInputError(f"padding bridge original is not a PE: {exc}") from exc
+    if int(pe.FILE_HEADER.Machine) != 0x14C or int(pe.OPTIONAL_HEADER.Magic) != 0x10B:
+        raise StageAInputError("padding bridge original must be i386 PE32")
+    mapping = _read_json_object(block_map, "padding bridge block map")
+    raw_waivers = mapping.get("waivers")
+    if not isinstance(raw_waivers, list):
+        raise StageAInputError("padding bridge block map has no waiver inventory")
+    waivers = tuple(
+        _padding_waiver_span(value, index)
+        for index, value in enumerate(raw_waivers)
+        if isinstance(value, dict) and value.get("binary") in {"original", "both"}
+    )
+
+    bridges: list[dict[str, Any]] = []
+    occupied = [
+        (_transfer_start(row), _transfer_end(row))
+        for row in rows
+    ]
+    for target in missing:
+        matches = [span for span in waivers if span[0] <= target < span[1]]
+        if len(matches) != 1:
+            raise StageAInputError(
+                f"direct target 0x{target:x} has {len(matches)} matching padding waivers"
+            )
+        _waiver_start, waiver_end, waiver_id = matches[0]
+        if any(start <= target < end for start, end in occupied):
+            raise StageAInputError(
+                f"direct target 0x{target:x} overlaps an existing semantic transfer"
+            )
+        encoded = bytes(pe.get_data(target, waiver_end - target))
+        if len(encoded) != waiver_end - target or not encoded:
+            raise StageAInputError(
+                f"padding bridge 0x{target:x}-0x{waiver_end:x} is not fully file-backed"
+            )
+        instructions = _decode_semantic_padding(
+            encoded,
+            image_base=int(pe.OPTIONAL_HEADER.ImageBase),
+            rva_start=target,
+        )
+        bridge = normalize_stage_a_semantic_transfer(
+            _padding_bridge_transfer(
+                rva_start=target,
+                rva_end=waiver_end,
+                waiver_id=waiver_id,
+                encoded=encoded,
+                instructions=instructions,
+            )
+        )
+        bridges.append(bridge)
+        occupied.append((target, waiver_end))
+
+    augmented = normalize_stage_a_semantic_transfers([*rows, *bridges])
+    augmented_starts = {_transfer_start(row) for row in augmented}
+    remaining = sorted(
+        target
+        for row in augmented
+        if _transfer_start(row) not in terminating_rows
+        for target in _semantic_direct_targets(row)
+        if target not in augmented_starts
+    )
+    if remaining:
+        rendered = ", ".join(f"0x{target:x}" for target in remaining[:16])
+        raise StageAInputError(
+            "padding bridge augmentation left unresolved direct targets: " + rendered
+        )
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_stage_b_state_machine(out, augmented)
+    return StageBPaddingBridgeResult(
+        path=out.resolve(),
+        sha256=sha256_file(out),
+        input_transfer_count=len(rows),
+        padding_bridge_count=len(bridges),
+        output_transfer_count=len(augmented),
+        bridged_rvas=tuple(sorted(_transfer_start(row) for row in bridges)),
+        terminating_transfer_rvas=tuple(sorted(terminating_rows)),
+    )
+
+
+def _read_state_machine_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file() or path.is_symlink():
+        raise StageAInputError("padding bridge state machine must be a regular file")
+    rows: list[dict[str, Any]] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise StageAInputError(
+                f"invalid state-machine JSON on line {line_number}: {exc}"
+            ) from exc
+        rows.append(_object(value, f"state-machine line {line_number}"))
+    return rows
+
+
+def _semantic_direct_targets(row: Mapping[str, Any]) -> tuple[int, ...]:
+    outcome = _object(row.get("outcome"), "semantic transfer outcome")
+    kind = outcome.get("kind")
+    if kind in {"fallthrough", "jump"}:
+        return (_u32(outcome.get("target_rva"), "semantic direct target"),)
+    if kind == "branch":
+        return (
+            _u32(outcome.get("true_target_rva"), "semantic true target"),
+            _u32(outcome.get("false_target_rva"), "semantic false target"),
+        )
+    return ()
+
+
+def _terminating_imports(external_profile: Path | None) -> frozenset[tuple[str, str, Any]]:
+    if external_profile is None:
+        return frozenset()
+    payload = _read_json_object(
+        Path(external_profile).resolve(), "padding bridge external profile"
+    )
+    contracts = payload.get("machine_import_call_contracts")
+    if not isinstance(contracts, list):
+        raise StageAInputError(
+            "padding bridge external profile has no machine import contracts"
+        )
+    result: set[tuple[str, str, Any]] = set()
+    for index, raw in enumerate(contracts):
+        contract = _object(raw, f"external profile contract {index}")
+        if contract.get("disposition") != "terminates":
+            continue
+        imported = _object(contract.get("import"), f"external profile contract {index} import")
+        dll = imported.get("dll")
+        symbol = imported.get("symbol")
+        ordinal = imported.get("ordinal")
+        if not isinstance(dll, str) or not dll or (symbol is None) == (ordinal is None):
+            raise StageAInputError(
+                f"terminating external profile contract {index} has invalid identity"
+            )
+        result.add((dll.lower(), str(symbol) if symbol is not None else "", ordinal))
+    return frozenset(result)
+
+
+def _row_calls_terminating_import(
+    row: Mapping[str, Any],
+    terminating_imports: frozenset[tuple[str, str, Any]],
+) -> bool:
+    if not terminating_imports:
+        return False
+    external_events = row.get("external_events")
+    if not isinstance(external_events, list):
+        raise StageAInputError("semantic transfer external_events must be a list")
+    for index, raw in enumerate(external_events):
+        event = _object(raw, f"semantic external event {index}")
+        if event.get("kind") != "external_call":
+            continue
+        dll = event.get("dll")
+        symbol = event.get("symbol")
+        ordinal = event.get("ordinal")
+        if isinstance(dll, str) and (
+            dll.lower(), str(symbol) if symbol is not None else "", ordinal
+        ) in terminating_imports:
+            return True
+    return False
+
+
+def _transfer_end(row: Mapping[str, Any]) -> int:
+    original = _object(row.get("original"), "semantic transfer original span")
+    return _u32(original.get("rva_end"), "semantic transfer rva_end")
+
+
+def _padding_waiver_span(value: Mapping[str, Any], index: int) -> tuple[int, int, str]:
+    start = _u32(value.get("rva"), f"padding waiver {index} rva")
+    size = _nonnegative_int(value.get("size"), f"padding waiver {index} size")
+    if size == 0 or start + size >= 2**32:
+        raise StageAInputError(f"padding waiver {index} has an invalid span")
+    waiver_id = value.get("id")
+    if not isinstance(waiver_id, str) or not waiver_id:
+        raise StageAInputError(f"padding waiver {index} has no stable identity")
+    return start, start + size, waiver_id
+
+
+def _decode_semantic_padding(
+    encoded: bytes,
+    *,
+    image_base: int,
+    rva_start: int,
+) -> list[dict[str, Any]]:
+    decoder = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    decoder.detail = True
+    decoded = list(decoder.disasm(encoded, image_base + rva_start))
+    if sum(int(instruction.size) for instruction in decoded) != len(encoded):
+        raise StageAInputError(
+            f"padding bridge at 0x{rva_start:x} does not decode exactly"
+        )
+    for instruction in decoded:
+        if not _semantic_padding_instruction(instruction):
+            raise StageAInputError(
+                "padding bridge contains a non-no-op instruction at "
+                f"0x{int(instruction.address - image_base):x}: "
+                f"{instruction.mnemonic} {instruction.op_str}".rstrip()
+            )
+    return [
+        {
+            "rva": int(instruction.address - image_base),
+            "size": int(instruction.size),
+            "bytes": bytes(instruction.bytes).hex(),
+            "mnemonic": instruction.mnemonic,
+            "op_str": instruction.op_str,
+        }
+        for instruction in decoded
+    ]
+
+
+def _semantic_padding_instruction(instruction: Any) -> bool:
+    if instruction.mnemonic == "nop":
+        return True
+    if instruction.mnemonic != "lea" or len(instruction.operands) != 2:
+        return False
+    destination, source = instruction.operands
+    if destination.type != X86_OP_REG or source.type != X86_OP_MEM:
+        return False
+    memory = source.mem
+    return (
+        destination.reg == memory.base
+        and memory.index == 0
+        and memory.disp == 0
+    )
+
+
+def _padding_bridge_transfer(
+    *,
+    rva_start: int,
+    rva_end: int,
+    waiver_id: str,
+    encoded: bytes,
+    instructions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    identity = f"semantic-transfer:padding-bridge-{rva_start:x}-{rva_end:x}"
+    return {
+        "format": STAGE_A_SEMANTIC_TRANSFER_FORMAT,
+        "id": identity,
+        "function": f"padding-bridge-{rva_start:x}",
+        "block_id": f"padding-{rva_start:x}-{rva_end:x}",
+        "unit_kind": "semantic_transfer",
+        "status": "reimplementable",
+        "reachable": True,
+        "original": {
+            "rva_start": rva_start,
+            "rva_end": rva_end,
+            "size": rva_end - rva_start,
+        },
+        "instructions": instructions,
+        "instruction_bytes_sha256": sha256_bytes(encoded),
+        "expression_model": STAGE_A_SEMANTIC_IR_MODEL,
+        "pre_state": _canonical_pre_state(),
+        "register_writes": [],
+        "flag_writes": [],
+        "memory_events": [],
+        "external_events": [],
+        "faults": [],
+        "ordered_events": [],
+        "edge_conditions": [{"condition": {"op": "true"}, "target_rva": rva_end}],
+        "outcome": {"kind": "fallthrough", "target_rva": rva_end},
+        "stack_delta": {
+            "status": "derived",
+            "net_bytes": 0,
+            "expression": {"op": "reg", "name": "esp", "width": 32},
+        },
+        "fpu_state": None,
+        "counts": {
+            "register_writes": 0,
+            "flag_writes": 0,
+            "memory_events": 0,
+            "external_events": 0,
+            "faults": 0,
+            "ordered_events": 0,
+            "edge_conditions": 1,
+        },
+        "acceptance": (
+            "untrusted exact padding bridge proposal; Lean decode and semantic "
+            "normalization are required"
+        ),
+        "blocker_category": None,
+        "blocker": None,
+        "next_action": f"Lean-check exact no-op bridge from waiver {waiver_id}",
+    }
+
+
+def _canonical_pre_state() -> dict[str, Any]:
+    return {
+        "registers": {
+            name: {"op": "reg", "name": name, "width": 32}
+            for name in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+        },
+        "flags": {
+            name: {"op": "flag", "name": name}
+            for name in ("cf", "zf", "sf", "of", "pf", "df")
+        },
+        "memory": {
+            "op": "memory",
+            "name": "mem0",
+            "address_width": 32,
+            "value_width": 8,
+        },
+    }
+
+
 def stage_b_state_machine_coverage(
     functions: Iterable[dict[str, Any]],
     rows: Iterable[dict[str, Any]],
@@ -489,7 +846,7 @@ def _transfer_reference(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _transfer_start(row: dict[str, Any]) -> int:
+def _transfer_start(row: Mapping[str, Any]) -> int:
     original = row.get("original")
     value = original.get("rva_start") if isinstance(original, dict) else row.get("rva_start")
     return int(value) if isinstance(value, int) else 0x7FFFFFFF
@@ -673,6 +1030,19 @@ def _digest(value: Any, context: str) -> str:
     return value
 
 
+def _nonnegative_int(value: Any, context: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise StageAInputError(f"{context} must be a non-negative integer")
+    return value
+
+
+def _u32(value: Any, context: str) -> int:
+    result = _nonnegative_int(value, context)
+    if result >= 2**32:
+        raise StageAInputError(f"{context} must fit in 32 bits")
+    return result
+
+
 __all__ = [
     "STAGE_A_REFERENCE_CONTRACT_FORMAT",
     "STAGE_A_SEMANTIC_EXPORT_BINDING_FORMAT",
@@ -680,7 +1050,9 @@ __all__ = [
     "STAGE_A_SEMANTIC_TRANSFER_FORMAT",
     "STAGE_B_STATE_MACHINE_FORMAT",
     "StageAReferenceContractBinding",
+    "StageBPaddingBridgeResult",
     "StageBStateMachineBinding",
+    "augment_state_machine_with_padding_bridges",
     "function_state_machine_binding",
     "load_stage_a_reference_contract_binding",
     "normalize_stage_a_semantic_transfer",

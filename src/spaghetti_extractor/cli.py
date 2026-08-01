@@ -96,11 +96,16 @@ from .source_equivalence import (
     generate_c0_proof_sources,
     generate_c0_source_project,
 )
+from .native_source_equivalence import (
+    build_native_source_bundle_manifest,
+    build_native_source_compilation_attestation,
+)
 from .stage_b_interpreter_backend import write_stage_b_interpreter_package
 from .stage_b_interpreter_native_build import (
     build_stage_b_interpreter_native_candidate,
 )
 from .stage_b_state_machine import (
+    augment_state_machine_with_padding_bridges,
     write_stage_b_state_machine_from_stage_a_export,
 )
 from .stage_b_native_engine import write_stage_b_native_engine_package
@@ -847,6 +852,21 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     )
     semantic_c.set_defaults(func=_cmd_stage_b_generate_semantic_c)
 
+    padding_bridges = subcommands.add_parser(
+        "stage-b-augment-padding-bridges",
+        help=(
+            "add exact no-op transfer proposals for checked padding targets "
+            "and validate direct-control closure"
+        ),
+    )
+    padding_bridges.add_argument("--state-machine", type=Path, required=True)
+    padding_bridges.add_argument("--original", type=Path, required=True)
+    padding_bridges.add_argument("--block-map", type=Path, required=True)
+    padding_bridges.add_argument("--external-profile", type=Path)
+    padding_bridges.add_argument("--out", type=Path, required=True)
+    padding_bridges.add_argument("--report", type=Path, required=True)
+    padding_bridges.set_defaults(func=_cmd_stage_b_augment_padding_bridges)
+
     prepare_source = subcommands.add_parser(
         "stage-a-prepare-source-equivalence",
         help="emit canonical C0 source and Lean source-attestation inputs",
@@ -897,6 +917,32 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     proof_source.add_argument("--candidate-build-identity", required=True)
     proof_source.add_argument("--out-dir", type=Path, required=True)
     proof_source.set_defaults(func=_cmd_stage_a_generate_c0_proof_sources)
+
+    native_source = subcommands.add_parser(
+        "stage-a-prepare-native-source-equivalence",
+        help="validate and bind a complete native-interpreter source project",
+    )
+    native_source.add_argument("--state-machine", type=Path, required=True)
+    native_source.add_argument("--interpreter-package", type=Path, required=True)
+    native_source.add_argument("--native-engine-package", type=Path, required=True)
+    native_source.add_argument("--native-runtime-package", type=Path, required=True)
+    native_source.add_argument("--load-image-contract", type=Path, required=True)
+    native_source.add_argument("--out", type=Path, required=True)
+    native_source.set_defaults(func=_cmd_stage_a_prepare_native_source_equivalence)
+
+    native_attestation = subcommands.add_parser(
+        "stage-a-attest-native-source-compilation",
+        help="bind a native-interpreter source project to one exact Nix-built PE",
+    )
+    native_attestation.add_argument("--source-bundle", type=Path, required=True)
+    native_attestation.add_argument("--native-build-manifest", type=Path, required=True)
+    native_attestation.add_argument("--nix-provenance", type=Path, required=True)
+    native_attestation.add_argument(
+        "--tool", action="append", default=[], metavar="ROLE=PATH"
+    )
+    native_attestation.add_argument("--nix-store-root", type=Path, default=Path("/nix/store"))
+    native_attestation.add_argument("--out", type=Path, required=True)
+    native_attestation.set_defaults(func=_cmd_stage_a_attest_native_source_compilation)
 
     reachable_slice = subcommands.add_parser(
         "stage-b-select-reachable-transfers",
@@ -1611,6 +1657,40 @@ def _cmd_stage_b_generate_semantic_c(args: Any) -> dict[str, Any]:
     }
 
 
+def _cmd_stage_b_augment_padding_bridges(args: Any) -> dict[str, Any]:
+    result = augment_state_machine_with_padding_bridges(
+        state_machine=args.state_machine,
+        original_pe=args.original,
+        block_map=args.block_map,
+        external_profile=args.external_profile,
+        out=args.out,
+    )
+    payload = {
+        "format": "stage-b-padding-bridge-augmentation-v1",
+        "status": "complete",
+        "state_machine": {
+            "path": str(result.path),
+            "sha256": result.sha256,
+        },
+        "counts": {
+            "input_transfers": result.input_transfer_count,
+            "padding_bridges": result.padding_bridge_count,
+            "output_transfers": result.output_transfer_count,
+            "terminating_transfers": len(result.terminating_transfer_rvas),
+        },
+        "bridged_rvas": list(result.bridged_rvas),
+        "terminating_transfer_rvas": list(result.terminating_transfer_rvas),
+        "trust": {
+            "proposal_authority": False,
+            "lean_exact_decode_required": True,
+            "lean_semantic_normalization_required": True,
+            "executes_original_binary": False,
+        },
+    }
+    write_json(args.report, payload)
+    return payload
+
+
 def _cmd_stage_a_prepare_source_equivalence(args: Any) -> dict[str, Any]:
     # PE parsing is deliberately static. It rejects accidental non-PE inputs
     # without executing or tracing the original.
@@ -1704,6 +1784,45 @@ def _cmd_stage_a_generate_c0_proof_sources(args: Any) -> dict[str, Any]:
         candidate_build_identity=args.candidate_build_identity,
         out_dir=args.out_dir,
     )
+
+
+def _cmd_stage_a_prepare_native_source_equivalence(args: Any) -> dict[str, Any]:
+    payload = build_native_source_bundle_manifest(
+        state_machine=args.state_machine,
+        interpreter_package=args.interpreter_package,
+        native_engine_package=args.native_engine_package,
+        native_runtime_package=args.native_runtime_package,
+        load_image_contract=args.load_image_contract,
+    )
+    write_json(args.out, payload)
+    return payload
+
+
+def _cmd_stage_a_attest_native_source_compilation(args: Any) -> dict[str, Any]:
+    tools: dict[str, Path] = {}
+    for value in args.tool:
+        if "=" not in value:
+            raise StageAInputError("--tool must use ROLE=PATH syntax")
+        role, raw_path = value.split("=", 1)
+        role = role.strip()
+        if not role or role in tools:
+            raise StageAInputError("--tool roles must be nonempty and unique")
+        tools[role] = Path(raw_path)
+    try:
+        provenance = json.loads(args.nix_provenance.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise StageAInputError(f"invalid Nix provenance JSON: {exc}") from exc
+    if not isinstance(provenance, dict):
+        raise StageAInputError("Nix provenance must be a JSON object")
+    payload = build_native_source_compilation_attestation(
+        source_bundle_manifest=args.source_bundle,
+        native_build_manifest=args.native_build_manifest,
+        nix_provenance=provenance,
+        additional_tools=tools,
+        nix_store_root=args.nix_store_root,
+    )
+    write_json(args.out, payload)
+    return payload
 
 
 def _cmd_stage_b_generate_link_roots(args: Any) -> dict[str, Any]:

@@ -160,11 +160,16 @@ def _validated_row(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _is_x87_row(row: Mapping[str, Any]) -> bool:
+def is_x87_row(row: Mapping[str, Any]) -> bool:
     return (
         row.get("fpu_state") is not None
         or row.get("instruction_effect_schedule") is not None
     )
+
+
+# Compatibility for the existing proof generators.  New phase drivers should
+# use the public predicate so every source inventory shares one partition.
+_is_x87_row = is_x87_row
 
 
 def _terminal(transfer: Any) -> str:
@@ -474,6 +479,7 @@ def relational_interpreter_normalization_bundle_sources(
     semantic_refinement_module: str | None = None,
     semantic_refinement_prefix: str = "exactNormalizedTransferSemanticRefinement",
     emit_acceptance_inventory: bool = True,
+    emit_source_binding_inventory: bool = False,
 ) -> dict[str, str]:
     """Emit deterministic exact-path shards and, when bound, certificates.
 
@@ -506,6 +512,7 @@ def relational_interpreter_normalization_bundle_sources(
     refinement_shard_names: list[str] = []
     refinement_source_shard_names: list[str] = []
     refinement_source_map_names: list[str] = []
+    source_binding_shard_names: list[str] = []
     for shard_start in range(0, len(selected), shard_size):
         shard = selected[shard_start : shard_start + shard_size]
         shard_index = shard_start // shard_size
@@ -621,10 +628,36 @@ theorem {refinement_source_map} (context : StaticProofContext) :
   simp [{refinement_shard}, {refinement_source_shard}, {shard_path_names}]
 """
                 )
+            if emit_source_binding_inventory:
+                source_binding_shard = f"{module}SourceBindings"
+                source_binding_shard_names.append(source_binding_shard)
+                source_bindings = ",\n    ".join(
+                    "{ path := "
+                    + member
+                    + ", transfer := "
+                    + f"{transfer_prefix}{source_index}"
+                    + ", sourceExact := by rfl, certificate := "
+                    + certificate
+                    + " }"
+                    for source_index, member, certificate in shard_members
+                )
+                certificate_definitions.append(
+                    f"""def {source_binding_shard} : List
+    (StageA.Relational.SourceWorld.InterpreterKernel.ExactOrdinaryRecordBinding
+      {pe_name}) := [
+    {source_bindings}
+]
+"""
+                )
             certificate_body = "\n".join(certificate_definitions)
             acceptance_import = (
                 "import StageA.RelationalInterpreterAcceptance\n"
                 if emit_acceptance_inventory
+                else ""
+            )
+            source_binding_import = (
+                "import StageA.RelationalSourceInterpreterKernel\n"
+                if emit_source_binding_inventory
                 else ""
             )
             acceptance_open = (
@@ -633,7 +666,7 @@ theorem {refinement_source_map} (context : StaticProofContext) :
                 else ""
             )
             sources[module] = f"""import StageA.{data_module}
-{acceptance_import}import {semantic_refinement_module}
+{acceptance_import}{source_binding_import}import {semantic_refinement_module}
 
 namespace StageA.GeneratedRelational
 
@@ -674,6 +707,23 @@ def exactNormalizedTransferSourceRvas : List Nat :=
 theorem exactNormalizedTransferSourceRvasNodup :
     exactNormalizedTransferSourceRvas.Nodup := by decide +kernel
 
+/-- Stable checked refinement inventory.  Downstream source proofs consume
+this definition instead of reconstructing the per-shard certificates. -/
+def exactNormalizedTransferRefinements
+    (context : StaticProofContext) :
+    List (ExactOriginalTransferRefinement
+      {{ context with originalPe := {pe_name} }}) :=
+  {refinements}
+
+theorem exactNormalizedTransferRefinementSourceMap
+    (context : StaticProofContext) :
+    (exactNormalizedTransferRefinements context).map
+        (fun refinement => refinement.path.sourceRva) =
+      exactNormalizedTransferSourceRvas := by
+  simp only [exactNormalizedTransferRefinements, List.map_append]
+  {source_map_rewrites}
+  rfl
+
 /-- Construct the exact ordinary acceptance inventory only after every shard's
 universal semantic theorem has been checked by Lean. -/
 def exactNormalizedTransferOriginalInventory
@@ -687,13 +737,11 @@ def exactNormalizedTransferOriginalInventory
     cases context
     simp_all [normalized]
   let refinements : List (ExactOriginalTransferRefinement normalized) :=
-      {refinements}
+    exactNormalizedTransferRefinements context
   have sourceMap :
       refinements.map (fun refinement => refinement.path.sourceRva) =
         exactNormalizedTransferSourceRvas := by
-    simp only [refinements, List.map_append]
-    {source_map_rewrites}
-    rfl
+    exact exactNormalizedTransferRefinementSourceMap context
   have inventory : ExactOriginalTransferInventory normalized := {{
     requiredSourceRvas := exactNormalizedTransferSourceRvas
     certifiedSourceRvas := exactNormalizedTransferSourceRvas
@@ -712,6 +760,14 @@ def exactNormalizedTransferOriginalInventory
   }}
   exact normalizedEq \u25b8 inventory
 """
+    source_bindings = ""
+    if emit_source_binding_inventory:
+        combined_source_bindings = " ++\n  ".join(source_binding_shard_names)
+        source_bindings = f"""def exactNormalizedOrdinaryRecordBindings : List
+    (StageA.Relational.SourceWorld.InterpreterKernel.ExactOrdinaryRecordBinding
+      {pe_name}) :=
+  {combined_source_bindings}
+"""
     sources[bundle_module] = f"""{imports}
 
 namespace StageA.GeneratedRelational
@@ -722,6 +778,8 @@ open StageA.Relational.InterpreterNormalization
 
 def exactNormalizedTransferPaths : List ExactNormalizedTransferPath :=
   {members}
+
+{source_bindings}
 
 {acceptance}
 end StageA.GeneratedRelational

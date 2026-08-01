@@ -238,6 +238,7 @@ class OriginalScannerExecutionProposal:
     gate_region: OriginalDecodedScannerRegionProposal
     dispatch_source_target_id: int
     dispatch_bypass_target_id: int
+    dispatch_bridge_region: OriginalDecodedScannerRegionProposal | None = None
 
     def validate(self) -> None:
         _u32(self.table_base, "original scanner table base")
@@ -259,6 +260,18 @@ class OriginalScannerExecutionProposal:
                     f"original scanner {field} has the wrong proposal type"
                 )
             region.validate(f"original scanner {field}")
+        if self.dispatch_bridge_region is not None:
+            if not isinstance(
+                self.dispatch_bridge_region,
+                OriginalDecodedScannerRegionProposal,
+            ):
+                raise StageAInputError(
+                    "original scanner dispatch bridge region has the wrong "
+                    "proposal type"
+                )
+            self.dispatch_bridge_region.validate(
+                "original scanner dispatch bridge region"
+            )
         _natural(
             self.dispatch_source_target_id,
             "original scanner dispatch source target id",
@@ -280,6 +293,13 @@ class OriginalScannerExecutionProposal:
   scannerRegion := {self.scanner_region.lean("original scanner scanner region")}
   bridgeRegion := {self.bridge_region.lean("original scanner bridge region")}
   gateRegion := {self.gate_region.lean("original scanner gate region")}
+  dispatchBridgeRegion := {(
+      "none"
+      if self.dispatch_bridge_region is None
+      else "some " + self.dispatch_bridge_region.lean(
+          "original scanner dispatch bridge region"
+      )
+  )}
   dispatchSourceTargetId := {self.dispatch_source_target_id}
   dispatchBypassTargetId := {self.dispatch_bypass_target_id}
 }}"""
