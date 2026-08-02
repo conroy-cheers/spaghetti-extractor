@@ -15,6 +15,7 @@ from .artifact_formats import (
     SEMANTIC_IR_FORMAT,
     SEMANTIC_TRANSFER_CONTRACT_FORMAT,
 )
+from .machine_import_profiles import load_machine_import_profile_set
 from .stage_binary import StageAInputError
 from .util import sha256_bytes, sha256_file
 
@@ -58,6 +59,7 @@ _TRANSFER_FIELDS = (
 _OPTIONAL_TRANSFER_FIELDS = (
     "instruction_effect_schedule",
     "semantic_cutpoint",
+    "control_disposition",
 )
 
 
@@ -368,7 +370,16 @@ def augment_state_machine_with_padding_bridges(
     starts = {_transfer_start(row) for row in rows}
     if len(starts) != len(rows):
         raise StageAInputError("padding bridge input has duplicate transfer RVAs")
-    terminating_imports = _terminating_imports(external_profile)
+    machine_import_contracts = _machine_import_contracts(external_profile)
+    rows = [
+        _annotate_machine_import_arguments(row, machine_import_contracts)
+        for row in rows
+    ]
+    terminating_imports = frozenset(
+        identity
+        for identity, contract in machine_import_contracts.items()
+        if contract.get("disposition") == "terminates"
+    )
     terminating_rows = {
         _transfer_start(row)
         for row in rows
@@ -437,7 +448,19 @@ def augment_state_machine_with_padding_bridges(
         bridges.append(bridge)
         occupied.append((target, waiver_end))
 
-    augmented = normalize_stage_a_semantic_transfers([*rows, *bridges])
+    annotated_rows = [
+        {
+            **row,
+            "control_disposition": {
+                "kind": "terminates_after_external_event",
+                "authority": "external_profile_machine_import_contract",
+            },
+        }
+        if _transfer_start(row) in terminating_rows
+        else row
+        for row in rows
+    ]
+    augmented = normalize_stage_a_semantic_transfers([*annotated_rows, *bridges])
     augmented_starts = {_transfer_start(row) for row in augmented}
     remaining = sorted(
         target
@@ -496,31 +519,409 @@ def _semantic_direct_targets(row: Mapping[str, Any]) -> tuple[int, ...]:
 
 
 def _terminating_imports(external_profile: Path | None) -> frozenset[tuple[str, str, Any]]:
-    if external_profile is None:
-        return frozenset()
-    payload = _read_json_object(
-        Path(external_profile).resolve(), "padding bridge external profile"
+    return frozenset(
+        identity
+        for identity, contract in _machine_import_contracts(external_profile).items()
+        if contract.get("disposition") == "terminates"
     )
-    contracts = payload.get("machine_import_call_contracts")
-    if not isinstance(contracts, list):
-        raise StageAInputError(
-            "padding bridge external profile has no machine import contracts"
-        )
-    result: set[tuple[str, str, Any]] = set()
-    for index, raw in enumerate(contracts):
-        contract = _object(raw, f"external profile contract {index}")
-        if contract.get("disposition") != "terminates":
+
+
+def _machine_import_contracts(
+    external_profile: Path | None,
+) -> dict[tuple[str, str, Any], dict[str, Any]]:
+    if external_profile is None:
+        return {}
+    profile_set = load_machine_import_profile_set([Path(external_profile).resolve()])
+    result: dict[tuple[str, str, Any], dict[str, Any]] = {}
+    for selected in profile_set.contracts:
+        # A variadic profile describes the minimum call shape, not the exact
+        # stack inventory.  It cannot safely synthesize concrete arguments.
+        if selected.arity_kind != "fixed":
             continue
-        imported = _object(contract.get("import"), f"external profile contract {index} import")
-        dll = imported.get("dll")
-        symbol = imported.get("symbol")
-        ordinal = imported.get("ordinal")
-        if not isinstance(dll, str) or not dll or (symbol is None) == (ordinal is None):
+        contract = dict(selected.contract)
+        contract["profile_binding"] = {
+            "profile_id": selected.profile_id,
+            "profile_sha256": selected.profile_sha256,
+            "entry_key": selected.entry_key,
+            "entry_index": selected.entry_index,
+        }
+        identity = selected.identity.state_machine_key()
+        argument_words = selected.argument_words
+        if (
+            not isinstance(argument_words, int)
+            or isinstance(argument_words, bool)
+            or argument_words < 0
+            or argument_words > 64
+        ):
             raise StageAInputError(
-                f"terminating external profile contract {index} has invalid identity"
+                f"external profile contract {contract['id']!r} has invalid argument_words"
             )
-        result.add((dll.lower(), str(symbol) if symbol is not None else "", ordinal))
-    return frozenset(result)
+        if contract.get("abi_template") not in {
+            "pe32-cdecl-v1",
+            "pe32-stdcall-v1",
+        }:
+            raise StageAInputError(
+                f"external profile contract {contract['id']!r} has unsupported ABI template"
+            )
+        world_effect = contract.get("world_effect")
+        callback_abi = contract.get("callback_abi")
+        if world_effect == "callbackRegistration":
+            if not isinstance(callback_abi, dict) or set(callback_abi) != {
+                "kind", "argument_words", "stack_cleanup_bytes", "nullable",
+            }:
+                raise StageAInputError(
+                    f"external profile contract {contract['id']!r} has no exact callback ABI"
+                )
+            callback_argument_words = callback_abi.get("argument_words")
+            callback_cleanup = callback_abi.get("stack_cleanup_bytes")
+            if (
+                callback_abi.get("kind") != "generic_callback"
+                or not isinstance(callback_argument_words, int)
+                or isinstance(callback_argument_words, bool)
+                or not 0 <= callback_argument_words <= 64
+                or not isinstance(callback_cleanup, int)
+                or isinstance(callback_cleanup, bool)
+                or not 0 <= callback_cleanup <= 0xFFFF
+                or not isinstance(callback_abi.get("nullable"), bool)
+            ):
+                raise StageAInputError(
+                    f"external profile contract {contract['id']!r} has an invalid callback ABI"
+                )
+            world_effect_argument = contract.get("world_effect_argument")
+            if (
+                not isinstance(world_effect_argument, int)
+                or isinstance(world_effect_argument, bool)
+                or not 0 <= world_effect_argument < argument_words
+            ):
+                raise StageAInputError(
+                    f"external profile contract {contract['id']!r} has an invalid callback argument"
+                )
+            callback_lifetime = contract.get("callback_lifetime")
+            if not isinstance(callback_lifetime, (str, dict)) or not callback_lifetime:
+                raise StageAInputError(
+                    f"external profile contract {contract['id']!r} has no exact callback lifetime"
+                )
+        elif callback_abi is not None:
+            raise StageAInputError(
+                f"external profile contract {contract['id']!r} attaches a callback ABI to a non-callback effect"
+            )
+        result[identity] = contract
+    return result
+
+
+def _annotate_machine_import_arguments(
+    row: dict[str, Any],
+    contracts: Mapping[tuple[str, str, Any], dict[str, Any]],
+) -> dict[str, Any]:
+    if not contracts:
+        return row
+
+    outcome = _object(row.get("outcome"), "semantic transfer outcome")
+    argument_base_offset = 4 if outcome.get("kind") == "external_jump" else 0
+
+    def annotate(raw: Any, label: str) -> dict[str, Any]:
+        event = dict(_object(raw, label))
+        if event.get("kind") != "external_call":
+            return event
+        dll = event.get("dll")
+        symbol = event.get("symbol")
+        ordinal = event.get("ordinal")
+        if not isinstance(dll, str):
+            return event
+        contract = contracts.get(
+            (dll.lower(), str(symbol) if symbol is not None else "", ordinal)
+        )
+        if contract is None:
+            return event
+        argument_words = int(contract["argument_words"])
+        arguments = event.get("arguments")
+        if not isinstance(arguments, list):
+            raise StageAInputError(f"{label} arguments must be a list")
+        if arguments and len(arguments) != argument_words:
+            raise StageAInputError(
+                f"{label} argument inventory differs from its machine-call contract"
+            )
+        if not arguments:
+            arguments = [
+                _cdecl_stack_word_expression(
+                    index, base_offset=argument_base_offset
+                )
+                for index in range(argument_words)
+            ]
+            event["arguments"] = arguments
+        stack_inputs = event.get("stack_inputs")
+        if stack_inputs is not None and not isinstance(stack_inputs, list):
+            raise StageAInputError(f"{label} stack_inputs must be a list")
+        if not stack_inputs:
+            event["stack_inputs"] = [
+                {
+                    "offset": argument_base_offset + index * 4,
+                    "width": 4,
+                    "value": value,
+                }
+                for index, value in enumerate(arguments)
+            ]
+        abi_contract = {
+            "template": contract["abi_template"],
+            "argument_words": argument_words,
+            "argument_base_offset": argument_base_offset,
+            "contract_id": contract.get("id"),
+            "disposition": contract.get("disposition", "returns"),
+            "result_register_relations": _machine_contract_metadata(
+                contract.get("result_register_relations", [])
+            ),
+            "memory_effect": contract.get("memory_effect", "none"),
+            "memory_footprints": _machine_contract_metadata(
+                contract.get("memory_footprints", [])
+            ),
+            "world_effect": contract.get("world_effect", "none"),
+        }
+        profile_binding = contract.get("profile_binding")
+        if isinstance(profile_binding, Mapping):
+            abi_contract["profile_binding"] = dict(profile_binding)
+        if contract.get("world_effect") == "callbackRegistration":
+            abi_contract.update({
+                "world_effect_argument": contract["world_effect_argument"],
+                "callback_abi": dict(contract["callback_abi"]),
+                "callback_behavior": contract.get(
+                    "callback_behavior", "registration"
+                ),
+                "callback_lifetime": _machine_contract_metadata(
+                    contract.get("callback_lifetime")
+                ),
+            })
+        event["abi_contract"] = abi_contract
+        return event
+
+    result = dict(row)
+    external_events = row.get("external_events")
+    if not isinstance(external_events, list):
+        raise StageAInputError("semantic transfer external_events must be a list")
+    ordered_events = row.get("ordered_events")
+    if not isinstance(ordered_events, list):
+        raise StageAInputError("semantic transfer ordered_events must be a list")
+    result["external_events"] = [
+        annotate(event, f"semantic external event {index}")
+        for index, event in enumerate(external_events)
+    ]
+    result["ordered_events"] = [
+        annotate(event, f"semantic ordered event {index}")
+        for index, event in enumerate(ordered_events)
+    ]
+    schedule = row.get("instruction_effect_schedule")
+    if schedule is not None:
+        enriched_schedule = _annotate_machine_import_instruction_schedule(
+            schedule=schedule,
+            aggregate_ordered_events=result["ordered_events"],
+            annotate=annotate,
+        )
+        result["instruction_effect_schedule"] = enriched_schedule
+
+        fpu_state = row.get("fpu_state")
+        if isinstance(fpu_state, Mapping):
+            replay = fpu_state.get("replay")
+            if isinstance(replay, Mapping) and "instruction_effect_schedule" in replay:
+                if replay.get("instruction_effect_schedule") != schedule:
+                    raise StageAInputError(
+                        "FPU replay and transfer instruction effect schedules differ"
+                    )
+                enriched_fpu = _json_value(fpu_state)
+                enriched_replay = _object(
+                    enriched_fpu.get("replay"), "FPU replay metadata"
+                )
+                enriched_replay["instruction_effect_schedule"] = _json_value(
+                    enriched_schedule
+                )
+                enriched_fpu["replay"] = enriched_replay
+                result["fpu_state"] = enriched_fpu
+    return result
+
+
+def _machine_contract_metadata(value: Any) -> Any:
+    """Project profile metadata without instruction-byte-shaped field names."""
+
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        for raw_key, item in value.items():
+            key = "byte_count" if raw_key == "bytes" else str(raw_key)
+            if key in result:
+                raise StageAInputError(
+                    f"machine import contract metadata collides at {key!r}"
+                )
+            result[key] = _machine_contract_metadata(item)
+        return result
+    if isinstance(value, list):
+        return [_machine_contract_metadata(item) for item in value]
+    return json.loads(json.dumps(value))
+
+
+def _annotate_machine_import_instruction_schedule(
+    *,
+    schedule: Any,
+    aggregate_ordered_events: list[dict[str, Any]],
+    annotate: Any,
+) -> dict[str, Any]:
+    source = dict(_object(schedule, "instruction effect schedule"))
+    _verify_embedded_digest(
+        source, "schedule_sha256", "instruction effect schedule"
+    )
+    records = source.get("records")
+    if not isinstance(records, list):
+        raise StageAInputError("instruction effect schedule records must be a list")
+
+    expected_calls = Counter(
+        _scheduled_external_call_key(event, "aggregate ordered external call")
+        for event in aggregate_ordered_events
+        if event.get("kind") == "external_call" and "abi_contract" in event
+    )
+    observed_calls: Counter[tuple[Any, ...]] = Counter()
+    enriched_records: list[dict[str, Any]] = []
+    for record_index, raw_record in enumerate(records):
+        record = dict(_object(raw_record, f"instruction effect record {record_index}"))
+        _verify_embedded_digest(
+            record,
+            "record_sha256",
+            f"instruction effect record {record_index}",
+        )
+        record_rva = _u32(
+            record.get("rva_start"),
+            f"instruction effect record {record_index} RVA",
+        )
+        effects = dict(
+            _object(
+                record.get("effects"),
+                f"instruction effect record {record_index} effects",
+            )
+        )
+        raw_ordered = effects.get("ordered_events")
+        raw_calls = effects.get("call_effects")
+        if not isinstance(raw_ordered, list) or not isinstance(raw_calls, list):
+            raise StageAInputError(
+                f"instruction effect record {record_index} call inventories must be lists"
+            )
+
+        enriched_ordered: list[dict[str, Any]] = []
+        ordered_call_signatures: Counter[tuple[Any, ...]] = Counter()
+        for event_index, raw_event in enumerate(raw_ordered):
+            event = annotate(
+                raw_event,
+                f"instruction effect record {record_index} ordered event {event_index}",
+            )
+            if event.get("kind") == "external_call" and "abi_contract" in event:
+                if event.get("instruction_rva") != record_rva:
+                    raise StageAInputError(
+                        f"instruction effect record {record_index} external call has "
+                        "a mismatched instruction RVA"
+                    )
+                observed_calls[
+                    _scheduled_external_call_key(
+                        event,
+                        f"instruction effect record {record_index} external call",
+                    )
+                ] += 1
+                ordered_call_signatures[
+                    _external_call_signature(
+                        event,
+                        f"instruction effect record {record_index} external call",
+                    )
+                ] += 1
+            enriched_ordered.append(event)
+
+        enriched_calls: list[dict[str, Any]] = []
+        call_effect_signatures: Counter[tuple[Any, ...]] = Counter()
+        for call_index, raw_call in enumerate(raw_calls):
+            call = annotate(
+                raw_call,
+                f"instruction effect record {record_index} call effect {call_index}",
+            )
+            if call.get("kind") == "external_call" and "abi_contract" in call:
+                call_effect_signatures[
+                    _external_call_signature(
+                        call,
+                        f"instruction effect record {record_index} call effect",
+                    )
+                ] += 1
+            enriched_calls.append(call)
+        if call_effect_signatures != ordered_call_signatures:
+            raise StageAInputError(
+                f"instruction effect record {record_index} call_effects and "
+                "ordered_events disagree"
+            )
+
+        effects["ordered_events"] = enriched_ordered
+        effects["call_effects"] = enriched_calls
+        record["effects"] = effects
+        record["record_sha256"] = _embedded_digest(record, "record_sha256")
+        enriched_records.append(record)
+
+    if observed_calls != expected_calls:
+        missing = expected_calls - observed_calls
+        extra = observed_calls - expected_calls
+        raise StageAInputError(
+            "instruction effect schedule and aggregate machine-import calls differ: "
+            f"missing={list(missing.elements())[:3]}, "
+            f"extra={list(extra.elements())[:3]}"
+        )
+    source["records"] = enriched_records
+    source["schedule_sha256"] = _embedded_digest(source, "schedule_sha256")
+    return source
+
+
+def _scheduled_external_call_key(
+    event: Mapping[str, Any], label: str
+) -> tuple[Any, ...]:
+    return (
+        _u32(event.get("instruction_rva"), f"{label} instruction RVA"),
+        *_external_call_signature(event, label),
+    )
+
+
+def _external_call_signature(
+    event: Mapping[str, Any], label: str
+) -> tuple[Any, ...]:
+    dll = event.get("dll")
+    if not isinstance(dll, str) or not dll:
+        raise StageAInputError(f"{label} DLL identity must be a nonempty string")
+    symbol = event.get("symbol")
+    ordinal = event.get("ordinal")
+    if symbol is None and ordinal is None:
+        raise StageAInputError(f"{label} has no symbol or ordinal identity")
+    return (
+        event.get("kind"),
+        dll.lower(),
+        str(symbol) if symbol is not None else "",
+        ordinal,
+        event.get("return_rva"),
+    )
+
+
+def _verify_embedded_digest(
+    value: Mapping[str, Any], digest_field: str, label: str
+) -> None:
+    expected = _digest(value.get(digest_field), f"{label} digest")
+    if _embedded_digest(value, digest_field) != expected:
+        raise StageAInputError(f"{label} digest does not match its canonical contents")
+
+
+def _embedded_digest(value: Mapping[str, Any], digest_field: str) -> str:
+    body = {key: item for key, item in value.items() if key != digest_field}
+    return sha256_bytes(_canonical_json(body))
+
+
+def _cdecl_stack_word_expression(
+    index: int, *, base_offset: int = 0
+) -> dict[str, Any]:
+    address: dict[str, Any] = {"op": "reg", "name": "esp", "width": 32}
+    offset = base_offset + index * 4
+    if offset != 0:
+        address = {
+            "op": "add32",
+            "args": [
+                {"op": "const", "value": offset, "width": 32},
+                address,
+            ],
+        }
+    return {"op": "load", "width": 4, "address": address}
 
 
 def _row_calls_terminating_import(

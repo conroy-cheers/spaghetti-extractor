@@ -1,33 +1,46 @@
 # Spaghetti Extractor
 
-Spaghetti Extractor is a binary reimplementation and equivalence-proof toolkit.
-Its immediate validation target is a generated GNU `hello.exe` reimplementation
+Spaghetti Extractor is a high-assurance binary reimplementation toolkit. Its
+immediate consolidation target is a generated GNU `hello.exe` reimplementation
 for 32-bit MinGW Windows, followed by the full `jq.exe` benchmark.
 
-The active workflow is whole-program-proof-first:
+The active direction is assurance-first rather than mandatory-whole-program-
+theorem-first:
 
-1. Stage A consumes the original binary statically and emits
-   `reference_contract.json` plus sidecars.
-2. Stage B converts the complete `stage-a-semantic-ir-v1` transfer inventory
-   into `state-machine.jsonl`, compiler-consumable semantic C, bootstrap source,
-   and exact source-map
-   bindings. Human or LLM repair may use those contracts, but upstream source
-   and original runtime traces are not generation inputs.
-3. Local iteration rebuilds and checks candidate slices outside the Nix sandbox.
-4. Acceptance is decided only by the relational Stage A whole-program theorem.
-   Public candidate-only behavior tests are a final backstop after Stage A
-   passes.
+1. Stage A consumes the original binary statically and emits exact contracts
+   and a canonical executable machine IR.
+2. Pinned x86 lifting is independently qualified with ISA corpora, emulators,
+   hardware evidence where practical, differential checks, and explicit trust
+   records.
+3. Stage B lowers the complete IR into compiler-consumable full-machine-state
+   C0 plus exact source maps and regional validation contracts.
+4. Formal, solver, exhaustive, differential, fuzz, integration, and assumed
+   evidence remain distinct in an auditable assurance report. Reachable unknown
+   behavior still fails closed.
+5. Candidate-only runtime validation begins only after complete static
+   qualification, then the generated baseline acts as the oracle for
+   progressive human-readable reconstruction.
+6. Strict whole-program Lean theorems remain optional stronger assurance
+   tracks and retain their existing `pass` and `conditional_pass` meanings.
 
 Stage B must not execute or trace the original binary during repair iteration.
 Original runtime output is not an oracle. If a candidate satisfies Stage A but
 fails public behavior checks, that is a Stage A/toolchain problem to investigate.
 
-The `experiment/source-equivalence` branch also contains a deliberately
-separate source-relative path. It proves an exact original PE equivalent to
+The `experiment/source-equivalence` branch contains a deliberately separate
+source-relative theorem path. It proves an exact original PE equivalent to
 canonical C0 semantics and derives only a `conditional_pass` for the compiled
 artifact under an explicit pinned-toolchain correctness premise. It cannot
-authorize the ordinary binary-to-binary `pass`. See
+authorize the ordinary binary-to-binary `pass`, and neither theorem verdict is
+required by the primary high-assurance workflow. See
 [the source-equivalence experiment](docs/stage-a-source-equivalence-experiment.md).
+
+See
+[the high-assurance reimplementation direction](docs/high-assurance-reimplementation-direction.md)
+for the trust model, evidence classes, static qualification gate, progressive
+reconstruction pathway, and scalability criteria.
+The current GNU Hello result and its exact limitations are recorded in
+[the high-assurance vertical-slice report](docs/gnu-hello-high-assurance-vertical-slice.md).
 
 For `contract-guided-c`, `state-machine.jsonl` is the canonical generation
 authority. It preserves each block pre-state, symbolic register and flag
@@ -65,6 +78,41 @@ Build the command suite:
 ```sh
 nix build .#spaghetti-extractor --no-link
 ```
+
+Build the GNU Hello static lifting benchmark. It emits
+`usable-incomplete`: exact jump-table, typed-memory, atomic, callback, and
+rooted-reachability evidence while retaining unresolved frontiers:
+
+```sh
+nix build .#stage-b-gnu-hello-lifting-evidence --no-link
+```
+
+Build the independently cached typed-C lifting workspaces and combine only
+qualified regions into an override registry:
+
+```sh
+nix build .#stage-b-gnu-hello-reconstruction-registry --no-link
+```
+
+The generic DAG is defined in
+`nix/stage-b-reconstruction-workspace.nix`. Its Python commands are phase
+workers and interactive diagnostics; an accepted repository artifact is the
+Nix realization. The emitted `reconstruction-status.json` tracks source-lift
+coverage separately from Stage A proof or assurance verdicts.
+
+Harder GNU Hello examples have portable implementations and candidate-only
+qualification checks. They cover atomic compare-exchange, callback
+registration, finite indirect dispatch, and ordered alias-sensitive memory:
+
+```sh
+nix build .#stage-b-gnu-hello-dispatch-workspace-check --no-link
+nix build .#stage-b-gnu-hello-typed-memory-workspace-check --no-link
+nix build .#stage-b-gnu-hello-atomic-workspace-check --no-link
+nix build .#stage-b-gnu-hello-callback-workspace-check --no-link
+```
+
+Runtime tests remain disabled as an acceptance path while rooted static
+control closure is incomplete.
 
 Export the versioned schema, artifact, Lean-interface, and parallel-workstream
 boundaries used by Stage A development:
@@ -211,12 +259,16 @@ Removed:
 
 ## Validation Discipline
 
-Use Stage A first. Runtime checks should not run as a substitute for unresolved
-Stage A contract failures. When Wine is needed for candidate-only diagnostics,
-run it under a headless Wayland/X session.
+Use static qualification first. Runtime checks must not substitute for unknown
+reachable transfers, control targets, or external boundaries. When Wine is
+needed for candidate-only diagnostics, run it under a headless Wayland/X
+session.
 
-See [docs/stage-a-architecture.md](docs/stage-a-architecture.md) for the
-normative trust boundary and command authority.
+See
+[docs/high-assurance-reimplementation-direction.md](docs/high-assurance-reimplementation-direction.md)
+for the primary project direction. See
+[docs/stage-a-architecture.md](docs/stage-a-architecture.md) for the strict
+formal `pass` trust boundary and command authority.
 The bounded structured qualification workflow and its measured result are in
 [docs/stage-a-round-trip-fuzzing-plan.md](docs/stage-a-round-trip-fuzzing-plan.md)
 and

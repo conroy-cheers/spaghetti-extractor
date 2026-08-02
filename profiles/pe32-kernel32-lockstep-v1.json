@@ -59,7 +59,14 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "callbackRegistration",
-      "world_effect_argument": 0
+      "world_effect_argument": 0,
+      "callback_lifetime": "until_replaced_or_process_exit",
+      "callback_abi": {
+        "kind": "generic_callback",
+        "argument_words": 1,
+        "stack_cleanup_bytes": 4,
+        "nullable": true
+      }
     },
     {
       "id": 4,

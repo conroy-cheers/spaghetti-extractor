@@ -41,5 +41,9 @@ spaghetti_extractor = [ "lean/**/*.lean" ]
   "nix/stage-a-isa-qualification-graph.nix",
   "nix/stage-a-register-dataflow-graph.nix",
   "nix/stage-a-relational-analysis-graph.nix",
+  "nix/stage-b-reconstruction-workspace.nix",
+  "nix/stage-b-native-object-graph.nix",
+  "nix/stage-b-semantic-component-workspaces.nix",
+  "nix/stage-b-semantic-components.nix",
 ]
 "share/spaghetti-extractor/profiles" = [ "profiles/*.json" ]

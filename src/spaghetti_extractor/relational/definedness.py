@@ -405,31 +405,52 @@ def _related_machine_input_choice(
     destination = match.group(2)
     if destination not in _REGISTER_NAMES:
         return None
-    matching_instructions: list[Mapping[str, Any]] = []
+    matching_instructions: list[tuple[str, Mapping[str, Any]]] = []
     for node in nodes.values():
         instructions = node.row.get("instructions")
         if not isinstance(instructions, list):
             continue
         for instruction in instructions:
+            if not isinstance(instruction, Mapping):
+                continue
             if (
-                isinstance(instruction, Mapping)
-                and instruction.get("rva") == instruction_rva
+                instruction.get("rva") == instruction_rva
                 and instruction.get("mnemonic") == "bsr"
             ):
-                matching_instructions.append(instruction)
+                matching_instructions.append(("exact_bytes", instruction))
+            elif (
+                instruction.get("rva_start") == instruction_rva
+                and instruction.get("mnemonic") == "bsr"
+            ):
+                matching_instructions.append(("typed_machine_ir", instruction))
     if len(matching_instructions) != 1:
         return None
-    instruction = matching_instructions[0]
-    operands = instruction.get("op_str")
-    encoded = instruction.get("bytes")
-    if (
-        not isinstance(operands, str)
-        or operands.split(",", 1)[0].strip() != destination
-        or not isinstance(encoded, str)
-        or not re.fullmatch(r"[0-9a-f]+", encoded)
-        or len(encoded) % 2
-    ):
-        return None
+    instruction_kind, instruction = matching_instructions[0]
+    if instruction_kind == "exact_bytes":
+        operands = instruction.get("op_str")
+        encoded = instruction.get("bytes")
+        if (
+            not isinstance(operands, str)
+            or operands.split(",", 1)[0].strip() != destination
+            or not isinstance(encoded, str)
+            or not re.fullmatch(r"[0-9a-f]+", encoded)
+            or len(encoded) % 2
+        ):
+            return None
+    else:
+        typed_operands = instruction.get("operands")
+        instruction_sha256 = instruction.get("instruction_sha256")
+        if (
+            not isinstance(typed_operands, list)
+            or len(typed_operands) != 2
+            or not isinstance(typed_operands[0], Mapping)
+            or typed_operands[0].get("kind") != "register"
+            or typed_operands[0].get("name") != destination
+            or typed_operands[0].get("access") != "write"
+            or not isinstance(instruction_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", instruction_sha256) is None
+        ):
+            return None
     defined_values = [item.defined_value for item in occurrences]
     if any(not isinstance(value, Mapping) for value in defined_values):
         return None
@@ -442,20 +463,26 @@ def _related_machine_input_choice(
         for _, child in _walk_json(defined_value)
     ):
         return None
-    return {
+    result = {
         "format": "stage-a-definedness-choice-source-v3",
         "kind": "related_machine_input",
         "slot": occurrences[0].slot,
         "undefined_id": undefined_id,
         "profile": "ia32-bsr-zero-preserves-destination-v1",
         "instruction_rva": instruction_rva,
-        "instruction_bytes": encoded,
         "location": {"family": "register", "name": destination},
         "input_expression": defined_value,
         "input_expression_sha256": hashlib.sha256(
             _canonical_json(defined_value).encode("ascii")
         ).hexdigest(),
     }
+    if instruction_kind == "exact_bytes":
+        result["instruction_bytes"] = encoded
+    else:
+        result["format"] = "stage-a-definedness-choice-source-v4"
+        result["instruction_sha256"] = instruction_sha256
+        result["instruction_model"] = "sanitized_typed_machine_ir_v2"
+    return result
 
 
 def _build_dependency_graph(

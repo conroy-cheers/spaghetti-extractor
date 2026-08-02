@@ -435,6 +435,49 @@ class ContractToolTests(unittest.TestCase):
             self.assertEqual(carry["op"], "eq_bool")
             self.assertIn("lshr32", json.dumps(carry))
 
+    def test_semantic_transfer_adds_fs_base_to_segmented_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            encoded = bytes.fromhex("648b00")
+            original = self._write_pe(root / "original.exe", encoded)
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1000 + len(encoded))
+            mapping = BlockMapping(
+                id="fs-load",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "fs_load"},
+            )
+
+            symbolic = _symbolic_execute(
+                binary,
+                side,
+                binary.pe.get_data(side.rva_start, side.size),
+                "original",
+                mapping,
+            )
+            transfer = _semantic_transfer_contract(
+                binary,
+                mapping,
+                "fs_load",
+                {"model": REFERENCE_CONTRACT_MODEL_ID},
+            )
+
+            self.assertEqual(symbolic["status"], "ok", symbolic)
+            eax = next(
+                write["value"]
+                for write in transfer["register_writes"]
+                if write["register"] == "eax"
+            )
+            self.assertEqual(eax["op"], "load")
+            self.assertEqual(eax["address"]["op"], "add32")
+            self.assertIn(
+                {"op": "fs_base", "width": 32}, eax["address"]["args"]
+            )
+
     def test_semantic_transfer_exports_large_rep_stosd_as_symbolic_fill(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

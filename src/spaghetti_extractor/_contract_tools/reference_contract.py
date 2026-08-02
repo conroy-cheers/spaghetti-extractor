@@ -1000,9 +1000,12 @@ def _semantic_transfer_contract(
             "next_action": "fix block range or PE section mapping before generating a semantic transfer contract",
         }
     instruction_effect_schedule: dict[str, Any] | None = None
-    if _semantic_transfer_inventory_contains_x87(instructions):
+    if (
+        len(instructions) > 1
+        or _semantic_transfer_inventory_contains_x87(instructions)
+    ):
         instruction_effect_schedule, symbolic = (
-            _semantic_x87_instruction_effect_schedule(
+            _semantic_instruction_effect_schedule(
                 binary,
                 side,
                 data,
@@ -1026,7 +1029,10 @@ def _semantic_transfer_contract(
         return blocked
     observables = symbolic.get("observables") if isinstance(symbolic.get("observables"), dict) else {}
     native_exact_command_replay = None
-    if instruction_effect_schedule is not None:
+    if (
+        instruction_effect_schedule is not None
+        and _semantic_transfer_inventory_contains_x87(instructions)
+    ):
         native_exact_command_replay = _semantic_x87_replay_binding(
             binary,
             side,
@@ -1059,7 +1065,7 @@ def _semantic_transfer_contract(
             "instruction_effect_schedule": instruction_effect_schedule,
             **effects,
         }
-    return {
+    result = {
         **base_row,
         "status": "reimplementable",
         "blocker_category": None,
@@ -1067,6 +1073,9 @@ def _semantic_transfer_contract(
         "next_action": "implement this block so the compiled candidate reproduces the transfer contract, then rerun Stage A",
         **effects,
     }
+    if instruction_effect_schedule is not None:
+        result["instruction_effect_schedule"] = instruction_effect_schedule
+    return result
 
 def _semantic_disassemble_block(binary: StageABinary, side: BlockSide, data: bytes) -> list[dict[str, Any]]:
     dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
@@ -1314,7 +1323,7 @@ def _semantic_transfer_inventory_contains_x87(
         if isinstance(instruction, dict)
     )
 
-def _semantic_x87_instruction_effect_schedule(
+def _semantic_instruction_effect_schedule(
     binary: StageABinary,
     side: BlockSide,
     data: bytes,
@@ -1324,7 +1333,9 @@ def _semantic_x87_instruction_effect_schedule(
     """Propose an exact-byte instruction ledger for checked Lean replay.
 
     Capstone reports are inventory hints only.  Every classification remains bound
-    to exact PE bytes and names the Lean decoder/executor that must replay it.
+    to exact PE bytes and names the Lean decoder/executor that must replay it.  The
+    ledger is also the Stage B authority for ordering effects across instructions;
+    aggregate final-state expressions cannot recover that ordering around calls.
     """
 
     transfer_digest = sha256_bytes(data)
@@ -1562,6 +1573,11 @@ def _semantic_x87_instruction_effect_schedule(
     schedule["schedule_sha256"] = _semantic_json_sha256(schedule)
     return schedule, final_symbolic
 
+
+# Compatibility name for proof generators and tests that predate schedules being
+# required for ordinary multi-instruction transfers.
+_semantic_x87_instruction_effect_schedule = _semantic_instruction_effect_schedule
+
 def _semantic_initial_instruction_observables(rva: int) -> dict[str, Any]:
     observables = {
         f"reg:{name}": ("reg", name)
@@ -1716,6 +1732,8 @@ def _semantic_expr_json(value: Any) -> Any:
         return {"op": "reg", "width": 32, "name": str(value[1])}
     if op == "flag":
         return {"op": "flag", "name": str(value[1])}
+    if op == "fs_base":
+        return {"op": "fs_base", "width": 32}
     if op == "mem32":
         return {"op": "load", "width": 4, "address": _semantic_expr_json(value[1])}
     if op == "mem":
@@ -4515,6 +4533,7 @@ __all__ = [
     '_semantic_initial_instruction_observables',
     '_semantic_instruction_effect_blocker',
     '_semantic_instruction_effect_delta',
+    '_semantic_instruction_effect_schedule',
     '_semantic_json_contains_op',
     '_semantic_json_sha256',
     '_semantic_memory_event_json',

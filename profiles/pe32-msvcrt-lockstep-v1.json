@@ -30,7 +30,14 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "callbackRegistration",
-      "world_effect_argument": 0
+      "world_effect_argument": 0,
+      "callback_lifetime": "until_invoked_or_process_exit",
+      "callback_abi": {
+        "kind": "generic_callback",
+        "argument_words": 0,
+        "stack_cleanup_bytes": 0,
+        "nullable": false
+      }
     },
     {
       "id": 3,
@@ -54,7 +61,20 @@
           "size": {"kind": "fixed", "bytes": 4},
           "minimum_size": 4,
           "required_words": [
-            {"offset": 0, "relation": "related_word"}
+            {
+              "offset": 0,
+              "relation": "nullable_dynamic_pointer",
+              "pointee_shape": {
+                "kind": "null_terminated_pointer_vector",
+                "max_elements": 4096,
+                "element": {
+                  "kind": "bounded_terminated",
+                  "unit_bytes": 2,
+                  "sentinel": [0, 0],
+                  "max_units": 1048576
+                }
+              }
+            }
           ],
           "nullable": false
         }
@@ -242,7 +262,20 @@
           "size": {"kind": "fixed", "bytes": 4},
           "minimum_size": 4,
           "required_words": [
-            {"offset": 0, "relation": "related_word"}
+            {
+              "offset": 0,
+              "relation": "nullable_dynamic_pointer",
+              "pointee_shape": {
+                "kind": "null_terminated_pointer_vector",
+                "max_elements": 4096,
+                "element": {
+                  "kind": "bounded_terminated",
+                  "unit_bytes": 1,
+                  "sentinel": [0],
+                  "max_units": 1048576
+                }
+              }
+            }
           ],
           "nullable": false
         }
@@ -296,7 +329,20 @@
           "size": {"kind": "fixed", "bytes": 4},
           "minimum_size": 4,
           "required_words": [
-            {"offset": 0, "relation": "related_word"}
+            {
+              "offset": 0,
+              "relation": "nullable_dynamic_pointer",
+              "pointee_shape": {
+                "kind": "null_terminated_pointer_vector",
+                "max_elements": 4096,
+                "element": {
+                  "kind": "bounded_terminated",
+                  "unit_bytes": 1,
+                  "sentinel": [0],
+                  "max_units": 1048576
+                }
+              }
+            }
           ],
           "nullable": false
         }
@@ -509,6 +555,79 @@
         }
       ],
       "world_effect": "none"
+    },
+    {
+      "id": 28,
+      "import": {"dll": "msvcrt.dll", "symbol": "__getmainargs"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 5,
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {
+          "access": "write",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 4},
+          "nullable": false
+        },
+        {
+          "access": "write",
+          "base_argument": 1,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 4},
+          "nullable": false
+        },
+        {
+          "access": "write",
+          "base_argument": 2,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 4},
+          "nullable": false
+        },
+        {
+          "access": "read",
+          "base_argument": 4,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 4},
+          "nullable": false
+        }
+      ],
+      "out_pointer_relations": [
+        {
+          "argument": 1,
+          "offset": 0,
+          "relation": "nullable_dynamic_pointer",
+          "pointee_shape": {
+            "kind": "null_terminated_pointer_vector",
+            "max_elements": 4096,
+            "element": {
+              "kind": "bounded_terminated",
+              "unit_bytes": 1,
+              "sentinel": [0],
+              "max_units": 1048576
+            }
+          }
+        },
+        {
+          "argument": 2,
+          "offset": 0,
+          "relation": "nullable_dynamic_pointer",
+          "pointee_shape": {
+            "kind": "null_terminated_pointer_vector",
+            "max_elements": 4096,
+            "element": {
+              "kind": "bounded_terminated",
+              "unit_bytes": 1,
+              "sentinel": [0],
+              "max_units": 1048576
+            }
+          }
+        }
+      ],
+      "world_effect": "dynamicRanges"
     },
     {
       "id": 27,

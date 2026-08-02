@@ -19,12 +19,12 @@ from typing import Any, Iterable, Mapping, Sequence
 import capstone
 from capstone import x86_const
 
+from ...artifact_formats import INTERPRETER_NATIVE_BUILD_FORMAT
 from ...stage_b_interpreter_backend import STAGE_B_INTERPRETER_PROGRAM_FORMAT
 from ...stage_b_engine_layout import (
     EngineLayoutFormatError,
     parse_stage_b_engine_layout_payload,
 )
-from ...stage_b_interpreter_native_build import INTERPRETER_NATIVE_BUILD_FORMAT
 from ...stage_binary import (
     StageABinary,
     StageAInputError,

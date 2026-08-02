@@ -1625,6 +1625,12 @@ def _x87_binary(operator: str, left: tuple[Any, ...], right: tuple[Any, ...]) ->
 def _mem_address_expr(insn: Any, operand: Any, registers: dict[str, tuple[Any, ...]]) -> tuple[Any, ...] | None:
     mem = operand.mem
     parts: list[tuple[Any, ...]] = []
+    if mem.segment:
+        segment = insn.reg_name(mem.segment).lower()
+        if segment == "fs":
+            parts.append(("fs_base",))
+        elif segment not in {"cs", "ds", "es", "ss"}:
+            return None
     if mem.base:
         base = registers.get(insn.reg_name(mem.base))
         if base is None:

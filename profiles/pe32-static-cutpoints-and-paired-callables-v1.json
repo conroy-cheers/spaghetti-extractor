@@ -1,0 +1,13 @@
+{
+  "assumption": {
+    "id": "complete-static-indirect-target-recovery",
+    "scope": "indirect control in the selected PE32 static-translation profile",
+    "statement": "Every reachable indirect target is either a checked machine-IR unit start or a callable external resource paired by the external world; the generated runtime rejects every other target."
+  },
+  "external_target_domain": "paired_external_callable_resources",
+  "format": "stage-a-indirect-target-profile-v1",
+  "id": "pe32-static-cutpoints-and-paired-callables-v1",
+  "internal_target_domain": "all_checked_machine_ir_unit_starts",
+  "runtime_rejection_required": true,
+  "status": "accepted_assumption"
+}

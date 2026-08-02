@@ -1,5 +1,13 @@
 # Stage A Internal Equivalence And 3D Application Roadmap
 
+> **Status:** This document records the stricter mandatory-whole-program-
+> theorem roadmap and is retained as formal-track design history. The primary
+> project direction is now
+> [high-assurance-reimplementation-direction.md](high-assurance-reimplementation-direction.md).
+> Formal proofs remain important local assurance tools, but a final
+> end-to-end theorem is no longer required for the primary reconstruction
+> workflow.
+
 Implementation can proceed across the versioned workstreams in
 [stage-a-parallel-development.md](stage-a-parallel-development.md). This does
 not split acceptance authority: all workstreams still converge on the one

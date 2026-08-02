@@ -828,6 +828,8 @@ def _runtime_header() -> str:
     return """#ifndef STAGE_B_STATE_MACHINE_RUNTIME_H
 #define STAGE_B_STATE_MACHINE_RUNTIME_H
 
+#define STAGE_B_MACHINE_STATE_HAS_EFLAGS 1
+
 #include <stdint.h>
 
 typedef struct stage_b_x87_value {
@@ -904,21 +906,50 @@ typedef stage_b_call_status (*stage_b_external_call_handler)(
     const stage_b_machine_state *input,
     stage_b_machine_state *output);
 
+typedef void (*stage_b_atomic_compare_exchange_handler)(
+    void *context,
+    uint32_t address,
+    uint32_t width,
+    uint32_t expected,
+    uint32_t desired,
+    uint32_t *observed,
+    uint32_t *exchanged,
+    uint32_t *fault);
+
 typedef uint32_t (*stage_b_code_target_resolver)(
     stage_b_runtime *runtime,
     uint32_t target_word,
     uint32_t *target_rva);
 
+typedef stage_b_call_status (*stage_b_callable_external_jump_handler)(
+    stage_b_runtime *runtime,
+    uint32_t source_rva,
+    uint32_t target_word,
+    const stage_b_machine_state *input,
+    stage_b_machine_state *output);
+
 struct stage_b_runtime {
   void *context;
   uint32_t (*read)(void *context, uint32_t address, uint32_t width, uint32_t *fault);
   void (*write)(void *context, uint32_t address, uint32_t width, uint32_t value, uint32_t *fault);
+  stage_b_atomic_compare_exchange_handler atomic_compare_exchange;
   uint32_t (*undefined_value)(
       void *context, uint32_t slot, const stage_b_machine_state *input,
       uint32_t defined_value);
   stage_b_external_call_handler external_call_fallback;
   stage_b_code_target_resolver resolve_code_target;
+  stage_b_callable_external_jump_handler invoke_callable_external_jump;
 };
+
+void stage_b_runtime_atomic_compare_exchange(
+    stage_b_runtime *runtime,
+    uint32_t address,
+    uint32_t width,
+    uint32_t expected,
+    uint32_t desired,
+    uint32_t *observed,
+    uint32_t *exchanged,
+    uint32_t *fault);
 
 stage_b_call_status stage_b_invoke_call(
     stage_b_runtime *runtime,
@@ -1164,6 +1195,19 @@ stage_b_engine_result stage_b_run_function_result(
         break;
       case STAGE_B_INDIRECT_JUMP: {
         stage_b_call_status status = stage_b_resolve_code_target(runtime, result.value, &current_rva);
+        if (status != STAGE_B_CALL_OK && runtime != 0 &&
+            runtime->invoke_callable_external_jump != 0) {
+          stage_b_machine_state external_output = state;
+          status = runtime->invoke_callable_external_jump(
+              runtime, current_rva, result.value, &state, &external_output);
+          if (status == STAGE_B_CALL_OK) {
+            *output = external_output;
+            return stage_b_engine_result_make(
+                STAGE_B_CALL_OK,
+                (stage_b_step_result){ STAGE_B_EXTERNAL_JUMP, current_rva,
+                                       result.value });
+          }
+        }
         if (status != STAGE_B_CALL_OK)
           return stage_b_engine_result_make(status, result);
         break;

@@ -17,8 +17,14 @@ from typing import Any, Mapping
 import pefile
 
 from .artifact_formats import (
+    INTERPRETER_NATIVE_BUILD_FORMAT,
+    NATIVE_ENGINE_PACKAGE_FORMAT,
+    NATIVE_ENGINE_PLAN_FORMAT,
+    NATIVE_RUNTIME_PACKAGE_FORMAT,
     NATIVE_SOURCE_BUNDLE_FORMAT,
     NATIVE_SOURCE_COMPILATION_ATTESTATION_FORMAT,
+    PAYLOAD_RELOCATION_INVENTORY_FORMAT,
+    PE_COMPOSITION_MANIFEST_FORMAT,
 )
 from .errors import StageAInputError
 from .roundtrip_fuzz.image_contract import load_stage_a_load_image_contract
@@ -26,19 +32,12 @@ from .stage_b_interpreter_backend import (
     STAGE_B_INTERPRETER_PACKAGE_FORMAT,
     STAGE_B_INTERPRETER_PROGRAM_FORMAT,
 )
-from .stage_b_interpreter_native_build import INTERPRETER_NATIVE_BUILD_FORMAT
-from .stage_b_native_engine import (
-    NATIVE_ENGINE_PACKAGE_FORMAT,
-    NATIVE_ENGINE_PLAN_FORMAT,
-)
-from .stage_b_native_runtime import (
-    NATIVE_RUNTIME_PACKAGE_FORMAT,
-    plan_stage_b_native_runtime,
-)
-from .stage_b_pe_composer import (
-    PAYLOAD_RELOCATION_INVENTORY_FORMAT,
-    PE_COMPOSITION_MANIFEST_FORMAT,
-    PayloadRelocationInventory,
+from .stage_b_typed_x87 import (
+    TYPED_NATIVE_X87_OPERATION_FORMAT,
+    TYPED_NATIVE_X87_PROGRAM_FORMAT,
+    X87_CHECKED_DECODER,
+    X87_CHECKED_EXECUTOR,
+    typed_x87_operation_from_payload,
 )
 from .util import sha256_bytes, sha256_file
 
@@ -113,6 +112,8 @@ def build_native_source_bundle_manifest(
     )
 
     try:
+        from .stage_b_native_runtime import plan_stage_b_native_runtime
+
         runtime_plan = plan_stage_b_native_runtime(
             interpreter_package=interpreter_root,
             native_engine_package=engine_root,
@@ -592,16 +593,20 @@ def _validate_transfer_inventory(
                     f"interpreter transfer {index} {field} differs from state machine"
                 )
         transfer_counts = _object(record.get("counts"), f"transfer {index} counts")
-        replay_count = _count(transfer_counts.get("x87_replays"), f"transfer {index} x87 count")
-        replays = _list(record.get("x87_replays"), f"transfer {index} x87 replays")
+        replay_count = _count(
+            transfer_counts.get("x87_operations"), f"transfer {index} x87 count"
+        )
+        replays = _list(
+            record.get("x87_operations"), f"transfer {index} x87 operations"
+        )
         if replay_count != len(replays):
             raise NativeSourceEquivalenceError(
-                f"interpreter transfer {index} x87 replay inventory is incomplete"
+                f"interpreter transfer {index} x87 operation inventory is incomplete"
             )
         for replay_index, replay in enumerate(replays):
-            _validate_x87_replay(
-                _object(replay, f"transfer {index} x87 replay {replay_index}"),
-                expected_transfer_sha256=expected["instruction_bytes_sha256"],
+            _validate_typed_x87_operation(
+                _object(replay, f"transfer {index} x87 operation {replay_index}"),
+                expected_contract_sha256=expected["contract_sha256"],
             )
         fpu_state = state.get("fpu_state")
         requires_x87_replay = (
@@ -626,17 +631,25 @@ def _validate_transfer_inventory(
         raise NativeSourceEquivalenceError("transfer RVAs must be sorted and unique")
     if tuple(rvas) != runtime_transfer_rvas:
         raise NativeSourceEquivalenceError("runtime transfer inventory differs")
-    if counts.get("x87_replays") != x87_replay_count:
-        raise NativeSourceEquivalenceError("program x87 replay count differs from inventory")
+    if counts.get("x87_operations") != x87_replay_count:
+        raise NativeSourceEquivalenceError(
+            "program x87 operation count differs from inventory"
+        )
     capability = _object(program.get("capability"), "interpreter capability")
     if x87_replay_count:
-        replay = _object(capability.get("x87_replay"), "x87 replay capability")
+        replay = _object(
+            capability.get("typed_native_x87"), "typed x87 capability"
+        )
         if (
-            replay.get("action") != "replay_x87"
-            or not replay.get("checked_decoder")
-            or not replay.get("checked_executor")
+            replay.get("format") != TYPED_NATIVE_X87_PROGRAM_FORMAT
+            or replay.get("operation_format") != TYPED_NATIVE_X87_OPERATION_FORMAT
+            or replay.get("mode") != "sanitized_typed_native_v1"
+            or replay.get("action") != "typed_x87"
+            or replay.get("runtime_handler") != "execute_typed_x87_operation"
+            or replay.get("checked_decoder") != X87_CHECKED_DECODER
+            or replay.get("checked_executor") != X87_CHECKED_EXECUTOR
         ):
-            raise NativeSourceEquivalenceError("x87 replay capability is not checked")
+            raise NativeSourceEquivalenceError("typed x87 capability is not checked")
     return {
         "count": len(result),
         "x87_transfer_count": x87_transfer_count,
@@ -646,21 +659,36 @@ def _validate_transfer_inventory(
     }
 
 
-def _validate_x87_replay(
-    replay: Mapping[str, Any], *, expected_transfer_sha256: str
+def _validate_typed_x87_operation(
+    replay: Mapping[str, Any], *, expected_contract_sha256: str
 ) -> None:
-    digest = _sha256(
-        replay.get("instruction_bytes_sha256"), "x87 replay byte SHA-256"
-    )
-    encoded = _hex_bytes(replay.get("instruction_bytes"), "x87 replay bytes")
-    if sha256_bytes(encoded) != digest:
-        raise NativeSourceEquivalenceError("x87 replay bytes do not match their digest")
-    if replay.get("transfer_instruction_bytes_sha256") != expected_transfer_sha256:
+    if replay.get("format") != TYPED_NATIVE_X87_PROGRAM_FORMAT:
+        raise NativeSourceEquivalenceError("typed x87 program format is unsupported")
+    if replay.get("contract_sha256") != expected_contract_sha256:
         raise NativeSourceEquivalenceError(
-            "x87 replay does not bind its complete transfer instruction bytes"
+            "typed x87 program does not bind its complete transfer contract"
         )
-    if not replay.get("checked_decoder") or not replay.get("checked_executor"):
-        raise NativeSourceEquivalenceError("x87 replay omits checked semantics identities")
+    if (
+        replay.get("checked_decoder") != X87_CHECKED_DECODER
+        or replay.get("checked_executor") != X87_CHECKED_EXECUTOR
+    ):
+        raise NativeSourceEquivalenceError(
+            "typed x87 program omits checked semantics identities"
+        )
+    image_base = _u32(replay.get("image_base"), "typed x87 image base")
+    rva_start = _u32(replay.get("rva_start"), "typed x87 start RVA")
+    rva_end = _u32(replay.get("rva_end"), "typed x87 end RVA")
+    if rva_end <= rva_start:
+        raise NativeSourceEquivalenceError("typed x87 span is empty or reversed")
+    operation = _object(replay.get("operation"), "typed x87 operation")
+    try:
+        parsed = typed_x87_operation_from_payload(operation, image_base=image_base)
+    except StageAInputError as exc:
+        raise NativeSourceEquivalenceError(str(exc)) from exc
+    if parsed.source_size != rva_end - rva_start:
+        raise NativeSourceEquivalenceError(
+            "typed x87 source size differs from its checked span"
+        )
 
 
 def _validate_build_source_closure(
@@ -691,6 +719,8 @@ def _validate_build_source_closure(
 
 
 def _runtime_plan_from_source(source: Mapping[str, Any]) -> dict[str, Any]:
+    from .stage_b_native_runtime import plan_stage_b_native_runtime
+
     packages = _object(source.get("packages"), "source packages")
     return plan_stage_b_native_runtime(
         interpreter_package=_package_root(packages["interpreter"], "interpreter"),
@@ -725,6 +755,8 @@ def _validate_candidate_pe(binding: Mapping[str, Any]) -> None:
 def _validate_relocation_artifact(
     binding: Mapping[str, Any], *, payload_sha256: str, output_binding: Mapping[str, Any]
 ) -> dict[str, Any]:
+    from .stage_b_pe_composer import PayloadRelocationInventory
+
     payload = _read_json_object(Path(binding["path"]), "payload relocation inventory")
     try:
         inventory = PayloadRelocationInventory.parse(payload)

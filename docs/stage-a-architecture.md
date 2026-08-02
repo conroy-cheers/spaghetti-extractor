@@ -1,5 +1,12 @@
 # Stage A Architecture
 
+> **Scope:** This document is normative for the strict formal-proof command
+> profile and for any result claiming formal `pass`. The primary project
+> delivery direction is now the high-assurance reconstruction workflow in
+> [high-assurance-reimplementation-direction.md](high-assurance-reimplementation-direction.md).
+> That workflow does not weaken the meaning of `pass`; it permits separately
+> labeled assurance results that do not claim a whole-program Lean theorem.
+
 ## Authority
 
 Stage A has one acceptance claim: Lean checks

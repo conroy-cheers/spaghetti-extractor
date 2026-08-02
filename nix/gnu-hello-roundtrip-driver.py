@@ -21,10 +21,6 @@ from spaghetti_extractor.contract_tools import (
     stage_a_export_reference_contract,
     stage_a_generate_map,
 )
-from spaghetti_extractor.native_source_equivalence import (
-    validate_native_source_bundle_manifest,
-    validate_native_source_compilation_attestation,
-)
 from spaghetti_extractor.relational.lean.definedness import (
     relational_definedness_preflight,
     relational_definedness_source,
@@ -317,9 +313,6 @@ from spaghetti_extractor.relational.lean.original_source_launch_context import (
 from spaghetti_extractor.relational.lean.runtime_memory_access_proposal import (
     generate_runtime_memory_access_proposal,
 )
-from spaghetti_extractor.relational.lean.source_equivalence_final_report import (
-    write_source_equivalence_final_report,
-)
 from spaghetti_extractor.relational.lean.gnu_hello_native_source_compiled_authority_evidence import (
     NixRealizationIdentity,
     write_gnu_hello_native_source_compiled_authority_evidence,
@@ -396,12 +389,6 @@ from spaghetti_extractor.relational.direct_call_proposal_ir import (
 )
 from spaghetti_extractor.roundtrip_fuzz.image_contract import (
     write_stage_a_load_image_contract,
-)
-from spaghetti_extractor.stage_b_interpreter_backend import (
-    compile_stage_b_interpreter_program,
-)
-from spaghetti_extractor.stage_b_state_machine import (
-    write_stage_b_state_machine_from_stage_a_export,
 )
 from spaghetti_extractor.stage_binary import _parse_stage_a_pe
 from spaghetti_extractor.util import sha256_file, write_json
@@ -745,6 +732,10 @@ def _native_launch_request(args: argparse.Namespace) -> None:
 
 
 def _static_export(args: argparse.Namespace) -> None:
+    from spaghetti_extractor.stage_b_state_machine import (
+        write_stage_b_state_machine_from_stage_a_export,
+    )
+
     original = Path(args.original)
     linker_map = Path(args.linker_map)
     out = Path(args.out)
@@ -830,6 +821,10 @@ def _original_pe_source(args: argparse.Namespace) -> None:
 
 
 def _program_source(args: argparse.Namespace) -> None:
+    from spaghetti_extractor.stage_b_interpreter_backend import (
+        compile_stage_b_interpreter_program,
+    )
+
     machine = Path(args.state_machine)
     out = Path(args.out)
     stage_a = out / "StageA"
@@ -1006,6 +1001,11 @@ def _native_source_program(args: argparse.Namespace) -> None:
 
 def _native_source_compiled_authority(args: argparse.Namespace) -> None:
     """Assemble exact compiled authority from closed static evidence only."""
+
+    from spaghetti_extractor.native_source_equivalence import (
+        validate_native_source_bundle_manifest,
+        validate_native_source_compilation_attestation,
+    )
 
     source_bundle_path = Path(args.source_bundle)
     attestation_path = Path(args.compilation_attestation)
@@ -1360,6 +1360,11 @@ def _native_source_compiled_authority(args: argparse.Namespace) -> None:
 
 def _native_source_acceptance(args: argparse.Namespace) -> None:
     """Assemble environment-family acceptance without status metadata."""
+
+    from spaghetti_extractor.native_source_equivalence import (
+        validate_native_source_bundle_manifest,
+        validate_native_source_compilation_attestation,
+    )
 
     source_bundle_path = Path(args.source_bundle)
     attestation_path = Path(args.compilation_attestation)
@@ -1794,6 +1799,10 @@ def _checked_response_family(args: argparse.Namespace) -> None:
 
 
 def _source_equivalence_final_report(args: argparse.Namespace) -> None:
+    from spaghetti_extractor.relational.lean.source_equivalence_final_report import (
+        write_source_equivalence_final_report,
+    )
+
     """Consolidate already checked proof and candidate-runtime evidence."""
 
     write_source_equivalence_final_report(
@@ -3031,7 +3040,6 @@ def _mixed_original_writable_slot_authority(
     callable_outputs, callable_counts = _write_callable_external_artifacts(
         out, callable_proposal, consumed.plan
     )
-
     facade = (
         out / "StageA" / f"{INTERPRETER_MIXED_ORIGINAL_BASE_MODULE}.lean"
     )

@@ -19,6 +19,10 @@ from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
 from ...artifact_formats import STATIC_MACHINE_IMPORT_CONTRACTS_FORMAT
 from ...errors import StageAInputError
+from ...machine_import_profiles import (
+    MachineImportProfileError,
+    load_machine_import_profile_graph,
+)
 from ...stage_binary import StageABinary, _parse_stage_a_pe
 from ..contract import _machine_import_call_contracts
 from .expressions import (
@@ -30,10 +34,6 @@ from .expressions import (
 
 STATIC_MACHINE_IMPORT_FORMAT = STATIC_MACHINE_IMPORT_CONTRACTS_FORMAT
 STATIC_MACHINE_IMPORT_MODULE = "GeneratedStaticMachineImportContracts"
-_PROFILE_FORMATS = {
-    "stage-a-external-environment-profile-v1",
-    "stage-a-static-machine-import-profile-v1",
-}
 _ABI_NAMES = {
     "pe32-cdecl-v1": "cdecl",
     "pe32-stdcall-v1": "stdcall",
@@ -678,58 +678,13 @@ def _load_signatures(
 def _load_profile_graph(
     profile_paths: Sequence[Path | str],
 ) -> tuple[tuple[Path, Mapping[str, Any]], ...]:
-    """Load included profiles before their includer, once per canonical path."""
+    """Compatibility shape over the canonical shared profile-graph loader."""
 
-    loaded: list[tuple[Path, Mapping[str, Any]]] = []
-    visited: set[Path] = set()
-    visiting: list[Path] = []
-
-    def visit(raw_path: Path | str, *, relative_to: Path | None = None) -> None:
-        path = Path(raw_path)
-        if relative_to is not None and not path.is_absolute():
-            path = relative_to / path
-        canonical = path.resolve()
-        if canonical in visited:
-            return
-        if canonical in visiting:
-            cycle = " -> ".join(str(item) for item in (*visiting, canonical))
-            raise StaticMachineImportContractError(
-                f"machine import profile include cycle: {cycle}"
-            )
-        try:
-            payload = json.loads(canonical.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise StaticMachineImportContractError(
-                f"cannot read machine import profile {canonical}: {exc}"
-            ) from exc
-        if not isinstance(payload, Mapping) or payload.get("format") not in _PROFILE_FORMATS:
-            raise StaticMachineImportContractError(
-                f"unsupported machine import profile format in {canonical}"
-            )
-        profile_id = payload.get("id")
-        if not isinstance(profile_id, str) or not profile_id:
-            raise StaticMachineImportContractError(
-                f"machine import profile {canonical} has no id"
-            )
-        includes = payload.get("includes", [])
-        if not isinstance(includes, list) or any(
-            not isinstance(item, str) or not item for item in includes
-        ):
-            raise StaticMachineImportContractError(
-                f"{canonical} includes must be a list of nonempty paths"
-            )
-        visiting.append(canonical)
-        try:
-            for include in includes:
-                visit(include, relative_to=canonical.parent)
-        finally:
-            visiting.pop()
-        visited.add(canonical)
-        loaded.append((canonical, payload))
-
-    for profile_path in profile_paths:
-        visit(profile_path)
-    return tuple(loaded)
+    try:
+        loaded = load_machine_import_profile_graph(profile_paths)
+    except MachineImportProfileError as exc:
+        raise StaticMachineImportContractError(str(exc)) from exc
+    return tuple((profile.path, profile.payload) for profile in loaded)
 
 
 def _normalize_signature(

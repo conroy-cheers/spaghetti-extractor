@@ -10,6 +10,7 @@ from pathlib import Path
 from spaghetti_extractor.stage_b_interpreter_backend import (
     STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT,
     StageBInterpreterError,
+    compile_stage_b_interpreter_machine_ir,
     compile_stage_b_interpreter_program,
     write_stage_b_interpreter_package,
 )
@@ -47,7 +48,370 @@ def _write_machine(path: Path, rows: list[dict[str, object]]) -> None:
     )
 
 
+def _machine_ir_pre_call_tail_unit() -> dict[str, object]:
+    registers = {
+        name: {"op": "reg", "name": name, "width": 32}
+        for name in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+    }
+    flags = {
+        name: {"op": "flag", "name": name}
+        for name in ("cf", "zf", "sf", "of", "pf", "df")
+    }
+    empty_effects = {
+        "register_writes": [],
+        "defined_flag_writes": [],
+        "undefined_flag_writes": [],
+        "ordered_events": [],
+    }
+    records = [
+        {
+            "rva_start": 0x1000,
+            "rva_end": 0x1001,
+            "instruction_class": "ordinary_symbolic_instruction",
+            "classification": {
+                "status": "proposal_requires_lean_exact_byte_replay",
+                "proof_authority": False,
+                "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                "checked_executor": "StageA.Formal.executeInstruction",
+            },
+            "effects": {
+                **empty_effects,
+                "register_writes": [{
+                    "register": "esp",
+                    "value": {
+                        "op": "add32",
+                        "args": [registers["esp"], {"op": "const", "value": 28, "width": 32}],
+                    },
+                }],
+                "control": {"kind": "fallthrough", "target_rva": 0x1001},
+            },
+        },
+        {
+            "rva_start": 0x1001,
+            "rva_end": 0x1002,
+            "instruction_class": "ordinary_symbolic_instruction",
+            "classification": {
+                "status": "proposal_requires_lean_exact_byte_replay",
+                "proof_authority": False,
+                "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                "checked_executor": "StageA.Formal.executeInstruction",
+            },
+            "effects": {
+                **empty_effects,
+                "ordered_events": [{
+                    "family": "external",
+                    "kind": "external_call",
+                    "instruction_rva": 0x1001,
+                    "return_rva": 0x1002,
+                    "dll": "msvcrt.dll",
+                    "symbol": "_unlock",
+                    "ordinal": None,
+                    "register_inputs": registers,
+                    "flag_inputs": flags,
+                    "arguments": [],
+                    "stack_inputs": [],
+                }],
+                "control": {
+                    "kind": "external_jump",
+                    "dll": "msvcrt.dll",
+                    "symbol": "_unlock",
+                    "ordinal": None,
+                },
+            },
+        },
+    ]
+    return {
+        "format": "stage-a-machine-ir-v2",
+        "record_kind": "unit",
+        "id": "semantic-transfer:pre-call-tail",
+        "status": "qualified",
+        "reachable": True,
+        "source": {
+            "original": {"rva_start": 0x1000, "rva_end": 0x1002, "size": 2},
+            "contract_sha256": _SHA_A,
+            "instruction_bytes_sha256": _SHA_B,
+        },
+        "instructions": [],
+        "x87_micro_ops": [],
+        "semantics": {
+            "pre_state": {},
+            "register_writes": [],
+            "flag_writes": [],
+            "memory_events": [],
+            "external_events": [],
+            "faults": [],
+            "ordered_events": [],
+            "edge_conditions": [],
+            "outcome": {
+                "kind": "external_jump",
+                "dll": "msvcrt.dll",
+                "symbol": "_unlock",
+                "ordinal": None,
+            },
+            "stack_delta": None,
+            "counts": {},
+            "fpu_state": None,
+            "instruction_effect_schedule": {
+                "format": "stage-a-instruction-ordered-effect-schedule-v1",
+                "status": "complete",
+                "proof_authority": False,
+                "ordering": "strict_contiguous_rva_order",
+                "rva_start": 0x1000,
+                "rva_end": 0x1002,
+                "records": records,
+                "blockers": [],
+                "counts": {
+                    "instructions": 2,
+                    "x87_singletons": 0,
+                    "ordinary_instructions": 2,
+                    "blockers": 0,
+                },
+            },
+        },
+    }
+
+
+def _machine_ir_load_compare_branch_unit() -> dict[str, object]:
+    empty_effects = {
+        "register_writes": [],
+        "defined_flag_writes": [],
+        "undefined_flag_writes": [],
+        "ordered_events": [],
+    }
+    address = {"op": "const", "value": 0x430328, "width": 32}
+    eax = {"op": "reg", "name": "eax", "width": 32}
+    one = {"op": "const", "value": 1, "width": 32}
+    difference = {"op": "sub32", "args": [eax, one]}
+    zero = {"op": "const", "value": 0, "width": 32}
+    records = [
+        {
+            "rva_start": 0x1063,
+            "rva_end": 0x1068,
+            "instruction_class": "ordinary_symbolic_instruction",
+            "classification": {
+                "status": "proposal_requires_lean_exact_byte_replay",
+                "proof_authority": False,
+                "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                "checked_executor": "StageA.Formal.executeInstruction",
+            },
+            "effects": {
+                **empty_effects,
+                "register_writes": [{
+                    "register": "eax",
+                    "value": {"op": "load", "width": 4, "address": address},
+                }],
+                "ordered_events": [{
+                    "family": "memory",
+                    "kind": "read",
+                    "width": 4,
+                    "address": address,
+                }],
+                "control": {"kind": "fallthrough", "target_rva": 0x1068},
+            },
+        },
+        {
+            "rva_start": 0x1068,
+            "rva_end": 0x106B,
+            "instruction_class": "ordinary_symbolic_instruction",
+            "classification": {
+                "status": "proposal_requires_lean_exact_byte_replay",
+                "proof_authority": False,
+                "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                "checked_executor": "StageA.Formal.executeInstruction",
+            },
+            "effects": {
+                **empty_effects,
+                "defined_flag_writes": [{
+                    "flag": "zf",
+                    "value": {"op": "eq", "args": [difference, zero]},
+                }],
+                "control": {"kind": "fallthrough", "target_rva": 0x106B},
+            },
+        },
+        {
+            "rva_start": 0x106B,
+            "rva_end": 0x1071,
+            "instruction_class": "ordinary_symbolic_instruction",
+            "classification": {
+                "status": "proposal_requires_lean_exact_byte_replay",
+                "proof_authority": False,
+                "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                "checked_executor": "StageA.Formal.executeInstruction",
+            },
+            "effects": {
+                **empty_effects,
+                "control": {
+                    "kind": "branch",
+                    "condition": {"op": "flag", "name": "zf"},
+                    "true_target_rva": 0x13F2,
+                    "false_target_rva": 0x1071,
+                },
+            },
+        },
+    ]
+    return {
+        "format": "stage-a-machine-ir-v2",
+        "record_kind": "unit",
+        "id": "semantic-transfer:load-compare-branch",
+        "status": "qualified",
+        "reachable": True,
+        "source": {
+            "original": {"rva_start": 0x1063, "rva_end": 0x1071, "size": 14},
+            "contract_sha256": _SHA_A,
+            "instruction_bytes_sha256": _SHA_B,
+        },
+        "instructions": [],
+        "x87_micro_ops": [],
+        "semantics": {
+            "pre_state": {},
+            "register_writes": [],
+            "flag_writes": [],
+            "memory_events": [],
+            "external_events": [],
+            "faults": [],
+            "ordered_events": [],
+            "edge_conditions": [],
+            "outcome": {
+                "kind": "branch",
+                "condition": {"op": "flag", "name": "zf"},
+                "true_target_rva": 0x13F2,
+                "false_target_rva": 0x1071,
+            },
+            "stack_delta": None,
+            "counts": {},
+            "fpu_state": None,
+            "instruction_effect_schedule": {
+                "format": "stage-a-instruction-ordered-effect-schedule-v1",
+                "status": "complete",
+                "proof_authority": False,
+                "ordering": "strict_contiguous_rva_order",
+                "rva_start": 0x1063,
+                "rva_end": 0x1071,
+                "records": records,
+                "blockers": [],
+                "counts": {
+                    "instructions": 3,
+                    "x87_singletons": 0,
+                    "ordinary_instructions": 3,
+                    "blockers": 0,
+                },
+            },
+        },
+    }
+
+
 class StageBInterpreterBackendTests(unittest.TestCase):
+    def test_machine_ir_applies_pre_call_effects_before_external_tail_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            machine = Path(temporary) / "machine-ir.jsonl"
+            _write_machine(machine, [_machine_ir_pre_call_tail_unit()])
+
+            transfer = compile_stage_b_interpreter_machine_ir(machine)[0]
+            set_esp = next(
+                index
+                for index, action in enumerate(transfer.actions)
+                if action.op == "set_reg" and action.aux == 7
+            )
+            call = next(
+                index for index, action in enumerate(transfer.actions)
+                if action.op == "call"
+            )
+
+            self.assertLess(set_esp, call)
+            self.assertFalse(any(
+                action.op == "set_reg" and action.aux == 7
+                for action in transfer.actions[call + 1:]
+            ))
+
+    def test_machine_ir_terminal_branch_reads_final_instruction_state(self) -> None:
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("C compiler is unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine = root / "machine-ir.jsonl"
+            _write_machine(machine, [_machine_ir_load_compare_branch_unit()])
+
+            transfer = compile_stage_b_interpreter_machine_ir(machine)[0]
+            branch = next(action for action in transfer.actions if action.op == "outcome_branch")
+            condition = transfer.nodes[branch.args[0]]
+            self.assertEqual(condition.op, "flag")
+            self.assertEqual(condition.immediate, 1)
+
+            package_dir = root / "package"
+            package = write_stage_b_interpreter_package(
+                machine_ir=machine, out=package_dir
+            )
+            self.assertEqual(package["status"], "ready")
+            harness = root / "harness.c"
+            harness.write_text(
+                r'''
+#include "state-machine-interpreter.h"
+
+typedef struct fixture_context { uint32_t value; } fixture_context;
+
+static uint32_t read_word(
+    void *raw, uint32_t address, uint32_t width, uint32_t *fault) {
+  fixture_context *context = (fixture_context *)raw;
+  if (address != 0x430328U || width != 4U) { *fault = 1U; return 0U; }
+  return context->value;
+}
+
+static void write_word(
+    void *raw, uint32_t address, uint32_t width, uint32_t value,
+    uint32_t *fault) {
+  (void)raw; (void)address; (void)width; (void)value; *fault = 1U;
+}
+
+stage_b_call_status stage_b_dispatch_external_call(
+    stage_b_runtime *runtime, const stage_b_call_event *event,
+    const stage_b_machine_state *input, stage_b_machine_state *output) {
+  (void)runtime; (void)event; (void)input; (void)output;
+  return STAGE_B_CALL_UNIMPLEMENTED;
+}
+
+int main(void) {
+  fixture_context context = {0U};
+  stage_b_runtime runtime = {0};
+  stage_b_machine_state state = {0};
+  stage_b_step_result result;
+  runtime.context = &context;
+  runtime.read = read_word;
+  runtime.write = write_word;
+
+  state.zf = 1U;
+  result = stage_b_interpreter_step(&runtime, &state, 0x1063U);
+  if (result.kind != STAGE_B_BRANCH || result.target_rva != 0x1071U) return 1;
+
+  context.value = 1U;
+  state.zf = 0U;
+  result = stage_b_interpreter_step(&runtime, &state, 0x1063U);
+  if (result.kind != STAGE_B_BRANCH || result.target_rva != 0x13f2U) return 2;
+  return 0;
+}
+''',
+                encoding="ascii",
+            )
+            executable = root / "load-compare-branch"
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=c11",
+                    "-Werror",
+                    "-I",
+                    str(package_dir),
+                    str(package_dir / "state-machine-interpreter.c"),
+                    str(package_dir / "state-machine-program.c"),
+                    str(harness),
+                    "-o",
+                    str(executable),
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            subprocess.run([str(executable)], check=True)
+
     def test_interpreter_stack_capacity_matches_checked_program_maximum(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -522,7 +886,7 @@ int main(void) {
                     capture_output=True,
                 )
 
-    def test_run_function_encodes_every_terminal_state_at_the_entry_rva(self) -> None:
+    def test_run_function_preserves_nested_failure_rva(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             machine = root / "state-machine.jsonl"
@@ -535,15 +899,30 @@ int main(void) {
                 encoding="ascii"
             )
             run = source.split(
-                "stage_b_call_status stage_b_run_function(", 1
-            )[1].split("stage_b_call_status stage_b_invoke_call(", 1)[0]
-            self.assertIn("uint32_t entry_rva = rva;", run)
+                "static stage_b_call_status stage_b_run_function_checked(", 1
+            )[1].split("stage_b_call_status stage_b_run_function(", 1)[0]
+            self.assertNotIn("uint32_t entry_rva = rva;", run)
             self.assertEqual(run.count("*out = s;"), 2)
-            self.assertEqual(run.count("out->original_rva = entry_rva;"), 2)
+            self.assertEqual(run.count("out->original_rva = rva;"), 1)
+            self.assertIn(
+                "out->original_rva = r.target_rva != 0U ? r.target_rva : rva;",
+                run,
+            )
+            self.assertIn("*state=call_output;return(stage_b_step_result)", source)
+            self.assertIn("call_output.original_rva,0U", source)
             self.assertLess(
                 run.index("*out = s;", run.index("stage_b_step_result r")),
                 run.index("if (r.kind == STAGE_B_RETURN"),
             )
+            self.assertIn("r.value != expected_return_rva", run)
+            self.assertIn("out->esi = expected_return_rva;", run)
+            self.assertIn("out->edi = r.value;", run)
+            self.assertIn("call_input.esp -= 4U;", source)
+            self.assertIn("event->return_rva, &memory_fault", source)
+            self.assertIn("output->esp < input->esp", source)
+            self.assertIn("output->esi = input->esp;", source)
+            self.assertIn("output->edi = output->esp;", source)
+            self.assertIn("->fs_base;", source)
 
     def test_unsupported_operation_fails_before_emission(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

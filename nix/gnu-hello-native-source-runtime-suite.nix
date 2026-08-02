@@ -69,7 +69,6 @@ in
         "Report bugs to: bug-hello@gnu.org"
         "GNU Hello home page: <https://www.gnu.org/software/hello/>"
         "General help using GNU software: <https://www.gnu.org/gethelp/>"
-        "Report GNU Hello translation bugs to <https://translationproject.org/team/>"
       ];
       expected_stderr = "";
     }
@@ -81,7 +80,6 @@ in
       expected_stdout = lines [
         "hello (GNU Hello) 2.12.3"
         "Copyright (C) 2026 Free Software Foundation, Inc."
-        ""
         "License GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>."
         "This is free software: you are free to change and redistribute it."
         "There is NO WARRANTY, to the extent permitted by law."

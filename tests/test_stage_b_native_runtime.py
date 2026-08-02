@@ -57,19 +57,35 @@ def _packages(
     rows: list[dict[str, object]] | None = None,
     *,
     callback_targets: list[dict[str, object]] | None = None,
+    import_iat_vas: dict[tuple[str, str], int] | None = None,
+    machine_ir: bool = False,
     modeled_termination: bool = False,
 ) -> tuple[Path, Path]:
-    state_machine = root / "state-machine.jsonl"
-    _write_state_machine(state_machine, rows or [_transfer()])
+    semantic_input = root / (
+        "machine-ir.jsonl" if machine_ir else "state-machine.jsonl"
+    )
+    _write_state_machine(semantic_input, rows or [_transfer()])
     interpreter = root / "interpreter"
     engine = root / "engine"
-    write_stage_b_interpreter_package(state_machine=state_machine, out=interpreter)
+    interpreter_input = (
+        {"machine_ir": semantic_input}
+        if machine_ir
+        else {"state_machine": semantic_input}
+    )
+    write_stage_b_interpreter_package(**interpreter_input, out=interpreter)
+    engine_input = (
+        {"machine_ir": semantic_input}
+        if machine_ir
+        else {"state_machine": semantic_input}
+    )
     write_stage_b_native_engine_package(
-        state_machine=state_machine,
+        **engine_input,
         entry_rva=0x1000,
         callback_targets=callback_targets or [],
         import_iat_vas=(
-            {("msvcrt.dll", "_amsg_exit"): 0x4321D8}
+            import_iat_vas
+            if import_iat_vas is not None
+            else {("msvcrt.dll", "_amsg_exit"): 0x4321D8}
             if modeled_termination
             else None
         ),
@@ -211,6 +227,128 @@ def _internal_tail_import_rows() -> list[dict[str, object]]:
     return [caller, thunk]
 
 
+def _external_result_rows() -> list[dict[str, object]]:
+    registers = {
+        name: {"op": "reg", "name": name}
+        for name in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+    }
+    flags = {
+        name: {"op": "flag", "name": name}
+        for name in ("cf", "zf", "sf", "of", "pf", "df")
+    }
+    row = _transfer(0x1000)
+    encoded = bytes.fromhex("ff159c214300")
+    row.update({
+        "instruction_bytes_sha256": sha256_bytes(encoded),
+        "original": {"rva_start": 0x1000, "rva_end": 0x1006, "size": 6},
+        "instructions": [{
+            "rva": 0x1000,
+            "size": 6,
+            "bytes": encoded.hex(),
+            "mnemonic": "call",
+            "op_str": "dword ptr [0x43219c]",
+        }],
+        "ordered_events": [{
+            "family": "external",
+            "kind": "external_call",
+            "instruction_rva": 0x1000,
+            "return_rva": 0x1006,
+            "dll": "msvcrt.dll",
+            "symbol": "__p__commode",
+            "ordinal": None,
+            "register_inputs": registers,
+            "flag_inputs": flags,
+            "arguments": [],
+            "stack_inputs": [],
+        }],
+    })
+    return [row]
+
+
+def _machine_ir_indirect_external_result_rows() -> list[dict[str, object]]:
+    registers = {
+        name: {"op": "reg", "name": name, "width": 32}
+        for name in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+    }
+    flags = {
+        name: {"op": "flag", "name": name}
+        for name in ("cf", "zf", "sf", "of", "pf", "df")
+    }
+    event = {
+        "family": "external",
+        "kind": "indirect_call",
+        "instruction_rva": 0x1000,
+        "return_rva": 0x1006,
+        "target": {
+        "op": "load",
+        "width": 4,
+        "address": {"op": "const", "width": 32, "value": 0x43219C},
+        },
+        "register_inputs": registers,
+        "flag_inputs": flags,
+        "stack_inputs": [],
+    }
+    return [{
+        "format": "stage-a-machine-ir-v2",
+        "record_kind": "unit",
+        "id": "semantic-transfer:typed-00001000",
+        "status": "qualified",
+        "source": {
+            "original": {"rva_start": 0x1000, "rva_end": 0x1006, "size": 6},
+            "contract_sha256": _CONTRACT_SHA256,
+            "instruction_bytes_sha256": _INSTRUCTION_SHA256,
+            "semantic_export": None,
+        },
+        "instructions": [{
+            "rva_start": 0x1000,
+            "rva_end": 0x1006,
+            "size": 6,
+            "instruction_sha256": _INSTRUCTION_SHA256,
+            "mnemonic": "call",
+            "operands": [],
+            "registers_read": [],
+            "registers_written": [],
+            "groups": ["call"],
+        }],
+        "x87_micro_ops": [],
+        "semantics": {
+            "pre_state": {},
+            "register_writes": [],
+            "flag_writes": [],
+            "memory_events": [],
+            "external_events": [event],
+            "faults": [],
+            "ordered_events": [event],
+            "edge_conditions": [],
+            "outcome": {"kind": "fallthrough", "target_rva": 0x1006},
+            "stack_delta": 0,
+            "counts": {},
+            "fpu_state": None,
+            "instruction_effect_schedule": None,
+        },
+    }]
+
+
+def _write_external_profile(path: Path, *, size_kind: str = "fixed") -> None:
+    size: dict[str, object] = {"kind": size_kind, "bytes": 4}
+    path.write_text(json.dumps({
+        "format": "stage-a-external-environment-profile-v1",
+        "id": "fixture-external-range-profile-v1",
+        "machine_import_call_contracts": [{
+            "id": "fixture-commode-range",
+            "import": {"dll": "msvcrt.dll", "symbol": "__p__commode"},
+            "result_register_relations": [{
+                "register": "eax",
+                "relation": "dynamic_range_base",
+                "size": size,
+                "minimum_size": 4,
+                "nullable": False,
+            }],
+            "world_effect": "dynamicRanges",
+        }],
+    }, sort_keys=True), encoding="utf-8")
+
+
 def _qualified_x87_transfer() -> dict[str, object]:
     encoded = bytes.fromhex("d9e8")
     digest = sha256_bytes(encoded)
@@ -262,7 +400,10 @@ def _qualified_x87_transfer() -> dict[str, object]:
 
 
 def _attach_definedness_metadata(
-    interpreter: Path, *, classification: str
+    interpreter: Path,
+    *,
+    classification: str,
+    include_defined_value: bool = False,
 ) -> int:
     program_path = interpreter / "state-machine-interpreter-program.json"
     program = json.loads(program_path.read_text(encoding="utf-8"))
@@ -349,7 +490,10 @@ def _attach_definedness_metadata(
                 "op": "undefined_bv",
                 **(
                     {"defined_value_node": 1}
-                    if classification == "synchronized_behavior_relevant"
+                    if (
+                        classification == "synchronized_behavior_relevant"
+                        or include_defined_value
+                    )
                     else {}
                 ),
             }],
@@ -379,6 +523,79 @@ def _attach_definedness_metadata(
 
 
 class StageBNativeRuntimeTests(unittest.TestCase):
+    def test_external_result_ranges_are_profile_bound_and_generic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            interpreter, engine = _packages(root, rows=_external_result_rows())
+            profile = root / "external-profile.json"
+            _write_external_profile(profile)
+            package = write_stage_b_native_runtime_package(
+                interpreter_package=interpreter,
+                native_engine_package=engine,
+                external_profile=profile,
+                out=root / "runtime",
+            )
+
+            rules = package["inputs"]["external_range_contracts"]["rules"]
+            self.assertEqual(len(rules), 1)
+            self.assertEqual(rules[0]["instruction_rva"], 0x1000)
+            self.assertEqual(rules[0]["action"], "add_result_range")
+            self.assertEqual(rules[0]["register"], "eax")
+            source = (root / "runtime/native-runtime.c").read_text(encoding="ascii")
+            self.assertIn("STAGE_B_NATIVE_MAX_EXTERNAL_RANGES 8192U", source)
+            self.assertIn("stage_b_native_inside_external_range", source)
+            self.assertIn("stage_b_native_runtime_record_external_result", source)
+            self.assertNotIn("__p__commode", source)
+
+    def test_iat_loaded_dynamic_call_uses_the_same_result_range_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            interpreter, engine = _packages(
+                root,
+                rows=_machine_ir_indirect_external_result_rows(),
+                import_iat_vas={("msvcrt.dll", "__p__commode"): 0x43219C},
+                machine_ir=True,
+            )
+            profile = root / "external-profile.json"
+            _write_external_profile(profile)
+
+            package = write_stage_b_native_runtime_package(
+                interpreter_package=interpreter,
+                native_engine_package=engine,
+                external_profile=profile,
+                out=root / "runtime",
+            )
+
+            plan = json.loads(
+                (engine / "native-engine-plan.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(plan["external_sites"][0]["site_kind"], "dynamic_target")
+            self.assertEqual(plan["external_sites"][0]["import"], {
+                "dll": "msvcrt.dll",
+                "symbol": "__p__commode",
+                "ordinal": None,
+            })
+            self.assertEqual(plan["external_sites"][0]["iat_va"], 0x43219C)
+            rules = package["inputs"]["external_range_contracts"]["rules"]
+            self.assertEqual(len(rules), 1)
+            self.assertEqual(rules[0]["action"], "add_result_range")
+            self.assertEqual(rules[0]["instruction_rva"], 0x1000)
+
+    def test_external_result_range_rejects_unknown_size_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            interpreter, engine = _packages(root, rows=_external_result_rows())
+            profile = root / "external-profile.json"
+            _write_external_profile(profile, size_kind="unknown")
+            with self.assertRaisesRegex(
+                StageBNativeRuntimeError, "unsupported range size"
+            ):
+                plan_stage_b_native_runtime(
+                    interpreter_package=interpreter,
+                    native_engine_package=engine,
+                    external_profile=profile,
+                )
+
     def test_package_binds_both_manifests_and_is_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -397,7 +614,10 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual(first["status"], "ready")
             self.assertFalse(first["acceptance_authority"])
-            self.assertEqual(first["counts"], {"transfers": 1})
+            self.assertEqual(
+                first["counts"],
+                {"transfers": 1, "callable_external_routes": 0},
+            )
             self.assertEqual(first["inputs"]["entry_rva"], 0x1000)
             self.assertEqual(first["inputs"]["transfer_rvas"], [0x1000])
             for name in ("native-runtime.h", "native-runtime.c"):
@@ -420,6 +640,14 @@ class StageBNativeRuntimeTests(unittest.TestCase):
 
             self.assertIn("stage_b_native_flat_read", source)
             self.assertIn("stage_b_native_flat_write", source)
+            self.assertIn("stage_b_native_atomic_compare_exchange", source)
+            self.assertIn("stage_b_runtime_atomic_compare_exchange", source)
+            self.assertIn(
+                ".atomic_compare_exchange = "
+                "stage_b_native_atomic_compare_exchange",
+                source,
+            )
+            self.assertIn("__atomic_compare_exchange_n", source)
             self.assertIn("STAGE_B_NATIVE_IMAGE_SCN_MEM_EXECUTE", source)
             self.assertIn("stage_b_native_transfer_rvas", source)
             self.assertIn("stage_b_program_lookup(rva)", source)
@@ -446,6 +674,11 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             self.assertEqual(
                 package["policy"]["terminal_control"],
                 "record-status-and-unsupported-native-halt",
+            )
+            self.assertTrue(
+                package["inputs"]["runtime_abi"][
+                    "atomic_compare_exchange_handler"
+                ]
             )
 
     def test_modeled_termination_and_root_callback_buffers_are_emitted(self) -> None:
@@ -600,7 +833,9 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             root = Path(temporary)
             interpreter, engine = _packages(root, [_undefined_transfer()])
             slot = _attach_definedness_metadata(
-                interpreter, classification="unknown"
+                interpreter,
+                classification="unknown",
+                include_defined_value=True,
             )
             write_stage_b_native_runtime_package(
                 interpreter_package=interpreter,
@@ -689,13 +924,17 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             invoke = interpreter_source.split(
                 "stage_b_call_status stage_b_invoke_call", 1
             )[1]
-            self.assertLess(invoke.index("resolve_code_target"), invoke.index(
-                "return stage_b_run_function(rt,target,in,out)"
-            ))
+            resolve_index = invoke.index("resolve_code_target")
+            indirect_invoke_index = invoke.index(
+                "return stage_b_invoke_internal_call(", resolve_index
+            )
+            self.assertLess(resolve_index, indirect_invoke_index)
             self.assertLess(
-                invoke.index("return stage_b_run_function(rt,target,in,out)"),
+                indirect_invoke_index,
                 invoke.index("return stage_b_dispatch_external_call"),
             )
+            self.assertIn("call_input.esp -= 4U;", interpreter_source)
+            self.assertIn("event->return_rva, &memory_fault", interpreter_source)
             runtime_source = (runtime / "native-runtime.c").read_text(encoding="ascii")
             engine_source = (engine / "native-engine-wrapper.c").read_text(
                 encoding="ascii"
@@ -706,6 +945,10 @@ class StageBNativeRuntimeTests(unittest.TestCase):
                 runtime_source,
             )
             self.assertIn("stage_b_native_runtime_run_at_rva(", engine_source)
+            self.assertIn("stage_b_native_read_allowed", runtime_source)
+            self.assertIn("context->headers_size = headers_size;", runtime_source)
+            self.assertIn("STAGE_B_NATIVE_TEB_READ_BYTES 0x1000U", runtime_source)
+            self.assertIn("address >= context->owner_fs_base", runtime_source)
             self.assertNotIn("static stage_b_runtime", engine_source)
             self.assertNotIn(".resolve_code_target = 0", engine_source)
 
@@ -820,12 +1063,12 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             self.assertIn("shr ecx, 11", bridge_source)
             self.assertIn("imul ecx, ecx, 10", bridge_source)
             self.assertIn(
-                "extern stage_b_call_status stage_b_native_replay_checked_x87_command",
+                "extern stage_b_call_status stage_b_native_execute_typed_x87_operation",
                 runtime_source,
             )
             self.assertIn(
-                ".replay_checked_x87_command = "
-                "stage_b_native_replay_checked_x87_command",
+                ".execute_typed_x87_operation = "
+                "stage_b_native_execute_typed_x87_operation",
                 runtime_source,
             )
 
@@ -872,7 +1115,7 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             ).stdout
             self.assertRegex(
                 runtime_object_symbols,
-                r"(?m)^\s+U _stage_b_native_replay_checked_x87_command$",
+                r"(?m)^\s+U _stage_b_native_execute_typed_x87_operation$",
             )
             payload = root / "x87-runtime.exe"
             subprocess.run(
@@ -899,7 +1142,7 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             ).stdout
             self.assertEqual(
                 len(re.findall(
-                    r"(?m)^\S+ T _stage_b_native_replay_checked_x87_command$",
+                    r"(?m)^\S+ T _stage_b_native_execute_typed_x87_operation$",
                     symbols,
                 )),
                 1,
@@ -910,6 +1153,32 @@ class StageBNativeRuntimeTests(unittest.TestCase):
                 )),
                 1,
             )
+
+    def test_typed_x87_inventory_rejects_reintroduced_instruction_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            interpreter, engine = _packages(root, [_qualified_x87_transfer()])
+            plan_path = engine / "native-engine-plan.json"
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            plan["x87_operations"][0]["instruction_bytes"] = "d9e8"
+            plan_path.write_text(
+                json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            manifest_path = engine / "native-engine-package.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["plan"]["sha256"] = sha256_file(plan_path)
+            manifest_path.write_text(
+                json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                StageBNativeRuntimeError, "forbidden instruction payload"
+            ):
+                plan_stage_b_native_runtime(
+                    interpreter_package=interpreter,
+                    native_engine_package=engine,
+                )
 
     @unittest.skipUnless(
         shutil.which("i686-w64-mingw32-gcc"),

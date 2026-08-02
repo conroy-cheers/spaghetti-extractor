@@ -22,7 +22,10 @@ from spaghetti_extractor.stage_b_interpreter_native_build import (
     INTERPRETER_NATIVE_BUILD_FORMAT,
     INTERPRETER_NATIVE_BUILD_MANIFEST_FILENAME,
     StageBInterpreterNativeBuildError,
+    assemble_stage_b_interpreter_native_objects,
     build_stage_b_interpreter_native_candidate,
+    compile_stage_b_interpreter_native_object,
+    prepare_stage_b_interpreter_native_object_graph,
 )
 from spaghetti_extractor.stage_b_native_engine import (
     write_stage_b_native_engine_package,
@@ -191,6 +194,34 @@ class StageBInterpreterNativeBuildIntegrationTests(unittest.TestCase):
                 load_image_contract=packages.contract,
                 out_dir=root / "candidate-repeated",
             )
+            graph_dir = root / "object-graph"
+            graph = prepare_stage_b_interpreter_native_object_graph(
+                interpreter_package=packages.interpreter,
+                native_engine_package=packages.engine,
+                native_runtime_package=packages.runtime,
+                out_dir=graph_dir,
+            )
+            object_packages = []
+            for unit in graph["units"]:
+                object_dir = root / "cached-objects" / unit["id"]
+                compile_stage_b_interpreter_native_object(
+                    graph=graph_dir, unit_id=unit["id"], out_dir=object_dir
+                )
+                object_packages.append(object_dir)
+            object_package = root / "object-package"
+            assemble_stage_b_interpreter_native_objects(
+                graph=graph_dir,
+                object_packages=object_packages,
+                out_dir=object_package,
+            )
+            cached = build_stage_b_interpreter_native_candidate(
+                interpreter_package=packages.interpreter,
+                native_engine_package=packages.engine,
+                native_runtime_package=packages.runtime,
+                load_image_contract=packages.contract,
+                precompiled_objects=object_package,
+                out_dir=root / "candidate-cached",
+            )
 
             output = root / "candidate"
             repeated_output = root / "candidate-repeated"
@@ -202,6 +233,14 @@ class StageBInterpreterNativeBuildIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 (output / "payload.map").read_bytes(),
                 (repeated_output / "payload.map").read_bytes(),
+            )
+            self.assertEqual(
+                (output / "candidate.exe").read_bytes(),
+                (root / "candidate-cached" / "candidate.exe").read_bytes(),
+            )
+            self.assertEqual(
+                cached["policy"]["object_compilation"],
+                "content-addressed-per-source",
             )
             self.assertEqual(manifest["format"], INTERPRETER_NATIVE_BUILD_FORMAT)
             self.assertEqual(manifest["status"], "candidate-generated")
@@ -249,6 +288,26 @@ class StageBInterpreterNativeBuildIntegrationTests(unittest.TestCase):
                     (int(directory.VirtualAddress), int(directory.Size)), (0, 0)
                 )
             payload.close()
+
+            cached_manifest = json.loads(
+                (object_package / "native-object-package.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            cached_object = object_package / cached_manifest["objects"][0]["path"]
+            cached_object.write_bytes(cached_object.read_bytes() + b"\x00")
+            with self.assertRaisesRegex(
+                StageBInterpreterNativeBuildError,
+                "native object package artifact is stale",
+            ):
+                build_stage_b_interpreter_native_candidate(
+                    interpreter_package=packages.interpreter,
+                    native_engine_package=packages.engine,
+                    native_runtime_package=packages.runtime,
+                    load_image_contract=packages.contract,
+                    precompiled_objects=object_package,
+                    out_dir=root / "candidate-tampered-cache",
+                )
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from typing import Any
 
 import pefile
 
+from .artifact_formats import SEMANTIC_CLAIM_CHECK_FORMAT
 from .isa_conformance import (
     ReportQualification,
     parse_isa_conformance_corpus,
@@ -46,6 +47,32 @@ from .relational.cache_qualification import diff_semantic_invalidation
 from .relational.interfaces import stage_a_export_interface_manifest
 from .roundtrip_fuzz.phase0 import generate_phase0_corpus
 from .roundtrip_fuzz.image_contract import load_stage_a_load_image_contract
+from .opaque_reconstruction import stage_a_export_opaque_reconstruction
+from .reconstruction_ir import export_machine_ir_package
+from .reconstruction_validation import check_semantic_claim
+from .reconstruction_assurance import (
+    write_assurance_report,
+    write_reconstruction_qualification,
+)
+from .reconstruction_workspace import (
+    build_reconstruction_regional_kernel,
+    check_reconstruction_workspace,
+    create_reconstruction_workspace,
+    promote_reconstruction_workspaces,
+    rebind_reconstruction_workspace,
+    run_reconstruction_workspace_check,
+    write_reconstruction_plan,
+    write_reconstruction_status,
+)
+from .component_workspace import (
+    create_component_slice_package,
+    create_component_workspace,
+    promote_qualified_components,
+    qualify_component,
+    rebind_component_workspace,
+    run_component_source_check,
+)
+from .semantic_components import write_semantic_component_catalog
 from .roundtrip_fuzz.generator import SPIKE_CASES, generate_spike_corpus
 from .roundtrip_fuzz.discovery import (
     compare_discovery_proposals,
@@ -85,7 +112,9 @@ from .stage_b import (
 )
 from .stage_b_functional import (
     StageBFunctionalInputError,
+    stage_b_aggregate_functional_cases,
     stage_b_materialize_upstream_suite,
+    stage_b_run_functional_case,
     stage_b_run_functional_suite,
 )
 from .stage_b_provenance import StageBProvenanceInputError, stage_b_generate_candidate_provenance
@@ -102,7 +131,10 @@ from .native_source_equivalence import (
 )
 from .stage_b_interpreter_backend import write_stage_b_interpreter_package
 from .stage_b_interpreter_native_build import (
+    assemble_stage_b_interpreter_native_objects,
     build_stage_b_interpreter_native_candidate,
+    compile_stage_b_interpreter_native_object,
+    prepare_stage_b_interpreter_native_object_graph,
 )
 from .stage_b_state_machine import (
     augment_state_machine_with_padding_bridges,
@@ -731,6 +763,333 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     contract.add_argument("--model", default=REFERENCE_CONTRACT_MODEL_ID)
     contract.set_defaults(func=_cmd_stage_a_export_reference_contract)
 
+    opaque_export = subcommands.add_parser(
+        "stage-a-export-opaque-reconstruction",
+        help=(
+            "emit map-blind semantic reconstruction inputs from a binary-only "
+            "cutpoint inventory"
+        ),
+    )
+    opaque_export.add_argument("--original", type=Path, required=True)
+    opaque_export.add_argument("--inventory", type=Path, required=True)
+    opaque_export.add_argument("--out", type=Path, required=True)
+    opaque_export.set_defaults(
+        func=lambda args: stage_a_export_opaque_reconstruction(
+            original=args.original,
+            inventory=args.inventory,
+            out=args.out,
+        )
+    )
+
+    machine_ir = subcommands.add_parser(
+        "stage-a-export-machine-ir",
+        help="sanitize a statically bound semantic state machine into byte-free IR",
+    )
+    machine_ir.add_argument("--state-machine", type=Path, required=True)
+    machine_ir.add_argument("--original", type=Path, required=True)
+    machine_ir.add_argument("--reference-contract", type=Path)
+    machine_ir.add_argument("--indirect-target-profile", type=Path)
+    machine_ir.add_argument("--out", type=Path, required=True)
+    machine_ir.set_defaults(func=_cmd_stage_a_export_machine_ir)
+
+    qualification = subcommands.add_parser(
+        "stage-a-qualify-reconstruction",
+        help="reconcile static high-assurance reconstruction evidence",
+    )
+    qualification.add_argument("--machine-ir", type=Path, required=True)
+    qualification.add_argument("--isa-evidence", type=Path, required=True)
+    qualification.add_argument("--lowering-evidence", type=Path, required=True)
+    qualification.add_argument("--external-protocol", type=Path, required=True)
+    qualification.add_argument("--source-binding", type=Path, required=True)
+    qualification.add_argument("--build-binding", type=Path, required=True)
+    qualification.add_argument("--trust-assumptions", type=Path, required=True)
+    qualification.add_argument("--out", type=Path, required=True)
+    qualification.set_defaults(func=_cmd_stage_a_qualify_reconstruction)
+
+    assurance = subcommands.add_parser(
+        "stage-a-build-assurance-report",
+        help="aggregate candidate-only high-assurance reconstruction evidence",
+    )
+    assurance.add_argument("--qualification", type=Path, required=True)
+    assurance.add_argument("--mutation-results", type=Path, required=True)
+    assurance.add_argument("--functional-results", type=Path, required=True)
+    assurance.add_argument("--regional-replacements", type=Path, required=True)
+    assurance.add_argument("--cache-evidence", type=Path, required=True)
+    assurance.add_argument("--timing-evidence", type=Path, required=True)
+    assurance.add_argument("--trust-assumptions", type=Path)
+    assurance.add_argument("--out", type=Path, required=True)
+    assurance.set_defaults(func=_cmd_stage_a_build_assurance_report)
+
+    reconstruction_plan = subcommands.add_parser(
+        "stage-b-plan-reconstruction",
+        help="rank content-bound typed-C reconstruction clusters from machine IR",
+    )
+    reconstruction_plan.add_argument("--machine-ir", type=Path, required=True)
+    reconstruction_plan.add_argument(
+        "--signature-catalog",
+        type=Path,
+        help="machine-import profile graph used to type external call boundaries",
+    )
+    reconstruction_plan.add_argument("--out", type=Path, required=True)
+    reconstruction_plan.set_defaults(func=_cmd_stage_b_plan_reconstruction)
+
+    semantic_components = subcommands.add_parser(
+        "stage-b-validate-components",
+        help=(
+            "validate operator-defined semantic components against machine IR "
+            "without generating implementations"
+        ),
+    )
+    semantic_components.add_argument("--machine-ir", type=Path, required=True)
+    semantic_components.add_argument(
+        "--reconstruction-plan", type=Path, required=True
+    )
+    semantic_components.add_argument("--declarations", type=Path, required=True)
+    semantic_components.add_argument("--out", type=Path, required=True)
+    semantic_components.set_defaults(func=_cmd_stage_b_validate_components)
+
+    semantic_claim = subcommands.add_parser(
+        "stage-b-check-semantic-claim",
+        help=(
+            "prove or refute an explicit normalized straight-line lifting claim; "
+            "this does not claim equivalence of arbitrary C text"
+        ),
+    )
+    semantic_claim.add_argument("--reference", type=Path, required=True)
+    semantic_claim.add_argument("--proposed", type=Path, required=True)
+    semantic_claim.add_argument("--input-widths", type=Path)
+    semantic_claim.add_argument("--out", type=Path, required=True)
+    semantic_claim.set_defaults(func=_cmd_stage_b_check_semantic_claim)
+
+    component_create = subcommands.add_parser(
+        "stage-b-create-component-workspace",
+        help="create an editable portable-C workspace bound to a semantic component",
+    )
+    component_create.add_argument("--catalog", type=Path)
+    component_create.add_argument("--plan", type=Path)
+    component_create.add_argument("--machine-ir", type=Path)
+    component_create.add_argument(
+        "--component-slice",
+        type=Path,
+        help="pre-reduced immutable slice; mutually exclusive with the full inputs",
+    )
+    component_create.add_argument("--interpreter-package", type=Path, required=True)
+    component_create.add_argument("--component-id", required=True)
+    component_create.add_argument("--proof-profile", required=True)
+    component_create.add_argument("--out-dir", type=Path, required=True)
+    component_create.set_defaults(
+        func=lambda args: create_component_workspace(
+            catalog=args.catalog,
+            plan=args.plan,
+            machine_ir=args.machine_ir,
+            interpreter_package=args.interpreter_package,
+            component_id=args.component_id,
+            proof_profile=args.proof_profile,
+            out_dir=args.out_dir,
+            component_slice=args.component_slice,
+        )
+    )
+
+    component_slices = subcommands.add_parser(
+        "stage-b-create-component-slices",
+        help="reduce immutable Stage B inputs to hash-bound per-component slices",
+    )
+    component_slices.add_argument("--catalog", type=Path, required=True)
+    component_slices.add_argument("--plan", type=Path, required=True)
+    component_slices.add_argument("--machine-ir", type=Path, required=True)
+    component_slices.add_argument("--component-id", action="append", required=True)
+    component_slices.add_argument("--out-dir", type=Path, required=True)
+    component_slices.set_defaults(
+        func=lambda args: create_component_slice_package(
+            catalog=args.catalog,
+            plan=args.plan,
+            machine_ir=args.machine_ir,
+            component_ids=args.component_id,
+            out_dir=args.out_dir,
+        )
+    )
+
+    regional_kernel = subcommands.add_parser(
+        "stage-b-build-regional-kernel",
+        help="precompile the immutable interpreter kernel used by component checks",
+    )
+    regional_kernel.add_argument("--interpreter-package", type=Path, required=True)
+    regional_kernel.add_argument("--compiler", default="cc")
+    regional_kernel.add_argument("--out-dir", type=Path, required=True)
+    regional_kernel.set_defaults(
+        func=lambda args: build_reconstruction_regional_kernel(
+            interpreter_package=args.interpreter_package,
+            compiler=args.compiler,
+            out_dir=args.out_dir,
+        )
+    )
+
+    component_rebind = subcommands.add_parser(
+        "stage-b-rebind-component-workspace",
+        help="refresh component source and refinement bindings after an edit",
+    )
+    component_rebind.add_argument("--workspace", type=Path, required=True)
+    component_rebind.set_defaults(
+        func=lambda args: rebind_component_workspace(workspace=args.workspace)
+    )
+
+    component_check = subcommands.add_parser(
+        "stage-b-check-component",
+        help="check editable component C with CBMC without executing the original binary",
+    )
+    component_check.add_argument("--workspace", type=Path, required=True)
+    component_check.add_argument("--cbmc", default="cbmc")
+    component_check.add_argument("--timeout-seconds", type=int, default=120)
+    component_check.add_argument("--out", type=Path, required=True)
+    component_check.set_defaults(
+        func=lambda args: run_component_source_check(
+            workspace=args.workspace,
+            cbmc=args.cbmc,
+            timeout_seconds=args.timeout_seconds,
+            out=args.out,
+        )
+    )
+
+    component_qualify = subcommands.add_parser(
+        "stage-b-qualify-component",
+        help="authorize a component only when source, adapter, and integration evidence close",
+    )
+    component_qualify.add_argument("--workspace", type=Path, required=True)
+    component_qualify.add_argument("--source-evidence", type=Path, required=True)
+    component_qualify.add_argument("--out", type=Path, required=True)
+    component_qualify.set_defaults(
+        func=lambda args: qualify_component(
+            workspace=args.workspace,
+            source_evidence=args.source_evidence,
+            out=args.out,
+        )
+    )
+
+    component_promote = subcommands.add_parser(
+        "stage-b-promote-components",
+        help="lower qualified components into the existing hybrid override backend",
+    )
+    component_promote.add_argument("--workspace", type=Path, action="append", required=True)
+    component_promote.add_argument("--qualification", type=Path, action="append", required=True)
+    component_promote.add_argument("--out-dir", type=Path, required=True)
+    component_promote.set_defaults(
+        func=lambda args: promote_qualified_components(
+            workspaces=args.workspace,
+            qualifications=args.qualification,
+            out_dir=args.out_dir,
+        )
+    )
+
+    reconstruction_create = subcommands.add_parser(
+        "stage-b-create-replacement",
+        help="create an editable typed-C workspace for one planned cluster",
+    )
+    reconstruction_create.add_argument("--plan", type=Path, required=True)
+    reconstruction_create.add_argument("--machine-ir", type=Path, required=True)
+    reconstruction_create.add_argument(
+        "--interpreter-package", type=Path, required=True
+    )
+    reconstruction_selector = reconstruction_create.add_mutually_exclusive_group(
+        required=True
+    )
+    reconstruction_selector.add_argument("--cluster-id")
+    reconstruction_selector.add_argument("--entry-rva", type=_auto_int)
+    reconstruction_create.add_argument("--out-dir", type=Path, required=True)
+    reconstruction_create.set_defaults(
+        func=lambda args: create_reconstruction_workspace(
+            plan=args.plan,
+            machine_ir=args.machine_ir,
+            interpreter_package=args.interpreter_package,
+            cluster_id=args.cluster_id,
+            entry_rva=args.entry_rva,
+            out_dir=args.out_dir,
+        )
+    )
+
+    reconstruction_rebind = subcommands.add_parser(
+        "stage-b-rebind-replacement",
+        help="refresh a replacement manifest after an intentional source edit",
+    )
+    reconstruction_rebind.add_argument("--workspace", type=Path, required=True)
+    reconstruction_rebind.set_defaults(
+        func=lambda args: rebind_reconstruction_workspace(
+            workspace=args.workspace
+        ).to_payload()
+    )
+
+    reconstruction_check = subcommands.add_parser(
+        "stage-b-check-replacement",
+        help="compare candidate-only baseline and replacement observations",
+    )
+    reconstruction_check.add_argument("--workspace", type=Path, required=True)
+    reconstruction_check.add_argument(
+        "--baseline-observations", type=Path, required=True
+    )
+    reconstruction_check.add_argument(
+        "--replacement-observations", type=Path, required=True
+    )
+    reconstruction_check.add_argument("--out", type=Path)
+    reconstruction_check.set_defaults(
+        func=lambda args: check_reconstruction_workspace(
+            workspace=args.workspace,
+            baseline_observations=args.baseline_observations,
+            replacement_observations=args.replacement_observations,
+            out=args.out,
+        )
+    )
+
+    reconstruction_run = subcommands.add_parser(
+        "stage-b-run-replacement-check",
+        help="compile and run candidate-only regional baseline/replacement cases",
+    )
+    reconstruction_run.add_argument("--workspace", type=Path, required=True)
+    reconstruction_run.add_argument(
+        "--interpreter-package", type=Path, required=True
+    )
+    reconstruction_run.add_argument("--compiler", default="cc")
+    reconstruction_run.add_argument(
+        "--regional-kernel",
+        type=Path,
+        help="precompiled interpreter kernel bound to this package and compiler",
+    )
+    reconstruction_run.add_argument("--out-dir", type=Path, required=True)
+    reconstruction_run.set_defaults(
+        func=lambda args: run_reconstruction_workspace_check(
+            workspace=args.workspace,
+            interpreter_package=args.interpreter_package,
+            compiler=args.compiler,
+            out_dir=args.out_dir,
+            regional_kernel=args.regional_kernel,
+        )
+    )
+
+    reconstruction_promote = subcommands.add_parser(
+        "stage-b-promote-replacements",
+        help="combine qualified replacement workspaces into an override package",
+    )
+    reconstruction_promote.add_argument(
+        "--workspace", type=Path, action="append", required=True
+    )
+    reconstruction_promote.add_argument("--out-dir", type=Path, required=True)
+    reconstruction_promote.set_defaults(
+        func=lambda args: promote_reconstruction_workspaces(
+            workspaces=args.workspace, out_dir=args.out_dir
+        )
+    )
+
+    reconstruction_status = subcommands.add_parser(
+        "stage-b-reconstruction-status",
+        help="report source-lifting coverage independently of proof status",
+    )
+    reconstruction_status.add_argument("--plan", type=Path, required=True)
+    reconstruction_status.add_argument("--registry", type=Path)
+    reconstruction_status.add_argument("--out", type=Path, required=True)
+    reconstruction_status.set_defaults(
+        func=lambda args: write_reconstruction_status(
+            plan=args.plan, registry=args.registry, out=args.out
+        )
+    )
+
     smoke = subcommands.add_parser("stage-a-smoke-contract", help="run the cheap Stage A contract sanity gate")
     smoke.add_argument("--reference-contract", type=Path, required=True)
     smoke.add_argument("--out", type=Path)
@@ -969,11 +1328,14 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         "stage-b-generate-interpreter",
         help="generate the stable semantic-IR interpreter and immutable program data",
     )
-    interpreter.add_argument("--state-machine", type=Path, required=True)
+    interpreter_input = interpreter.add_mutually_exclusive_group(required=True)
+    interpreter_input.add_argument("--state-machine", type=Path)
+    interpreter_input.add_argument("--machine-ir", type=Path)
     interpreter.add_argument("--out-dir", type=Path, required=True)
     interpreter.set_defaults(
         func=lambda args: write_stage_b_interpreter_package(
             state_machine=args.state_machine,
+            machine_ir=args.machine_ir,
             out=args.out_dir,
         )
     )
@@ -982,7 +1344,9 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         "stage-b-generate-native-engine",
         help="generate the hash-bound PE32 bridge for a semantic interpreter",
     )
-    native_engine.add_argument("--state-machine", type=Path, required=True)
+    native_engine_input = native_engine.add_mutually_exclusive_group(required=True)
+    native_engine_input.add_argument("--state-machine", type=Path)
+    native_engine_input.add_argument("--machine-ir", type=Path)
     native_engine.add_argument("--entry-rva", type=_auto_int, required=True)
     native_engine.add_argument(
         "--load-image-contract",
@@ -995,6 +1359,7 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         help="bind relocation evidence to the exact Stage A reference contract",
     )
     native_engine.add_argument("--callback-rva", type=_auto_int, action="append", default=[])
+    native_engine.add_argument("--callable-external-contract", type=Path)
     native_engine.add_argument("--out-dir", type=Path, required=True)
     native_engine.set_defaults(
         func=_cmd_stage_b_generate_native_engine
@@ -1006,12 +1371,73 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     )
     native_runtime.add_argument("--interpreter-package", type=Path, required=True)
     native_runtime.add_argument("--native-engine-package", type=Path, required=True)
+    native_runtime.add_argument("--external-profile", type=Path)
+    native_runtime.add_argument("--callable-external-contract", type=Path)
     native_runtime.add_argument("--out-dir", type=Path, required=True)
     native_runtime.set_defaults(
         func=lambda args: write_stage_b_native_runtime_package(
             interpreter_package=args.interpreter_package,
             native_engine_package=args.native_engine_package,
+            external_profile=args.external_profile,
+            callable_external_contract=args.callable_external_contract,
             out=args.out_dir,
+        )
+    )
+
+    native_object_graph = subcommands.add_parser(
+        "stage-b-prepare-interpreter-native-objects",
+        help="prepare the deterministic per-source native candidate compile graph",
+    )
+    native_object_graph.add_argument("--interpreter-package", type=Path, required=True)
+    native_object_graph.add_argument("--native-engine-package", type=Path, required=True)
+    native_object_graph.add_argument("--native-runtime-package", type=Path, required=True)
+    native_object_graph.add_argument("--region-override-package", type=Path)
+    native_object_graph.add_argument("--compiler", default="i686-w64-mingw32-gcc")
+    native_object_graph.add_argument("--entry-symbol", default="stage_b_payload_entry")
+    native_object_graph.add_argument("--diagnostic-failure-trap", action="store_true")
+    native_object_graph.add_argument("--out-dir", type=Path, required=True)
+    native_object_graph.set_defaults(
+        func=lambda args: prepare_stage_b_interpreter_native_object_graph(
+            interpreter_package=args.interpreter_package,
+            native_engine_package=args.native_engine_package,
+            native_runtime_package=args.native_runtime_package,
+            region_override_package=args.region_override_package,
+            compiler=args.compiler,
+            entry_symbol=args.entry_symbol,
+            diagnostic_failure_trap=args.diagnostic_failure_trap,
+            out_dir=args.out_dir,
+        )
+    )
+
+    native_object = subcommands.add_parser(
+        "stage-b-compile-interpreter-native-object",
+        help="compile one content-bound unit from a prepared native object graph",
+    )
+    native_object.add_argument("--graph", type=Path, required=True)
+    native_object.add_argument("--unit-id", required=True)
+    native_object.add_argument("--out-dir", type=Path, required=True)
+    native_object.set_defaults(
+        func=lambda args: compile_stage_b_interpreter_native_object(
+            graph=args.graph,
+            unit_id=args.unit_id,
+            out_dir=args.out_dir,
+        )
+    )
+
+    native_objects = subcommands.add_parser(
+        "stage-b-assemble-interpreter-native-objects",
+        help="assemble complete checked native object shards without recompiling them",
+    )
+    native_objects.add_argument("--graph", type=Path, required=True)
+    native_objects.add_argument(
+        "--object-package", type=Path, action="append", required=True
+    )
+    native_objects.add_argument("--out-dir", type=Path, required=True)
+    native_objects.set_defaults(
+        func=lambda args: assemble_stage_b_interpreter_native_objects(
+            graph=args.graph,
+            object_packages=args.object_package,
+            out_dir=args.out_dir,
         )
     )
 
@@ -1022,6 +1448,11 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     interpreter_candidate.add_argument("--interpreter-package", type=Path, required=True)
     interpreter_candidate.add_argument("--native-engine-package", type=Path, required=True)
     interpreter_candidate.add_argument("--native-runtime-package", type=Path, required=True)
+    interpreter_candidate.add_argument(
+        "--region-override-package",
+        type=Path,
+        help="optional content-bound regional replacement package",
+    )
     interpreter_candidate.add_argument("--load-image-contract", type=Path, required=True)
     interpreter_candidate.add_argument(
         "--anchor-manifest",
@@ -1031,17 +1462,26 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     interpreter_candidate.add_argument("--compiler", default="i686-w64-mingw32-gcc")
     interpreter_candidate.add_argument("--entry-symbol", default="stage_b_payload_entry")
     interpreter_candidate.add_argument("--payload-rva", type=_auto_int)
+    interpreter_candidate.add_argument("--diagnostic-failure-trap", action="store_true")
+    interpreter_candidate.add_argument(
+        "--precompiled-objects",
+        type=Path,
+        help="complete object package emitted by the native object graph",
+    )
     interpreter_candidate.add_argument("--out-dir", type=Path, required=True)
     interpreter_candidate.set_defaults(
         func=lambda args: build_stage_b_interpreter_native_candidate(
             interpreter_package=args.interpreter_package,
             native_engine_package=args.native_engine_package,
             native_runtime_package=args.native_runtime_package,
+            region_override_package=args.region_override_package,
             load_image_contract=args.load_image_contract,
             anchor_manifest=args.anchor_manifest,
             compiler=args.compiler,
             entry_symbol=args.entry_symbol,
             payload_rva=args.payload_rva,
+            diagnostic_failure_trap=args.diagnostic_failure_trap,
+            precompiled_objects=args.precompiled_objects,
             out_dir=args.out_dir,
         )
     )
@@ -1106,6 +1546,34 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     functional.add_argument("--strip-stderr-line-regex", action="append", default=[])
     functional.add_argument("candidate_command", nargs=argparse.REMAINDER)
     functional.set_defaults(func=_cmd_stage_b_run_functional_suite)
+
+    functional_case = subcommands.add_parser(
+        "stage-b-run-functional-case",
+        help="run one candidate-only expected-output case as a cacheable shard",
+    )
+    functional_case.add_argument("--suite", type=Path, required=True)
+    functional_case.add_argument("--case-id", required=True)
+    functional_case.add_argument("--out", type=Path, required=True)
+    functional_case.add_argument("--candidate-binary", type=Path)
+    functional_case.add_argument("--timeout-seconds", type=float, default=30.0)
+    functional_case.add_argument("--strip-stderr-line-regex", action="append", default=[])
+    functional_case.add_argument("candidate_command", nargs=argparse.REMAINDER)
+    functional_case.set_defaults(func=_cmd_stage_b_run_functional_case)
+
+    functional_aggregate = subcommands.add_parser(
+        "stage-b-aggregate-functional-cases",
+        help="validate and aggregate independently cached functional-case reports",
+    )
+    functional_aggregate.add_argument("--suite", type=Path, required=True)
+    functional_aggregate.add_argument("--case-report", type=Path, action="append", required=True)
+    functional_aggregate.add_argument("--out", type=Path, required=True)
+    functional_aggregate.set_defaults(
+        func=lambda args: stage_b_aggregate_functional_cases(
+            suite=args.suite,
+            case_reports=args.case_report,
+            out=args.out,
+        )
+    )
 
     crash = subcommands.add_parser("stage-b-extract-candidate-crash", help="summarize a candidate-only Wine crash from functional output")
     crash.add_argument("--functional-report", type=Path, required=True)
@@ -1540,12 +2008,151 @@ def _cmd_stage_a_export_reference_contract(args: Any) -> dict[str, Any]:
 def _cmd_stage_b_check_contract(args: Any) -> dict[str, Any]:
     return stage_b_check_contract(
         reference_contract=args.reference_contract,
+        indirect_target_profile=args.indirect_target_profile,
         candidate=args.candidate,
         linker_map_candidate=args.linker_map_candidate,
         out=args.out,
         model=args.model,
         skeleton_manifest=args.skeleton_manifest,
     )
+
+
+def _cmd_stage_a_export_machine_ir(args: Any) -> dict[str, Any]:
+    package = export_machine_ir_package(
+        state_machine=args.state_machine,
+        original_pe=args.original,
+        reference_contract=args.reference_contract,
+        indirect_target_profile=args.indirect_target_profile,
+        out=args.out,
+    )
+    return {
+        "format": "stage-a-machine-ir-export-result-v1",
+        "status": package.status,
+        "units": package.unit_count,
+        "issues": package.issue_count,
+        "manifest": str(package.manifest),
+        "machine_ir": str(package.machine_ir),
+    }
+
+
+def _cmd_stage_b_check_semantic_claim(args: Any) -> dict[str, Any]:
+    widths = (
+        None
+        if args.input_widths is None
+        else _json_file(args.input_widths, "semantic claim input widths")
+    )
+    if widths is not None and not isinstance(widths, dict):
+        raise ValueError("semantic claim input widths must be a JSON object")
+    result = check_semantic_claim(
+        _json_file(args.reference, "reference semantic claim"),
+        _json_file(args.proposed, "proposed semantic claim"),
+        input_widths=widths,
+    )
+    payload = {
+        "format": SEMANTIC_CLAIM_CHECK_FORMAT,
+        **result.to_payload(),
+    }
+    write_json(args.out, payload)
+    return payload
+
+
+def _cmd_stage_b_plan_reconstruction(args: Any) -> dict[str, Any]:
+    payload = write_reconstruction_plan(
+        machine_ir=args.machine_ir,
+        signature_catalog=args.signature_catalog,
+        out=args.out,
+    )
+    return {
+        "format": payload["format"],
+        "status": payload["status"],
+        "out": str(args.out),
+        "plan_sha256": payload["plan_sha256"],
+        "counts": payload["counts"],
+        "control_analysis": {
+            "status": payload["control_analysis"].get("status"),
+            "reachability_status": payload["control_analysis"].get(
+                "reachability_status"
+            ),
+            "exact_reachable_units": payload["control_analysis"].get(
+                "exact_reachable_units"
+            ),
+            "potential_units": payload["control_analysis"].get("potential_units"),
+            "unresolved_frontiers": len(
+                payload["control_analysis"].get("frontiers", [])
+            ),
+        },
+    }
+
+
+def _cmd_stage_b_validate_components(args: Any) -> dict[str, Any]:
+    payload = write_semantic_component_catalog(
+        machine_ir=args.machine_ir,
+        reconstruction_plan=args.reconstruction_plan,
+        declarations=args.declarations,
+        out=args.out,
+    )
+    return {
+        "format": "stage-b-semantic-component-validation-result-v1",
+        "status": (
+            "checked" if payload["definition_status"] == "valid" else "violated"
+        ),
+        "catalog_status": payload["status"],
+        "definition_status": payload["definition_status"],
+        "assurance_status": payload["assurance_status"],
+        "out": str(args.out),
+        "catalog_sha256": payload["catalog_sha256"],
+        "counts": payload["counts"],
+    }
+
+
+def _cmd_stage_a_qualify_reconstruction(args: Any) -> dict[str, Any]:
+    assumptions = _json_file(args.trust_assumptions, "trust assumptions")
+    if not isinstance(assumptions, list):
+        raise ValueError("trust assumptions must be a JSON array")
+    payload = write_reconstruction_qualification(
+        args.out,
+        machine_ir=_json_file(args.machine_ir, "machine IR evidence"),
+        isa_evidence=_json_file(args.isa_evidence, "ISA evidence"),
+        lowering_evidence=_json_file(args.lowering_evidence, "lowering evidence"),
+        external_protocol=_json_file(args.external_protocol, "external protocol evidence"),
+        source_binding=_json_file(args.source_binding, "source binding"),
+        build_binding=_json_file(args.build_binding, "build binding"),
+        trust_assumptions=assumptions,
+    )
+    return {
+        "format": "stage-a-reconstruction-qualification-result-v1",
+        "status": payload["status"],
+        "out": str(args.out),
+        "content_sha256": payload["content_sha256"],
+        "counts": payload["counts"],
+    }
+
+
+def _cmd_stage_a_build_assurance_report(args: Any) -> dict[str, Any]:
+    assumptions = None
+    if args.trust_assumptions is not None:
+        assumptions = _json_file(args.trust_assumptions, "trust assumptions")
+        if not isinstance(assumptions, list):
+            raise ValueError("trust assumptions must be a JSON array")
+    payload = write_assurance_report(
+        args.out,
+        reconstruction_qualification=_json_file(args.qualification, "qualification"),
+        mutation_results=_json_file(args.mutation_results, "mutation results"),
+        functional_results=_json_file(args.functional_results, "functional results"),
+        regional_replacements=_json_file(
+            args.regional_replacements, "regional replacement results"
+        ),
+        cache_evidence=_json_file(args.cache_evidence, "cache evidence"),
+        timing_evidence=_json_file(args.timing_evidence, "timing evidence"),
+        trust_assumptions=assumptions,
+    )
+    return {
+        "format": "stage-a-assurance-report-result-v1",
+        "status": payload["status"],
+        "out": str(args.out),
+        "content_sha256": payload["content_sha256"],
+        "counts": payload["counts"],
+    }
 
 
 def _cmd_stage_b_audit_contract(args: Any) -> dict[str, Any]:
@@ -1865,11 +2472,7 @@ def _cmd_stage_b_materialize_upstream_suite(args: Any) -> dict[str, Any]:
 
 
 def _cmd_stage_b_run_functional_suite(args: Any) -> dict[str, Any]:
-    command = list(args.candidate_command or [])
-    if command and command[0] == "--":
-        command = command[1:]
-    if not command:
-        raise StageBFunctionalInputError("stage-b-run-functional-suite requires a candidate command after --")
+    command = _stage_b_candidate_command(args.candidate_command, "stage-b-run-functional-suite")
     return stage_b_run_functional_suite(
         suite=args.suite,
         candidate_command=tuple(command),
@@ -1878,6 +2481,30 @@ def _cmd_stage_b_run_functional_suite(args: Any) -> dict[str, Any]:
         candidate_binary=args.candidate_binary,
         strip_stderr_line_regexes=tuple(args.strip_stderr_line_regex),
     )
+
+
+def _cmd_stage_b_run_functional_case(args: Any) -> dict[str, Any]:
+    command = _stage_b_candidate_command(args.candidate_command, "stage-b-run-functional-case")
+    return stage_b_run_functional_case(
+        suite=args.suite,
+        case_id=args.case_id,
+        candidate_command=tuple(command),
+        out=args.out,
+        timeout_seconds=args.timeout_seconds,
+        candidate_binary=args.candidate_binary,
+        strip_stderr_line_regexes=tuple(args.strip_stderr_line_regex),
+    )
+
+
+def _stage_b_candidate_command(values: Any, command_name: str) -> list[str]:
+    command = list(values or [])
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        raise StageBFunctionalInputError(
+            f"{command_name} requires a candidate command after --"
+        )
+    return command
 
 
 def _cmd_stage_b_extract_candidate_crash(args: Any) -> dict[str, Any]:
@@ -2001,10 +2628,12 @@ def _cmd_stage_b_generate_native_engine(args: Any) -> dict[str, Any]:
         }
     return write_stage_b_native_engine_package(
         state_machine=args.state_machine,
+        machine_ir=args.machine_ir,
         entry_rva=args.entry_rva,
         callback_targets=callback_targets,
         import_iat_vas=import_iat_vas,
         base_relocation_evidence=base_relocation_evidence,
+        callable_external_contract=args.callable_external_contract,
         out=args.out_dir,
     )
 
@@ -2046,6 +2675,13 @@ def _json_object_arg(text: str | None, path: Path | None) -> dict[str, Any] | No
     if not isinstance(payload, dict):
         raise ValueError("proof metadata must be a JSON object")
     return payload
+
+
+def _json_file(path: Path, description: str) -> Any:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not read {description}: {exc}") from exc
 
 
 def _candidate_modules(values: list[str]) -> list[dict[str, Any]] | None:

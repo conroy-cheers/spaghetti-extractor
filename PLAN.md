@@ -1,5 +1,12 @@
 # Plan
 
+> **Status:** This file records the earlier strict whole-program-proof workflow
+> and remains useful for its existing command surface. It is not the primary
+> project completion plan. The current direction is
+> [docs/high-assurance-reimplementation-direction.md](docs/high-assurance-reimplementation-direction.md),
+> which uses formal proof selectively inside an auditable assurance case and
+> does not require a final end-to-end theorem.
+
 ## Goal
 
 Produce a fully verified jq reimplementation by repeatedly converting the

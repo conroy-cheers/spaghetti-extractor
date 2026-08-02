@@ -10,15 +10,21 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import struct
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from . import stage_b_native_build as native_build
+from .artifact_formats import (
+    INTERPRETER_NATIVE_BUILD_FORMAT,
+    NATIVE_ENGINE_PACKAGE_FORMAT,
+)
 from .roundtrip_fuzz.image_contract import load_stage_a_load_image_contract
+from .region_replacement import REGION_OVERRIDE_TABLE_FORMAT
 from .stage_b_interpreter_backend import STAGE_B_INTERPRETER_PACKAGE_FORMAT
-from .stage_b_native_engine import NATIVE_ENGINE_PACKAGE_FORMAT
 from .stage_b_native_runtime import (
     NATIVE_RUNTIME_MANIFEST_FILENAME,
     NATIVE_RUNTIME_PACKAGE_FORMAT,
@@ -35,8 +41,9 @@ from .stage_b_pe_composer import (
 from .util import sha256_file
 
 
-INTERPRETER_NATIVE_BUILD_FORMAT = "stage-b-interpreter-native-build-v1"
 INTERPRETER_NATIVE_BUILD_MANIFEST_FILENAME = "interpreter-native-build-manifest.json"
+INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT = "stage-b-interpreter-native-object-graph-v1"
+INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT = "stage-b-interpreter-native-object-package-v1"
 
 _INTERPRETER_MANIFEST_FILENAME = "state-machine-interpreter-package.json"
 _ENGINE_MANIFEST_FILENAME = "native-engine-package.json"
@@ -89,20 +96,284 @@ class _Package:
         }
 
 
+def prepare_stage_b_interpreter_native_object_graph(
+    *,
+    interpreter_package: Path | str,
+    native_engine_package: Path | str,
+    native_runtime_package: Path | str,
+    out_dir: Path | str,
+    region_override_package: Path | str | None = None,
+    compiler: Path | str = "i686-w64-mingw32-gcc",
+    entry_symbol: str = "stage_b_payload_entry",
+    diagnostic_failure_trap: bool = False,
+) -> dict[str, Any]:
+    """Emit a deterministic per-source compile graph for Nix CA derivations."""
+
+    if _C_IDENTIFIER.fullmatch(entry_symbol) is None:
+        raise StageBInterpreterNativeBuildError(
+            "payload entry symbol is not a C identifier"
+        )
+    interpreter = _load_package(
+        interpreter_package,
+        filename=_INTERPRETER_MANIFEST_FILENAME,
+        owner="interpreter",
+        expected_format=STAGE_B_INTERPRETER_PACKAGE_FORMAT,
+        require_roles=True,
+    )
+    engine = _load_package(
+        native_engine_package,
+        filename=_ENGINE_MANIFEST_FILENAME,
+        owner="native_engine",
+        expected_format=NATIVE_ENGINE_PACKAGE_FORMAT,
+        require_roles=False,
+    )
+    runtime = _load_package(
+        native_runtime_package,
+        filename=NATIVE_RUNTIME_MANIFEST_FILENAME,
+        owner="native_runtime",
+        expected_format=NATIVE_RUNTIME_PACKAGE_FORMAT,
+        require_roles=True,
+    )
+    _validate_package_closure(interpreter, engine, runtime)
+    region_overrides = (
+        None
+        if region_override_package is None
+        else _load_region_override_package(region_override_package)
+    )
+    if region_overrides is not None:
+        _validate_region_override_closure(interpreter, region_overrides)
+    compile_units = _compile_units(
+        interpreter, engine, runtime, entry_symbol, region_overrides
+    )
+    toolchain = native_build._select_toolchain(compiler)
+    package_roots = (
+        interpreter.root,
+        engine.root,
+        runtime.root,
+        *((region_overrides.root,) if region_overrides is not None else ()),
+    )
+    output = Path(out_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    for index, artifact in enumerate(compile_units):
+        rows.append(
+            _native_object_graph_row(
+                index=index,
+                artifact=artifact,
+                package_roots=package_roots,
+                compiler=toolchain.compiler,
+                diagnostic_failure_trap=diagnostic_failure_trap,
+                region_overrides=region_overrides is not None,
+            )
+        )
+    relocation_source = output / "payload-relocation-anchor.S"
+    relocation_source.write_text(
+        native_build._relocation_anchor_source(entry_symbol), encoding="ascii"
+    )
+    relocation_artifact = _Artifact(
+        owner="generated",
+        role="payload_relocation_anchor",
+        relative_path=relocation_source.name,
+        sha256=sha256_file(relocation_source),
+        path=relocation_source,
+    )
+    rows.append(
+        _native_object_graph_row(
+            index=len(rows),
+            artifact=relocation_artifact,
+            package_roots=package_roots,
+            compiler=toolchain.compiler,
+            diagnostic_failure_trap=diagnostic_failure_trap,
+            region_overrides=region_overrides is not None,
+        )
+    )
+    core = {
+        "format": INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT,
+        "status": "ready",
+        "executes_original_binary": False,
+        "entry_symbol": entry_symbol,
+        "diagnostic_failure_trap": diagnostic_failure_trap,
+        "compiler": _native_compiler_binding(toolchain.compiler),
+        "packages": {
+            "interpreter": interpreter.binding(),
+            "native_engine": engine.binding(),
+            "native_runtime": runtime.binding(),
+            "region_overrides": (
+                None if region_overrides is None else region_overrides.binding()
+            ),
+        },
+        "units": rows,
+        "counts": {"compile_units": len(rows)},
+    }
+    payload = {**core, "graph_sha256": native_build._canonical_sha256(core)}
+    native_build._write_json(output / "native-object-graph.json", payload)
+    return payload
+
+
+def compile_stage_b_interpreter_native_object(
+    *, graph: Path | str, unit_id: str, out_dir: Path | str
+) -> dict[str, Any]:
+    """Compile exactly one graph unit and bind the object to its checked row."""
+
+    graph_path, graph_payload = _load_native_object_graph(graph)
+    matches = [row for row in graph_payload["units"] if row.get("id") == unit_id]
+    if len(matches) != 1:
+        raise StageBInterpreterNativeBuildError(
+            f"native object graph has {len(matches)} matches for {unit_id}"
+        )
+    row = matches[0]
+    source_value = Path(str(row["source"]["location"]))
+    source = _file(
+        graph_path.parent / source_value
+        if row["source"].get("location_base") == "graph"
+        else source_value,
+        "native object source",
+    )
+    if sha256_file(source) != row["source"]["sha256"]:
+        raise StageBInterpreterNativeBuildError("native object source binding is stale")
+    compiler = _file(row["compiler"]["path"], "native object compiler")
+    if _native_compiler_binding(compiler) != row["compiler"]:
+        raise StageBInterpreterNativeBuildError("native object compiler binding is stale")
+    output = Path(out_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    object_path = output / "object.o"
+    command = [str(compiler), *row["arguments"], "-o", str(object_path)]
+    try:
+        native_build._run(
+            command,
+            phase=f"compile cached {row['source']['owner']}:{row['source']['role']}",
+            env=native_build._deterministic_environment(),
+            cwd=graph_path.parent,
+        )
+    except native_build.StageBNativeBuildError as exc:
+        raise StageBInterpreterNativeBuildError(str(exc)) from exc
+    if not object_path.is_file():
+        raise StageBInterpreterNativeBuildError("compiler omitted cached native object")
+    core = {
+        "format": "stage-b-interpreter-native-object-v1",
+        "status": "compiled",
+        "executes_original_binary": False,
+        "graph_sha256": graph_payload["graph_sha256"],
+        "graph_artifact_sha256": sha256_file(graph_path),
+        "graph": {
+            "path": str(graph_path.parent),
+            "manifest": graph_path.name,
+            "manifest_sha256": sha256_file(graph_path),
+        },
+        "unit_id": unit_id,
+        "unit_sha256": row["unit_sha256"],
+        "object": {
+            "path": object_path.name,
+            "sha256": sha256_file(object_path),
+            "size": object_path.stat().st_size,
+        },
+    }
+    payload = {**core, "object_receipt_sha256": native_build._canonical_sha256(core)}
+    native_build._write_json(output / "native-object.json", payload)
+    return payload
+
+
+def assemble_stage_b_interpreter_native_objects(
+    *,
+    graph: Path | str,
+    object_packages: Sequence[Path | str],
+    out_dir: Path | str,
+) -> dict[str, Any]:
+    """Assemble a complete ordered object package without recompilation."""
+
+    graph_path, graph_payload = _load_native_object_graph(graph)
+    receipts: dict[str, tuple[Path, dict[str, Any]]] = {}
+    for value in object_packages:
+        root = Path(value)
+        receipt_path = root / "native-object.json" if root.is_dir() else root
+        receipt = _read_json_object(receipt_path, "native object receipt")
+        core = dict(receipt)
+        expected = core.pop("object_receipt_sha256", None)
+        if expected != native_build._canonical_sha256(core):
+            raise StageBInterpreterNativeBuildError("native object receipt self-hash is stale")
+        unit_id = str(receipt.get("unit_id"))
+        if unit_id in receipts:
+            raise StageBInterpreterNativeBuildError("duplicate native object receipt")
+        if (
+            receipt.get("graph_sha256") != graph_payload["graph_sha256"]
+            or receipt.get("graph_artifact_sha256") != sha256_file(graph_path)
+        ):
+            raise StageBInterpreterNativeBuildError("native object receipt graph binding is stale")
+        receipts[unit_id] = (receipt_path.parent, receipt)
+    expected_ids = [str(row["id"]) for row in graph_payload["units"]]
+    if set(receipts) != set(expected_ids):
+        raise StageBInterpreterNativeBuildError(
+            "native object receipts do not exactly cover the compile graph"
+        )
+    output = Path(out_dir)
+    objects_dir = output / "objects"
+    objects_dir.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    by_id = {str(row["id"]): row for row in graph_payload["units"]}
+    for index, unit_id in enumerate(expected_ids):
+        root, receipt = receipts[unit_id]
+        graph_row = by_id[unit_id]
+        if receipt.get("unit_sha256") != graph_row["unit_sha256"]:
+            raise StageBInterpreterNativeBuildError("native object unit binding is stale")
+        source = root / str(receipt["object"]["path"])
+        if not source.is_file() or sha256_file(source) != receipt["object"]["sha256"]:
+            raise StageBInterpreterNativeBuildError("native object artifact binding is stale")
+        target = objects_dir / f"{index:03d}.o"
+        shutil.copyfile(source, target)
+        rows.append(
+            {
+                "unit_id": unit_id,
+                "unit_sha256": graph_row["unit_sha256"],
+                "path": target.relative_to(output).as_posix(),
+                "sha256": sha256_file(target),
+                "size": target.stat().st_size,
+            }
+        )
+    core = {
+        "format": INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT,
+        "status": "complete",
+        "executes_original_binary": False,
+        "graph_sha256": graph_payload["graph_sha256"],
+        "graph_artifact_sha256": sha256_file(graph_path),
+        "graph": {
+            "path": str(graph_path.parent),
+            "manifest": graph_path.name,
+            "manifest_sha256": sha256_file(graph_path),
+        },
+        "compiler": graph_payload["compiler"],
+        "packages": graph_payload["packages"],
+        "entry_symbol": graph_payload["entry_symbol"],
+        "diagnostic_failure_trap": graph_payload["diagnostic_failure_trap"],
+        "units": graph_payload["units"],
+        "objects": rows,
+        "counts": {"objects": len(rows)},
+    }
+    payload = {**core, "package_sha256": native_build._canonical_sha256(core)}
+    native_build._write_json(output / "native-object-package.json", payload)
+    return payload
+
+
 def build_stage_b_interpreter_native_candidate(
     *,
     interpreter_package: Path | str,
     native_engine_package: Path | str,
     native_runtime_package: Path | str,
+    region_override_package: Path | str | None = None,
     load_image_contract: Path | str,
     out_dir: Path | str,
     anchor_manifest: Path | str | None = None,
     compiler: Path | str = "i686-w64-mingw32-gcc",
     entry_symbol: str = "stage_b_payload_entry",
     payload_rva: int | None = None,
+    diagnostic_failure_trap: bool = False,
+    precompiled_objects: Path | str | None = None,
 ) -> dict[str, Any]:
     """Compile, qualify, and compose one interpreter-backed PE32 candidate."""
 
+    if not isinstance(diagnostic_failure_trap, bool):
+        raise StageBInterpreterNativeBuildError(
+            "diagnostic_failure_trap must be a boolean"
+        )
     if _C_IDENTIFIER.fullmatch(entry_symbol) is None:
         raise StageBInterpreterNativeBuildError(
             "payload entry symbol is not a C identifier"
@@ -130,7 +401,16 @@ def build_stage_b_interpreter_native_candidate(
         require_roles=True,
     )
     runtime_plan = _validate_package_closure(interpreter, engine, runtime)
-    compile_units = _compile_units(interpreter, engine, runtime, entry_symbol)
+    region_overrides = (
+        None
+        if region_override_package is None
+        else _load_region_override_package(region_override_package)
+    )
+    if region_overrides is not None:
+        _validate_region_override_closure(interpreter, region_overrides)
+    compile_units = _compile_units(
+        interpreter, engine, runtime, entry_symbol, region_overrides
+    )
 
     contract_path = _file(load_image_contract, "load-image contract")
     contract_artifact_sha256 = sha256_file(contract_path)
@@ -178,91 +458,123 @@ def build_stage_b_interpreter_native_candidate(
 
     object_paths: list[Path] = []
     object_rows: list[dict[str, Any]] = []
-    package_roots = (interpreter.root, engine.root, runtime.root)
-    for index, artifact in enumerate(compile_units):
-        object_path = objects / f"{index:03d}-{artifact.owner}.o"
-        language = (
-            "assembler-with-cpp"
-            if artifact.path.suffix.lower() == ".s"
-            else "c"
-        )
-        flags = _compile_flags(artifact.sha256, package_roots)
-        command = [
-            str(toolchain.compiler),
-            "-x",
-            language,
-            "-c",
-            str(artifact.path),
-            "-o",
-            str(object_path),
-            *sum((["-I", str(root)] for root in package_roots), []),
-            *flags,
-        ]
-        try:
-            native_build._run(
-                command,
-                phase=f"compile {artifact.owner}:{artifact.role}",
-                env=environment,
-            )
-        except native_build.StageBNativeBuildError as exc:
-            raise StageBInterpreterNativeBuildError(str(exc)) from exc
-        if not object_path.is_file():
-            raise StageBInterpreterNativeBuildError(
-                f"compiler omitted object for {artifact.owner}:{artifact.role}"
-            )
-        object_paths.append(object_path)
-        object_rows.append(
-            {
-                "source": artifact.payload(),
-                "language": language,
-                "object": object_path.relative_to(output).as_posix(),
-                "object_sha256": sha256_file(object_path),
-                "flags": _canonical_compile_flags(artifact.sha256),
-            }
-        )
-
+    package_roots = (
+        interpreter.root,
+        engine.root,
+        runtime.root,
+        *((region_overrides.root,) if region_overrides is not None else ()),
+    )
     relocation_source = output / ".payload-relocation-anchor.S"
-    relocation_object = objects / f"{len(object_paths):03d}-relocation-anchor.o"
     relocation_source.write_text(
         native_build._relocation_anchor_source(entry_symbol), encoding="ascii"
     )
     relocation_digest = sha256_file(relocation_source)
-    try:
-        native_build._run(
-            [
+    precompiled_object_binding: dict[str, Any] | None = None
+    if precompiled_objects is not None:
+        precompiled_manifest = Path(precompiled_objects)
+        if precompiled_manifest.is_dir():
+            precompiled_manifest = precompiled_manifest / "native-object-package.json"
+        cached = _load_precompiled_native_objects(
+            precompiled_objects,
+            compile_units=compile_units,
+            package_roots=package_roots,
+            packages={
+                "interpreter": interpreter.binding(),
+                "native_engine": engine.binding(),
+                "native_runtime": runtime.binding(),
+                "region_overrides": (
+                    None if region_overrides is None else region_overrides.binding()
+                ),
+            },
+            compiler=toolchain.compiler,
+            entry_symbol=entry_symbol,
+            diagnostic_failure_trap=diagnostic_failure_trap,
+            relocation_digest=relocation_digest,
+        )
+        precompiled_object_binding = {
+            "artifact_sha256": sha256_file(precompiled_manifest),
+            "package_sha256": _read_json_object(
+                precompiled_manifest, "native object package"
+            )["package_sha256"],
+        }
+        for index, (source_row, cached_path) in enumerate(cached):
+            object_path = objects / f"{index:03d}-{source_row['source']['owner']}.o"
+            shutil.copyfile(cached_path, object_path)
+            object_paths.append(object_path)
+            object_rows.append(
+                {
+                    "source": {
+                        key: source_row["source"][key]
+                        for key in ("owner", "role", "path", "sha256")
+                    },
+                    "language": source_row["language"],
+                    "object": object_path.relative_to(output).as_posix(),
+                    "object_sha256": sha256_file(object_path),
+                    "flags": source_row["canonical_flags"],
+                    "cache": "content_addressed_precompiled_object",
+                }
+            )
+    else:
+        sources = [
+            *compile_units,
+            _Artifact(
+                owner="generated",
+                role="payload_relocation_anchor",
+                relative_path=relocation_source.name,
+                sha256=relocation_digest,
+                path=relocation_source,
+            ),
+        ]
+        for index, artifact in enumerate(sources):
+            object_path = objects / f"{index:03d}-{artifact.owner}.o"
+            language = (
+                "assembler-with-cpp"
+                if artifact.path.suffix.lower() == ".s"
+                else "c"
+            )
+            flags = _compile_flags(
+                artifact.sha256,
+                package_roots,
+                diagnostic_failure_trap=diagnostic_failure_trap,
+            )
+            command = [
                 str(toolchain.compiler),
                 "-x",
-                "assembler-with-cpp",
+                language,
                 "-c",
-                str(relocation_source),
+                str(artifact.path),
                 "-o",
-                str(relocation_object),
-                *_compile_flags(relocation_digest, package_roots),
-            ],
-            phase="compile generated relocation anchor",
-            env=environment,
-        )
-    except native_build.StageBNativeBuildError as exc:
-        raise StageBInterpreterNativeBuildError(str(exc)) from exc
-    if not relocation_object.is_file():
-        raise StageBInterpreterNativeBuildError(
-            "compiler omitted the generated relocation-anchor object"
-        )
-    object_paths.append(relocation_object)
-    object_rows.append(
-        {
-            "source": {
-                "owner": "generated",
-                "role": "payload_relocation_anchor",
-                "path": relocation_source.name,
-                "sha256": relocation_digest,
-            },
-            "language": "assembler-with-cpp",
-            "object": relocation_object.relative_to(output).as_posix(),
-            "object_sha256": sha256_file(relocation_object),
-            "flags": _canonical_compile_flags(relocation_digest),
-        }
-    )
+                str(object_path),
+                *sum((["-I", str(root)] for root in package_roots), []),
+                *flags,
+            ]
+            try:
+                native_build._run(
+                    command,
+                    phase=f"compile {artifact.owner}:{artifact.role}",
+                    env=environment,
+                )
+            except native_build.StageBNativeBuildError as exc:
+                raise StageBInterpreterNativeBuildError(str(exc)) from exc
+            if not object_path.is_file():
+                raise StageBInterpreterNativeBuildError(
+                    f"compiler omitted object for {artifact.owner}:{artifact.role}"
+                )
+            object_paths.append(object_path)
+            object_rows.append(
+                {
+                    "source": artifact.payload(),
+                    "language": language,
+                    "object": object_path.relative_to(output).as_posix(),
+                    "object_sha256": sha256_file(object_path),
+                    "flags": _canonical_compile_flags(
+                        artifact.sha256,
+                        diagnostic_failure_trap=diagnostic_failure_trap,
+                        region_overrides=region_overrides is not None,
+                    ),
+                    "cache": "compiled_in_candidate_derivation",
+                }
+            )
 
     raw_payload = output / ".payload-linked.exe"
     linker_map = output / _PAYLOAD_MAP_FILENAME
@@ -349,6 +661,8 @@ def build_stage_b_interpreter_native_candidate(
     _revalidate_package(interpreter)
     _revalidate_package(engine)
     _revalidate_package(runtime)
+    if region_overrides is not None:
+        _revalidate_package(region_overrides)
     if sha256_file(contract_path) != contract_artifact_sha256:
         raise StageBInterpreterNativeBuildError(
             "load-image contract changed during compilation"
@@ -383,7 +697,11 @@ def build_stage_b_interpreter_native_candidate(
             "interpreter_package": interpreter.binding(),
             "native_engine_package": engine.binding(),
             "native_runtime_package": runtime.binding(),
+            "region_override_package": (
+                None if region_overrides is None else region_overrides.binding()
+            ),
             "runtime_plan": runtime_plan.payload(),
+            "precompiled_objects": precompiled_object_binding,
             "load_image_contract": {
                 "artifact_sha256": contract_artifact_sha256,
                 "contract_sha256": contract.hashes.contract_sha256,
@@ -415,6 +733,17 @@ def build_stage_b_interpreter_native_candidate(
             "imports": "forbidden-in-payload",
             "unresolved_symbols": "forbidden",
             "base_relocations": "complete-pe32-highlow-inventory-required",
+            "diagnostic_failure_trap": diagnostic_failure_trap,
+            "region_overrides": (
+                0
+                if region_overrides is None
+                else len(region_overrides.payload["entries"])
+            ),
+            "object_compilation": (
+                "content-addressed-per-source"
+                if precompiled_object_binding is not None
+                else "inline"
+            ),
         },
         "objects": object_rows,
         "commands": {
@@ -549,13 +878,213 @@ def _load_package(
     )
 
 
+def _load_region_override_package(value: Path | str) -> _Package:
+    manifest_path = Path(value)
+    if manifest_path.is_dir():
+        manifest_path = manifest_path / "region-overrides-manifest.json"
+    manifest_path = _file(manifest_path, "region override package manifest")
+    root = manifest_path.parent
+    payload = _read_json_object(manifest_path, "region override package manifest")
+    if payload.get("format") != REGION_OVERRIDE_TABLE_FORMAT:
+        raise StageBInterpreterNativeBuildError(
+            "region override package has an unsupported format"
+        )
+    if payload.get("status") != "ready":
+        raise StageBInterpreterNativeBuildError(
+            "region override package is not ready"
+        )
+    if payload.get("executes_original_binary") is not False:
+        raise StageBInterpreterNativeBuildError(
+            "region override package does not enforce zero original execution"
+        )
+    checks = payload.get("checks")
+    if not isinstance(checks, Mapping) or not checks or any(
+        value != "verified" for value in checks.values()
+    ):
+        raise StageBInterpreterNativeBuildError(
+            "region override package checks are incomplete"
+        )
+    entries = payload.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise StageBInterpreterNativeBuildError(
+            "region override package has no entries"
+        )
+    artifacts_raw = payload.get("artifacts")
+    if not isinstance(artifacts_raw, Mapping) or set(artifacts_raw) != {
+        "header", "source"
+    }:
+        raise StageBInterpreterNativeBuildError(
+            "region override package artifact inventory is malformed"
+        )
+    artifacts = [
+        _artifact(root, "region_overrides", f"table_{role}", artifacts_raw[role])
+        for role in ("header", "source")
+    ]
+    seen_paths = {item.relative_path for item in artifacts}
+    seen_symbols: set[str] = set()
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, Mapping):
+            raise StageBInterpreterNativeBuildError(
+                f"region override entry {index} is not an object"
+            )
+        source = entry.get("source")
+        if not isinstance(source, Mapping):
+            raise StageBInterpreterNativeBuildError(
+                f"region override entry {index} has no source binding"
+            )
+        symbol = source.get("symbol")
+        if not isinstance(symbol, str) or _C_IDENTIFIER.fullmatch(symbol) is None:
+            raise StageBInterpreterNativeBuildError(
+                f"region override entry {index} source symbol is malformed"
+            )
+        if symbol in seen_symbols:
+            raise StageBInterpreterNativeBuildError(
+                "region override package has duplicate source symbols"
+            )
+        seen_symbols.add(symbol)
+        artifact = _artifact(
+            root,
+            "region_overrides",
+            f"replacement_source_{index:03d}",
+            source,
+        )
+        if artifact.relative_path in seen_paths:
+            raise StageBInterpreterNativeBuildError(
+                "region override package has duplicate source paths"
+            )
+        seen_paths.add(artifact.relative_path)
+        artifacts.append(artifact)
+        support_sources = entry.get("support_sources", [])
+        if not isinstance(support_sources, list):
+            raise StageBInterpreterNativeBuildError(
+                f"region override entry {index} support sources are malformed"
+            )
+        for support_index, support in enumerate(support_sources):
+            if not isinstance(support, Mapping):
+                raise StageBInterpreterNativeBuildError(
+                    f"region override entry {index} support source {support_index} "
+                    "is not an object"
+                )
+            support_artifact = _artifact(
+                root,
+                "region_overrides",
+                f"replacement_support_{index:03d}_{support_index:03d}",
+                support,
+            )
+            if support_artifact.relative_path in seen_paths:
+                raise StageBInterpreterNativeBuildError(
+                    "region override package has duplicate source paths"
+                )
+            seen_paths.add(support_artifact.relative_path)
+            artifacts.append(support_artifact)
+    return _Package(
+        owner="region_overrides",
+        root=root,
+        manifest_path=manifest_path,
+        manifest_sha256=sha256_file(manifest_path),
+        payload=payload,
+        artifacts=tuple(artifacts),
+    )
+
+
+def _validate_region_override_closure(
+    interpreter: _Package, region_overrides: _Package
+) -> None:
+    machine_ir = interpreter.payload.get("machine_ir")
+    if not isinstance(machine_ir, Mapping):
+        raise StageBInterpreterNativeBuildError(
+            "region overrides require a machine-IR interpreter package"
+        )
+    machine_ir_sha256 = native_build._digest(
+        machine_ir.get("sha256"), "interpreter machine-IR SHA-256"
+    )
+    program = next(
+        (item for item in interpreter.artifacts if item.role == "program"), None
+    )
+    if program is None:
+        raise StageBInterpreterNativeBuildError(
+            "interpreter package has no baseline program artifact"
+        )
+    if (
+        region_overrides.payload.get("machine_ir_sha256") != machine_ir_sha256
+        or region_overrides.payload.get("baseline_program_sha256")
+        != program.sha256
+    ):
+        raise StageBInterpreterNativeBuildError(
+            "region override package binds a different machine IR or baseline program"
+        )
+
+
 def _validate_package_closure(
     interpreter: _Package, engine: _Package, runtime: _Package
 ) -> Any:
+    runtime_inputs = runtime.payload.get("inputs")
+    if not isinstance(runtime_inputs, Mapping):
+        raise StageBInterpreterNativeBuildError(
+            "native-runtime package has malformed inputs"
+        )
+    external_binding = runtime_inputs.get("external_range_contracts")
+    if not isinstance(external_binding, Mapping):
+        raise StageBInterpreterNativeBuildError(
+            "native-runtime package has no external-range contract binding"
+        )
+    profile_binding = external_binding.get("profile")
+    profile_artifacts = [
+        artifact for artifact in runtime.artifacts
+        if artifact.role == "external_profile"
+    ]
+    external_profile: Path | None = None
+    if profile_binding is None:
+        if profile_artifacts:
+            raise StageBInterpreterNativeBuildError(
+                "native-runtime package has an unbound external profile"
+            )
+    else:
+        if not isinstance(profile_binding, Mapping) or len(profile_artifacts) != 1:
+            raise StageBInterpreterNativeBuildError(
+                "native-runtime external profile binding is incomplete"
+            )
+        profile_artifact = profile_artifacts[0]
+        if (
+            profile_binding.get("path") != profile_artifact.relative_path
+            or profile_binding.get("sha256") != profile_artifact.sha256
+        ):
+            raise StageBInterpreterNativeBuildError(
+                "native-runtime external profile binding differs from its artifact"
+            )
+        external_profile = profile_artifact.path
+    callable_binding = runtime_inputs.get("callable_external")
+    callable_artifacts = [
+        artifact
+        for artifact in runtime.artifacts
+        if artifact.role == "callable_external_contract"
+    ]
+    callable_contract: Path | None = None
+    if callable_binding is None:
+        if callable_artifacts:
+            raise StageBInterpreterNativeBuildError(
+                "native-runtime package has an unbound callable-external contract"
+            )
+    else:
+        if not isinstance(callable_binding, Mapping) or len(callable_artifacts) != 1:
+            raise StageBInterpreterNativeBuildError(
+                "native-runtime callable-external binding is incomplete"
+            )
+        callable_artifact = callable_artifacts[0]
+        if (
+            callable_binding.get("path") != callable_artifact.relative_path
+            or callable_binding.get("sha256") != callable_artifact.sha256
+        ):
+            raise StageBInterpreterNativeBuildError(
+                "native-runtime callable-external binding differs from its artifact"
+            )
+        callable_contract = callable_artifact.path
     try:
         plan = plan_stage_b_native_runtime(
             interpreter_package=interpreter.root,
             native_engine_package=engine.root,
+            external_profile=external_profile,
+            callable_external_contract=callable_contract,
         )
     except Exception as exc:
         raise StageBInterpreterNativeBuildError(
@@ -608,12 +1137,18 @@ def _compile_units(
     engine: _Package,
     runtime: _Package,
     entry_symbol: str,
+    region_overrides: _Package | None = None,
 ) -> tuple[_Artifact, ...]:
     interpreter_roles = {"interpreter_source", "program_source"}
     runtime_roles = {"native_runtime_source"}
     selected = [
         item
-        for package in (interpreter, engine, runtime)
+        for package in (
+            interpreter,
+            engine,
+            runtime,
+            *((region_overrides,) if region_overrides is not None else ()),
+        )
         for item in package.artifacts
         if item.path.suffix.lower() in {".c", ".s"}
     ]
@@ -655,7 +1190,12 @@ def _compile_units(
             f"native-engine package does not define payload entry {entry_symbol}"
         )
 
-    owner_order = {"native_engine": 0, "interpreter": 1, "native_runtime": 2}
+    owner_order = {
+        "native_engine": 0,
+        "interpreter": 1,
+        "native_runtime": 2,
+        "region_overrides": 3,
+    }
     return tuple(
         sorted(
             selected,
@@ -666,6 +1206,202 @@ def _compile_units(
             ),
         )
     )
+
+
+def _native_object_graph_row(
+    *,
+    index: int,
+    artifact: _Artifact,
+    package_roots: Sequence[Path],
+    compiler: Path,
+    diagnostic_failure_trap: bool,
+    region_overrides: bool,
+) -> dict[str, Any]:
+    language = "assembler-with-cpp" if artifact.path.suffix.lower() == ".s" else "c"
+    unit_id = f"{index:03d}-{artifact.owner}-{artifact.role}"
+    graph_relative = artifact.owner == "generated"
+    source_argument = (
+        artifact.relative_path if graph_relative else str(artifact.path)
+    )
+    arguments = [
+        "-x",
+        language,
+        "-c",
+        source_argument,
+        *sum((["-I", str(root)] for root in package_roots), []),
+        *_compile_flags(
+            artifact.sha256,
+            package_roots,
+            diagnostic_failure_trap=diagnostic_failure_trap,
+        ),
+    ]
+    unit_core = {
+        "id": unit_id,
+        "index": index,
+        "source": {
+            **artifact.payload(),
+            "location": source_argument,
+            "location_base": "graph" if graph_relative else "absolute",
+        },
+        "language": language,
+        "compiler": _native_compiler_binding(compiler),
+        "arguments": arguments,
+        "canonical_flags": _canonical_compile_flags(
+            artifact.sha256,
+            diagnostic_failure_trap=diagnostic_failure_trap,
+            region_overrides=region_overrides,
+        ),
+    }
+    return {**unit_core, "unit_sha256": native_build._canonical_sha256(unit_core)}
+
+
+def _load_native_object_graph(value: Path | str) -> tuple[Path, dict[str, Any]]:
+    path = Path(value)
+    if path.is_dir():
+        path = path / "native-object-graph.json"
+    payload = _read_json_object(path, "native object graph")
+    if payload.get("format") != INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT:
+        raise StageBInterpreterNativeBuildError("unsupported native object graph format")
+    core = dict(payload)
+    expected = core.pop("graph_sha256", None)
+    if expected != native_build._canonical_sha256(core):
+        raise StageBInterpreterNativeBuildError("native object graph self-hash is stale")
+    units = payload.get("units")
+    if not isinstance(units, list) or not units:
+        raise StageBInterpreterNativeBuildError("native object graph has no compile units")
+    seen: set[str] = set()
+    for row in units:
+        if not isinstance(row, Mapping):
+            raise StageBInterpreterNativeBuildError("native object graph unit is malformed")
+        unit_id = str(row.get("id"))
+        if unit_id in seen:
+            raise StageBInterpreterNativeBuildError("native object graph has duplicate unit IDs")
+        seen.add(unit_id)
+        unit_core = dict(row)
+        unit_expected = unit_core.pop("unit_sha256", None)
+        if unit_expected != native_build._canonical_sha256(unit_core):
+            raise StageBInterpreterNativeBuildError("native object graph unit self-hash is stale")
+    return path, payload
+
+
+def _load_precompiled_native_objects(
+    value: Path | str,
+    *,
+    compile_units: Sequence[_Artifact],
+    package_roots: Sequence[Path],
+    packages: Mapping[str, Any],
+    compiler: Path,
+    entry_symbol: str,
+    diagnostic_failure_trap: bool,
+    relocation_digest: str,
+) -> list[tuple[dict[str, Any], Path]]:
+    path = Path(value)
+    if path.is_dir():
+        path = path / "native-object-package.json"
+    payload = _read_json_object(path, "native object package")
+    if payload.get("format") != INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT:
+        raise StageBInterpreterNativeBuildError("unsupported native object package format")
+    core = dict(payload)
+    expected_hash = core.pop("package_sha256", None)
+    if expected_hash != native_build._canonical_sha256(core):
+        raise StageBInterpreterNativeBuildError("native object package self-hash is stale")
+    if (
+        payload.get("status") != "complete"
+        or payload.get("executes_original_binary") is not False
+        or payload.get("packages") != packages
+        or payload.get("compiler") != _native_compiler_binding(compiler)
+        or payload.get("entry_symbol") != entry_symbol
+        or payload.get("diagnostic_failure_trap") != diagnostic_failure_trap
+    ):
+        raise StageBInterpreterNativeBuildError("native object package build binding is stale")
+    units = payload.get("units")
+    objects = payload.get("objects")
+    if (
+        not isinstance(units, list)
+        or not isinstance(objects, list)
+        or len(units) != len(compile_units) + 1
+        or len(objects) != len(units)
+    ):
+        raise StageBInterpreterNativeBuildError("native object package inventory is incomplete")
+    graph_binding = payload.get("graph")
+    if not isinstance(graph_binding, Mapping):
+        raise StageBInterpreterNativeBuildError("native object package graph binding is missing")
+    bound_graph_path = Path(str(graph_binding.get("path"))) / str(
+        graph_binding.get("manifest")
+    )
+    if (
+        not bound_graph_path.is_file()
+        or sha256_file(bound_graph_path) != graph_binding.get("manifest_sha256")
+        or graph_binding.get("manifest_sha256") != payload.get("graph_artifact_sha256")
+    ):
+        raise StageBInterpreterNativeBuildError("native object package graph artifact is stale")
+    relocation_location = Path(str(units[-1].get("source", {}).get("location")))
+    graph_relocation_source = _file(
+        bound_graph_path.parent / relocation_location
+        if units[-1].get("source", {}).get("location_base") == "graph"
+        else relocation_location,
+        "cached relocation-anchor source",
+    )
+    if sha256_file(graph_relocation_source) != relocation_digest:
+        raise StageBInterpreterNativeBuildError(
+            "native object package relocation-anchor binding is stale"
+        )
+    expected_artifacts = [
+        *compile_units,
+        _Artifact(
+            owner="generated",
+            role="payload_relocation_anchor",
+            relative_path=graph_relocation_source.name,
+            sha256=relocation_digest,
+            path=graph_relocation_source,
+        ),
+    ]
+    region_overrides = packages.get("region_overrides") is not None
+    expected_rows = [
+        _native_object_graph_row(
+            index=index,
+            artifact=artifact,
+            package_roots=package_roots,
+            compiler=compiler,
+            diagnostic_failure_trap=diagnostic_failure_trap,
+            region_overrides=region_overrides,
+        )
+        for index, artifact in enumerate(expected_artifacts)
+    ]
+    if units != expected_rows:
+        raise StageBInterpreterNativeBuildError(
+            "native object package compile-unit definitions are stale"
+        )
+    package_root = path.parent
+    result: list[tuple[dict[str, Any], Path]] = []
+    for expected_row, object_row in zip(expected_rows, objects, strict=True):
+        if (
+            not isinstance(object_row, Mapping)
+            or object_row.get("unit_id") != expected_row["id"]
+            or object_row.get("unit_sha256") != expected_row["unit_sha256"]
+        ):
+            raise StageBInterpreterNativeBuildError("native object package unit binding is stale")
+        object_path = package_root / str(object_row.get("path"))
+        if not object_path.is_file() or sha256_file(object_path) != object_row.get("sha256"):
+            raise StageBInterpreterNativeBuildError("native object package artifact is stale")
+        result.append((expected_row, object_path))
+    return result
+
+
+def _native_compiler_binding(compiler: Path | str) -> dict[str, Any]:
+    path = Path(compiler).resolve()
+    if not path.is_file():
+        raise StageBInterpreterNativeBuildError(f"native compiler does not exist: {path}")
+    completed = subprocess.run(
+        [str(path), "--version"], check=False, capture_output=True, text=True
+    )
+    if completed.returncode != 0:
+        raise StageBInterpreterNativeBuildError("native compiler version query failed")
+    return {
+        "path": str(path),
+        "sha256": sha256_file(path),
+        "version": completed.stdout.splitlines()[0].strip(),
+    }
 
 
 def _artifact(
@@ -704,18 +1440,41 @@ def _revalidate_package(package: _Package) -> None:
             )
 
 
-def _compile_flags(source_sha256: str, roots: Sequence[Path]) -> list[str]:
+def _compile_flags(
+    source_sha256: str,
+    roots: Sequence[Path],
+    *,
+    diagnostic_failure_trap: bool = False,
+) -> list[str]:
     flags = _proof_profile_compile_flags(source_sha256)
-    labels = ("interpreter", "engine", "runtime")
+    if diagnostic_failure_trap:
+        flags.append("-DSTAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP=1")
+    labels = (
+        "interpreter", "engine", "runtime", "region-overrides"
+    )[:len(roots)]
+    if len(labels) != len(roots):
+        raise StageBInterpreterNativeBuildError(
+            "unsupported native-build source-root inventory"
+        )
     for label, root in zip(labels, roots, strict=True):
         for prefix in ("file", "debug", "macro"):
             flags.append(f"-f{prefix}-prefix-map={root}=/stage-b/{label}")
     return flags
 
 
-def _canonical_compile_flags(source_sha256: str) -> list[str]:
+def _canonical_compile_flags(
+    source_sha256: str,
+    *,
+    diagnostic_failure_trap: bool = False,
+    region_overrides: bool = False,
+) -> list[str]:
     flags = _proof_profile_compile_flags(source_sha256)
-    for label in ("interpreter", "engine", "runtime"):
+    if diagnostic_failure_trap:
+        flags.append("-DSTAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP=1")
+    labels = ["interpreter", "engine", "runtime"]
+    if region_overrides:
+        labels.append("region-overrides")
+    for label in labels:
         for prefix in ("file", "debug", "macro"):
             flags.append(
                 f"-f{prefix}-prefix-map=<{label}-package>=/stage-b/{label}"
@@ -949,6 +1708,11 @@ def _align_up(value: int, alignment: int) -> int:
 __all__ = [
     "INTERPRETER_NATIVE_BUILD_FORMAT",
     "INTERPRETER_NATIVE_BUILD_MANIFEST_FILENAME",
+    "INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT",
+    "INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT",
     "StageBInterpreterNativeBuildError",
+    "assemble_stage_b_interpreter_native_objects",
     "build_stage_b_interpreter_native_candidate",
+    "compile_stage_b_interpreter_native_object",
+    "prepare_stage_b_interpreter_native_object_graph",
 ]

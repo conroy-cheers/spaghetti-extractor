@@ -12,8 +12,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from .artifact_formats import NATIVE_ENGINE_PLAN_FORMAT
 from .errors import StageAInputError
-from .stage_b_native_engine import NATIVE_ENGINE_PLAN_FORMAT
 from .util import json_dumps, sha256_file, sha256_text, write_json
 
 
@@ -370,11 +370,14 @@ def _parse_native_site(value: Any, index: int) -> dict[str, Any]:
             site.get("import"), f"native engine site {index} import"
         )
     else:
-        if site.get("import") is not None:
-            raise StageAInputError(
-                f"native engine dynamic-target site {index} must not name an import"
+        import_identity = (
+            None
+            if site.get("import") is None
+            else _parse_import_identity(
+                site.get("import"),
+                f"native engine dynamic-target site {index} resolved import",
             )
-        import_identity = None
+        )
     return {
         "selector": (transfer_id, event_index, instruction_rva),
         "plan_site_id": plan_site_id,

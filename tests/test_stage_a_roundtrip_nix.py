@@ -675,8 +675,18 @@ class StageARoundtripNixTests(unittest.TestCase):
 
         self.assertIn("${sourceConditionalAcceptanceChecked}", runtime)
         self.assertIn("stage-b-run-functional-suite", runtime)
-        self.assertIn("--candidate-binary ${sourceCandidate}/candidate.exe", runtime)
-        self.assertIn("-- xvfb-run -a wine ${sourceCandidate}/candidate.exe", runtime)
+        self.assertIn(
+            '--candidate-binary "$runtime_dir/hello.exe"', runtime
+        )
+        self.assertIn(
+            'ln -s ${sourceCandidate}/candidate.exe "$runtime_dir/hello.exe"',
+            runtime,
+        )
+        self.assertIn("export FONTCONFIG_FILE=${wineFontsConf}", runtime)
+        self.assertIn('export XDG_CACHE_HOME="$TMPDIR/cache"', runtime)
+        self.assertIn(
+            "-- xvfb-run -a wine cmd /d /c hello.exe", runtime
+        )
         self.assertIn(".oracle.original_runtime_observations | not", runtime)
         self.assertIn(".counts.cases == 9", runtime)
         self.assertIn(
@@ -1880,9 +1890,7 @@ class StageARoundtripNixTests(unittest.TestCase):
         smoke_start = lane.index(
             'smoke = mkPhase "stage-a-gnu-hello-roundtrip-smoke"'
         )
-        smoke_end = lane.index(
-            'staticExport = mkPhase "stage-a-gnu-hello-roundtrip-static-export"'
-        )
+        smoke_end = lane.index("opaqueOriginalInventory =", smoke_start)
         smoke = lane[smoke_start:smoke_end]
 
         self.assertIn("gnu-hello-roundtrip-driver.py", lane)
@@ -1896,6 +1904,156 @@ class StageARoundtripNixTests(unittest.TestCase):
             "lean ",
         ):
             self.assertNotIn(forbidden, smoke)
+
+    def test_gnu_hello_static_export_excludes_candidate_runtime_sources(
+        self,
+    ) -> None:
+        lane = self.gnu_hello_nix.read_text(encoding="utf-8")
+        phase_start = lane.index(
+            "staticExport = mkPhaseWithSource opaqueStaticPythonSource"
+        )
+        phase_end = lane.index("sourceStateMachine =", phase_start)
+        phase = lane[phase_start:phase_end]
+
+        self.assertIn("${runtimeDriver} static-export", phase)
+        self.assertNotIn("runtimePythonSource", phase)
+        self.assertIn(
+            "../src/spaghetti_extractor/stage_b_native_runtime.py",
+            lane,
+        )
+        opaque_start = lane.index("opaqueStaticPythonSource =")
+        opaque_end = lane.index("stackDynamicProofPythonFiles =", opaque_start)
+        opaque_source = lane[opaque_start:opaque_end]
+        for excluded in (
+            "callable_external_runtime.py",
+            "stage_b_api_catalog.py",
+            "stage_b_c_backend.py",
+            "stage_b_engine_layout.py",
+            "stage_b_functional.py",
+            "stage_b_interpreter_backend.py",
+            "stage_b_interpreter_native_build.py",
+            "stage_b_native_binding.py",
+            "stage_b_native_build.py",
+            "stage_b_native_engine.py",
+            "stage_b_native_runtime.py",
+            "stage_b_pe_composer.py",
+        ):
+            self.assertIn(excluded, opaque_source)
+
+    def test_semantic_component_hybrid_has_candidate_only_functional_suite(
+        self,
+    ) -> None:
+        lane = self.gnu_hello_nix.read_text(encoding="utf-8")
+        self.assertIn(
+            "semanticComponentHybridFunctionalSuite = "
+            "mkReconstructionFunctionalSuite",
+            lane,
+        )
+        self.assertIn(
+            "candidate = semanticComponentHybridCandidate;",
+            lane,
+        )
+        self.assertIn(
+            "componentRegistry = semanticComponentRegistry;",
+            lane,
+        )
+        self.assertIn(
+            '.activation_policy == "qualified_components_only"',
+            lane,
+        )
+        self.assertIn(
+            ".coverage.qualified_units + .coverage.remaining_units",
+            lane,
+        )
+        self.assertIn(
+            '(.status == "qualified" or .status == "incomplete")',
+            lane,
+        )
+        self.assertNotIn(
+            ".control.counts.indirect_exits == "
+            ".control.counts.closed_indirect_exits",
+            lane,
+        )
+        self.assertIn(
+            '"xvfb-run", "-a", "wine", "cmd", "/d", "/c", "hello.exe"',
+            lane,
+        )
+        self.assertIn("stage_b_run_functional_case", lane)
+        self.assertIn("stage_b_aggregate_functional_cases", lane)
+        self.assertIn("stage-b-native-object-graph.nix", lane)
+        self.assertIn("precompiled_objects=precompiled_objects", lane)
+        self.assertIn("nativeBuildPythonSource", lane)
+        self.assertIn("export FONTCONFIG_FILE=${wineFontsConf}", lane)
+        self.assertIn('export XDG_CACHE_HOME="$TMPDIR/cache"', lane)
+
+        component_dag = (
+            self.repo / "nix" / "stage-b-semantic-component-workspaces.nix"
+        ).read_text(encoding="utf-8")
+        self.assertIn("componentSlices = pkgs.runCommand", component_dag)
+        self.assertIn("regionalKernel = pkgs.runCommand", component_dag)
+        self.assertIn("component_slice=package / matches[0][\"path\"]", component_dag)
+        self.assertIn("regional_kernel=pathlib.Path(sys.argv[4])", component_dag)
+
+        flake = self.flake_nix.read_text(encoding="utf-8")
+        self.assertIn("./nix/stage-b-native-object-graph.nix", flake)
+        self.assertIn("stage-b-gnu-hello-component-slices", flake)
+        self.assertIn("stage-b-gnu-hello-regional-interpreter-kernel", flake)
+
+        proof_start = lane.index("proofPythonFiles =")
+        proof_end = lane.index("proofPythonSource =", proof_start)
+        proof_source = lane[proof_start:proof_end]
+        for runtime_only in (
+            "callable_external_runtime.py",
+            "stage_b_interpreter_native_build.py",
+            "stage_b_native_engine.py",
+            "stage_b_native_runtime.py",
+        ):
+            self.assertIn(runtime_only, proof_source)
+
+    def test_reconstruction_runtime_is_gated_while_lifting_evidence_is_first_class(
+        self,
+    ) -> None:
+        lane = self.gnu_hello_nix.read_text(encoding="utf-8")
+        qualification_start = lane.index("reconstructionQualification =")
+        qualification_end = lane.index("staticExport =", qualification_start)
+        qualification = lane[qualification_start:qualification_end]
+        runtime_start = lane.index("mkReconstructionFunctionalSuite =")
+        runtime_end = lane.index("reconstructionAssurance =", runtime_start)
+        runtime = lane[runtime_start:runtime_end]
+        assurance_start = lane.index("reconstructionAssurance =")
+        assurance_end = lane.index("interpreter = mkPhase", assurance_start)
+        assurance = lane[assurance_start:assurance_end]
+
+        self.assertIn(
+            "${reconstructionEntryReplacementValidation}/validation-report.json",
+            qualification,
+        )
+        self.assertIn("regional replacement validation is not closed", qualification)
+        self.assertIn("qualification ? null", runtime)
+        self.assertIn("${qualification}/reconstruction-qualification.json", runtime)
+        self.assertIn("qualification = reconstructionQualification", runtime)
+        self.assertIn("xvfb-run", runtime)
+        self.assertNotIn("${originalPe}", runtime)
+        self.assertIn('"evidence_classes": ["differential"]', assurance)
+        self.assertIn('"evidence_classes": ["integration"]', assurance)
+        self.assertIn('"assumption_ids": []', assurance)
+
+        flake = self.flake_nix.read_text(encoding="utf-8")
+        checks_start = flake.index("checks = forAllSystems")
+        checks_end = flake.index("devShells = forAllSystems", checks_start)
+        self.assertIn(
+            "stage-b-gnu-hello-lifting-evidence",
+            flake[checks_start:checks_end],
+        )
+        self.assertNotIn(
+            "stage-a-gnu-hello-reconstruction-assurance",
+            flake[checks_start:checks_end],
+        )
+        machine_start = lane.index("machineIr = pkgs.runCommand")
+        machine_end = lane.index("reconstructionInterpreter =", machine_start)
+        machine = lane[machine_start:machine_end]
+        self.assertIn('.status == "incomplete"', machine)
+        self.assertIn('.control.counts.closed_indirect_exits == 3', machine)
 
     def test_candidate_kernel_closures_do_not_depend_on_global_proof_sources(
         self,

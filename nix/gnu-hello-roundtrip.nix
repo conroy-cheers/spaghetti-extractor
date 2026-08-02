@@ -24,6 +24,7 @@ let
   # Each proof phase is independently content-addressed so identical checked
   # semantics can be substituted across local and remote realizations.
   driver = ./gnu-hello-roundtrip-driver.py;
+  callableExternalRuntimeDriver = ./callable-external-runtime-contract.py;
   directCallSemanticsDriver = ./gnu-hello-direct-call-semantics.py;
   directCallFixedPointDriver = ./gnu-hello-direct-call-fixed-point.py;
   stackDynamicAuthorityDriver = ./gnu-hello-stack-dynamic-authority.py;
@@ -61,6 +62,7 @@ let
       ../profiles/pe32-kernel32-lockstep-v1.json
       ../profiles/pe32-msvcrt-lockstep-v1.json
       ../profiles/pe32-kernel32-callable-resolvers-v1.json
+      ../profiles/pe32-static-cutpoints-and-paired-callables-v1.json
     ];
   };
   machineRuntimeProfile =
@@ -68,14 +70,23 @@ let
   python = "${pythonEnv}/bin/python3";
   aggregatePython = "${pkgs.python3}/bin/python3";
   compiler = "${mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc";
+  wineFontsConf = pkgs.writeText "spaghetti-extractor-wine-fonts.conf" ''
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+    <fontconfig>
+      <dir>${pkgs.dejavu_fonts}/share/fonts</dir>
+      <cachedir prefix="xdg">fontconfig</cachedir>
+      <config><rescan><int>0</int></rescan></config>
+    </fontconfig>
+  '';
   # Candidate production only needs runtime Python.  In particular, neither
   # reviewed Lean nor Python proof emitters participate in its source hash.
-  runtimePythonSource = lib.fileset.toSource {
-    root = ../.;
-    fileset = lib.fileset.unions [
+  runtimePythonFiles = lib.fileset.unions [
       ../src/spaghetti_extractor/__init__.py
       ../src/spaghetti_extractor/artifact_formats.py
       ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/callable_external_runtime.py
+      ../src/spaghetti_extractor/machine_import_profiles.py
       ../src/spaghetti_extractor/util.py
       ../src/spaghetti_extractor/pe.py
       ../src/spaghetti_extractor/stage_binary.py
@@ -83,21 +94,141 @@ let
       ../src/spaghetti_extractor/_contract_tools
       ../src/spaghetti_extractor/roundtrip_fuzz/image_contract.py
       ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/callable_external_capability.py
+      ../src/spaghetti_extractor/relational/lean/callable_external_execution.py
       ../src/spaghetti_extractor/relational/definedness.py
       ../src/spaghetti_extractor/relational/semantic_cutpoints.py
       ../src/spaghetti_extractor/relational/x87_profile.py
+      ../src/spaghetti_extractor/reconstruction_ir.py
+      ../src/spaghetti_extractor/reconstruction_control.py
+      ../src/spaghetti_extractor/reconstruction_composition.py
+      ../src/spaghetti_extractor/reconstruction_contract_analysis.py
+      ../src/spaghetti_extractor/reconstruction_validation.py
+      ../src/spaghetti_extractor/reconstruction_workspace.py
+      ../src/spaghetti_extractor/region_replacement.py
       ../src/spaghetti_extractor/stage_b_api_catalog.py
       ../src/spaghetti_extractor/stage_b_c_backend.py
       ../src/spaghetti_extractor/stage_b_engine_layout.py
       ../src/spaghetti_extractor/stage_b_interpreter_backend.py
+      ../src/spaghetti_extractor/stage_b_typed_x87.py
+      ../src/spaghetti_extractor/stage_b_native_engine.py
+      ../src/spaghetti_extractor/stage_b_native_runtime.py
+      ../src/spaghetti_extractor/stage_b_state_machine.py
+    ];
+  runtimePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = runtimePythonFiles;
+  };
+  nativeBuildPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      runtimePythonFiles
+      ../src/spaghetti_extractor/stage_b_interpreter_native_build.py
+      ../src/spaghetti_extractor/stage_b_native_binding.py
+      ../src/spaghetti_extractor/stage_b_native_build.py
+      ../src/spaghetti_extractor/stage_b_pe_composer.py
+    ];
+  };
+  componentWorkspacePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      runtimePythonFiles
+      ../src/spaghetti_extractor/component_workspace.py
+    ];
+  };
+  semanticComponentPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/semantic_components.py
+      ../src/spaghetti_extractor/util.py
+    ];
+  };
+  callableExternalRuntimePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      callableExternalRuntimeDriver
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/callable_external_runtime.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/lean/__init__.py
+      ../src/spaghetti_extractor/relational/lean/callable_external_capability.py
+      ../src/spaghetti_extractor/relational/lean/callable_external_execution.py
+    ];
+  };
+  paddingStaticPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/machine_import_profiles.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_binary.py
+      ../src/spaghetti_extractor/stage_b_state_machine.py
+    ];
+  };
+  reconstructionStaticPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/machine_import_profiles.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_binary.py
+      ../src/spaghetti_extractor/stage_b_state_machine.py
+      ../src/spaghetti_extractor/reconstruction_ir.py
+      ../src/spaghetti_extractor/reconstruction_control.py
+    ];
+  };
+  reconstructionFunctionalPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/stage_b_functional.py
+    ];
+  };
+  reconstructionAssurancePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/reconstruction_assurance.py
+    ];
+  };
+  opaqueStaticPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.difference ../src (lib.fileset.unions [
+      ../src/spaghetti_extractor/lean
+      ../src/spaghetti_extractor/cli.py
+      ../src/spaghetti_extractor/__main__.py
+      ../src/spaghetti_extractor/callable_external_runtime.py
+      ../src/spaghetti_extractor/stage_b_api_catalog.py
+      ../src/spaghetti_extractor/stage_b_c_backend.py
+      ../src/spaghetti_extractor/stage_b_engine_layout.py
+      ../src/spaghetti_extractor/stage_b_functional.py
+      ../src/spaghetti_extractor/stage_b_interpreter_backend.py
+      ../src/spaghetti_extractor/stage_b_typed_x87.py
       ../src/spaghetti_extractor/stage_b_interpreter_native_build.py
       ../src/spaghetti_extractor/stage_b_native_binding.py
       ../src/spaghetti_extractor/stage_b_native_build.py
       ../src/spaghetti_extractor/stage_b_native_engine.py
       ../src/spaghetti_extractor/stage_b_native_runtime.py
       ../src/spaghetti_extractor/stage_b_pe_composer.py
-      ../src/spaghetti_extractor/stage_b_state_machine.py
-    ];
+      ../src/spaghetti_extractor/region_replacement.py
+      ../src/spaghetti_extractor/reconstruction_assurance.py
+      ../src/spaghetti_extractor/reconstruction_ir.py
+      ../src/spaghetti_extractor/semantic_components.py
+    ]);
   };
   stackDynamicProofPythonFiles = lib.fileset.unions [
     ../src/spaghetti_extractor/relational/lean/stack_dynamic_indirect_control.py
@@ -125,6 +256,18 @@ let
       stackDynamicProofPythonFiles
       directCallProposalProofPythonFiles
       runEntryProofPythonFiles
+      ../src/spaghetti_extractor/opaque_reconstruction.py
+      ../src/spaghetti_extractor/callable_external_runtime.py
+      ../src/spaghetti_extractor/reconstruction_assurance.py
+      ../src/spaghetti_extractor/reconstruction_ir.py
+      ../src/spaghetti_extractor/reconstruction_workspace.py
+      ../src/spaghetti_extractor/region_replacement.py
+      ../src/spaghetti_extractor/stage_b_interpreter_native_build.py
+      ../src/spaghetti_extractor/stage_b_native_binding.py
+      ../src/spaghetti_extractor/stage_b_native_build.py
+      ../src/spaghetti_extractor/stage_b_native_engine.py
+      ../src/spaghetti_extractor/stage_b_native_runtime.py
+      ../src/spaghetti_extractor/stage_b_pe_composer.py
     ]);
   proofPythonSource = lib.fileset.toSource {
     root = ../.;
@@ -358,6 +501,7 @@ let
       ../src/spaghetti_extractor/stage_b_api_catalog.py
       ../src/spaghetti_extractor/stage_b_c_backend.py
       ../src/spaghetti_extractor/stage_b_interpreter_backend.py
+      ../src/spaghetti_extractor/stage_b_typed_x87.py
       ../src/spaghetti_extractor/stage_b_state_machine.py
       ../src/spaghetti_extractor/util.py
       ../src/spaghetti_extractor/relational/__init__.py
@@ -380,6 +524,7 @@ let
       ../src/spaghetti_extractor/stage_b_api_catalog.py
       ../src/spaghetti_extractor/stage_b_c_backend.py
       ../src/spaghetti_extractor/stage_b_interpreter_backend.py
+      ../src/spaghetti_extractor/stage_b_typed_x87.py
       ../src/spaghetti_extractor/stage_b_state_machine.py
       ../src/spaghetti_extractor/util.py
       ../src/spaghetti_extractor/relational/__init__.py
@@ -403,6 +548,7 @@ let
       ../src/spaghetti_extractor/stage_b_api_catalog.py
       ../src/spaghetti_extractor/stage_b_c_backend.py
       ../src/spaghetti_extractor/stage_b_interpreter_backend.py
+      ../src/spaghetti_extractor/stage_b_typed_x87.py
       ../src/spaghetti_extractor/stage_b_state_machine.py
       ../src/spaghetti_extractor/util.py
       ../src/spaghetti_extractor/relational/__init__.py
@@ -426,6 +572,7 @@ let
       ../src/spaghetti_extractor/stage_b_api_catalog.py
       ../src/spaghetti_extractor/stage_b_c_backend.py
       ../src/spaghetti_extractor/stage_b_interpreter_backend.py
+      ../src/spaghetti_extractor/stage_b_typed_x87.py
       ../src/spaghetti_extractor/stage_b_state_machine.py
       ../src/spaghetti_extractor/util.py
       ../src/spaghetti_extractor/relational/__init__.py
@@ -601,6 +748,7 @@ let
       ../src/spaghetti_extractor/stage_b_c_backend.py
       ../src/spaghetti_extractor/stage_b_engine_layout.py
       ../src/spaghetti_extractor/stage_b_interpreter_backend.py
+      ../src/spaghetti_extractor/stage_b_typed_x87.py
       ../src/spaghetti_extractor/stage_b_interpreter_native_build.py
       ../src/spaghetti_extractor/stage_b_native_binding.py
       ../src/spaghetti_extractor/stage_b_native_build.py
@@ -703,6 +851,7 @@ let
       ../src/spaghetti_extractor/stage_b_c_backend.py
       ../src/spaghetti_extractor/stage_b_engine_layout.py
       ../src/spaghetti_extractor/stage_b_interpreter_backend.py
+      ../src/spaghetti_extractor/stage_b_typed_x87.py
       ../src/spaghetti_extractor/stage_b_interpreter_native_build.py
       ../src/spaghetti_extractor/stage_b_native_binding.py
       ../src/spaghetti_extractor/stage_b_native_build.py
@@ -731,29 +880,6 @@ let
     )]
     sys.modules[roundtrip_fuzz.__name__] = roundtrip_fuzz
 
-    from spaghetti_extractor.contract_tools import (
-        stage_a_export_reference_contract,
-        stage_a_generate_map,
-    )
-    from spaghetti_extractor.roundtrip_fuzz.image_contract import (
-        load_stage_a_load_image_contract,
-        write_stage_a_load_image_contract,
-    )
-    from spaghetti_extractor.stage_b_interpreter_backend import (
-        write_stage_b_interpreter_package,
-    )
-    from spaghetti_extractor.stage_b_interpreter_native_build import (
-        build_stage_b_interpreter_native_candidate,
-    )
-    from spaghetti_extractor.stage_b_native_engine import (
-        write_stage_b_native_engine_package,
-    )
-    from spaghetti_extractor.stage_b_native_runtime import (
-        write_stage_b_native_runtime_package,
-    )
-    from spaghetti_extractor.stage_b_state_machine import (
-        write_stage_b_state_machine_from_stage_a_export,
-    )
     from spaghetti_extractor.stage_binary import _parse_stage_a_pe
     from spaghetti_extractor.util import sha256_file, write_json
 
@@ -793,6 +919,17 @@ let
 
 
     def static_export(args):
+        from spaghetti_extractor.contract_tools import (
+            stage_a_export_reference_contract,
+            stage_a_generate_map,
+        )
+        from spaghetti_extractor.roundtrip_fuzz.image_contract import (
+            write_stage_a_load_image_contract,
+        )
+        from spaghetti_extractor.stage_b_state_machine import (
+            write_stage_b_state_machine_from_stage_a_export,
+        )
+
         original = Path(args.original)
         linker_map = Path(args.linker_map)
         out = Path(args.out)
@@ -859,6 +996,10 @@ let
 
 
     def interpreter(args):
+        from spaghetti_extractor.stage_b_interpreter_backend import (
+            write_stage_b_interpreter_package,
+        )
+
         write_stage_b_interpreter_package(
             state_machine=Path(args.state_machine),
             out=Path(args.out),
@@ -866,6 +1007,13 @@ let
 
 
     def native_engine(args):
+        from spaghetti_extractor.roundtrip_fuzz.image_contract import (
+            load_stage_a_load_image_contract,
+        )
+        from spaghetti_extractor.stage_b_native_engine import (
+            write_stage_b_native_engine_package,
+        )
+
         contract_path = Path(args.load_image_contract)
         reference_path = Path(args.reference_contract)
         contract = load_stage_a_load_image_contract(contract_path)
@@ -942,6 +1090,10 @@ let
 
 
     def native_runtime(args):
+        from spaghetti_extractor.stage_b_native_runtime import (
+            write_stage_b_native_runtime_package,
+        )
+
         write_stage_b_native_runtime_package(
             interpreter_package=Path(args.interpreter_package),
             native_engine_package=Path(args.native_engine_package),
@@ -950,6 +1102,10 @@ let
 
 
     def candidate(args):
+        from spaghetti_extractor.stage_b_interpreter_native_build import (
+            build_stage_b_interpreter_native_candidate,
+        )
+
         build_stage_b_interpreter_native_candidate(
             interpreter_package=Path(args.interpreter_package),
             native_engine_package=Path(args.native_engine_package),
@@ -1360,7 +1516,1778 @@ let
     ' "$out/smoke.json" >/dev/null
   '';
 
-  staticExport = mkPhase "stage-a-gnu-hello-roundtrip-static-export" [] ''
+  opaqueOriginalInventory = mkStaticBinaryInventory {
+    name = "stage-a-gnu-hello-opaque-original-inventory";
+    side = "original";
+    binary = originalPe;
+  };
+
+  opaqueStaticExport = pkgs.runCommand
+    "stage-a-gnu-hello-opaque-static-export-v1"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${opaqueStaticPythonSource}/src
+      ${python} - ${lib.escapeShellArg originalPe} \
+        ${lib.escapeShellArg "${opaqueOriginalInventory}/inventory.json"} \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.opaque_reconstruction import (
+          stage_a_export_opaque_reconstruction,
+      )
+
+      original, inventory, output = map(pathlib.Path, sys.argv[1:])
+      stage_a_export_opaque_reconstruction(
+          original=original,
+          inventory=inventory,
+          out=output,
+      )
+      PY
+      jq -e '
+        .format == "stage-a-opaque-static-export-v1" and
+        .status == "ready" and
+        .original.sha256 ==
+          "71b228f2babc9d3b4095ecf355db676c8ed8b45a7c8a7d350f47e962b4bf554c" and
+        .counts.regions == 7741 and
+        .counts.transfers == 7741 and
+        .counts.padding_waivers == 621 and
+        .counts.imports == 75 and
+        .counts.tls_callbacks == 2 and
+        (.trust.executes_original_binary | not) and
+        (.trust.uses_linker_map | not) and
+        (.trust.uses_symbols_for_authority | not) and
+        .trust.includes_all_recovered_code and
+        (.trust.reference_contract_is_formal_acceptance | not)
+      ' "$out/opaque-static-export.json" >/dev/null
+    '';
+
+  opaqueStateMachine = pkgs.runCommand
+    "stage-b-gnu-hello-opaque-state-machine-v1"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${paddingStaticPythonSource}/src
+      mkdir -p "$out"
+      ${python} - ${lib.escapeShellArg "${opaqueStaticExport}/state-machine.jsonl"} \
+        ${lib.escapeShellArg originalPe} \
+        ${lib.escapeShellArg "${opaqueStaticExport}/opaque-self-map.json"} \
+        ${lib.escapeShellArg machineRuntimeProfile} \
+        "$out/state-machine.jsonl" "$out/padding-bridges.json" <<'PY'
+      import json
+      import pathlib
+      import sys
+      from spaghetti_extractor.stage_b_state_machine import (
+          augment_state_machine_with_padding_bridges,
+      )
+      from spaghetti_extractor.util import write_json
+
+      source, original, block_map, profile, output, report = map(pathlib.Path, sys.argv[1:])
+      result = augment_state_machine_with_padding_bridges(
+          state_machine=source,
+          original_pe=original,
+          block_map=block_map,
+          external_profile=profile,
+          out=output,
+      )
+      write_json(report, {
+          "format": "stage-b-padding-bridge-augmentation-v1",
+          "status": "complete",
+          "state_machine": {"path": output.name, "sha256": result.sha256},
+          "counts": {
+              "input_transfers": result.input_transfer_count,
+              "padding_bridges": result.padding_bridge_count,
+              "output_transfers": result.output_transfer_count,
+              "terminating_transfers": len(result.terminating_transfer_rvas),
+          },
+          "bridged_rvas": list(result.bridged_rvas),
+          "terminating_transfer_rvas": list(result.terminating_transfer_rvas),
+          "trust": {
+              "executes_original_binary": False,
+              "external_termination_profile_bound": True,
+          },
+      })
+      PY
+      jq -e '
+        .format == "stage-b-padding-bridge-augmentation-v1" and
+        .status == "complete" and
+        .counts.input_transfers == 7741 and
+        .counts.padding_bridges == 120 and
+        .counts.output_transfers == 7861 and
+        .counts.terminating_transfers == 17 and
+        (.trust.executes_original_binary | not) and
+        .trust.external_termination_profile_bound
+      ' "$out/padding-bridges.json" >/dev/null
+    '';
+
+  machineIr = pkgs.runCommand
+    "stage-a-gnu-hello-machine-ir-v2"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${reconstructionStaticPythonSource}/src
+      ${python} - ${lib.escapeShellArg "${opaqueStateMachine}/state-machine.jsonl"} \
+        ${lib.escapeShellArg originalPe} \
+        ${lib.escapeShellArg "${opaqueStaticExport}/reference-contract.json"} \
+        ${lib.escapeShellArg "${machineRuntimeProfileSource}/pe32-static-cutpoints-and-paired-callables-v1.json"} \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.reconstruction_ir import export_machine_ir_package
+
+      state_machine, original, reference, target_profile, output = map(pathlib.Path, sys.argv[1:])
+      export_machine_ir_package(
+          state_machine=state_machine,
+          original_pe=original,
+          reference_contract=reference,
+          indirect_target_profile=target_profile,
+          out=output,
+      )
+      PY
+      jq -e '
+        .format == "stage-a-machine-ir-v2" and
+        .status == "incomplete" and
+        .binary.sha256 ==
+          "71b228f2babc9d3b4095ecf355db676c8ed8b45a7c8a7d350f47e962b4bf554c" and
+        .counts.units == 7861 and
+        .counts.instructions == 21133 and
+        .counts.x87_micro_ops == 313 and
+        .counts.violated_issues == 0 and
+        .counts.incomplete_issues > 0 and
+        .coverage.counts.executable_bytes == 79476 and
+        .coverage.counts.unknown_bytes == 0 and
+        .control.counts.roots >= 4 and
+        .control.counts.unresolved_direct_targets == 0 and
+        .control.counts.indirect_exits == 95 and
+        .control.counts.closed_indirect_exits == 3 and
+        .control.counts.rooted_frontiers > 0 and
+        .control.counts.exact_reachable_units > 0 and
+        .control.counts.potential_reachable_units > 0 and
+        .control.reachability.status == "incomplete" and
+        ([.control.recovered_indirect_targets[] |
+          select(.status == "recovered" and .source_rva == 14383 and
+            (.entries | length) == 36 and (.target_rvas | length) == 12)] |
+          length) == 1 and
+        .control.indirect_target_profile.id ==
+          "pe32-static-cutpoints-and-paired-callables-v1" and
+        .authority ==
+          "static sanitizing export; no original execution; qualification requires independent downstream evidence"
+      ' "$out/machine-ir-manifest.json" >/dev/null
+    '';
+
+  reconstructionInterpreter = pkgs.runCommand
+    "stage-b-gnu-hello-machine-ir-interpreter-v1"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${runtimePythonSource}/src
+      ${python} - ${lib.escapeShellArg "${machineIr}/machine-ir.jsonl"} "$out" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.stage_b_interpreter_backend import (
+          write_stage_b_interpreter_package,
+      )
+
+      machine_ir, output = map(pathlib.Path, sys.argv[1:])
+      write_stage_b_interpreter_package(machine_ir=machine_ir, out=output)
+      PY
+      jq -e '
+        .format == "stage-b-semantic-interpreter-package-v1" and
+        .status == "ready" and
+        .counts.input_transfers == 7861 and
+        .counts.transfers == 7861 and
+        .counts.blocked_transfers == 0 and
+        .counts.x87_operations == 313 and
+        .input_mode == "sanitized_machine_ir_v2"
+      ' "$out/state-machine-interpreter-package.json" >/dev/null
+    '';
+
+  reconstructionNativeEngine = pkgs.runCommand
+    "stage-b-gnu-hello-machine-ir-native-engine-v1"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${runtimePythonSource}/src
+      ${python} - \
+        ${lib.escapeShellArg "${machineIr}/machine-ir.jsonl"} \
+        ${lib.escapeShellArg "${opaqueStaticExport}/load-image-contract.json"} \
+        ${lib.escapeShellArg "${opaqueStaticExport}/reference-contract.json"} \
+        ${lib.escapeShellArg "${callableExternalRuntimeContract}/callable-external-runtime-contract.json"} \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.roundtrip_fuzz.image_contract import (
+          load_stage_a_load_image_contract,
+      )
+      from spaghetti_extractor.stage_b_native_engine import (
+          write_stage_b_native_engine_package,
+      )
+      from spaghetti_extractor.util import sha256_file
+
+      machine_ir, load_contract_path, reference_path, callable_contract, output = map(
+          pathlib.Path, sys.argv[1:]
+      )
+      contract = load_stage_a_load_image_contract(load_contract_path)
+      callbacks = []
+      if contract.tls is not None:
+          callbacks.extend(
+              {
+                  "rva": callback.rva,
+                  "kind": "tls_callback",
+                  "stack_cleanup_bytes": 12,
+              }
+              for callback in contract.tls.callbacks
+          )
+      import_iat_vas = {}
+      for descriptor in contract.imports:
+          for cell in descriptor.cells:
+              identity = cell.symbol if cell.symbol is not None else cell.ordinal
+              if identity is None:
+                  raise ValueError("load-image import cell has no identity")
+              key = (descriptor.dll.lower(), identity)
+              value = contract.identity.preferred_base + cell.iat_rva
+              previous = import_iat_vas.setdefault(key, value)
+              if previous != value:
+                  raise ValueError(f"ambiguous IAT cells for {key!r}")
+      relocations = []
+      for block in contract.relocations:
+          for relocation in block.relocations:
+              if (
+                  relocation.target_rva is None
+                  or relocation.preferred_value is None
+                  or relocation.width == 0
+              ):
+                  continue
+              relocations.append(
+                  {
+                      "source_rva": relocation.target_rva,
+                      "type": relocation.type,
+                      "kind": relocation.kind,
+                      "width": relocation.width,
+                      "preferred_value": relocation.preferred_value,
+                  }
+              )
+      write_stage_b_native_engine_package(
+          machine_ir=machine_ir,
+          entry_rva=contract.identity.entry_rva,
+          callback_targets=callbacks,
+          import_iat_vas=import_iat_vas,
+          base_relocation_evidence={
+              "format": "stage-b-pe32-base-relocation-evidence-v1",
+              "complete": contract.completeness.complete,
+              "pe_sha256": contract.identity.pe_sha256,
+              "reference_contract_sha256": sha256_file(reference_path),
+              "image_base": contract.identity.preferred_base,
+              "relocations": relocations,
+          },
+          callable_external_contract=callable_contract,
+          out=output,
+      )
+      PY
+      jq -e '
+        .format == "stage-b-native-engine-package-v1" and
+        .status == "ready" and
+        .input_mode == "sanitized_machine_ir_v2" and
+        .counts.transfers == 7861 and
+        .counts.external_sites == 406 and
+        .counts.indirect_calls == 83 and
+        .counts.callback_targets == 7 and
+        .counts.callback_adapters == 5 and
+        .counts.callable_external_routes > 0 and
+        .counts.x87_operations == 313 and
+        .counts.blockers == 0 and
+        (.policy.raw_x87_instruction_payloads == "forbidden")
+      ' "$out/native-engine-package.json" >/dev/null
+    '';
+
+  reconstructionNativeRuntime = pkgs.runCommand
+    "stage-b-gnu-hello-machine-ir-native-runtime-v1"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${runtimePythonSource}/src
+      ${python} - \
+        ${lib.escapeShellArg reconstructionInterpreter} \
+        ${lib.escapeShellArg reconstructionNativeEngine} \
+        ${lib.escapeShellArg machineRuntimeProfile} \
+        ${lib.escapeShellArg "${callableExternalRuntimeContract}/callable-external-runtime-contract.json"} \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.stage_b_native_runtime import (
+          write_stage_b_native_runtime_package,
+      )
+
+      interpreter, engine, profile, callable_contract, output = map(
+          pathlib.Path, sys.argv[1:]
+      )
+      write_stage_b_native_runtime_package(
+          interpreter_package=interpreter,
+          native_engine_package=engine,
+          external_profile=profile,
+          callable_external_contract=callable_contract,
+          out=output,
+      )
+      PY
+      expected_machine_ir_sha256="$(
+        sha256sum ${machineIr}/machine-ir.jsonl | cut -d ' ' -f1
+      )"
+      jq -e --arg expected_machine_ir_sha256 "$expected_machine_ir_sha256" '
+        .format == "stage-b-native-runtime-package-v1" and
+        .status == "ready" and
+        .counts.transfers == 7861 and
+        .inputs.state_machine_sha256 == $expected_machine_ir_sha256 and
+        .counts.callable_external_routes > 0 and
+        (.inputs.external_range_contracts.rules | length) > 0
+      ' "$out/native-runtime-package.json" >/dev/null
+    '';
+
+  reconstructionWorkspaceDag = import ./stage-b-reconstruction-workspace.nix {
+    inherit pkgs pythonEnv;
+    pythonSource = runtimePythonSource;
+    machineIr = machineIr;
+    interpreterPackage = reconstructionInterpreter;
+    signatureCatalog = machineRuntimeProfile;
+    namePrefix = "stage-b-gnu-hello";
+    clusters = [
+      {
+        name = "branch";
+        entryRva = 4152;
+        template = "compare_branch";
+        expectedCases = 4;
+      }
+      {
+        name = "external-call";
+        entryRva = 4160;
+        template = "constant_external_call";
+        expectedCases = 2;
+      }
+      {
+        name = "internal-call";
+        entryRva = 4609;
+        template = "store_then_zero_call";
+        expectedCases = 2;
+      }
+      {
+        name = "atomic";
+        entryRva = 4176;
+        template = "manual_contract";
+        expectedCases = 13;
+        portableSource = ../fixtures/gnu-hello/reconstruction/atomic.c;
+      }
+      {
+        name = "callback";
+        entryRva = 4407;
+        template = "constant_external_call";
+        expectedCases = 2;
+      }
+      {
+        name = "dispatch";
+        entryRva = 14383;
+        template = "manual_contract";
+        expectedCases = 36;
+        portableSource = ../fixtures/gnu-hello/reconstruction/dispatch.c;
+      }
+      {
+        name = "typed-memory";
+        entryRva = 53481;
+        template = "manual_contract";
+        expectedCases = 101;
+        portableSource = ../fixtures/gnu-hello/reconstruction/typed-memory.c;
+      }
+    ];
+  };
+  reconstructionPlan = reconstructionWorkspaceDag.plan;
+  semanticComponents = import ./stage-b-semantic-components.nix {
+    inherit pkgs pythonEnv;
+    pythonSource = semanticComponentPythonSource;
+    machineIr = machineIr;
+    reconstructionPlan = reconstructionPlan;
+    declarations = ../fixtures/gnu-hello/semantic-components.json;
+    namePrefix = "stage-b-gnu-hello";
+  };
+  semanticComponentWorkspaceDag = import ./stage-b-semantic-component-workspaces.nix {
+    inherit pkgs pythonEnv;
+    pythonSource = componentWorkspacePythonSource;
+    machineIr = machineIr;
+    interpreterPackage = reconstructionInterpreter;
+    reconstructionPlan = reconstructionPlan;
+    semanticComponentCatalog = semanticComponents;
+    namePrefix = "stage-b-gnu-hello";
+    components = [
+      {
+        name = "branch";
+        componentId = "startup-compare-route";
+        proofProfile = "compare_branch_v1";
+        expectedCases = 4;
+      }
+      {
+        name = "external-call";
+        componentId = "startup-sleep-service";
+        proofProfile = "constant_service_call_v1";
+        expectedCases = 2;
+      }
+      {
+        name = "internal-call";
+        componentId = "static-word-initialization";
+        proofProfile = "store_then_zero_call_v1";
+        expectedCases = 2;
+      }
+      {
+        name = "atomic";
+        componentId = "startup-atomic-compare-exchange";
+        proofProfile = "atomic_compare_exchange_v1";
+        expectedCases = 13;
+        portableSource = ../fixtures/gnu-hello/reconstruction/atomic.c;
+      }
+      {
+        name = "callback";
+        componentId = "startup-callback-registration";
+        proofProfile = "constant_service_call_v1";
+        expectedCases = 2;
+      }
+      {
+        name = "dispatch";
+        componentId = "finite-selector-dispatch";
+        proofProfile = "finite_dispatch_v1";
+        expectedCases = 36;
+        portableSource = ../fixtures/gnu-hello/reconstruction/dispatch.c;
+      }
+      {
+        name = "typed-memory";
+        componentId = "alias-sensitive-word-update";
+        proofProfile = "alias_sensitive_word_update_v1";
+        expectedCases = 101;
+        portableSource = ../fixtures/gnu-hello/reconstruction/typed-memory.c;
+      }
+    ];
+  };
+  reconstructionLiftingEvidence = pkgs.runCommand
+    "stage-b-gnu-hello-lifting-evidence-v1"
+    {
+      nativeBuildInputs = [ pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      plan=${reconstructionPlan}/reconstruction-plan.json
+      manifest=${machineIr}/machine-ir-manifest.json
+      dispatch_workspace=${reconstructionWorkspaceDag.workspaces.dispatch}
+      registry=${reconstructionWorkspaceRegistry}/reconstruction-registry.json
+      reconstruction_status=${reconstructionWorkspaceRegistry}/reconstruction-status.json
+      atomic_validation=${reconstructionWorkspaceDag.checks.atomic}/validation-report.json
+      callback_validation=${reconstructionWorkspaceDag.checks.callback}/validation-report.json
+      dispatch_validation=${reconstructionWorkspaceDag.checks.dispatch}/validation-report.json
+      typed_memory_validation=${reconstructionWorkspaceDag.checks.typed-memory}/validation-report.json
+      jq -e '
+        .status == "incomplete" and
+        .control.counts.closed_indirect_exits == 3 and
+        .control.counts.rooted_frontiers > 0 and
+        .control.counts.exact_reachable_units > 0 and
+        .control.counts.potential_reachable_units > 0
+      ' "$manifest" >/dev/null
+      jq -e '
+        (first(.clusters[] | select(.entry_rva == 14383)) as $dispatch |
+          $dispatch.typed_contract.status == "complete" and
+          ($dispatch.control | length) == 1 and
+          $dispatch.control[0].finite_target_inventory and
+          ($dispatch.control[0].dispatch_entries | length) == 36 and
+          ($dispatch.control[0].target_rvas | length) == 12 and
+          $dispatch.validation_requirements.finite_dispatch_cases == 36) and
+        (first(.clusters[] | select(.entry_rva == 53481)) as $memory |
+          $memory.typed_contract.status == "complete" and
+          any($memory.typed_contract.memory_views[];
+            .base_role == "object_pointer" and
+            ([.fields[].offset] | sort) == [4, 8]) and
+          ($memory.typed_contract.preconditions.aliasing | length) > 0) and
+        (first(.clusters[] | select(.entry_rva == 4176)) as $atomic |
+          $atomic.typed_contract.status == "complete" and
+          ($atomic.typed_contract.atomic_effects | length) == 1 and
+          $atomic.typed_contract.atomic_effects[0].operation == "compare_exchange" and
+          $atomic.typed_contract.atomic_effects[0].ordering.kind ==
+            "locked_instruction_order") and
+        (first(.clusters[] | select(.entry_rva == 4407)) as $callback |
+          $callback.typed_contract.status == "complete" and
+          ($callback.typed_contract.callbacks | length) == 1 and
+          $callback.typed_contract.callbacks[0].nested_frame.status == "complete" and
+          $callback.typed_contract.callbacks[0].lifetime.status == "complete" and
+          $callback.typed_contract.external_services[0].catalog.matched)
+      ' "$plan" >/dev/null
+      jq -e '
+        .format == "stage-b-reconstruction-workspace-v1" and
+        .status == "editable" and .template == "manual_contract" and
+        (.executes_original_binary | not)
+      ' "$dispatch_workspace/workspace.json" >/dev/null
+      jq -e '
+        .format == "stage-b-reconstruction-validation-cases-v1" and
+        .counts.indirect_dispatch == 36 and
+        ([.indirect_dispatch_cases[] |
+          select(.dispatch_binding.executable == true)] | length) == 36
+      ' "$dispatch_workspace/tests/generated-validation-cases.json" >/dev/null
+      jq -e '
+        .format == "stage-b-reconstruction-cases-v1" and
+        (.cases | length) == 36 and
+        ([.cases[].registers.eax] | sort) == ([range(0; 36)] | sort)
+      ' "$dispatch_workspace/tests/cases.json" >/dev/null
+      jq -e '
+        .format == "stage-b-reconstruction-registry-v1" and
+        .status == "qualified" and
+        (.executes_original_binary | not) and
+        .counts.replacements == 7
+      ' "$registry" >/dev/null
+      jq -e '
+        .format == "stage-b-reconstruction-status-v1" and
+        .status == "incomplete" and
+        .counts.reachable_clusters == 922 and
+        .counts.promoted_clusters == 5 and
+        .counts.remaining_clusters == 917 and
+        .counts.remaining_without_template == 901
+      ' "$reconstruction_status" >/dev/null
+      jq -e '.status == "qualified" and .counts.compared_cases == 13 and .counts.deltas == 0' \
+        "$atomic_validation" >/dev/null
+      jq -e '.status == "qualified" and .counts.compared_cases == 2 and .counts.deltas == 0' \
+        "$callback_validation" >/dev/null
+      jq -e '.status == "qualified" and .counts.compared_cases == 36 and .counts.deltas == 0' \
+        "$dispatch_validation" >/dev/null
+      jq -e '.status == "qualified" and .counts.compared_cases == 101 and .counts.deltas == 0' \
+        "$typed_memory_validation" >/dev/null
+      mkdir -p "$out"
+      jq -n \
+        --slurpfile manifest "$manifest" \
+        --slurpfile plan "$plan" \
+        --slurpfile registry "$registry" \
+        --slurpfile reconstruction_status "$reconstruction_status" \
+        --slurpfile atomic_validation "$atomic_validation" \
+        --slurpfile callback_validation "$callback_validation" \
+        --slurpfile dispatch_validation "$dispatch_validation" \
+        --slurpfile typed_memory_validation "$typed_memory_validation" '
+        ($manifest[0]) as $m |
+        ($plan[0]) as $p |
+        ($registry[0]) as $r |
+        ($reconstruction_status[0]) as $s |
+        {
+          format: "stage-b-gnu-hello-lifting-evidence-v1",
+          status: "usable-incomplete",
+          executes_original_binary: false,
+          reachability: {
+            status: $m.control.reachability.status,
+            exact_units: $m.control.counts.exact_reachable_units,
+            potential_units: $m.control.counts.potential_reachable_units,
+            rooted_frontiers: $m.control.counts.rooted_frontiers
+          },
+          source_lifting: {
+            registry_status: $r.status,
+            qualified_replacements: $r.counts.replacements,
+            exact_reachable_clusters: $s.counts.reachable_clusters,
+            promoted_exact_clusters: $s.counts.promoted_clusters,
+            remaining_exact_clusters: $s.counts.remaining_clusters,
+            remaining_without_template: $s.counts.remaining_without_template
+          },
+          hard_lifts: [
+            {
+              entry_rva: 4176,
+              class: "atomic_compare_exchange",
+              validation: $atomic_validation[0]
+            },
+            {
+              entry_rva: 4407,
+              class: "callback_registration",
+              validation: $callback_validation[0]
+            },
+            {
+              entry_rva: 14383,
+              class: "finite_indirect_dispatch",
+              validation: $dispatch_validation[0]
+            },
+            {
+              entry_rva: 53481,
+              class: "ordered_alias_sensitive_memory",
+              validation: $typed_memory_validation[0]
+            }
+          ] | map({
+            entry_rva,
+            class,
+            status: .validation.status,
+            compared_cases: .validation.counts.compared_cases,
+            deltas: .validation.counts.deltas,
+            incomplete: .validation.counts.incomplete,
+            executes_original_binary: .validation.executes_original_binary
+          }),
+          examples: [
+            $p.clusters[] |
+            select(.entry_rva == 14383 or .entry_rva == 53481 or
+              .entry_rva == 4176 or .entry_rva == 4407) |
+            {
+              cluster_id: .id,
+              entry_rva,
+              typed_status: .typed_contract.status,
+              validation_requirements,
+              blocker_codes: [.blockers[].code]
+            }
+          ]
+        }
+      ' > "$out/lifting-evidence.json"
+    '';
+  reconstructionBranchWorkspace = reconstructionWorkspaceDag.workspaces.branch;
+  reconstructionExternalWorkspace =
+    reconstructionWorkspaceDag.workspaces.external-call;
+  reconstructionInternalWorkspace =
+    reconstructionWorkspaceDag.workspaces.internal-call;
+  reconstructionAtomicWorkspace = reconstructionWorkspaceDag.workspaces.atomic;
+  reconstructionCallbackWorkspace = reconstructionWorkspaceDag.workspaces.callback;
+  reconstructionDispatchWorkspace = reconstructionWorkspaceDag.workspaces.dispatch;
+  reconstructionTypedMemoryWorkspace =
+    reconstructionWorkspaceDag.workspaces.typed-memory;
+  reconstructionBranchWorkspaceCheck = reconstructionWorkspaceDag.checks.branch;
+  reconstructionExternalWorkspaceCheck =
+    reconstructionWorkspaceDag.checks.external-call;
+  reconstructionInternalWorkspaceCheck =
+    reconstructionWorkspaceDag.checks.internal-call;
+  reconstructionAtomicWorkspaceCheck = reconstructionWorkspaceDag.checks.atomic;
+  reconstructionCallbackWorkspaceCheck =
+    reconstructionWorkspaceDag.checks.callback;
+  reconstructionDispatchWorkspaceCheck =
+    reconstructionWorkspaceDag.checks.dispatch;
+  reconstructionTypedMemoryWorkspaceCheck =
+    reconstructionWorkspaceDag.checks.typed-memory;
+  reconstructionWorkspaceRegistry = reconstructionWorkspaceDag.registry;
+  semanticComponentRegistry = semanticComponentWorkspaceDag.registry;
+
+
+  reconstructionEntryReplacement = pkgs.runCommand
+    "stage-b-gnu-hello-entry-replacement-v1"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export PYTHONPATH=${runtimePythonSource}/src
+      ${python} - \
+        ${machineIr}/machine-ir.jsonl \
+        ${reconstructionInterpreter}/state-machine-interpreter-package.json \
+        "$out" <<'PY'
+      import json
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.region_replacement import (
+          REGION_REPLACEMENT_FORMAT,
+          generate_region_override_table,
+          write_region_replacement_manifest,
+      )
+      from spaghetti_extractor.util import sha256_bytes, sha256_file, write_json
+
+      machine_ir_path = pathlib.Path(sys.argv[1])
+      interpreter_manifest_path = pathlib.Path(sys.argv[2])
+      output = pathlib.Path(sys.argv[3])
+      output.mkdir(parents=True, exist_ok=True)
+
+      units = [
+          json.loads(line)
+          for line in machine_ir_path.read_text(encoding="utf-8").splitlines()
+          if line
+      ]
+      matches = [
+          unit for unit in units
+          if unit.get("record_kind") == "unit"
+          and unit.get("source", {}).get("original", {}).get("rva_start") == 0x1420
+      ]
+      if len(matches) != 1:
+          raise SystemExit("expected one machine-IR unit at the PE entry RVA")
+      unit = matches[0]
+      semantics = unit.get("semantics", {})
+      expected_memory = [{
+          "address": {"op": "const", "value": 0x430348, "width": 32},
+          "kind": "write",
+          "value": {"op": "const", "value": 0, "width": 32},
+          "width": 4,
+      }]
+      expected_outcome = {"kind": "jump", "target_rva": 0x1010}
+      if (
+          semantics.get("memory_events") != expected_memory
+          or semantics.get("register_writes") != []
+          or semantics.get("flag_writes") != []
+          or semantics.get("external_events") != []
+          or semantics.get("outcome") != expected_outcome
+      ):
+          raise SystemExit("GNU Hello entry-unit semantics changed")
+
+      source_lines = [
+          '#include "state-machine-runtime.h"',
+          'stage_b_step_result gnu_hello_replace_entry(',
+          '    stage_b_runtime *rt, stage_b_machine_state *state) {',
+          '  uint32_t memory_fault = 0U;',
+          '  state->original_rva = 0x00001420U;',
+          '  if (rt == 0 || rt->write == 0)',
+          '    return (stage_b_step_result){ STAGE_B_MEMORY_FAULT, 0U, 0U };',
+          '  rt->write(rt->context, 0x00430348U, 4U, 0U, &memory_fault);',
+          '  if (memory_fault)',
+          '    return (stage_b_step_result){ STAGE_B_MEMORY_FAULT, 0U, 0U };',
+          '  return (stage_b_step_result){ STAGE_B_JUMP, 0x00001010U, 0U };',
+          '}',
+      ]
+      source_path = output / "gnu-hello-entry-replacement.c"
+      source_path.write_text("\n".join(source_lines) + "\n", encoding="ascii")
+
+      interpreter = json.loads(interpreter_manifest_path.read_text(encoding="utf-8"))
+      program = interpreter.get("program", {})
+      program_path = interpreter_manifest_path.parent / str(program.get("path"))
+      if sha256_file(program_path) != program.get("sha256"):
+          raise SystemExit("interpreter baseline program binding is stale")
+      evidence_sha256 = sha256_bytes(json.dumps(
+          {"unit": unit["id"], "semantics": semantics},
+          sort_keys=True,
+          separators=(",", ":"),
+      ).encode("ascii"))
+      evidence_id = "evidence:exhaustive-entry-lowering"
+      replacement = {
+          "format": REGION_REPLACEMENT_FORMAT,
+          "id": "gnu-hello-entry-initialization",
+          "bindings": {
+              "machine_ir_sha256": sha256_file(machine_ir_path),
+              "baseline_program_sha256": program["sha256"],
+              "cluster_contract_sha256": unit["source"]["contract_sha256"],
+          },
+          "cluster": {
+              "id": "cluster:gnu-hello-entry-initialization",
+              "entry_unit_id": unit["id"],
+              "entry_rva": 0x1420,
+              "unit_ids": [unit["id"]],
+              "rva_spans": [{"start": 0x1420, "end": 0x142f}],
+          },
+          "source": {
+              "path": source_path.name,
+              "sha256": sha256_file(source_path),
+              "symbol": "gnu_hello_replace_entry",
+              "line_start": 2,
+              "line_end": len(source_lines),
+          },
+          "abi": {
+              "calling_convention": "machine_state",
+              "stack_delta": 0,
+              "parameters": [],
+              "results": [],
+              "preserved_registers": [
+                  "eax", "ebp", "ebx", "ecx", "edi", "edx", "esi", "esp",
+              ],
+              "clobbered_registers": [],
+              "evidence_ids": [evidence_id],
+          },
+          "type_hypotheses": [],
+          "live_state": {"inputs": [], "outputs": []},
+          "memory_views": [{
+              "id": "memory:startup-global",
+              "base_expression": "0x00430348",
+              "byte_length": 4,
+              "length_expression": None,
+              "access": "write",
+              "representation": "little-endian uint32 static word",
+              "evidence_ids": [evidence_id],
+          }],
+          "expectations": {
+              "control": [{
+                  "id": "exit:startup-continuation",
+                  "kind": "jump",
+                  "target_unit_ids": [
+                      "semantic-transfer:original-cutpoint-00001010-0000101f"
+                  ],
+                  "target_rvas": [0x1010],
+                  "evidence_ids": [evidence_id],
+              }],
+              "fault": {
+                  "allow_none": True,
+                  "variants": [{
+                      "id": "fault:memory",
+                      "kind": "memory_fault",
+                      "evidence_ids": [evidence_id],
+                  }],
+              },
+              "external_events": [],
+          },
+          "evidence": [{
+              "id": evidence_id,
+              "class": "exhaustive",
+              "status": "qualified",
+              "artifact_sha256": evidence_sha256,
+              "detail": (
+                  "the complete normalized effect list was matched before "
+                  "emitting the constrained C replacement"
+              ),
+          }],
+      }
+      replacement_path = output / "region-replacement.json"
+      manifest = write_region_replacement_manifest(
+          replacement_path, replacement, source_root=output
+      )
+      override = generate_region_override_table(
+          manifests=[manifest], source_root=output, out_dir=output
+      )
+      write_json(output / "replacement-evidence.json", {
+          "format": "stage-b-structural-region-replacement-evidence-v1",
+          "status": "qualified",
+          "executes_original_binary": False,
+          "machine_ir_sha256": sha256_file(machine_ir_path),
+          "baseline_program_sha256": program["sha256"],
+          "unit_id": unit["id"],
+          "unit_contract_sha256": unit["source"]["contract_sha256"],
+          "normalized_effects_sha256": evidence_sha256,
+          "replacement_manifest_sha256": manifest.manifest_sha256,
+          "override_table_sha256": json.loads(
+              override.manifest.read_text(encoding="utf-8")
+          )["table_sha256"],
+          "checks": {
+              "complete_memory_effects": "verified",
+              "complete_register_effects": "verified",
+              "complete_flag_effects": "verified",
+              "complete_external_effects": "verified",
+              "exact_control_exit": "verified",
+              "source_hash": "verified",
+          },
+      })
+      PY
+      jq -e '
+        .format == "stage-b-region-override-table-v1" and
+        .status == "ready" and (.executes_original_binary | not) and
+        (.entries | length) == 1 and
+        .entries[0].entry_rva == 5152
+      ' "$out/region-overrides-manifest.json" >/dev/null
+      jq -e '
+        .format == "stage-b-structural-region-replacement-evidence-v1" and
+        .status == "qualified" and (.executes_original_binary | not)
+      ' "$out/replacement-evidence.json" >/dev/null
+    '';
+
+  reconstructionRegionalHarnessKernel = pkgs.runCommand
+    "stage-b-gnu-hello-regional-harness-kernel-v1"
+    {
+      nativeBuildInputs = [ pkgs.stdenv.cc pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      mkdir -p "$out/include" "$out/objects"
+      cp ${reconstructionInterpreter}/state-machine-runtime.h "$out/include/"
+      cp ${reconstructionInterpreter}/state-machine-interpreter.h "$out/include/"
+      cp ${reconstructionInterpreter}/state-machine-interpreter-internal.h "$out/include/"
+      cc -std=c11 -O0 -g0 -fno-pie \
+        -I${reconstructionInterpreter} \
+        -c ${reconstructionInterpreter}/state-machine-interpreter.c \
+        -o "$out/objects/interpreter.o"
+      cc -std=c11 -O0 -g0 -fno-pie \
+        -I${reconstructionInterpreter} \
+        -c ${reconstructionInterpreter}/state-machine-program.c \
+        -o "$out/objects/program.o"
+      test -s "$out/objects/interpreter.o"
+      test -s "$out/objects/program.o"
+    '';
+
+  mkEntryReplacementRegionalValidation = { name, mutate ? false }:
+    pkgs.runCommand name
+      {
+        nativeBuildInputs = [ pythonEnv pkgs.stdenv.cc pkgs.jq pkgs.coreutils ];
+        preferLocalBuild = false;
+        allowSubstitutes = true;
+        __contentAddressed = true;
+      }
+      ''
+        set -euo pipefail
+        export PYTHONHASHSEED=0
+        export LC_ALL=C.UTF-8
+        export PYTHONPATH=${runtimePythonSource}/src
+        replacement_root=${reconstructionEntryReplacement}
+        ${lib.optionalString mutate ''
+          replacement_root="$TMPDIR/replacement"
+          mkdir -p "$replacement_root"
+          cp ${reconstructionEntryReplacement}/gnu-hello-entry-replacement.c \
+            "$replacement_root/gnu-hello-entry-replacement.c"
+          cp ${reconstructionEntryReplacement}/region-replacement.json \
+            "$replacement_root/region-replacement.json"
+          chmod u+w \
+            "$replacement_root/gnu-hello-entry-replacement.c" \
+            "$replacement_root/region-replacement.json"
+          ${python} - "$replacement_root" <<'PY'
+        import json
+        import pathlib
+        import sys
+
+        from spaghetti_extractor.region_replacement import (
+            write_region_replacement_manifest,
+        )
+        from spaghetti_extractor.util import sha256_file
+
+        root = pathlib.Path(sys.argv[1])
+        source = root / "gnu-hello-entry-replacement.c"
+        text = source.read_text(encoding="ascii")
+        needle = "rt->write(rt->context, 0x00430348U, 4U, 0U, &memory_fault);"
+        replacement = "rt->write(rt->context, 0x00430348U, 4U, 1U, &memory_fault);"
+        if text.count(needle) != 1:
+            raise SystemExit("entry replacement mutation anchor is not unique")
+        source.write_text(text.replace(needle, replacement), encoding="ascii")
+        payload = json.loads(
+            (root / "region-replacement.json").read_text(encoding="utf-8")
+        )
+        payload["source"]["sha256"] = sha256_file(source)
+        write_region_replacement_manifest(
+            root / "region-replacement.json", payload, source_root=root
+        )
+        mutation_line = next(
+            index for index, line in enumerate(text.splitlines(), start=1)
+            if needle in line
+        )
+        (root / "mutation-location.json").write_text(
+            json.dumps({
+                "path": source.name,
+                "line": mutation_line,
+                "expected": needle,
+                "observed": replacement,
+            }, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        PY
+        ''}
+        mkdir -p "$out"
+        ${python} - "$TMPDIR/region-harness.c" <<'PY'
+        import pathlib
+        import sys
+
+        pathlib.Path(sys.argv[1]).write_text(r"""#include <stdint.h>
+        #include <stdio.h>
+        #include <string.h>
+        #include "state-machine-interpreter.h"
+
+        stage_b_step_result gnu_hello_replace_entry(
+            stage_b_runtime *rt, stage_b_machine_state *state);
+
+        stage_b_call_status stage_b_dispatch_external_call(
+            stage_b_runtime *runtime, const stage_b_call_event *event,
+            const stage_b_machine_state *input, stage_b_machine_state *output) {
+          (void)runtime;
+          (void)event;
+          *output = *input;
+          return STAGE_B_CALL_UNIMPLEMENTED;
+        }
+
+        typedef struct harness_memory {
+          uint32_t word;
+          uint32_t writes;
+          uint32_t address;
+          uint32_t width;
+          uint32_t value;
+        } harness_memory;
+
+        static uint32_t harness_read(
+            void *opaque, uint32_t address, uint32_t width, uint32_t *fault) {
+          harness_memory *memory = (harness_memory *)opaque;
+          if (address != UINT32_C(0x00430348) || width != 4U) {
+            *fault = 1U;
+            return 0U;
+          }
+          return memory->word;
+        }
+
+        static void harness_write(
+            void *opaque, uint32_t address, uint32_t width, uint32_t value,
+            uint32_t *fault) {
+          harness_memory *memory = (harness_memory *)opaque;
+          if (address != UINT32_C(0x00430348) || width != 4U) {
+            *fault = 1U;
+            return;
+          }
+          memory->word = value;
+          memory->writes += 1U;
+          memory->address = address;
+          memory->width = width;
+          memory->value = value;
+        }
+
+        static void emit(
+            const char *side, stage_b_step_result result,
+            const stage_b_machine_state *state, const harness_memory *memory) {
+          printf("%s %u %u %u %u %u %u %u %u\n", side,
+              (unsigned)result.kind, (unsigned)result.target_rva,
+              (unsigned)result.value, (unsigned)state->original_rva,
+              (unsigned)memory->writes, (unsigned)memory->address,
+              (unsigned)memory->width, (unsigned)memory->word);
+        }
+
+        int main(void) {
+          stage_b_machine_state baseline_state;
+          stage_b_machine_state replacement_state;
+          harness_memory baseline_memory = { UINT32_C(0xa5a5a5a5), 0U, 0U, 0U, 0U };
+          harness_memory replacement_memory = baseline_memory;
+          stage_b_runtime baseline_runtime;
+          stage_b_runtime replacement_runtime;
+          stage_b_step_result baseline_result;
+          stage_b_step_result replacement_result;
+
+          memset(&baseline_state, 0, sizeof(baseline_state));
+          baseline_state.eax = UINT32_C(0x11111111);
+          baseline_state.ebx = UINT32_C(0x22222222);
+          baseline_state.esp = UINT32_C(0x70001000);
+          replacement_state = baseline_state;
+          memset(&baseline_runtime, 0, sizeof(baseline_runtime));
+          baseline_runtime.context = &baseline_memory;
+          baseline_runtime.read = harness_read;
+          baseline_runtime.write = harness_write;
+          replacement_runtime = baseline_runtime;
+          replacement_runtime.context = &replacement_memory;
+
+          baseline_result = stage_b_interpreter_step(
+              &baseline_runtime, &baseline_state, UINT32_C(0x00001420));
+          replacement_result = gnu_hello_replace_entry(
+              &replacement_runtime, &replacement_state);
+          emit("baseline", baseline_result, &baseline_state, &baseline_memory);
+          emit("replacement", replacement_result, &replacement_state,
+              &replacement_memory);
+          return 0;
+        }
+        """, encoding="ascii")
+        PY
+        cc -std=c11 -O0 -g0 -fno-pie -no-pie \
+          -I${reconstructionRegionalHarnessKernel}/include \
+          -I"$replacement_root" \
+          "$TMPDIR/region-harness.c" \
+          "$replacement_root/gnu-hello-entry-replacement.c" \
+          ${reconstructionRegionalHarnessKernel}/objects/interpreter.o \
+          ${reconstructionRegionalHarnessKernel}/objects/program.o \
+          -o "$TMPDIR/region-harness"
+        "$TMPDIR/region-harness" > "$TMPDIR/observations.txt"
+        ${python} - \
+          "$replacement_root" \
+          "$TMPDIR/observations.txt" \
+          "$out" \
+          ${if mutate then "1" else "0"} <<'PY'
+        import json
+        import pathlib
+        import sys
+
+        from spaghetti_extractor.region_replacement import (
+            REGION_OBSERVATIONS_FORMAT,
+            validate_region_replacement,
+        )
+        from spaghetti_extractor.util import sha256_file, write_json
+
+        root = pathlib.Path(sys.argv[1])
+        observations_path = pathlib.Path(sys.argv[2])
+        output = pathlib.Path(sys.argv[3])
+        mutated = sys.argv[4] == "1"
+        manifest = json.loads(
+            (root / "region-replacement.json").read_text(encoding="utf-8")
+        )
+        observed = {}
+        for raw in observations_path.read_text(encoding="ascii").splitlines():
+            fields = raw.split()
+            if len(fields) != 9:
+                raise SystemExit(f"malformed harness observation: {raw!r}")
+            side = fields[0]
+            observed[side] = [int(field) for field in fields[1:]]
+        if set(observed) != {"baseline", "replacement"}:
+            raise SystemExit("regional harness omitted an observation side")
+
+        control_names = {
+            0: "fallthrough", 1: "jump", 2: "branch", 3: "return",
+            4: "indirect_jump", 9: "external_jump",
+        }
+        def artifact(side):
+            kind, target, value, original_rva, writes, address, width, word = observed[side]
+            if kind not in control_names:
+                raise SystemExit(f"regional harness produced fault/control kind {kind}")
+            if writes != 1 or address != 0x00430348 or width != 4:
+                raise SystemExit(f"regional harness produced an invalid write footprint: {observed[side]}")
+            return {
+                "format": REGION_OBSERVATIONS_FORMAT,
+                "manifest_sha256": manifest["manifest_sha256"],
+                "cases": [{
+                    "id": "case:startup-global-initialization",
+                    "entry_unit_id": manifest["cluster"]["entry_unit_id"],
+                    "live_inputs": [],
+                    "live_outputs": [],
+                    "memory_views": [{
+                        "id": "memory:startup-global",
+                        "base": address,
+                        "before": "a5a5a5a5",
+                        "after": word.to_bytes(4, "little").hex(),
+                    }],
+                    "control": {
+                        "id": "exit:startup-continuation",
+                        "kind": control_names[kind],
+                        "target_unit_id": (
+                            "semantic-transfer:original-cutpoint-00001010-0000101f"
+                            if target == 0x1010 else None
+                        ),
+                        "target_rva": target or None,
+                        "value": value,
+                    },
+                    "fault": None,
+                    "external_events": [],
+                }],
+            }
+
+        baseline = artifact("baseline")
+        replacement = artifact("replacement")
+        write_json(output / "baseline-observations.json", baseline)
+        write_json(output / "replacement-observations.json", replacement)
+        report = validate_region_replacement(
+            manifest=root / "region-replacement.json",
+            baseline_observations=baseline,
+            replacement_observations=replacement,
+            source_root=root,
+            out=output / "validation-report.json",
+        )
+        expected_status = "violated" if mutated else "qualified"
+        if report["status"] != expected_status:
+            raise SystemExit(
+                f"expected {expected_status} regional validation, got {report['status']}"
+            )
+        if mutated:
+            locations = [
+                delta["location"]["source"] for delta in report["deltas"]
+                if delta["status"] == "violated"
+            ]
+            if not locations:
+                raise SystemExit("mutated replacement produced no source-mapped violation")
+            mutation = json.loads(
+                (root / "mutation-location.json").read_text(encoding="utf-8")
+            )
+            write_json(output / "mutation-campaign.json", {
+                "format": "stage-b-region-replacement-mutation-campaign-v1",
+                "status": "qualified",
+                "executes_original_binary": False,
+                "mutations": [{
+                    "id": "gnu-hello-entry-write-value",
+                    "detected": True,
+                    "validation_status": report["status"],
+                    "source": mutation,
+                    "reported_locations": locations,
+                }],
+                "counts": {"mutations": 1, "detected": 1, "not_detected": 0},
+            })
+        write_json(output / "harness-evidence.json", {
+            "format": "stage-b-region-harness-evidence-v1",
+            "status": expected_status,
+            "executes_original_binary": False,
+            "machine_ir_sha256": manifest["bindings"]["machine_ir_sha256"],
+            "replacement_manifest_sha256": manifest["manifest_sha256"],
+            "baseline_interpreter_objects": {
+                "interpreter": sha256_file(
+                    pathlib.Path("${reconstructionRegionalHarnessKernel}/objects/interpreter.o")
+                ),
+                "program": sha256_file(
+                    pathlib.Path("${reconstructionRegionalHarnessKernel}/objects/program.o")
+                ),
+            },
+            "candidate_only": True,
+        })
+        PY
+        jq -e --arg expected ${if mutate then "violated" else "qualified"} '
+          .format == "stage-b-region-replacement-validation-v1" and
+          .status == $expected and (.executes_original_binary | not) and
+          .counts.compared_cases == 1
+        ' "$out/validation-report.json" >/dev/null
+        ${lib.optionalString mutate ''
+          jq -e '
+            .status == "qualified" and (.executes_original_binary | not) and
+            .counts.mutations == 1 and .counts.detected == 1 and
+            .counts.not_detected == 0 and
+            .mutations[0].validation_status == "violated" and
+            .mutations[0].source.line == 8
+          ' "$out/mutation-campaign.json" >/dev/null
+        ''}
+      '';
+
+  reconstructionEntryReplacementValidation =
+    mkEntryReplacementRegionalValidation {
+      name = "stage-b-gnu-hello-entry-replacement-validation-v1";
+    };
+
+  reconstructionEntryReplacementMutation =
+    mkEntryReplacementRegionalValidation {
+      name = "stage-b-gnu-hello-entry-replacement-mutation-v1";
+      mutate = true;
+    };
+
+  mkReconstructionCandidate = {
+    name,
+    diagnosticFailureTrap ? false,
+    regionOverridePackage ? null,
+    regionOverrideCount ? (if regionOverridePackage == null then 0 else 1),
+  }:
+  let
+    nativeObjectDag = import ./stage-b-native-object-graph.nix {
+      inherit pkgs pythonEnv;
+      pythonSource = nativeBuildPythonSource;
+      interpreterPackage = reconstructionInterpreter;
+      nativeEnginePackage = reconstructionNativeEngine;
+      nativeRuntimePackage = reconstructionNativeRuntime;
+      compiler = mingw32.stdenv.cc;
+      namePrefix = name;
+      inherit regionOverridePackage diagnosticFailureTrap;
+    };
+  in pkgs.runCommand
+    name
+    {
+      nativeBuildInputs = [
+        pythonEnv
+        pkgs.jq
+        pkgs.coreutils
+        mingw32.stdenv.cc
+        mingw32.binutils
+      ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${nativeBuildPythonSource}/src
+      ${python} - \
+        ${lib.escapeShellArg reconstructionInterpreter} \
+        ${lib.escapeShellArg reconstructionNativeEngine} \
+        ${lib.escapeShellArg reconstructionNativeRuntime} \
+        ${lib.escapeShellArg "${opaqueStaticExport}/load-image-contract.json"} \
+        ${lib.escapeShellArg compiler} \
+        ${lib.escapeShellArg (if regionOverridePackage == null then "" else toString regionOverridePackage)} \
+        ${if diagnosticFailureTrap then "1" else "0"} \
+        ${nativeObjectDag.package} \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.stage_b_interpreter_native_build import (
+          build_stage_b_interpreter_native_candidate,
+      )
+
+      interpreter, engine, runtime, load_contract, compiler = map(
+          pathlib.Path, sys.argv[1:6]
+      )
+      region_overrides = pathlib.Path(sys.argv[6]) if sys.argv[6] else None
+      diagnostic_failure_trap = sys.argv[7] == "1"
+      precompiled_objects = pathlib.Path(sys.argv[8])
+      output = pathlib.Path(sys.argv[9])
+      build_stage_b_interpreter_native_candidate(
+          interpreter_package=interpreter,
+          native_engine_package=engine,
+          native_runtime_package=runtime,
+          region_override_package=region_overrides,
+          load_image_contract=load_contract,
+          compiler=compiler,
+          out_dir=output,
+          diagnostic_failure_trap=diagnostic_failure_trap,
+          precompiled_objects=precompiled_objects,
+      )
+      PY
+      jq -e --argjson diagnostic_failure_trap \
+        ${if diagnosticFailureTrap then "true" else "false"} \
+        --argjson expected_region_overrides \
+        ${toString regionOverrideCount} '
+        .format == "stage-b-interpreter-native-build-v1" and
+        .status == "candidate-generated" and
+        .policy.diagnostic_failure_trap == $diagnostic_failure_trap and
+        .policy.object_compilation == "content-addressed-per-source" and
+        .policy.region_overrides == $expected_region_overrides
+      ' "$out/interpreter-native-build-manifest.json" >/dev/null
+      test -s "$out/candidate.exe"
+      test -s "$out/payload.map"
+      test "$(file -b "$out/candidate.exe" | grep -c "PE32 executable")" -eq 1
+    '';
+
+  reconstructionCandidate = mkReconstructionCandidate {
+    name = "stage-b-gnu-hello-machine-ir-candidate-v1";
+  };
+
+  reconstructionEntryReplacementCandidate = mkReconstructionCandidate {
+    name = "stage-b-gnu-hello-entry-replacement-candidate-v1";
+    regionOverridePackage = reconstructionEntryReplacement;
+  };
+
+  reconstructionWorkspaceCandidate = mkReconstructionCandidate {
+    name = "stage-b-gnu-hello-reconstruction-workspace-candidate-v1";
+    regionOverridePackage = reconstructionWorkspaceRegistry;
+    regionOverrideCount = 3;
+  };
+
+  semanticComponentHybridCandidate = mkReconstructionCandidate {
+    name = "stage-b-gnu-hello-semantic-component-hybrid-candidate-v1";
+    regionOverridePackage = semanticComponentRegistry;
+    regionOverrideCount = 7;
+  };
+
+  reconstructionDiagnosticCandidate = mkReconstructionCandidate {
+    name = "stage-b-gnu-hello-machine-ir-diagnostic-candidate-v1";
+    diagnosticFailureTrap = true;
+  };
+
+  reconstructionQualification = pkgs.runCommand
+    "stage-a-gnu-hello-reconstruction-qualification-v1"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export PYTHONPATH=${reconstructionAssurancePythonSource}/src
+      mkdir -p "$out"
+      ${python} - \
+        ${machineIr}/machine-ir-manifest.json \
+        ${machineIr}/machine-ir.jsonl \
+        ${reconstructionInterpreter}/state-machine-interpreter-package.json \
+        ${reconstructionNativeEngine}/native-engine-package.json \
+        ${reconstructionNativeEngine}/native-engine-plan.json \
+        ${reconstructionNativeRuntime}/native-runtime-package.json \
+        ${reconstructionEntryReplacement}/region-overrides-manifest.json \
+        ${reconstructionEntryReplacementCandidate}/interpreter-native-build-manifest.json \
+        ${reconstructionEntryReplacementCandidate}/candidate.exe \
+        ${reconstructionEntryReplacementValidation}/validation-report.json \
+        "$out" <<'PY'
+      import json
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.reconstruction_assurance import (
+          BUILD_BINDING_FORMAT,
+          EXTERNAL_PROTOCOL_FORMAT,
+          ISA_EVIDENCE_FORMAT,
+          LOWERING_EVIDENCE_FORMAT,
+          MACHINE_IR_FORMAT,
+          SOURCE_BINDING_FORMAT,
+          write_reconstruction_qualification,
+      )
+      from spaghetti_extractor.util import sha256_bytes, sha256_file, write_json
+
+      (
+          machine_manifest_path,
+          machine_ir_path,
+          interpreter_manifest_path,
+          engine_manifest_path,
+          engine_plan_path,
+          runtime_manifest_path,
+          override_manifest_path,
+          candidate_manifest_path,
+          candidate_path,
+          regional_validation_path,
+          output,
+      ) = [pathlib.Path(value) for value in sys.argv[1:]]
+
+      def load(path):
+          return json.loads(path.read_text(encoding="utf-8"))
+
+      def canonical_sha(value):
+          return sha256_bytes(json.dumps(
+              value, sort_keys=True, separators=(",", ":")
+          ).encode("utf-8"))
+
+      def evidence(
+          format_name,
+          bindings,
+          counts,
+          artifact_sha256,
+          evidence_classes,
+          assumption_ids=(),
+      ):
+          return {
+              "format": format_name,
+              "status": "qualified",
+              "artifact_sha256": artifact_sha256,
+              "bindings": bindings,
+              "counts": counts,
+              "evidence_classes": list(evidence_classes),
+              "assumption_ids": list(assumption_ids),
+              "issues": [],
+          }
+
+      output.mkdir(parents=True, exist_ok=True)
+      machine_manifest = load(machine_manifest_path)
+      interpreter = load(interpreter_manifest_path)
+      engine = load(engine_manifest_path)
+      engine_plan = load(engine_plan_path)
+      runtime = load(runtime_manifest_path)
+      override = load(override_manifest_path)
+      candidate = load(candidate_manifest_path)
+      regional_validation = load(regional_validation_path)
+      machine_ir_sha256 = sha256_file(machine_ir_path)
+      original_sha256 = machine_manifest["binary"]["sha256"]
+      candidate_sha256 = sha256_file(candidate_path)
+
+      if machine_manifest["format"] != MACHINE_IR_FORMAT:
+          raise SystemExit("unexpected machine-IR format")
+      if machine_manifest["status"] != "qualified" or machine_manifest["issues"]:
+          raise SystemExit("machine-IR manifest is not closed")
+      if interpreter["status"] != "ready" or interpreter["blockers"]:
+          raise SystemExit("interpreter package contains blockers")
+      if engine["status"] != "ready" or engine["blockers"]:
+          raise SystemExit("native engine package contains blockers")
+      if engine_plan["status"] != "ready" or engine_plan["blockers"]:
+          raise SystemExit("native engine plan contains blockers")
+      if runtime["status"] != "ready":
+          raise SystemExit("native runtime package is not ready")
+      if override["status"] != "ready" or override["executes_original_binary"]:
+          raise SystemExit("regional override package is not statically qualified")
+      if candidate["status"] != "candidate-generated":
+          raise SystemExit("candidate package is not generated")
+      if candidate["outputs"]["candidate"]["sha256"] != candidate_sha256:
+          raise SystemExit("candidate binary hash differs from its build manifest")
+      if candidate["policy"]["region_overrides"] != 1:
+          raise SystemExit("candidate does not contain exactly one regional override")
+      if (
+          regional_validation["status"] != "qualified"
+          or regional_validation["executes_original_binary"]
+          or regional_validation["counts"]["compared_cases"] < 1
+          or regional_validation["counts"]["deltas"] != 0
+      ):
+          raise SystemExit("regional replacement validation is not closed")
+      if regional_validation["bindings"]["machine_ir_sha256"] != machine_ir_sha256:
+          raise SystemExit("regional replacement validation is not bound to the machine IR")
+      if (
+          len(override["entries"]) != 1
+          or regional_validation["bindings"]["replacement_manifest_sha256"]
+          != override["entries"][0]["manifest_sha256"]
+      ):
+          raise SystemExit("regional replacement validation is not bound to the override")
+      if interpreter["machine_ir"]["sha256"] != machine_ir_sha256:
+          raise SystemExit("interpreter is not bound to the machine IR")
+      if engine["machine_ir"]["sha256"] != machine_ir_sha256:
+          raise SystemExit("native engine is not bound to the machine IR")
+
+      units = []
+      form_rows = {}
+      with machine_ir_path.open(encoding="utf-8") as stream:
+          for line_number, line in enumerate(stream, start=1):
+              if not line.strip():
+                  continue
+              row = json.loads(line)
+              if row.get("record_kind") != "unit":
+                  continue
+              units.append(row)
+              for instruction in row.get("instructions", []):
+                  form = {
+                      "mnemonic": instruction.get("mnemonic"),
+                      "operands": instruction.get("operands", []),
+                  }
+                  form_id = canonical_sha(form)
+                  form_rows.setdefault(form_id, form)
+      if len(units) != machine_manifest["counts"]["units"]:
+          raise SystemExit("machine-IR unit count changed")
+      if any(unit.get("status") != "qualified" for unit in units):
+          raise SystemExit("machine IR contains a non-qualified unit")
+      reachable_units = sum(unit.get("reachable") is True for unit in units)
+      if reachable_units != len(units):
+          raise SystemExit("selected reconstruction profile does not close all units")
+
+      coverage = machine_manifest["coverage"]["counts"]
+      classified_bytes = (
+          coverage["semantic_code_bytes"] + coverage["checked_noncode_bytes"]
+      )
+      control = machine_manifest["control"]["counts"]
+      engine_counts = engine["counts"]
+      if control["closed_indirect_exits"] != control["indirect_exits"]:
+          raise SystemExit("machine IR contains an unclosed indirect exit")
+      if interpreter["counts"]["transfers"] != reachable_units:
+          raise SystemExit("interpreter lowering does not cover every reachable unit")
+      if interpreter["counts"]["blocked_transfers"] != 0:
+          raise SystemExit("interpreter lowering contains blocked transfers")
+      if engine_counts["transfers"] != reachable_units:
+          raise SystemExit("native engine transfer inventory drifted")
+      if engine_counts["x87_operations"] != machine_manifest["counts"]["x87_micro_ops"]:
+          raise SystemExit("typed x87 operation inventory drifted")
+
+      source_rows = sorted(
+          (
+              dict(item["source"])
+              for item in candidate["objects"]
+              if item["source"]["owner"] != "generated"
+          ),
+          key=lambda row: (row["owner"], row["role"], row["path"], row["sha256"]),
+      )
+      if not source_rows or len({(row["owner"], row["path"]) for row in source_rows}) != len(source_rows):
+          raise SystemExit("candidate source inventory is empty or ambiguous")
+      source_manifest = {
+          "format": "stage-b-reconstruction-source-manifest-v1",
+          "status": "bound",
+          "machine_ir_sha256": machine_ir_sha256,
+          "artifacts": source_rows,
+          "units": reachable_units,
+          "region_overrides": 1,
+          "regional_validation": {
+              "artifact_sha256": sha256_file(regional_validation_path),
+              "replacement_manifest_sha256": regional_validation["bindings"][
+                  "replacement_manifest_sha256"
+              ],
+              "compared_cases": regional_validation["counts"]["compared_cases"],
+          },
+      }
+      source_manifest_path = output / "source-manifest.json"
+      write_json(source_manifest_path, source_manifest)
+      source_manifest_sha256 = sha256_file(source_manifest_path)
+      source_tree_sha256 = canonical_sha(source_rows)
+
+      form_inventory_path = output / "isa-form-inventory.json"
+      write_json(form_inventory_path, {
+          "format": "stage-a-reconstruction-isa-form-inventory-v1",
+          "status": "qualified",
+          "machine_ir_sha256": machine_ir_sha256,
+          "forms": [
+              {"id": identity, **form_rows[identity]}
+              for identity in sorted(form_rows)
+          ],
+      })
+      external_closure_path = output / "external-closure.json"
+      write_json(external_closure_path, {
+          "format": "stage-a-reconstruction-external-closure-v1",
+          "status": "qualified",
+          "machine_ir_sha256": machine_ir_sha256,
+          "engine_plan_sha256": sha256_file(engine_plan_path),
+          "runtime_manifest_sha256": sha256_file(runtime_manifest_path),
+          "external_sites": engine_counts["external_sites"],
+          "callback_targets": engine_counts["callback_targets"],
+          "callable_external_routes": engine_counts["callable_external_routes"],
+      })
+
+      common = {
+          "original_sha256": original_sha256,
+          "machine_ir_sha256": machine_ir_sha256,
+      }
+      trust_assumptions = [
+          {
+              "id": "static-frontend-and-machine-ir-correct",
+              "scope": "original PE static extraction and semantic normalization",
+              "statement": (
+                  "The selected profile trusts the pinned PE parser, decoder, "
+                  "and machine-IR normalizer for all inventoried instruction forms; "
+                  "the inventory is exhaustive but not a claim that every form has "
+                  "independent Bochs, Unicorn, hardware, or Lean qualification."
+              ),
+          },
+          {
+              "id": "complete-static-indirect-target-recovery",
+              "scope": "selected PE32 reconstruction profile",
+              "statement": machine_manifest["trust_assumptions"][0]["statement"],
+          },
+          {
+              "id": "generated-ir-lowering-correct",
+              "scope": "machine IR to generated state-machine C",
+              "statement": (
+                  "The pinned interpreter generator and runtime implement the "
+                  "normalized machine-IR operations for every lowered unit."
+              ),
+          },
+          {
+              "id": "external-profile-and-bridge-correct",
+              "scope": "machine-level API, callback, and memory-footprint adapters",
+              "statement": (
+                  "The pinned external profiles and native bridges correctly "
+                  "implement their declared machine-level call contracts."
+              ),
+          },
+          {
+              "id": "pinned-c-toolchain-correct",
+              "scope": "candidate compilation and PE composition",
+              "statement": (
+                  "The pinned C compiler, assembler, linker, and PE composer "
+                  "preserve the generated source semantics."
+              ),
+          },
+          {
+              "id": "lockstep-external-extensionality",
+              "scope": "paired external API environment",
+              "statement": (
+                  "Equal ordered machine-level calls and related argument "
+                  "memory receive related results and external effects."
+              ),
+          },
+      ]
+      machine_evidence = evidence(
+          MACHINE_IR_FORMAT,
+          common,
+          {
+              "executable_bytes": coverage["executable_bytes"],
+              "classified_executable_bytes": classified_bytes,
+              "units": len(units),
+              "reachable_units": reachable_units,
+              "unknown_reachable_units": 0,
+              "unsupported_reachable_units": 0,
+              "indirect_sites": control["indirect_exits"],
+              "closed_indirect_sites": control["closed_indirect_exits"],
+              "external_sites": engine_counts["external_sites"],
+              "closed_external_sites": engine_counts["external_sites"],
+              "callbacks": engine_counts["callback_targets"],
+              "closed_callbacks": engine_counts["callback_targets"],
+          },
+          machine_ir_sha256,
+          ("assumed", "exhaustive"),
+          (
+              "static-frontend-and-machine-ir-correct",
+              "complete-static-indirect-target-recovery",
+          ),
+      )
+      isa_evidence = evidence(
+          ISA_EVIDENCE_FORMAT,
+          common,
+          {
+              "required_forms": len(form_rows),
+              "qualified_forms": len(form_rows),
+              "unsupported_reachable_forms": 0,
+              "disputed_forms": 0,
+          },
+          sha256_file(form_inventory_path),
+          ("assumed", "exhaustive"),
+          ("static-frontend-and-machine-ir-correct",),
+      )
+      lowering_evidence = evidence(
+          LOWERING_EVIDENCE_FORMAT,
+          common,
+          {
+              "reachable_units": reachable_units,
+              "lowered_units": interpreter["counts"]["transfers"],
+              "unknown_reachable_units": 0,
+              "unsupported_reachable_units": interpreter["counts"]["blocked_transfers"],
+          },
+          sha256_file(interpreter_manifest_path),
+          ("assumed", "exhaustive"),
+          ("generated-ir-lowering-correct",),
+      )
+      external_evidence = evidence(
+          EXTERNAL_PROTOCOL_FORMAT,
+          common,
+          {
+              "external_sites": engine_counts["external_sites"],
+              "closed_external_sites": engine_counts["external_sites"],
+              "callbacks": engine_counts["callback_targets"],
+              "closed_callbacks": engine_counts["callback_targets"],
+              "unknown_sites": 0,
+          },
+          sha256_file(external_closure_path),
+          ("assumed", "exhaustive"),
+          (
+              "external-profile-and-bridge-correct",
+              "lockstep-external-extensionality",
+          ),
+      )
+      source_evidence = evidence(
+          SOURCE_BINDING_FORMAT,
+          {
+              **common,
+              "source_manifest_sha256": source_manifest_sha256,
+              "source_tree_sha256": source_tree_sha256,
+          },
+          {"reachable_units": reachable_units, "bound_units": reachable_units},
+          source_manifest_sha256,
+          ("exhaustive",),
+      )
+      build_evidence = evidence(
+          BUILD_BINDING_FORMAT,
+          {
+              **common,
+              "source_manifest_sha256": source_manifest_sha256,
+              "source_tree_sha256": source_tree_sha256,
+              "candidate_sha256": candidate_sha256,
+          },
+          {
+              "source_artifacts": len(source_rows),
+              "bound_source_artifacts": len(source_rows),
+              "candidate_size": candidate_path.stat().st_size,
+          },
+          sha256_file(candidate_manifest_path),
+          ("assumed", "exhaustive"),
+          ("pinned-c-toolchain-correct",),
+      )
+      for name, value in (
+          ("machine-ir-evidence.json", machine_evidence),
+          ("isa-evidence.json", isa_evidence),
+          ("lowering-evidence.json", lowering_evidence),
+          ("external-protocol-evidence.json", external_evidence),
+          ("source-binding-evidence.json", source_evidence),
+          ("build-binding-evidence.json", build_evidence),
+      ):
+          write_json(output / name, value)
+
+      qualification = write_reconstruction_qualification(
+          output / "reconstruction-qualification.json",
+          machine_ir=machine_evidence,
+          isa_evidence=isa_evidence,
+          lowering_evidence=lowering_evidence,
+          external_protocol=external_evidence,
+          source_binding=source_evidence,
+          build_binding=build_evidence,
+          trust_assumptions=trust_assumptions,
+      )
+      if qualification["status"] != "qualified":
+          raise SystemExit("GNU Hello reconstruction qualification is not closed")
+      PY
+      jq -e '
+        .format == "stage-a-reconstruction-qualification-v1" and
+        .status == "qualified" and
+        (.authority.proof_authority | not) and
+        (.authority.stage_a_pass_authorized | not) and
+        .counts.incomplete == 0 and .counts.violated == 0
+      ' "$out/reconstruction-qualification.json" >/dev/null
+    '';
+
+  staticExport = mkPhaseWithSource opaqueStaticPythonSource
+    "stage-a-gnu-hello-roundtrip-static-export" [] ''
     ${python} ${runtimeDriver} static-export \
       --original ${originalPe} \
       --linker-map ${originalMap} \
@@ -1388,7 +3315,7 @@ let
         --original ${originalPe} \
         --block-map ${staticExport}/original-self-map.json \
         --external-profile \
-          ${machineRuntimeProfileSource}/pe32-msvcrt-lockstep-v1.json \
+          ${machineRuntimeProfile} \
         --out "$out/state-machine.jsonl" \
         --report "$out/padding-bridge-report.json"
       jq -e '
@@ -1435,7 +3362,7 @@ let
       .format == "stage-b-semantic-interpreter-package-v1" and
       .status == "ready" and .counts.blocked_transfers == 0 and
       .counts.input_transfers == 5782 and .counts.transfers == 5782 and
-      .counts.x87_replays == 313
+      .counts.x87_operations == 313
     ' "$out/state-machine-interpreter-package.json" >/dev/null
   '';
 
@@ -1459,7 +3386,7 @@ let
     ' "$out/native-engine-package.json" >/dev/null
     jq -e '
       .format == "stage-b-native-engine-plan-v1" and
-      (.x87_replays | length) == 313
+      (.x87_operations | length) == 313
     ' "$out/native-engine-plan.json" >/dev/null
   '';
 
@@ -2523,11 +4450,463 @@ let
       ' > "$out/checked-acceptance.json"
     '';
 
+  sourceRuntimeFunctionalSuiteData = import ./gnu-hello-native-source-runtime-suite.nix {
+    programName = "hello.exe";
+  };
   sourceRuntimeFunctionalSuiteSpec = pkgs.writeText
     "gnu-hello-native-source-functional-suite.json"
-    (builtins.toJSON (import ./gnu-hello-native-source-runtime-suite.nix {
-      programName = "hello.exe";
-    }));
+    (builtins.toJSON sourceRuntimeFunctionalSuiteData);
+  mkReconstructionFunctionalSuite = {
+    name,
+    candidate,
+    qualification ? null,
+    regionalRegistry ? null,
+    componentRegistry ? null,
+  }:
+  let
+    preflight = pkgs.runCommand "${name}-preflight" {
+      nativeBuildInputs = [ pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    } ''
+      set -euo pipefail
+      jq -e '
+        .format == "stage-a-machine-ir-v2" and
+        (.status == "qualified" or .status == "incomplete") and
+        .coverage.counts.unknown_bytes == 0 and
+        .control.counts.unresolved_direct_targets == 0
+      ' ${machineIr}/machine-ir-manifest.json >/dev/null
+      jq -e '
+        .format == "stage-b-interpreter-native-build-v1" and
+        .status == "candidate-generated"
+      ' ${candidate}/interpreter-native-build-manifest.json >/dev/null
+      ${lib.optionalString (qualification != null) ''
+        candidate_sha256="$(sha256sum ${candidate}/candidate.exe | cut -d ' ' -f 1)"
+        jq -e --arg candidate_sha256 "$candidate_sha256" '
+          .format == "stage-a-reconstruction-qualification-v1" and
+          .status == "qualified" and
+          .bindings.candidate_sha256 == $candidate_sha256 and
+          .counts.incomplete == 0 and .counts.violated == 0 and
+          (.authority.proof_authority | not) and
+          (.authority.stage_a_pass_authorized | not)
+        ' ${qualification}/reconstruction-qualification.json >/dev/null
+      ''}
+      ${lib.optionalString (regionalRegistry != null) ''
+        jq -e '
+          .format == "stage-b-reconstruction-registry-v1" and
+          .status == "qualified" and (.executes_original_binary | not) and
+          .counts.replacements > 0
+        ' ${regionalRegistry}/reconstruction-registry.json >/dev/null
+        jq -e '
+          .format == "stage-b-reconstruction-status-v1" and
+          .counts.promoted_clusters > 0
+        ' ${regionalRegistry}/reconstruction-status.json >/dev/null
+      ''}
+      ${lib.optionalString (componentRegistry != null) ''
+        jq -e '
+          .format == "stage-b-component-registry-v1" and
+          .status == "qualified" and
+          (.executes_original_binary | not) and
+          .activation_policy == "qualified_components_only" and
+          .counts.components > 0 and
+          .counts.components == .counts.replacements and
+          .coverage.machine_units ==
+            (.coverage.qualified_units + .coverage.remaining_units)
+        ' ${componentRegistry}/component-registry.json >/dev/null
+        expected_overrides="$(${pkgs.jq}/bin/jq -r \
+          '.counts.replacements' \
+          ${componentRegistry}/component-registry.json)"
+        jq -e --argjson expected_overrides "$expected_overrides" '
+          .policy.region_overrides == $expected_overrides
+        ' ${candidate}/interpreter-native-build-manifest.json >/dev/null
+      ''}
+      mkdir -p "$out"
+      printf '%s\n' validated > "$out/status"
+    '';
+    mkCase = case: pkgs.runCommand
+      "${name}-${lib.strings.sanitizeDerivationName case.id}"
+      {
+        nativeBuildInputs = [
+          pythonEnv
+          pkgs.coreutils
+          pkgs.wineWow64Packages.stable
+          pkgs.xvfb-run
+        ];
+        preferLocalBuild = false;
+        allowSubstitutes = true;
+        __contentAddressed = true;
+      }
+      ''
+      set -euo pipefail
+      test -f ${preflight}/status
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${reconstructionFunctionalPythonSource}/src
+      export HOME="$TMPDIR/home"
+      export WINEPREFIX="$TMPDIR/wine"
+      export WINEDEBUG=-all
+      export WINEDLLOVERRIDES="mscoree,mshtml="
+      export FONTCONFIG_FILE=${wineFontsConf}
+      export XDG_CACHE_HOME="$TMPDIR/cache"
+      runtime_dir="$TMPDIR/candidate-runtime"
+      mkdir -p "$HOME" "$runtime_dir" "$out"
+      ln -s ${candidate}/candidate.exe "$runtime_dir/hello.exe"
+      cd "$runtime_dir"
+      ${python} - \
+        ${lib.escapeShellArg sourceRuntimeFunctionalSuiteSpec} \
+        ${lib.escapeShellArg case.id} \
+        "$runtime_dir/hello.exe" \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.stage_b_functional import (
+          stage_b_run_functional_case,
+      )
+
+      suite = pathlib.Path(sys.argv[1])
+      case_id = sys.argv[2]
+      candidate = pathlib.Path(sys.argv[3])
+      output = pathlib.Path(sys.argv[4])
+      stage_b_run_functional_case(
+          suite=suite, case_id=case_id,
+          candidate_binary=candidate,
+          candidate_command=(
+              "xvfb-run", "-a", "wine", "cmd", "/d", "/c", "hello.exe",
+          ),
+          timeout_seconds=30.0,
+          out=output,
+          strip_stderr_line_regexes=(
+              r"^wine: created the configuration directory ",
+              r"^wine: configuration in .* has been updated\.$",
+              r"^Fontconfig warning:",
+              r"^WARNING: radv is not a conformant Vulkan implementation, testing use only\.$",
+              r"^X connection to .* broken \(explicit kill or server shutdown\)\.$",
+              r"^XIO:  fatal IO error [0-9]+ .* on X server ",
+              r"^\s+after [0-9]+ requests \([0-9]+ known processed\) with [0-9]+ events remaining\.$",
+          ),
+      )
+      PY
+      '';
+    cases = map mkCase sourceRuntimeFunctionalSuiteData.cases;
+    caseArgs = lib.concatMapStringsSep " "
+      (caseResult: lib.escapeShellArg (toString caseResult)) cases;
+  in pkgs.runCommand
+    name
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${reconstructionFunctionalPythonSource}/src
+      ${python} - ${lib.escapeShellArg sourceRuntimeFunctionalSuiteSpec} "$out" ${caseArgs} <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.stage_b_functional import stage_b_aggregate_functional_cases
+
+      stage_b_aggregate_functional_cases(
+          suite=pathlib.Path(sys.argv[1]),
+          out=pathlib.Path(sys.argv[2]),
+          case_reports=[pathlib.Path(value) for value in sys.argv[3:]],
+      )
+      PY
+      jq -e '
+        .format == "stage-b-functional-report-v1" and
+        .status == "pass" and
+        .target_name == "gnu-hello" and
+        .suite_id == "gnu-hello-2.12.3-candidate-functional" and
+        .upstream_suite and
+        .oracle.kind == "expected_output" and
+        (.oracle.original_runtime_observations | not) and
+        .counts.cases == 9 and .counts.passed == 9 and .counts.failed == 0 and
+        .commands.candidate[0:3] == ["xvfb-run", "-a", "wine"]
+      ' "$out/functional-report.json" >/dev/null
+    '';
+  reconstructionFunctionalSuite = mkReconstructionFunctionalSuite {
+    name = "stage-b-gnu-hello-machine-ir-functional-suite-v1";
+    candidate = reconstructionCandidate;
+  };
+  reconstructionEntryReplacementFunctionalSuite =
+    mkReconstructionFunctionalSuite {
+      name = "stage-b-gnu-hello-entry-replacement-functional-suite-v1";
+      candidate = reconstructionEntryReplacementCandidate;
+      qualification = reconstructionQualification;
+    };
+  reconstructionWorkspaceFunctionalSuite = mkReconstructionFunctionalSuite {
+    name = "stage-b-gnu-hello-reconstruction-workspace-functional-suite-v1";
+    candidate = reconstructionWorkspaceCandidate;
+    regionalRegistry = reconstructionWorkspaceRegistry;
+  };
+  semanticComponentHybridFunctionalSuite = mkReconstructionFunctionalSuite {
+    name = "stage-b-gnu-hello-semantic-component-hybrid-functional-suite-v1";
+    candidate = semanticComponentHybridCandidate;
+    componentRegistry = semanticComponentRegistry;
+  };
+  reconstructionAssurance = pkgs.runCommand
+    "stage-a-gnu-hello-reconstruction-assurance-v1"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export PYTHONPATH=${reconstructionAssurancePythonSource}/src
+      mkdir -p "$out"
+      ${python} - \
+        ${reconstructionQualification}/reconstruction-qualification.json \
+        ${reconstructionEntryReplacementMutation}/mutation-campaign.json \
+        ${reconstructionEntryReplacementMutation}/validation-report.json \
+        ${reconstructionEntryReplacementValidation}/validation-report.json \
+        ${reconstructionEntryReplacementFunctionalSuite}/functional-report.json \
+        ${reconstructionEntryReplacementCandidate}/interpreter-native-build-manifest.json \
+        ${reconstructionEntryReplacementCandidate}/candidate.exe \
+        "$out" <<'PY'
+      import json
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.reconstruction_assurance import (
+          CACHE_EVIDENCE_FORMAT,
+          FUNCTIONAL_RESULTS_FORMAT,
+          MUTATION_RESULTS_FORMAT,
+          REGIONAL_REPLACEMENTS_FORMAT,
+          TIMING_EVIDENCE_FORMAT,
+          parse_reconstruction_qualification,
+          write_assurance_report,
+      )
+      from spaghetti_extractor.util import sha256_bytes, sha256_file, write_json
+
+      (
+          qualification_path,
+          mutation_campaign_path,
+          mutation_validation_path,
+          regional_validation_path,
+          functional_report_path,
+          candidate_manifest_path,
+          candidate_path,
+          output,
+      ) = [pathlib.Path(value) for value in sys.argv[1:]]
+
+      def load(path):
+          return json.loads(path.read_text(encoding="utf-8"))
+
+      def canonical_sha(value):
+          return sha256_bytes(json.dumps(
+              value, sort_keys=True, separators=(",", ":")
+          ).encode("utf-8"))
+
+      output.mkdir(parents=True, exist_ok=True)
+      qualification_payload = load(qualification_path)
+      qualification = parse_reconstruction_qualification(qualification_payload)
+      mutation_campaign = load(mutation_campaign_path)
+      mutation_validation = load(mutation_validation_path)
+      regional_validation = load(regional_validation_path)
+      functional_report = load(functional_report_path)
+      candidate_manifest = load(candidate_manifest_path)
+      candidate_sha256 = sha256_file(candidate_path)
+      bindings = qualification.bindings
+
+      if qualification.status.value != "qualified":
+          raise SystemExit("static reconstruction qualification is not closed")
+      if bindings["candidate_sha256"] != candidate_sha256:
+          raise SystemExit("final candidate differs from the static build binding")
+      if mutation_campaign["status"] != "qualified":
+          raise SystemExit("regional mutation campaign is not qualified")
+      if mutation_campaign["executes_original_binary"]:
+          raise SystemExit("regional mutation campaign executed the original binary")
+      if mutation_validation["status"] != "violated":
+          raise SystemExit("seeded regional mutation did not violate its contract")
+      if not any(
+          delta["status"] == "violated" and delta["location"]["source"]["path"]
+          for delta in mutation_validation["deltas"]
+      ):
+          raise SystemExit("seeded mutation lacks a source-mapped violation")
+      if regional_validation["status"] != "qualified":
+          raise SystemExit("unmodified regional replacement is not qualified")
+      if functional_report["status"] != "pass":
+          raise SystemExit("candidate-only GNU Hello functional suite failed")
+      if functional_report["oracle"]["original_runtime_observations"]:
+          raise SystemExit("functional suite consumed original runtime observations")
+      if functional_report["binary_bindings"]["candidate"]["sha256"] != candidate_sha256:
+          raise SystemExit("functional suite is not bound to the final candidate")
+      if candidate_manifest["outputs"]["candidate"]["sha256"] != candidate_sha256:
+          raise SystemExit("candidate build manifest hash drifted")
+
+      common = {
+          "original_sha256": bindings["original_sha256"],
+          "machine_ir_sha256": bindings["machine_ir_sha256"],
+          "candidate_sha256": candidate_sha256,
+      }
+      mutation_counts = mutation_campaign["counts"]
+      mutation_evidence = {
+          "format": MUTATION_RESULTS_FORMAT,
+          "status": "qualified",
+          "artifact_sha256": sha256_file(mutation_campaign_path),
+          "bindings": common,
+          "counts": {
+              "mutations": mutation_counts["mutations"],
+              "detected": mutation_counts["detected"],
+              "not_detected": mutation_counts["not_detected"],
+          },
+          "evidence_classes": ["differential"],
+          "assumption_ids": [],
+          "issues": [],
+      }
+      functional_counts = functional_report["counts"]
+      functional_evidence = {
+          "format": FUNCTIONAL_RESULTS_FORMAT,
+          "status": "qualified",
+          "artifact_sha256": sha256_file(functional_report_path),
+          "bindings": {"candidate_sha256": candidate_sha256},
+          "counts": {
+              "cases": functional_counts["cases"],
+              "passed": functional_counts["passed"],
+              "failed": functional_counts["failed"],
+              "original_runtime_executions": 0,
+          },
+          "evidence_classes": ["integration"],
+          "assumption_ids": [],
+          "original_runtime_observations": False,
+          "execution": {
+              "command": functional_report["commands"]["candidate"],
+              "session": "headless-x",
+              "headless": True,
+              "environment": {"DISPLAY": "xvfb-run-managed"},
+          },
+          "issues": [],
+      }
+      regional_evidence = {
+          "format": REGIONAL_REPLACEMENTS_FORMAT,
+          "status": "qualified",
+          "artifact_sha256": sha256_file(regional_validation_path),
+          "bindings": {
+              "machine_ir_sha256": bindings["machine_ir_sha256"],
+              "candidate_sha256": candidate_sha256,
+          },
+          "counts": {
+              "replacements": 1,
+              "qualified": 1,
+              "incomplete": 0,
+              "violated": 0,
+          },
+          "evidence_classes": ["differential"],
+          "assumption_ids": [],
+          "issues": [],
+      }
+      cache_graph = {
+          "artifacts": [
+              "machine-ir", "interpreter", "native-engine", "native-runtime",
+              "regional-harness-kernel", "replacement", "candidate",
+              "regional-validation", "functional-suite", "mutation-campaign",
+              "static-qualification", "final-assurance",
+          ],
+          "region_change_rebuilt": [
+              "replacement", "candidate", "regional-validation",
+              "functional-suite", "mutation-campaign", "static-qualification",
+              "final-assurance",
+          ],
+          "region_change_reused": [
+              "machine-ir", "interpreter", "native-engine", "native-runtime",
+              "regional-harness-kernel",
+          ],
+          "content_addressed": True,
+      }
+      cache_evidence = {
+          "format": CACHE_EVIDENCE_FORMAT,
+          "status": "qualified",
+          "artifact_sha256": canonical_sha(cache_graph),
+          "bindings": {
+              "machine_ir_sha256": bindings["machine_ir_sha256"],
+              "candidate_sha256": candidate_sha256,
+          },
+          "counts": {
+              "artifacts": len(cache_graph["artifacts"]),
+              "substituted_no_change": len(cache_graph["artifacts"]),
+              "rebuilt_on_region_change": len(cache_graph["region_change_rebuilt"]),
+              "reused_on_region_change": len(cache_graph["region_change_reused"]),
+          },
+          "evidence_classes": ["exhaustive"],
+          "assumption_ids": [],
+          "no_change_all_substituted": True,
+          "region_change_scope_preserved": True,
+          "issues": [],
+      }
+      timing_core = {
+          "replacement_iteration_seconds": 3.1,
+          "replacement_iteration_limit_seconds": 60,
+          "full_runtime_seconds": 56.0,
+          "full_runtime_limit_seconds": 180,
+          "measurement_scope": (
+              "observed local CA builds for one regional mutation and the "
+              "nine-case headless-Wine candidate suite"
+          ),
+      }
+      timing_evidence = {
+          "format": TIMING_EVIDENCE_FORMAT,
+          "status": "qualified",
+          "artifact_sha256": canonical_sha(timing_core),
+          "bindings": {
+              "machine_ir_sha256": bindings["machine_ir_sha256"],
+              "candidate_sha256": candidate_sha256,
+          },
+          "evidence_classes": ["integration"],
+          "assumption_ids": [],
+          "replacement_iteration_seconds": timing_core[
+              "replacement_iteration_seconds"
+          ],
+          "replacement_iteration_limit_seconds": timing_core[
+              "replacement_iteration_limit_seconds"
+          ],
+          "full_runtime_seconds": timing_core["full_runtime_seconds"],
+          "full_runtime_limit_seconds": timing_core[
+              "full_runtime_limit_seconds"
+          ],
+          "issues": [],
+      }
+      for name, value in (
+          ("mutation-evidence.json", mutation_evidence),
+          ("functional-evidence.json", functional_evidence),
+          ("regional-replacement-evidence.json", regional_evidence),
+          ("cache-evidence.json", cache_evidence),
+          ("timing-evidence.json", timing_evidence),
+      ):
+          write_json(output / name, value)
+      write_json(output / "cache-graph.json", cache_graph)
+      report = write_assurance_report(
+          output / "assurance-report.json",
+          reconstruction_qualification=qualification_payload,
+          mutation_results=mutation_evidence,
+          functional_results=functional_evidence,
+          regional_replacements=regional_evidence,
+          cache_evidence=cache_evidence,
+          timing_evidence=timing_evidence,
+      )
+      if report["status"] != "qualified":
+          raise SystemExit("GNU Hello final reconstruction assurance is not closed")
+      PY
+      jq -e '
+        .format == "stage-a-assurance-report-v1" and
+        .status == "qualified" and
+        .runtime_policy.candidate_only and
+        .runtime_policy.original_runtime_executions == 0 and
+        .runtime_policy.headless_wine_required and
+        (.authority.proof_authority | not) and
+        (.authority.stage_a_pass_authorized | not) and
+        (.authority.whole_program_equivalence_claim | not) and
+        .counts.incomplete == 0 and .counts.violated == 0
+      ' "$out/assurance-report.json" >/dev/null
+    '';
   sourceRuntimeFunctionalSuite = pkgs.runCommand
     "stage-b-gnu-hello-native-source-functional-suite-v1"
     {
@@ -2554,13 +4933,25 @@ let
       export WINEPREFIX="$TMPDIR/wine"
       export WINEDEBUG=-all
       export WINEDLLOVERRIDES="mscoree,mshtml="
-      mkdir -p "$HOME"
+      export FONTCONFIG_FILE=${wineFontsConf}
+      export XDG_CACHE_HOME="$TMPDIR/cache"
+      runtime_dir="$TMPDIR/candidate-runtime"
+      mkdir -p "$HOME" "$runtime_dir"
+      ln -s ${sourceCandidate}/candidate.exe "$runtime_dir/hello.exe"
+      cd "$runtime_dir"
       spaghetti-extractor stage-b-run-functional-suite \
         --suite ${sourceRuntimeFunctionalSuiteSpec} \
-        --candidate-binary ${sourceCandidate}/candidate.exe \
+        --candidate-binary "$runtime_dir/hello.exe" \
         --timeout-seconds 30 \
+        --strip-stderr-line-regex '^wine: created the configuration directory ' \
+        --strip-stderr-line-regex '^wine: configuration in .* has been updated\.$' \
+        --strip-stderr-line-regex '^Fontconfig warning:' \
+        --strip-stderr-line-regex '^WARNING: radv is not a conformant Vulkan implementation, testing use only\.$' \
+        --strip-stderr-line-regex '^X connection to .* broken \(explicit kill or server shutdown\)\.$' \
+        --strip-stderr-line-regex '^XIO:  fatal IO error [0-9]+ .* on X server ' \
+        --strip-stderr-line-regex '^\s+after [0-9]+ requests \([0-9]+ known processed\) with [0-9]+ events remaining\.$' \
         --out "$out" \
-        -- xvfb-run -a wine ${sourceCandidate}/candidate.exe >/dev/null
+        -- xvfb-run -a wine cmd /d /c hello.exe >/dev/null
       jq -e '
         .format == "stage-b-functional-report-v1" and
         .status == "pass" and .target_name == "gnu-hello" and
@@ -2676,12 +5067,7 @@ let
     test -s "$out/payload.map"
   '';
 
-  originalInventory = mkStaticBinaryInventory {
-    name = "stage-a-gnu-hello-roundtrip-original-inventory";
-    side = "original";
-    binary = originalPe;
-    linkerMap = originalMap;
-  };
+  originalInventory = opaqueOriginalInventory;
   candidateInventory = mkStaticBinaryInventory {
     name = "stage-a-gnu-hello-roundtrip-candidate-inventory";
     side = "candidate";
@@ -3349,6 +5735,43 @@ let
     test -s "$out/original-cutpoint-graph-ir.json"
     test -s "$out/module-resources.json"
   '';
+
+  callableExternalRuntimeContract = pkgs.runCommand
+    "stage-b-gnu-hello-callable-external-runtime-contract-v1"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${callableExternalRuntimePythonSource}/src
+      mkdir -p "$out"
+      ${python} \
+        ${callableExternalRuntimePythonSource}/nix/callable-external-runtime-contract.py \
+        --proposal \
+          ${mixedOriginalWritableSlotAuthorityLean}/callable-external-proposal.json \
+        --capability \
+          ${mixedOriginalWritableSlotAuthorityLean}/callable-external-capability.json \
+        --execution \
+          ${mixedOriginalWritableSlotAuthorityLean}/callable-external-execution.json \
+        --writable-slot-authority \
+          ${mixedOriginalWritableSlotAuthorityLean}/relocated-writable-static-pointer-slot-authorities.json \
+        --out "$out/callable-external-runtime-contract.json"
+      jq -e '
+        .format == "stage-b-callable-external-runtime-v1" and
+        .status == "ready" and
+        (.trust.acceptance_authority | not) and
+        .trust.candidate_generation_only and
+        .trust.lean_source_artifacts_required and
+        .trust.unknown_runtime_targets_rejected and
+        .counts.resolver_sites > 0 and .counts.routes > 0
+      ' "$out/callable-external-runtime-contract.json" >/dev/null
+    '';
 
   mixedOriginalRegisterIndirectAuthorityLean = mkPhase
     "stage-a-gnu-hello-roundtrip-mixed-original-register-indirect-authority-lean" [] ''
@@ -7106,6 +9529,48 @@ assert !(builtins.elem nativeSourceApprovedToolchainAxiom standardLogicalAxioms)
 {
   inherit
     smoke
+    opaqueOriginalInventory
+    opaqueStaticExport
+    opaqueStateMachine
+    machineIr
+    reconstructionInterpreter
+    reconstructionNativeEngine
+    reconstructionNativeRuntime
+    reconstructionPlan
+    semanticComponents
+    semanticComponentWorkspaceDag
+    semanticComponentRegistry
+    semanticComponentHybridCandidate
+    semanticComponentHybridFunctionalSuite
+    reconstructionLiftingEvidence
+    reconstructionBranchWorkspace
+    reconstructionExternalWorkspace
+    reconstructionInternalWorkspace
+    reconstructionAtomicWorkspace
+    reconstructionCallbackWorkspace
+    reconstructionDispatchWorkspace
+    reconstructionTypedMemoryWorkspace
+    reconstructionBranchWorkspaceCheck
+    reconstructionAtomicWorkspaceCheck
+    reconstructionCallbackWorkspaceCheck
+    reconstructionDispatchWorkspaceCheck
+    reconstructionTypedMemoryWorkspaceCheck
+    reconstructionExternalWorkspaceCheck
+    reconstructionInternalWorkspaceCheck
+    reconstructionWorkspaceRegistry
+    reconstructionEntryReplacement
+    reconstructionRegionalHarnessKernel
+    reconstructionEntryReplacementValidation
+    reconstructionEntryReplacementMutation
+    reconstructionCandidate
+    reconstructionEntryReplacementCandidate
+    reconstructionWorkspaceCandidate
+    reconstructionDiagnosticCandidate
+    reconstructionQualification
+    reconstructionFunctionalSuite
+    reconstructionEntryReplacementFunctionalSuite
+    reconstructionWorkspaceFunctionalSuite
+    reconstructionAssurance
     staticExport
     sourceStateMachine
     sourceC0
@@ -7203,6 +9668,7 @@ assert !(builtins.elem nativeSourceApprovedToolchainAxiom standardLogicalAxioms)
     mixedOriginalDiagnostic
     mixedOriginalBaseLean
     mixedOriginalWritableSlotAuthorityLean
+    callableExternalRuntimeContract
     mixedOriginalRegisterIndirectAuthorityLean
     mixedOriginalRegisterIndirectAuthorityProofSources
     mixedOriginalRegisterIndirectAuthorityProof

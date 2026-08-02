@@ -325,6 +325,49 @@ class StageAX87SemanticExportTests(unittest.TestCase):
         self.assertIsNone(transfer["fpu_state"])
         self.assertIsNone(transfer["blocker_category"])
 
+    def test_multi_instruction_transfer_exports_ordered_ordinary_schedule(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            encoded = bytes.fromhex(
+                "b804000000"  # mov eax, 4
+                "83c001"      # add eax, 1
+            )
+            original = root / "original.exe"
+            original.write_bytes(pe32_image(encoded))
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1000 + len(encoded))
+            mapping = BlockMapping(
+                id="ordinary-ordered-effects",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "ordinary_ordered_effects"},
+            )
+
+            transfer = _semantic_transfer_contract(
+                binary,
+                mapping,
+                "ordinary_ordered_effects",
+                {"model": REFERENCE_CONTRACT_MODEL_ID},
+            )
+
+        self.assertEqual(transfer["status"], "reimplementable", transfer)
+        self.assertIsNone(transfer["fpu_state"])
+        schedule = transfer["instruction_effect_schedule"]
+        self.assertEqual(schedule["status"], "complete")
+        self.assertEqual(schedule["counts"], {
+            "instructions": 2,
+            "x87_singletons": 0,
+            "ordinary_instructions": 2,
+            "blockers": 0,
+        })
+        self.assertEqual(
+            [record["instruction_class"] for record in schedule["records"]],
+            ["ordinary_symbolic_instruction", "ordinary_symbolic_instruction"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

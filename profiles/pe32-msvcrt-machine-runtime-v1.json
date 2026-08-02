@@ -82,7 +82,14 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "callbackRegistration",
-      "world_effect_argument": 0
+      "world_effect_argument": 0,
+      "callback_lifetime": "until_invoked_or_process_exit",
+      "callback_abi": {
+        "kind": "generic_callback",
+        "argument_words": 0,
+        "stack_cleanup_bytes": 0,
+        "nullable": false
+      }
     },
     {
       "import": {"dll": "msvcrt.dll", "symbol": "atoi"},
@@ -143,17 +150,6 @@
       "world_effect": "none"
     },
     {
-      "import": {"dll": "msvcrt.dll", "symbol": "__getmainargs"},
-      "abi_template": "pe32-cdecl-v1",
-      "arity": {"kind": "fixed", "words": 5},
-      "result_register_relations": [
-        {"register": "eax", "relation": "exact"}
-      ],
-      "memory_effect": "relationalState",
-      "memory_footprints": [],
-      "world_effect": "dynamicRanges"
-    },
-    {
       "import": {"dll": "msvcrt.dll", "symbol": "__setusermatherr"},
       "abi_template": "pe32-cdecl-v1",
       "arity": {"kind": "fixed", "words": 1},
@@ -164,7 +160,14 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "callbackRegistration",
-      "world_effect_argument": 0
+      "world_effect_argument": 0,
+      "callback_lifetime": "until_replaced_or_process_exit",
+      "callback_abi": {
+        "kind": "generic_callback",
+        "argument_words": 1,
+        "stack_cleanup_bytes": 0,
+        "nullable": true
+      }
     },
     {
       "import": {"dll": "msvcrt.dll", "symbol": "_cexit"},

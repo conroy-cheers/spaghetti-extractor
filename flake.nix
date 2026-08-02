@@ -158,6 +158,10 @@
               ./nix/stage-a-isa-qualification-graph.nix
               ./nix/stage-a-register-dataflow-graph.nix
               ./nix/stage-a-relational-analysis-graph.nix
+              ./nix/stage-b-native-object-graph.nix
+              ./nix/stage-b-reconstruction-workspace.nix
+              ./nix/stage-b-semantic-components.nix
+              ./nix/stage-b-semantic-component-workspaces.nix
             ];
           };
           spaghettiExtractorRoundtripSource = pkgs.lib.fileset.toSource {
@@ -3979,6 +3983,105 @@
               "StageA.GeneratedRelational.GnuHelloNativeSourceEnvironmentFamily.pinnedCompilerLoweringCorrect";
           };
           stage-a-gnu-hello-roundtrip-smoke = gnuHelloRoundtrip.smoke;
+          stage-a-gnu-hello-opaque-original-inventory =
+            gnuHelloRoundtrip.opaqueOriginalInventory;
+          stage-a-gnu-hello-opaque-static-export =
+            gnuHelloRoundtrip.opaqueStaticExport;
+          stage-b-gnu-hello-opaque-state-machine =
+            gnuHelloRoundtrip.opaqueStateMachine;
+          stage-a-gnu-hello-machine-ir = gnuHelloRoundtrip.machineIr;
+          stage-b-gnu-hello-machine-ir-interpreter =
+            gnuHelloRoundtrip.reconstructionInterpreter;
+          stage-b-gnu-hello-machine-ir-native-engine =
+            gnuHelloRoundtrip.reconstructionNativeEngine;
+          stage-b-gnu-hello-machine-ir-native-runtime =
+            gnuHelloRoundtrip.reconstructionNativeRuntime;
+          stage-b-gnu-hello-reconstruction-plan =
+            gnuHelloRoundtrip.reconstructionPlan;
+          stage-b-gnu-hello-semantic-components =
+            gnuHelloRoundtrip.semanticComponents;
+          stage-b-gnu-hello-component-slices =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.componentSlices;
+          stage-b-gnu-hello-regional-interpreter-kernel =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.regionalKernel;
+          stage-b-gnu-hello-component-registry =
+            gnuHelloRoundtrip.semanticComponentRegistry;
+          stage-b-gnu-hello-branch-component-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.branch;
+          stage-b-gnu-hello-external-call-component-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.external-call;
+          stage-b-gnu-hello-internal-call-component-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.internal-call;
+          stage-b-gnu-hello-atomic-component-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.atomic;
+          stage-b-gnu-hello-callback-component-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.callback;
+          stage-b-gnu-hello-dispatch-component-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.dispatch;
+          stage-b-gnu-hello-typed-memory-component-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.typed-memory;
+          stage-b-gnu-hello-component-hybrid-candidate =
+            gnuHelloRoundtrip.semanticComponentHybridCandidate;
+          stage-b-gnu-hello-component-hybrid-functional-suite =
+            gnuHelloRoundtrip.semanticComponentHybridFunctionalSuite;
+          stage-b-gnu-hello-lifting-evidence =
+            gnuHelloRoundtrip.reconstructionLiftingEvidence;
+          stage-b-gnu-hello-branch-workspace =
+            gnuHelloRoundtrip.reconstructionBranchWorkspace;
+          stage-b-gnu-hello-external-call-workspace =
+            gnuHelloRoundtrip.reconstructionExternalWorkspace;
+          stage-b-gnu-hello-internal-call-workspace =
+            gnuHelloRoundtrip.reconstructionInternalWorkspace;
+          stage-b-gnu-hello-atomic-workspace =
+            gnuHelloRoundtrip.reconstructionAtomicWorkspace;
+          stage-b-gnu-hello-callback-workspace =
+            gnuHelloRoundtrip.reconstructionCallbackWorkspace;
+          stage-b-gnu-hello-dispatch-workspace =
+            gnuHelloRoundtrip.reconstructionDispatchWorkspace;
+          stage-b-gnu-hello-typed-memory-workspace =
+            gnuHelloRoundtrip.reconstructionTypedMemoryWorkspace;
+          stage-b-gnu-hello-branch-workspace-check =
+            gnuHelloRoundtrip.reconstructionBranchWorkspaceCheck;
+          stage-b-gnu-hello-external-call-workspace-check =
+            gnuHelloRoundtrip.reconstructionExternalWorkspaceCheck;
+          stage-b-gnu-hello-internal-call-workspace-check =
+            gnuHelloRoundtrip.reconstructionInternalWorkspaceCheck;
+          stage-b-gnu-hello-callback-workspace-check =
+            gnuHelloRoundtrip.reconstructionCallbackWorkspaceCheck;
+          stage-b-gnu-hello-atomic-workspace-check =
+            gnuHelloRoundtrip.reconstructionAtomicWorkspaceCheck;
+          stage-b-gnu-hello-dispatch-workspace-check =
+            gnuHelloRoundtrip.reconstructionDispatchWorkspaceCheck;
+          stage-b-gnu-hello-typed-memory-workspace-check =
+            gnuHelloRoundtrip.reconstructionTypedMemoryWorkspaceCheck;
+          stage-b-gnu-hello-reconstruction-registry =
+            gnuHelloRoundtrip.reconstructionWorkspaceRegistry;
+          stage-b-gnu-hello-entry-replacement =
+            gnuHelloRoundtrip.reconstructionEntryReplacement;
+          stage-b-gnu-hello-regional-harness-kernel =
+            gnuHelloRoundtrip.reconstructionRegionalHarnessKernel;
+          stage-b-gnu-hello-entry-replacement-validation =
+            gnuHelloRoundtrip.reconstructionEntryReplacementValidation;
+          stage-b-gnu-hello-entry-replacement-mutation =
+            gnuHelloRoundtrip.reconstructionEntryReplacementMutation;
+          stage-a-gnu-hello-reconstruction-qualification =
+            gnuHelloRoundtrip.reconstructionQualification;
+          stage-b-gnu-hello-machine-ir-candidate =
+            gnuHelloRoundtrip.reconstructionCandidate;
+          stage-b-gnu-hello-entry-replacement-candidate =
+            gnuHelloRoundtrip.reconstructionEntryReplacementCandidate;
+          stage-b-gnu-hello-reconstruction-workspace-candidate =
+            gnuHelloRoundtrip.reconstructionWorkspaceCandidate;
+          stage-b-gnu-hello-machine-ir-diagnostic-candidate =
+            gnuHelloRoundtrip.reconstructionDiagnosticCandidate;
+          stage-b-gnu-hello-machine-ir-functional-suite =
+            gnuHelloRoundtrip.reconstructionFunctionalSuite;
+          stage-b-gnu-hello-entry-replacement-functional-suite =
+            gnuHelloRoundtrip.reconstructionEntryReplacementFunctionalSuite;
+          stage-b-gnu-hello-reconstruction-workspace-functional-suite =
+            gnuHelloRoundtrip.reconstructionWorkspaceFunctionalSuite;
+          stage-a-gnu-hello-reconstruction-assurance =
+            gnuHelloRoundtrip.reconstructionAssurance;
           stage-a-gnu-hello-roundtrip-static-export = gnuHelloRoundtrip.staticExport;
           stage-b-gnu-hello-source-state-machine =
             gnuHelloRoundtrip.sourceStateMachine;
@@ -4160,6 +4263,8 @@
             gnuHelloRoundtrip.mixedOriginalStaticReachabilityProof;
           stage-a-gnu-hello-roundtrip-mixed-original-writable-slot-authority-lean =
             gnuHelloRoundtrip.mixedOriginalWritableSlotAuthorityLean;
+          stage-b-gnu-hello-callable-external-runtime-contract =
+            gnuHelloRoundtrip.callableExternalRuntimeContract;
           stage-a-gnu-hello-roundtrip-mixed-original-register-indirect-authority-source =
             gnuHelloRoundtrip.mixedOriginalRegisterIndirectAuthorityLean;
           stage-a-gnu-hello-roundtrip-mixed-original-register-indirect-authority-proof-sources =
@@ -5903,6 +6008,52 @@
             stage-a-roundtrip-interpreter-native-kernel-cache
             stage-a-roundtrip-lean-kernel-lookup-native
             stage-a-roundtrip-lean-program-lookup-operation
+            stage-a-gnu-hello-opaque-original-inventory
+            stage-a-gnu-hello-opaque-static-export
+            stage-b-gnu-hello-opaque-state-machine
+            stage-a-gnu-hello-machine-ir
+            stage-b-gnu-hello-machine-ir-interpreter
+            stage-b-gnu-hello-machine-ir-native-engine
+            stage-b-gnu-hello-machine-ir-native-runtime
+            stage-b-gnu-hello-reconstruction-plan
+            stage-b-gnu-hello-semantic-components
+            stage-b-gnu-hello-component-slices
+            stage-b-gnu-hello-regional-interpreter-kernel
+            stage-b-gnu-hello-component-registry
+            stage-b-gnu-hello-branch-component-qualification
+            stage-b-gnu-hello-external-call-component-qualification
+            stage-b-gnu-hello-internal-call-component-qualification
+            stage-b-gnu-hello-atomic-component-qualification
+            stage-b-gnu-hello-callback-component-qualification
+            stage-b-gnu-hello-dispatch-component-qualification
+            stage-b-gnu-hello-typed-memory-component-qualification
+            stage-b-gnu-hello-component-hybrid-candidate
+            stage-b-gnu-hello-component-hybrid-functional-suite
+            stage-b-gnu-hello-lifting-evidence
+            stage-b-gnu-hello-branch-workspace
+            stage-b-gnu-hello-external-call-workspace
+            stage-b-gnu-hello-internal-call-workspace
+            stage-b-gnu-hello-atomic-workspace
+            stage-b-gnu-hello-callback-workspace
+            stage-b-gnu-hello-dispatch-workspace
+            stage-b-gnu-hello-typed-memory-workspace
+            stage-b-gnu-hello-branch-workspace-check
+            stage-b-gnu-hello-atomic-workspace-check
+            stage-b-gnu-hello-callback-workspace-check
+            stage-b-gnu-hello-dispatch-workspace-check
+            stage-b-gnu-hello-typed-memory-workspace-check
+            stage-b-gnu-hello-external-call-workspace-check
+            stage-b-gnu-hello-internal-call-workspace-check
+            stage-b-gnu-hello-reconstruction-registry
+            stage-b-gnu-hello-entry-replacement
+            stage-b-gnu-hello-regional-harness-kernel
+            stage-b-gnu-hello-entry-replacement-validation
+            stage-b-gnu-hello-entry-replacement-mutation
+            stage-b-gnu-hello-machine-ir-candidate
+            stage-b-gnu-hello-entry-replacement-candidate
+            stage-b-gnu-hello-reconstruction-workspace-candidate
+            stage-b-gnu-hello-machine-ir-diagnostic-candidate
+            stage-b-gnu-hello-callable-external-runtime-contract
             stage-a-gnu-hello-roundtrip-smoke
             stage-a-gnu-hello-roundtrip-static-export
             stage-b-gnu-hello-source-state-machine
@@ -6318,6 +6469,8 @@
             stage-a-exit-behavior-smoke
             stage-a-winapi-hello-check
             stage-a-gnu-hello-preflight
+            stage-b-gnu-hello-lifting-evidence
+            stage-b-gnu-hello-semantic-components
             stage-a-gnu-hello-roundtrip-smoke
             stage-a-gnu-hello-roundtrip-runtime-foundation-proof
             stage-a-gnu-hello-roundtrip-launch-binding-proof

@@ -15,6 +15,15 @@ from typing import Any, Iterable, Mapping
 from .artifact_formats import INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
 from .relational.definedness import analyze_definedness_jsonl
 from .stage_b_c_backend import _runtime_header, _runtime_helpers
+from .stage_b_typed_x87 import (
+    TYPED_NATIVE_X87_OPERATION_FORMAT,
+    TYPED_NATIVE_X87_PROGRAM_FORMAT,
+    TypedX87Operation,
+    X87_CHECKED_DECODER,
+    X87_CHECKED_EXECUTOR,
+    extract_typed_x87_operation,
+    typed_x87_operation_from_micro_op,
+)
 from .stage_binary import StageAInputError
 from .util import sha256_bytes, sha256_file, write_json
 
@@ -24,6 +33,7 @@ STAGE_B_INTERPRETER_PACKAGE_FORMAT = "stage-b-semantic-interpreter-package-v1"
 STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT = (
     "stage-b-interpreter-definedness-use-v2"
 )
+_MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
 
 _REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
 _FLAGS = ("cf", "zf", "sf", "of", "pf", "df")
@@ -32,8 +42,9 @@ _FLAG_INDEX = {name: index for index, name in enumerate(_FLAGS)}
 _X87_REPLAY_MODEL = "native_exact_x87_command_replay_obligation_v1"
 _X87_REPLAY_FORMAT = "stage-a-native-exact-x87-command-replay-obligation-v1"
 _X87_REPLAY_PROGRAM_FORMAT = "stage-b-native-exact-x87-command-replay-program-v1"
-_X87_CHECKED_DECODER = "StageA.Relational.X87.decodeSingletonCommand"
-_X87_CHECKED_EXECUTOR = "StageA.Relational.X87.executeSingletonCommand"
+_X87_TYPED_PROGRAM_FORMAT = TYPED_NATIVE_X87_PROGRAM_FORMAT
+_X87_CHECKED_DECODER = X87_CHECKED_DECODER
+_X87_CHECKED_EXECUTOR = X87_CHECKED_EXECUTOR
 _INSTRUCTION_EFFECT_SCHEDULE_FORMAT = (
     INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
 )
@@ -43,6 +54,13 @@ _X87_PHYSICAL_FIELDS = (
     "stack", "tags", "control", "status", "pending_exception", "last_opcode",
     "instruction_pointer", "code_selector", "data_pointer", "data_selector",
 )
+_RAW_INSTRUCTION_FIELDS = frozenset({
+    "bytes",
+    "instruction_bytes",
+    "opcode_bytes",
+    "raw_bytes",
+    "encoded_instruction",
+})
 
 
 class StageBInterpreterError(StageAInputError):
@@ -95,14 +113,12 @@ class _Call:
 
 
 @dataclass(frozen=True)
-class _X87ReplayProgram:
+class _TypedX87Program:
     contract_sha256: str
-    instruction_bytes_sha256: str
-    transfer_instruction_bytes_sha256: str
     image_base: int
     rva_start: int
     rva_end: int
-    instruction_bytes: bytes
+    operation: TypedX87Operation
     checked_decoder: str
     checked_executor: str
 
@@ -117,7 +133,13 @@ class _Transfer:
     x87_nodes: tuple[_Node, ...]
     actions: tuple[_Action, ...]
     calls: tuple[_Call, ...]
-    x87_replays: tuple[_X87ReplayProgram, ...]
+    x87_operations: tuple[_TypedX87Program, ...]
+
+    @property
+    def x87_replays(self) -> tuple[_TypedX87Program, ...]:
+        """Compatibility alias for proof consumers migrating to typed operations."""
+
+        return self.x87_operations
 
 
 @dataclass
@@ -127,7 +149,7 @@ class _TransferCompiler:
     x87_nodes: list[_Node] = field(default_factory=list)
     actions: list[_Action] = field(default_factory=list)
     calls: list[_Call] = field(default_factory=list)
-    x87_replays: list[_X87ReplayProgram] = field(default_factory=list)
+    x87_operations: list[_TypedX87Program] = field(default_factory=list)
     memo: dict[str, int] = field(default_factory=dict)
     memo_memory_dependencies: dict[str, frozenset[str]] = field(default_factory=dict)
     x87_memo: dict[str, int] = field(default_factory=dict)
@@ -139,6 +161,7 @@ class _TransferCompiler:
     scheduled_outcome: _Action | None = None
 
     def compile(self) -> _Transfer:
+        machine_ir_x87 = self.row.get("_machine_ir_x87_micro_ops")
         fpu_state = self.row.get("fpu_state")
         fpu = (
             _object(fpu_state, f"{self.identity} fpu_state")
@@ -147,7 +170,14 @@ class _TransferCompiler:
         )
         native_x87_replay = fpu is not None and fpu.get("model") == _X87_REPLAY_MODEL
         scheduled_x87_replay = False
-        if native_x87_replay:
+        if machine_ir_x87 is not None:
+            typed_micro_ops = _list(
+                machine_ir_x87, f"{self.identity} x87 micro-ops"
+            )
+            self._compile_machine_ir_transfer(typed_micro_ops)
+            scheduled_x87_replay = self.scheduled_outcome is not None
+            native_x87_replay = bool(typed_micro_ops)
+        elif native_x87_replay:
             scheduled_x87_replay = self._compile_x87_replay(fpu)
         elif fpu is not None:
             raise StageBInterpreterError(
@@ -180,8 +210,257 @@ class _TransferCompiler:
             x87_nodes=tuple(self.x87_nodes),
             actions=tuple(self.actions),
             calls=tuple(self.calls),
-            x87_replays=tuple(self.x87_replays),
+            x87_operations=tuple(self.x87_operations),
         )
+
+    def _compile_machine_ir_transfer(self, micro_ops: list[Any]) -> None:
+        schedule = self.row.get("instruction_effect_schedule")
+        original = _object(self.row.get("original"), f"{self.identity} source span")
+        original_start = _u32(original.get("rva_start"), "machine-IR start RVA")
+        original_end = _u32(original.get("rva_end"), "machine-IR end RVA")
+        if schedule is None:
+            if not micro_ops:
+                self._compile_symbolic_transfer()
+                return
+            cursor = original_start
+            for raw in micro_ops:
+                micro = _object(raw, f"{self.identity} x87 micro-op")
+                start = _u32(micro.get("rva_start"), "typed x87 start RVA")
+                end = _u32(micro.get("rva_end"), "typed x87 end RVA")
+                if start != cursor or end <= start:
+                    raise StageBInterpreterError(
+                        f"{self.identity}: typed x87 micro-ops do not cover the unit",
+                        code="malformed_machine_ir_x87_schedule",
+                    )
+                self._append_machine_ir_x87_operation(micro)
+                cursor = end
+            if cursor != original_end:
+                raise StageBInterpreterError(
+                    f"{self.identity}: typed x87 micro-ops do not cover the unit",
+                    code="malformed_machine_ir_x87_schedule",
+                )
+            return
+        schedule_object = _object(
+            schedule, f"{self.identity} machine-IR instruction schedule"
+        )
+        if (
+            schedule_object.get("format") != _INSTRUCTION_EFFECT_SCHEDULE_FORMAT
+            or schedule_object.get("status") != "complete"
+            or schedule_object.get("proof_authority") is not False
+            or schedule_object.get("blockers") != []
+            or schedule_object.get("ordering") != "strict_contiguous_rva_order"
+            or schedule_object.get("rva_start", original_start) != original_start
+            or schedule_object.get("rva_end", original_end) != original_end
+        ):
+            raise StageBInterpreterError(
+                f"{self.identity}: machine-IR instruction schedule is incomplete",
+                code="malformed_machine_ir_x87_schedule",
+            )
+        records = _list(
+            schedule_object.get("records"),
+            f"{self.identity} machine-IR schedule records",
+        )
+        counts = _object(
+            schedule_object.get("counts"),
+            f"{self.identity} machine-IR schedule counts",
+        )
+        if counts.get("instructions") != len(records) or counts.get("blockers") != 0:
+            raise StageBInterpreterError(
+                f"{self.identity}: machine-IR schedule counts are inconsistent",
+                code="malformed_machine_ir_x87_schedule",
+            )
+        micro_by_rva: dict[int, Mapping[str, Any]] = {}
+        for raw in micro_ops:
+            micro = _object(raw, f"{self.identity} x87 micro-op")
+            rva = _u32(micro.get("rva_start"), "x87 micro-op RVA")
+            if rva in micro_by_rva:
+                raise StageBInterpreterError(
+                    f"{self.identity}: duplicate x87 micro-op RVA 0x{rva:x}",
+                    code="malformed_machine_ir_x87_schedule",
+                )
+            micro_by_rva[rva] = micro
+        used: set[int] = set()
+        cursor = original_start
+        x87_count = 0
+        ordinary_count = 0
+        for index, raw_record in enumerate(records):
+            record = _object(raw_record, f"{self.identity} schedule record {index}")
+            rva = _u32(record.get("rva_start"), "machine-IR schedule RVA")
+            rva_end = _u32(record.get("rva_end"), "machine-IR schedule end RVA")
+            if rva != cursor or rva_end <= rva:
+                raise StageBInterpreterError(
+                    f"{self.identity}: machine-IR schedule is not contiguous",
+                    code="malformed_machine_ir_x87_schedule",
+                )
+            cursor = rva_end
+            instruction_class = record.get("instruction_class")
+            classification = _object(
+                record.get("classification"),
+                f"{self.identity} schedule classification {index}",
+            )
+            if (
+                classification.get("status")
+                != "proposal_requires_lean_exact_byte_replay"
+                or classification.get("proof_authority") is not False
+            ):
+                raise StageBInterpreterError(
+                    f"{self.identity}: machine-IR schedule classification is invalid",
+                    code="malformed_machine_ir_x87_schedule",
+                )
+            effects = _object(
+                record.get("effects") or {}, f"machine-IR schedule effects {index}"
+            )
+            control = effects.get("control")
+            if control is None:
+                control = (
+                    {"kind": "fallthrough", "target_rva": records[index + 1].get("rva_start")}
+                    if index + 1 < len(records) and isinstance(records[index + 1], Mapping)
+                    else self.row.get("outcome")
+                )
+            control_object = _object(control, f"machine-IR schedule control {index}")
+            if index + 1 < len(records):
+                next_record = _object(records[index + 1], "next machine-IR schedule record")
+                if (
+                    control_object.get("kind") != "fallthrough"
+                    or control_object.get("target_rva") != next_record.get("rva_start")
+                ):
+                    raise StageBInterpreterError(
+                        f"{self.identity}: machine-IR schedule is not contiguous",
+                        code="malformed_machine_ir_x87_schedule",
+                    )
+            else:
+                self._validate_scheduled_outcome(control_object)
+            if instruction_class == "x87_singleton_checked_replay":
+                micro = micro_by_rva.get(rva)
+                if micro is None:
+                    raise StageBInterpreterError(
+                        f"{self.identity}: x87 schedule record has no typed micro-op",
+                        code="malformed_machine_ir_x87_schedule",
+                    )
+                if (
+                    micro.get("rva_end") != rva_end
+                    or classification.get("checked_decoder") != _X87_CHECKED_DECODER
+                    or classification.get("checked_executor") != _X87_CHECKED_EXECUTOR
+                ):
+                    raise StageBInterpreterError(
+                        f"{self.identity}: typed x87 schedule binding is invalid",
+                        code="malformed_machine_ir_x87_schedule",
+                    )
+                self._append_machine_ir_x87_operation(micro)
+                used.add(rva)
+                x87_count += 1
+            elif instruction_class == "ordinary_symbolic_instruction":
+                if (
+                    classification.get("checked_decoder")
+                    != _ORDINARY_CHECKED_DECODER
+                    or classification.get("checked_executor")
+                    != _ORDINARY_CHECKED_EXECUTOR
+                ):
+                    raise StageBInterpreterError(
+                        f"{self.identity}: ordinary schedule binding is invalid",
+                        code="malformed_machine_ir_x87_schedule",
+                    )
+                self._reset_instruction_expression_cache()
+                self.instruction_local = True
+                try:
+                    self._compile_instruction_effects(effects)
+                    if index + 1 == len(records):
+                        self.scheduled_outcome = self._outcome(control_object)
+                finally:
+                    self.instruction_local = False
+                ordinary_count += 1
+            else:
+                raise StageBInterpreterError(
+                    f"{self.identity}: unsupported machine-IR instruction class",
+                    code="malformed_machine_ir_x87_schedule",
+                )
+            if index + 1 == len(records) and self.scheduled_outcome is None:
+                # Checked x87 replay updates the current machine state. A
+                # terminal control expression following it must therefore use
+                # the same instruction-local state view as an ordinary final
+                # instruction.
+                self.instruction_local = True
+                try:
+                    self.scheduled_outcome = self._outcome(control_object)
+                finally:
+                    self.instruction_local = False
+        if used != set(micro_by_rva):
+            raise StageBInterpreterError(
+                f"{self.identity}: machine-IR x87 micro-op coverage differs from schedule",
+                code="malformed_machine_ir_x87_schedule",
+            )
+        if (
+            cursor != original_end
+            or counts.get("x87_singletons") != x87_count
+            or counts.get("ordinary_instructions") != ordinary_count
+        ):
+            raise StageBInterpreterError(
+                f"{self.identity}: machine-IR schedule coverage is inconsistent",
+                code="malformed_machine_ir_x87_schedule",
+            )
+
+    def _append_machine_ir_x87_operation(self, micro: Mapping[str, Any]) -> None:
+        fpu = _object(self.row.get("fpu_state"), f"{self.identity} fpu_state")
+        typed_replay = _object(
+            fpu.get("typed_replay"), f"{self.identity} typed x87 metadata"
+        )
+        if (
+            micro.get("unit_id") != self.identity
+            or micro.get("transfer_instruction_sha256")
+            != self.row.get("instruction_bytes_sha256")
+            or micro.get("checked_decoder") != _X87_CHECKED_DECODER
+            or micro.get("checked_executor") != _X87_CHECKED_EXECUTOR
+            or micro.get("physical_state_effect")
+            != "defined_by_checked_typed_x87_executor"
+        ):
+            raise StageBInterpreterError(
+                f"{self.identity}: typed x87 micro-op is not bound to its unit or checker",
+                code="malformed_typed_x87_operation",
+            )
+        _sha256(micro.get("instruction_sha256"), "typed x87 instruction SHA-256")
+        image_base = _u32(typed_replay.get("image_base"), "typed x87 image base")
+        try:
+            operation = typed_x87_operation_from_micro_op(micro, image_base=image_base)
+        except StageAInputError as exc:
+            raise StageBInterpreterError(
+                f"{self.identity}: malformed typed x87 micro-op: {exc}",
+                code="unsupported_typed_x87_operation",
+            ) from exc
+        start = _u32(micro.get("rva_start"), "typed x87 start RVA")
+        end = _u32(micro.get("rva_end"), "typed x87 end RVA")
+        original = _object(self.row.get("original"), f"{self.identity} source span")
+        original_start = _u32(original.get("rva_start"), "machine-IR start RVA")
+        original_end = _u32(original.get("rva_end"), "machine-IR end RVA")
+        if (
+            end <= start
+            or operation.source_size != end - start
+            or start < original_start
+            or end > original_end
+        ):
+            raise StageBInterpreterError(
+                f"{self.identity}: typed x87 micro-op span is invalid for its unit",
+                code="malformed_typed_x87_operation",
+            )
+        index = len(self.x87_operations)
+        self.x87_operations.append(
+            _TypedX87Program(
+                contract_sha256=_sha256(
+                    self.row.get("contract_sha256"), "contract_sha256"
+                ),
+                image_base=image_base,
+                rva_start=start,
+                rva_end=end,
+                operation=operation,
+                checked_decoder=_string(
+                    micro.get("checked_decoder"), "typed x87 checked decoder"
+                ),
+                checked_executor=_string(
+                    micro.get("checked_executor"), "typed x87 checked executor"
+                ),
+            )
+        )
+        self.actions.append(_Action("typed_x87", (index,)))
+        self._reset_instruction_expression_cache()
 
     def _compile_symbolic_transfer(self) -> None:
         ordered = self.row.get("ordered_events")
@@ -402,21 +681,20 @@ class _TransferCompiler:
         contract_digest = _sha256(self.row.get("contract_sha256"), "contract_sha256")
         image_base = _u32(replay.get("image_base"), "x87 replay image_base")
         for instruction_rva, instruction_end, instruction_bytes, _outer in instruction_records:
-            replay_index = len(self.x87_replays)
-            self.x87_replays.append(
-                _X87ReplayProgram(
+            replay_index = len(self.x87_operations)
+            self.x87_operations.append(
+                _typed_x87_program(
                     contract_sha256=contract_digest,
-                    instruction_bytes_sha256=sha256_bytes(instruction_bytes),
-                    transfer_instruction_bytes_sha256=transfer_digest,
                     image_base=image_base,
                     rva_start=instruction_rva,
                     rva_end=instruction_end,
                     instruction_bytes=instruction_bytes,
+                    instruction=_outer,
                     checked_decoder=_X87_CHECKED_DECODER,
                     checked_executor=_X87_CHECKED_EXECUTOR,
                 )
             )
-            self.actions.append(_Action("replay_x87", (replay_index,)))
+            self.actions.append(_Action("typed_x87", (replay_index,)))
         return False
 
     def _compile_instruction_effect_schedule(
@@ -589,19 +867,18 @@ class _TransferCompiler:
                         f"{self.identity}: x87 schedule record {index} singleton binding is malformed",
                         code="malformed_x87_instruction_effect_schedule",
                     )
-                replay_index = len(self.x87_replays)
-                self.x87_replays.append(_X87ReplayProgram(
+                replay_index = len(self.x87_operations)
+                self.x87_operations.append(_typed_x87_program(
                     contract_sha256=contract_digest,
-                    instruction_bytes_sha256=sha256_bytes(instruction_bytes),
-                    transfer_instruction_bytes_sha256=transfer_digest,
                     image_base=image_base,
                     rva_start=instruction_rva,
                     rva_end=instruction_end,
                     instruction_bytes=instruction_bytes,
+                    instruction=_outer,
                     checked_decoder=_X87_CHECKED_DECODER,
                     checked_executor=_X87_CHECKED_EXECUTOR,
                 ))
-                self.actions.append(_Action("replay_x87", (replay_index,)))
+                self.actions.append(_Action("typed_x87", (replay_index,)))
                 self._reset_instruction_expression_cache()
                 if index + 1 == len(records):
                     if control.get("kind") not in {"fallthrough", "jump"}:
@@ -742,7 +1019,7 @@ class _TransferCompiler:
         self.actions.append(_Action("sync_eflags"))
 
     def _check_x87_replay_outcome(self, outcome: Mapping[str, Any]) -> None:
-        continuation = self.x87_replays[-1].rva_end
+        continuation = self.x87_operations[-1].rva_end
         if outcome.get("kind") != "fallthrough" or outcome.get("target_rva") != continuation:
             raise StageBInterpreterError(
                 f"{self.identity}: checked x87 replay sequence must fall through to its span end",
@@ -835,6 +1112,8 @@ class _TransferCompiler:
                 aux=_FLAG_INDEX[name],
                 immediate=int(self.instruction_local),
             )
+        if op == "fs_base":
+            return _Node(op, immediate=int(self.instruction_local))
         if op in {"true", "false"}:
             return _Node(op)
         if op in {"undefined_bv", "undefined_flag"}:
@@ -884,6 +1163,7 @@ class _TransferCompiler:
             "imul_overflow": 5, "mul_carry": 4, "udiv_quot32": 3,
             "udiv_rem32": 3, "udiv_valid32": 3, "bsr_index": 2,
             "tzcnt": 2, "sbb_borrow": 5, "sbb_overflow": 5,
+            "adc_carry": 5, "adc_overflow": 5,
         }.get(op)
         if expected is None:
             raise StageBInterpreterError(
@@ -1072,6 +1352,90 @@ def compile_stage_b_interpreter_program(state_machine: Path) -> tuple[_Transfer,
     return transfers
 
 
+def compile_stage_b_interpreter_machine_ir(machine_ir: Path) -> tuple[_Transfer, ...]:
+    rows = _adapt_machine_ir_rows(_read_jsonl(Path(machine_ir)))
+    transfers, _blockers = _compile_interpreter_rows(rows, collect_blockers=False)
+    return transfers
+
+
+def _adapt_machine_ir_rows(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, unit in enumerate(units):
+        if unit.get("format") != _MACHINE_IR_FORMAT or unit.get("record_kind") != "unit":
+            raise StageBInterpreterError(
+                f"machine-IR record {index} is not a v2 unit",
+                code="malformed_machine_ir_input",
+            )
+        if _contains_raw_instruction_material(unit):
+            raise StageBInterpreterError(
+                f"machine-IR record {index} contains raw instruction material",
+                code="malformed_machine_ir_input",
+            )
+        identity = _string(unit.get("id"), "machine-IR unit id")
+        source = _object(unit.get("source"), f"{identity} source binding")
+        original = _object(source.get("original"), f"{identity} source span")
+        semantics = _object(unit.get("semantics"), f"{identity} semantics")
+        source_digest = _sha256(
+            source.get("instruction_bytes_sha256"), f"{identity} source span SHA-256"
+        )
+        rva_start = _u32(original.get("rva_start"), "machine-IR start RVA")
+        rva_end = _u32(original.get("rva_end"), "machine-IR end RVA")
+        span_size = _nonnegative(original.get("size"), "machine-IR span size")
+        if rva_end <= rva_start or span_size != rva_end - rva_start:
+            raise StageBInterpreterError(
+                f"{identity}: machine-IR source span is inconsistent",
+                code="malformed_machine_ir_input",
+            )
+        row: dict[str, Any] = {
+            "format": "stage-a-semantic-transfer-contract-v1",
+            "expression_model": "stage-a-semantic-ir-v1",
+            "id": identity,
+            "status": "reimplementable" if unit.get("status") == "qualified" else "incomplete",
+            "reachable": unit.get("reachable") is True,
+            "contract_sha256": _sha256(
+                source.get("contract_sha256"), f"{identity} contract SHA-256"
+            ),
+            "instruction_bytes_sha256": source_digest,
+            "original": {
+                "rva_start": rva_start,
+                "rva_end": rva_end,
+                "size": span_size,
+            },
+            "_machine_ir_x87_micro_ops": _list(
+                unit.get("x87_micro_ops"), f"{identity} x87 micro-ops"
+            ),
+            # Definedness analysis needs the checked instruction identity and
+            # typed operand shape for ISA-defined input witnesses such as the
+            # zero-source BSR destination.  The machine IR contains no opcode
+            # bytes, so retaining this metadata does not reintroduce runtime
+            # decoding or original executable material.
+            "instructions": _list(
+                unit.get("instructions", []), f"{identity} instructions"
+            ),
+        }
+        for field in (
+            "pre_state", "register_writes", "flag_writes", "memory_events",
+            "external_events", "faults", "ordered_events", "edge_conditions",
+            "outcome", "stack_delta", "counts", "fpu_state",
+            "instruction_effect_schedule",
+        ):
+            row[field] = semantics.get(field)
+        rows.append(row)
+    return rows
+
+
+def _contains_raw_instruction_material(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            key in _RAW_INSTRUCTION_FIELDS
+            or _contains_raw_instruction_material(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_raw_instruction_material(item) for item in value)
+    return False
+
+
 def _compile_interpreter_rows(
     rows: list[dict[str, Any]],
     *,
@@ -1146,13 +1510,45 @@ def _package_blocker_sort_key(blocker: Mapping[str, Any]) -> tuple[int, str, str
     )
 
 
-def write_stage_b_interpreter_package(*, state_machine: Path, out: Path) -> dict[str, Any]:
+def write_stage_b_interpreter_package(
+    *,
+    state_machine: Path | None = None,
+    machine_ir: Path | None = None,
+    out: Path,
+) -> dict[str, Any]:
     """Write stable interpreter source, program data, and a strict manifest."""
 
-    state_machine = Path(state_machine)
+    if (state_machine is None) == (machine_ir is None):
+        raise StageBInterpreterError(
+            "provide exactly one of state_machine or machine_ir",
+            code="ambiguous_interpreter_input",
+        )
+    input_path = Path(state_machine if state_machine is not None else machine_ir)
+    input_kind = "state_machine" if state_machine is not None else "machine_ir"
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    rows = _read_jsonl(state_machine)
+    input_rows = _read_jsonl(input_path)
+    rows = (
+        input_rows
+        if state_machine is not None
+        else _adapt_machine_ir_rows(input_rows)
+    )
+    definedness_input = input_path
+    if machine_ir is not None:
+        definedness_input = out / "machine-ir-adapted-semantics.jsonl"
+        definedness_input.write_text(
+            "".join(
+                json.dumps(
+                    _sanitize_generated_binding_names(row),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                )
+                + "\n"
+                for row in rows
+            ),
+            encoding="ascii",
+        )
     transfers, blockers = _compile_interpreter_rows(rows, collect_blockers=True)
     max_word_nodes = max((len(transfer.nodes) for transfer in transfers), default=0)
     if max_word_nodes > 1024:
@@ -1191,15 +1587,22 @@ def write_stage_b_interpreter_package(*, state_machine: Path, out: Path) -> dict
     files["program_source"].write_text(_program_source(transfers), encoding="ascii")
     program_payload = _program_payload(
         transfers,
-        state_machine=state_machine,
-        input_transfer_count=len(rows),
+        semantic_input_sha256=sha256_file(input_path),
+        definedness_input=definedness_input,
+        input_transfer_count=len(input_rows),
         blockers=blockers,
+        sanitized_source_bindings=machine_ir is not None,
     )
     write_json(files["program_manifest"], program_payload)
     package = {
         "format": STAGE_B_INTERPRETER_PACKAGE_FORMAT,
         "status": "ready" if not blockers else "incomplete",
-        "state_machine": {"path": state_machine.name, "sha256": sha256_file(state_machine)},
+        input_kind: {"path": input_path.name, "sha256": sha256_file(input_path)},
+        "input_mode": (
+            "strict_exact_state_machine_v1"
+            if state_machine is not None
+            else "sanitized_machine_ir_v2"
+        ),
         "program": {
             "path": files["program_manifest"].name,
             "sha256": sha256_file(files["program_manifest"]),
@@ -1213,16 +1616,36 @@ def write_stage_b_interpreter_package(*, state_machine: Path, out: Path) -> dict
         "blockers": blockers,
         "authority": "candidate generation only; final acceptance requires Lean replay",
     }
+    if machine_ir is not None:
+        package["adapted_semantics"] = {
+            "path": definedness_input.name,
+            "sha256": sha256_file(definedness_input),
+            "role": "byte_free_definedness_analysis_input",
+        }
     write_json(out / "state-machine-interpreter-package.json", package)
     return package
+
+
+def _sanitize_generated_binding_names(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            ("source_span_sha256" if key == "instruction_bytes_sha256" else str(key)):
+            _sanitize_generated_binding_names(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_generated_binding_names(item) for item in value]
+    return value
 
 
 def _program_payload(
     transfers: Iterable[_Transfer],
     *,
-    state_machine: Path,
+    semantic_input_sha256: str,
+    definedness_input: Path,
     input_transfer_count: int | None = None,
     blockers: Iterable[Mapping[str, Any]] = (),
+    sanitized_source_bindings: bool = False,
 ) -> dict[str, Any]:
     rows = list(transfers)
     blocker_rows = [dict(item) for item in blockers]
@@ -1230,24 +1653,32 @@ def _program_payload(
     word_ops = sorted({node.op for row in rows for node in row.nodes})
     x87_ops = sorted({node.op for row in rows for node in row.x87_nodes})
     action_ops = sorted({action.op for row in rows for action in row.actions})
-    state_machine_sha256 = sha256_file(state_machine)
-    transfer_payloads = [
-        {
+    state_machine_sha256 = semantic_input_sha256
+    transfer_payloads = []
+    for row in rows:
+        source_binding = {
+            (
+                "source_span_sha256"
+                if sanitized_source_bindings
+                else "instruction_bytes_sha256"
+            ): row.instruction_bytes_sha256
+        }
+        transfer_payloads.append({
             "id": row.identity,
             "rva_start": row.rva_start,
             "contract_sha256": row.contract_sha256,
-            "instruction_bytes_sha256": row.instruction_bytes_sha256,
+            **source_binding,
             "counts": {
                 "word_nodes": len(row.nodes),
                 "x87_nodes": len(row.x87_nodes),
                 "actions": len(row.actions),
                 "calls": len(row.calls),
-                "x87_replays": len(row.x87_replays),
+                "x87_operations": len(row.x87_operations),
             },
-            "x87_replays": [_x87_replay_payload(replay) for replay in row.x87_replays],
-        }
-        for row in rows
-    ]
+            "x87_operations": [
+                _typed_x87_payload(operation) for operation in row.x87_operations
+            ],
+        })
     undefined_node_count = sum(
         node.op in {"undefined_bv", "undefined_flag"}
         for row in rows
@@ -1263,7 +1694,7 @@ def _program_payload(
             "blocked_transfers": len(blocker_rows),
             "word_nodes": sum(len(row.nodes) for row in rows),
             "x87_nodes": sum(len(row.x87_nodes) for row in rows),
-            "x87_replays": sum(len(row.x87_replays) for row in rows),
+            "x87_operations": sum(len(row.x87_operations) for row in rows),
             "actions": sum(len(row.actions) for row in rows),
             "calls": sum(len(row.calls) for row in rows),
             "undefined_nodes": undefined_node_count,
@@ -1274,10 +1705,12 @@ def _program_payload(
             "word_ops": word_ops,
             "x87_ops": x87_ops,
             "action_ops": action_ops,
-            "x87_replay": {
-                "format": _X87_REPLAY_PROGRAM_FORMAT,
-                "action": "replay_x87",
-                "runtime_handler": "replay_checked_x87_command",
+            "typed_native_x87": {
+                "format": _X87_TYPED_PROGRAM_FORMAT,
+                "operation_format": TYPED_NATIVE_X87_OPERATION_FORMAT,
+                "mode": "sanitized_typed_native_v1",
+                "action": "typed_x87",
+                "runtime_handler": "execute_typed_x87_operation",
                 "checked_decoder": _X87_CHECKED_DECODER,
                 "checked_executor": _X87_CHECKED_EXECUTOR,
             },
@@ -1287,7 +1720,7 @@ def _program_payload(
         "authority": "untrusted generated program; Stage A checks every binding",
     }
     if undefined_node_count:
-        definedness_evidence = analyze_definedness_jsonl(state_machine)
+        definedness_evidence = analyze_definedness_jsonl(definedness_input)
         payload["definedness_use"] = _definedness_use_payload(
             rows,
             state_machine_sha256=state_machine_sha256,
@@ -1415,38 +1848,75 @@ def _definedness_use_payload(
     return metadata
 
 
-def _x87_replay_payload(replay: _X87ReplayProgram) -> dict[str, Any]:
+def _typed_x87_program(
+    *,
+    contract_sha256: str,
+    image_base: int,
+    rva_start: int,
+    rva_end: int,
+    instruction_bytes: bytes,
+    instruction: Mapping[str, Any],
+    checked_decoder: str,
+    checked_executor: str,
+) -> _TypedX87Program:
+    try:
+        operation = extract_typed_x87_operation(
+            encoded=instruction_bytes,
+            instruction=instruction,
+            image_base=image_base,
+        )
+    except StageAInputError as exc:
+        raise StageBInterpreterError(
+            f"typed x87 extraction failed: {exc}",
+            code="unsupported_typed_x87_operation",
+            next_action=(
+                "add the mnemonic and operand form to the reviewed typed x87 table "
+                "and qualify it against the ISA oracles"
+            ),
+        ) from exc
+    if operation.source_size != rva_end - rva_start:
+        raise StageBInterpreterError(
+            "typed x87 source size differs from its checked span",
+            code="malformed_typed_x87_operation",
+        )
+    return _TypedX87Program(
+        contract_sha256=contract_sha256,
+        image_base=image_base,
+        rva_start=rva_start,
+        rva_end=rva_end,
+        operation=operation,
+        checked_decoder=checked_decoder,
+        checked_executor=checked_executor,
+    )
+
+
+def _typed_x87_payload(program: _TypedX87Program) -> dict[str, Any]:
     return {
-        "format": _X87_REPLAY_PROGRAM_FORMAT,
-        "contract_sha256": replay.contract_sha256,
-        "instruction_bytes_sha256": replay.instruction_bytes_sha256,
-        "transfer_instruction_bytes_sha256": replay.transfer_instruction_bytes_sha256,
-        "image_base": replay.image_base,
-        "rva_start": replay.rva_start,
-        "rva_end": replay.rva_end,
-        "instruction_count": 1,
-        "instruction_bytes": replay.instruction_bytes.hex(),
-        "checked_decoder": replay.checked_decoder,
-        "checked_executor": replay.checked_executor,
+        "format": _X87_TYPED_PROGRAM_FORMAT,
+        "contract_sha256": program.contract_sha256,
+        "image_base": program.image_base,
+        "rva_start": program.rva_start,
+        "rva_end": program.rva_end,
+        "operation": program.operation.payload(),
+        "checked_decoder": program.checked_decoder,
+        "checked_executor": program.checked_executor,
     }
 
 
 def _interpreter_runtime_header() -> str:
     header = _runtime_header()
-    replay_record = """typedef struct stage_b_x87_replay_program {
-  uint32_t image_base, rva_start, rva_end, instruction_count, byte_count;
-  const uint8_t *instruction_bytes;
-  const char *instruction_bytes_sha256;
-  const char *transfer_instruction_bytes_sha256;
+    replay_record = """typedef struct stage_b_typed_x87_operation {
+  uint32_t image_base, rva_start, rva_end, source_size;
+  const char *operation_identity;
   const char *contract_sha256;
   const char *checked_decoder;
   const char *checked_executor;
-} stage_b_x87_replay_program;
+} stage_b_typed_x87_operation;
 
 """
-    replay_handler = """typedef stage_b_call_status (*stage_b_x87_replay_handler)(
+    replay_handler = """typedef stage_b_call_status (*stage_b_typed_x87_handler)(
     stage_b_runtime *runtime,
-    const stage_b_x87_replay_program *program,
+    const stage_b_typed_x87_operation *program,
     const stage_b_machine_state *input,
     stage_b_machine_state *output);
 
@@ -1465,7 +1935,7 @@ def _interpreter_runtime_header() -> str:
             "  stage_b_code_target_resolver resolve_code_target;\n",
             "  stage_b_external_call_handler external_call_fallback;\n"
             "  stage_b_code_target_resolver resolve_code_target;\n"
-            "  stage_b_x87_replay_handler replay_checked_x87_command;\n",
+            "  stage_b_typed_x87_handler execute_typed_x87_operation;\n",
         ),
     )
     for old, new in replacements:
@@ -1486,8 +1956,17 @@ def _interpreter_header() -> str:
 #include "state-machine-runtime.h"
 
 typedef struct stage_b_program_transfer stage_b_program_transfer;
+typedef stage_b_step_result (*stage_b_region_override_fn)(
+    stage_b_runtime *, stage_b_machine_state *);
+typedef struct stage_b_region_override {
+  uint32_t entry_rva;
+  stage_b_region_override_fn function;
+  const char *replacement_id;
+  const char *cluster_id;
+} stage_b_region_override;
 
 const stage_b_program_transfer *stage_b_program_lookup(uint32_t source_rva);
+const stage_b_region_override *stage_b_region_override_lookup(uint32_t entry_rva);
 stage_b_step_result stage_b_interpreter_step(
     stage_b_runtime *runtime, stage_b_machine_state *state, uint32_t source_rva);
 stage_b_call_status stage_b_run_function(
@@ -1514,6 +1993,8 @@ _WORD_OPS = (
     "fpu_code_selector", "fpu_data_pointer", "fpu_data_selector", "fpu_control_load",
     "fpu_control_word", "fpu_status_word", "fpu_bits_lo32", "fpu_bits_hi32",
     "fpu_cmp_cf", "fpu_cmp_pf", "fpu_cmp_zf", "fpu_fxam", "fpu_int32",
+    "adc_carry", "adc_overflow",
+    "fs_base",
 )
 _X87_OPS = (
     "fpu_reg", "fpu_empty", "fpu_const", "fpu_mem", "fpu_int", "fpu_mem64",
@@ -1525,6 +2006,8 @@ _ACTIONS = (
     "set_x87_status", "set_x87_pending", "set_x87_opcode", "set_x87_ip",
     "set_x87_cs", "set_x87_dp", "set_x87_ds", "sync_eflags", "outcome_fallthrough",
     "outcome_jump", "outcome_branch", "outcome_return", "outcome_indirect",
+    # Opcode 25 retains its historical ABI label. Its payload is now a typed,
+    # byte-free operation and all newly generated capability metadata says so.
     "outcome_external", "replay_x87", "rep_stosd",
 )
 
@@ -1547,8 +2030,8 @@ def _program_source(transfers: tuple[_Transfer, ...]) -> str:
         prefix = f"stage_b_t{index:04d}"
         lines.append(
             f"  {{ 0x{row.rva_start:08x}U, {len(row.nodes)}U, {len(row.x87_nodes)}U, "
-            f"{len(row.actions)}U, {len(row.x87_replays)}U, {prefix}_nodes, "
-            f"{prefix}_x87_nodes, {prefix}_actions, {prefix}_calls, {prefix}_x87_replays }},"
+            f"{len(row.actions)}U, {len(row.x87_operations)}U, {prefix}_nodes, "
+            f"{prefix}_x87_nodes, {prefix}_actions, {prefix}_calls, {prefix}_x87_operations }},"
         )
     if not transfers:
         lines.append("  { 0U,0U,0U,0U,0U,0,0,0,0,0 },")
@@ -1599,26 +2082,22 @@ def _render_transfer_data(prefix: str, row: _Transfer) -> list[str]:
     if not row.calls:
         lines.append("  { 0U,0U,0U,0U,0U,0U,0,0,0U,0U,0,0,0,0U,0,0U },")
     lines.append("};")
-    for index, replay in enumerate(row.x87_replays):
-        encoded = ",".join(f"0x{byte:02x}U" for byte in replay.instruction_bytes)
-        lines.append(
-            f"static const uint8_t {prefix}_x87_replay_{index}_bytes[] = {{ {encoded} }};"
-        )
-    lines.append(f"static const stage_b_x87_replay_program {prefix}_x87_replays[] = {{")
-    for index, replay in enumerate(row.x87_replays):
+    lines.append(
+        f"static const stage_b_typed_x87_operation {prefix}_x87_operations[] = {{"
+    )
+    for operation in row.x87_operations:
         lines.append(
             "  { "
-            f"0x{replay.image_base:08x}U, 0x{replay.rva_start:08x}U, "
-            f"0x{replay.rva_end:08x}U, 1U, {len(replay.instruction_bytes)}U, "
-            f"{prefix}_x87_replay_{index}_bytes, "
-            f"{_c_string(replay.instruction_bytes_sha256)}, "
-            f"{_c_string(replay.transfer_instruction_bytes_sha256)}, "
-            f"{_c_string(replay.contract_sha256)}, "
-            f"{_c_string(replay.checked_decoder)}, {_c_string(replay.checked_executor)} "
+            f"0x{operation.image_base:08x}U, 0x{operation.rva_start:08x}U, "
+            f"0x{operation.rva_end:08x}U, {operation.operation.source_size}U, "
+            f"{_c_string(operation.operation.identity)}, "
+            f"{_c_string(operation.contract_sha256)}, "
+            f"{_c_string(operation.checked_decoder)}, "
+            f"{_c_string(operation.checked_executor)} "
             "},"
         )
-    if not row.x87_replays:
-        lines.append("  { 0U,0U,0U,0U,0U,0,0,0,0,0,0 },")
+    if not row.x87_operations:
+        lines.append("  { 0U,0U,0U,0U,0,0,0,0 },")
     lines.append("};")
     lines.append(f"static const stage_b_program_action {prefix}_actions[] = {{")
     lines.extend("  " + _c_action(action) + "," for action in row.actions)
@@ -1639,11 +2118,12 @@ def _c_node(node: _Node, inventory: tuple[str, ...]) -> str:
 
 
 def _c_action(action: _Action) -> str:
-    if action.op not in _ACTIONS:
+    opcode_name = "replay_x87" if action.op == "typed_x87" else action.op
+    if opcode_name not in _ACTIONS:
         raise StageBInterpreterError(f"interpreter action inventory lacks {action.op}")
     args = list(action.args) + [0] * (5 - len(action.args))
     return (
-        f"{{ {_ACTIONS.index(action.op)}U, {len(action.args)}U, {action.aux}U, "
+        f"{{ {_ACTIONS.index(opcode_name)}U, {len(action.args)}U, {action.aux}U, "
         "{" + ",".join(f"{value}U" for value in args) + "} }"
     )
 
@@ -1703,12 +2183,12 @@ typedef struct stage_b_program_call {
   uint32_t stack_input_count;
 } stage_b_program_call;
 struct stage_b_program_transfer {
-  uint32_t source_rva, word_count, x87_count, action_count, x87_replay_count;
+  uint32_t source_rva, word_count, x87_count, action_count, x87_operation_count;
   const stage_b_word_node *nodes;
   const stage_b_x87_node *x87_nodes;
   const stage_b_program_action *actions;
   const stage_b_program_call *calls;
-  const stage_b_x87_replay_program *x87_replays;
+  const stage_b_typed_x87_operation *x87_operations;
 };
 extern const stage_b_program_transfer stage_b_program_transfers[];
 extern const uint32_t stage_b_program_transfer_count;
@@ -1809,10 +2289,64 @@ static uint32_t stage_b_eval_word(
   if (op == 59U) return (node->immediate?current:input)->x87_data_pointer;
   if (op == 60U) return (node->immediate?current:input)->x87_data_selector;
   if (op >= 61U && op <= 63U) return W(0)&0xffffU;
+  if (op == 71U) {
+    uint32_t width = W(0);
+    uint64_t mask, sum;
+    if (width == 0U || width > 32U || W(3) > 1U) {
+      *semantic_fault = 1U;
+      return 0U;
+    }
+    mask = width == 32U ? 0xffffffffULL : ((1ULL << width) - 1ULL);
+    sum = ((uint64_t)W(1) & mask) + ((uint64_t)W(2) & mask) + (uint64_t)W(3);
+    if (((uint32_t)sum & (uint32_t)mask) != (W(4) & (uint32_t)mask)) {
+      *semantic_fault = 1U;
+      return 0U;
+    }
+    return (uint32_t)((sum >> width) & 1ULL);
+  }
+  if (op == 72U) {
+    uint32_t width = W(0), mask, left, right, result, sign;
+    uint64_t sum;
+    if (width == 0U || width > 32U || W(3) > 1U) {
+      *semantic_fault = 1U;
+      return 0U;
+    }
+    mask = width == 32U ? 0xffffffffU : ((1U << width) - 1U);
+    left = W(1) & mask;
+    right = W(2) & mask;
+    result = W(4) & mask;
+    sum = (uint64_t)left + (uint64_t)right + (uint64_t)W(3);
+    if (((uint32_t)sum & mask) != result) {
+      *semantic_fault = 1U;
+      return 0U;
+    }
+    sign = 1U << (width - 1U);
+    return ((~(left ^ right) & (left ^ result) & sign) != 0U) ? 1U : 0U;
+  }
+  if (op == 73U) return (node->immediate?current:input)->fs_base;
   *semantic_fault = 1U;
   return 0U;
 }
 #undef W
+
+__attribute__((weak)) const stage_b_region_override *
+stage_b_region_override_lookup(uint32_t entry_rva) {
+  (void)entry_rva;
+  return (const stage_b_region_override *)0;
+}
+
+static uint32_t stage_b_region_override_result_valid(stage_b_step_result result) {
+  if (result.kind > STAGE_B_EXTERNAL_JUMP) return 0U;
+  if (result.kind <= STAGE_B_BRANCH)
+    return result.target_rva != 0U && result.value == 0U;
+  if (result.kind == STAGE_B_RETURN)
+    return result.target_rva == 0U;
+  if (result.kind == STAGE_B_INDIRECT_JUMP)
+    return result.target_rva == 0U && result.value != 0U;
+  if (result.kind == STAGE_B_UNIMPLEMENTED)
+    return result.value == 0U;
+  return result.target_rva == 0U && result.value == 0U;
+}
 
 const stage_b_program_transfer *stage_b_program_lookup(uint32_t source_rva) {
   uint32_t low=0U,high=stage_b_program_transfer_count;
@@ -1824,9 +2358,24 @@ const stage_b_program_transfer *stage_b_program_lookup(uint32_t source_rva) {
 
 stage_b_step_result stage_b_interpreter_step(
     stage_b_runtime *rt, stage_b_machine_state *state, uint32_t source_rva) {
-  const stage_b_program_transfer *t=stage_b_program_lookup(source_rva);
+  const stage_b_region_override *override;
+  const stage_b_program_transfer *t;
   stage_b_machine_state input,call_output;
   uint32_t words[STAGE_B_MAX_WORD_NODES],memory_fault=0U,semantic_fault=0U,i;
+  if(!state)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
+  override=stage_b_region_override_lookup(source_rva);
+  if(override){
+    stage_b_machine_state overridden=*state;
+    stage_b_step_result result;
+    if(override->entry_rva!=source_rva||!override->function)
+      return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
+    result=override->function(rt,&overridden);
+    if(!stage_b_region_override_result_valid(result))
+      return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
+    *state=overridden;
+    return result;
+  }
+  t=stage_b_program_lookup(source_rva);
   if(!t||t->word_count>STAGE_B_MAX_WORD_NODES||t->x87_count!=0U)
     return (stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
   input=*state;call_output=input;state->original_rva=source_rva;
@@ -1846,7 +2395,7 @@ stage_b_step_result stage_b_interpreter_step(
       e.kind=(stage_b_call_event_kind)c->kind;e.instruction_rva=c->instruction_rva;e.call_index=c->call_index;
       e.target_rva=c->kind==2U?words[c->target_node]:c->target_rva;e.return_rva=c->return_rva;e.dll=c->dll;e.symbol=c->symbol;
       e.ordinal=c->ordinal;e.has_ordinal=c->has_ordinal;e.arguments=av;e.argument_count=c->argument_count;e.stack_inputs=si;e.stack_input_count=c->stack_input_count;
-      call_output=ci;{stage_b_call_status s=stage_b_invoke_call(rt,&e,&ci,&call_output);if(s!=STAGE_B_CALL_OK)return(stage_b_step_result){s==STAGE_B_CALL_DIVIDE_ERROR?STAGE_B_DIVIDE_ERROR:s==STAGE_B_CALL_MEMORY_FAULT?STAGE_B_MEMORY_FAULT:s==STAGE_B_CALL_EXTERNAL_FAULT?STAGE_B_EXTERNAL_FAULT:STAGE_B_UNIMPLEMENTED,0U,0U};}*state=call_output;
+      call_output=ci;{stage_b_call_status s=stage_b_invoke_call(rt,&e,&ci,&call_output);if(s!=STAGE_B_CALL_OK){*state=call_output;return(stage_b_step_result){s==STAGE_B_CALL_DIVIDE_ERROR?STAGE_B_DIVIDE_ERROR:s==STAGE_B_CALL_MEMORY_FAULT?STAGE_B_MEMORY_FAULT:s==STAGE_B_CALL_EXTERNAL_FAULT?STAGE_B_EXTERNAL_FAULT:STAGE_B_UNIMPLEMENTED,call_output.original_rva,0U};}}*state=call_output;
     } else if(a->op==5U){uint32_t s=words[a->args[0]],d=words[a->args[1]],n=words[a->args[2]],step=words[a->args[3]]?0xfffffffcU:4U,j;for(j=0U;j<n;++j){uint32_t v=stage_b_read(rt,s,4U,&memory_fault);if(memory_fault)break;stage_b_write(rt,d,4U,v,&memory_fault);s+=step;d+=step;}}
     else if(a->op==6U)stage_b_set_reg(state,a->aux,words[a->args[0]]);
     else if(a->op==7U)stage_b_set_flag(state,a->aux,words[a->args[0]]);
@@ -1859,19 +2408,17 @@ stage_b_step_result stage_b_interpreter_step(
     else if(a->op==23U)return(stage_b_step_result){STAGE_B_INDIRECT_JUMP,0U,words[a->args[0]]};
     else if(a->op==24U)return(stage_b_step_result){STAGE_B_EXTERNAL_JUMP,0U,0U};
     else if(a->op==25U){
-      const stage_b_x87_replay_program*p;stage_b_machine_state replay_output;stage_b_call_status s;
-      if(a->arity!=1U||a->args[0]>=t->x87_replay_count||!rt||!rt->replay_checked_x87_command)
+      const stage_b_typed_x87_operation*p;stage_b_machine_state operation_output;stage_b_call_status s;
+      if(a->arity!=1U||a->args[0]>=t->x87_operation_count||!rt||!rt->execute_typed_x87_operation)
         return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
-      p=&t->x87_replays[a->args[0]];
-      if(p->instruction_count!=1U||p->rva_end<=p->rva_start||
-          p->byte_count!=p->rva_end-p->rva_start||!p->instruction_bytes||
-          !p->instruction_bytes_sha256||!p->transfer_instruction_bytes_sha256||
-          !p->contract_sha256||
+      p=&t->x87_operations[a->args[0]];
+      if(p->rva_end<=p->rva_start||p->source_size!=p->rva_end-p->rva_start||
+          !p->operation_identity||!p->contract_sha256||
           !p->checked_decoder||!p->checked_executor)
         return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
-      replay_output=*state;s=rt->replay_checked_x87_command(rt,p,state,&replay_output);
+      operation_output=*state;s=rt->execute_typed_x87_operation(rt,p,state,&operation_output);
       if(s!=STAGE_B_CALL_OK)return(stage_b_step_result){s==STAGE_B_CALL_DIVIDE_ERROR?STAGE_B_DIVIDE_ERROR:s==STAGE_B_CALL_MEMORY_FAULT?STAGE_B_MEMORY_FAULT:s==STAGE_B_CALL_EXTERNAL_FAULT?STAGE_B_EXTERNAL_FAULT:STAGE_B_UNIMPLEMENTED,source_rva,0U};
-      *state=replay_output;
+      *state=operation_output;
     } else if(a->op==26U){
       uint32_t d=words[a->args[0]],v=words[a->args[1]];
       uint32_t n=words[a->args[2]],step=words[a->args[3]]?0xfffffffcU:4U;
@@ -1890,11 +2437,11 @@ stage_b_step_result stage_b_interpreter_step(
   return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
 }
 
-stage_b_call_status stage_b_run_function(
+static stage_b_call_status stage_b_run_function_checked(
     stage_b_runtime *rt, uint32_t rva, const stage_b_machine_state *in,
-    stage_b_machine_state *out) {
+    stage_b_machine_state *out, uint32_t expected_return_rva,
+    uint32_t check_return_rva) {
   stage_b_machine_state s;
-  uint32_t entry_rva = rva;
   if (!in || !out) return STAGE_B_CALL_UNIMPLEMENTED;
   s = *in;
   for (;;) {
@@ -1907,17 +2454,35 @@ stage_b_call_status stage_b_run_function(
       uint32_t next_rva;
       if (!rt || !rt->resolve_code_target ||
           rt->resolve_code_target(rt, r.value, &next_rva)) {
+        stage_b_call_status external_status = STAGE_B_CALL_UNIMPLEMENTED;
+        stage_b_machine_state external_output = s;
+        if (rt && rt->invoke_callable_external_jump) {
+          external_status = rt->invoke_callable_external_jump(
+              rt, rva, r.value, &s, &external_output);
+          if (external_status == STAGE_B_CALL_OK) {
+            *out = external_output;
+            return STAGE_B_CALL_OK;
+          }
+        }
         *out = s;
-        out->original_rva = entry_rva;
-        return STAGE_B_CALL_UNIMPLEMENTED;
+        out->original_rva = rva;
+        return external_status;
       }
       rva = next_rva;
       continue;
     }
     *out = s;
-    out->original_rva = entry_rva;
-    if (r.kind == STAGE_B_RETURN || r.kind == STAGE_B_EXTERNAL_JUMP)
+    out->original_rva = r.target_rva != 0U ? r.target_rva : rva;
+    if (r.kind == STAGE_B_RETURN) {
+      if (check_return_rva && r.value != expected_return_rva) {
+        /* Failure-only payload consumed by the candidate diagnostic trap. */
+        out->esi = expected_return_rva;
+        out->edi = r.value;
+        return STAGE_B_CALL_UNIMPLEMENTED;
+      }
       return STAGE_B_CALL_OK;
+    }
+    if (r.kind == STAGE_B_EXTERNAL_JUMP) return STAGE_B_CALL_OK;
     if (r.kind == STAGE_B_DIVIDE_ERROR) return STAGE_B_CALL_DIVIDE_ERROR;
     if (r.kind == STAGE_B_MEMORY_FAULT) return STAGE_B_CALL_MEMORY_FAULT;
     if (r.kind == STAGE_B_EXTERNAL_FAULT) return STAGE_B_CALL_EXTERNAL_FAULT;
@@ -1925,7 +2490,55 @@ stage_b_call_status stage_b_run_function(
   }
 }
 
-stage_b_call_status stage_b_invoke_call(stage_b_runtime*rt,const stage_b_call_event*e,const stage_b_machine_state*in,stage_b_machine_state*out){uint32_t target;if(!e)return STAGE_B_CALL_UNIMPLEMENTED;if(e->kind==STAGE_B_CALL_INTERNAL_DIRECT)return stage_b_run_function(rt,e->target_rva,in,out);if(e->kind==STAGE_B_CALL_INDIRECT&&rt&&rt->resolve_code_target&&!rt->resolve_code_target(rt,e->target_rva,&target))return stage_b_run_function(rt,target,in,out);return stage_b_dispatch_external_call(rt,e,in,out);}
+stage_b_call_status stage_b_run_function(
+    stage_b_runtime *rt, uint32_t rva, const stage_b_machine_state *in,
+    stage_b_machine_state *out) {
+  return stage_b_run_function_checked(rt, rva, in, out, 0U, 0U);
+}
+
+static stage_b_call_status stage_b_invoke_internal_call(
+    stage_b_runtime *rt, const stage_b_call_event *event, uint32_t target_rva,
+    const stage_b_machine_state *input, stage_b_machine_state *output) {
+  stage_b_machine_state call_input;
+  stage_b_call_status status;
+  uint32_t memory_fault = 0U;
+  if (!rt || !event || !input || !output || input->esp < 4U)
+    return STAGE_B_CALL_UNIMPLEMENTED;
+  call_input = *input;
+  call_input.esp -= 4U;
+  stage_b_write(
+      rt, call_input.esp, 4U, event->return_rva, &memory_fault);
+  if (memory_fault) {
+    *output = call_input;
+    output->original_rva = event->instruction_rva;
+    return STAGE_B_CALL_MEMORY_FAULT;
+  }
+  status = stage_b_run_function_checked(
+      rt, target_rva, &call_input, output, event->return_rva, 1U);
+#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP
+  if (status == STAGE_B_CALL_OK && output->esp < input->esp) {
+    output->esi = input->esp;
+    output->edi = output->esp;
+    return STAGE_B_CALL_UNIMPLEMENTED;
+  }
+#endif
+  return status;
+}
+
+stage_b_call_status stage_b_invoke_call(
+    stage_b_runtime *rt, const stage_b_call_event *event,
+    const stage_b_machine_state *input, stage_b_machine_state *output) {
+  uint32_t target_rva;
+  if (!event) return STAGE_B_CALL_UNIMPLEMENTED;
+  if (event->kind == STAGE_B_CALL_INTERNAL_DIRECT)
+    return stage_b_invoke_internal_call(
+        rt, event, event->target_rva, input, output);
+  if (event->kind == STAGE_B_CALL_INDIRECT && rt && rt->resolve_code_target &&
+      !rt->resolve_code_target(rt, event->target_rva, &target_rva))
+    return stage_b_invoke_internal_call(
+        rt, event, target_rva, input, output);
+  return stage_b_dispatch_external_call(rt, event, input, output);
+}
 '''
 
 

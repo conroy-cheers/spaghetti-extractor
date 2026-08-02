@@ -10,9 +10,15 @@ from pathlib import Path
 
 from spaghetti_extractor.stage_b_interpreter_backend import (
     StageBInterpreterError,
+    compile_stage_b_interpreter_machine_ir,
     compile_stage_b_interpreter_program,
     write_stage_b_interpreter_package,
 )
+from spaghetti_extractor.stage_b_typed_x87 import (
+    typed_x87_operation_from_micro_op,
+    typed_x87_operation_from_payload,
+)
+from spaghetti_extractor.stage_binary import StageAInputError
 from spaghetti_extractor.util import sha256_bytes
 
 
@@ -111,6 +117,196 @@ def _write_machine(path: Path, rows: list[dict[str, object]]) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _machine_ir_x87_unit(*, mnemonic: str = "fld1", operands: list[object] | None = None) -> dict[str, object]:
+    digest = sha256_bytes(bytes.fromhex("d9e8"))
+    return {
+        "format": "stage-a-machine-ir-v2",
+        "record_kind": "unit",
+        "id": "semantic-transfer:x87-replay",
+        "status": "qualified",
+        "source": {
+            "original": {"rva_start": 0x1000, "rva_end": 0x1002, "size": 2},
+            "contract_sha256": _CONTRACT_SHA,
+            "instruction_bytes_sha256": digest,
+        },
+        "x87_micro_ops": [{
+            "format": "stage-a-x87-micro-op-v1",
+            "id": "semantic-transfer:x87-replay:x87:00001000",
+            "unit_id": "semantic-transfer:x87-replay",
+            "rva_start": 0x1000,
+            "rva_end": 0x1002,
+            "size": 2,
+            "instruction_sha256": digest,
+            "transfer_instruction_sha256": digest,
+            "mnemonic": mnemonic,
+            "operands": [] if operands is None else operands,
+            "implicit_registers_read": [],
+            "implicit_registers_written": [],
+            "checked_decoder": "StageA.Relational.X87.decodeSingletonCommand",
+            "checked_executor": "StageA.Relational.X87.executeSingletonCommand",
+            "physical_state_effect": "defined_by_checked_typed_x87_executor",
+        }],
+        "semantics": {
+            "pre_state": {},
+            "register_writes": [],
+            "flag_writes": [],
+            "memory_events": [],
+            "external_events": [],
+            "faults": [],
+            "ordered_events": [],
+            "edge_conditions": [],
+            "outcome": {"kind": "fallthrough", "target_rva": 0x1002},
+            "stack_delta": 0,
+            "counts": {},
+            "fpu_state": {
+                "typed_replay": {
+                    "image_base": 0x400000,
+                    "checked_decoder": "StageA.Relational.X87.decodeSingletonCommand",
+                    "checked_executor": "StageA.Relational.X87.executeSingletonCommand",
+                }
+            },
+            "instruction_effect_schedule": None,
+        },
+    }
+
+
+def _machine_ir_mixed_unit() -> dict[str, object]:
+    unit = _machine_ir_x87_unit()
+    transfer_digest = sha256_bytes(bytes.fromhex("d9e840"))
+    unit["source"]["original"] = {
+        "rva_start": 0x1000,
+        "rva_end": 0x1003,
+        "size": 3,
+    }
+    unit["source"]["instruction_bytes_sha256"] = transfer_digest
+    unit["x87_micro_ops"][0]["transfer_instruction_sha256"] = transfer_digest
+    x87_effects = {
+        "ordered_events": [],
+        "register_writes": [],
+        "defined_flag_writes": [],
+        "undefined_flag_writes": [],
+        "control": {"kind": "fallthrough", "target_rva": 0x1002},
+    }
+    ordinary_effects = {
+        "ordered_events": [],
+        "register_writes": [{
+            "register": "eax",
+            "value": {
+                "op": "add32",
+                "args": [
+                    {"op": "reg", "name": "eax", "width": 32},
+                    {"op": "const", "value": 1, "width": 32},
+                ],
+            },
+        }],
+        "defined_flag_writes": [],
+        "undefined_flag_writes": [],
+        "control": {"kind": "fallthrough", "target_rva": 0x1003},
+    }
+    unit["semantics"]["outcome"] = {
+        "kind": "fallthrough",
+        "target_rva": 0x1003,
+    }
+    unit["semantics"]["instruction_effect_schedule"] = {
+        "format": "stage-a-instruction-ordered-effect-schedule-v1",
+        "status": "complete",
+        "proof_authority": False,
+        "ordering": "strict_contiguous_rva_order",
+        "rva_start": 0x1000,
+        "rva_end": 0x1003,
+        "source_schedule_sha256": "f" * 64,
+        "records": [
+            {
+                "index": 0,
+                "rva_start": 0x1000,
+                "rva_end": 0x1002,
+                "instruction_class": "x87_singleton_checked_replay",
+                "classification": {
+                    "status": "proposal_requires_lean_exact_byte_replay",
+                    "proof_authority": False,
+                    "checked_decoder": "StageA.Relational.X87.decodeSingletonCommand",
+                    "checked_executor": "StageA.Relational.X87.executeSingletonCommand",
+                },
+                "effects": x87_effects,
+            },
+            {
+                "index": 1,
+                "rva_start": 0x1002,
+                "rva_end": 0x1003,
+                "instruction_class": "ordinary_symbolic_instruction",
+                "classification": {
+                    "status": "proposal_requires_lean_exact_byte_replay",
+                    "proof_authority": False,
+                    "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                    "checked_executor": "StageA.Formal.executeInstruction",
+                },
+                "effects": ordinary_effects,
+            },
+        ],
+        "blockers": [],
+        "counts": {
+            "instructions": 2,
+            "x87_singletons": 1,
+            "ordinary_instructions": 1,
+            "blockers": 0,
+        },
+    }
+    return unit
+
+
+def _machine_ir_adc_carry_unit() -> dict[str, object]:
+    unit = _machine_ir_x87_unit()
+    unit["id"] = "semantic-transfer:adc-carry"
+    unit["source"]["original"] = {
+        "rva_start": 0x2000, "rva_end": 0x2002, "size": 2,
+    }
+    unit["x87_micro_ops"] = []
+    unit["semantics"]["fpu_state"] = None
+    unit["semantics"]["flag_writes"] = [{
+        "flag": "cf",
+        "value": {
+            "op": "adc_carry",
+            "args": [
+                {"op": "const", "value": 32, "width": 32},
+                {"op": "reg", "name": "eax", "width": 32},
+                {"op": "reg", "name": "ebx", "width": 32},
+                {"op": "flag", "name": "cf"},
+                {
+                    "op": "add32",
+                    "args": [
+                        {"op": "reg", "name": "eax", "width": 32},
+                        {"op": "reg", "name": "ebx", "width": 32},
+                        {"op": "flag", "name": "cf"},
+                    ],
+                },
+            ],
+        },
+    }, {
+        "flag": "of",
+        "value": {
+            "op": "adc_overflow",
+            "args": [
+                {"op": "const", "value": 32, "width": 32},
+                {"op": "reg", "name": "eax", "width": 32},
+                {"op": "reg", "name": "ebx", "width": 32},
+                {"op": "flag", "name": "cf"},
+                {
+                    "op": "add32",
+                    "args": [
+                        {"op": "reg", "name": "eax", "width": 32},
+                        {"op": "reg", "name": "ebx", "width": 32},
+                        {"op": "flag", "name": "cf"},
+                    ],
+                },
+            ],
+        },
+    }]
+    unit["semantics"]["outcome"] = {
+        "kind": "fallthrough", "target_rva": 0x2002,
+    }
+    return unit
 
 
 def _json_sha256(value: object) -> str:
@@ -264,27 +460,310 @@ def _scheduled_mixed_row() -> dict[str, object]:
 
 
 class StageBInterpreterX87ReplayTests(unittest.TestCase):
-    def test_exact_singleton_lowers_to_immutable_native_replay_record(self) -> None:
+    def test_typed_operation_payload_round_trips_canonically(self) -> None:
+        operation = typed_x87_operation_from_micro_op(
+            _machine_ir_x87_unit()["x87_micro_ops"][0], image_base=0x400000
+        )
+
+        self.assertEqual(
+            typed_x87_operation_from_payload(
+                operation.payload(), image_base=0x400000
+            ),
+            operation,
+        )
+
+    def test_typed_operation_payload_rejects_identity_corruption(self) -> None:
+        operation = typed_x87_operation_from_micro_op(
+            _machine_ir_x87_unit()["x87_micro_ops"][0], image_base=0x400000
+        ).payload()
+        operation["identity"] = "0" * 64
+
+        with self.assertRaisesRegex(StageAInputError, "canonical representation"):
+            typed_x87_operation_from_payload(operation, image_base=0x400000)
+
+    def test_typed_micro_op_rejects_malformed_address_registers(self) -> None:
+        unit = _machine_ir_x87_unit(
+            mnemonic="fld",
+            operands=[{
+                "kind": "memory",
+                "width_bits": 32,
+                "segment": None,
+                "base": 7,
+                "index": None,
+                "scale": 1,
+                "displacement": 0,
+            }],
+        )
+
+        with self.assertRaisesRegex(StageAInputError, "memory base is malformed"):
+            typed_x87_operation_from_micro_op(
+                unit["x87_micro_ops"][0], image_base=0x400000
+            )
+
+    def test_byte_free_machine_ir_generates_same_typed_interpreter_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine_ir = root / "machine-ir.jsonl"
+            _write_machine(machine_ir, [_machine_ir_x87_unit()])
+
+            transfer = compile_stage_b_interpreter_machine_ir(machine_ir)[0]
+            self.assertEqual(transfer.x87_operations[0].operation.mnemonic, "fld1")
+            package = write_stage_b_interpreter_package(
+                machine_ir=machine_ir, out=root / "package"
+            )
+            self.assertEqual(package["status"], "ready", package["blockers"])
+            self.assertEqual(package["input_mode"], "sanitized_machine_ir_v2")
+            for path in (root / "package").iterdir():
+                if path.suffix not in {".c", ".h", ".json", ".jsonl"}:
+                    continue
+                generated = path.read_text(encoding="utf-8")
+                self.assertNotIn("d9e8", generated)
+                self.assertNotIn("instruction_bytes", generated)
+                self.assertNotIn(".byte", generated)
+
+    def test_malformed_byte_free_x87_form_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            machine_ir = Path(temporary) / "machine-ir.jsonl"
+            _write_machine(
+                machine_ir,
+                [_machine_ir_x87_unit(
+                    mnemonic="fld1",
+                    operands=[{
+                        "kind": "immediate", "value": 1,
+                        "width_bits": 32, "access": "read",
+                    }],
+                )],
+            )
+            with self.assertRaises(StageBInterpreterError) as raised:
+                compile_stage_b_interpreter_machine_ir(machine_ir)
+            self.assertEqual(raised.exception.code, "unsupported_typed_x87_operation")
+
+    def test_byte_free_micro_op_must_bind_its_unit_and_checker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            machine_ir = Path(temporary) / "machine-ir.jsonl"
+            unit = _machine_ir_x87_unit()
+            unit["x87_micro_ops"][0]["unit_id"] = "semantic-transfer:other"
+            _write_machine(machine_ir, [unit])
+            with self.assertRaises(StageBInterpreterError) as raised:
+                compile_stage_b_interpreter_machine_ir(machine_ir)
+            self.assertEqual(raised.exception.code, "malformed_typed_x87_operation")
+
+    def test_byte_free_machine_ir_rejects_raw_opcode_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            machine_ir = Path(temporary) / "machine-ir.jsonl"
+            unit = _machine_ir_x87_unit()
+            unit["x87_micro_ops"][0]["bytes"] = "d9e8"
+            _write_machine(machine_ir, [unit])
+            with self.assertRaises(StageBInterpreterError) as raised:
+                compile_stage_b_interpreter_machine_ir(machine_ir)
+            self.assertEqual(raised.exception.code, "malformed_machine_ir_input")
+
+    def test_byte_free_machine_ir_composes_x87_and_ordinary_schedule(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine_ir = root / "machine-ir.jsonl"
+            _write_machine(machine_ir, [_machine_ir_mixed_unit()])
+
+            transfer = compile_stage_b_interpreter_machine_ir(machine_ir)[0]
+            self.assertEqual(
+                [action.op for action in transfer.actions],
+                [
+                    "typed_x87", "eval_word", "eval_word", "eval_word",
+                    "set_reg", "sync_eflags", "outcome_fallthrough",
+                ],
+            )
+            package = write_stage_b_interpreter_package(
+                machine_ir=machine_ir, out=root / "package"
+            )
+            self.assertEqual(package["status"], "ready", package["blockers"])
+
+    def test_byte_free_machine_ir_supports_adc_carry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine_ir = root / "machine-ir.jsonl"
+            _write_machine(machine_ir, [_machine_ir_adc_carry_unit()])
+
+            transfer = compile_stage_b_interpreter_machine_ir(machine_ir)[0]
+            node_ops = [node.op for node in transfer.nodes]
+            self.assertIn("adc_carry", node_ops)
+            self.assertIn("adc_overflow", node_ops)
+            package = write_stage_b_interpreter_package(
+                machine_ir=machine_ir, out=root / "package"
+            )
+            self.assertEqual(package["status"], "ready", package["blockers"])
+            source = (
+                root / "package/state-machine-interpreter.c"
+            ).read_text(encoding="ascii")
+            self.assertIn("if (op == 71U)", source)
+            self.assertIn("if (op == 72U)", source)
+            compiler = shutil.which("cc")
+            if compiler is None:
+                return
+            harness = root / "adc-harness.c"
+            harness.write_text(
+                r'''
+#include "state-machine-interpreter.h"
+stage_b_call_status stage_b_dispatch_external_call(
+    stage_b_runtime *runtime, const stage_b_call_event *event,
+    const stage_b_machine_state *input, stage_b_machine_state *output) {
+  (void)runtime; (void)event; (void)input; (void)output;
+  return STAGE_B_CALL_UNIMPLEMENTED;
+}
+static int check(uint32_t left, uint32_t right, uint32_t carry,
+                 uint32_t expected_cf, uint32_t expected_of) {
+  stage_b_runtime runtime = {0};
+  stage_b_machine_state state = {0};
+  stage_b_step_result result;
+  state.eax = left; state.ebx = right; state.cf = carry;
+  result = stage_b_interpreter_step(&runtime, &state, 0x2000U);
+  if (result.kind != STAGE_B_FALLTHROUGH || result.target_rva != 0x2002U)
+    return 10;
+  if (state.cf != expected_cf) return 20;
+  if (state.of != expected_of) return 30;
+  return 0;
+}
+int main(void) {
+  int result;
+  if ((result = check(0xffffffffU, 0U, 1U, 1U, 0U)) != 0) return result + 1;
+  if ((result = check(0x7fffffffU, 0U, 1U, 0U, 1U)) != 0) return result + 2;
+  if ((result = check(0x80000000U, 0xffffffffU, 1U, 1U, 0U)) != 0) return result + 3;
+  return 0;
+}
+''',
+                encoding="ascii",
+            )
+            executable = root / "adc-harness"
+            subprocess.run(
+                [
+                    compiler, "-std=c11", "-I", str(root / "package"),
+                    str(root / "package/state-machine-interpreter.c"),
+                    str(root / "package/state-machine-program.c"),
+                    str(harness), "-o", str(executable),
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [str(executable)], check=True, text=True, capture_output=True
+            )
+
+    def test_linked_regional_override_precedes_lookup_and_fails_closed(self) -> None:
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("native C compiler is unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine_ir = root / "machine-ir.jsonl"
+            package_dir = root / "package"
+            unit = _machine_ir_x87_unit()
+            unit["x87_micro_ops"] = []
+            unit["semantics"]["fpu_state"] = None
+            _write_machine(machine_ir, [unit])
+            write_stage_b_interpreter_package(
+                machine_ir=machine_ir, out=package_dir
+            )
+            source = (
+                package_dir / "state-machine-interpreter.c"
+            ).read_text(encoding="ascii")
+            self.assertLess(
+                source.index("override=stage_b_region_override_lookup(source_rva)"),
+                source.index("t=stage_b_program_lookup(source_rva)"),
+            )
+            harness = root / "override-harness.c"
+            harness.write_text(
+                r'''
+#include "state-machine-interpreter.h"
+
+stage_b_call_status stage_b_dispatch_external_call(
+    stage_b_runtime *runtime, const stage_b_call_event *event,
+    const stage_b_machine_state *input, stage_b_machine_state *output) {
+  (void)runtime; (void)event; (void)input; (void)output;
+  return STAGE_B_CALL_UNIMPLEMENTED;
+}
+
+static stage_b_step_result valid_override(
+    stage_b_runtime *runtime, stage_b_machine_state *state) {
+  (void)runtime;
+  state->eax = 0x12345678U;
+  return (stage_b_step_result){STAGE_B_JUMP, 0x2000U, 0U};
+}
+
+static stage_b_step_result malformed_override(
+    stage_b_runtime *runtime, stage_b_machine_state *state) {
+  (void)runtime;
+  state->eax = 0xffffffffU;
+  return (stage_b_step_result){(stage_b_control_kind)99U, 7U, 9U};
+}
+
+static const stage_b_region_override overrides[] = {
+  {0x1000U, valid_override, "valid", "fixture"},
+  {0x3000U, malformed_override, "malformed", "fixture"},
+};
+
+const stage_b_region_override *stage_b_region_override_lookup(uint32_t rva) {
+  if (rva == 0x1000U) return &overrides[0];
+  if (rva == 0x3000U) return &overrides[1];
+  return (const stage_b_region_override *)0;
+}
+
+int main(void) {
+  stage_b_runtime runtime = {0};
+  stage_b_machine_state state = {0};
+  stage_b_step_result result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
+  if (result.kind != STAGE_B_JUMP || result.target_rva != 0x2000U) return 1;
+  if (state.eax != 0x12345678U) return 2;
+  state.eax = 0x55U;
+  result = stage_b_interpreter_step(&runtime, &state, 0x3000U);
+  if (result.kind != STAGE_B_UNIMPLEMENTED || result.target_rva != 0x3000U) return 3;
+  return state.eax == 0x55U ? 0 : 4;
+}
+''',
+                encoding="ascii",
+            )
+            executable = root / "override-harness"
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=c11",
+                    "-I",
+                    str(package_dir),
+                    str(package_dir / "state-machine-interpreter.c"),
+                    str(package_dir / "state-machine-program.c"),
+                    str(harness),
+                    "-o",
+                    str(executable),
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [str(executable)], check=True, text=True, capture_output=True
+            )
+
+    def test_exact_singleton_lowers_to_sanitized_typed_native_record(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             machine = root / "state-machine.jsonl"
             _write_machine(machine, [_replay_row()])
 
             transfer = compile_stage_b_interpreter_program(machine)[0]
-            replay = transfer.x87_replays[0]
+            operation = transfer.x87_operations[0]
 
             self.assertEqual([action.op for action in transfer.actions], [
-                "replay_x87",
+                "typed_x87",
                 "outcome_fallthrough",
             ])
             self.assertEqual(transfer.nodes, ())
             self.assertEqual(transfer.x87_nodes, ())
-            self.assertEqual(replay.instruction_bytes, bytes.fromhex("d9e8"))
-            self.assertEqual(replay.rva_start, 0x1000)
-            self.assertEqual(replay.rva_end, 0x1002)
-            self.assertEqual(replay.contract_sha256, _CONTRACT_SHA)
+            self.assertEqual(operation.operation.mnemonic, "fld1")
+            self.assertEqual(operation.operation.operand.kind, "none")
+            self.assertEqual(operation.rva_start, 0x1000)
+            self.assertEqual(operation.rva_end, 0x1002)
+            self.assertEqual(operation.contract_sha256, _CONTRACT_SHA)
             with self.assertRaises(FrozenInstanceError):
-                replay.rva_start = 0x2000  # type: ignore[misc]
+                operation.rva_start = 0x2000  # type: ignore[misc]
 
             package = write_stage_b_interpreter_package(
                 state_machine=machine, out=root / "package"
@@ -294,17 +773,15 @@ class StageBInterpreterX87ReplayTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            replay_record = program["transfers"][0]["x87_replays"][0]
+            operation_record = program["transfers"][0]["x87_operations"][0]
             self.assertEqual(package["status"], "ready")
-            self.assertEqual(replay_record["instruction_bytes"], "d9e8")
             self.assertEqual(
-                replay_record["instruction_bytes_sha256"], sha256_bytes(bytes.fromhex("d9e8"))
+                operation_record["operation"]["mnemonic"], "fld1"
             )
             self.assertEqual(
-                replay_record["transfer_instruction_bytes_sha256"],
-                sha256_bytes(bytes.fromhex("d9e8")),
+                operation_record["operation"]["operand"], {"kind": "none"}
             )
-            self.assertTrue(set(_REQUIRED_PHYSICAL_FIELDS).isdisjoint(replay_record))
+            self.assertTrue(set(_REQUIRED_PHYSICAL_FIELDS).isdisjoint(operation_record))
             runtime_header = (
                 root / "package/state-machine-runtime.h"
             ).read_text(encoding="ascii")
@@ -314,11 +791,19 @@ class StageBInterpreterX87ReplayTests(unittest.TestCase):
             interpreter_source = (
                 root / "package/state-machine-interpreter.c"
             ).read_text(encoding="ascii")
-            self.assertIn("stage_b_x87_replay_handler", runtime_header)
-            self.assertIn("replay_checked_x87_command", runtime_header)
-            self.assertIn("static const stage_b_x87_replay_program", program_source)
-            self.assertIn("0xd9U,0xe8U", program_source)
+            self.assertIn("stage_b_typed_x87_handler", runtime_header)
+            self.assertIn("execute_typed_x87_operation", runtime_header)
+            self.assertIn("static const stage_b_typed_x87_operation", program_source)
+            self.assertNotIn("0xd9U,0xe8U", program_source)
             self.assertIn("{ 25U, 1U, 0U, {0U,0U,0U,0U,0U} }", program_source)
+            self.assertEqual(
+                program["transfers"][0]["instruction_bytes_sha256"],
+                sha256_bytes(bytes.fromhex("d9e8")),
+            )
+            self.assertNotIn("instruction_bytes", json.dumps(operation_record, sort_keys=True))
+            for generated in (runtime_header, program_source):
+                self.assertNotIn("instruction_bytes", generated)
+                self.assertNotIn(".byte", generated)
             self.assertNotIn("long double", interpreter_source)
             self.assertNotIn("stage_b_eval_x87", interpreter_source)
             self.assertNotIn("stage_b_x87_binary", interpreter_source)
@@ -359,22 +844,16 @@ class StageBInterpreterX87ReplayTests(unittest.TestCase):
 
             self.assertEqual(
                 [action.op for action in transfer.actions],
-                ["replay_x87", "replay_x87", "outcome_fallthrough"],
+                ["typed_x87", "typed_x87", "outcome_fallthrough"],
             )
             self.assertEqual([action.args for action in transfer.actions[:2]], [(0,), (1,)])
             self.assertEqual(
-                [(item.rva_start, item.rva_end) for item in transfer.x87_replays],
+                [(item.rva_start, item.rva_end) for item in transfer.x87_operations],
                 [(0x1000, 0x1002), (0x1002, 0x1004)],
             )
             self.assertEqual(
-                [item.instruction_bytes_sha256 for item in transfer.x87_replays],
-                [sha256_bytes(bytes.fromhex("d9e8")), sha256_bytes(bytes.fromhex("ddd8"))],
-            )
-            self.assertTrue(
-                all(
-                    item.transfer_instruction_bytes_sha256 == sha256_bytes(encoded)
-                    for item in transfer.x87_replays
-                )
+                [item.operation.mnemonic for item in transfer.x87_operations],
+                ["fld1", "fstp"],
             )
 
     def test_checked_schedule_uses_post_replay_state_for_ordinary_effects(self) -> None:
@@ -391,7 +870,7 @@ class StageBInterpreterX87ReplayTests(unittest.TestCase):
             replay_action = next(
                 index
                 for index, action in enumerate(transfer.actions)
-                if action.op == "replay_x87"
+                if action.op == "typed_x87"
             )
             post_replay_register = next(
                 index
@@ -422,8 +901,8 @@ stage_b_call_status stage_b_dispatch_external_call(
   return STAGE_B_CALL_UNIMPLEMENTED;
 }
 
-static stage_b_call_status checked_replay(
-    stage_b_runtime *runtime, const stage_b_x87_replay_program *program,
+static stage_b_call_status checked_operation(
+    stage_b_runtime *runtime, const stage_b_typed_x87_operation *program,
     const stage_b_machine_state *input, stage_b_machine_state *output) {
   (void)runtime; (void)input;
   if (program->rva_start != 0x1000U || program->rva_end != 0x1002U)
@@ -438,7 +917,7 @@ int main(void) {
   stage_b_machine_state state = {0};
   stage_b_step_result result;
   state.eax = 1U;
-  runtime.replay_checked_x87_command = checked_replay;
+  runtime.execute_typed_x87_operation = checked_operation;
   result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
   if (result.kind != STAGE_B_FALLTHROUGH || result.target_rva != 0x1003U) return 1;
   if (state.eax != 41U) return 2;
@@ -545,7 +1024,7 @@ int main(void) {
                     raised.exception.code, "x87_replay_interleaving_unavailable"
                 )
 
-    def test_runtime_callout_is_required_and_receives_exact_binding(self) -> None:
+    def test_runtime_callout_is_required_and_receives_typed_binding(self) -> None:
         compiler = shutil.which("cc")
         if compiler is None:
             self.skipTest("native C compiler is unavailable")
@@ -568,15 +1047,13 @@ stage_b_call_status stage_b_dispatch_external_call(
   return STAGE_B_CALL_UNIMPLEMENTED;
 }
 
-static stage_b_call_status checked_replay(
-    stage_b_runtime *runtime, const stage_b_x87_replay_program *program,
+static stage_b_call_status checked_operation(
+    stage_b_runtime *runtime, const stage_b_typed_x87_operation *program,
     const stage_b_machine_state *input, stage_b_machine_state *output) {
   (void)runtime;
   if (program->rva_start != 0x1000U || program->rva_end != 0x1002U ||
-      program->instruction_count != 1U || program->byte_count != 2U ||
-      program->instruction_bytes[0] != 0xd9U || program->instruction_bytes[1] != 0xe8U ||
-      strcmp(program->instruction_bytes_sha256,
-        "852df74fff31b328b40e1bb1b4ad5d8baba06f81bef9371e7f0ddb597d97e8b4") != 0)
+      program->source_size != 2U || strcmp(program->operation_identity,
+        "1d432ce79277a7acd9723c0b1df3284238e4f9c190c05b1adc71be963cfeb130") != 0)
     return STAGE_B_CALL_UNIMPLEMENTED;
   *output = *input;
   output->x87_status = 0x1234U;
@@ -588,7 +1065,7 @@ int main(void) {
   stage_b_machine_state state = {0};
   stage_b_step_result result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
   if (result.kind != STAGE_B_UNIMPLEMENTED) return 1;
-  runtime.replay_checked_x87_command = checked_replay;
+  runtime.execute_typed_x87_operation = checked_operation;
   result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
   if (result.kind != STAGE_B_FALLTHROUGH || result.target_rva != 0x1002U) return 2;
   return state.x87_status == 0x1234U ? 0 : 3;

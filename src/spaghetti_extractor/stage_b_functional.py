@@ -4,6 +4,7 @@ import json
 import os
 import re
 import signal
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -121,14 +122,206 @@ def stage_b_run_functional_suite(
             )
         )
 
+    result = _build_functional_report(
+        payload=payload,
+        suite_path=Path(suite),
+        cases=cases,
+        candidate_command=candidate_command,
+        candidate_binary=candidate_binary,
+        strip_stderr_line_regexes=strip_stderr_line_regexes,
+        started_at=started_at,
+        completed_at=utc_now(),
+    )
+    write_json(out / "functional-report.json", result)
+    return result
+
+
+def stage_b_run_functional_case(
+    *,
+    suite: Path,
+    case_id: str,
+    candidate_command: tuple[str, ...],
+    out: Path,
+    timeout_seconds: float = 30.0,
+    candidate_binary: Path | None = None,
+    strip_stderr_line_regexes: tuple[str, ...] | list[str] = (),
+) -> dict[str, Any]:
+    """Run one expected-output case as an independent cacheable work unit."""
+
+    started_at = utc_now()
+    suite_path = Path(suite)
+    payload = _load_functional_suite(suite_path)
+    normalized = _materialized_suite_cases(payload)
+    matches = [
+        (index, case)
+        for index, case in enumerate(normalized)
+        if case["id"] == _artifact_name(case_id)
+    ]
+    if len(matches) != 1:
+        raise StageBFunctionalInputError(
+            f"functional suite has {len(matches)} matches for case {case_id!r}"
+        )
+    index, case = matches[0]
+    output = Path(out)
+    artifacts = output / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    result = _run_functional_case(
+        case=case,
+        index=index,
+        candidate_command=candidate_command,
+        out=artifacts,
+        default_timeout_seconds=timeout_seconds,
+        strip_stderr_line_regexes=strip_stderr_line_regexes,
+    )
+    # CA derivations rewrite self-references from the temporary output path to
+    # the final store path.  Keep shard-local artifacts relative so that the
+    # report's canonical hash remains stable across that rewrite.
+    for stream in ("stdout", "stderr"):
+        artifact = result["candidate"][stream]
+        artifact["path"] = Path(str(artifact["path"])).relative_to(output).as_posix()
+    core = {
+        "format": "stage-b-functional-case-report-v1",
+        "status": result["status"],
+        "executes_original_binary": False,
+        "started_at": started_at,
+        "completed_at": utc_now(),
+        "suite_sha256": sha256_file(suite_path),
+        "case_index": index,
+        "case_id": result["id"],
+        "case_definition_sha256": _canonical_sha256(case),
+        "runner": {
+            "candidate_command": list(candidate_command),
+            "strip_stderr_line_regexes": list(strip_stderr_line_regexes),
+            "default_timeout_seconds": timeout_seconds,
+        },
+        "binary_binding": _functional_binary_binding(
+            candidate_binary, candidate_command
+        ),
+        "case": result,
+    }
+    report = {**core, "report_sha256": _canonical_sha256(core)}
+    write_json(output / "functional-case-report.json", report)
+    return report
+
+
+def stage_b_aggregate_functional_cases(
+    *,
+    suite: Path,
+    case_reports: list[Path] | tuple[Path, ...],
+    out: Path,
+) -> dict[str, Any]:
+    """Validate and deterministically aggregate independently executed cases."""
+
+    suite_path = Path(suite)
+    payload = _load_functional_suite(suite_path)
+    expected_cases = _materialized_suite_cases(payload)
+    suite_sha256 = sha256_file(suite_path)
+    reports: list[dict[str, Any]] = []
+    roots: list[Path] = []
+    for report_value in case_reports:
+        report_path = Path(report_value)
+        if report_path.is_dir():
+            report_path = report_path / "functional-case-report.json"
+        report = _load_json(report_path)
+        if not isinstance(report, dict) or report.get("format") != "stage-b-functional-case-report-v1":
+            raise StageBFunctionalInputError("unsupported functional case report")
+        core = dict(report)
+        expected_hash = core.pop("report_sha256", None)
+        if expected_hash != _canonical_sha256(core):
+            raise StageBFunctionalInputError("functional case report self-hash is stale")
+        if report.get("suite_sha256") != suite_sha256:
+            raise StageBFunctionalInputError("functional case report is stale for suite")
+        reports.append(report)
+        roots.append(report_path.parent)
+    reports_with_roots = sorted(
+        zip(reports, roots), key=lambda item: int(item[0].get("case_index", -1))
+    )
+    observed_indexes = [int(report.get("case_index", -1)) for report, _ in reports_with_roots]
+    if observed_indexes != list(range(len(expected_cases))):
+        raise StageBFunctionalInputError(
+            "functional case reports do not exactly cover the suite case inventory"
+        )
+    commands = {
+        tuple(report.get("runner", {}).get("candidate_command", []))
+        for report, _ in reports_with_roots
+    }
+    bindings = {
+        _canonical_sha256(report.get("binary_binding", {}))
+        for report, _ in reports_with_roots
+    }
+    strip_policies = {
+        tuple(report.get("runner", {}).get("strip_stderr_line_regexes", []))
+        for report, _ in reports_with_roots
+    }
+    if len(commands) != 1 or len(bindings) != 1 or len(strip_policies) != 1:
+        raise StageBFunctionalInputError(
+            "functional case reports use inconsistent candidate bindings or runner policy"
+        )
+    output = Path(out)
+    output.mkdir(parents=True, exist_ok=True)
+    cases: list[dict[str, Any]] = []
+    for (report, root), expected in zip(reports_with_roots, expected_cases):
+        if report.get("case_id") != expected["id"]:
+            raise StageBFunctionalInputError("functional case report order or ID is stale")
+        if report.get("case_definition_sha256") != _canonical_sha256(expected):
+            raise StageBFunctionalInputError("functional case report definition is stale")
+        case = dict(report["case"])
+        case["candidate"] = dict(case["candidate"])
+        destination = output / "cases" / expected["id"]
+        destination.mkdir(parents=True, exist_ok=True)
+        for stream in ("stdout", "stderr"):
+            artifact = dict(case["candidate"][stream])
+            source = Path(str(artifact["path"]))
+            if not source.is_absolute():
+                source = root / source
+            if not source.is_file() or sha256_file(source) != artifact["sha256"]:
+                raise StageBFunctionalInputError(
+                    f"functional case {expected['id']} {stream} artifact is stale"
+                )
+            target = destination / f"candidate.{stream}"
+            shutil.copyfile(source, target)
+            artifact["path"] = str(target)
+            case["candidate"][stream] = artifact
+        cases.append(case)
+    first_report = reports_with_roots[0][0]
+    candidate_command = tuple(first_report["runner"]["candidate_command"])
+    result = _build_functional_report(
+        payload=payload,
+        suite_path=suite_path,
+        cases=cases,
+        candidate_command=candidate_command,
+        candidate_binary=None,
+        strip_stderr_line_regexes=tuple(
+            first_report["runner"]["strip_stderr_line_regexes"]
+        ),
+        started_at=min(report["started_at"] for report, _ in reports_with_roots),
+        completed_at=max(report["completed_at"] for report, _ in reports_with_roots),
+        binary_binding=first_report["binary_binding"],
+    )
+    write_json(output / "functional-report.json", result)
+    return result
+
+
+def _build_functional_report(
+    *,
+    payload: dict[str, Any],
+    suite_path: Path,
+    cases: list[dict[str, Any]],
+    candidate_command: tuple[str, ...],
+    candidate_binary: Path | None,
+    strip_stderr_line_regexes: tuple[str, ...] | list[str],
+    started_at: str,
+    completed_at: str,
+    binary_binding: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     passed = sum(1 for case in cases if case["status"] == "pass")
     failed = len(cases) - passed
     status = "pass" if cases and failed == 0 else "fail"
-    suite_name = str(payload.get("suite_name") or payload.get("name") or Path(suite).stem)
+    suite_name = str(payload.get("suite_name") or payload.get("name") or suite_path.stem)
     suite_id = str(payload.get("suite_id") or payload.get("id") or _artifact_name(suite_name))
     upstream_suite = bool(payload.get("upstream_suite", False))
     case_manifest = _functional_case_manifest(cases)
-    suite_sha256 = sha256_file(Path(suite))
+    suite_sha256 = sha256_file(suite_path)
     suite_case_manifest_sha256 = _case_manifest_sha256(case_manifest)
     result = {
         "format": "stage-b-functional-report-v1",
@@ -139,8 +332,8 @@ def stage_b_run_functional_suite(
         },
         "status": status,
         "started_at": started_at,
-        "completed_at": utc_now(),
-        "suite": str(suite),
+        "completed_at": completed_at,
+        "suite": str(suite_path),
         "suite_sha256": suite_sha256,
         "suite_case_manifest_sha256": suite_case_manifest_sha256,
         "target_name": str(payload.get("target_name") or ""),
@@ -154,7 +347,9 @@ def stage_b_run_functional_suite(
         },
         "commands": {"candidate": list(candidate_command)},
         "binary_bindings": {
-            "candidate": _functional_binary_binding(candidate_binary, candidate_command),
+            "candidate": binary_binding
+            if binary_binding is not None
+            else _functional_binary_binding(candidate_binary, candidate_command),
         },
         "coverage": _functional_coverage_report(
             payload,
@@ -171,8 +366,25 @@ def stage_b_run_functional_suite(
         "case_manifest": case_manifest,
         "cases": cases,
     }
-    write_json(out / "functional-report.json", result)
     return result
+
+
+def _load_functional_suite(path: Path) -> dict[str, Any]:
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        raise StageBFunctionalInputError("Stage B functional suite must be a JSON object")
+    cases = payload.get("cases")
+    if not isinstance(cases, list) or not cases:
+        raise StageBFunctionalInputError(
+            "Stage B functional suite must contain a non-empty cases list"
+        )
+    return payload
+
+
+def _canonical_sha256(value: Any) -> str:
+    return sha256_bytes(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
 
 
 def _functional_binary_binding(binary: Path | None, command: tuple[str, ...]) -> dict[str, Any]:

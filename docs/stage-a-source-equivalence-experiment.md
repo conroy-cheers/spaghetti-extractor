@@ -1,5 +1,12 @@
 # Stage A Source-Relative Equivalence Experiment
 
+> **Status:** This remains an optional stronger proof track. It is not the
+> primary reimplementation completion gate. See
+> [high-assurance-reimplementation-direction.md](high-assurance-reimplementation-direction.md)
+> for the current project direction, which uses formal methods selectively to
+> minimize reconstruction mistakes and permits explicitly labeled
+> high-assurance results without a final whole-program theorem.
+
 ## Objective
 
 This branch evaluates a narrower acceptance theorem than the main

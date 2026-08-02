@@ -39,6 +39,134 @@ def _transfer(*, event: dict | None = None) -> dict:
     }
 
 
+def _machine_ir_transfer(
+    *,
+    event: dict | None = None,
+    rva: int = 0x142A,
+    size: int = 6,
+    mnemonic: str = "call",
+    instruction_sha256: str | None = None,
+) -> dict:
+    instruction_digest = instruction_sha256 or sha256_bytes(b"typed-call")
+    registers = {
+        name: {"op": "reg", "name": name, "width": 32}
+        for name in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+    }
+    flags = {
+        name: {"op": "flag", "name": name}
+        for name in ("cf", "zf", "sf", "of", "pf", "df")
+    }
+    ordered: list[dict] = []
+    if event is not None:
+        ordered = [{
+            "family": "external",
+            "arguments": [],
+            "register_inputs": registers,
+            "flag_inputs": flags,
+            "stack_inputs": [],
+            **event,
+        }]
+    end = rva + size
+    return {
+        "format": "stage-a-machine-ir-v2",
+        "record_kind": "unit",
+        "id": f"semantic-transfer:typed-{rva:08x}",
+        "status": "qualified",
+        "source": {
+            "original": {"rva_start": rva, "rva_end": end, "size": size},
+            "contract_sha256": "a" * 64,
+            "instruction_bytes_sha256": sha256_bytes(
+                f"unit:{rva:08x}:{size}".encode("ascii")
+            ),
+            "semantic_export": None,
+        },
+        "instructions": [{
+            "rva_start": rva,
+            "rva_end": end,
+            "size": size,
+            "instruction_sha256": instruction_digest,
+            "mnemonic": mnemonic,
+            "operands": [],
+            "registers_read": [],
+            "registers_written": [],
+            "groups": ["call"] if mnemonic == "call" else [],
+        }],
+        "x87_micro_ops": [],
+        "semantics": {
+            "pre_state": {},
+            "register_writes": [],
+            "flag_writes": [],
+            "memory_events": [],
+            "external_events": ordered,
+            "faults": [],
+            "ordered_events": ordered,
+            "edge_conditions": [],
+            "outcome": {"kind": "fallthrough", "target_rva": end},
+            "stack_delta": 0,
+            "counts": {},
+            "fpu_state": None,
+            "instruction_effect_schedule": None,
+        },
+    }
+
+
+def _machine_ir_x87_transfer(
+    *, rva: int, mnemonic: str, encoded: bytes
+) -> dict:
+    unit = _machine_ir_transfer(
+        rva=rva,
+        size=len(encoded),
+        mnemonic=mnemonic,
+        instruction_sha256=sha256_bytes(encoded),
+    )
+    unit["instructions"][0].update({
+        "operands": [{
+            "kind": "register",
+            "name": "st(1)",
+            "width_bits": 80,
+            "access": "read",
+        }],
+        "registers_read": ["st(0)", "st(1)"],
+        "registers_written": ["eflags"],
+        "groups": ["fpu"],
+    })
+    unit["source"]["instruction_bytes_sha256"] = sha256_bytes(encoded)
+    transfer_digest = unit["source"]["instruction_bytes_sha256"]
+    micro_id = f"{unit['id']}:x87:{rva:08x}"
+    unit["x87_micro_ops"] = [{
+        "format": "stage-a-x87-micro-op-v1",
+        "id": micro_id,
+        "unit_id": unit["id"],
+        "rva_start": rva,
+        "rva_end": rva + len(encoded),
+        "size": len(encoded),
+        "instruction_sha256": sha256_bytes(encoded),
+        "transfer_instruction_sha256": transfer_digest,
+        "mnemonic": mnemonic,
+        "operands": unit["instructions"][0]["operands"],
+        "implicit_registers_read": ["st(0)", "st(1)"],
+        "implicit_registers_written": ["eflags"],
+        "checked_decoder": "StageA.Relational.X87.decodeSingletonCommand",
+        "checked_executor": "StageA.Relational.X87.executeSingletonCommand",
+        "physical_state_effect": "defined_by_checked_typed_x87_executor",
+    }]
+    unit["semantics"]["fpu_state"] = {
+        "typed_replay": {
+            "source_format": "stage-a-native-exact-x87-command-replay-obligation-v1",
+            "architecture": "x86",
+            "bitness": 32,
+            "image_base": 0x400000,
+            "rva_start": rva,
+            "rva_end": rva + len(encoded),
+            "instruction_bytes_sha256": transfer_digest,
+            "checked_decoder": "StageA.Relational.X87.decodeSingletonCommand",
+            "checked_executor": "StageA.Relational.X87.executeSingletonCommand",
+            "micro_op_ids": [micro_id],
+        }
+    }
+    return unit
+
+
 def _x87_replay_transfer() -> dict:
     encoded = bytes.fromhex("d9e8")
     digest = sha256_bytes(encoded)
@@ -219,27 +347,25 @@ struct stage_b_runtime {
 def _x87_runtime_header() -> str:
     header = _RUNTIME_HEADER.replace(
         "typedef struct stage_b_runtime stage_b_runtime;",
-        """typedef struct stage_b_x87_replay_program {
-  uint32_t image_base, rva_start, rva_end, instruction_count, byte_count;
-  const uint8_t *instruction_bytes;
-  const char *instruction_bytes_sha256;
-  const char *transfer_instruction_bytes_sha256;
+        """typedef struct stage_b_typed_x87_operation {
+  uint32_t image_base, rva_start, rva_end, source_size;
+  const char *operation_identity;
   const char *contract_sha256;
   const char *checked_decoder;
   const char *checked_executor;
-} stage_b_x87_replay_program;
+} stage_b_typed_x87_operation;
 typedef struct stage_b_runtime stage_b_runtime;""",
     )
     header = header.replace(
         "typedef uint32_t (*stage_b_code_target_resolver)(",
-        """typedef stage_b_call_status (*stage_b_x87_replay_handler)(
-    stage_b_runtime *, const stage_b_x87_replay_program *,
+        """typedef stage_b_call_status (*stage_b_typed_x87_handler)(
+    stage_b_runtime *, const stage_b_typed_x87_operation *,
     const stage_b_machine_state *, stage_b_machine_state *);
 typedef uint32_t (*stage_b_code_target_resolver)(""",
     )
     return header.replace(
         "  void *replay_checked_x87_command;",
-        "  stage_b_x87_replay_handler replay_checked_x87_command;",
+        "  stage_b_typed_x87_handler execute_typed_x87_operation;",
     )
 
 
@@ -271,6 +397,150 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertEqual(plan.external_sites[0].instruction_bytes.hex(), "ff159c214300")
             self.assertEqual(plan.external_sites[0].iat_va, 0x43219C)
             self.assertEqual(plan.external_sites[0].disposition, "returns_here")
+
+    def test_plans_byte_free_machine_ir_external_bridge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            event = {
+                "kind": "external_call",
+                "instruction_rva": 0x142A,
+                "return_rva": 0x1430,
+                "dll": "KERNEL32.dll",
+                "symbol": "Sleep",
+                "ordinal": None,
+            }
+            machine_ir = self._write(root, [_machine_ir_transfer(event=event)])
+            package = root / "package"
+            plan = plan_stage_b_native_engine(
+                machine_ir=machine_ir,
+                entry_rva=0x142A,
+                import_iat_vas={("kernel32.dll", "Sleep"): 0x43219C},
+            )
+            result = write_stage_b_native_engine_package(
+                machine_ir=machine_ir,
+                entry_rva=0x142A,
+                import_iat_vas={("kernel32.dll", "Sleep"): 0x43219C},
+                out=package,
+            )
+            site = plan.external_sites[0]
+            self.assertEqual(plan.status, "ready", plan.blockers)
+            self.assertEqual(plan.input_mode, "sanitized_machine_ir_v2")
+            self.assertIsNone(site.instruction_bytes)
+            self.assertRegex(site.source_instruction_sha256, r"^[0-9a-f]{64}$")
+            self.assertRegex(site.event_identity_sha256 or "", r"^[0-9a-f]{64}$")
+            self.assertRegex(site.abi_metadata_sha256 or "", r"^[0-9a-f]{64}$")
+            self.assertEqual(result["input_mode"], "sanitized_machine_ir_v2")
+            for artifact in package.iterdir():
+                if artifact.suffix not in {".json", ".c", ".h", ".S"}:
+                    continue
+                generated = artifact.read_text(encoding="ascii")
+                self.assertNotIn("instruction_bytes", generated)
+                self.assertNotIn(".byte", generated)
+
+    def test_byte_free_indirect_bridge_binds_target_expression(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = {"op": "reg", "name": "ebx", "width": 32}
+            unit = _machine_ir_transfer(
+                event={
+                    "kind": "indirect_call",
+                    "instruction_rva": 0x142A,
+                    "return_rva": 0x142C,
+                    "target": target,
+                },
+                size=2,
+            )
+            del unit["semantics"]["ordered_events"][0]["arguments"]
+            plan = plan_stage_b_native_engine(
+                machine_ir=self._write(root, [unit]), entry_rva=0x142A
+            )
+            self.assertEqual(plan.status, "ready", plan.blockers)
+            self.assertEqual(plan.external_sites[0].target_expression, target)
+            self.assertEqual(plan.external_sites[0].site_kind, "dynamic_target")
+
+    def test_byte_free_iat_loaded_indirect_bridge_binds_import_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = {
+                "op": "load",
+                "width": 4,
+                "address": {"op": "const", "value": 0x43219C, "width": 32},
+            }
+            unit = _machine_ir_transfer(
+                event={
+                    "kind": "indirect_call",
+                    "instruction_rva": 0x142A,
+                    "return_rva": 0x142C,
+                    "target": target,
+                },
+                size=2,
+            )
+            del unit["semantics"]["ordered_events"][0]["arguments"]
+
+            plan = plan_stage_b_native_engine(
+                machine_ir=self._write(root, [unit]),
+                entry_rva=0x142A,
+                import_iat_vas={("msvcrt.dll", "__p___argv"): 0x43219C},
+            )
+
+            site = plan.external_sites[0]
+            self.assertEqual(site.site_kind, "dynamic_target")
+            self.assertEqual(site.dll, "msvcrt.dll")
+            self.assertEqual(site.symbol, "__p___argv")
+            self.assertEqual(site.iat_va, 0x43219C)
+            self.assertEqual(site.payload()["import"], {
+                "dll": "msvcrt.dll",
+                "symbol": "__p___argv",
+                "ordinal": None,
+            })
+
+    def test_byte_free_iat_loaded_indirect_bridge_rejects_ambiguous_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = {
+                "op": "load",
+                "width": 4,
+                "address": {"op": "const", "value": 0x43219C, "width": 32},
+            }
+            unit = _machine_ir_transfer(
+                event={
+                    "kind": "indirect_call",
+                    "instruction_rva": 0x142A,
+                    "return_rva": 0x142C,
+                    "target": target,
+                },
+                size=2,
+            )
+            del unit["semantics"]["ordered_events"][0]["arguments"]
+
+            with self.assertRaisesRegex(StageAInputError, "ambiguous import"):
+                plan_stage_b_native_engine(
+                    machine_ir=self._write(root, [unit]),
+                    entry_rva=0x142A,
+                    import_iat_vas={
+                        ("msvcrt.dll", "__p___argv"): 0x43219C,
+                        ("msvcrt.dll", "__p__environ"): 0x43219C,
+                    },
+                )
+
+    def test_byte_free_bridge_rejects_incomplete_abi_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            unit = _machine_ir_transfer(event={
+                "kind": "external_call",
+                "instruction_rva": 0x142A,
+                "return_rva": 0x1430,
+                "dll": "kernel32.dll",
+                "symbol": "Sleep",
+                "ordinal": None,
+            })
+            del unit["semantics"]["ordered_events"][0]["flag_inputs"]
+            with self.assertRaises(StageAInputError):
+                plan_stage_b_native_engine(
+                    machine_ir=self._write(root, [unit]),
+                    entry_rva=0x142A,
+                    import_iat_vas={("kernel32.dll", "Sleep"): 0x43219C},
+                )
 
     def test_relative_import_call_requires_exact_original_iat_binding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -465,6 +735,10 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertNotIn("stage_b_native_bridge_fn", source)
             self.assertEqual(source.count("stage_b_native_bridge();"), 1)
             self.assertIn(
+                "stage_b_native_runtime_record_external_result(event, output)",
+                source,
+            )
+            self.assertIn(
                 "stage_b_native_dispatch_bridge();",
                 source,
             )
@@ -595,8 +869,21 @@ class StageBNativeEngineTests(unittest.TestCase):
             callback_assembly = assembly.split(
                 "stage_b_payload_callback_00001420:", 1
             )[1]
+            entry_assembly = assembly.split("stage_b_payload_entry:", 1)[1].split(
+                "stage_b_native_entry_dispatch_return:", 1
+            )[0]
+            wrapper = (package / "native-engine-wrapper.c").read_text(
+                encoding="ascii"
+            )
             self.assertIn("_stage_b_native_callback_failure_0000", callback_assembly)
             self.assertIn("_stage_b_native_root_callback_fault", callback_assembly)
+            self.assertIn("stage_b_native_root_callback_fault_rva = callback_rva;", wrapper)
+            self.assertIn("stage_b_native_root_callback_fault_state = *output;", wrapper)
+            self.assertIn(
+                "mov esp, OFFSET FLAT:_stage_b_native_callback_stack + 65536",
+                entry_assembly,
+            )
+            self.assertIn("and esp, -16", entry_assembly)
             self.assertNotIn("jne _stage_b_native_halt", callback_assembly)
 
     def test_tls_callback_rejects_non_stdcall_cleanup(self) -> None:
@@ -629,7 +916,172 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertEqual(plan.status, "ready", plan.blockers)
             self.assertEqual(plan.callback_targets[0].stack_cleanup_bytes, 8)
 
-    def test_qualified_x87_replay_preserves_physical_fnsave_contract(self) -> None:
+    def test_callback_registration_recovers_and_adapts_finite_static_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            callback_va = 0x403000
+            caller = _machine_ir_transfer(
+                rva=0x1400,
+                size=5,
+                event={
+                    "kind": "internal_call",
+                    "instruction_rva": 0x1400,
+                    "return_rva": 0x1405,
+                    "target_rva": 0x2000,
+                    "stack_inputs": [{
+                        "offset": 0,
+                        "width": 4,
+                        "value": {"op": "const", "value": callback_va, "width": 32},
+                    }],
+                },
+            )
+            thunk = _machine_ir_transfer(
+                rva=0x2000,
+                size=6,
+                mnemonic="jmp",
+                event={
+                    "kind": "external_call",
+                    "instruction_rva": 0x2000,
+                    "return_rva": 0x2006,
+                    "dll": "msvcrt.dll",
+                    "symbol": "atexit",
+                    "ordinal": None,
+                    "arguments": [{
+                        "op": "load",
+                        "width": 4,
+                        "address": {
+                            "op": "add32",
+                            "args": [
+                                {"op": "const", "value": 4, "width": 32},
+                                {"op": "reg", "name": "esp", "width": 32},
+                            ],
+                        },
+                    }],
+                    "stack_inputs": [{
+                        "offset": 4,
+                        "width": 4,
+                        "value": {
+                            "op": "load",
+                            "width": 4,
+                            "address": {
+                                "op": "add32",
+                                "args": [
+                                    {"op": "const", "value": 4, "width": 32},
+                                    {"op": "reg", "name": "esp", "width": 32},
+                                ],
+                            },
+                        },
+                    }],
+                    "abi_contract": {
+                        "template": "pe32-cdecl-v1",
+                        "argument_words": 1,
+                        "argument_base_offset": 4,
+                        "contract_id": 2,
+                        "world_effect": "callbackRegistration",
+                        "world_effect_argument": 0,
+                        "callback_abi": {
+                            "kind": "generic_callback",
+                            "argument_words": 0,
+                            "stack_cleanup_bytes": 0,
+                            "nullable": False,
+                        },
+                    },
+                },
+            )
+            thunk["semantics"]["outcome"] = {
+                "kind": "external_jump",
+                "dll": "msvcrt.dll",
+                "symbol": "atexit",
+                "ordinal": None,
+            }
+            callback = _machine_ir_transfer(
+                rva=0x3000, size=1, mnemonic="nop"
+            )
+            machine = self._write(root, [caller, thunk, callback])
+            plan = plan_stage_b_native_engine(
+                machine_ir=machine,
+                entry_rva=0x1400,
+                import_iat_vas={("msvcrt.dll", "atexit"): 0x43219C},
+                base_relocation_evidence=_relocation_evidence([]),
+            )
+            self.assertEqual(plan.status, "ready", plan.blockers)
+            self.assertEqual([target.rva for target in plan.callback_targets], [0x3000])
+            self.assertEqual(len(plan.callback_adapters), 1)
+            self.assertEqual(
+                plan.callback_adapters[0].payload(),
+                {
+                    "id": 0,
+                    "instruction_rva": 0x2000,
+                    "argument_index": 0,
+                    "original_rva": 0x3000,
+                    "callback_rva": 0x3000,
+                    "symbol": "stage_b_payload_callback_00003000",
+                    "matching": "runtime-image-base-plus-rva",
+                },
+            )
+            package = root / "package"
+            result = write_stage_b_native_engine_package(
+                machine_ir=machine,
+                entry_rva=0x1400,
+                import_iat_vas={("msvcrt.dll", "atexit"): 0x43219C},
+                base_relocation_evidence=_relocation_evidence([]),
+                out=package,
+            )
+            self.assertEqual(result["counts"]["callback_adapters"], 1)
+            source = (package / "native-engine-wrapper.c").read_text(encoding="ascii")
+            self.assertIn("stage_b_native_callback_adapter_for(", source)
+            self.assertIn("callback_argument_address, callback_argument_original", source)
+            self.assertIn("stage_b_payload_callback_00003000", source)
+
+    def test_callback_registration_rejects_unresolved_target_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            row = _machine_ir_transfer(
+                rva=0x2000,
+                size=6,
+                mnemonic="jmp",
+                event={
+                    "kind": "external_call",
+                    "instruction_rva": 0x2000,
+                    "return_rva": 0x2006,
+                    "dll": "msvcrt.dll",
+                    "symbol": "atexit",
+                    "ordinal": None,
+                    "abi_contract": {
+                        "template": "pe32-cdecl-v1",
+                        "argument_words": 1,
+                        "argument_base_offset": 4,
+                        "contract_id": 2,
+                        "world_effect": "callbackRegistration",
+                        "world_effect_argument": 0,
+                        "callback_abi": {
+                            "kind": "generic_callback",
+                            "argument_words": 0,
+                            "stack_cleanup_bytes": 0,
+                            "nullable": False,
+                        },
+                    },
+                },
+            )
+            row["semantics"]["outcome"] = {
+                "kind": "external_jump",
+                "dll": "msvcrt.dll",
+                "symbol": "atexit",
+                "ordinal": None,
+            }
+            plan = plan_stage_b_native_engine(
+                machine_ir=self._write(root, [row]),
+                entry_rva=0x2000,
+                import_iat_vas={("msvcrt.dll", "atexit"): 0x43219C},
+                base_relocation_evidence=_relocation_evidence([]),
+            )
+            self.assertEqual(plan.status, "incomplete")
+            self.assertEqual(
+                plan.blockers[0]["category"],
+                "callback_target_provenance_incomplete",
+            )
+
+    def test_typed_x87_operation_preserves_physical_fnsave_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             machine = self._write(root, [_x87_replay_transfer()])
@@ -637,7 +1089,7 @@ class StageBNativeEngineTests(unittest.TestCase):
                 state_machine=machine, entry_rva=0x1420
             )
             self.assertEqual(plan.status, "ready", plan.blockers)
-            self.assertEqual(len(plan.x87_replays), 1)
+            self.assertEqual(len(plan.x87_operations), 1)
             package = root / "package"
             result = write_stage_b_native_engine_package(
                 state_machine=machine,
@@ -665,7 +1117,10 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertIn("entry->bridge();", source)
             self.assertIn("fnsave", assembly)
             self.assertIn("frstor", assembly)
-            self.assertIn(".byte 0xd9, 0xe8", assembly)
+            self.assertIn("    fld1", assembly)
+            self.assertNotIn(".byte", assembly)
+            manifest = (package / "native-engine-plan.json").read_text(encoding="utf-8")
+            self.assertNotIn("instruction_bytes", manifest)
             x87_capture = assembly.split(
                 "_stage_b_native_x87_capture_0000:", maxsplit=1
             )[1]
@@ -685,6 +1140,256 @@ class StageBNativeEngineTests(unittest.TestCase):
                 )
             self.assertIn("and ebx, 0x00000cd5", x87_capture)
             self.assertIn("mov DWORD PTR [edx + 240], ecx", x87_capture)
+
+    def test_typed_x87_memory_form_uses_reviewed_mnemonic_rendering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            row = _x87_replay_transfer()
+            encoded = bytes.fromhex("d94004")
+            digest = sha256_bytes(encoded)
+            row["instruction_bytes_sha256"] = digest
+            row["original"] = {"rva_start": 0x1420, "rva_end": 0x1423, "size": 3}
+            row["instructions"] = [{
+                "rva": 0x1420, "size": 3, "bytes": encoded.hex(),
+                "mnemonic": "fld", "op_str": "dword ptr [eax + 4]",
+            }]
+            row["outcome"] = {"kind": "fallthrough", "target_rva": 0x1423}
+            replay = row["fpu_state"]["replay"]
+            replay.update({
+                "rva_end": 0x1423,
+                "bytes": encoded.hex(),
+                "bytes_sha256": digest,
+                "instructions": [{"rva": 0x1420, "size": 3, "bytes": encoded.hex()}],
+            })
+            package = root / "package"
+            result = write_stage_b_native_engine_package(
+                state_machine=self._write(root, [row]), entry_rva=0x1420, out=package
+            )
+            self.assertEqual(result["status"], "ready", result["blockers"])
+            assembly = (package / "native-engine-bridges.S").read_text(encoding="ascii")
+            self.assertIn("fld DWORD PTR [eax + 0x4]", assembly)
+            self.assertNotIn(".byte", assembly)
+
+    def test_byte_free_indexed_image_x87_operand_uses_checked_relocation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rva = 0xE548
+            unit = _machine_ir_x87_transfer(
+                rva=rva, mnemonic="fld", encoded=bytes.fromhex("dd04d5e0794200")
+            )
+            operand = {
+                "kind": "memory",
+                "segment": None,
+                "base": None,
+                "index": "edx",
+                "scale": 8,
+                "displacement": 0x4279E0,
+                "width_bits": 64,
+                "access": "read",
+            }
+            unit["instructions"][0]["operands"] = [operand]
+            unit["instructions"][0]["registers_read"] = ["edx"]
+            unit["instructions"][0]["registers_written"] = ["fpsw"]
+            unit["x87_micro_ops"][0]["operands"] = [operand]
+            unit["x87_micro_ops"][0]["implicit_registers_read"] = ["edx"]
+            unit["x87_micro_ops"][0]["implicit_registers_written"] = ["fpsw"]
+            unit["source"]["semantic_export"] = {
+                "format": "stage-a-semantic-export-binding-v1",
+                "reference_contract_sha256": "c" * 64,
+                "semantic_transfer_sha256": "e" * 64,
+            }
+            package = root / "package"
+            result = write_stage_b_native_engine_package(
+                machine_ir=self._write(root, [unit]),
+                entry_rva=rva,
+                base_relocation_evidence=_relocation_evidence([{
+                    "source_rva": rva + 3,
+                    "type": 3,
+                    "kind": "highlow",
+                    "width": 4,
+                    "preferred_value": 0x4279E0,
+                }]),
+                out=package,
+            )
+            self.assertEqual(result["status"], "ready", result["blockers"])
+            plan = json.loads(
+                (package / "native-engine-plan.json").read_text(encoding="ascii")
+            )
+            operation = plan["x87_operations"][0]
+            self.assertEqual(operation["operation"]["operand"]["address"], {
+                "base": None,
+                "index": "edx",
+                "scale": 8,
+                "displacement": 0,
+                "image_rva": 0x279E0,
+            })
+            assembly = (package / "native-engine-bridges.S").read_text(
+                encoding="ascii"
+            )
+            self.assertIn(
+                "fld QWORD PTR [___ImageBase + 0x000279e0 + edx * 8]",
+                assembly,
+            )
+            self.assertNotIn(".byte", assembly)
+
+    @unittest.skipUnless(
+        shutil.which("i686-w64-mingw32-gcc"),
+        "i686 MinGW compiler is unavailable",
+    )
+    def test_reviewed_x87_form_renderings_assemble(self) -> None:
+        compiler = shutil.which("i686-w64-mingw32-gcc")
+        assert compiler is not None
+        forms = (
+            ("d8c1", "fadd", "st(1)", "fadd st(1)"),
+            ("dff1", "fcompi", "st(1)", "fcompi st(1)"),
+            ("dfe9", "fucompi", "st(1)", "fucompi st(1)"),
+            ("dfe0", "fnstsw", "ax", "fnstsw ax"),
+            ("db28", "fld", "xword ptr [eax]", "fld TBYTE PTR [eax]"),
+            ("d920", "fldenv", "[eax]", "fldenv [eax]"),
+            ("dd30", "fnsave", "dword ptr [eax]", "fnsave [eax]"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index, (raw_hex, mnemonic, op_str, rendered) in enumerate(forms):
+                encoded = bytes.fromhex(raw_hex)
+                digest = sha256_bytes(encoded)
+                row = _x87_replay_transfer()
+                row["instruction_bytes_sha256"] = digest
+                row["original"] = {
+                    "rva_start": 0x1420,
+                    "rva_end": 0x1420 + len(encoded),
+                    "size": len(encoded),
+                }
+                row["instructions"] = [{
+                    "rva": 0x1420,
+                    "size": len(encoded),
+                    "bytes": raw_hex,
+                    "mnemonic": mnemonic,
+                    "op_str": op_str,
+                }]
+                row["outcome"] = {
+                    "kind": "fallthrough",
+                    "target_rva": 0x1420 + len(encoded),
+                }
+                replay = row["fpu_state"]["replay"]
+                replay.update({
+                    "rva_end": 0x1420 + len(encoded),
+                    "bytes": raw_hex,
+                    "bytes_sha256": digest,
+                    "instructions": [{
+                        "rva": 0x1420,
+                        "size": len(encoded),
+                        "bytes": raw_hex,
+                    }],
+                })
+                package = root / f"package-{index}"
+                result = write_stage_b_native_engine_package(
+                    state_machine=self._write(root, [row]),
+                    entry_rva=0x1420,
+                    out=package,
+                )
+                self.assertEqual(result["status"], "ready", result["blockers"])
+                assembly = package / "native-engine-bridges.S"
+                self.assertIn(rendered, assembly.read_text(encoding="ascii"))
+                subprocess.run(
+                    [
+                        compiler,
+                        "-c",
+                        str(assembly),
+                        "-o",
+                        str(root / f"typed-form-{index}.o"),
+                    ],
+                    check=True,
+                    text=True,
+                    capture_output=True,
+                )
+
+    @unittest.skipUnless(
+        shutil.which("i686-w64-mingw32-gcc"),
+        "i686 MinGW compiler is unavailable",
+    )
+    def test_byte_free_machine_ir_compare_forms_assemble(self) -> None:
+        compiler = shutil.which("i686-w64-mingw32-gcc")
+        assert compiler is not None
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            machine_ir = self._write(root, [
+                _machine_ir_x87_transfer(
+                    rva=0x1420, mnemonic="fcompi", encoded=bytes.fromhex("dff1")
+                ),
+                _machine_ir_x87_transfer(
+                    rva=0x1430, mnemonic="fucompi", encoded=bytes.fromhex("dfe9")
+                ),
+            ])
+            package = root / "package"
+            result = write_stage_b_native_engine_package(
+                machine_ir=machine_ir, entry_rva=0x1420, out=package
+            )
+            self.assertEqual(result["status"], "ready", result["blockers"])
+            assembly = package / "native-engine-bridges.S"
+            rendered = assembly.read_text(encoding="ascii")
+            self.assertIn("fcompi st(1)", rendered)
+            self.assertIn("fucompi st(1)", rendered)
+            self.assertNotIn(".byte", rendered)
+            subprocess.run(
+                [compiler, "-c", str(assembly), "-o", str(root / "compare.o")],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+
+    @unittest.skipUnless(
+        shutil.which("i686-w64-mingw32-gcc"),
+        "i686 MinGW compiler is unavailable",
+    )
+    def test_byte_free_machine_ir_fxch_complete_operands_assemble(self) -> None:
+        compiler = shutil.which("i686-w64-mingw32-gcc")
+        assert compiler is not None
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            unit = _machine_ir_x87_transfer(
+                rva=0x1420, mnemonic="fxch", encoded=bytes.fromhex("d9c9")
+            )
+            operands = [
+                {
+                    "kind": "register", "name": "st(0)",
+                    "width_bits": 80, "access": "read_write",
+                },
+                {
+                    "kind": "register", "name": "st(1)",
+                    "width_bits": 80, "access": "read_write",
+                },
+            ]
+            unit["instructions"][0]["operands"] = operands
+            unit["x87_micro_ops"][0]["operands"] = operands
+            machine_ir = self._write(root, [unit])
+            package = root / "package"
+            result = write_stage_b_native_engine_package(
+                machine_ir=machine_ir, entry_rva=0x1420, out=package
+            )
+            self.assertEqual(result["status"], "ready", result["blockers"])
+            assembly = package / "native-engine-bridges.S"
+            rendered = assembly.read_text(encoding="ascii")
+            self.assertIn("fxch st(1)", rendered)
+            self.assertNotIn("fxch st(0), st(1)", rendered)
+            subprocess.run(
+                [compiler, "-c", str(assembly), "-o", str(root / "fxch.o")],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+
+    def test_malformed_typed_x87_guidance_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            row = _x87_replay_transfer()
+            row["instructions"][0]["mnemonic"] = "fadd"
+            plan = plan_stage_b_native_engine(
+                state_machine=self._write(root, [row]), entry_rva=0x1420
+            )
+            self.assertEqual(plan.status, "incomplete")
+            self.assertEqual(plan.blockers[0]["category"], "x87_physical_state_unqualified")
+            self.assertIn("mnemonic differs", plan.blockers[0]["observed"])
 
     def test_x87_callback_passes_preserved_input_fnsave_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -773,14 +1478,15 @@ class StageBNativeEngineTests(unittest.TestCase):
                 base_relocation_evidence=_relocation_evidence(),
             )
             self.assertEqual(plan.status, "ready", plan.blockers)
-            replay = plan.x87_replays[0]
-            self.assertEqual(replay.relocation_source_rva, 0x1422)
-            self.assertEqual(replay.operand_byte_offset, 2)
-            self.assertEqual(replay.preferred_value, 0x401234)
-            self.assertEqual(replay.target_rva, 0x1234)
-            self.assertEqual((replay.relocation_type, replay.relocation_width), (3, 4))
+            operation = plan.x87_operations[0]
+            self.assertEqual(operation.relocation_source_rva, 0x1422)
+            self.assertEqual(operation.operation.mnemonic, "fld")
+            self.assertEqual(operation.operation.operand.image_rva, 0x1234)
+            self.assertEqual(operation.preferred_value, 0x401234)
+            self.assertEqual(operation.target_rva, 0x1234)
+            self.assertEqual((operation.relocation_type, operation.relocation_width), (3, 4))
             payload = plan.payload(state_machine_sha256=sha256_bytes(machine.read_bytes()))
-            relocation = payload["x87_replays"][0]["base_relocation"]
+            relocation = payload["x87_operations"][0]["base_relocation"]
             self.assertEqual(relocation["reference_contract_sha256"], "c" * 64)
             self.assertEqual(relocation["pe_sha256"], "d" * 64)
             package = root / "package"
@@ -793,8 +1499,9 @@ class StageBNativeEngineTests(unittest.TestCase):
             assembly = (package / "native-engine-bridges.S").read_text(
                 encoding="ascii"
             )
-            self.assertIn(".byte 0xd9, 0x05", assembly)
-            self.assertIn(".long ___ImageBase + 0x00001234", assembly)
+            self.assertIn("fld DWORD PTR [___ImageBase + 0x00001234]", assembly)
+            self.assertNotIn(".byte", assembly)
+            self.assertNotIn(".long", assembly)
             self.assertNotIn("0x34, 0x12, 0x40, 0x00", assembly)
 
     def test_x87_relocation_evidence_must_bind_same_reference_contract(self) -> None:
@@ -925,6 +1632,10 @@ class StageBNativeEngineTests(unittest.TestCase):
                 encoding="ascii"
             )
             self.assertIn("stage_b_native_runtime_run_at_rva(", wrapper)
+            self.assertIn('"c" (modeled_eax)', wrapper)
+            self.assertIn('"b" (modeled_esp)', wrapper)
+            self.assertIn('"S" (expected_return)', wrapper)
+            self.assertIn('"D" (observed_return)', wrapper)
             self.assertNotIn("static stage_b_runtime", wrapper)
             self.assertNotIn("stage_b_native_read(", wrapper)
             self.assertIn("stage_b_native_original_iat_target", wrapper)
@@ -932,6 +1643,8 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertIn("frame.parent = stage_b_native_active_bridge", wrapper)
             self.assertIn("stage_b_native_active_bridge = frame.parent", wrapper)
             self.assertIn("offsetof(stage_b_machine_state, eflags) == 240U", wrapper)
+            self.assertIn("state->eflags = 2U |", wrapper)
+            self.assertNotIn("state->eflags & ~represented", wrapper)
             layout = (root / "first" / "native-engine-layout.c").read_text(
                 encoding="ascii"
             )
@@ -991,6 +1704,12 @@ stage_b_call_status stage_b_native_runtime_run_nested_callback(
   (void)callback_rva;
   *output = *input;
   output->esp += 4U + stack_cleanup_bytes;
+  return STAGE_B_CALL_OK;
+}
+stage_b_call_status stage_b_native_runtime_record_external_result(
+    const stage_b_call_event *event, const stage_b_machine_state *output) {
+  (void)event;
+  (void)output;
   return STAGE_B_CALL_OK;
 }
 """,

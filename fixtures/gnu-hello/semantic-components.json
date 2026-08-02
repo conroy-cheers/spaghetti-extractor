@@ -1,0 +1,341 @@
+{
+  "format": "stage-b-semantic-component-declarations-v1",
+  "program_id": "gnu-hello-pe32-reference-v1",
+  "bindings": {
+    "machine_ir_sha256": "82cf817a094e72283aef43fddad4e4814f87b03a09d00b0ef07d2b18d1eaad9c",
+    "machine_ir_manifest_sha256": "7bc7cf0cf27aee094b0dda2558254b80437b12e4ef1de432a83a617c134b3481",
+    "reconstruction_plan_sha256": "e677ddfd4dcb47d6d66edd2be2728ffb3ac1dea63c653ea9921438ee97c9234c",
+    "original_binary_sha256": "71b228f2babc9d3b4095ecf355db676c8ed8b45a7c8a7d350f47e962b4bf554c"
+  },
+  "components": [
+    {
+      "id": "gnu-hello-validation-sample",
+      "label": "GNU Hello semantic-component validation sample",
+      "purpose": "Aggregate representative component shapes without claiming whole-program coverage.",
+      "kind": "aggregate",
+      "sharing": "exclusive",
+      "expected_reachability": "mixed",
+      "membership": {"unit_ids": [], "cluster_ids": []},
+      "children": [
+        "startup-compare-route",
+        "startup-sleep-service",
+        "startup-atomic-compare-exchange",
+        "startup-callback-registration",
+        "short-option-classifier",
+        "static-word-initialization",
+        "rotate-pending-words",
+        "finite-selector-dispatch",
+        "alias-sensitive-word-update"
+      ],
+      "logical_interface": {
+        "status": "not_applicable",
+        "parameters": [], "results": [], "objects": [],
+        "persistent_state": [], "services": [], "preconditions": [],
+        "postconditions": [], "observations": []
+      },
+      "refinement": {"status": "not_applicable", "stages": []},
+      "emission": {"policy": "none"},
+      "evidence": [],
+      "assumptions": []
+    },
+    {
+      "id": "startup-compare-route",
+      "label": "Startup comparison route",
+      "purpose": "Represent a small comparison and branch as an inline validation component.",
+      "kind": "inline",
+      "sharing": "exclusive",
+      "expected_reachability": "exact",
+      "membership": {
+        "unit_ids": [],
+        "cluster_ids": ["cluster:00001038:04ca4cb9c937"]
+      },
+      "children": [],
+      "logical_interface": {
+        "status": "proposed",
+        "parameters": [
+          {"id": "left", "type": "uint32_t", "machine_source": "eax"},
+          {"id": "right", "type": "uint32_t", "machine_source": "edx"}
+        ],
+        "results": [{"id": "route", "type": "boolean_branch"}],
+        "objects": [], "persistent_state": [], "services": [],
+        "preconditions": [],
+        "postconditions": [{"id": "route-equality", "claim": "route is selected by equality"}],
+        "observations": [{"kind": "control_exit"}]
+      },
+      "refinement": {"status": "not_started", "stages": []},
+      "emission": {"policy": "inline"},
+      "evidence": [], "assumptions": []
+    },
+    {
+      "id": "startup-sleep-service",
+      "label": "Startup delay service call",
+      "purpose": "Represent an exact external service boundary with a typed logical duration.",
+      "kind": "procedure",
+      "sharing": "exclusive",
+      "expected_reachability": "exact",
+      "membership": {
+        "unit_ids": [],
+        "cluster_ids": ["cluster:00001040:ebe49b972cfd"]
+      },
+      "children": [],
+      "logical_interface": {
+        "status": "proposed",
+        "parameters": [{"id": "milliseconds", "type": "uint32_t", "value": 1000}],
+        "results": [], "objects": [], "persistent_state": [],
+        "services": [{"id": "sleep", "identity": "kernel32.dll!Sleep"}],
+        "preconditions": [], "postconditions": [],
+        "observations": [{"kind": "external_event", "identity": "kernel32.dll!Sleep"}]
+      },
+      "refinement": {"status": "not_started", "stages": []},
+      "emission": {"policy": "function", "symbol": "startup_sleep"},
+      "evidence": [], "assumptions": []
+    },
+    {
+      "id": "startup-atomic-compare-exchange",
+      "label": "Atomic startup update",
+      "purpose": "Retain a locked compare-exchange operation and its success/failure control.",
+      "kind": "procedure",
+      "sharing": "exclusive",
+      "expected_reachability": "exact",
+      "membership": {
+        "unit_ids": [],
+        "cluster_ids": ["cluster:00001050:49b9217279c5"]
+      },
+      "children": [],
+      "logical_interface": {
+        "status": "proposed",
+        "parameters": [
+          {"id": "slot", "type": "atomic_uint32_t*"},
+          {"id": "expected", "type": "uint32_t"},
+          {"id": "desired", "type": "uint32_t"}
+        ],
+        "results": [{"id": "exchanged", "type": "bool"}],
+        "objects": [{"id": "slot-object", "kind": "atomic_word"}],
+        "persistent_state": [], "services": [],
+        "preconditions": [{"id": "valid-slot", "claim": "slot names a writable aligned word"}],
+        "postconditions": [{"id": "compare-exchange", "claim": "slot changes exactly on comparison success"}],
+        "observations": [{"kind": "atomic_memory_effect"}, {"kind": "control_exit"}]
+      },
+      "refinement": {"status": "not_started", "stages": []},
+      "emission": {"policy": "function", "symbol": "startup_compare_exchange"},
+      "evidence": [], "assumptions": []
+    },
+    {
+      "id": "startup-callback-registration",
+      "label": "Unhandled-exception callback registration",
+      "purpose": "Model callback registration as a stateful external service boundary.",
+      "kind": "procedure",
+      "sharing": "exclusive",
+      "expected_reachability": "exact",
+      "membership": {
+        "unit_ids": [],
+        "cluster_ids": ["cluster:00001137:b9e945f1eb4f"]
+      },
+      "children": [],
+      "logical_interface": {
+        "status": "proposed",
+        "parameters": [{"id": "handler", "type": "exception_callback"}],
+        "results": [{"id": "previous_handler", "type": "exception_callback"}],
+        "objects": [],
+        "persistent_state": [{"id": "registered-handler", "kind": "callback_registration"}],
+        "services": [{"id": "register-handler", "identity": "kernel32.dll!SetUnhandledExceptionFilter"}],
+        "preconditions": [{"id": "mapped-callback", "claim": "non-null handler has a mapped component entry"}],
+        "postconditions": [{"id": "registration-lifetime", "claim": "handler remains registered until replacement or process exit"}],
+        "observations": [{"kind": "external_event"}, {"kind": "future_callback"}]
+      },
+      "refinement": {"status": "not_started", "stages": []},
+      "emission": {"policy": "function", "symbol": "register_exception_handler"},
+      "evidence": [], "assumptions": []
+    },
+    {
+      "id": "short-option-classifier",
+      "label": "Short-option classifier",
+      "purpose": "Exercise boundary minimization for a two-instruction comparison whose flags die at both successors.",
+      "kind": "inline",
+      "sharing": "exclusive",
+      "expected_reachability": "exact",
+      "membership": {
+        "unit_ids": [],
+        "cluster_ids": ["cluster:000011ac:f37e373e4c6a"]
+      },
+      "children": [],
+      "logical_interface": {
+        "status": "proposed",
+        "parameters": [{"id": "value", "type": "uint16_t", "machine_source": "cx"}],
+        "results": [{"id": "route", "type": "boolean_branch"}],
+        "objects": [], "persistent_state": [], "services": [],
+        "preconditions": [],
+        "postconditions": [{"id": "classification", "claim": "route selects value != 523"}],
+        "observations": [{"kind": "control_exit"}]
+      },
+      "refinement": {"status": "not_started", "stages": []},
+      "emission": {"policy": "inline"},
+      "evidence": [], "assumptions": []
+    },
+    {
+      "id": "static-word-initialization",
+      "label": "Static-word initialization with helper",
+      "purpose": "Exercise noncontiguous membership spanning a caller and a zero-return internal helper.",
+      "kind": "procedure",
+      "sharing": "exclusive",
+      "expected_reachability": "exact",
+      "membership": {
+        "unit_ids": [
+          "semantic-transfer:original-cutpoint-00001201-0000120e",
+          "semantic-transfer:original-cutpoint-0000a290-0000a293"
+        ],
+        "cluster_ids": []
+      },
+      "children": [],
+      "logical_interface": {
+        "status": "proposed",
+        "parameters": [{"id": "destination", "type": "uint32_t*"}],
+        "results": [{"id": "result", "type": "uint32_t"}],
+        "objects": [{"id": "startup-word", "kind": "static_word"}],
+        "persistent_state": [], "services": [],
+        "preconditions": [{"id": "valid-destination", "claim": "destination is writable for four bytes"}],
+        "postconditions": [{"id": "stored-word", "claim": "destination receives the selected startup word and result is zero"}],
+        "observations": [{"kind": "memory_effect"}, {"kind": "return"}]
+      },
+      "refinement": {"status": "not_started", "stages": []},
+      "emission": {"policy": "function", "symbol": "initialize_static_word"},
+      "evidence": [], "assumptions": []
+    },
+    {
+      "id": "rotate-pending-words",
+      "label": "Pending-word range rotation",
+      "purpose": "Exercise a multi-path procedure with loops, out-of-line control paths, indexed memory, and state updates.",
+      "kind": "procedure",
+      "sharing": "exclusive",
+      "expected_reachability": "exact",
+      "membership": {
+        "unit_ids": [
+          "semantic-transfer:original-cutpoint-00001ba0-00001ba5",
+          "semantic-transfer:original-cutpoint-00001ba5-00001baf",
+          "semantic-transfer:original-cutpoint-00001baf-00001bb8",
+          "semantic-transfer:original-cutpoint-00001bb8-00001bc2",
+          "semantic-transfer:original-cutpoint-00001bc2-00001bc4",
+          "semantic-transfer:original-cutpoint-00001bc4-00001bd0",
+          "semantic-transfer:original-cutpoint-00001bd0-00001bd8",
+          "semantic-transfer:original-cutpoint-00001bd8-00001bdc",
+          "semantic-transfer:original-cutpoint-00001bdc-00001be4",
+          "semantic-transfer:original-cutpoint-00001be4-00001bf0",
+          "semantic-transfer:original-cutpoint-00001bf0-00001bfa",
+          "semantic-transfer:padding-bridge-1bfa-1c00",
+          "semantic-transfer:original-cutpoint-00001c00-00001c0a",
+          "semantic-transfer:original-cutpoint-00001c0a-00001c11",
+          "semantic-transfer:original-cutpoint-00001c11-00001c19",
+          "semantic-transfer:original-cutpoint-00001c19-00001c1d",
+          "semantic-transfer:original-cutpoint-00001c1d-00001c21",
+          "semantic-transfer:original-cutpoint-00001c21-00001c2d",
+          "semantic-transfer:original-cutpoint-00001c2d-00001c38",
+          "semantic-transfer:original-cutpoint-00001c38-00001c3e",
+          "semantic-transfer:original-cutpoint-00001c3e-00001c45",
+          "semantic-transfer:original-cutpoint-00001c45-00001c46",
+          "semantic-transfer:original-cutpoint-00001c46-00001c50",
+          "semantic-transfer:original-cutpoint-00001c50-00001c59",
+          "semantic-transfer:original-cutpoint-00001c59-00001c5b",
+          "semantic-transfer:original-cutpoint-00001c5b-00001c5f",
+          "semantic-transfer:padding-bridge-1c5f-1c60",
+          "semantic-transfer:original-cutpoint-00001c60-00001c6a",
+          "semantic-transfer:original-cutpoint-00001c6a-00001c71",
+          "semantic-transfer:original-cutpoint-00001c71-00001c77",
+          "semantic-transfer:original-cutpoint-00001c77-00001c7b"
+        ],
+        "cluster_ids": []
+      },
+      "children": [],
+      "logical_interface": {
+        "status": "proposed",
+        "parameters": [
+          {"id": "words", "type": "uint32_t*", "machine_source": "eax"},
+          {"id": "window", "type": "range_window*", "machine_source": "edx"}
+        ],
+        "results": [],
+        "objects": [
+          {"id": "word-array", "kind": "indexed_array", "element_type": "uint32_t"},
+          {"id": "range-window", "kind": "record", "fields": ["first", "middle", "end"]}
+        ],
+        "persistent_state": [], "services": [],
+        "preconditions": [
+          {"id": "ordered-window", "claim": "first <= middle <= end within the array"},
+          {"id": "alias-domain", "claim": "array and range metadata obey the declared alias relation"}
+        ],
+        "postconditions": [
+          {"id": "left-rotation", "claim": "the selected word range is rotated left by middle-first"},
+          {"id": "window-update", "claim": "middle becomes old end and first becomes old first + old end - old middle"}
+        ],
+        "observations": [{"kind": "memory_effect"}, {"kind": "return"}, {"kind": "fault"}]
+      },
+      "refinement": {
+        "status": "not_started",
+        "stages": [
+          {"from": "machine_ir", "to": "target_neutral_hir", "status": "not_started"},
+          {"from": "target_neutral_hir", "to": "algorithmic_rotation", "status": "not_started"},
+          {"from": "algorithmic_rotation", "to": "portable_c", "status": "not_started"}
+        ]
+      },
+      "emission": {"policy": "function", "symbol": "rotate_pending_words"},
+      "evidence": [],
+      "assumptions": [{"id": "logical-shape-unvalidated", "claim": "the proposed array and range-window interpretation has not yet been refined against machine IR"}]
+    },
+    {
+      "id": "finite-selector-dispatch",
+      "label": "Finite selector dispatch",
+      "purpose": "Represent a checked finite indirect-control inventory as a component boundary.",
+      "kind": "inline",
+      "sharing": "exclusive",
+      "expected_reachability": "potential",
+      "membership": {
+        "unit_ids": [],
+        "cluster_ids": ["cluster:0000382f:e3097614d7b9"]
+      },
+      "children": [],
+      "logical_interface": {
+        "status": "proposed",
+        "parameters": [{"id": "selector", "type": "uint32_t"}],
+        "results": [{"id": "destination", "type": "finite_route"}],
+        "objects": [{"id": "dispatch-table", "kind": "immutable_finite_table"}],
+        "persistent_state": [], "services": [],
+        "preconditions": [{"id": "selector-domain", "claim": "selector belongs to the checked table domain"}],
+        "postconditions": [{"id": "checked-target", "claim": "destination belongs to the checked finite target inventory"}],
+        "observations": [{"kind": "indirect_control_exit"}]
+      },
+      "refinement": {"status": "not_started", "stages": []},
+      "emission": {"policy": "inline"},
+      "evidence": [], "assumptions": []
+    },
+    {
+      "id": "alias-sensitive-word-update",
+      "label": "Alias-sensitive typed memory update",
+      "purpose": "Represent ordered object and stack memory effects with explicit alias preconditions.",
+      "kind": "procedure",
+      "sharing": "exclusive",
+      "expected_reachability": "potential",
+      "membership": {
+        "unit_ids": [],
+        "cluster_ids": ["cluster:0000d0e9:e0bd63e78f03"]
+      },
+      "children": [],
+      "logical_interface": {
+        "status": "proposed",
+        "parameters": [{"id": "object", "type": "word_record*"}],
+        "results": [],
+        "objects": [
+          {"id": "word-record", "kind": "record", "field_offsets": [4, 8]},
+          {"id": "stack-frame", "kind": "frame"}
+        ],
+        "persistent_state": [], "services": [],
+        "preconditions": [
+          {"id": "valid-object", "claim": "required object fields are readable and writable"},
+          {"id": "explicit-alias-case", "claim": "object and stack relation is one of the checked alias cases"}
+        ],
+        "postconditions": [{"id": "ordered-update", "claim": "loads observe preceding writes according to the concrete event order"}],
+        "observations": [{"kind": "memory_effect"}, {"kind": "fault"}]
+      },
+      "refinement": {"status": "not_started", "stages": []},
+      "emission": {"policy": "function", "symbol": "update_word_record"},
+      "evidence": [], "assumptions": []
+    }
+  ]
+}

@@ -116,10 +116,30 @@ class StageAExternalProtocolTests(unittest.TestCase):
     def test_narrow_and_wide_initial_environment_accessors_share_contract_shape(self):
         narrow = self._msvcrt_contract("__p___initenv")
         wide = self._msvcrt_contract("__p___winitenv")
+        narrow_shape = narrow["result_register_relations"][0]["required_words"][0][
+            "pointee_shape"
+        ]
+        wide_shape = wide["result_register_relations"][0]["required_words"][0][
+            "pointee_shape"
+        ]
+        self.assertEqual(narrow_shape["element"]["unit_bytes"], 1)
+        self.assertEqual(narrow_shape["element"]["sentinel"], [0])
+        self.assertEqual(wide_shape["element"]["unit_bytes"], 2)
+        self.assertEqual(wide_shape["element"]["sentinel"], [0, 0])
+        comparable_wide = json.loads(json.dumps(wide))
+        comparable_wide_shape = comparable_wide["result_register_relations"][0][
+            "required_words"
+        ][0]["pointee_shape"]
+        comparable_wide_shape["element"]["unit_bytes"] = 1
+        comparable_wide_shape["element"]["sentinel"] = [0]
         ignored = {"id", "import"}
         self.assertEqual(
             {key: value for key, value in narrow.items() if key not in ignored},
-            {key: value for key, value in wide.items() if key not in ignored},
+            {
+                key: value
+                for key, value in comparable_wide.items()
+                if key not in ignored
+            },
         )
         self.assertEqual(narrow["abi_template"], "pe32-cdecl-v1")
         self.assertEqual(narrow["argument_words"], 0)
@@ -266,6 +286,7 @@ class StageAExternalProtocolTests(unittest.TestCase):
             ("msvcrt.dll", "__p___argv"): 3,
         }
         thunk_sites = {
+            ("msvcrt.dll", "__getmainargs"): 1,
             ("msvcrt.dll", "__p___mb_cur_max"): 1,
             ("msvcrt.dll", "_lock"): 1,
             ("msvcrt.dll", "memchr"): 1,
@@ -278,7 +299,6 @@ class StageAExternalProtocolTests(unittest.TestCase):
             ("msvcrt.dll", "wcslen"): 2,
         }
         excluded_thunk_sites = {
-            ("msvcrt.dll", "__getmainargs"): 1,
             ("msvcrt.dll", "__setusermatherr"): 1,
             ("msvcrt.dll", "_cexit"): 1,
             ("msvcrt.dll", "_initterm"): 1,
@@ -313,8 +333,8 @@ class StageAExternalProtocolTests(unittest.TestCase):
         }
 
         self.assertEqual(sum(direct_sites.values()), 9)
-        self.assertEqual(sum(thunk_sites.values()), 60)
-        self.assertEqual(sum(excluded_thunk_sites.values()), 58)
+        self.assertEqual(sum(thunk_sites.values()), 61)
+        self.assertEqual(sum(excluded_thunk_sites.values()), 57)
         self.assertTrue((direct_sites.keys() | thunk_sites.keys()) <= contracts.keys())
         self.assertTrue(excluded_thunk_sites.keys().isdisjoint(contracts))
         for identity in direct_sites.keys() | thunk_sites.keys():

@@ -16,6 +16,10 @@ from typing import Any, Mapping, Sequence
 
 import pefile
 
+from .artifact_formats import (
+    PAYLOAD_RELOCATION_INVENTORY_FORMAT,
+    PE_COMPOSITION_MANIFEST_FORMAT,
+)
 from .roundtrip_fuzz.image_contract import (
     STAGE_A_LOAD_IMAGE_CONTRACT_FORMAT,
     StageALoadImageContract,
@@ -25,10 +29,6 @@ from .util import sha256_bytes
 
 
 EXECUTABLE_ANCHOR_MANIFEST_FORMAT = "stage-b-pe-executable-anchor-manifest-v1"
-PAYLOAD_RELOCATION_INVENTORY_FORMAT = (
-    "stage-b-pe-payload-relocation-inventory-v1"
-)
-PE_COMPOSITION_MANIFEST_FORMAT = "stage-b-pe-composition-manifest-v1"
 CANDIDATE_FILENAME = "candidate.exe"
 COMPOSITION_MANIFEST_FILENAME = "composition-manifest.json"
 

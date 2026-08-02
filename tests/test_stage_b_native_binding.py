@@ -273,6 +273,30 @@ class StageBNativeBindingTests(unittest.TestCase):
                 sha256_file(obligations_path),
             )
 
+    def test_dynamic_dispatch_preserves_a_checked_import_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = _plan()
+            dynamic = plan["external_sites"][0]
+            dynamic["import"] = {
+                "dll": "MSVCRT.dll",
+                "symbol": "__p___argv",
+                "ordinal": None,
+            }
+
+            result = self._build(Path(tmp), plan, _obligations())
+
+            self.assertEqual(result["status"], "ready", result)
+            dynamic_result = next(
+                site for site in result["sites"]
+                if site["kind"] == "indirect_call"
+            )
+            self.assertEqual(dynamic_result["site_kind"], "dynamic_target")
+            self.assertEqual(dynamic_result["import"], {
+                "dll": "msvcrt.dll",
+                "symbol": "__p___argv",
+                "ordinal": None,
+            })
+
     def test_rejects_malformed_or_mismatched_state_machine_hashes(self) -> None:
         mutations = []
         malformed_plan = _plan()

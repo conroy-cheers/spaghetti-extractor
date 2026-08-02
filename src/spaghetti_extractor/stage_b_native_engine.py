@@ -13,16 +13,34 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .artifact_formats import INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
+from .artifact_formats import (
+    INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT,
+    NATIVE_ENGINE_PACKAGE_FORMAT,
+    NATIVE_ENGINE_PLAN_FORMAT,
+)
+from .callable_external_runtime import (
+    CallableExternalRuntimeContract,
+    CallableExternalRuntimeRoute,
+    load_callable_external_runtime_contract,
+)
 from .stage_binary import StageAInputError
 from .stage_b_engine_layout import (
     render_stage_b_engine_layout_c,
 )
+from .stage_b_typed_x87 import (
+    TYPED_NATIVE_X87_OPERATION_FORMAT,
+    TypedX87Operation,
+    X87_MEMORY_NO_SIZE_MNEMONICS as _X87_MEMORY_NO_SIZE_MNEMONICS,
+    X87_MEMORY_SIZE_KEYWORDS as _X87_MEMORY_SIZE_KEYWORDS,
+    extract_typed_x87_operation,
+    typed_x87_operation_from_micro_op,
+)
 from .util import sha256_bytes, sha256_file, write_json
 
 
-NATIVE_ENGINE_PLAN_FORMAT = "stage-b-native-engine-plan-v1"
-NATIVE_ENGINE_PACKAGE_FORMAT = "stage-b-native-engine-package-v1"
+_MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
+_STRICT_INPUT_MODE = "strict_exact_state_machine_v1"
+_MACHINE_IR_INPUT_MODE = "sanitized_machine_ir_v2"
 _CALL_KINDS = frozenset({"external_call", "indirect_call"})
 _SEMANTIC_RUNTIME_EVENT_KINDS = frozenset({"rep_movsd"})
 _HEX_BYTES = re.compile(r"(?:[0-9a-fA-F]{2})+")
@@ -39,6 +57,12 @@ _X87_PHYSICAL_FIELDS = (
 )
 _FNSAVE_IMAGE_SIZE = 108
 _MACHINE_STATE_SIZE = 252
+_MACHINE_REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+_MACHINE_FLAGS = ("cf", "zf", "sf", "of", "pf", "df")
+_RAW_INSTRUCTION_FIELDS = frozenset({
+    "bytes", "instruction_bytes", "opcode_bytes", "raw_bytes",
+    "encoded_instruction",
+})
 
 
 class _X87ReplayASLRUnsafe(StageAInputError):
@@ -145,7 +169,8 @@ class NativeExternalSite:
     event_index: int
     instruction_rva: int
     return_rva: int
-    instruction_bytes: bytes
+    instruction_bytes: bytes | None
+    source_instruction_sha256: str
     site_kind: str
     dll: str | None
     symbol: str | None
@@ -153,6 +178,12 @@ class NativeExternalSite:
     disposition: str
     iat_va: int | None
     transfer_sha256: str
+    event_identity_sha256: str | None = None
+    abi_metadata_sha256: str | None = None
+    target_expression: Any = None
+    callback_argument_index: int | None = None
+    callback_argument_offset: int | None = None
+    callback_nullable: bool = False
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -161,7 +192,19 @@ class NativeExternalSite:
             "event_index": self.event_index,
             "instruction_rva": self.instruction_rva,
             "return_rva": self.return_rva,
-            "instruction_bytes": self.instruction_bytes.hex(),
+            "source_encoding_sha256": self.source_instruction_sha256,
+            "event_identity_sha256": self.event_identity_sha256,
+            "abi_metadata_sha256": self.abi_metadata_sha256,
+            "target_expression": self.target_expression,
+            "callback_registration": (
+                {
+                    "argument_index": self.callback_argument_index,
+                    "stack_offset": self.callback_argument_offset,
+                    "nullable": self.callback_nullable,
+                }
+                if self.callback_argument_index is not None
+                else None
+            ),
             "disposition": self.disposition,
             "transfer_sha256": self.transfer_sha256,
             "continuation_evidence": (
@@ -183,7 +226,7 @@ class NativeExternalSite:
                     "symbol": self.symbol,
                     "ordinal": self.ordinal,
                 }
-                if self.site_kind == "direct_import"
+                if self.dll is not None
                 else None
             ),
         }
@@ -220,18 +263,39 @@ class NativeCallbackTarget:
 
 
 @dataclass(frozen=True)
-class NativeX87Replay:
+class NativeCallbackAdapter:
+    id: int
+    instruction_rva: int
+    argument_index: int
+    original_rva: int
+    callback_rva: int
+
+    @property
+    def symbol(self) -> str:
+        return f"stage_b_payload_callback_{self.callback_rva:08x}"
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "instruction_rva": self.instruction_rva,
+            "argument_index": self.argument_index,
+            "original_rva": self.original_rva,
+            "callback_rva": self.callback_rva,
+            "symbol": self.symbol,
+            "matching": "runtime-image-base-plus-rva",
+        }
+
+
+@dataclass(frozen=True)
+class NativeX87Operation:
     id: int
     transfer_id: str
     contract_sha256: str
-    instruction_bytes_sha256: str
-    transfer_instruction_bytes_sha256: str
     image_base: int
     rva_start: int
     rva_end: int
-    instruction_bytes: bytes
+    operation: TypedX87Operation
     relocation_source_rva: int | None = None
-    operand_byte_offset: int | None = None
     preferred_value: int | None = None
     target_rva: int | None = None
     relocation_type: int | None = None
@@ -242,24 +306,18 @@ class NativeX87Replay:
     def payload(self) -> dict[str, Any]:
         return {
             "id": self.id,
-            "format": _X87_REPLAY_PROGRAM_FORMAT,
+            "format": TYPED_NATIVE_X87_OPERATION_FORMAT,
             "transfer_id": self.transfer_id,
             "contract_sha256": self.contract_sha256,
-            "instruction_bytes_sha256": self.instruction_bytes_sha256,
-            "transfer_instruction_bytes_sha256": (
-                self.transfer_instruction_bytes_sha256
-            ),
             "image_base": self.image_base,
             "rva_start": self.rva_start,
             "rva_end": self.rva_end,
-            "instruction_count": 1,
-            "instruction_bytes": self.instruction_bytes.hex(),
+            "operation": self.operation.payload(),
             "checked_decoder": _X87_CHECKED_DECODER,
             "checked_executor": _X87_CHECKED_EXECUTOR,
             "base_relocation": (
                 {
                     "source_rva": self.relocation_source_rva,
-                    "operand_byte_offset": self.operand_byte_offset,
                     "preferred_value": self.preferred_value,
                     "target_rva": self.target_rva,
                     "type": self.relocation_type,
@@ -274,6 +332,11 @@ class NativeX87Replay:
                 else None
             ),
         }
+
+
+# Python callers may still use the historical type name while migrating.  New
+# serialized packages never emit the byte-replay schema.
+NativeX87Replay = NativeX87Operation
 
 
 @dataclass(frozen=True)
@@ -294,12 +357,15 @@ class _PEBaseRelocationEvidence:
 
 @dataclass(frozen=True)
 class NativeEnginePlan:
+    input_mode: str
     entry_rva: int
     transfer_count: int
     external_sites: tuple[NativeExternalSite, ...]
     indirect_call_count: int
     callback_targets: tuple[NativeCallbackTarget, ...]
-    x87_replays: tuple[NativeX87Replay, ...]
+    callback_adapters: tuple[NativeCallbackAdapter, ...]
+    callable_external_contract: CallableExternalRuntimeContract | None
+    x87_operations: tuple[NativeX87Operation, ...]
     termination_import: NativeTerminationImport | None
     blockers: tuple[dict[str, Any], ...]
 
@@ -307,23 +373,56 @@ class NativeEnginePlan:
     def status(self) -> str:
         return "ready" if not self.blockers else "incomplete"
 
+    @property
+    def x87_replays(self) -> tuple[NativeX87Operation, ...]:
+        """Compatibility alias for callers migrating from byte replay artifacts."""
+
+        return self.x87_operations
+
     def payload(self, *, state_machine_sha256: str) -> dict[str, Any]:
         return {
             "format": NATIVE_ENGINE_PLAN_FORMAT,
             "status": self.status,
             "state_machine_sha256": state_machine_sha256,
+            "input_mode": self.input_mode,
             "entry_rva": self.entry_rva,
             "counts": {
                 "transfers": self.transfer_count,
                 "external_sites": len(self.external_sites),
                 "indirect_calls": self.indirect_call_count,
                 "callback_targets": len(self.callback_targets),
+                "callback_adapters": len(self.callback_adapters),
+                "callable_external_routes": (
+                    0
+                    if self.callable_external_contract is None
+                    else len(self.callable_external_contract.routes)
+                ),
+                "x87_operations": len(self.x87_operations),
                 "blockers": len(self.blockers),
             },
             "external_sites": [site.payload() for site in self.external_sites],
             "callback_targets": [target.rva for target in self.callback_targets],
             "callback_abis": [target.payload() for target in self.callback_targets],
-            "x87_replays": [replay.payload() for replay in self.x87_replays],
+            "callback_adapters": [
+                adapter.payload() for adapter in self.callback_adapters
+            ],
+            "callable_external": (
+                None
+                if self.callable_external_contract is None
+                else {
+                    "identity": self.callable_external_contract.identity,
+                    "resolver_sites": [
+                        site.payload()
+                        for site in self.callable_external_contract.resolvers
+                    ],
+                    "routes": [
+                        route.payload()
+                        for route in self.callable_external_contract.routes
+                    ],
+                }
+            ),
+            "x87_mode": "sanitized_typed_native_v1",
+            "x87_operations": [operation.payload() for operation in self.x87_operations],
             "termination_import": (
                 self.termination_import.payload()
                 if self.termination_import is not None
@@ -342,6 +441,7 @@ class NativeEnginePlan:
                 "original_evidence": "complete-hash-bound-pe32-inventory-when-required",
                 "payload_evidence": "complete-pe32-highlow-inventory-required",
                 "raw_absolute_operands": "forbidden",
+                "x87_instruction_payloads": "forbidden-after-typed-extraction",
             },
             "blockers": list(self.blockers),
             "authority": (
@@ -396,18 +496,521 @@ def _parse_native_termination_import(
     )
 
 
+def _canonical_sha256(value: Any) -> str:
+    try:
+        encoded = json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("ascii")
+    except (TypeError, UnicodeEncodeError) as exc:
+        raise StageAInputError("machine-IR metadata is not canonical JSON") from exc
+    return sha256_bytes(encoded)
+
+
+def _contains_raw_instruction_material(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            key in _RAW_INSTRUCTION_FIELDS
+            or _contains_raw_instruction_material(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_raw_instruction_material(item) for item in value)
+    return False
+
+
+def _adapt_native_machine_ir_unit(
+    unit: Mapping[str, Any], row_index: int
+) -> dict[str, Any]:
+    if unit.get("format") != _MACHINE_IR_FORMAT or unit.get("record_kind") != "unit":
+        raise StageAInputError(f"machine-IR record {row_index} is not a v2 unit")
+    if _contains_raw_instruction_material(unit):
+        raise StageAInputError(
+            f"machine-IR record {row_index} contains raw instruction material"
+        )
+    transfer_id = _required_string(
+        unit.get("id"), f"machine-IR record {row_index} id"
+    )
+    if unit.get("status") != "qualified":
+        raise StageAInputError(f"{transfer_id} is not a qualified machine-IR unit")
+    source = unit.get("source")
+    semantics = unit.get("semantics")
+    if not isinstance(source, Mapping) or not isinstance(semantics, Mapping):
+        raise StageAInputError(f"{transfer_id} source or semantics is malformed")
+    original = source.get("original")
+    if not isinstance(original, Mapping):
+        raise StageAInputError(f"{transfer_id} has no machine-IR source span")
+    rva_start = _required_u32(
+        original.get("rva_start"), f"{transfer_id} original start RVA"
+    )
+    rva_end = _required_u32(
+        original.get("rva_end"), f"{transfer_id} original end RVA"
+    )
+    size = original.get("size")
+    if (
+        rva_end <= rva_start
+        or isinstance(size, bool)
+        or not isinstance(size, int)
+        or size != rva_end - rva_start
+    ):
+        raise StageAInputError(f"{transfer_id} machine-IR source span is inconsistent")
+    instructions = _machine_ir_instruction_inventory(
+        transfer_id=transfer_id,
+        raw_instructions=unit.get("instructions"),
+        rva_start=rva_start,
+        rva_end=rva_end,
+    )
+    ordered_events = semantics.get("ordered_events")
+    if not isinstance(ordered_events, list):
+        raise StageAInputError(f"{transfer_id} ordered_events must be a list")
+    semantic_export = source.get("semantic_export")
+    return {
+        "id": transfer_id,
+        "original": {"rva_start": rva_start, "rva_end": rva_end, "size": size},
+        "instructions": instructions,
+        "ordered_events": ordered_events,
+        "outcome": semantics.get("outcome"),
+        "fpu_state": semantics.get("fpu_state"),
+        "instruction_effect_schedule": semantics.get("instruction_effect_schedule"),
+        "contract_sha256": _required_sha256(
+            source.get("contract_sha256"), f"{transfer_id} contract SHA-256"
+        ),
+        "instruction_bytes_sha256": _required_sha256(
+            source.get("instruction_bytes_sha256"),
+            f"{transfer_id} source-span SHA-256",
+        ),
+        "stage_a_export": (
+            dict(semantic_export) if isinstance(semantic_export, Mapping) else None
+        ),
+        "_machine_ir": True,
+        "_machine_ir_x87_micro_ops": unit.get("x87_micro_ops"),
+        "_source_record_sha256": _canonical_sha256(unit),
+    }
+
+
+def _machine_ir_instruction_inventory(
+    *,
+    transfer_id: str,
+    raw_instructions: Any,
+    rva_start: int,
+    rva_end: int,
+) -> list[dict[str, Any]]:
+    if not isinstance(raw_instructions, list) or not raw_instructions:
+        raise StageAInputError(f"{transfer_id} machine-IR instructions must be nonempty")
+    result: list[dict[str, Any]] = []
+    cursor = rva_start
+    for index, raw in enumerate(raw_instructions):
+        if not isinstance(raw, Mapping):
+            raise StageAInputError(
+                f"{transfer_id} machine-IR instruction {index} must be an object"
+            )
+        start = _required_u32(
+            raw.get("rva_start"), f"{transfer_id} instruction {index} start RVA"
+        )
+        end = _required_u32(
+            raw.get("rva_end"), f"{transfer_id} instruction {index} end RVA"
+        )
+        size = raw.get("size")
+        mnemonic = _required_string(
+            raw.get("mnemonic"), f"{transfer_id} instruction {index} mnemonic"
+        ).lower()
+        operands = raw.get("operands")
+        registers_read = raw.get("registers_read")
+        registers_written = raw.get("registers_written")
+        groups = raw.get("groups")
+        if (
+            start != cursor
+            or end <= start
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size != end - start
+            or not isinstance(operands, list)
+            or not isinstance(registers_read, list)
+            or not isinstance(registers_written, list)
+            or not isinstance(groups, list)
+            or any(not isinstance(item, str) for item in registers_read)
+            or any(not isinstance(item, str) for item in registers_written)
+            or any(not isinstance(item, str) for item in groups)
+        ):
+            raise StageAInputError(
+                f"{transfer_id} machine-IR instruction {index} is malformed"
+            )
+        result.append({
+            "rva": start,
+            "rva_end": end,
+            "size": size,
+            "instruction_sha256": _required_sha256(
+                raw.get("instruction_sha256"),
+                f"{transfer_id} instruction {index} SHA-256",
+            ),
+            "mnemonic": mnemonic,
+            "operands": operands,
+            "registers_read": registers_read,
+            "registers_written": registers_written,
+            "groups": groups,
+        })
+        cursor = end
+    if cursor != rva_end:
+        raise StageAInputError(
+            f"{transfer_id} machine-IR instructions do not cover the unit span"
+        )
+    return result
+
+
+def _machine_ir_event_evidence(
+    event: Mapping[str, Any], *, transfer_id: str, event_index: int
+) -> tuple[str, str, Any]:
+    kind = event.get("kind")
+    registers = event.get("register_inputs")
+    flags = event.get("flag_inputs")
+    arguments = event.get("arguments", [])
+    stack_inputs = event.get("stack_inputs")
+    if (
+        not isinstance(registers, Mapping)
+        or set(registers) != set(_MACHINE_REGISTERS)
+        or not isinstance(flags, Mapping)
+        or set(flags) != set(_MACHINE_FLAGS)
+        or not isinstance(arguments, list)
+        or not isinstance(stack_inputs, list)
+    ):
+        raise StageAInputError(
+            f"{transfer_id} external event {event_index} lacks complete machine ABI metadata"
+        )
+    for field, values in (("register", registers), ("flag", flags)):
+        if any(not isinstance(value, Mapping) for value in values.values()):
+            raise StageAInputError(
+                f"{transfer_id} external event {event_index} has malformed {field} inputs"
+            )
+    if any(not isinstance(value, Mapping) for value in arguments):
+        raise StageAInputError(
+            f"{transfer_id} external event {event_index} has malformed arguments"
+        )
+    normalized_stack: list[dict[str, Any]] = []
+    for stack_index, value in enumerate(stack_inputs):
+        if not isinstance(value, Mapping):
+            raise StageAInputError(
+                f"{transfer_id} external event {event_index} stack input {stack_index} "
+                "is malformed"
+            )
+        offset = _required_u32(
+            value.get("offset"),
+            f"{transfer_id} external event {event_index} stack offset",
+        )
+        width = value.get("width")
+        if width not in {1, 2, 4} or not isinstance(value.get("value"), Mapping):
+            raise StageAInputError(
+                f"{transfer_id} external event {event_index} stack input {stack_index} "
+                "has an unsupported width or value"
+            )
+        normalized_stack.append({
+            "offset": offset, "width": width, "value": value.get("value")
+        })
+    target_expression = event.get("target") if kind == "indirect_call" else None
+    if kind == "indirect_call" and not isinstance(target_expression, Mapping):
+        raise StageAInputError(
+            f"{transfer_id} indirect event {event_index} has no target expression"
+        )
+    identity = {
+        "kind": kind,
+        "dll": str(event.get("dll") or "").lower() or None,
+        "symbol": event.get("symbol"),
+        "ordinal": event.get("ordinal"),
+    }
+    abi = {
+        "register_inputs": dict(registers),
+        "flag_inputs": dict(flags),
+        "arguments": arguments,
+        "stack_inputs": normalized_stack,
+        "abi_contract": (
+            dict(event["abi_contract"])
+            if isinstance(event.get("abi_contract"), Mapping)
+            else None
+        ),
+    }
+    return _canonical_sha256(identity), _canonical_sha256(abi), target_expression
+
+
+def _machine_ir_callback_registration(
+    event: Mapping[str, Any], *, transfer_id: str, event_index: int
+) -> tuple[int, int, str, int, bool] | None:
+    raw_contract = event.get("abi_contract")
+    if raw_contract is None:
+        return None
+    if not isinstance(raw_contract, Mapping):
+        raise StageAInputError(
+            f"{transfer_id} external event {event_index} has malformed ABI contract"
+        )
+    if raw_contract.get("world_effect") != "callbackRegistration":
+        return None
+    argument_words = _required_u32(
+        raw_contract.get("argument_words"),
+        f"{transfer_id} callback-registration argument count",
+    )
+    argument_index = _required_u32(
+        raw_contract.get("world_effect_argument"),
+        f"{transfer_id} callback-registration argument index",
+    )
+    argument_base_offset = _required_u32(
+        raw_contract.get("argument_base_offset"),
+        f"{transfer_id} callback-registration argument base offset",
+    )
+    if (
+        argument_words > 64
+        or argument_index >= argument_words
+        or argument_base_offset % 4 != 0
+        or argument_base_offset > 0x10000
+    ):
+        raise StageAInputError(
+            f"{transfer_id} callback-registration argument inventory is invalid"
+        )
+    raw_callback = raw_contract.get("callback_abi")
+    if not isinstance(raw_callback, Mapping) or set(raw_callback) != {
+        "kind", "argument_words", "stack_cleanup_bytes", "nullable",
+    }:
+        raise StageAInputError(
+            f"{transfer_id} callback registration has no exact callback ABI"
+        )
+    kind = _required_string(
+        raw_callback.get("kind"), f"{transfer_id} callback kind"
+    )
+    callback_argument_words = _required_u32(
+        raw_callback.get("argument_words"),
+        f"{transfer_id} callback argument count",
+    )
+    stack_cleanup = _required_u32(
+        raw_callback.get("stack_cleanup_bytes"),
+        f"{transfer_id} callback stack cleanup",
+    )
+    nullable = raw_callback.get("nullable")
+    if (
+        kind != "generic_callback"
+        or callback_argument_words > 64
+        or stack_cleanup > 0xFFFF
+        or not isinstance(nullable, bool)
+    ):
+        raise StageAInputError(
+            f"{transfer_id} callback registration has an unsupported callback ABI"
+        )
+    return (
+        argument_index,
+        argument_base_offset + argument_index * 4,
+        kind,
+        stack_cleanup,
+        nullable,
+    )
+
+
+def _exact_u32_expression(value: Any) -> int | None:
+    if not isinstance(value, Mapping) or value.get("op") != "const":
+        return None
+    width = value.get("width", 32)
+    raw = value.get("value")
+    if (
+        width != 32
+        or isinstance(raw, bool)
+        or not isinstance(raw, int)
+        or not 0 <= raw <= 0xFFFFFFFF
+    ):
+        return None
+    return raw
+
+
+def _static_iat_import_identity(
+    target: Any,
+    *,
+    import_iat_vas: Mapping[tuple[str, str | int], int],
+) -> tuple[str, str | None, int | None, int] | None:
+    """Resolve an indirect target that is exactly one checked IAT-cell load."""
+
+    if (
+        not isinstance(target, Mapping)
+        or target.get("op") != "load"
+        or target.get("width") != 4
+    ):
+        return None
+    iat_va = _exact_u32_expression(target.get("address"))
+    if iat_va is None:
+        return None
+    matches = [
+        (dll.lower(), identity)
+        for (dll, identity), value in import_iat_vas.items()
+        if _required_u32(value, "import IAT VA") == iat_va
+    ]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise StageAInputError(
+            f"indirect target IAT cell {iat_va:#x} has ambiguous import identities"
+        )
+    dll, identity = matches[0]
+    if isinstance(identity, str) and identity:
+        return dll, identity, None, iat_va
+    if isinstance(identity, int) and not isinstance(identity, bool) and identity >= 0:
+        return dll, None, identity, iat_va
+    raise StageAInputError("import IAT identity must be one symbol or ordinal")
+
+
+def _stack_expression_at_offset(event: Mapping[str, Any], offset: int) -> Any:
+    raw_inputs = event.get("stack_inputs")
+    if not isinstance(raw_inputs, list):
+        return None
+    matches = [
+        item.get("value")
+        for item in raw_inputs
+        if isinstance(item, Mapping)
+        and item.get("offset") == offset
+        and item.get("width") == 4
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _add_callable_external_sites(
+    *,
+    contract: CallableExternalRuntimeContract,
+    machine_ir_mode: bool,
+    transfer_rows: Mapping[int, tuple[str, str]],
+    transfer_details: Mapping[
+        int, tuple[Mapping[str, Any], Mapping[int, Mapping[str, Any]]]
+    ],
+    sites: list[NativeExternalSite],
+    seen_sites: dict[int, NativeExternalSite],
+    blockers: list[dict[str, Any]],
+) -> None:
+    """Add finite-origin external jumps from one checked runtime projection."""
+
+    routes_by_site: dict[tuple[int, int], list[CallableExternalRuntimeRoute]] = {}
+    for route in contract.routes:
+        routes_by_site.setdefault(
+            (route.source_rva, route.instruction_rva), []
+        ).append(route)
+    for (source_rva, instruction_rva), routes in sorted(routes_by_site.items()):
+        binding = transfer_rows.get(source_rva)
+        details = transfer_details.get(source_rva)
+        if binding is None or details is None:
+            blockers.append(_blocker(
+                "callable_external_transfer_missing",
+                source_rva=source_rva,
+                instruction_rva=instruction_rva,
+                next_action=(
+                    "export the finite-origin callable exit as a checked machine-IR unit"
+                ),
+            ))
+            continue
+        transfer_id, transfer_sha256 = binding
+        row, instruction_by_rva = details
+        outcome = row.get("outcome")
+        instruction = instruction_by_rva.get(instruction_rva)
+        if (
+            not isinstance(outcome, Mapping)
+            or outcome.get("kind") != "indirect_jump"
+            or instruction is None
+            or str(instruction.get("mnemonic") or "").lower() != "jmp"
+        ):
+            blockers.append(_blocker(
+                "callable_external_exit_mismatch",
+                transfer_id=transfer_id,
+                source_rva=source_rva,
+                instruction_rva=instruction_rva,
+                observed={
+                    "outcome": outcome,
+                    "mnemonic": (
+                        None if instruction is None else instruction.get("mnemonic")
+                    ),
+                },
+                next_action=(
+                    "bind the runtime route to one exact indirect JMP outcome"
+                ),
+            ))
+            continue
+        if instruction_rva in seen_sites:
+            blockers.append(_blocker(
+                "callable_external_bridge_ambiguous",
+                transfer_id=transfer_id,
+                instruction_rva=instruction_rva,
+                next_action=(
+                    "select exactly one external bridge class for the indirect exit"
+                ),
+            ))
+            continue
+        if machine_ir_mode:
+            source_instruction_sha256 = _required_sha256(
+                instruction.get("instruction_sha256"),
+                f"{transfer_id} callable JMP instruction SHA-256",
+            )
+            raw = None
+        else:
+            raw_hex = instruction.get("bytes")
+            if not isinstance(raw_hex, str) or not _HEX_BYTES.fullmatch(raw_hex):
+                blockers.append(_blocker(
+                    "callable_external_instruction_bytes_missing",
+                    transfer_id=transfer_id,
+                    instruction_rva=instruction_rva,
+                    next_action="retain exact bytes for strict state-machine bridges",
+                ))
+                continue
+            raw = bytes.fromhex(raw_hex)
+            source_instruction_sha256 = sha256_bytes(raw)
+        route_payloads = [route.payload() for route in routes]
+        site = NativeExternalSite(
+            id=len(sites),
+            transfer_id=transfer_id,
+            event_index=0,
+            instruction_rva=instruction_rva,
+            return_rva=0,
+            instruction_bytes=raw,
+            source_instruction_sha256=source_instruction_sha256,
+            site_kind="callable_external",
+            dll=None,
+            symbol=None,
+            ordinal=None,
+            disposition="tail_jump",
+            iat_va=None,
+            transfer_sha256=transfer_sha256,
+            event_identity_sha256=contract.identity,
+            abi_metadata_sha256=sha256_bytes(
+                json.dumps(
+                    route_payloads,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                ).encode("ascii")
+            ),
+            target_expression=outcome.get("target"),
+        )
+        seen_sites[instruction_rva] = site
+        sites.append(site)
+
+
 def plan_stage_b_native_engine(
     *,
-    state_machine: Path,
+    state_machine: Path | None = None,
+    machine_ir: Path | None = None,
     entry_rva: int,
     callback_targets: Iterable[int | Mapping[str, Any]] = (),
     import_iat_vas: Mapping[tuple[str, str | int], int] | None = None,
     termination_import: Mapping[str, Any] | None = None,
     base_relocation_evidence: Mapping[str, Any] | None = None,
+    callable_external_contract: Path | str | None = None,
 ) -> NativeEnginePlan:
-    """Plan exact machine-level external bridges from an opaque state machine."""
+    """Plan machine-level external bridges from one strict or byte-free input."""
 
-    rows = _read_jsonl_objects(Path(state_machine), "state machine")
+    if (state_machine is None) == (machine_ir is None):
+        raise StageAInputError("provide exactly one of state_machine or machine_ir")
+    input_path = Path(state_machine if state_machine is not None else machine_ir)
+    raw_rows = _read_jsonl_objects(
+        input_path, "state machine" if state_machine is not None else "machine IR"
+    )
+    callback_targets = tuple(callback_targets)
+    callable_contract = (
+        None
+        if callable_external_contract is None
+        else load_callable_external_runtime_contract(callable_external_contract)
+    )
+    machine_ir_mode = machine_ir is not None
+    rows = (
+        [_adapt_native_machine_ir_unit(row, index) for index, row in enumerate(raw_rows)]
+        if machine_ir_mode
+        else raw_rows
+    )
     sites: list[NativeExternalSite] = []
     import_iat_vas = import_iat_vas or {}
     blockers: list[dict[str, Any]] = []
@@ -419,7 +1022,12 @@ def plan_stage_b_native_engine(
     seen_returns: dict[int, NativeExternalSite] = {}
     transfer_rvas: set[int] = set()
     transfer_rows: dict[int, tuple[str, str]] = {}
-    x87_replays: list[NativeX87Replay] = []
+    transfer_details: dict[int, tuple[Mapping[str, Any], dict[int, Mapping[str, Any]]]] = {}
+    internal_call_inputs: dict[int, list[tuple[str, int, Mapping[str, Any]]]] = {}
+    callback_site_transfer_rvas: dict[int, int] = {}
+    callback_site_events: dict[int, Mapping[str, Any]] = {}
+    callback_site_abis: dict[int, tuple[int, int, str, int, bool]] = {}
+    x87_operations: list[NativeX87Operation] = []
     relocation_evidence = _parse_pe_base_relocation_evidence(
         base_relocation_evidence
     )
@@ -436,14 +1044,7 @@ def plan_stage_b_native_engine(
         transfer_rvas.add(transfer_rva)
         transfer_rows[transfer_rva] = (
             transfer_id,
-            sha256_bytes(
-                json.dumps(
-                    row,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=True,
-                ).encode("ascii")
-            ),
+            str(row.get("_source_record_sha256") or _canonical_sha256(row)),
         )
         ordered = row.get("ordered_events")
         if not isinstance(ordered, list):
@@ -452,9 +1053,11 @@ def plan_stage_b_native_engine(
         if not isinstance(instructions, list):
             raise StageAInputError(f"{transfer_id} instructions must be a list")
         instruction_by_rva = _instruction_inventory(transfer_id, instructions)
+        transfer_details[transfer_rva] = (row, instruction_by_rva)
 
         fpu_state = row.get("fpu_state")
-        if fpu_state is not None:
+        machine_ir_micro_ops = row.get("_machine_ir_x87_micro_ops")
+        if fpu_state is not None or machine_ir_micro_ops:
             if relocation_evidence is not None:
                 export = row.get("stage_a_export")
                 if not isinstance(export, Mapping):
@@ -474,11 +1077,20 @@ def plan_stage_b_native_engine(
                         "different reference contracts"
                     )
             try:
-                qualified = _qualified_x87_replays(
-                    row=row,
-                    transfer_id=transfer_id,
-                    first_id=len(x87_replays),
-                    relocation_evidence=relocation_evidence,
+                qualified = (
+                    _qualified_machine_ir_x87_operations(
+                        row=row,
+                        transfer_id=transfer_id,
+                        first_id=len(x87_operations),
+                        relocation_evidence=relocation_evidence,
+                    )
+                    if machine_ir_mode
+                    else _qualified_x87_operations(
+                        row=row,
+                        transfer_id=transfer_id,
+                        first_id=len(x87_operations),
+                        relocation_evidence=relocation_evidence,
+                    )
                 )
             except StageAInputError as exc:
                 aslr_unsafe = isinstance(exc, _X87ReplayASLRUnsafe)
@@ -499,7 +1111,7 @@ def plan_stage_b_native_engine(
                     ),
                 ))
             else:
-                x87_replays.extend(qualified)
+                x87_operations.extend(qualified)
 
         event_index = 0
         for event in ordered:
@@ -507,6 +1119,11 @@ def plan_stage_b_native_engine(
                 continue
             kind = str(event.get("kind") or "")
             if kind == "internal_call":
+                target_rva = event.get("target_rva")
+                if isinstance(target_rva, int) and not isinstance(target_rva, bool):
+                    internal_call_inputs.setdefault(target_rva, []).append(
+                        (transfer_id, event_index, event)
+                    )
                 event_index += 1
                 continue
             if kind in _SEMANTIC_RUNTIME_EVENT_KINDS:
@@ -541,56 +1158,101 @@ def plan_stage_b_native_engine(
                 event_index += 1
                 continue
             mnemonic = str(instruction.get("mnemonic") or "").lower()
-            raw_hex = instruction.get("bytes")
             outcome = row.get("outcome") if isinstance(row.get("outcome"), dict) else {}
             disposition = (
                 "tail_jump"
                 if mnemonic == "jmp" and outcome.get("kind") == "external_jump"
                 else "returns_here"
             )
+            raw: bytes | None = None
+            raw_hex = instruction.get("bytes")
+            if machine_ir_mode:
+                instruction_end = _required_u32(
+                    instruction.get("rva_end"),
+                    f"{transfer_id} external instruction end RVA",
+                )
+                source_instruction_sha256 = _required_sha256(
+                    instruction.get("instruction_sha256"),
+                    f"{transfer_id} external instruction SHA-256",
+                )
+            elif isinstance(raw_hex, str) and _HEX_BYTES.fullmatch(raw_hex):
+                raw = bytes.fromhex(raw_hex)
+                instruction_end = instruction_rva + len(raw)
+                source_instruction_sha256 = sha256_bytes(raw)
+            else:
+                instruction_end = instruction_rva
+                source_instruction_sha256 = ""
             if (
                 mnemonic not in {"call", "jmp"}
                 or (mnemonic == "jmp" and disposition != "tail_jump")
-                or not isinstance(raw_hex, str)
-                or not _HEX_BYTES.fullmatch(raw_hex)
+                or (not machine_ir_mode and raw is None)
             ):
                 blockers.append(_blocker(
                     "external_call_instruction_unsupported",
                     transfer_id=transfer_id,
                     event_index=event_index,
                     instruction_rva=instruction_rva,
-                    observed={"mnemonic": mnemonic, "bytes": raw_hex},
-                    next_action="supply a decoded direct or IAT call instruction with exact bytes",
+                    observed={
+                        "mnemonic": mnemonic,
+                        "source_instruction_sha256": (
+                            source_instruction_sha256 or None
+                        ),
+                    },
+                    next_action=(
+                        "supply a typed call/jump instruction bound to the machine-IR span"
+                        if machine_ir_mode
+                        else "supply a decoded direct or IAT call instruction with exact bytes"
+                    ),
                 ))
                 event_index += 1
                 continue
-            raw = bytes.fromhex(raw_hex)
-            if disposition == "returns_here" and instruction_rva + len(raw) != return_rva:
+            if disposition == "returns_here" and instruction_end != return_rva:
                 blockers.append(_blocker(
                     "external_return_rva_mismatch",
                     transfer_id=transfer_id,
                     event_index=event_index,
                     instruction_rva=instruction_rva,
-                    expected=instruction_rva + len(raw),
+                    expected=instruction_end,
                     observed=return_rva,
                     next_action="repair the call boundary before generating a physical bridge",
                 ))
                 event_index += 1
                 continue
             dynamic_target = kind == "indirect_call"
+            event_identity_sha256: str | None = None
+            abi_metadata_sha256: str | None = None
+            target_expression: Any = None
+            if machine_ir_mode:
+                (
+                    event_identity_sha256,
+                    abi_metadata_sha256,
+                    target_expression,
+                ) = _machine_ir_event_evidence(
+                    event, transfer_id=transfer_id, event_index=event_index
+                )
+                callback_registration = _machine_ir_callback_registration(
+                    event, transfer_id=transfer_id, event_index=event_index
+                )
+            else:
+                callback_registration = None
             iat_va: int | None = None
             if dynamic_target:
                 indirect_calls += 1
                 dll = None
                 symbol = None
                 ordinal = None
-                if not _indirect_call_encoding(raw):
+                resolved_import = _static_iat_import_identity(
+                    target_expression, import_iat_vas=import_iat_vas
+                )
+                if resolved_import is not None:
+                    dll, symbol, ordinal, iat_va = resolved_import
+                if not machine_ir_mode and (raw is None or not _indirect_call_encoding(raw)):
                     blockers.append(_blocker(
                         "indirect_call_encoding_unsupported",
                         transfer_id=transfer_id,
                         event_index=event_index,
                         instruction_rva=instruction_rva,
-                        observed=raw.hex(),
+                        observed=raw.hex() if raw is not None else None,
                         next_action=(
                             "supply an exact i686 FF /2 indirect CALL instruction "
                             "whose evaluated target is present in the semantic event"
@@ -612,7 +1274,11 @@ def plan_stage_b_native_engine(
                     )
                 identity: str | int = symbol if isinstance(symbol, str) else int(ordinal)
                 supplied_iat = import_iat_vas.get((dll.lower(), identity))
-                encoded_iat = _absolute_iat_va(raw, mnemonic)
+                encoded_iat = (
+                    None
+                    if machine_ir_mode or raw is None
+                    else _absolute_iat_va(raw, mnemonic)
+                )
                 if supplied_iat is not None:
                     supplied_iat = _required_u32(supplied_iat, "import IAT VA")
                 if encoded_iat is not None and supplied_iat not in {None, encoded_iat}:
@@ -634,7 +1300,11 @@ def plan_stage_b_native_engine(
                         transfer_id=transfer_id,
                         event_index=event_index,
                         instruction_rva=instruction_rva,
-                        observed=raw.hex(),
+                        observed=(
+                            source_instruction_sha256
+                            if machine_ir_mode
+                            else raw.hex() if raw is not None else None
+                        ),
                         next_action=(
                             "bind this import identity to one exact original IAT cell "
                             "from the load-image contract"
@@ -676,6 +1346,7 @@ def plan_stage_b_native_engine(
                 instruction_rva=instruction_rva,
                 return_rva=return_rva,
                 instruction_bytes=raw,
+                source_instruction_sha256=source_instruction_sha256,
                 site_kind="dynamic_target" if dynamic_target else "direct_import",
                 dll=dll.lower() if dll is not None else None,
                 symbol=symbol if isinstance(symbol, str) else None,
@@ -683,6 +1354,24 @@ def plan_stage_b_native_engine(
                 disposition=disposition,
                 iat_va=iat_va,
                 transfer_sha256=transfer_rows[transfer_rva][1],
+                event_identity_sha256=event_identity_sha256,
+                abi_metadata_sha256=abi_metadata_sha256,
+                target_expression=target_expression,
+                callback_argument_index=(
+                    callback_registration[0]
+                    if callback_registration is not None
+                    else None
+                ),
+                callback_argument_offset=(
+                    callback_registration[1]
+                    if callback_registration is not None
+                    else None
+                ),
+                callback_nullable=(
+                    callback_registration[4]
+                    if callback_registration is not None
+                    else False
+                ),
             )
             prior_site = seen_sites.get(instruction_rva)
             if prior_site is not None and prior_site != site:
@@ -709,9 +1398,31 @@ def plan_stage_b_native_engine(
             if disposition == "returns_here":
                 seen_returns[return_rva] = site
             sites.append(site)
+            if callback_registration is not None:
+                callback_site_transfer_rvas[instruction_rva] = transfer_rva
+                callback_site_events[instruction_rva] = event
+                callback_site_abis[instruction_rva] = callback_registration
             event_index += 1
 
+    if callable_contract is not None:
+        _add_callable_external_sites(
+            contract=callable_contract,
+            machine_ir_mode=machine_ir_mode,
+            transfer_rows=transfer_rows,
+            transfer_details=transfer_details,
+            sites=sites,
+            seen_sites=seen_sites,
+            blockers=blockers,
+        )
+
     callback_specs: dict[int, tuple[str, str, str, int]] = {}
+    declared_callback_root_rvas = {
+        value.get("rva")
+        for value in callback_targets
+        if isinstance(value, Mapping)
+        and isinstance(value.get("rva"), int)
+        and not isinstance(value.get("rva"), bool)
+    }
     for index, value in enumerate(callback_targets):
         try:
             callback_rva, callback_kind, stack_cleanup = _callback_spec(value, index)
@@ -741,6 +1452,171 @@ def plan_stage_b_native_engine(
         callback_specs[callback_rva] = (
             transfer_id, transfer_sha256, callback_kind, stack_cleanup
         )
+
+    callback_adapter_specs: set[tuple[int, int, int, int]] = set()
+    for site in sorted(sites, key=lambda item: item.instruction_rva):
+        registration = callback_site_abis.get(site.instruction_rva)
+        if registration is None:
+            continue
+        argument_index, argument_offset, callback_kind, stack_cleanup, nullable = (
+            registration
+        )
+        transfer_rva = callback_site_transfer_rvas[site.instruction_rva]
+        candidate_expressions: list[tuple[str, Any]] = []
+        if site.disposition == "tail_jump":
+            incoming = internal_call_inputs.get(transfer_rva, [])
+            if not incoming:
+                if (
+                    transfer_rva == entry_rva
+                    or transfer_rva in declared_callback_root_rvas
+                ):
+                    blockers.append(_blocker(
+                        "callback_target_provenance_incomplete",
+                        transfer_id=site.transfer_id,
+                        instruction_rva=site.instruction_rva,
+                        observed=(
+                            "callback registration root has no checked argument provenance"
+                        ),
+                        next_action=(
+                            "supply a finite checked callback target set for every "
+                            "reachable registration path"
+                        ),
+                    ))
+                continue
+            caller_offset = argument_index * 4
+            candidate_expressions.extend(
+                (
+                    f"{caller_id} external event {caller_event_index}",
+                    _stack_expression_at_offset(caller_event, caller_offset),
+                )
+                for caller_id, caller_event_index, caller_event in incoming
+            )
+        else:
+            event = callback_site_events[site.instruction_rva]
+            arguments = event.get("arguments")
+            argument_expression = (
+                arguments[argument_index]
+                if isinstance(arguments, list) and argument_index < len(arguments)
+                else None
+            )
+            stack_expression = _stack_expression_at_offset(event, argument_offset)
+            exact_argument = _exact_u32_expression(argument_expression)
+            exact_stack = _exact_u32_expression(stack_expression)
+            if (
+                exact_argument is not None
+                and exact_stack is not None
+                and exact_argument != exact_stack
+            ):
+                blockers.append(_blocker(
+                    "callback_target_provenance_ambiguous",
+                    transfer_id=site.transfer_id,
+                    instruction_rva=site.instruction_rva,
+                    observed=[exact_argument, exact_stack],
+                    next_action=(
+                        "make the machine argument and checked stack witness identify "
+                        "the same callback word"
+                    ),
+                ))
+                continue
+            candidate_expressions.append((
+                f"{site.transfer_id} external event {site.event_index}",
+                (
+                    argument_expression
+                    if exact_argument is not None
+                    else stack_expression
+                ),
+            ))
+
+        for source, expression in candidate_expressions:
+            preferred_value = _exact_u32_expression(expression)
+            if preferred_value is None:
+                blockers.append(_blocker(
+                    "callback_target_provenance_incomplete",
+                    transfer_id=site.transfer_id,
+                    instruction_rva=site.instruction_rva,
+                    observed={"source": source, "expression": expression},
+                    next_action=(
+                        "reduce the callback argument to a bounded finite set of static "
+                        "code targets before generating a native adapter"
+                    ),
+                ))
+                continue
+            if preferred_value == 0:
+                if nullable:
+                    continue
+                blockers.append(_blocker(
+                    "callback_target_null_forbidden",
+                    transfer_id=site.transfer_id,
+                    instruction_rva=site.instruction_rva,
+                    observed={"source": source, "value": 0},
+                    next_action="supply a non-null callback target required by the API contract",
+                ))
+                continue
+            if relocation_evidence is None:
+                blockers.append(_blocker(
+                    "callback_image_binding_missing",
+                    transfer_id=site.transfer_id,
+                    instruction_rva=site.instruction_rva,
+                    observed={"source": source, "preferred_value": preferred_value},
+                    next_action=(
+                        "bind callback constants to the exact preferred PE image base"
+                    ),
+                ))
+                continue
+            callback_rva = preferred_value - relocation_evidence.image_base
+            if not 0 <= callback_rva <= 0xFFFFFFFF:
+                blockers.append(_blocker(
+                    "callback_target_outside_static_image",
+                    transfer_id=site.transfer_id,
+                    instruction_rva=site.instruction_rva,
+                    observed={"source": source, "preferred_value": preferred_value},
+                    next_action=(
+                        "model dynamic or imported callback provenance explicitly; static "
+                        "registration accepts only image-relative targets"
+                    ),
+                ))
+                continue
+            binding = transfer_rows.get(callback_rva)
+            if binding is None:
+                blockers.append(_blocker(
+                    "callback_transfer_missing",
+                    transfer_id=site.transfer_id,
+                    instruction_rva=site.instruction_rva,
+                    callback_rva=callback_rva,
+                    observed={"source": source, "preferred_value": preferred_value},
+                    next_action=(
+                        "export a checked semantic transfer for every registered callback"
+                    ),
+                ))
+                continue
+            callback_transfer_id, callback_transfer_sha256 = binding
+            existing = callback_specs.get(callback_rva)
+            callback_spec = (
+                callback_transfer_id,
+                callback_transfer_sha256,
+                callback_kind,
+                stack_cleanup,
+            )
+            if existing is not None and existing != callback_spec:
+                blockers.append(_blocker(
+                    "callback_abi_ambiguous",
+                    transfer_id=site.transfer_id,
+                    instruction_rva=site.instruction_rva,
+                    callback_rva=callback_rva,
+                    expected=existing[2:],
+                    observed=callback_spec[2:],
+                    next_action=(
+                        "use one exact callback ABI for each static callback target"
+                    ),
+                ))
+                continue
+            callback_specs[callback_rva] = callback_spec
+            callback_adapter_specs.add((
+                site.instruction_rva,
+                argument_index,
+                callback_rva,
+                callback_rva,
+            ))
     callbacks = tuple(
         NativeCallbackTarget(
             id=index,
@@ -752,6 +1628,18 @@ def plan_stage_b_native_engine(
         )
         for index, rva in enumerate(sorted(callback_specs))
     )
+    callback_adapters = tuple(
+        NativeCallbackAdapter(
+            id=index,
+            instruction_rva=instruction_rva,
+            argument_index=argument_index,
+            original_rva=original_rva,
+            callback_rva=callback_rva,
+        )
+        for index, (
+            instruction_rva, argument_index, original_rva, callback_rva
+        ) in enumerate(sorted(callback_adapter_specs))
+    )
     if entry_rva not in transfer_rvas:
         blockers.append(_blocker(
             "entry_transfer_missing",
@@ -759,12 +1647,17 @@ def plan_stage_b_native_engine(
             next_action="export the semantic transfer beginning at the PE entrypoint",
         ))
     return NativeEnginePlan(
+        input_mode=(
+            _MACHINE_IR_INPUT_MODE if machine_ir_mode else _STRICT_INPUT_MODE
+        ),
         entry_rva=_required_u32(entry_rva, "entry RVA"),
         transfer_count=len(rows),
         external_sites=tuple(sorted(sites, key=lambda item: item.instruction_rva)),
         indirect_call_count=indirect_calls,
         callback_targets=callbacks,
-        x87_replays=tuple(x87_replays),
+        callback_adapters=callback_adapters,
+        callable_external_contract=callable_contract,
+        x87_operations=tuple(x87_operations),
         termination_import=checked_termination_import,
         blockers=tuple(blockers),
     )
@@ -772,29 +1665,36 @@ def plan_stage_b_native_engine(
 
 def write_stage_b_native_engine_package(
     *,
-    state_machine: Path,
+    state_machine: Path | None = None,
+    machine_ir: Path | None = None,
     entry_rva: int,
     out: Path,
     callback_targets: Iterable[int | Mapping[str, Any]] = (),
     import_iat_vas: Mapping[tuple[str, str | int], int] | None = None,
     termination_import: Mapping[str, Any] | None = None,
     base_relocation_evidence: Mapping[str, Any] | None = None,
+    callable_external_contract: Path | str | None = None,
 ) -> dict[str, Any]:
     """Write deterministic wrapper sources and a fail-closed build plan."""
 
-    state_machine = Path(state_machine)
+    if (state_machine is None) == (machine_ir is None):
+        raise StageAInputError("provide exactly one of state_machine or machine_ir")
+    input_path = Path(state_machine if state_machine is not None else machine_ir)
+    input_kind = "state_machine" if state_machine is not None else "machine_ir"
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     plan = plan_stage_b_native_engine(
         state_machine=state_machine,
+        machine_ir=machine_ir,
         entry_rva=entry_rva,
         callback_targets=callback_targets,
         import_iat_vas=import_iat_vas,
         termination_import=termination_import,
         base_relocation_evidence=base_relocation_evidence,
+        callable_external_contract=callable_external_contract,
     )
     plan_path = out / "native-engine-plan.json"
-    write_json(plan_path, plan.payload(state_machine_sha256=sha256_file(state_machine)))
+    write_json(plan_path, plan.payload(state_machine_sha256=sha256_file(input_path)))
     header = out / "native-engine-wrapper.h"
     source = out / "native-engine-wrapper.c"
     assembly = out / "native-engine-bridges.S"
@@ -813,7 +1713,18 @@ def write_stage_b_native_engine_package(
     result = {
         "format": NATIVE_ENGINE_PACKAGE_FORMAT,
         "status": plan.status,
+        input_kind: {"path": input_path.name, "sha256": sha256_file(input_path)},
+        "input_mode": plan.input_mode,
         "plan": {"path": plan_path.name, "sha256": sha256_file(plan_path)},
+        "callable_external_contract": (
+            None
+            if callable_external_contract is None
+            else {
+                "path": Path(callable_external_contract).name,
+                "sha256": sha256_file(callable_external_contract),
+                "identity": plan.callable_external_contract.identity,
+            }
+        ),
         "sources": [
             {"path": path.name, "sha256": sha256_file(path)}
             for path in (header, source, assembly, layout_source)
@@ -824,7 +1735,8 @@ def write_stage_b_native_engine_package(
         "policy": {
             "dynamic_base": True,
             "base_relocations": "complete-pe32-highlow-inventory-required",
-            "raw_absolute_x87_replay_operands": "forbidden",
+            "raw_x87_instruction_payloads": "forbidden",
+            "typed_x87_operations": TYPED_NATIVE_X87_OPERATION_FORMAT,
             "root_callback_engine_buffers": "fixed-launch-buffers",
             "nested_callback_engine_buffers": "stack-local-requires-checked-runtime-frame",
             "terminal_control": (
@@ -904,6 +1816,8 @@ extern stage_b_x87_fnsave_image stage_b_native_launch_x87;
 extern stage_b_x87_fnsave_image stage_b_native_launch_output_x87;
 extern uint8_t stage_b_native_callback_stack[65536];
 extern volatile stage_b_call_status stage_b_native_root_callback_fault;
+extern volatile uint32_t stage_b_native_root_callback_fault_rva;
+extern stage_b_machine_state stage_b_native_root_callback_fault_state;
 extern stage_b_runtime stage_b_native_runtime_instance;
 
 stage_b_call_status stage_b_native_runtime_run_at_rva(
@@ -912,6 +1826,8 @@ stage_b_call_status stage_b_native_runtime_run_at_rva(
 stage_b_call_status stage_b_native_runtime_run_nested_callback(
     uint32_t callback_rva, uint32_t stack_cleanup_bytes,
     const stage_b_machine_state *input, stage_b_machine_state *output);
+stage_b_call_status stage_b_native_runtime_record_external_result(
+    const stage_b_call_event *event, const stage_b_machine_state *output);
 stage_b_call_status stage_b_native_run_entry(
     stage_b_machine_state *input, stage_b_machine_state *output);
 stage_b_call_status stage_b_native_run_callback(
@@ -931,15 +1847,19 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         for target in plan.callback_targets
     ]
     x87_declarations = [
-        f"extern void stage_b_native_x87_bridge_{replay.id:04d}(void);"
-        for replay in plan.x87_replays
+        f"extern void stage_b_native_x87_bridge_{operation.id:04d}(void);"
+        for operation in plan.x87_operations
     ]
     table = [
         (
             f"  {{ 0x{site.instruction_rva:08x}U, "
             f"0x{(site.iat_va or 0):08x}U, "
-            f"{1 if site.site_kind == 'dynamic_target' else 0}U, "
-            f"{1 if site.disposition == 'tail_jump' else 0}U }},"
+            f"{1 if site.site_kind != 'direct_import' else 0}U, "
+            f"{1 if site.disposition == 'tail_jump' else 0}U, "
+            f"{1 if site.callback_argument_offset is not None else 0}U, "
+            f"{site.callback_argument_index or 0}U, "
+            f"{site.callback_argument_offset or 0}U, "
+            f"{1 if site.callback_nullable else 0}U }},"
         )
         for site in plan.external_sites
     ]
@@ -986,25 +1906,23 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         )
         for target in plan.callback_targets
     ]
+    callback_adapter_table = [
+        (
+            f"  {{ 0x{adapter.instruction_rva:08x}U, "
+            f"{adapter.argument_index}U, 0x{adapter.original_rva:08x}U, "
+            f"{adapter.symbol} }},"
+        )
+        for adapter in plan.callback_adapters
+    ]
     x87_table = [
         (
-            f"  {{ 0x{replay.image_base:08x}U, 0x{replay.rva_start:08x}U, "
-            f"0x{replay.rva_end:08x}U, {len(replay.instruction_bytes)}U, "
-            f"stage_b_native_x87_bytes_{replay.id:04d}, "
-            f"{json.dumps(replay.instruction_bytes_sha256)}, "
-            f"{json.dumps(replay.transfer_instruction_bytes_sha256)}, "
-            f"{json.dumps(replay.contract_sha256)}, "
-            f"stage_b_native_x87_bridge_{replay.id:04d} }},"
+            f"  {{ 0x{operation.image_base:08x}U, 0x{operation.rva_start:08x}U, "
+            f"0x{operation.rva_end:08x}U, {operation.operation.source_size}U, "
+            f"{json.dumps(operation.operation.identity)}, "
+            f"{json.dumps(operation.contract_sha256)}, "
+            f"stage_b_native_x87_bridge_{operation.id:04d} }},"
         )
-        for replay in plan.x87_replays
-    ]
-    x87_bytes = [
-        (
-            f"static const uint8_t stage_b_native_x87_bytes_{replay.id:04d}[] = {{ "
-            + ", ".join(f"0x{byte:02x}U" for byte in replay.instruction_bytes)
-            + " };"
-        )
-        for replay in plan.x87_replays
+        for operation in plan.x87_operations
     ]
     bridge_dispatch = [
         "static void stage_b_native_dispatch_bridge(void) {",
@@ -1030,6 +1948,8 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "stage_b_x87_fnsave_image stage_b_native_launch_output_x87;",
         "uint8_t stage_b_native_callback_stack[65536] __attribute__((aligned(16)));",
         "volatile stage_b_call_status stage_b_native_root_callback_fault = STAGE_B_CALL_OK;",
+        "volatile uint32_t stage_b_native_root_callback_fault_rva;",
+        "stage_b_machine_state stage_b_native_root_callback_fault_state;",
         "",
         *state_assertions,
         *frame_assertions,
@@ -1056,18 +1976,21 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "  uint32_t instruction_rva;",
         "  uint32_t iat_va;",
         "  uint32_t dynamic_target, tail_jump;",
+        "  uint32_t callback_registration, callback_argument_index;",
+        "  uint32_t callback_argument_offset, callback_nullable;",
         "} stage_b_native_bridge_entry;",
         "typedef struct stage_b_native_callback_entry {",
         "  uint32_t rva, stack_cleanup_bytes;",
         "  const char *kind, *transfer_id, *transfer_sha256;",
         "  stage_b_native_assembly_fn bridge;",
         "} stage_b_native_callback_entry;",
+        "typedef struct stage_b_native_callback_adapter {",
+        "  uint32_t instruction_rva, argument_index, original_rva;",
+        "  stage_b_native_assembly_fn bridge;",
+        "} stage_b_native_callback_adapter;",
         "typedef struct stage_b_native_x87_entry {",
-        "  uint32_t image_base, rva_start, rva_end, byte_count;",
-        "  const uint8_t *instruction_bytes;",
-        "  const char *instruction_bytes_sha256;",
-        "  const char *transfer_instruction_bytes_sha256;",
-        "  const char *contract_sha256;",
+        "  uint32_t image_base, rva_start, rva_end, source_size;",
+        "  const char *operation_identity, *contract_sha256;",
         "  stage_b_native_assembly_fn bridge;",
         "} stage_b_native_x87_entry;",
         "",
@@ -1081,7 +2004,11 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "};",
         f"static const uint32_t stage_b_native_callback_count = {len(callback_table)}U;",
         "",
-        *x87_bytes,
+        "static const stage_b_native_callback_adapter stage_b_native_callback_adapters[] = {",
+        *callback_adapter_table,
+        "};",
+        f"static const uint32_t stage_b_native_callback_adapter_count = {len(callback_adapter_table)}U;",
+        "",
         "static const stage_b_native_x87_entry stage_b_native_x87_entries[] = {",
         *x87_table,
         "};",
@@ -1103,6 +2030,23 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "    if (stage_b_native_callbacks[i].rva == rva)",
         "      return &stage_b_native_callbacks[i];",
         "  return (const stage_b_native_callback_entry *)0;",
+        "}",
+        "",
+        "static const stage_b_native_callback_adapter *",
+        "stage_b_native_callback_adapter_for(",
+        "    uint32_t instruction_rva, uint32_t argument_index,",
+        "    uint32_t observed_target) {",
+        "  const uint32_t image_base = (uint32_t)(uintptr_t)&__ImageBase;",
+        "  uint32_t i;",
+        "  for (i = 0; i < stage_b_native_callback_adapter_count; ++i) {",
+        "    const stage_b_native_callback_adapter *adapter =",
+        "        &stage_b_native_callback_adapters[i];",
+        "    if (adapter->instruction_rva == instruction_rva &&",
+        "        adapter->argument_index == argument_index &&",
+        "        image_base + adapter->original_rva == observed_target)",
+        "      return adapter;",
+        "  }",
+        "  return (const stage_b_native_callback_adapter *)0;",
         "}",
         "",
         "static __attribute__((unused)) const stage_b_native_x87_entry *",
@@ -1140,6 +2084,18 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "  bytes = (const volatile uint8_t *)(uintptr_t)address;",
         "  *value = (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8U) |",
         "      ((uint32_t)bytes[2] << 16U) | ((uint32_t)bytes[3] << 24U);",
+        "  return 1U;",
+        "}",
+        "",
+        "static uint32_t stage_b_native_fixed_flat_write_u32(",
+        "    uint32_t address, uint32_t value) {",
+        "  volatile uint8_t *bytes;",
+        "  if (address > 0xffffffffU - 3U) return 0U;",
+        "  bytes = (volatile uint8_t *)(uintptr_t)address;",
+        "  bytes[0] = (uint8_t)value;",
+        "  bytes[1] = (uint8_t)(value >> 8U);",
+        "  bytes[2] = (uint8_t)(value >> 16U);",
+        "  bytes[3] = (uint8_t)(value >> 24U);",
         "  return 1U;",
         "}",
         "",
@@ -1211,14 +2167,28 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "}",
         "",
         "static void stage_b_native_pack_flags(stage_b_machine_state *state) {",
-        "  const uint32_t represented =",
-        "      (1U << 0) | (1U << 2) | (1U << 6) | (1U << 7) |",
-        "      (1U << 10) | (1U << 11);",
-        "  state->eflags = (state->eflags & ~represented) |",
+        "  /* The supported machine model carries exactly these six flags.",
+        "   * Do not replay unmodeled control bits such as TF, NT, RF, or VM. */",
+        "  state->eflags = 2U |",
         "      ((state->cf & 1U) << 0) | ((state->pf & 1U) << 2) |",
         "      ((state->zf & 1U) << 6) | ((state->sf & 1U) << 7) |",
         "      ((state->df & 1U) << 10) | ((state->of & 1U) << 11);",
         "}",
+        "",
+        "#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP",
+        "static __attribute__((noinline)) void stage_b_native_diagnostic_trap(",
+        "    stage_b_call_status status, const stage_b_machine_state *state) {",
+        "  const uint32_t rva = state != 0 ? state->original_rva : 0U;",
+        "  const uint32_t modeled_eax = state != 0 ? state->eax : 0U;",
+        "  const uint32_t modeled_esp = state != 0 ? state->esp : 0U;",
+        "  const uint32_t expected_return = state != 0 ? state->esi : 0U;",
+        "  const uint32_t observed_return = state != 0 ? state->edi : 0U;",
+        "  __asm__ volatile (\"int3\" : : \"a\" (rva),",
+        "      \"d\" ((uint32_t)status), \"c\" (modeled_eax),",
+        "      \"b\" (modeled_esp), \"S\" (expected_return),",
+        "      \"D\" (observed_return) : \"memory\");",
+        "}",
+        "#endif",
         "",
         "static uint32_t stage_b_native_original_iat_target(uint32_t iat_va) {",
         "  const uint32_t image_base = (uint32_t)(uintptr_t)&__ImageBase;",
@@ -1251,7 +2221,7 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
                 "          &stage_b_native_launch_x87, input) != 0U)",
                 "    return STAGE_B_CALL_UNIMPLEMENTED;",
             ]
-            if plan.x87_replays
+            if plan.x87_operations
             else []
         ),
         "  stage_b_native_unpack_flags(input);",
@@ -1259,6 +2229,10 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "  *output = *input;",
         "  status = stage_b_native_runtime_run_at_rva(",
         f"      0x{plan.entry_rva:08x}U, input, output);",
+        "#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP",
+        "  if (status != STAGE_B_CALL_OK)",
+        "    stage_b_native_diagnostic_trap(status, output);",
+        "#endif",
         "  if (status != STAGE_B_CALL_OK) return status;",
         "  stage_b_native_pack_flags(output);",
         *(
@@ -1267,7 +2241,7 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
                 "          output, &stage_b_native_launch_output_x87) != 0U)",
                 "    return STAGE_B_CALL_UNIMPLEMENTED;",
             ]
-            if plan.x87_replays
+            if plan.x87_operations
             else []
         ),
         "  return STAGE_B_CALL_OK;",
@@ -1280,16 +2254,17 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "    stage_b_x87_fnsave_image *output_x87) {",
         "  const stage_b_native_callback_entry *entry =",
         "      stage_b_native_callback_entry_for(callback_rva);",
-        "  stage_b_call_status status;",
+        "  stage_b_call_status status = STAGE_B_CALL_UNIMPLEMENTED;",
         "  if (entry == 0 || input == 0 || output == 0 ||",
         "      entry->stack_cleanup_bytes != stack_cleanup_bytes)",
         "    return STAGE_B_CALL_UNIMPLEMENTED;",
+        "  *output = *input;",
         *(
             [
                 "  if (stage_b_native_fnsave_to_state(input_x87, input) != 0U)",
-                "    return STAGE_B_CALL_UNIMPLEMENTED;",
+                "    goto record_result;",
             ]
-            if plan.x87_replays
+            if plan.x87_operations
             else ["  (void)input_x87;", "  (void)output_x87;"]
         ),
         "  stage_b_native_unpack_flags(input);",
@@ -1299,24 +2274,34 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "      ? stage_b_native_runtime_run_nested_callback(",
         "          callback_rva, stack_cleanup_bytes, input, output)",
         "      : stage_b_native_runtime_run_at_rva(callback_rva, input, output);",
-        "  if (status != STAGE_B_CALL_OK) return status;",
-        "  if (output->esp != input->esp + 4U + stack_cleanup_bytes)",
-        "    return STAGE_B_CALL_UNIMPLEMENTED;",
+        "  if (status != STAGE_B_CALL_OK) goto record_result;",
+        "  if (output->esp != input->esp + 4U + stack_cleanup_bytes) {",
+        "    status = STAGE_B_CALL_UNIMPLEMENTED;",
+        "    goto record_result;",
+        "  }",
         "  stage_b_native_pack_flags(output);",
         *(
             [
-                "  if (stage_b_native_state_to_fnsave(output, output_x87) != 0U)",
-                "    return STAGE_B_CALL_UNIMPLEMENTED;",
+                "  if (stage_b_native_state_to_fnsave(output, output_x87) != 0U) {",
+                "    status = STAGE_B_CALL_UNIMPLEMENTED;",
+                "    goto record_result;",
+                "  }",
             ]
-            if plan.x87_replays
+            if plan.x87_operations
             else []
         ),
-        "  return STAGE_B_CALL_OK;",
+        "record_result:",
+        "  if (status != STAGE_B_CALL_OK && stage_b_native_active_bridge == 0 &&",
+        "      stage_b_native_root_callback_fault_rva == 0U) {",
+        "    stage_b_native_root_callback_fault_rva = callback_rva;",
+        "    stage_b_native_root_callback_fault_state = *output;",
+        "  }",
+        "  return status;",
         "}",
         "",
         *(
             _x87_handler_source_lines()
-            if plan.x87_replays
+            if plan.x87_operations
             else []
         ),
         "stage_b_call_status stage_b_dispatch_external_call(",
@@ -1326,6 +2311,10 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "    stage_b_machine_state *output) {",
         "  stage_b_native_bridge_frame frame;",
         "  const stage_b_native_bridge_entry *entry;",
+        "  const stage_b_native_callback_adapter *callback_adapter = 0;",
+        "  uint32_t callback_argument_address = 0U;",
+        "  uint32_t callback_argument_original = 0U;",
+        "  uint32_t callback_argument_patched = 0U;",
         "  if (runtime != &stage_b_native_runtime_instance ||",
         "      event == 0 || input == 0 || output == 0)",
         "    return STAGE_B_CALL_UNIMPLEMENTED;",
@@ -1351,6 +2340,30 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "        frame.saved_continuation == 0U)",
         "      return STAGE_B_CALL_MEMORY_FAULT;",
         "  }",
+        "  if (entry->callback_registration != 0U) {",
+        "    if (input->esp > 0xffffffffU - entry->callback_argument_offset)",
+        "      return STAGE_B_CALL_MEMORY_FAULT;",
+        "    callback_argument_address =",
+        "        input->esp + entry->callback_argument_offset;",
+        "    if (stage_b_native_fixed_flat_read_u32(",
+        "            callback_argument_address, &callback_argument_original) == 0U)",
+        "      return STAGE_B_CALL_MEMORY_FAULT;",
+        "    if (callback_argument_original == 0U) {",
+        "      if (entry->callback_nullable == 0U)",
+        "        return STAGE_B_CALL_UNIMPLEMENTED;",
+        "    } else {",
+        "      callback_adapter = stage_b_native_callback_adapter_for(",
+        "          entry->instruction_rva, entry->callback_argument_index,",
+        "          callback_argument_original);",
+        "      if (callback_adapter == 0)",
+        "        return STAGE_B_CALL_UNIMPLEMENTED;",
+        "      if (stage_b_native_fixed_flat_write_u32(",
+        "              callback_argument_address,",
+        "              (uint32_t)(uintptr_t)callback_adapter->bridge) == 0U)",
+        "        return STAGE_B_CALL_MEMORY_FAULT;",
+        "      callback_argument_patched = 1U;",
+        "    }",
+        "  }",
         "  *output = *input;",
         "  stage_b_native_pack_flags(output);",
         *(
@@ -1358,12 +2371,16 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
                 "  if (stage_b_native_state_to_fnsave(input, &frame.input_x87) != 0U)",
                 "    return STAGE_B_CALL_UNIMPLEMENTED;",
             ]
-            if plan.x87_replays
+            if plan.x87_operations
             else []
         ),
         "  frame.input = output;",
         "  stage_b_native_active_bridge = &frame;",
         "  stage_b_native_dispatch_bridge();",
+        "  if (callback_argument_patched != 0U &&",
+        "      stage_b_native_fixed_flat_write_u32(",
+        "          callback_argument_address, callback_argument_original) == 0U)",
+        "    frame.status = STAGE_B_CALL_MEMORY_FAULT;",
         "  if (stage_b_native_active_bridge != &frame)",
         "    frame.status = STAGE_B_CALL_UNIMPLEMENTED;",
         "  stage_b_native_active_bridge = frame.parent;",
@@ -1375,9 +2392,11 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
                 "      stage_b_native_fnsave_to_state(&frame.output_x87, output) != 0U)",
                 "    frame.status = STAGE_B_CALL_UNIMPLEMENTED;",
             ]
-            if plan.x87_replays
+            if plan.x87_operations
             else []
         ),
+        "  if (frame.status == STAGE_B_CALL_OK)",
+        "    frame.status = stage_b_native_runtime_record_external_result(event, output);",
         "  return frame.status;",
         "}",
         "",
@@ -1386,24 +2405,20 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
 
 def _x87_handler_source_lines() -> list[str]:
     return [
-        "stage_b_call_status stage_b_native_replay_checked_x87_command(",
-        "    stage_b_runtime *runtime, const stage_b_x87_replay_program *program,",
+        "stage_b_call_status stage_b_native_execute_typed_x87_operation(",
+        "    stage_b_runtime *runtime, const stage_b_typed_x87_operation *program,",
         "    const stage_b_machine_state *input, stage_b_machine_state *output) {",
         "  const stage_b_native_x87_entry *entry;",
         "  stage_b_native_x87_frame frame;",
         "  if (runtime != &stage_b_native_runtime_instance || program == 0 ||",
-        "      input == 0 || output == 0 || program->instruction_count != 1U)",
+        "      input == 0 || output == 0)",
         "    return STAGE_B_CALL_UNIMPLEMENTED;",
         "  entry = stage_b_native_x87_entry_for(program->rva_start);",
         "  if (entry == 0 || entry->image_base != program->image_base ||",
         "      entry->rva_end != program->rva_end ||",
-        "      entry->byte_count != program->byte_count ||",
-        "      !stage_b_native_bytes_equal(entry->instruction_bytes,",
-        "          program->instruction_bytes, entry->byte_count) ||",
-        "      !stage_b_native_string_equal(entry->instruction_bytes_sha256,",
-        "          program->instruction_bytes_sha256) ||",
-        "      !stage_b_native_string_equal(entry->transfer_instruction_bytes_sha256,",
-        "          program->transfer_instruction_bytes_sha256) ||",
+        "      entry->source_size != program->source_size ||",
+        "      !stage_b_native_string_equal(entry->operation_identity,",
+        "          program->operation_identity) ||",
         "      !stage_b_native_string_equal(entry->contract_sha256,",
         "          program->contract_sha256) ||",
         f"      !stage_b_native_string_equal(program->checked_decoder, {json.dumps(_X87_CHECKED_DECODER)}) ||",
@@ -1469,10 +2484,12 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
                 "    mov esi, OFFSET FLAT:_stage_b_native_launch_x87",
                 *_capture_fnsave_state("esi", "edx", "eax", "ecx"),
             ]
-            if plan.x87_replays
+            if plan.x87_operations
             else []
         ),
         "    cld",
+        "    mov esp, OFFSET FLAT:_stage_b_native_callback_stack + 65536",
+        "    and esp, -16",
         "    mov eax, OFFSET FLAT:_stage_b_native_launch_output",
         "    push eax",
         "    push edx",
@@ -1486,7 +2503,7 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
         "_stage_b_native_entry_return:",
         *(
             ["    frstor [_stage_b_native_launch_output_x87]"]
-            if plan.x87_replays
+            if plan.x87_operations
             else []
         ),
         "    mov ecx, OFFSET FLAT:_stage_b_native_launch_output",
@@ -1541,7 +2558,7 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
         f"    mov edx, DWORD PTR [eax + {_FRAME_OFFSETS['call_target']}]",
         *(
             [f"    frstor [eax + {_FRAME_OFFSETS['input_x87']}]" ]
-            if plan.x87_replays
+            if plan.x87_operations
             else []
         ),
         f"    mov esp, DWORD PTR [ecx + {_STATE_OFFSETS['esp']}]",
@@ -1581,7 +2598,7 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
         "    je _stage_b_native_halt",
         *(
             [f"    fnsave [eax + {_FRAME_OFFSETS['output_x87']}]" ]
-            if plan.x87_replays
+            if plan.x87_operations
             else []
         ),
         f"    mov edx, DWORD PTR [eax + {_FRAME_OFFSETS['output']}]",
@@ -1698,12 +2715,12 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
                     "    mov eax, OFFSET FLAT:_stage_b_native_launch_output_x87",
                     f"_stage_b_native_callback_output_x87_ready_{target.id:04d}:",
                 ]
-                if plan.x87_replays
+                if plan.x87_operations
                 else []
             ),
             *(
                 ["    push eax", "    push esi"]
-                if plan.x87_replays
+                if plan.x87_operations
                 else ["    push 0", "    push 0"]
             ),
             "    push ebx",
@@ -1743,7 +2760,7 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             f"    lea ecx, [ebp + {_CALLBACK_FRAME_OFFSETS['input']}]",
             *(
                 [f"    lea ebx, [ebp + {_CALLBACK_FRAME_OFFSETS['input_x87']}]"]
-                if plan.x87_replays
+                if plan.x87_operations
                 else []
             ),
             f"    jmp _stage_b_native_callback_failure_buffers_ready_{target.id:04d}",
@@ -1751,13 +2768,13 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             "    mov ecx, OFFSET FLAT:_stage_b_native_launch_state",
             *(
                 ["    mov ebx, OFFSET FLAT:_stage_b_native_launch_x87"]
-                if plan.x87_replays
+                if plan.x87_operations
                 else []
             ),
             f"_stage_b_native_callback_failure_buffers_ready_{target.id:04d}:",
             *(
                 ["    frstor [ebx]"]
-                if plan.x87_replays
+                if plan.x87_operations
                 else []
             ),
             f"    mov edx, DWORD PTR [ebp + {_CALLBACK_FRAME_OFFSETS['return_target']}]",
@@ -1777,7 +2794,7 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             f"    lea ecx, [ebp + {_CALLBACK_FRAME_OFFSETS['output']}]",
             *(
                 [f"    lea ebx, [ebp + {_CALLBACK_FRAME_OFFSETS['output_x87']}]"]
-                if plan.x87_replays
+                if plan.x87_operations
                 else []
             ),
             f"    jmp _stage_b_native_callback_success_buffers_ready_{target.id:04d}",
@@ -1785,13 +2802,13 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             "    mov ecx, OFFSET FLAT:_stage_b_native_launch_output",
             *(
                 ["    mov ebx, OFFSET FLAT:_stage_b_native_launch_output_x87"]
-                if plan.x87_replays
+                if plan.x87_operations
                 else []
             ),
             f"_stage_b_native_callback_success_buffers_ready_{target.id:04d}:",
             *(
                 ["    frstor [ebx]"]
-                if plan.x87_replays
+                if plan.x87_operations
                 else []
             ),
             f"    mov edx, DWORD PTR [ebp + {_CALLBACK_FRAME_OFFSETS['return_target']}]",
@@ -1802,16 +2819,16 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             "    popfd",
             "    ret",
         ])
-    if plan.x87_replays:
+    if plan.x87_operations:
         lines.extend([
             "",
-            "/* Qualified singleton x87 commands run from exact bound bytes. */",
+            "/* Typed x87 operations use reviewed mnemonic and operand rendering. */",
         ])
-    for replay in plan.x87_replays:
+    for replay in plan.x87_operations:
         replay_padding = (
             _X87_REPLAY_INLINE_CAPTURE_OFFSET
             - _X87_REPLAY_INLINE_INSTRUCTION_OFFSET
-            - len(replay.instruction_bytes)
+            - replay.operation.source_size
         )
         if replay_padding < 0:
             raise StageAInputError(
@@ -1849,7 +2866,7 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             "    .endif",
             f"    .globl _stage_b_native_x87_instruction_{replay.id:04d}",
             f"_stage_b_native_x87_instruction_{replay.id:04d}:",
-            *_x87_replay_instruction_lines(replay),
+            f"    {_render_typed_x87_instruction(replay)}",
             *(["    nop"] * replay_padding),
             f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
             f"!= {_X87_REPLAY_INLINE_CAPTURE_OFFSET}",
@@ -1901,25 +2918,63 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _x87_replay_instruction_lines(replay: NativeX87Replay) -> list[str]:
-    offset = replay.operand_byte_offset
-    if offset is None:
-        return [
-            "    .byte " + ", ".join(
-                f"0x{byte:02x}" for byte in replay.instruction_bytes
+def _render_typed_x87_instruction(operation: NativeX87Operation) -> str:
+    typed = operation.operation
+    operand = typed.operand
+    if operand.kind == "none":
+        return typed.mnemonic
+    if operand.kind == "ax":
+        return f"{typed.mnemonic} ax"
+    if operand.kind == "stack":
+        registers = operand.registers
+        # GNU as Intel syntax encodes ST(0) implicitly for FXCH.  Capstone's
+        # typed operand inventory can still spell out both architectural
+        # operands, so normalize that complete form before rendering.
+        if typed.mnemonic == "fxch" and len(registers) == 2:
+            if registers[0] != 0:
+                raise StageAInputError("typed fxch first operand must be st(0)")
+            registers = registers[1:]
+        rendered = ", ".join(f"st({index})" for index in registers)
+        return f"{typed.mnemonic} {rendered}"
+    if operand.kind != "memory":
+        raise StageAInputError(f"unsupported typed x87 operand kind {operand.kind!r}")
+    terms: list[str] = []
+    if operand.image_rva is not None:
+        if (
+            operation.target_rva != operand.image_rva
+            or operation.relocation_type != 3
+            or operation.relocation_width != 4
+        ):
+            raise StageAInputError(
+                "absolute typed x87 operand lacks its checked HIGHLOW target"
             )
-        ]
-    if replay.target_rva is None or replay.relocation_width != 4:
-        raise StageAInputError("relocated x87 replay lacks its checked target binding")
-    lines: list[str] = []
-    leading = replay.instruction_bytes[:offset]
-    trailing = replay.instruction_bytes[offset + 4 :]
-    if leading:
-        lines.append("    .byte " + ", ".join(f"0x{byte:02x}" for byte in leading))
-    lines.append(f"    .long ___ImageBase + 0x{replay.target_rva:08x}")
-    if trailing:
-        lines.append("    .byte " + ", ".join(f"0x{byte:02x}" for byte in trailing))
-    return lines
+        terms.append(f"___ImageBase + 0x{operand.image_rva:08x}")
+    if operand.base is not None:
+        terms.append(operand.base)
+    if operand.index is not None:
+        terms.append(
+            operand.index
+            if operand.scale == 1
+            else f"{operand.index} * {operand.scale}"
+        )
+    if not terms:
+        raise StageAInputError("typed x87 memory operand has no address source")
+    address = " + ".join(terms)
+    if operand.displacement > 0:
+        address += f" + 0x{operand.displacement:x}"
+    elif operand.displacement < 0:
+        address += f" - 0x{-operand.displacement:x}"
+    size = (
+        ""
+        if typed.mnemonic in _X87_MEMORY_NO_SIZE_MNEMONICS
+        else _X87_MEMORY_SIZE_KEYWORDS.get(operand.width)
+    )
+    if size is None:
+        raise StageAInputError(
+            f"typed x87 memory width {operand.width} has no reviewed rendering"
+        )
+    prefix = f"{size} " if size else ""
+    return f"{typed.mnemonic} {prefix}[{address}]"
 
 
 def _restore_pushes(state_register: str) -> list[str]:
@@ -2016,13 +3071,171 @@ def _uses_x87_state(row: Mapping[str, Any]) -> bool:
     return walk(row)
 
 
-def _qualified_x87_replays(
+def _qualified_machine_ir_x87_operations(
     *,
     row: Mapping[str, Any],
     transfer_id: str,
     first_id: int,
     relocation_evidence: _PEBaseRelocationEvidence | None,
-) -> tuple[NativeX87Replay, ...]:
+) -> tuple[NativeX87Operation, ...]:
+    fpu = row.get("fpu_state")
+    micro_ops = row.get("_machine_ir_x87_micro_ops")
+    if not isinstance(fpu, Mapping) or not isinstance(micro_ops, list) or not micro_ops:
+        raise StageAInputError("machine-IR x87 state lacks typed micro-operations")
+    replay = fpu.get("typed_replay")
+    original = row.get("original")
+    instructions = row.get("instructions")
+    if (
+        not isinstance(replay, Mapping)
+        or not isinstance(original, Mapping)
+        or not isinstance(instructions, list)
+    ):
+        raise StageAInputError("machine-IR x87 typed replay binding is malformed")
+    rva_start = _required_u32(original.get("rva_start"), "machine-IR x87 start RVA")
+    rva_end = _required_u32(original.get("rva_end"), "machine-IR x87 end RVA")
+    image_base = _required_u32(replay.get("image_base"), "machine-IR x87 image base")
+    transfer_digest = _required_sha256(
+        row.get("instruction_bytes_sha256"), "machine-IR x87 transfer SHA-256"
+    )
+    if (
+        replay.get("source_format") != _X87_REPLAY_FORMAT
+        or replay.get("architecture") != "x86"
+        or replay.get("bitness") != 32
+        or replay.get("rva_start") != rva_start
+        or replay.get("rva_end") != rva_end
+        or replay.get("instruction_bytes_sha256") != transfer_digest
+        or replay.get("checked_decoder") != _X87_CHECKED_DECODER
+        or replay.get("checked_executor") != _X87_CHECKED_EXECUTOR
+    ):
+        raise StageAInputError("machine-IR x87 typed replay metadata is unqualified")
+    micro_ids = replay.get("micro_op_ids")
+    if (
+        not isinstance(micro_ids, list)
+        or len(micro_ids) != len(micro_ops)
+        or len(set(str(item) for item in micro_ids)) != len(micro_ids)
+    ):
+        raise StageAInputError("machine-IR x87 micro-op inventory is malformed")
+    instruction_by_rva = _instruction_inventory(transfer_id, instructions)
+    contract_digest = _required_sha256(
+        row.get("contract_sha256"), "machine-IR x87 contract SHA-256"
+    )
+    result: list[NativeX87Operation] = []
+    seen_spans: set[tuple[int, int]] = set()
+    for index, raw in enumerate(micro_ops):
+        if not isinstance(raw, Mapping):
+            raise StageAInputError(f"machine-IR x87 micro-op {index} is malformed")
+        micro_id = _required_string(raw.get("id"), f"machine-IR x87 micro-op {index} id")
+        start = _required_u32(
+            raw.get("rva_start"), f"machine-IR x87 micro-op {index} start RVA"
+        )
+        end = _required_u32(
+            raw.get("rva_end"), f"machine-IR x87 micro-op {index} end RVA"
+        )
+        size = raw.get("size")
+        instruction = instruction_by_rva.get(start)
+        if (
+            micro_ids[index] != micro_id
+            or raw.get("unit_id") != transfer_id
+            or end <= start
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size != end - start
+            or (start, end) in seen_spans
+            or instruction is None
+            or instruction.get("rva_end") != end
+            or raw.get("instruction_sha256")
+            != instruction.get("instruction_sha256")
+            or raw.get("transfer_instruction_sha256") != transfer_digest
+            or raw.get("mnemonic") != instruction.get("mnemonic")
+            or raw.get("operands") != instruction.get("operands")
+            or raw.get("implicit_registers_read")
+            != instruction.get("registers_read")
+            or raw.get("implicit_registers_written")
+            != instruction.get("registers_written")
+            or raw.get("checked_decoder") != _X87_CHECKED_DECODER
+            or raw.get("checked_executor") != _X87_CHECKED_EXECUTOR
+            or raw.get("physical_state_effect")
+            != "defined_by_checked_typed_x87_executor"
+        ):
+            raise StageAInputError(
+                f"machine-IR x87 micro-op {index} does not bind its typed instruction"
+            )
+        seen_spans.add((start, end))
+        typed = typed_x87_operation_from_micro_op(raw, image_base=image_base)
+        relocation: _PEBaseRelocation | None = None
+        if typed.operand.image_rva is not None:
+            preferred_value = image_base + typed.operand.image_rva
+            matches = (
+                [
+                    item
+                    for item in relocation_evidence.relocations
+                    if start <= item.source_rva
+                    and item.source_rva + item.width <= end
+                    and item.preferred_value == preferred_value
+                ]
+                if relocation_evidence is not None
+                else []
+            )
+            if len(matches) != 1:
+                raise _X87ReplayASLRUnsafe(
+                    "absolute typed x87 operand lacks one span-bound PE relocation"
+                )
+            relocation = matches[0]
+            if (
+                relocation_evidence is None
+                or relocation_evidence.image_base != image_base
+                or relocation.type != 3
+                or relocation.width != 4
+            ):
+                raise _X87ReplayASLRUnsafe(
+                    "typed x87 absolute operand is not bound by PE32 HIGHLOW evidence"
+                )
+        elif relocation_evidence is not None and any(
+            item.source_rva < end and item.source_rva + item.width > start
+            for item in relocation_evidence.relocations
+        ):
+            raise _X87ReplayASLRUnsafe(
+                "position-independent typed x87 form overlaps relocation evidence"
+            )
+        result.append(NativeX87Operation(
+            id=first_id + len(result),
+            transfer_id=transfer_id,
+            contract_sha256=contract_digest,
+            image_base=image_base,
+            rva_start=start,
+            rva_end=end,
+            operation=typed,
+            relocation_source_rva=(
+                relocation.source_rva if relocation is not None else None
+            ),
+            preferred_value=(
+                relocation.preferred_value if relocation is not None else None
+            ),
+            target_rva=(
+                relocation.preferred_value - image_base
+                if relocation is not None else None
+            ),
+            relocation_type=relocation.type if relocation is not None else None,
+            relocation_width=relocation.width if relocation is not None else None,
+            relocation_pe_sha256=(
+                relocation_evidence.pe_sha256
+                if relocation is not None and relocation_evidence is not None else None
+            ),
+            relocation_reference_contract_sha256=(
+                relocation_evidence.reference_contract_sha256
+                if relocation is not None and relocation_evidence is not None else None
+            ),
+        ))
+    return tuple(result)
+
+
+def _qualified_x87_operations(
+    *,
+    row: Mapping[str, Any],
+    transfer_id: str,
+    first_id: int,
+    relocation_evidence: _PEBaseRelocationEvidence | None,
+) -> tuple[NativeX87Operation, ...]:
     fpu = row.get("fpu_state")
     if not isinstance(fpu, Mapping) or fpu.get("model") != _X87_REPLAY_MODEL:
         raise StageAInputError("x87 state is not an exact native replay obligation")
@@ -2100,7 +3313,7 @@ def _qualified_x87_replays(
         raise StageAInputError("x87 replay instruction inventories differ")
     cursor = rva_start
     reconstructed = bytearray()
-    result: list[NativeX87Replay] = []
+    result: list[NativeX87Operation] = []
     schedule_records: list[Any] | None = None
     if schedule is not None:
         if not isinstance(schedule, Mapping):
@@ -2191,6 +3404,11 @@ def _qualified_x87_replays(
                     f"x87 schedule record {index} lacks checked classification"
                 )
         if is_x87:
+            typed = extract_typed_x87_operation(
+                encoded=encoded,
+                instruction=outer,
+                image_base=image_base,
+            )
             operand_offset = _x87_absolute_operand_offset(encoded)
             relocation: _PEBaseRelocation | None = None
             if operand_offset is not None:
@@ -2235,7 +3453,7 @@ def _qualified_x87_replays(
             elif not _x87_replay_relocation_safe(encoded):
                 raise _X87ReplayASLRUnsafe(
                     "x87 singleton uses an absolute or unqualified addressing form "
-                    "whose raw .byte replay has no PE HIGHLOW relocation"
+                    "whose typed address has no PE HIGHLOW relocation"
                 )
             elif relocation_evidence is not None and any(
                 item.source_rva < instruction_rva + size
@@ -2245,20 +3463,21 @@ def _qualified_x87_replays(
                 raise _X87ReplayASLRUnsafe(
                     "position-independent x87 instruction overlaps unexpected relocation evidence"
                 )
-            result.append(NativeX87Replay(
+            if (typed.operand.image_rva is None) != (relocation is None):
+                raise _X87ReplayASLRUnsafe(
+                    "typed x87 absolute-address classification differs from relocation evidence"
+                )
+            result.append(NativeX87Operation(
                 id=first_id + len(result),
                 transfer_id=transfer_id,
                 contract_sha256=contract_digest,
-                instruction_bytes_sha256=sha256_bytes(encoded),
-                transfer_instruction_bytes_sha256=transfer_digest,
                 image_base=image_base,
                 rva_start=instruction_rva,
                 rva_end=instruction_rva + size,
-                instruction_bytes=encoded,
+                operation=typed,
                 relocation_source_rva=(
                     relocation.source_rva if relocation is not None else None
                 ),
-                operand_byte_offset=operand_offset,
                 preferred_value=(
                     relocation.preferred_value if relocation is not None else None
                 ),
@@ -2677,7 +3896,13 @@ __all__ = [
     "NativeCallbackTarget",
     "NativeExternalSite",
     "NativeTerminationImport",
+    "NativeX87Operation",
     "NativeX87Replay",
+    "TypedX87Operation",
+    "TypedX87Operand",
+    "TYPED_NATIVE_X87_OPERATION_FORMAT",
+    "extract_typed_x87_operation",
+    "typed_x87_operation_from_micro_op",
     "plan_stage_b_native_engine",
     "write_stage_b_native_engine_package",
 ]
