@@ -1488,13 +1488,23 @@ def _stack_argument_writes(
     esp: tuple[Any, ...],
     memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]],
 ) -> list[tuple[int, int, tuple[Any, ...]]]:
-    result: dict[tuple[int, int], tuple[Any, ...]] = {}
-    for address, width_bits, value in memory_writes:
+    result: set[tuple[int, int]] = set()
+    for address, width_bits, _value in memory_writes:
         offset = _stack_relative_offset(address, esp)
         if offset is None or offset < 0 or offset > 0x100:
             continue
-        result[(offset, width_bits)] = _expr_mask(value, width_bits)
-    return [(offset, width_bits, value) for (offset, width_bits), value in sorted(result.items())]
+        result.add((offset, width_bits))
+    return [
+        (
+            offset,
+            width_bits,
+            _memory_expr(
+                width_bits,
+                _canonical_expr(_expr_add(esp, ("const", offset))),
+            ),
+        )
+        for offset, width_bits in sorted(result)
+    ]
 
 def _stack_relative_offset(address: tuple[Any, ...], esp: tuple[Any, ...]) -> int | None:
     address = _canonical_expr(address)

@@ -6,16 +6,19 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ..contract_tools import (
-    BlockSide,
+from .._contract_tools.map_generation import (
     _linker_function_import_thunk_evidence,
     _linker_function_issues,
-    _parse_linker_map_functions,
     _recover_basic_blocks,
     _section_gap_code_blocks,
     _section_gaps,
 )
-from ..stage_binary import StageAInputError, _parse_stage_a_pe
+from ..stage_binary import (
+    BlockSide,
+    StageAInputError,
+    _parse_linker_map_functions,
+    _parse_stage_a_pe,
+)
 from ..util import sha256_bytes, sha256_file, write_json
 from .contract import (
     _raw_base_relocations,

@@ -60,6 +60,7 @@ _OPTIONAL_TRANSFER_FIELDS = (
     "instruction_effect_schedule",
     "semantic_cutpoint",
     "control_disposition",
+    "blocking_instruction",
 )
 
 
@@ -1320,6 +1321,11 @@ def _load_stage_a_semantic_transfer_rows(
             raise StageAInputError(
                 f"Stage A semantic-transfer line {line_number}."
                 "instruction_effect_schedule must be an object"
+            )
+        if "blocking_instruction" in row and row["blocking_instruction"] is not None:
+            _object(
+                row["blocking_instruction"],
+                f"Stage A semantic-transfer line {line_number}.blocking_instruction",
             )
         if "semantic_cutpoint" in row:
             cutpoint = _object(

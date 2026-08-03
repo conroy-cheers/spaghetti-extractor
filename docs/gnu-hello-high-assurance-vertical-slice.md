@@ -22,6 +22,18 @@ The lifting evidence is `usable-incomplete`. It is not `qualified`, `pass`,
 `conditional_pass`, or a whole-program equivalence theorem. Runtime tests are
 therefore not an acceptance signal for the current artifact.
 
+The later whole-application source slice adds an independent idiomatic C
+candidate. Its reviewed scope consists of both code ranges contributed by
+`src/hello.o`: `.text` at `0x1440..0x1720` and `.text.startup` at
+`0x14548..0x14628`. All 83 machine-IR units in that scope are bound to three
+source islands, with zero scoped units remaining. The other 7,778 units are
+explicitly classified as out-of-scope linked runtime and library code.
+
+That source-only candidate passes all nine applicable GNU Hello expected-output
+cases under `xvfb-run -a wine`, with no original runtime observations. Its
+assurance artifact reports `behavior_validated` and `not_proven`; this is strong
+candidate-only reconstruction evidence, not a whole-program equivalence claim.
+
 The semantic-component validation layer additionally defines one aggregate
 and nine representative leaf components. Their exact membership and machine
 boundaries validate successfully, but all nine machine-to-logical refinements
@@ -47,6 +59,15 @@ nix build --no-link .#stage-b-gnu-hello-typed-memory-workspace-check
 nix build --no-link .#stage-b-gnu-hello-atomic-workspace-check
 nix build --no-link .#stage-b-gnu-hello-callback-workspace-check
 nix build --no-link .#stage-b-gnu-hello-reconstruction-registry
+```
+
+Build the independent application source project:
+
+```sh
+nix build --no-link .#stage-b-gnu-hello-idiomatic-source-binding
+nix build --no-link .#stage-b-gnu-hello-idiomatic-candidate
+nix build --no-link .#stage-b-gnu-hello-idiomatic-functional-suite
+nix build --no-link .#stage-b-gnu-hello-idiomatic-assurance
 ```
 
 Each workspace is content addressed and its generated skeleton must compile.

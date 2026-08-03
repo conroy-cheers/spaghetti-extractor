@@ -141,6 +141,31 @@ class SemanticComponentTests(unittest.TestCase):
         self.assertEqual(catalog["coverage"]["counts"]["unassigned_potential_units"], 1)
         self.assertFalse(catalog["coverage"]["complete"])
 
+    def test_linked_islands_expose_component_ownership_crossings(self) -> None:
+        catalog = build_semantic_component_catalog(
+            machine_ir=self.machine,
+            reconstruction_plan=self.plan_path,
+            declarations=self._declarations(
+                [_component("worker", cluster_ids=["cluster:ab"])]
+            ),
+            linked_islands=self._linked_islands(),
+        )
+
+        worker = catalog["components"][0]["linked_island_membership"]
+        self.assertTrue(worker["crosses_island_boundaries"])
+        self.assertTrue(worker["crosses_ownership_kinds"])
+        self.assertEqual(worker["kinds"], ["application", "linked_dependency"])
+        coverage = catalog["coverage"]["linked_islands"]
+        self.assertEqual(coverage["component_declared_units_by_kind"]["application"], 1)
+        self.assertEqual(
+            coverage["component_declared_units_by_kind"]["linked_dependency"],
+            1,
+        )
+        self.assertEqual(coverage["remaining_units_by_kind"]["unknown"], 1)
+        self.assertFalse(
+            catalog["policy"]["linked_island_identity_authorizes_replacement"]
+        )
+
     def test_stale_binding_is_a_source_localized_violation(self) -> None:
         declarations = self._declarations([_component("worker", cluster_ids=["cluster:ab"])])
         declarations["bindings"]["machine_ir_sha256"] = "9" * 64
@@ -259,6 +284,93 @@ class SemanticComponentTests(unittest.TestCase):
         self.assertIn(
             "unknown_indirect_target", {item["code"] for item in catalog["issues"]}
         )
+
+    def test_checked_indirect_targets_inside_component_are_not_boundary_exits(self) -> None:
+        self.units[0]["semantics"]["outcome"] = {
+            "kind": "indirect_jump",
+            "target": {"op": "reg", "name": "eax", "width": 32},
+        }
+        self.units[0]["control"] = {
+            "kind": "indirect_jump",
+            "direct_targets": [],
+            "has_indirect_target": True,
+        }
+        self.manifest["control"]["recovered_indirect_targets"] = [
+            {
+                "id": "indirect:internal",
+                "status": "recovered",
+                "closure": "checked_finite_target_inventory",
+                "source_unit_id": "unit:a",
+                "source_rva": 0x1000,
+                "target_unit_ids": ["unit:b"],
+                "target_rvas": [0x1010],
+                "failure": None,
+            }
+        ]
+        self._replace_machine(self.units)
+        declarations = self._declarations(
+            [_component("worker", unit_ids=["unit:a", "unit:b"])]
+        )
+
+        catalog = build_semantic_component_catalog(
+            machine_ir=self.machine,
+            reconstruction_plan=self.plan_path,
+            declarations=declarations,
+        )
+
+        worker = next(item for item in catalog["components"] if item["id"] == "worker")
+        boundary = worker["machine_boundary"]
+        self.assertEqual(
+            [(item["kind"], item["source_unit_id"]) for item in boundary["exits"]],
+            [("return", "unit:b")],
+        )
+        self.assertEqual(boundary["counts"]["internal_indirect_controls"], 1)
+        self.assertEqual(
+            boundary["internal_indirect_controls"][0]["internal_target_unit_ids"],
+            ["unit:b"],
+        )
+
+    def test_checked_indirect_target_outside_component_remains_boundary_exit(self) -> None:
+        self.units[0]["semantics"]["outcome"] = {
+            "kind": "indirect_jump",
+            "target": {"op": "reg", "name": "eax", "width": 32},
+        }
+        self.units[0]["control"] = {
+            "kind": "indirect_jump",
+            "direct_targets": [],
+            "has_indirect_target": True,
+        }
+        self.manifest["control"]["recovered_indirect_targets"] = [
+            {
+                "id": "indirect:mixed",
+                "status": "recovered",
+                "closure": "checked_finite_target_inventory",
+                "source_unit_id": "unit:a",
+                "source_rva": 0x1000,
+                "target_unit_ids": ["unit:b", "unit:c"],
+                "target_rvas": [0x1010, 0x2000],
+                "failure": None,
+            }
+        ]
+        self._replace_machine(self.units)
+        declarations = self._declarations(
+            [_component("worker", unit_ids=["unit:a", "unit:b"])]
+        )
+
+        catalog = build_semantic_component_catalog(
+            machine_ir=self.machine,
+            reconstruction_plan=self.plan_path,
+            declarations=declarations,
+        )
+
+        worker = next(item for item in catalog["components"] if item["id"] == "worker")
+        indirect = next(
+            item
+            for item in worker["machine_boundary"]["exits"]
+            if item["kind"] == "indirect_jump"
+        )
+        self.assertEqual(indirect["internal_target_unit_ids"], ["unit:b"])
+        self.assertEqual(indirect["external_target_unit_ids"], ["unit:c"])
 
     def test_writer_is_byte_reproducible(self) -> None:
         declarations = self._declarations([_component("worker", cluster_ids=["cluster:ab"])])
@@ -448,6 +560,57 @@ class SemanticComponentTests(unittest.TestCase):
             },
             "components": components,
         }
+
+    def _linked_islands(self) -> dict[str, object]:
+        core: dict[str, object] = {
+            "format": "stage-b-linked-island-manifest-v1",
+            "status": "incomplete",
+            "executes_original_binary": False,
+            "bindings": {
+                "machine_ir_sha256": self.machine_ir_sha256,
+                "machine_ir_manifest_sha256": _file_sha256(self.manifest_path),
+                "original_binary_sha256": self.manifest["binary"]["sha256"],
+            },
+            "islands": [
+                {
+                    "id": "application",
+                    "kind": "application",
+                    "unit_ids": ["unit:a"],
+                    "unit_count": 1,
+                    "replacement_authorized": False,
+                },
+                {
+                    "id": "runtime",
+                    "kind": "linked_dependency",
+                    "unit_ids": ["unit:b"],
+                    "unit_count": 1,
+                    "replacement_authorized": False,
+                },
+                {
+                    "id": "unknown",
+                    "kind": "unknown",
+                    "unit_ids": ["unit:c"],
+                    "unit_count": 1,
+                    "replacement_authorized": False,
+                },
+            ],
+            "coverage": {
+                "machine_units": 3,
+                "classified_units": 3,
+                "classified_exactly_once": True,
+                "units_by_kind": {
+                    "application": 1,
+                    "linked_dependency": 1,
+                    "unknown": 1,
+                },
+                "unknown_units": 1,
+            },
+            "authority": {
+                "artifact_recognition_authorizes_replacement": False,
+                "semantic_qualification_required": True,
+            },
+        }
+        return {**core, "manifest_sha256": _canonical_sha256(core)}
 
 
 def _component(

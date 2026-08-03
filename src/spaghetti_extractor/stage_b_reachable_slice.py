@@ -44,8 +44,19 @@ def write_stage_b_reachable_slice(
     )
     rows = _jsonl_objects(state_machine, "state machine")
 
-    if prepared.get("format") != "stage-a-prepared-relational-v1":
+    prepared_format = prepared.get("format")
+    if prepared_format not in {
+        "stage-a-prepared-relational-v1",
+        "stage-a-prepared-relational-v2",
+    }:
         raise StageAInputError("reachable slicing requires a relational v3 prepared proof")
+    if (
+        prepared_format == "stage-a-prepared-relational-v2"
+        and not isinstance(prepared.get("artifact_manifest_sha256"), str)
+    ):
+        raise StageAInputError(
+            "reachable slicing requires a v2 prepared proof bound to its artifact manifest"
+        )
     if prepared.get("status") != "prepared":
         raise StageAInputError("reachable slicing requires a prepared Stage A proof")
     if prepared.get("acceptance") != acceptance:

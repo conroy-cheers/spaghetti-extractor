@@ -15,6 +15,7 @@
 , nativeSourceOriginalExecutionEvidence ? null
 , nativeSourceCompiledAuthorityEvidence ? null
 , nativeSourceEnvironmentFamilyEvidence ? null
+, linkedIslands ? null
 , nativeSourceApprovedToolchainAxiom ?
     "StageA.GeneratedRelational.GnuHelloNativeSourceEnvironmentFamily.pinnedCompilerLoweringCorrect"
 }:
@@ -79,62 +80,44 @@ let
       <config><rescan><int>0</int></rescan></config>
     </fontconfig>
   '';
-  # Candidate production only needs runtime Python.  In particular, neither
-  # reviewed Lean nor Python proof emitters participate in its source hash.
-  runtimePythonFiles = lib.fileset.unions [
+  # Candidate production and component workspaces share one centrally defined
+  # source closure. Reviewed Lean and Python proof emitters remain excluded.
+  stageBPythonSources = import ./stage-b-python-sources.nix { inherit pkgs; };
+  runtimePythonFiles = stageBPythonSources.runtimeFiles;
+  interpreterPythonSource = stageBPythonSources.interpreter;
+  runtimePythonSource = stageBPythonSources.runtime;
+  nativeBuildPythonSource = stageBPythonSources.nativeBuild;
+  componentWorkspacePythonSource = stageBPythonSources.workspace;
+  pairwiseByteComponentProfilePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = ../src/spaghetti_extractor_component_profiles/bounded_pairwise_byte_compare_v1.py;
+  };
+  lastComponentProfilePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = ../src/spaghetti_extractor_component_profiles/bounded_last_component_v1.py;
+  };
+  externalZeroPredicateProfilePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = ../src/spaghetti_extractor_component_profiles/external_zero_predicate_v1.py;
+  };
+  basenamePrefixSelectionProfilePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = ../src/spaghetti_extractor_component_profiles/basename_prefix_selection_v1.py;
+  };
+  componentDiscoveryPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/component_discovery.py
+    ];
+  };
+  componentSelectionPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
       ../src/spaghetti_extractor/__init__.py
       ../src/spaghetti_extractor/artifact_formats.py
-      ../src/spaghetti_extractor/errors.py
-      ../src/spaghetti_extractor/callable_external_runtime.py
-      ../src/spaghetti_extractor/machine_import_profiles.py
+      ../src/spaghetti_extractor/component_selection.py
       ../src/spaghetti_extractor/util.py
-      ../src/spaghetti_extractor/pe.py
-      ../src/spaghetti_extractor/stage_binary.py
-      ../src/spaghetti_extractor/contract_tools.py
-      ../src/spaghetti_extractor/_contract_tools
-      ../src/spaghetti_extractor/roundtrip_fuzz/image_contract.py
-      ../src/spaghetti_extractor/relational/__init__.py
-      ../src/spaghetti_extractor/relational/lean/__init__.py
-      ../src/spaghetti_extractor/relational/lean/callable_external_capability.py
-      ../src/spaghetti_extractor/relational/lean/callable_external_execution.py
-      ../src/spaghetti_extractor/relational/definedness.py
-      ../src/spaghetti_extractor/relational/semantic_cutpoints.py
-      ../src/spaghetti_extractor/relational/x87_profile.py
-      ../src/spaghetti_extractor/reconstruction_ir.py
-      ../src/spaghetti_extractor/reconstruction_control.py
-      ../src/spaghetti_extractor/reconstruction_composition.py
-      ../src/spaghetti_extractor/reconstruction_contract_analysis.py
-      ../src/spaghetti_extractor/reconstruction_validation.py
-      ../src/spaghetti_extractor/reconstruction_workspace.py
-      ../src/spaghetti_extractor/region_replacement.py
-      ../src/spaghetti_extractor/stage_b_api_catalog.py
-      ../src/spaghetti_extractor/stage_b_c_backend.py
-      ../src/spaghetti_extractor/stage_b_engine_layout.py
-      ../src/spaghetti_extractor/stage_b_interpreter_backend.py
-      ../src/spaghetti_extractor/stage_b_typed_x87.py
-      ../src/spaghetti_extractor/stage_b_native_engine.py
-      ../src/spaghetti_extractor/stage_b_native_runtime.py
-      ../src/spaghetti_extractor/stage_b_state_machine.py
-    ];
-  runtimePythonSource = lib.fileset.toSource {
-    root = ../.;
-    fileset = runtimePythonFiles;
-  };
-  nativeBuildPythonSource = lib.fileset.toSource {
-    root = ../.;
-    fileset = lib.fileset.unions [
-      runtimePythonFiles
-      ../src/spaghetti_extractor/stage_b_interpreter_native_build.py
-      ../src/spaghetti_extractor/stage_b_native_binding.py
-      ../src/spaghetti_extractor/stage_b_native_build.py
-      ../src/spaghetti_extractor/stage_b_pe_composer.py
-    ];
-  };
-  componentWorkspacePythonSource = lib.fileset.toSource {
-    root = ../.;
-    fileset = lib.fileset.unions [
-      runtimePythonFiles
-      ../src/spaghetti_extractor/component_workspace.py
     ];
   };
   semanticComponentPythonSource = lib.fileset.toSource {
@@ -142,6 +125,7 @@ let
     fileset = lib.fileset.unions [
       ../src/spaghetti_extractor/__init__.py
       ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/linked_library_contracts.py
       ../src/spaghetti_extractor/semantic_components.py
       ../src/spaghetti_extractor/util.py
     ];
@@ -205,30 +189,54 @@ let
       ../src/spaghetti_extractor/reconstruction_assurance.py
     ];
   };
+  sourceProjectPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/linked_library_contracts.py
+      ../src/spaghetti_extractor/source_project.py
+      ../src/spaghetti_extractor/util.py
+    ];
+  };
+  idiomaticHelloSource = lib.fileset.toSource {
+    root = ../fixtures/gnu-hello/idiomatic;
+    fileset = lib.fileset.unions [
+      ../fixtures/gnu-hello/idiomatic/hello.c
+      ../fixtures/gnu-hello/idiomatic/hello.h
+      ../fixtures/gnu-hello/idiomatic/source-project.json
+    ];
+  };
+  # Static extraction has an explicit dependency closure.  A subtractive
+  # "almost all Python" source made unrelated Stage B component edits
+  # invalidate the authoritative PE extraction and every descendant.
   opaqueStaticPythonSource = lib.fileset.toSource {
     root = ../.;
-    fileset = lib.fileset.difference ../src (lib.fileset.unions [
-      ../src/spaghetti_extractor/lean
-      ../src/spaghetti_extractor/cli.py
-      ../src/spaghetti_extractor/__main__.py
-      ../src/spaghetti_extractor/callable_external_runtime.py
-      ../src/spaghetti_extractor/stage_b_api_catalog.py
-      ../src/spaghetti_extractor/stage_b_c_backend.py
-      ../src/spaghetti_extractor/stage_b_engine_layout.py
-      ../src/spaghetti_extractor/stage_b_functional.py
-      ../src/spaghetti_extractor/stage_b_interpreter_backend.py
-      ../src/spaghetti_extractor/stage_b_typed_x87.py
-      ../src/spaghetti_extractor/stage_b_interpreter_native_build.py
-      ../src/spaghetti_extractor/stage_b_native_binding.py
-      ../src/spaghetti_extractor/stage_b_native_build.py
-      ../src/spaghetti_extractor/stage_b_native_engine.py
-      ../src/spaghetti_extractor/stage_b_native_runtime.py
-      ../src/spaghetti_extractor/stage_b_pe_composer.py
-      ../src/spaghetti_extractor/region_replacement.py
-      ../src/spaghetti_extractor/reconstruction_assurance.py
-      ../src/spaghetti_extractor/reconstruction_ir.py
-      ../src/spaghetti_extractor/semantic_components.py
-    ]);
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/_contract_tools
+      ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/contract_tools.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/machine_import_profiles.py
+      ../src/spaghetti_extractor/opaque_reconstruction.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_b_state_machine.py
+      ../src/spaghetti_extractor/stage_binary.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/artifacts.py
+      ../src/spaghetti_extractor/relational/binary_inventory.py
+      ../src/spaghetti_extractor/relational/contract.py
+      ../src/spaghetti_extractor/relational/model.py
+      ../src/spaghetti_extractor/relational/reference_contract.py
+      ../src/spaghetti_extractor/relational/schema.py
+      ../src/spaghetti_extractor/relational/semantic_cutpoints.py
+      ../src/spaghetti_extractor/relational/side_extraction_artifact.py
+      ../src/spaghetti_extractor/relational/x87_profile.py
+      ../src/spaghetti_extractor/roundtrip_fuzz/__init__.py
+      ../src/spaghetti_extractor/roundtrip_fuzz/image_contract.py
+    ];
   };
   stackDynamicProofPythonFiles = lib.fileset.unions [
     ../src/spaghetti_extractor/relational/lean/stack_dynamic_indirect_control.py
@@ -258,10 +266,20 @@ let
       runEntryProofPythonFiles
       ../src/spaghetti_extractor/opaque_reconstruction.py
       ../src/spaghetti_extractor/callable_external_runtime.py
+      ../src/spaghetti_extractor/bounded_component_contract.py
+      ../src/spaghetti_extractor/cli.py
+      ../src/spaghetti_extractor/component_discovery.py
+      ../src/spaghetti_extractor/component_interface.py
+      ../src/spaghetti_extractor/component_selection.py
+      ../src/spaghetti_extractor/component_workspace.py
+      ../src/spaghetti_extractor/finite_component_contract.py
+      ../src/spaghetti_extractor/linked_library_contracts.py
       ../src/spaghetti_extractor/reconstruction_assurance.py
       ../src/spaghetti_extractor/reconstruction_ir.py
       ../src/spaghetti_extractor/reconstruction_workspace.py
       ../src/spaghetti_extractor/region_replacement.py
+      ../src/spaghetti_extractor/linked_library_contracts.py
+      ../src/spaghetti_extractor/semantic_components.py
       ../src/spaghetti_extractor/stage_b_interpreter_native_build.py
       ../src/spaghetti_extractor/stage_b_native_binding.py
       ../src/spaghetti_extractor/stage_b_native_build.py
@@ -1536,6 +1554,8 @@ let
       export LC_ALL=C.UTF-8
       export SOURCE_DATE_EPOCH=1
       export PYTHONPATH=${opaqueStaticPythonSource}/src
+      test ! -e ${opaqueStaticPythonSource}/src/spaghetti_extractor/component_workspace.py
+      test ! -e ${opaqueStaticPythonSource}/src/spaghetti_extractor/reconstruction_workspace.py
       ${python} - ${lib.escapeShellArg originalPe} \
         ${lib.escapeShellArg "${opaqueOriginalInventory}/inventory.json"} \
         "$out" <<'PY'
@@ -1680,7 +1700,9 @@ let
         .counts.incomplete_issues > 0 and
         .coverage.counts.executable_bytes == 79476 and
         .coverage.counts.unknown_bytes == 0 and
-        .control.counts.roots >= 4 and
+        # Entrypoint, export, and TLS callback are exact roots. A callback
+        # registration proposal remains potential until its call is checked.
+        .control.counts.roots >= 3 and
         .control.counts.unresolved_direct_targets == 0 and
         .control.counts.indirect_exits == 95 and
         .control.counts.closed_indirect_exits == 3 and
@@ -1712,7 +1734,7 @@ let
       export PYTHONHASHSEED=0
       export LC_ALL=C.UTF-8
       export SOURCE_DATE_EPOCH=1
-      export PYTHONPATH=${runtimePythonSource}/src
+      export PYTHONPATH=${interpreterPythonSource}/src
       ${python} - ${lib.escapeShellArg "${machineIr}/machine-ir.jsonl"} "$out" <<'PY'
       import pathlib
       import sys
@@ -1954,37 +1976,99 @@ let
     reconstructionPlan = reconstructionPlan;
     declarations = ../fixtures/gnu-hello/semantic-components.json;
     namePrefix = "stage-b-gnu-hello";
+    validationProfile = "gnu-hello-validation-set-v1";
+  };
+  componentProposals = import ./stage-b-component-discovery.nix {
+    inherit pkgs pythonEnv;
+    pythonSource = componentDiscoveryPythonSource;
+    machineIr = machineIr;
+    reconstructionPlan = reconstructionPlan;
+    namePrefix = "stage-b-gnu-hello";
+  };
+  selectedComponentDeclarations = import ./stage-b-component-selection.nix {
+    inherit pkgs pythonEnv componentProposals;
+    pythonSource = componentSelectionPythonSource;
+    selection = ../fixtures/gnu-hello/component-selection.json;
+    namePrefix = "stage-b-gnu-hello";
+  };
+  selectedSemanticComponents = import ./stage-b-semantic-components.nix {
+    inherit pkgs pythonEnv;
+    pythonSource = semanticComponentPythonSource;
+    machineIr = machineIr;
+    reconstructionPlan = reconstructionPlan;
+    declarations = "${selectedComponentDeclarations}/semantic-component-declarations.json";
+    namePrefix = "stage-b-gnu-hello-selected";
   };
   semanticComponentWorkspaceDag = import ./stage-b-semantic-component-workspaces.nix {
     inherit pkgs pythonEnv;
     pythonSource = componentWorkspacePythonSource;
+    profilePythonSources = {
+      bounded_pairwise_byte_compare_v1 =
+        pairwiseByteComponentProfilePythonSource;
+      bounded_last_component_v1 = lastComponentProfilePythonSource;
+      external_zero_predicate_v1 = externalZeroPredicateProfilePythonSource;
+      basename_prefix_selection_v1 = basenamePrefixSelectionProfilePythonSource;
+    };
     machineIr = machineIr;
     interpreterPackage = reconstructionInterpreter;
     reconstructionPlan = reconstructionPlan;
-    semanticComponentCatalog = semanticComponents;
+    semanticComponentCatalog = selectedSemanticComponents;
+    inherit linkedIslands;
     namePrefix = "stage-b-gnu-hello";
     components = [
       {
         name = "branch";
         componentId = "startup-compare-route";
+        interfaceSpec = ../fixtures/gnu-hello/component-interfaces/branch.json;
         proofProfile = "compare_branch_v1";
         expectedCases = 4;
       }
       {
         name = "external-call";
         componentId = "startup-sleep-service";
+        interfaceSpec = ../fixtures/gnu-hello/component-interfaces/external-call.json;
         proofProfile = "constant_service_call_v1";
         expectedCases = 2;
       }
       {
         name = "internal-call";
         componentId = "static-word-initialization";
+        interfaceSpec = ../fixtures/gnu-hello/component-interfaces/internal-call.json;
         proofProfile = "store_then_zero_call_v1";
         expectedCases = 2;
       }
       {
+        name = "short-option";
+        componentId = "short-option-classifier";
+        interfaceSpec = ../fixtures/gnu-hello/component-interfaces/short-option.json;
+        proofProfile = "constant_compare_branch_v1";
+        expectedCases = 25;
+      }
+      {
+        name = "rotate";
+        componentId = "rotate-pending-words";
+        interfaceSpec = ../fixtures/gnu-hello/component-interfaces/rotate.json;
+        proofProfile = "bounded_range_rotation_v1";
+        expectedCases = 8;
+      }
+      {
+        name = "windows-error";
+        componentId = "windows-error-message-lookup";
+        interfaceSpec = ../fixtures/gnu-hello/component-interfaces/windows-error.json;
+        proofProfile = "finite_acyclic_static_string_lookup_v1";
+        staticImage = originalPe;
+        expectedCases = 56;
+      }
+      {
+        name = "bounded-string-length";
+        componentId = "bounded-string-length";
+        proofProfile = "bounded_string_length_v1";
+        expectedCases = 153;
+      }
+      {
         name = "atomic";
         componentId = "startup-atomic-compare-exchange";
+        interfaceSpec = ../fixtures/gnu-hello/component-interfaces/atomic.json;
         proofProfile = "atomic_compare_exchange_v1";
         expectedCases = 13;
         portableSource = ../fixtures/gnu-hello/reconstruction/atomic.c;
@@ -1992,12 +2076,14 @@ let
       {
         name = "callback";
         componentId = "startup-callback-registration";
+        interfaceSpec = ../fixtures/gnu-hello/component-interfaces/callback.json;
         proofProfile = "constant_service_call_v1";
         expectedCases = 2;
       }
       {
         name = "dispatch";
         componentId = "finite-selector-dispatch";
+        interfaceSpec = ../fixtures/gnu-hello/component-interfaces/dispatch.json;
         proofProfile = "finite_dispatch_v1";
         expectedCases = 36;
         portableSource = ../fixtures/gnu-hello/reconstruction/dispatch.c;
@@ -2005,9 +2091,43 @@ let
       {
         name = "typed-memory";
         componentId = "alias-sensitive-word-update";
+        interfaceSpec = ../fixtures/gnu-hello/component-interfaces/typed-memory.json;
         proofProfile = "alias_sensitive_word_update_v1";
         expectedCases = 101;
         portableSource = ../fixtures/gnu-hello/reconstruction/typed-memory.c;
+      }
+      {
+        name = "ascii-to-lower";
+        componentId = "ascii-to-lower";
+        proofProfile = "finite_acyclic_scalar_v1";
+        expectedCases = 263;
+      }
+      {
+        name = "ascii-string-compare";
+        componentId = "ascii-string-compare";
+        proofProfile = "bounded_pairwise_byte_compare_v1";
+        dependencies = [ "ascii-to-lower" ];
+        expectedCases = 43;
+      }
+      {
+        name = "last-path-component";
+        componentId = "last-path-component";
+        proofProfile = "bounded_last_component_v1";
+        expectedCases = 19;
+      }
+      {
+        name = "memory-regions-equal";
+        componentId = "memory-regions-equal";
+        proofProfile = "external_zero_predicate_v1";
+        expectedCases = 16;
+      }
+      {
+        name = "program-name-selection";
+        componentId = "program-name-selection";
+        proofProfile = "basename_prefix_selection_v1";
+        dependencies = [ "memory-regions-equal" ];
+        staticImage = originalPe;
+        expectedCases = 10;
       }
     ];
   };
@@ -2869,7 +2989,7 @@ let
   semanticComponentHybridCandidate = mkReconstructionCandidate {
     name = "stage-b-gnu-hello-semantic-component-hybrid-candidate-v1";
     regionOverridePackage = semanticComponentRegistry;
-    regionOverrideCount = 7;
+    regionOverrideCount = semanticComponentWorkspaceDag.componentCount;
   };
 
   reconstructionDiagnosticCandidate = mkReconstructionCandidate {
@@ -4459,6 +4579,8 @@ let
   mkReconstructionFunctionalSuite = {
     name,
     candidate,
+    candidateManifestFormat ? "stage-b-interpreter-native-build-v1",
+    requireMachineIr ? true,
     qualification ? null,
     regionalRegistry ? null,
     componentRegistry ? null,
@@ -4471,14 +4593,16 @@ let
       __contentAddressed = true;
     } ''
       set -euo pipefail
-      jq -e '
+      ${lib.optionalString requireMachineIr ''
+        jq -e '
         .format == "stage-a-machine-ir-v2" and
         (.status == "qualified" or .status == "incomplete") and
         .coverage.counts.unknown_bytes == 0 and
         .control.counts.unresolved_direct_targets == 0
-      ' ${machineIr}/machine-ir-manifest.json >/dev/null
+        ' ${machineIr}/machine-ir-manifest.json >/dev/null
+      ''}
       jq -e '
-        .format == "stage-b-interpreter-native-build-v1" and
+        .format == "${candidateManifestFormat}" and
         .status == "candidate-generated"
       ' ${candidate}/interpreter-native-build-manifest.json >/dev/null
       ${lib.optionalString (qualification != null) ''
@@ -4649,6 +4773,184 @@ let
     candidate = semanticComponentHybridCandidate;
     componentRegistry = semanticComponentRegistry;
   };
+  idiomaticSourceBinding = pkgs.runCommand
+    "stage-b-gnu-hello-idiomatic-source-binding-v1"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export PYTHONPATH=${sourceProjectPythonSource}/src
+      mkdir -p "$out"
+      ${python} - \
+        ${machineIr} \
+        ${idiomaticHelloSource}/source-project.json \
+        ${idiomaticHelloSource} \
+        ${linkedIslands} \
+        "$out/source-project-binding.json" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.source_project import bind_source_project
+
+      bind_source_project(
+          machine_ir=pathlib.Path(sys.argv[1]),
+          specification=pathlib.Path(sys.argv[2]),
+          source_root=pathlib.Path(sys.argv[3]),
+          linked_islands=pathlib.Path(sys.argv[4]),
+          out=pathlib.Path(sys.argv[5]),
+      )
+      PY
+      jq -e '
+        .format == "stage-b-source-project-binding-v1" and
+        .status == "bound" and .equivalence_status == "not_proven" and
+        (.executes_original_binary | not) and
+        .program_id == "gnu-hello-2.12.3-idiomatic-source-v1" and
+        (.islands | length) == 3 and
+        .coverage.source_bound_units == 83 and
+        .coverage.reviewed_scope.required_machine_units == 83 and
+        .coverage.reviewed_scope.source_bound_machine_units == 83 and
+        .coverage.reviewed_scope.remaining_machine_units == 0 and
+        .coverage.reviewed_scope.fully_source_bound and
+        .coverage.reviewed_scope.out_of_scope_policy ==
+          "linked_runtime_and_library_code" and
+        .coverage.machine_units ==
+          (.coverage.source_bound_units + .coverage.remaining_machine_units) and
+        (.authority.proves_source_semantics | not) and
+        (.authority.can_authorize_machine_override | not)
+      ' "$out/source-project-binding.json" >/dev/null
+    '';
+  idiomaticCandidate = pkgs.runCommand
+    "stage-b-gnu-hello-idiomatic-candidate-v1"
+    {
+      nativeBuildInputs = [
+        mingw32.stdenv.cc
+        mingw32.binutils
+        pkgs.coreutils
+        pkgs.file
+        pkgs.jq
+      ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      mkdir -p "$out/source"
+      cp ${idiomaticHelloSource}/hello.c "$out/source/hello.c"
+      cp ${idiomaticHelloSource}/hello.h "$out/source/hello.h"
+      cp ${idiomaticHelloSource}/source-project.json \
+        "$out/source/source-project.json"
+      ${compiler} \
+        -std=c11 -O2 -Wall -Wextra -Werror \
+        -ffile-prefix-map=${idiomaticHelloSource}=gnu-hello-idiomatic \
+        -Wl,-Map,"$out/candidate.map" \
+        -o "$out/candidate.exe" \
+        ${idiomaticHelloSource}/hello.c
+      test -s "$out/candidate.exe"
+      test -s "$out/candidate.map"
+      ${pkgs.file}/bin/file "$out/candidate.exe" | grep -q 'PE32 executable'
+
+      candidate_sha256="$(sha256sum "$out/candidate.exe" | cut -d ' ' -f 1)"
+      candidate_size="$(stat -c %s "$out/candidate.exe")"
+      map_sha256="$(sha256sum "$out/candidate.map" | cut -d ' ' -f 1)"
+      source_sha256="$(sha256sum "$out/source/hello.c" | cut -d ' ' -f 1)"
+      header_sha256="$(sha256sum "$out/source/hello.h" | cut -d ' ' -f 1)"
+      specification_sha256="$(
+        jq -r .specification_sha256 "$out/source/source-project.json"
+      )"
+      jq -n \
+        --arg candidate_sha256 "$candidate_sha256" \
+        --argjson candidate_size "$candidate_size" \
+        --arg map_sha256 "$map_sha256" \
+        --arg source_sha256 "$source_sha256" \
+        --arg header_sha256 "$header_sha256" \
+        --arg specification_sha256 "$specification_sha256" '
+        {
+          format: "stage-b-source-project-build-v1",
+          status: "candidate-generated",
+          candidate_kind: "idiomatic-source-project",
+          executes_original_binary: false,
+          inputs: {
+            source_project_specification_sha256: $specification_sha256,
+            sources: [
+              {path: "source/hello.c", sha256: $source_sha256},
+              {path: "source/hello.h", sha256: $header_sha256}
+            ]
+          },
+          outputs: {
+            candidate: {
+              path: "candidate.exe",
+              sha256: $candidate_sha256,
+              bytes: $candidate_size
+            },
+            linker_map: {path: "candidate.map", sha256: $map_sha256}
+          },
+          authority: {
+            proof_authority: false,
+            stage_a_pass_authorized: false,
+            whole_program_equivalence_claim: false
+          }
+        }
+      ' > "$out/interpreter-native-build-manifest.json"
+    '';
+  idiomaticFunctionalSuite = mkReconstructionFunctionalSuite {
+    name = "stage-b-gnu-hello-idiomatic-functional-suite-v1";
+    candidate = idiomaticCandidate;
+    candidateManifestFormat = "stage-b-source-project-build-v1";
+    requireMachineIr = false;
+  };
+  idiomaticAssurance = pkgs.runCommand
+    "stage-b-gnu-hello-idiomatic-assurance-v1"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export PYTHONPATH=${sourceProjectPythonSource}/src
+      mkdir -p "$out"
+      ${python} - \
+        ${idiomaticSourceBinding}/source-project-binding.json \
+        ${idiomaticCandidate}/candidate.exe \
+        ${idiomaticFunctionalSuite}/functional-report.json \
+        "$out/source-project-assurance.json" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.source_project import assess_source_project
+
+      assess_source_project(
+          binding=pathlib.Path(sys.argv[1]),
+          candidate_binary=pathlib.Path(sys.argv[2]),
+          functional_report=pathlib.Path(sys.argv[3]),
+          out=pathlib.Path(sys.argv[4]),
+      )
+      PY
+      jq -e '
+        .format == "stage-b-source-project-assurance-v1" and
+        .status == "behavior_validated" and
+        .equivalence_status == "not_proven" and
+        (.executes_original_binary | not) and
+        .functional.status == "pass" and
+        .functional.counts.cases == 9 and
+        .functional.counts.failed == 0 and
+        (.functional.original_runtime_observations | not) and
+        (.authority.proves_equivalence | not) and
+        (.authority.can_authorize_machine_override | not)
+      ' "$out/source-project-assurance.json" >/dev/null
+    '';
   reconstructionAssurance = pkgs.runCommand
     "stage-a-gnu-hello-reconstruction-assurance-v1"
     {
@@ -9538,10 +9840,17 @@ assert !(builtins.elem nativeSourceApprovedToolchainAxiom standardLogicalAxioms)
     reconstructionNativeRuntime
     reconstructionPlan
     semanticComponents
+    componentProposals
+    selectedComponentDeclarations
+    selectedSemanticComponents
     semanticComponentWorkspaceDag
     semanticComponentRegistry
     semanticComponentHybridCandidate
     semanticComponentHybridFunctionalSuite
+    idiomaticSourceBinding
+    idiomaticCandidate
+    idiomaticFunctionalSuite
+    idiomaticAssurance
     reconstructionLiftingEvidence
     reconstructionBranchWorkspace
     reconstructionExternalWorkspace

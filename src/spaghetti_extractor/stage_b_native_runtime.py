@@ -253,6 +253,7 @@ class NativeRuntimePlan:
             },
             "runtime_abi": {
                 "atomic_compare_exchange_handler": True,
+                "atomic_exchange_handler": True,
                 "typed_native_x87_handler": self.has_typed_x87_handler,
                 "legacy_checked_x87_replay_handler": self.has_x87_replay_handler,
                 "modeled_environment_termination":
@@ -2355,6 +2356,34 @@ static void stage_b_native_atomic_compare_exchange(
   *fault = 0U;
 }}
 
+static void stage_b_native_atomic_exchange(
+    void *opaque, uint32_t address, uint32_t width,
+    uint32_t desired, uint32_t *observed, uint32_t *fault) {{
+  stage_b_native_context *context = (stage_b_native_context *)opaque;
+  uint32_t end;
+  if (fault == 0) return;
+  *fault = 1U;
+  if (observed == 0 || context == 0 || context->initialized == 0U ||
+      (width != 1U && width != 2U && width != 4U) ||
+      !stage_b_native_range_end(address, width, &end) ||
+      !stage_b_native_read_allowed(address, width) ||
+      !stage_b_native_write_allowed(address, width))
+    return;
+  (void)end;
+  if (width == 1U)
+    *observed = __atomic_exchange_n(
+        (volatile uint8_t *)(uintptr_t)address, (uint8_t)desired,
+        __ATOMIC_SEQ_CST);
+  else if (width == 2U)
+    *observed = __atomic_exchange_n(
+        (volatile uint16_t *)(uintptr_t)address, (uint16_t)desired,
+        __ATOMIC_SEQ_CST);
+  else
+    *observed = __atomic_exchange_n(
+        (volatile uint32_t *)(uintptr_t)address, desired, __ATOMIC_SEQ_CST);
+  *fault = 0U;
+}}
+
 void stage_b_runtime_atomic_compare_exchange(
     stage_b_runtime *runtime, uint32_t address, uint32_t width,
     uint32_t expected, uint32_t desired,
@@ -2365,6 +2394,16 @@ void stage_b_runtime_atomic_compare_exchange(
   stage_b_native_atomic_compare_exchange(
       runtime->context, address, width, expected, desired,
       observed, exchanged, fault);
+}}
+
+void stage_b_runtime_atomic_exchange(
+    stage_b_runtime *runtime, uint32_t address, uint32_t width,
+    uint32_t desired, uint32_t *observed, uint32_t *fault) {{
+  if (fault == 0) return;
+  *fault = 1U;
+  if (runtime == 0) return;
+  stage_b_native_atomic_exchange(
+      runtime->context, address, width, desired, observed, fault);
 }}
 
 static uint32_t stage_b_native_undefined_value(
@@ -2542,6 +2581,7 @@ stage_b_runtime stage_b_native_runtime_instance = {{
   .read = stage_b_native_flat_read,
   .write = stage_b_native_flat_write,
   .atomic_compare_exchange = stage_b_native_atomic_compare_exchange,
+  .atomic_exchange = stage_b_native_atomic_exchange,
   .undefined_value = stage_b_native_undefined_value,
   .external_call_fallback = stage_b_dispatch_external_call,
   .resolve_code_target = stage_b_native_resolve_code_target{x87_initializer}

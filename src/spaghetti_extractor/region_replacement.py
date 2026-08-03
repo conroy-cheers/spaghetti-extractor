@@ -308,6 +308,7 @@ def generate_region_override_table(
     source_root: Path,
     out_dir: Path,
     runtime_header: str = "state-machine-runtime.h",
+    fallback_on_unimplemented_ids: Sequence[str] = (),
 ) -> RegionOverrideTableArtifacts:
     """Generate a deterministic interpreter override lookup table."""
 
@@ -319,6 +320,14 @@ def generate_region_override_table(
     ]
     _validate_override_inventory(contracts)
     contracts.sort(key=lambda item: (int(item.cluster["entry_rva"]), item.id))
+    fallback_ids = {str(value) for value in fallback_on_unimplemented_ids}
+    contract_ids = {item.id for item in contracts}
+    unknown_fallbacks = fallback_ids.difference(contract_ids)
+    if unknown_fallbacks:
+        raise StageAInputError(
+            "override fallback IDs are absent from the manifest inventory: "
+            + ", ".join(sorted(unknown_fallbacks))
+        )
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -328,9 +337,17 @@ def generate_region_override_table(
     header_path.write_text(
         _render_override_header(contracts, runtime_header), encoding="ascii"
     )
-    source_path.write_text(_render_override_source(contracts), encoding="ascii")
+    source_path.write_text(
+        _render_override_source(contracts, fallback_ids), encoding="ascii"
+    )
 
-    entries = [_override_entry(contract) for contract in contracts]
+    entries = [
+        _override_entry(
+            contract,
+            fallback_on_unimplemented=contract.id in fallback_ids,
+        )
+        for contract in contracts
+    ]
     table_core = {
         "machine_ir_sha256": contracts[0].bindings["machine_ir_sha256"],
         "baseline_program_sha256": contracts[0].bindings[
@@ -356,6 +373,7 @@ def generate_region_override_table(
             "unique_entry_rvas": "verified",
             "non_overlapping_rva_spans": "verified",
             "qualified_evidence": "verified",
+            "guarded_fallbacks": "verified",
         },
     }
     write_json(manifest_path, payload)
@@ -828,12 +846,63 @@ def _normalize_fault_variant(payload: Mapping[str, Any], evidence: set[str]) -> 
 
 def _normalize_external_expectation(payload: Mapping[str, Any], evidence: set[str]) -> dict[str, Any]:
     context = "region replacement external-event expectation"
-    _exact_fields(payload, {"id", "kind", "identity", "evidence_ids"}, context)
-    return {
+    required = {"id", "kind", "identity", "evidence_ids"}
+    site_fields = {"instruction_rva", "return_rva"}
+    optional = site_fields | {"comparison"}
+    _exact_fields(payload, required | optional, context, optional=optional)
+    present_site_fields = set(payload) & site_fields
+    if present_site_fields not in (set(), site_fields):
+        raise StageAInputError(
+            f"{context} must provide instruction_rva and return_rva together"
+        )
+    result = {
         "id": _identifier(payload["id"], f"{context}.id"),
         "kind": _string(payload["kind"], f"{context}.kind"),
         "identity": _string(payload["identity"], f"{context}.identity"),
         "evidence_ids": _evidence_refs(payload["evidence_ids"], evidence, f"{context}.evidence_ids"),
+    }
+    if present_site_fields:
+        result["instruction_rva"] = _uint32(
+            payload["instruction_rva"], f"{context}.instruction_rva"
+        )
+        result["return_rva"] = _uint32(
+            payload["return_rva"], f"{context}.return_rva"
+        )
+    if "comparison" in payload:
+        result["comparison"] = _normalize_external_comparison(
+            _object(payload["comparison"], f"{context}.comparison")
+        )
+    return result
+
+
+def _normalize_external_comparison(payload: Mapping[str, Any]) -> dict[str, Any]:
+    context = "region replacement external-event comparison"
+    _exact_fields(
+        payload,
+        {
+            "mode",
+            "abi_contract_sha256",
+            "template",
+            "profile_id",
+            "profile_sha256",
+            "contract_id",
+        },
+        context,
+    )
+    mode = _choice(
+        payload["mode"], {"checked_machine_abi_v1"}, f"{context}.mode"
+    )
+    return {
+        "mode": mode,
+        "abi_contract_sha256": _digest(
+            payload["abi_contract_sha256"], f"{context}.abi_contract_sha256"
+        ),
+        "template": _string(payload["template"], f"{context}.template"),
+        "profile_id": _identifier(payload["profile_id"], f"{context}.profile_id"),
+        "profile_sha256": _digest(
+            payload["profile_sha256"], f"{context}.profile_sha256"
+        ),
+        "contract_id": _uint32(payload["contract_id"], f"{context}.contract_id"),
     }
 
 
@@ -938,9 +1007,11 @@ def _normalize_observation_case(payload: Mapping[str, Any]) -> dict[str, Any]:
         payload,
         {
             "id", "entry_unit_id", "live_inputs", "live_outputs",
-            "memory_views", "control", "fault", "external_events",
+            "memory_views", "guest_memory_writes", "control", "fault",
+            "external_events",
         },
         context,
+        optional={"guest_memory_writes"},
     )
     result = {
         "id": _identifier(payload["id"], f"{context}.id"),
@@ -961,6 +1032,23 @@ def _normalize_observation_case(payload: Mapping[str, Any]) -> dict[str, Any]:
     _require_unique((item["id"] for item in memory), f"{context}.memory view ids")
     memory.sort(key=lambda item: item["id"])
     result["memory_views"] = memory
+    guest_writes = [
+        _normalize_observed_guest_write(
+            _object(item, f"{context}.guest_memory_writes[{index}]")
+        )
+        for index, item in enumerate(
+            _array(
+                payload.get("guest_memory_writes", []),
+                f"{context}.guest_memory_writes",
+            )
+        )
+    ]
+    _require_unique(
+        (item["address"] for item in guest_writes),
+        f"{context}.guest_memory_writes addresses",
+    )
+    guest_writes.sort(key=lambda item: item["address"])
+    result["guest_memory_writes"] = guest_writes
     result["control"] = _normalize_observed_control(
         _object(payload["control"], f"{context}.control")
     )
@@ -1000,6 +1088,18 @@ def _normalize_observed_memory(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_observed_guest_write(payload: Mapping[str, Any]) -> dict[str, Any]:
+    context = "observed guest-memory write"
+    _exact_fields(payload, {"address", "after"}, context)
+    after = _hex_bytes(payload["after"], f"{context}.after")
+    if len(after) != 2:
+        raise StageAInputError(f"{context}.after must contain exactly one byte")
+    return {
+        "address": _uint32(payload["address"], f"{context}.address"),
+        "after": after,
+    }
+
+
 def _normalize_observed_control(payload: Mapping[str, Any]) -> dict[str, Any]:
     context = "observed control"
     _exact_fields(payload, {"id", "kind", "target_unit_id", "target_rva", "value"}, context)
@@ -1033,11 +1133,12 @@ def _normalize_observed_external(payload: Mapping[str, Any]) -> dict[str, Any]:
         payload,
         {
             "id", "kind", "identity", "arguments", "memory_reads", "result",
-            "memory_writes", "callbacks",
+            "memory_writes", "callbacks", "machine_call",
         },
         context,
+        optional={"machine_call"},
     )
-    return {
+    result = {
         "id": _identifier(payload["id"], f"{context}.id"),
         "kind": _string(payload["kind"], f"{context}.kind"),
         "identity": _string(payload["identity"], f"{context}.identity"),
@@ -1047,6 +1148,11 @@ def _normalize_observed_external(payload: Mapping[str, Any]) -> dict[str, Any]:
         "memory_writes": _canonical_json_value(payload["memory_writes"], f"{context}.memory_writes"),
         "callbacks": _canonical_json_value(payload["callbacks"], f"{context}.callbacks"),
     }
+    if "machine_call" in payload:
+        result["machine_call"] = _canonical_json_value(
+            payload["machine_call"], f"{context}.machine_call"
+        )
+    return result
 
 
 def _check_case_against_contract(
@@ -1192,13 +1298,26 @@ def _compare_cases(
                 next_action="repair writes through the named memory view",
             ),
         )
+    _recursive_differences(
+        baseline["guest_memory_writes"],
+        replacement["guest_memory_writes"],
+        path="/guest_memory_writes",
+        callback=lambda path, expected, observed: _append_delta(
+            deltas,
+            manifest,
+            status="violated",
+            family="guest_memory_write",
+            case_id=case_id,
+            path=path,
+            expected=expected,
+            observed=observed,
+            message="replacement guest-memory writes differ from baseline",
+            next_action="repair the adapter guest-memory write footprint or value",
+        ),
+    )
     for family, field, next_action in (
         ("control", "control", "repair the replacement exit and target selection"),
         ("fault", "fault", "repair fault conditions and fault metadata"),
-        (
-            "external_event", "external_events",
-            "repair the external call identity, ordering, arguments, effects, or callback protocol",
-        ),
     ):
         _recursive_differences(
             baseline[field], replacement[field], path=f"/{field}",
@@ -1209,6 +1328,52 @@ def _compare_cases(
                 next_action=action,
             ),
         )
+    _recursive_differences(
+        _project_external_events(manifest, baseline["external_events"]),
+        _project_external_events(manifest, replacement["external_events"]),
+        path="/external_events",
+        callback=lambda path, expected, observed: _append_delta(
+            deltas,
+            manifest,
+            status="violated",
+            family="external_event",
+            case_id=case_id,
+            path=path,
+            expected=expected,
+            observed=observed,
+            message="replacement external event differs from baseline",
+            next_action=(
+                "repair the external call identity, ordering, arguments, "
+                "effects, or callback protocol"
+            ),
+        ),
+    )
+
+
+def _project_external_events(
+    manifest: RegionReplacementManifest,
+    events: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    expectations = {
+        item["id"]: item
+        for item in manifest.payload["expectations"]["external_events"]
+    }
+    projected = []
+    for event in events:
+        result = dict(event)
+        expectation = expectations.get(event["id"])
+        comparison = None if expectation is None else expectation.get("comparison")
+        if (
+            comparison is not None
+            and comparison["mode"] == "checked_machine_abi_v1"
+            and "machine_call" in result
+        ):
+            machine_call = dict(_object(result["machine_call"], "observed machine call"))
+            machine_call.pop("registers", None)
+            machine_call.pop("flags", None)
+            result["machine_call"] = machine_call
+        projected.append(result)
+    return projected
 
 
 def _control_target_allowed(
@@ -1450,6 +1615,7 @@ typedef stage_b_step_result (*stage_b_region_override_fn)(
 typedef struct stage_b_region_override {{
   uint32_t entry_rva;
   stage_b_region_override_fn function;
+  uint32_t fallback_on_unimplemented;
   const char *replacement_id;
   const char *cluster_id;
 }} stage_b_region_override;
@@ -1464,12 +1630,15 @@ const stage_b_region_override *stage_b_region_override_lookup(uint32_t entry_rva
 """
 
 
-def _render_override_source(contracts: Sequence[RegionReplacementManifest]) -> str:
+def _render_override_source(
+    contracts: Sequence[RegionReplacementManifest], fallback_ids: set[str]
+) -> str:
     entries = "\n".join(
-        "  { UINT32_C(%d), %s, %s, %s },"
+        "  { UINT32_C(%d), %s, UINT32_C(%d), %s, %s },"
         % (
             int(item.cluster["entry_rva"]),
             item.source["symbol"],
+            1 if item.id in fallback_ids else 0,
             _c_string(item.id),
             _c_string(str(item.cluster["id"])),
         )
@@ -1499,13 +1668,16 @@ const stage_b_region_override *stage_b_region_override_lookup(uint32_t entry_rva
 """
 
 
-def _override_entry(contract: RegionReplacementManifest) -> dict[str, Any]:
+def _override_entry(
+    contract: RegionReplacementManifest, *, fallback_on_unimplemented: bool
+) -> dict[str, Any]:
     return {
         "replacement_id": contract.id,
         "manifest_sha256": contract.manifest_sha256,
         "cluster_id": contract.cluster["id"],
         "entry_unit_id": contract.cluster["entry_unit_id"],
         "entry_rva": contract.cluster["entry_rva"],
+        "fallback_on_unimplemented": fallback_on_unimplemented,
         "unit_ids": list(contract.cluster["unit_ids"]),
         "rva_spans": _json_copy(contract.cluster["rva_spans"]),
         "symbol": contract.source["symbol"],

@@ -244,6 +244,20 @@ def _observations(manifest_sha256: str) -> dict:
                         "result": {"eax": 1},
                         "memory_writes": [{"address": 0x70001010, "bytes": "02000000"}],
                         "callbacks": [],
+                        "machine_call": {
+                            "kind": 0,
+                            "instruction_rva": 0x1010,
+                            "call_index": 0,
+                            "target_rva": 0,
+                            "return_rva": 0x1015,
+                            "ordinal": 0,
+                            "has_ordinal": False,
+                            "registers": {"eax": 1},
+                            "flags": {"zf": 0},
+                            "stack_inputs": [
+                                {"offset": 0, "width": 4, "value": 1}
+                            ],
+                        },
                     }
                 ],
             }
@@ -329,6 +343,9 @@ class RegionReplacementTests(unittest.TestCase):
             root = Path(tmp)
             path, manifest = _write_manifest(root)
             baseline = _observations(manifest.manifest_sha256)
+            baseline["cases"][0]["guest_memory_writes"] = [
+                {"address": 0x70001002, "after": "ff"}
+            ]
             replacement = copy.deepcopy(baseline)
             report_path = root / "validation.json"
 
@@ -356,12 +373,19 @@ class RegionReplacementTests(unittest.TestCase):
             root = Path(tmp)
             path, manifest = _write_manifest(root)
             baseline = _observations(manifest.manifest_sha256)
+            baseline["cases"][0]["guest_memory_writes"] = [
+                {"address": 0x70001002, "after": "ff"}
+            ]
             replacement = copy.deepcopy(baseline)
             case = replacement["cases"][0]
             case["live_outputs"][1]["value"]["bits"] = "0000002b"
             case["memory_views"][0]["after"] = "0102aa04"
+            case["guest_memory_writes"][0]["after"] = "aa"
             case["control"]["value"] = 43
             case["external_events"][0]["arguments"][2] = 3
+            case["external_events"][0]["machine_call"]["stack_inputs"][0][
+                "value"
+            ] = 2
 
             first = validate_region_replacement(
                 manifest=path,
@@ -380,8 +404,21 @@ class RegionReplacementTests(unittest.TestCase):
             self.assertEqual(first["status"], "violated")
             families = {delta["family"] for delta in first["deltas"]}
             self.assertTrue(
-                {"live_output", "memory_output", "control", "external_event"}
+                {
+                    "live_output",
+                    "memory_output",
+                    "guest_memory_write",
+                    "control",
+                    "external_event",
+                }
                 <= families
+            )
+            self.assertTrue(
+                any(
+                    delta["family"] == "external_event"
+                    and "machine_call/stack_inputs/0/value" in delta["path"]
+                    for delta in first["deltas"]
+                )
             )
             output_delta = next(
                 delta for delta in first["deltas"]
@@ -405,6 +442,78 @@ class RegionReplacementTests(unittest.TestCase):
             self.assertEqual(memory_delta["path"], "/memory_views/view:buffer/after/2")
             self.assertEqual(memory_delta["expected"], "ff")
             self.assertEqual(memory_delta["observed"], "aa")
+            guest_write_delta = next(
+                delta
+                for delta in first["deltas"]
+                if delta["family"] == "guest_memory_write"
+            )
+            self.assertEqual(
+                guest_write_delta["path"], "/guest_memory_writes/0/after"
+            )
+
+    def test_checked_machine_abi_ignores_only_noncontract_register_and_flag_noise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _source(root)
+            payload = _manifest_payload(root)
+            payload["expectations"]["external_events"][0]["comparison"] = {
+                "mode": "checked_machine_abi_v1",
+                "abi_contract_sha256": "5" * 64,
+                "template": "pe32-stdcall-v1",
+                "profile_id": "pe32-kernel32-lockstep-v1",
+                "profile_sha256": "6" * 64,
+                "contract_id": 11,
+            }
+            path = root / "machine-abi.json"
+            manifest = write_region_replacement_manifest(
+                path, payload, source_root=root
+            )
+            baseline = _observations(manifest.manifest_sha256)
+            replacement = copy.deepcopy(baseline)
+            machine_call = replacement["cases"][0]["external_events"][0][
+                "machine_call"
+            ]
+            machine_call["registers"] = {"eax": 0xDEADBEEF, "ebp": 7}
+            machine_call["flags"] = {"cf": 1, "zf": 1}
+
+            qualified = validate_region_replacement(
+                manifest=path,
+                baseline_observations=baseline,
+                replacement_observations=replacement,
+                source_root=root,
+            )
+
+            self.assertEqual(qualified["status"], "qualified")
+
+            replacement["cases"][0]["external_events"][0]["machine_call"][
+                "stack_inputs"
+            ][0]["value"] = 2
+            replacement["cases"][0]["external_events"][0]["arguments"][0] = 2
+            violated = validate_region_replacement(
+                manifest=path,
+                baseline_observations=baseline,
+                replacement_observations=replacement,
+                source_root=root,
+            )
+
+            self.assertEqual(violated["status"], "violated")
+            paths = {item["path"] for item in violated["deltas"]}
+            self.assertTrue(
+                any("/arguments/0" in item for item in paths)
+            )
+            self.assertTrue(
+                any("/machine_call/stack_inputs/0/value" in item for item in paths)
+            )
+
+            invalid = _manifest_payload(root)
+            invalid["expectations"]["external_events"][0]["comparison"] = {
+                **payload["expectations"]["external_events"][0]["comparison"],
+                "mode": "ignore_machine_state_v1",
+            }
+            with self.assertRaisesRegex(StageAInputError, "must be one of"):
+                write_region_replacement_manifest(
+                    root / "invalid-machine-abi.json", invalid, source_root=root
+                )
 
     def test_input_drift_missing_case_and_incomplete_evidence_fail_incomplete(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -588,10 +697,16 @@ class RegionReplacementTests(unittest.TestCase):
             out_b = root / "out-b"
 
             artifacts_a = generate_region_override_table(
-                manifests=[second_path, first_path], source_root=root, out_dir=out_a
+                manifests=[second_path, first_path],
+                source_root=root,
+                out_dir=out_a,
+                fallback_on_unimplemented_ids=["replace-second"],
             )
             artifacts_b = generate_region_override_table(
-                manifests=[first_path, second_path], source_root=root, out_dir=out_b
+                manifests=[first_path, second_path],
+                source_root=root,
+                out_dir=out_b,
+                fallback_on_unimplemented_ids=["replace-second"],
             )
 
             self.assertEqual(artifacts_a.count, 2)
@@ -606,8 +721,13 @@ class RegionReplacementTests(unittest.TestCase):
             )
             self.assertFalse(manifest["executes_original_binary"])
             self.assertEqual(manifest["checks"]["source_hashes"], "verified")
+            self.assertEqual(
+                [entry["fallback_on_unimplemented"] for entry in manifest["entries"]],
+                [False, True],
+            )
             source_text = artifacts_a.source.read_text(encoding="ascii")
             self.assertLess(source_text.index("replace_loop"), source_text.index("replace_second"))
+            self.assertIn("replace_second, UINT32_C(1)", source_text)
 
             compiler = shutil.which("cc")
             if compiler is not None:
@@ -620,6 +740,14 @@ class RegionReplacementTests(unittest.TestCase):
                     check=True,
                     capture_output=True,
                     text=True,
+                )
+
+            with self.assertRaisesRegex(StageAInputError, "fallback IDs"):
+                generate_region_override_table(
+                    manifests=[first_path],
+                    source_root=root,
+                    out_dir=root / "unknown-fallback",
+                    fallback_on_unimplemented_ids=["missing-replacement"],
                 )
 
     def test_override_table_rejects_duplicate_overlap_binding_and_tampering(self):

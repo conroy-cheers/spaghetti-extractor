@@ -24,6 +24,10 @@ from .artifact_formats import (
     SEMANTIC_COMPONENT_CATALOG_FORMAT,
     SEMANTIC_COMPONENT_DECLARATIONS_FORMAT,
 )
+from .linked_library_contracts import (
+    LinkedLibraryContractError,
+    validate_linked_island_manifest,
+)
 from .util import sha256_file, write_json
 
 
@@ -92,6 +96,7 @@ class ComponentDeclaration:
     unit_ids: tuple[str, ...]
     cluster_ids: tuple[str, ...]
     child_ids: tuple[str, ...]
+    component_calls: tuple[dict[str, Any], ...]
     logical_interface: LogicalInterface
     refinement_status: str
     refinement_stages: tuple[dict[str, Any], ...]
@@ -116,6 +121,7 @@ def build_semantic_component_catalog(
     machine_ir: Path | str,
     reconstruction_plan: Path | str,
     declarations: Path | str | Mapping[str, Any],
+    linked_islands: Path | str | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Check component declarations and derive their exact static boundaries."""
 
@@ -123,6 +129,7 @@ def build_semantic_component_catalog(
     plan_path, plan = _load_plan(Path(reconstruction_plan))
     declaration_payload, declaration_sha256 = _load_declarations(declarations)
     parsed = _parse_declarations(declaration_payload)
+    linked_scope = _load_linked_island_scope(linked_islands, machine=machine)
 
     issues: list[dict[str, Any]] = []
     _check_bindings(
@@ -197,6 +204,12 @@ def build_semantic_component_catalog(
     ancestors, hierarchy_valid = _check_hierarchy(parsed, issues)
     resolved_members = _resolve_members(parsed, direct_members, hierarchy_valid)
     _check_component_overlaps(parsed, resolved_members, ancestors, issues)
+    _check_component_call_dependencies(
+        machine=machine,
+        declarations=parsed,
+        resolved_members=resolved_members,
+        issues=issues,
+    )
 
     graph = _machine_graph(machine)
     _check_machine_control_inventory(machine, issues)
@@ -239,6 +252,11 @@ def build_semantic_component_catalog(
             else "valid"
         )
         membership_spans = _membership_spans(machine, members)
+        effective_refinement_status = (
+            "not_applicable"
+            if declaration.refinement_status == "not_applicable"
+            else "not_started"
+        )
         component_core = {
             "id": declaration.identity,
             "label": declaration.label,
@@ -246,10 +264,10 @@ def build_semantic_component_catalog(
             "kind": declaration.kind,
             "sharing": declaration.sharing,
             "definition_status": definition_status,
-            "refinement_status": declaration.refinement_status,
+            "refinement_status": effective_refinement_status,
             "implementation_status": (
                 "not_required"
-                if declaration.refinement_status == "not_applicable"
+                if effective_refinement_status == "not_applicable"
                 else "not_implemented"
             ),
             "membership": {
@@ -262,9 +280,11 @@ def build_semantic_component_catalog(
             },
             "reachability": reachability,
             "machine_boundary": boundary,
+            "component_calls": copy.deepcopy(list(declaration.component_calls)),
             "logical_interface": declaration.logical_interface.payload(),
             "refinement": {
-                "status": declaration.refinement_status,
+                "status": effective_refinement_status,
+                "declared_status": declaration.refinement_status,
                 "stages": copy.deepcopy(list(declaration.refinement_stages)),
                 "machine_to_logical_projection_validated": False,
             },
@@ -280,6 +300,10 @@ def build_semantic_component_catalog(
             "assumptions": copy.deepcopy(list(declaration.assumptions)),
             "issues": component_issues,
         }
+        if linked_scope is not None:
+            component_core["linked_island_membership"] = (
+                _component_linked_island_membership(linked_scope, members)
+            )
         component_payloads.append(
             {
                 **component_core,
@@ -289,6 +313,11 @@ def build_semantic_component_catalog(
 
     component_payloads.sort(key=lambda item: item["id"])
     coverage = _coverage_ledger(machine, parsed, direct_members, resolved_members)
+    if linked_scope is not None:
+        coverage["linked_islands"] = _component_catalog_linked_coverage(
+            linked_scope,
+            declared_units=set().union(*resolved_members.values()),
+        )
     status = "violated" if any(item["status"] == "violated" for item in issues) else "incomplete"
     result = {
         "format": SEMANTIC_COMPONENT_CATALOG_FORMAT,
@@ -305,13 +334,27 @@ def build_semantic_component_catalog(
             "machine_ir_manifest_sha256": sha256_file(machine.manifest_path),
             "reconstruction_plan_sha256": plan["plan_sha256"],
             "original_binary_sha256": machine.manifest["binary"]["sha256"],
+            **(
+                {
+                    "linked_island_manifest_sha256": linked_scope[
+                        "manifest_sha256"
+                    ]
+                }
+                if linked_scope is not None
+                else {}
+            ),
         },
         "policy": {
             "machine_boundary_authority": "canonical_full_machine_state_v1",
             "logical_interface_authority": "operator_proposal_until_refined",
+            "logical_interface_activation_gate": (
+                "checked_stage_b_component_interface_refinement_v1_required"
+            ),
+            "declaration_refinement_status_authority": "none",
             "membership_authority": "exact_machine_unit_ids_checked_against_machine_ir",
             "overlap_policy": "nested_or_explicit_shared_component_only",
             "acceptance_authority": "none",
+            "linked_island_identity_authorizes_replacement": False,
         },
         "components": component_payloads,
         "coverage": coverage,
@@ -321,7 +364,7 @@ def build_semantic_component_catalog(
             "leaf_components": sum(not item["membership"]["child_ids"] for item in component_payloads),
             "aggregate_components": sum(item["kind"] == "aggregate" for item in component_payloads),
             "valid_definitions": sum(item["definition_status"] == "valid" for item in component_payloads),
-            "validated_refinements": sum(item["refinement_status"] == "validated" for item in component_payloads),
+            "validated_refinements": 0,
             "declared_units": coverage["counts"]["declared_units"],
             "unassigned_exact_reachable_units": coverage["counts"]["unassigned_exact_reachable_units"],
             "issues": len(issues),
@@ -336,15 +379,127 @@ def write_semantic_component_catalog(
     machine_ir: Path | str,
     reconstruction_plan: Path | str,
     declarations: Path | str | Mapping[str, Any],
+    linked_islands: Path | str | Mapping[str, Any] | None = None,
     out: Path | str,
 ) -> dict[str, Any]:
     payload = build_semantic_component_catalog(
         machine_ir=machine_ir,
         reconstruction_plan=reconstruction_plan,
         declarations=declarations,
+        linked_islands=linked_islands,
     )
     write_json(Path(out), payload)
     return payload
+
+
+def _load_linked_island_scope(
+    linked_islands: Path | str | Mapping[str, Any] | None,
+    *,
+    machine: _MachineInputs,
+) -> dict[str, Any] | None:
+    if linked_islands is None:
+        return None
+    manifest = (
+        copy.deepcopy(dict(linked_islands))
+        if isinstance(linked_islands, Mapping)
+        else _json_object(Path(linked_islands), "linked-island manifest")
+    )
+    try:
+        validate_linked_island_manifest(manifest)
+    except LinkedLibraryContractError as error:
+        raise SemanticComponentError(
+            f"invalid linked-island manifest: {error}"
+        ) from error
+    bindings = _object(manifest.get("bindings"), "linked-island bindings")
+    expected = {
+        "original_binary_sha256": machine.manifest["binary"]["sha256"],
+        "machine_ir_sha256": machine.manifest["artifacts"]["machine_ir"][
+            "sha256"
+        ],
+        "machine_ir_manifest_sha256": sha256_file(machine.manifest_path),
+    }
+    stale = {
+        key: {"expected": value, "observed": bindings.get(key)}
+        for key, value in expected.items()
+        if bindings.get(key) != value
+    }
+    if stale:
+        raise SemanticComponentError(
+            f"semantic components/linked-island binding is stale: {stale}"
+        )
+    owner_by_unit: dict[str, Mapping[str, Any]] = {}
+    for raw_island in _array(manifest.get("islands"), "linked islands"):
+        island = _object(raw_island, "linked island")
+        for unit_id in _array(island.get("unit_ids"), "linked island units"):
+            owner_by_unit[str(unit_id)] = island
+    if set(owner_by_unit) != set(machine.units_by_id):
+        raise SemanticComponentError(
+            "linked-island manifest does not classify the exact machine-IR unit set"
+        )
+    return {
+        "manifest_sha256": manifest["manifest_sha256"],
+        "status": manifest.get("status"),
+        "islands": manifest["islands"],
+        "owner_by_unit": owner_by_unit,
+    }
+
+
+def _component_linked_island_membership(
+    linked_scope: Mapping[str, Any],
+    members: set[str],
+) -> dict[str, Any]:
+    owner_by_unit = _object(
+        linked_scope.get("owner_by_unit"), "linked-island unit ownership"
+    )
+    grouped: dict[str, dict[str, Any]] = {}
+    for unit_id in sorted(members):
+        island = _object(owner_by_unit[unit_id], "linked island")
+        island_id = str(island["id"])
+        grouped.setdefault(
+            island_id,
+            {"island_id": island_id, "kind": island["kind"], "unit_ids": []},
+        )["unit_ids"].append(unit_id)
+    rows = []
+    for row in sorted(grouped.values(), key=lambda item: item["island_id"]):
+        rows.append({**row, "unit_count": len(row["unit_ids"])})
+    kinds = sorted({str(row["kind"]) for row in rows})
+    return {
+        "manifest_sha256": linked_scope["manifest_sha256"],
+        "islands": rows,
+        "kinds": kinds,
+        "crosses_island_boundaries": len(rows) > 1,
+        "crosses_ownership_kinds": len(kinds) > 1,
+        "identity_authorizes_replacement": False,
+    }
+
+
+def _component_catalog_linked_coverage(
+    linked_scope: Mapping[str, Any],
+    *,
+    declared_units: set[str],
+) -> dict[str, Any]:
+    owner_by_unit = _object(
+        linked_scope.get("owner_by_unit"), "linked-island unit ownership"
+    )
+    totals: dict[str, int] = defaultdict(int)
+    declared: dict[str, int] = defaultdict(int)
+    for unit_id, raw_island in owner_by_unit.items():
+        island = _object(raw_island, "linked island")
+        kind = str(island["kind"])
+        totals[kind] += 1
+        if unit_id in declared_units:
+            declared[kind] += 1
+    return {
+        "manifest_sha256": linked_scope["manifest_sha256"],
+        "classification_status": linked_scope["status"],
+        "machine_units_by_kind": dict(sorted(totals.items())),
+        "component_declared_units_by_kind": dict(sorted(declared.items())),
+        "remaining_units_by_kind": {
+            kind: count - declared.get(kind, 0)
+            for kind, count in sorted(totals.items())
+        },
+        "identity_authorizes_replacement": False,
+    }
 
 
 def _load_machine_inputs(path: Path) -> _MachineInputs:
@@ -436,6 +591,12 @@ def _parse_declarations(payload: Mapping[str, Any]) -> tuple[ComponentDeclaratio
                 unit_ids=_string_sequence(membership.get("unit_ids", []), f"component {identity} unit ids"),
                 cluster_ids=_string_sequence(membership.get("cluster_ids", []), f"component {identity} cluster ids"),
                 child_ids=_string_sequence(item.get("children", []), f"component {identity} children"),
+                component_calls=tuple(
+                    _object_sequence(
+                        item.get("component_calls", []),
+                        f"component {identity} component calls",
+                    )
+                ),
                 logical_interface=logical,
                 refinement_status=refinement_status,
                 refinement_stages=tuple(_object_sequence(refinement.get("stages", []), f"component {identity} refinement stages")),
@@ -715,6 +876,98 @@ def _check_component_overlaps(
             )
 
 
+def _check_component_call_dependencies(
+    *,
+    machine: _MachineInputs,
+    declarations: Sequence[ComponentDeclaration],
+    resolved_members: Mapping[str, set[str]],
+    issues: list[dict[str, Any]],
+) -> None:
+    by_id = {item.identity: item for item in declarations}
+    for declaration in declarations:
+        members = resolved_members.get(declaration.identity, set())
+        declared_calls: set[tuple[str, int]] = set()
+        for dependency in declaration.component_calls:
+            core = copy.deepcopy(dict(dependency))
+            observed_hash = core.pop("dependency_sha256", None)
+            target_component_id = dependency.get("target_component_id")
+            target_rva = dependency.get("target_rva")
+            target_unit_id = dependency.get("target_unit_id")
+            target = by_id.get(str(target_component_id))
+            target_members = resolved_members.get(str(target_component_id), set())
+            valid = (
+                observed_hash == _canonical_sha256(core)
+                and target is not None
+                and target_component_id != declaration.identity
+                and isinstance(target_rva, int)
+                and isinstance(target_unit_id, str)
+                and target_unit_id in target_members
+                and target_unit_id in machine.units_by_id
+                and _unit_start(machine.units_by_id[target_unit_id]) == target_rva
+            )
+            callsites = dependency.get("callsites")
+            if not isinstance(callsites, list) or not callsites:
+                valid = False
+                callsites = []
+            for callsite in callsites:
+                if not isinstance(callsite, Mapping):
+                    valid = False
+                    continue
+                source_id = callsite.get("source_unit_id")
+                source = machine.units_by_id.get(str(source_id))
+                if source_id not in members or source is None:
+                    valid = False
+                    continue
+                events = _mapping(
+                    source.get("semantics"), f"unit {source_id} semantics"
+                ).get("external_events", [])
+                matches = [
+                    event
+                    for event in events
+                    if isinstance(event, Mapping)
+                    and event.get("kind") == "internal_call"
+                    and event.get("target_rva") == target_rva
+                ]
+                if len(matches) != 1:
+                    valid = False
+                declared_calls.add((str(source_id), int(target_rva or 0)))
+            if not valid:
+                _issue(
+                    issues,
+                    "violated",
+                    "invalid_component_call_dependency",
+                    "component-call dependency does not bind exact machine callsites to a selected callee",
+                    component_id=declaration.identity,
+                    target_component_id=target_component_id,
+                    target_rva=target_rva,
+                )
+        external_internal_calls = {
+            (unit_id, int(event["target_rva"]))
+            for unit_id in members
+            for event in _mapping(
+                machine.units_by_id[unit_id].get("semantics"),
+                f"unit {unit_id} semantics",
+            ).get("external_events", [])
+            if isinstance(event, Mapping)
+            and event.get("kind") == "internal_call"
+            and isinstance(event.get("target_rva"), int)
+            and (
+                machine.units_by_rva.get(int(event["target_rva"])) is None
+                or machine.units_by_rva[int(event["target_rva"])]["id"] not in members
+            )
+        }
+        if declared_calls != external_internal_calls:
+            _issue(
+                issues,
+                "violated",
+                "incomplete_component_call_inventory",
+                "component-call dependencies do not exactly cover external internal calls",
+                component_id=declaration.identity,
+                expected=sorted(external_internal_calls),
+                observed=sorted(declared_calls),
+            )
+
+
 def _machine_graph(machine: _MachineInputs) -> dict[str, Any]:
     incoming: dict[str, list[dict[str, Any]]] = defaultdict(list)
     outgoing: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -801,6 +1054,7 @@ def _derive_boundary(machine: _MachineInputs, graph: Mapping[str, Any], members:
     memory_events: list[dict[str, Any]] = []
     registers_written: set[str] = set()
     flags_written: set[str] = set()
+    internal_indirect_controls: list[dict[str, Any]] = []
     call_closure = _derive_internal_call_closure(machine, graph, members)
     consumed_returns = set(call_closure["consumed_return_unit_ids"])
 
@@ -840,23 +1094,42 @@ def _derive_boundary(machine: _MachineInputs, graph: Mapping[str, Any], members:
                 )
             elif outcome_kind.startswith("indirect"):
                 certificate = graph["indirect_by_unit"].get(unit_id)
-                exits.append(
-                    {
-                        "kind": outcome_kind,
-                        "source_unit_id": unit_id,
-                        "target_expression": copy.deepcopy(outcome.get("target")),
-                        "target_inventory": (
-                            copy.deepcopy(certificate)
-                            if certificate is not None
-                            else {
-                                "status": "incomplete",
-                                "closure": "unresolved",
-                                "target_unit_ids": [],
-                                "target_rvas": [],
-                            }
-                        ),
+                inventory = (
+                    copy.deepcopy(certificate)
+                    if certificate is not None
+                    else {
+                        "status": "incomplete",
+                        "closure": "unresolved",
+                        "target_unit_ids": [],
+                        "target_rvas": [],
                     }
                 )
+                target_ids = {
+                    str(target_id)
+                    for target_id in inventory.get("target_unit_ids", [])
+                    if isinstance(target_id, str)
+                }
+                inventory_complete = (
+                    inventory.get("status") == "recovered"
+                    and inventory.get("closure")
+                    == "checked_finite_target_inventory"
+                    and bool(target_ids)
+                    and inventory.get("failure") is None
+                )
+                internal_targets = sorted(target_ids & members)
+                external_targets = sorted(target_ids - members)
+                record = {
+                    "kind": outcome_kind,
+                    "source_unit_id": unit_id,
+                    "target_expression": copy.deepcopy(outcome.get("target")),
+                    "target_inventory": inventory,
+                    "internal_target_unit_ids": internal_targets,
+                    "external_target_unit_ids": external_targets,
+                }
+                if inventory_complete and not external_targets:
+                    internal_indirect_controls.append(record)
+                else:
+                    exits.append(record)
         for index, event in enumerate(semantics.get("external_events", [])):
             if not isinstance(event, Mapping):
                 continue
@@ -898,6 +1171,7 @@ def _derive_boundary(machine: _MachineInputs, graph: Mapping[str, Any], members:
         },
         "internal_calls": copy.deepcopy(call_closure["calls"]),
         "internal_returns": copy.deepcopy(call_closure["returns"]),
+        "internal_indirect_controls": internal_indirect_controls,
         "call_closure": {
             "status": call_closure["status"],
             "issues": copy.deepcopy(call_closure["issues"]),
@@ -911,6 +1185,7 @@ def _derive_boundary(machine: _MachineInputs, graph: Mapping[str, Any], members:
             "internal_calls": len(call_closure["calls"]),
             "internal_returns": len(call_closure["returns"]),
             "internal_frame_effects": len(call_closure["frame_effects"]),
+            "internal_indirect_controls": len(internal_indirect_controls),
         },
     }
 

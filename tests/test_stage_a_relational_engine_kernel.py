@@ -34,6 +34,7 @@ class StageARelationalEngineKernelTests(unittest.TestCase):
                     source_root / f"{module}.lean",
                     stage_a / f"{module}.lean",
                 )
+            shutil.copyfile(module_source, stage_a / module_source.name)
 
             (stage_a / "RelationalEngineKernel.lean").write_text(
                 """import StageA.RelationalEngine

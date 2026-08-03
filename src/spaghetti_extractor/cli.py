@@ -73,6 +73,43 @@ from .component_workspace import (
     run_component_source_check,
 )
 from .semantic_components import write_semantic_component_catalog
+from .component_discovery import write_component_proposals
+from .component_interface import (
+    synthesize_component_interface_spec,
+    write_component_interface_refinement,
+)
+from .component_selection import materialize_component_declarations
+from .source_project import assess_source_project, bind_source_project
+from .linked_libraries import (
+    bind_interface_contract_catalog,
+    bind_library_artifact_inputs,
+    bind_linked_interface_assignments,
+    bind_linked_island_review,
+    derive_dynamic_library_requirements,
+    index_library_artifacts,
+    infer_library_hypotheses,
+    lock_library_catalog,
+    match_linked_islands,
+    plan_library_replacements,
+    propose_library_match_evidence,
+    qualify_linked_interfaces,
+    refine_linked_islands,
+)
+from .source_call_substitution import (
+    audit_candidate_dependencies,
+    bind_allowed_runtime_imports,
+    bind_call_substitution_assignments,
+    bind_callable_interface_catalog,
+    bind_source_call_bindings,
+    bind_source_substitution_catalog,
+    check_source_call_bindings,
+    derive_static_indirect_call_targets,
+    generate_call_frontier,
+    inventory_clang_source_calls,
+    plan_call_substitutions,
+    propose_source_component_artifacts,
+    propose_source_component_bindings,
+)
 from .roundtrip_fuzz.generator import SPIKE_CASES, generate_spike_corpus
 from .roundtrip_fuzz.discovery import (
     compare_discovery_proposals,
@@ -845,8 +882,498 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         "--reconstruction-plan", type=Path, required=True
     )
     semantic_components.add_argument("--declarations", type=Path, required=True)
+    semantic_components.add_argument("--linked-islands", type=Path)
     semantic_components.add_argument("--out", type=Path, required=True)
     semantic_components.set_defaults(func=_cmd_stage_b_validate_components)
+
+    component_discovery = subcommands.add_parser(
+        "stage-b-discover-components",
+        help="propose deterministic overlapping semantic-component boundaries",
+    )
+    component_discovery.add_argument("--machine-ir", type=Path, required=True)
+    component_discovery.add_argument(
+        "--reconstruction-plan", type=Path, required=True
+    )
+    component_discovery.add_argument("--max-units", type=int, default=512)
+    component_discovery.add_argument(
+        "--max-candidates-per-seed", type=int, default=12
+    )
+    component_discovery.add_argument("--out", type=Path, required=True)
+    component_discovery.set_defaults(func=_cmd_stage_b_discover_components)
+
+    component_selection = subcommands.add_parser(
+        "stage-b-select-components",
+        help="materialize reviewed discovery proposals as component declarations",
+    )
+    component_selection.add_argument("--proposals", type=Path, required=True)
+    component_selection.add_argument("--selection", type=Path, required=True)
+    component_selection.add_argument("--out", type=Path, required=True)
+    component_selection.set_defaults(func=_cmd_stage_b_select_components)
+
+    source_project = subcommands.add_parser(
+        "stage-b-bind-source-project",
+        help="bind idiomatic source islands to exact machine-IR units",
+    )
+    source_project.add_argument("--machine-ir", type=Path, required=True)
+    source_project.add_argument("--specification", type=Path, required=True)
+    source_project.add_argument("--source-root", type=Path, required=True)
+    source_project.add_argument("--linked-islands", type=Path)
+    source_project.add_argument("--out", type=Path, required=True)
+    source_project.set_defaults(func=_cmd_stage_b_bind_source_project)
+
+    source_assurance = subcommands.add_parser(
+        "stage-b-assess-source-project",
+        help="combine static source binding with candidate-only behavior evidence",
+    )
+    source_assurance.add_argument("--binding", type=Path, required=True)
+    source_assurance.add_argument("--candidate-binary", type=Path, required=True)
+    source_assurance.add_argument("--functional-report", type=Path, required=True)
+    source_assurance.add_argument("--out", type=Path, required=True)
+    source_assurance.set_defaults(func=_cmd_stage_b_assess_source_project)
+
+    library_inputs = subcommands.add_parser(
+        "stage-b-bind-library-artifact-inputs",
+        help="self-bind a public/private linked-library artifact declaration",
+    )
+    library_inputs.add_argument("--inputs", type=Path, required=True)
+    library_inputs.add_argument("--out", type=Path, required=True)
+    library_inputs.set_defaults(
+        func=lambda args: _write_bound_json(
+            source=args.inputs,
+            out=args.out,
+            label="library artifact inputs",
+            binder=bind_library_artifact_inputs,
+        )
+    )
+
+    library_index = subcommands.add_parser(
+        "stage-b-index-library-artifacts",
+        help="index content-bound COFF, OMF, archive, and PE artifacts statically",
+    )
+    library_index.add_argument("--inputs", type=Path, required=True)
+    library_index.add_argument("--artifact-root", type=Path, required=True)
+    library_index.add_argument("--out", type=Path, required=True)
+    library_index.set_defaults(
+        func=lambda args: index_library_artifacts(
+            inputs=args.inputs,
+            artifact_root=args.artifact_root,
+            out=args.out,
+        )
+    )
+
+    library_lock = subcommands.add_parser(
+        "stage-b-lock-library-catalog",
+        help="lock selected immutable library indexes for reproducible matching",
+    )
+    library_lock.add_argument("--artifact-index", type=Path, action="append", default=[])
+    library_lock.add_argument("--out", type=Path, required=True)
+    library_lock.set_defaults(
+        func=lambda args: lock_library_catalog(indexes=args.artifact_index, out=args.out)
+    )
+
+    linked_review = subcommands.add_parser(
+        "stage-b-bind-linked-island-review",
+        help="self-bind operator-reviewed application/dependency ownership ranges",
+    )
+    linked_review.add_argument("--review", type=Path, required=True)
+    linked_review.add_argument("--out", type=Path, required=True)
+    linked_review.set_defaults(
+        func=lambda args: _write_bound_json(
+            source=args.review,
+            out=args.out,
+            label="linked-island review",
+            binder=bind_linked_island_review,
+        )
+    )
+
+    linked_match = subcommands.add_parser(
+        "stage-b-match-linked-islands",
+        help="classify every machine unit and propose linked-library identities",
+    )
+    linked_match.add_argument("--original", type=Path, required=True)
+    linked_match.add_argument("--machine-ir", type=Path, required=True)
+    linked_match.add_argument("--catalog-lock", type=Path)
+    linked_match.add_argument("--review", type=Path)
+    linked_match.add_argument("--out", type=Path, required=True)
+    linked_match.set_defaults(
+        func=lambda args: match_linked_islands(
+            original=args.original,
+            machine_ir=args.machine_ir,
+            catalog_lock=args.catalog_lock,
+            review=args.review,
+            out=args.out,
+        )
+    )
+
+    library_evidence = subcommands.add_parser(
+        "stage-b-propose-library-evidence",
+        help="emit all exact target-to-library matches without selecting identity",
+    )
+    library_evidence.add_argument("--original", type=Path, required=True)
+    library_evidence.add_argument("--machine-ir", type=Path, required=True)
+    library_evidence.add_argument("--catalog-lock", type=Path, required=True)
+    library_evidence.add_argument("--review", type=Path)
+    library_evidence.add_argument("--out", type=Path, required=True)
+    library_evidence.set_defaults(
+        func=lambda args: propose_library_match_evidence(
+            original=args.original,
+            machine_ir=args.machine_ir,
+            catalog_lock=args.catalog_lock,
+            review=args.review,
+            out=args.out,
+        )
+    )
+
+    library_hypotheses = subcommands.add_parser(
+        "stage-b-infer-library-hypotheses",
+        help="infer coherent member, release, and library-family hypotheses",
+    )
+    library_hypotheses.add_argument("--match-evidence", type=Path, required=True)
+    library_hypotheses.add_argument("--max-hypotheses", type=int, default=256)
+    library_hypotheses.add_argument("--out", type=Path, required=True)
+    library_hypotheses.set_defaults(
+        func=lambda args: infer_library_hypotheses(
+            match_evidence=args.match_evidence,
+            max_hypotheses=args.max_hypotheses,
+            out=args.out,
+        )
+    )
+
+    linked_refine = subcommands.add_parser(
+        "stage-b-refine-linked-islands",
+        help="materialize ownership islands from constellation hypotheses",
+    )
+    linked_refine.add_argument("--original", type=Path, required=True)
+    linked_refine.add_argument("--machine-ir", type=Path, required=True)
+    linked_refine.add_argument("--match-evidence", type=Path, required=True)
+    linked_refine.add_argument("--hypotheses", type=Path, required=True)
+    linked_refine.add_argument("--review", type=Path)
+    linked_refine.add_argument("--out", type=Path, required=True)
+    linked_refine.set_defaults(
+        func=lambda args: refine_linked_islands(
+            original=args.original,
+            machine_ir=args.machine_ir,
+            match_evidence=args.match_evidence,
+            hypotheses=args.hypotheses,
+            review=args.review,
+            out=args.out,
+        )
+    )
+
+    dynamic_requirements = subcommands.add_parser(
+        "stage-b-derive-dynamic-library-requirements",
+        help="preserve exact imported identities and checked machine-call contracts",
+    )
+    dynamic_requirements.add_argument("--machine-ir", type=Path, required=True)
+    dynamic_requirements.add_argument("--machine-import-report", type=Path)
+    dynamic_requirements.add_argument("--out", type=Path, required=True)
+    dynamic_requirements.set_defaults(
+        func=lambda args: derive_dynamic_library_requirements(
+            machine_ir=args.machine_ir,
+            machine_import_report=args.machine_import_report,
+            out=args.out,
+        )
+    )
+
+    interface_catalog = subcommands.add_parser(
+        "stage-b-bind-interface-contract-catalog",
+        help="self-bind reusable component contracts and portable replacements",
+    )
+    interface_catalog.add_argument("--catalog", type=Path, required=True)
+    interface_catalog.add_argument("--out", type=Path, required=True)
+    interface_catalog.set_defaults(
+        func=lambda args: _write_bound_json(
+            source=args.catalog,
+            out=args.out,
+            label="interface contract catalog",
+            binder=bind_interface_contract_catalog,
+        )
+    )
+
+    interface_assignments = subcommands.add_parser(
+        "stage-b-bind-linked-interface-assignments",
+        help="self-bind operator-selected island-to-contract assignments",
+    )
+    interface_assignments.add_argument("--assignments", type=Path, required=True)
+    interface_assignments.add_argument("--out", type=Path, required=True)
+    interface_assignments.set_defaults(
+        func=lambda args: _write_bound_json(
+            source=args.assignments,
+            out=args.out,
+            label="linked interface assignments",
+            binder=bind_linked_interface_assignments,
+        )
+    )
+
+    linked_qualification = subcommands.add_parser(
+        "stage-b-qualify-linked-interface",
+        help="bind checked component evidence to proposed library interfaces",
+    )
+    linked_qualification.add_argument("--linked-islands", type=Path, required=True)
+    linked_qualification.add_argument("--interface-catalog", type=Path, required=True)
+    linked_qualification.add_argument("--assignments", type=Path, required=True)
+    linked_qualification.add_argument("--out", type=Path, required=True)
+    linked_qualification.set_defaults(
+        func=lambda args: qualify_linked_interfaces(
+            linked_islands=args.linked_islands,
+            interface_catalog=args.interface_catalog,
+            assignments=args.assignments,
+            out=args.out,
+        )
+    )
+
+    replacement_plan = subcommands.add_parser(
+        "stage-b-plan-library-replacements",
+        help="select qualified portable replacements and explicit IR fallbacks",
+    )
+    replacement_plan.add_argument("--linked-islands", type=Path, required=True)
+    replacement_plan.add_argument("--interface-qualification", type=Path, required=True)
+    replacement_plan.add_argument("--interface-catalog", type=Path, required=True)
+    replacement_plan.add_argument("--dynamic-requirements", type=Path)
+    replacement_plan.add_argument("--out", type=Path, required=True)
+    replacement_plan.set_defaults(
+        func=lambda args: plan_library_replacements(
+            linked_islands=args.linked_islands,
+            interface_qualification=args.interface_qualification,
+            interface_catalog=args.interface_catalog,
+            dynamic_requirements=args.dynamic_requirements,
+            out=args.out,
+        )
+    )
+
+    call_frontier = subcommands.add_parser(
+        "stage-b-generate-call-frontier",
+        help="classify every outgoing call from source-bound application islands",
+    )
+
+    indirect_targets = subcommands.add_parser(
+        "stage-b-derive-static-indirect-targets",
+        help="derive relocation-backed internal call targets from static PE evidence",
+    )
+    indirect_targets.add_argument("--original", type=Path, required=True)
+    indirect_targets.add_argument("--machine-ir", type=Path, required=True)
+    indirect_targets.add_argument("--source-binding", type=Path, required=True)
+    indirect_targets.add_argument("--out", type=Path, required=True)
+    indirect_targets.set_defaults(
+        func=lambda args: derive_static_indirect_call_targets(
+            original=args.original,
+            machine_ir=args.machine_ir,
+            source_binding=args.source_binding,
+            out=args.out,
+        )
+    )
+    call_frontier.add_argument("--source-binding", type=Path, required=True)
+    call_frontier.add_argument("--linked-islands", type=Path, required=True)
+    call_frontier.add_argument("--dynamic-requirements", type=Path, required=True)
+    call_frontier.add_argument("--indirect-targets", type=Path)
+    call_frontier.add_argument("--out", type=Path, required=True)
+    call_frontier.set_defaults(
+        func=lambda args: generate_call_frontier(
+            source_binding=args.source_binding,
+            linked_islands=args.linked_islands,
+            dynamic_requirements=args.dynamic_requirements,
+            indirect_targets=args.indirect_targets,
+            out=args.out,
+        )
+    )
+
+    callable_catalog = subcommands.add_parser(
+        "stage-b-bind-callable-interface-catalog",
+        help="self-bind reusable machine-to-logical callable contracts",
+    )
+    callable_catalog.add_argument("--catalog", type=Path, required=True)
+    callable_catalog.add_argument("--out", type=Path, required=True)
+    callable_catalog.set_defaults(
+        func=lambda args: _write_bound_json(
+            source=args.catalog,
+            out=args.out,
+            label="callable interface catalog",
+            binder=bind_callable_interface_catalog,
+        )
+    )
+
+    source_substitutions = subcommands.add_parser(
+        "stage-b-bind-source-substitution-catalog",
+        help="self-bind C implementations for qualified callable interfaces",
+    )
+    source_substitutions.add_argument("--catalog", type=Path, required=True)
+    source_substitutions.add_argument("--out", type=Path, required=True)
+    source_substitutions.set_defaults(
+        func=lambda args: _write_bound_json(
+            source=args.catalog,
+            out=args.out,
+            label="source substitution catalog",
+            binder=bind_source_substitution_catalog,
+        )
+    )
+
+    call_assignments = subcommands.add_parser(
+        "stage-b-bind-call-substitution-assignments",
+        help="self-bind operator-selected frontier-to-source substitutions",
+    )
+    call_assignments.add_argument("--assignments", type=Path, required=True)
+    call_assignments.add_argument("--out", type=Path, required=True)
+    call_assignments.set_defaults(
+        func=lambda args: _write_bound_json(
+            source=args.assignments,
+            out=args.out,
+            label="call substitution assignments",
+            binder=bind_call_substitution_assignments,
+        )
+    )
+
+    component_substitutions = subcommands.add_parser(
+        "stage-b-propose-source-components",
+        help="group each application island call frontier into a fail-closed source component",
+    )
+    component_substitutions.add_argument("--frontier", type=Path, required=True)
+    component_substitutions.add_argument("--source-binding", type=Path, required=True)
+    component_substitutions.add_argument("--interfaces-out", type=Path, required=True)
+    component_substitutions.add_argument("--substitutions-out", type=Path, required=True)
+    component_substitutions.add_argument("--assignments-out", type=Path, required=True)
+    component_substitutions.set_defaults(
+        func=lambda args: propose_source_component_artifacts(
+            frontier=args.frontier,
+            source_binding=args.source_binding,
+            interfaces_out=args.interfaces_out,
+            substitutions_out=args.substitutions_out,
+            assignments_out=args.assignments_out,
+        )
+    )
+
+    call_plan = subcommands.add_parser(
+        "stage-b-plan-call-substitutions",
+        help="require one qualified C disposition for every frontier call",
+    )
+    call_plan.add_argument("--frontier", type=Path, required=True)
+    call_plan.add_argument("--interface-catalog", type=Path, required=True)
+    call_plan.add_argument("--substitution-catalog", type=Path, required=True)
+    call_plan.add_argument("--assignments", type=Path, required=True)
+    call_plan.add_argument("--out", type=Path, required=True)
+    call_plan.set_defaults(
+        func=lambda args: plan_call_substitutions(
+            frontier=args.frontier,
+            interface_catalog=args.interface_catalog,
+            substitution_catalog=args.substitution_catalog,
+            assignments=args.assignments,
+            out=args.out,
+        )
+    )
+
+    source_call_inventory = subcommands.add_parser(
+        "stage-b-inventory-source-calls",
+        help="inventory source calls from a Clang JSON AST",
+    )
+    source_call_inventory.add_argument("--clang-ast", type=Path, required=True)
+    source_call_inventory.add_argument("--source-root", type=Path, required=True)
+    source_call_inventory.add_argument("--source-binding", type=Path, required=True)
+    source_call_inventory.add_argument("--out", type=Path, required=True)
+    source_call_inventory.set_defaults(func=_cmd_stage_b_inventory_source_calls)
+
+    source_call_bindings = subcommands.add_parser(
+        "stage-b-bind-source-call-bindings",
+        help="self-bind source AST calls to checked call plans",
+    )
+    source_call_bindings.add_argument("--bindings", type=Path, required=True)
+    source_call_bindings.add_argument("--out", type=Path, required=True)
+    source_call_bindings.set_defaults(
+        func=lambda args: _write_bound_json(
+            source=args.bindings,
+            out=args.out,
+            label="source call bindings",
+            binder=bind_source_call_bindings,
+        )
+    )
+
+    component_source_bindings = subcommands.add_parser(
+        "stage-b-propose-source-component-bindings",
+        help="bind proposed component plans to matching Clang source definitions",
+    )
+    component_source_bindings.add_argument("--call-plan", type=Path, required=True)
+    component_source_bindings.add_argument(
+        "--source-inventory", type=Path, required=True
+    )
+    component_source_bindings.add_argument("--out", type=Path, required=True)
+    component_source_bindings.set_defaults(
+        func=lambda args: propose_source_component_bindings(
+            call_plan=args.call_plan,
+            source_inventory=args.source_inventory,
+            out=args.out,
+        )
+    )
+
+    source_call_check = subcommands.add_parser(
+        "stage-b-check-source-call-bindings",
+        help="reject missing, extra, or mismatched source calls",
+    )
+    source_call_check.add_argument("--call-plan", type=Path, required=True)
+    source_call_check.add_argument("--source-inventory", type=Path, required=True)
+    source_call_check.add_argument("--bindings", type=Path, required=True)
+    source_call_check.add_argument("--out", type=Path, required=True)
+    source_call_check.set_defaults(
+        func=lambda args: check_source_call_bindings(
+            call_plan=args.call_plan,
+            source_inventory=args.source_inventory,
+            bindings=args.bindings,
+            out=args.out,
+        )
+    )
+
+    dependency_audit = subcommands.add_parser(
+        "stage-b-audit-candidate-dependencies",
+        help="statically reject candidate imports outside the checked source envelope",
+    )
+    dependency_audit.add_argument("--candidate", type=Path, required=True)
+    dependency_audit.add_argument("--call-plan", type=Path, required=True)
+    dependency_audit.add_argument("--allowed-runtime-imports", type=Path, required=True)
+    dependency_audit.add_argument("--out", type=Path, required=True)
+    dependency_audit.set_defaults(func=_cmd_stage_b_audit_candidate_dependencies)
+
+    runtime_imports = subcommands.add_parser(
+        "stage-b-bind-allowed-runtime-imports",
+        help="self-bind a reviewed candidate dependency envelope",
+    )
+    runtime_imports.add_argument("--imports", type=Path, required=True)
+    runtime_imports.add_argument("--out", type=Path, required=True)
+    runtime_imports.set_defaults(
+        func=lambda args: _write_bound_json(
+            source=args.imports,
+            out=args.out,
+            label="allowed runtime imports",
+            binder=bind_allowed_runtime_imports,
+        )
+    )
+
+    component_interface_synthesis = subcommands.add_parser(
+        "stage-b-synthesize-component-interface",
+        help="emit a conservative machine-shaped component interface proposal",
+    )
+    component_interface_synthesis.add_argument("--catalog", type=Path, required=True)
+    component_interface_synthesis.add_argument("--machine-ir", type=Path, required=True)
+    component_interface_synthesis.add_argument("--component-id", required=True)
+    component_interface_synthesis.add_argument("--out", type=Path, required=True)
+    component_interface_synthesis.set_defaults(
+        func=_cmd_stage_b_synthesize_component_interface
+    )
+
+    component_interface_check = subcommands.add_parser(
+        "stage-b-check-component-interface",
+        help="check a structured logical interface against exact machine effects",
+    )
+    component_interface_check.add_argument("--catalog", type=Path, required=True)
+    component_interface_check.add_argument("--machine-ir", type=Path, required=True)
+    component_interface_check.add_argument("--component-id", required=True)
+    component_interface_check.add_argument("--interface-spec", type=Path, required=True)
+    component_interface_check.add_argument("--out", type=Path, required=True)
+    component_interface_check.set_defaults(
+        func=lambda args: write_component_interface_refinement(
+            catalog=args.catalog,
+            machine_ir=args.machine_ir,
+            component_id=args.component_id,
+            interface_spec=args.interface_spec,
+            out=args.out,
+        )
+    )
 
     semantic_claim = subcommands.add_parser(
         "stage-b-check-semantic-claim",
@@ -874,6 +1401,9 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         help="pre-reduced immutable slice; mutually exclusive with the full inputs",
     )
     component_create.add_argument("--interpreter-package", type=Path, required=True)
+    component_create.add_argument(
+        "--interface-refinement", type=Path, required=True
+    )
     component_create.add_argument("--component-id", required=True)
     component_create.add_argument("--proof-profile", required=True)
     component_create.add_argument("--out-dir", type=Path, required=True)
@@ -886,6 +1416,7 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
             component_id=args.component_id,
             proof_profile=args.proof_profile,
             out_dir=args.out_dir,
+            interface_refinement=args.interface_refinement,
             component_slice=args.component_slice,
         )
     )
@@ -972,11 +1503,13 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     component_promote.add_argument("--workspace", type=Path, action="append", required=True)
     component_promote.add_argument("--qualification", type=Path, action="append", required=True)
     component_promote.add_argument("--out-dir", type=Path, required=True)
+    component_promote.add_argument("--linked-islands", type=Path)
     component_promote.set_defaults(
         func=lambda args: promote_qualified_components(
             workspaces=args.workspace,
             qualifications=args.qualification,
             out_dir=args.out_dir,
+            linked_islands=args.linked_islands,
         )
     )
 
@@ -2089,6 +2622,7 @@ def _cmd_stage_b_validate_components(args: Any) -> dict[str, Any]:
         machine_ir=args.machine_ir,
         reconstruction_plan=args.reconstruction_plan,
         declarations=args.declarations,
+        linked_islands=args.linked_islands,
         out=args.out,
     )
     return {
@@ -2102,6 +2636,91 @@ def _cmd_stage_b_validate_components(args: Any) -> dict[str, Any]:
         "out": str(args.out),
         "catalog_sha256": payload["catalog_sha256"],
         "counts": payload["counts"],
+    }
+
+
+def _cmd_stage_b_discover_components(args: Any) -> dict[str, Any]:
+    payload = write_component_proposals(
+        machine_ir=args.machine_ir,
+        reconstruction_plan=args.reconstruction_plan,
+        max_units=args.max_units,
+        max_candidates_per_seed=args.max_candidates_per_seed,
+        out=args.out,
+    )
+    return {
+        "format": "stage-b-component-discovery-result-v1",
+        "status": "generated",
+        "proposal_status": payload["status"],
+        "proposal_set_sha256": payload["proposal_set_sha256"],
+        "proposals": len(payload["proposals"]),
+        "issues": len(payload["issues"]),
+        "out": str(args.out),
+    }
+
+
+def _cmd_stage_b_select_components(args: Any) -> dict[str, Any]:
+    payload = materialize_component_declarations(
+        proposals=args.proposals,
+        selection=args.selection,
+        out=args.out,
+    )
+    return {
+        "format": "stage-b-component-selection-result-v1",
+        "status": "generated",
+        "components": len(payload["components"]),
+        "out": str(args.out),
+    }
+
+
+def _cmd_stage_b_bind_source_project(args: Any) -> dict[str, Any]:
+    payload = bind_source_project(
+        machine_ir=args.machine_ir,
+        specification=args.specification,
+        source_root=args.source_root,
+        linked_islands=args.linked_islands,
+        out=args.out,
+    )
+    return {
+        "format": "stage-b-source-project-binding-result-v1",
+        "status": "complete",
+        "binding_status": payload["status"],
+        "program_id": payload["program_id"],
+        "islands": len(payload["islands"]),
+        "source_bound_units": payload["coverage"]["source_bound_units"],
+        "out": str(args.out),
+    }
+
+
+def _cmd_stage_b_assess_source_project(args: Any) -> dict[str, Any]:
+    payload = assess_source_project(
+        binding=args.binding,
+        candidate_binary=args.candidate_binary,
+        functional_report=args.functional_report,
+        out=args.out,
+    )
+    return {
+        "format": "stage-b-source-project-assessment-result-v1",
+        "status": "pass" if payload["status"] == "behavior_validated" else "fail",
+        "assurance_status": payload["status"],
+        "equivalence_status": payload["equivalence_status"],
+        "program_id": payload["program_id"],
+        "out": str(args.out),
+    }
+
+
+def _cmd_stage_b_synthesize_component_interface(args: Any) -> dict[str, Any]:
+    payload = synthesize_component_interface_spec(
+        catalog=args.catalog,
+        machine_ir=args.machine_ir,
+        component_id=args.component_id,
+    )
+    write_json(args.out, payload)
+    return {
+        "format": "stage-b-component-interface-synthesis-result-v1",
+        "status": "generated",
+        "component_id": payload["component_id"],
+        "interface_spec_sha256": payload["interface_spec_sha256"],
+        "out": str(args.out),
     }
 
 
@@ -2663,6 +3282,49 @@ def _auto_int(value: str) -> int:
     return result
 
 
+def _cmd_stage_b_inventory_source_calls(args: Any) -> dict[str, Any]:
+    binding = _json_file(args.source_binding, "source-project binding")
+    if not isinstance(binding, dict):
+        raise ValueError("source-project binding must be a JSON object")
+    sources = binding.get("sources")
+    if not isinstance(sources, list):
+        raise ValueError("source-project binding omits its source inventory")
+    return inventory_clang_source_calls(
+        ast_json=args.clang_ast,
+        source_root=args.source_root,
+        source_hashes=sources,
+        project_symbols=[
+            island["source_symbol"]
+            for island in binding.get("islands", [])
+            if isinstance(island, dict) and isinstance(island.get("source_symbol"), str)
+        ],
+        out=args.out,
+    )
+
+
+def _cmd_stage_b_audit_candidate_dependencies(args: Any) -> dict[str, Any]:
+    payload = _json_file(args.allowed_runtime_imports, "allowed runtime imports")
+    if isinstance(payload, dict):
+        bound = bind_allowed_runtime_imports(payload)
+        supplied_hash = payload.get("envelope_sha256")
+        if supplied_hash is not None and supplied_hash != bound["envelope_sha256"]:
+            raise ValueError("allowed runtime imports hash is stale")
+        imports = bound["imports"]
+        envelope_sha256 = bound["envelope_sha256"]
+    else:
+        imports = payload
+        envelope_sha256 = None
+    if not isinstance(imports, list):
+        raise ValueError("allowed runtime imports must be an array or contain one")
+    return audit_candidate_dependencies(
+        candidate=args.candidate,
+        call_plan=args.call_plan,
+        allowed_runtime_imports=imports,
+        allowed_runtime_imports_sha256=envelope_sha256,
+        out=args.out,
+    )
+
+
 def _json_object_arg(text: str | None, path: Path | None) -> dict[str, Any] | None:
     if text and path is not None:
         raise ValueError("provide --proof-metadata-json or --proof-metadata, not both")
@@ -2682,6 +3344,21 @@ def _json_file(path: Path, description: str) -> Any:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"could not read {description}: {exc}") from exc
+
+
+def _write_bound_json(
+    *,
+    source: Path,
+    out: Path,
+    label: str,
+    binder: Any,
+) -> dict[str, Any]:
+    payload = _json_file(source, label)
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    bound = binder(payload)
+    write_json(out, bound)
+    return bound
 
 
 def _candidate_modules(values: list[str]) -> list[dict[str, Any]] | None:
@@ -2721,6 +3398,10 @@ def _exit_status(result: dict[str, Any]) -> int:
         "recovered",
         "reduced",
         "ready",
+        "bound",
+        "indexed",
+        "locked",
+        "classified",
         "satisfied",
         "qualified",
         "conditional_pass",

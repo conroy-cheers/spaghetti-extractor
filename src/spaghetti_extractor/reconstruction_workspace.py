@@ -469,12 +469,20 @@ def create_reconstruction_workspace(
         or composition.get("status") != "complete"
         or not isinstance(composition.get("summary_unit"), Mapping)
     ):
-        raise StageAInputError(
-            f"cluster {cluster['id']} has no complete multi-unit semantic composition"
+        component_boundary = cluster.get("component_execution_boundary", {})
+        if (
+            not isinstance(component_boundary, Mapping)
+            or component_boundary.get("status") != "checked"
+            or composition.get("status") != "checked_by_component_interface"
+        ):
+            raise StageAInputError(
+                f"cluster {cluster['id']} has no complete multi-unit semantic composition"
+            )
+        semantic_units = units
+    else:
+        semantic_units = (
+            [composition["summary_unit"]] if len(units) > 1 else units
         )
-    semantic_units = (
-        [composition["summary_unit"]] if len(units) > 1 else units
-    )
     out_dir = Path(out_dir)
     if out_dir.exists() and any(out_dir.iterdir()):
         raise StageAInputError(f"reconstruction workspace is not empty: {out_dir}")
@@ -618,6 +626,9 @@ def rebind_reconstruction_workspace(*, workspace: Path) -> RegionReplacementMani
     edit_map = _source_edit_map(generated_path, portable_path)
     write_json(root / "edit-map.json", edit_map)
     payload["source"]["sha256"] = sha256_file(source_path)
+    payload["source"]["line_end"] = len(
+        source_path.read_text(encoding="ascii").splitlines()
+    )
     for support in payload.get("support_sources", []):
         support["sha256"] = sha256_file(root / str(support["path"]))
     manifest = write_region_replacement_manifest(
@@ -661,6 +672,34 @@ def check_reconstruction_workspace(
     return report
 
 
+def _workspace_fallback_on_unimplemented(root: Path) -> bool:
+    component_metadata_path = root / "component-workspace.json"
+    if not component_metadata_path.is_file():
+        return False
+    component_metadata = _read_object(
+        component_metadata_path, "component workspace"
+    )
+    domain = _object(
+        component_metadata.get("activation", {}).get("domain", {"kind": "total"}),
+        "component activation domain",
+    )
+    if domain.get("kind") == "total":
+        return False
+    if domain.get("kind") != "guarded_partial":
+        raise StageAInputError(
+            f"unsupported component activation domain: {domain.get('kind')}"
+        )
+    if (
+        domain.get("fallback") != "canonical_machine_ir"
+        or domain.get("decline_before_guest_writes") is not True
+        or domain.get("decline_before_observable_effects") is not True
+    ):
+        raise StageAInputError(
+            "guarded component has an unsafe interpreter fallback contract"
+        )
+    return True
+
+
 def run_reconstruction_workspace_check(
     *,
     workspace: Path,
@@ -678,6 +717,7 @@ def run_reconstruction_workspace_check(
 
     root = Path(workspace)
     metadata = _load_workspace(root)
+    fallback_on_unimplemented = _workspace_fallback_on_unimplemented(root)
     interpreter_root, interpreter = _load_interpreter_package(interpreter_package)
     manifest = load_region_replacement_manifest(
         root / str(metadata["files"]["replacement_manifest"]), source_root=root
@@ -720,7 +760,18 @@ def run_reconstruction_workspace_check(
         build = Path(temporary)
         harness_path = build / "regional-harness.c"
         harness_path.write_text(
-            _render_regional_harness(manifest, cases), encoding="ascii"
+            _render_regional_harness(
+                manifest,
+                cases,
+                fallback_on_unimplemented=fallback_on_unimplemented,
+                typed_x87_runtime=(
+                    "STAGE_B_MACHINE_STATE_HAS_X87"
+                    in (interpreter_root / "state-machine-runtime.h").read_text(
+                        encoding="ascii"
+                    )
+                ),
+            ),
+            encoding="ascii",
         )
         executable = build / "regional-harness"
         command = [
@@ -922,13 +973,25 @@ def _regional_compiler_identity(compiler: str) -> dict[str, str]:
 
 
 def promote_reconstruction_workspaces(
-    *, workspaces: Sequence[Path], out_dir: Path
+    *,
+    workspaces: Sequence[Path],
+    out_dir: Path,
+    fallback_on_unimplemented_workspaces: Sequence[Path] = (),
 ) -> dict[str, Any]:
     """Validate and combine checked workspaces into one override package."""
 
     if not workspaces:
         raise StageAInputError("promotion requires at least one reconstruction workspace")
-    roots = [Path(item) for item in workspaces]
+    roots = [Path(item).resolve() for item in workspaces]
+    fallback_roots = {
+        Path(item).resolve() for item in fallback_on_unimplemented_workspaces
+    }
+    unknown_fallbacks = fallback_roots.difference(roots)
+    if unknown_fallbacks:
+        raise StageAInputError(
+            "fallback workspaces are not present in the promotion inventory: "
+            + ", ".join(str(item) for item in sorted(unknown_fallbacks))
+        )
     manifests = []
     for root in roots:
         metadata = _load_workspace(root)
@@ -948,6 +1011,13 @@ def promote_reconstruction_workspaces(
             raise StageAInputError(f"workspace validation is stale: {root}")
         manifests.append((root, manifest))
 
+    promoted_portable_source_hashes = {
+        str(support["sha256"])
+        for _, manifest in manifests
+        for support in manifest.support_sources
+        if support.get("role") == "portable_source"
+    }
+
     out_dir = Path(out_dir)
     source_root = out_dir / "sources"
     source_root.mkdir(parents=True, exist_ok=True)
@@ -963,9 +1033,24 @@ def promote_reconstruction_workspaces(
         payload["source"]["path"] = copied_source.relative_to(out_dir).as_posix()
         payload["source"]["sha256"] = sha256_file(copied_source)
         copied_support = []
+        dependency_directories_to_omit = {
+            Path(str(support["path"])).parent
+            for support in manifest.support_sources
+            if support.get("role") == "adapter_support"
+            and "component-dependencies" in Path(str(support["path"])).parts
+            and str(support["sha256"]) in promoted_portable_source_hashes
+        }
         for support in manifest.support_sources:
             support_source = root / str(support["path"])
-            support_destination = destination / support_source.name
+            support_relative = Path(str(support["path"]))
+            if support_relative.parent in dependency_directories_to_omit:
+                continue
+            if support_relative.parts and support_relative.parts[0] == "src":
+                support_relative = Path(*support_relative.parts[1:])
+            else:
+                support_relative = Path("support") / support_relative
+            support_destination = destination / support_relative
+            support_destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(support_source, support_destination)
             copied_support.append(
                 {
@@ -988,10 +1073,18 @@ def promote_reconstruction_workspaces(
                 "entry_rva": copied.cluster["entry_rva"],
                 "manifest": copied_manifest_path.relative_to(out_dir).as_posix(),
                 "manifest_sha256": copied.manifest_sha256,
+                "fallback_on_unimplemented": root in fallback_roots,
             }
         )
     override = generate_region_override_table(
-        manifests=copied_manifests, source_root=out_dir, out_dir=out_dir
+        manifests=copied_manifests,
+        source_root=out_dir,
+        out_dir=out_dir,
+        fallback_on_unimplemented_ids=[
+            manifest.id
+            for root, manifest in manifests
+            if root in fallback_roots
+        ],
     )
     registry = {
         "format": RECONSTRUCTION_REGISTRY_FORMAT,
@@ -2165,12 +2258,49 @@ def _render_store_zero(
     return _source_files(header, portable, adapter)
 
 
+def _checked_machine_abi_comparison(
+    event: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    value = event.get("abi_contract")
+    if value is None:
+        return None
+    contract = _object(value, "external-event ABI contract")
+    binding_value = contract.get("profile_binding")
+    if not isinstance(binding_value, Mapping):
+        return None
+    binding = _object(binding_value, "external-event ABI profile binding")
+    contract_id = contract.get("contract_id")
+    template = contract.get("template")
+    profile_id = binding.get("profile_id")
+    profile_sha256 = binding.get("profile_sha256")
+    if (
+        not isinstance(contract_id, int)
+        or isinstance(contract_id, bool)
+        or not 0 <= contract_id <= 0xFFFFFFFF
+        or not isinstance(template, str)
+        or not template
+        or not isinstance(profile_id, str)
+        or not profile_id
+        or not isinstance(profile_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", profile_sha256) is None
+    ):
+        return None
+    return {
+        "mode": "checked_machine_abi_v1",
+        "abi_contract_sha256": _canonical_sha256(contract),
+        "template": template,
+        "profile_id": profile_id,
+        "profile_sha256": profile_sha256,
+        "contract_id": contract_id,
+    }
+
+
 def _replacement_manifest_payload(
     *, cluster: Mapping[str, Any], entry: Mapping[str, Any],
     units: Sequence[Mapping[str, Any]], source_path: Path, source_root: Path,
     symbol: str, machine_ir_sha256: str, baseline_program_sha256: str,
     evidence_id: str,
-) -> dict[str, Any]:
+    ) -> dict[str, Any]:
     live_inputs = [_live_value(item, evidence_id) for item in cluster["inputs"]]
     output_names = sorted(set(_REGISTERS + _FLAGS))
     live_outputs = [
@@ -2209,15 +2339,61 @@ def _replacement_manifest_payload(
                 "evidence_ids": [evidence_id],
             }
         )
-    events = [
-        {
-            "id": f"event:{index:02d}",
-            "kind": "import_call",
-            "identity": item["identity"],
-            "evidence_ids": [evidence_id],
-        }
-        for index, item in enumerate(cluster.get("external_events", []))
-    ]
+    events = []
+    for unit in sorted(units, key=lambda item: int(_source_span(item)["rva_start"])):
+        semantics = _object(unit.get("semantics", {}), "unit semantics")
+        unit_events = _array(
+            semantics.get("external_events", []), "unit external events"
+        )
+        ordered_events = [
+            _object(item, "ordered external event")
+            for item in _array(
+                semantics.get("ordered_events", []), "unit ordered events"
+            )
+            if isinstance(item, Mapping) and item.get("family") == "external"
+        ]
+        if ordered_events and len(unit_events) != len(ordered_events):
+            raise StageAInputError(
+                f"unit {unit['id']} external-event order is incomplete"
+            )
+        ordered_for_events: Sequence[Mapping[str, Any] | None] = (
+            ordered_events if ordered_events else [None] * len(unit_events)
+        )
+        for event, ordered in zip(unit_events, ordered_for_events, strict=True):
+            event = _object(event, "unit external event")
+            event_kind = str(event.get("kind"))
+            if event_kind == "external_call":
+                identity = f"{event.get('dll') or ''}!{event.get('symbol') or ''}"
+                manifest_kind = "import_call"
+            elif event_kind == "indirect_call":
+                identity = "indirect-call"
+                manifest_kind = "indirect_call"
+            elif event_kind == "internal_call":
+                continue
+            else:
+                raise StageAInputError(
+                    f"unit {unit['id']} has unsupported event kind {event_kind}"
+                )
+            site = {
+                "id": f"event-site:{len(events):02d}",
+                "kind": manifest_kind,
+                "identity": identity,
+                "evidence_ids": [evidence_id],
+            }
+            if ordered is not None:
+                site["instruction_rva"] = int(ordered["instruction_rva"])
+                site["return_rva"] = int(event["return_rva"])
+            comparison = _checked_machine_abi_comparison(event)
+            if comparison is not None:
+                site["comparison"] = comparison
+            events.append(site)
+    cluster_events = _array(cluster.get("external_events", []), "cluster external events")
+    if len(events) != len(cluster_events):
+        raise StageAInputError("cluster external-event inventory disagrees with its units")
+    for event, cluster_event in zip(events, cluster_events, strict=True):
+        event["identity"] = str(
+            _object(cluster_event, "cluster external event")["identity"]
+        )
     composition = cluster.get("composition", {})
     summary = (
         composition.get("summary_unit", {})
@@ -2906,7 +3082,11 @@ def _mutation_inventory(units: Sequence[Mapping[str, Any]]) -> list[dict[str, An
 
 
 def _render_regional_harness(
-    manifest: RegionReplacementManifest, cases: Mapping[str, Any]
+    manifest: RegionReplacementManifest,
+    cases: Mapping[str, Any],
+    *,
+    fallback_on_unimplemented: bool = False,
+    typed_x87_runtime: bool = False,
 ) -> str:
     symbol = str(manifest.source["symbol"])
     cluster_entry_rvas = sorted(
@@ -2921,7 +3101,70 @@ def _render_regional_harness(
     cluster_rva_cases = " ".join(
         f"case UINT32_C(0x{rva:08x}):" for rva in cluster_entry_rvas
     )
+    address_space = cases.get("address_space")
+    if address_space is None:
+        image_base = 0
+        image_size = 0
+    else:
+        address_space = _object(address_space, "reconstruction case address space")
+        if set(address_space) != {"kind", "image_base", "size_of_image"}:
+            raise StageAInputError("reconstruction case address space is malformed")
+        if address_space.get("kind") != "pe32_image_rva_v1":
+            raise StageAInputError("unsupported reconstruction case address space")
+        image_base = int(address_space["image_base"])
+        image_size = int(address_space["size_of_image"])
+        if (
+            image_base < 0
+            or image_size <= 0
+            or image_base + image_size > 1 << 32
+        ):
+            raise StageAInputError("reconstruction case PE32 address space is invalid")
     case_rows = _array(cases.get("cases"), "reconstruction cases")
+    event_capacity = max(
+        16,
+        *(
+            len(
+                _array(
+                    _object(row, "reconstruction case").get(
+                        "external_responses", []
+                    ),
+                    "case external responses",
+                )
+            )
+            for row in case_rows
+        ),
+    )
+    if event_capacity > 256:
+        raise StageAInputError(
+            "regional harness requires more than 256 external-event records"
+        )
+    call_stack_observations = _regional_call_stack_observations(cases)
+    call_stack_observation_lines = []
+    for event_index, slots in call_stack_observations:
+        call_stack_observation_lines.append(
+            f"  if (event_index == {event_index}U) {{"
+        )
+        for offset, width in slots:
+            call_stack_observation_lines.extend(
+                [
+                    "    if (!harness_observe_stack_input(",
+                    "        context, record, input, "
+                    f"UINT32_C(0x{offset:08x}), {width}U))",
+                    "      return STAGE_B_CALL_MEMORY_FAULT;",
+                ]
+            )
+        call_stack_observation_lines.append("  }")
+    fallback_lines = (
+        [
+            "  if (replacement_result.kind == STAGE_B_UNIMPLEMENTED) {",
+            "    replacement_state = *initial;",
+            "    initialize_context(&replacement_context, bytes, byte_count, responses, response_count);",
+            "    replacement_result = run_baseline_cluster(&replacement_runtime, &replacement_state);",
+            "  }",
+        ]
+        if fallback_on_unimplemented
+        else []
+    )
     initializers = []
     invocations = []
     for index, raw_case in enumerate(case_rows):
@@ -2929,12 +3172,42 @@ def _render_regional_harness(
         registers = _object(case.get("registers"), f"case {index} registers")
         flags = _object(case.get("flags"), f"case {index} flags")
         memory = _array(case.get("memory"), f"case {index} memory")
-        state_values = [int(registers[name]) for name in _REGISTERS]
-        state_values.extend(int(flags[name]) for name in _FLAGS)
-        state_values.append(int(manifest.cluster["entry_rva"]))
+        responses = _array(
+            case.get("external_responses", []),
+            f"case {index} external responses",
+        )
+        if len(responses) > event_capacity:
+            raise StageAInputError(
+                f"case {index} has more external responses than the regional harness can record"
+            )
+        state_values = [
+            ".%s = UINT32_C(0x%08x)" % (name, int(registers[name]) & 0xFFFFFFFF)
+            for name in _REGISTERS
+        ]
+        state_values.extend(
+            ".%s = UINT32_C(0x%08x)" % (name, int(flags[name]) & 0xFFFFFFFF)
+            for name in _FLAGS
+        )
+        if typed_x87_runtime:
+            state_values.extend(
+                [
+                    ".x87_stack = {"
+                    + ", ".join(
+                        "{ .empty = 1U, .tag = 3U }" for _ in range(8)
+                    )
+                    + "}",
+                    ".x87_control = UINT16_C(0x037f)",
+                ]
+            )
+        state_values.extend(
+            [
+                ".original_rva = UINT32_C(0x%08x)"
+                % (int(manifest.cluster["entry_rva"]) & 0xFFFFFFFF),
+            ]
+        )
         initializers.append(
             "  static const stage_b_machine_state state_%u = { %s };"
-            % (index, ", ".join(f"UINT32_C(0x{value & 0xFFFFFFFF:08x})" for value in state_values))
+            % (index, ", ".join(state_values))
         )
         bytes_rows = []
         for item in memory:
@@ -2970,9 +3243,169 @@ def _render_regional_harness(
             views_pointer = f"views_{index}"
         else:
             views_pointer = "0"
+        response_values = []
+        for response_index, raw_response in enumerate(responses):
+            response = _object(
+                raw_response,
+                f"case {index} external response {response_index}",
+            )
+            if set(response) - {"eax", "registers", "flags", "memory_writes"} or "eax" not in response:
+                raise StageAInputError(
+                    "regional external response requires EAX and optional register, flag, and memory effects"
+                )
+            response_registers = _object(
+                response.get("registers", {}),
+                f"case {index} external response {response_index} registers",
+            )
+            if set(response_registers) - set(_REGISTERS):
+                raise StageAInputError(
+                    "regional external response names an unsupported register"
+                )
+            register_values = {"eax": int(response["eax"])}
+            register_values.update(
+                {str(name): int(value) for name, value in response_registers.items()}
+            )
+            if any(not 0 <= value <= 0xFFFFFFFF for value in register_values.values()):
+                raise StageAInputError(
+                    "regional external response register value is outside PE32"
+                )
+            response_flags = _object(
+                response.get("flags", {}),
+                f"case {index} external response {response_index} flags",
+            )
+            if set(response_flags) - set(_FLAGS) or any(
+                int(value) not in {0, 1} for value in response_flags.values()
+            ):
+                raise StageAInputError(
+                    "regional external response flag effect is malformed"
+                )
+            response_writes = _array(
+                response.get("memory_writes", []),
+                f"case {index} external response {response_index} memory writes",
+            )
+            if len(response_writes) > 16:
+                raise StageAInputError(
+                    "regional external response exceeds the memory-write count limit"
+                )
+            write_rows = []
+            total_write_bytes = 0
+            for write_index, raw_write in enumerate(response_writes):
+                write = _object(
+                    raw_write,
+                    f"case {index} external response {response_index} memory write {write_index}",
+                )
+                if set(write) not in (
+                    {"argument_index", "offset", "bytes"},
+                    {"stack_pointer_offset", "offset", "bytes"},
+                ):
+                    raise StageAInputError(
+                        "regional external response memory write is malformed"
+                    )
+                if "argument_index" in write:
+                    location_kind = 0
+                    location_value = int(write["argument_index"])
+                    valid_location = 0 <= location_value < 16
+                else:
+                    location_kind = 1
+                    location_value = int(write["stack_pointer_offset"])
+                    valid_location = 0 <= location_value <= 0xFFFFFFFF
+                offset = int(write["offset"])
+                if not valid_location or not 0 <= offset <= 0xFFFFFFFF:
+                    raise StageAInputError(
+                        "regional external response memory-write location is invalid"
+                    )
+                try:
+                    write_bytes = bytes.fromhex(str(write["bytes"]))
+                except ValueError as error:
+                    raise StageAInputError(
+                        "regional external response memory-write bytes are invalid"
+                    ) from error
+                if not write_bytes:
+                    raise StageAInputError(
+                        "regional external response memory write must not be empty"
+                    )
+                total_write_bytes += len(write_bytes)
+                if total_write_bytes > 512:
+                    raise StageAInputError(
+                        "regional external response exceeds the memory-write byte limit"
+                    )
+                byte_name = f"response_{index}_{response_index}_write_{write_index}_bytes"
+                initializers.append(
+                    "  static const uint8_t %s[] = { %s };"
+                    % (
+                        byte_name,
+                        ", ".join(
+                            f"UINT8_C(0x{value:02x})" for value in write_bytes
+                        ),
+                    )
+                )
+                write_rows.append(
+                    "{ %uU, UINT32_C(0x%08x), UINT32_C(0x%08x), %s, %uU }"
+                    % (
+                        location_kind,
+                        location_value,
+                        offset,
+                        byte_name,
+                        len(write_bytes),
+                    )
+                )
+            if write_rows:
+                writes_name = f"response_{index}_{response_index}_writes"
+                initializers.append(
+                    "  static const harness_response_write %s[] = { %s };"
+                    % (writes_name, ", ".join(write_rows))
+                )
+                writes_pointer = writes_name
+            else:
+                writes_pointer = "0"
+            response_values.append(
+                "{ { %s }, UINT32_C(0x%08x), { %s }, UINT32_C(0x%08x), %s, %uU }"
+                % (
+                    ", ".join(
+                        "UINT32_C(0x%08x)" % (register_values.get(name, 0) & 0xFFFFFFFF)
+                        for name in _REGISTERS
+                    ),
+                    sum(
+                        1 << register_index
+                        for register_index, name in enumerate(_REGISTERS)
+                        if name in register_values
+                    ),
+                    ", ".join(
+                        "UINT32_C(0x%08x)" % int(response_flags.get(name, 0))
+                        for name in _FLAGS
+                    ),
+                    sum(
+                        1 << flag_index
+                        for flag_index, name in enumerate(_FLAGS)
+                        if name in response_flags
+                    ),
+                    writes_pointer,
+                    len(write_rows),
+                )
+            )
+        if response_values:
+            initializers.append(
+                "  static const harness_response responses_%u[] = { %s };"
+                % (
+                    index,
+                    ", ".join(response_values),
+                )
+            )
+            responses_pointer = f"responses_{index}"
+        else:
+            responses_pointer = "0"
         invocations.append(
-            "  run_case(%uU, &state_%u, %s, %uU, %s, %uU);"
-            % (index, index, memory_pointer, len(bytes_rows), views_pointer, len(view_rows))
+            "  run_case(%uU, &state_%u, %s, %uU, %s, %uU, %s, %uU);"
+            % (
+                index,
+                index,
+                memory_pointer,
+                len(bytes_rows),
+                views_pointer,
+                len(view_rows),
+                responses_pointer,
+                len(response_values),
+            )
         )
     return "\n".join(
         [
@@ -2986,19 +3419,52 @@ def _render_regional_harness(
             "typedef struct harness_initial_byte { uint32_t address; uint8_t value; } harness_initial_byte;",
             "typedef struct harness_view { uint32_t address; uint32_t width; } harness_view;",
             "typedef struct harness_byte { uint32_t address; uint8_t value; } harness_byte;",
+            "typedef struct harness_response_write {",
+            "  uint32_t location_kind, location_value, offset;",
+            "  const uint8_t *bytes;",
+            "  uint32_t byte_count;",
+            "} harness_response_write;",
+            "typedef struct harness_response {",
+            "  uint32_t registers[8], register_mask;",
+            "  uint32_t flags[6], flag_mask;",
+            "  const harness_response_write *writes;",
+            "  uint32_t write_count;",
+            "} harness_response;",
+            "typedef struct harness_event {",
+            "  char identity[192];",
+            "  uint32_t kind, instruction_rva, call_index, target_rva, return_rva;",
+            "  uint32_t ordinal, has_ordinal;",
+            "  uint32_t arguments[16];",
+            "  uint32_t argument_count;",
+            "  stage_b_stack_input stack_inputs[16];",
+            "  uint32_t stack_input_count;",
+            "  uint32_t registers[8];",
+            "  uint32_t flags[6];",
+            "} harness_event;",
             "typedef struct harness_context {",
             "  harness_byte bytes[512];",
             "  uint32_t byte_count;",
+            "  harness_byte writes[512];",
+            "  uint32_t write_count;",
+            "  uint32_t write_overflow;",
+            f"  harness_event events[{event_capacity}];",
             "  uint32_t event_count;",
-            "  char event_identity[192];",
-            "  uint32_t event_arguments[16];",
-            "  uint32_t event_argument_count;",
+            "  uint32_t event_overflow;",
+            "  const harness_response *responses;",
+            "  uint32_t response_count;",
             "} harness_context;",
             "",
             "static int find_byte(harness_context *context, uint32_t address) {",
             "  uint32_t index;",
             "  for (index = 0U; index < context->byte_count; ++index)",
             "    if (context->bytes[index].address == address) return (int)index;",
+            "  return -1;",
+            "}",
+            "",
+            "static int find_write(harness_context *context, uint32_t address) {",
+            "  uint32_t index;",
+            "  for (index = 0U; index < context->write_count; ++index)",
+            "    if (context->writes[index].address == address) return (int)index;",
             "  return -1;",
             "}",
             "",
@@ -3026,8 +3492,167 @@ def _render_regional_harness(
             "      context->bytes[index].address = address + offset;",
             "    }",
             "    context->bytes[index].value = (uint8_t)(value >> (8U * offset));",
+            "    index = find_write(context, address + offset);",
+            "    if (index < 0) {",
+            "      if (context->write_count >= 512U) { context->write_overflow = 1U; continue; }",
+            "      index = (int)context->write_count++;",
+            "      context->writes[index].address = address + offset;",
+            "    }",
+            "    context->writes[index].value = (uint8_t)(value >> (8U * offset));",
             "  }",
             "}",
+            "",
+            "#ifdef STAGE_B_MACHINE_STATE_HAS_X87",
+            "static uint32_t harness_x87_register(const stage_b_machine_state *state, uint32_t code, uint32_t *valid) {",
+            "  *valid = 1U;",
+            "  switch (code) {",
+            "  case 0U: return 0U; case 1U: return state->eax; case 2U: return state->ebx;",
+            "  case 3U: return state->ecx; case 4U: return state->edx; case 5U: return state->esi;",
+            "  case 6U: return state->edi; case 7U: return state->ebp; case 8U: return state->esp;",
+            "  default: *valid = 0U; return 0U;",
+            "  }",
+            "}",
+            "",
+            "static uint32_t harness_x87_address(const stage_b_typed_x87_operation *program,",
+            "    const stage_b_machine_state *state, uint32_t *valid) {",
+            "  uint32_t base, index;",
+            "  if (program->has_image_rva != 0U) {",
+            "    if (program->base_register != 0U || program->index_register != 0U ||",
+            "        program->displacement != 0) { *valid = 0U; return 0U; }",
+            "    *valid = 1U; return program->image_base + program->image_rva;",
+            "  }",
+            "  base = harness_x87_register(state, program->base_register, valid);",
+            "  if (!*valid) return 0U;",
+            "  index = harness_x87_register(state, program->index_register, valid);",
+            "  if (!*valid || (program->scale != 1U && program->scale != 2U &&",
+            "      program->scale != 4U && program->scale != 8U)) return 0U;",
+            "  return base + index * program->scale + (uint32_t)program->displacement;",
+            "}",
+            "",
+            "static void harness_x87_set_bytes(stage_b_x87_value *value, uint64_t significand, uint16_t sign_exponent) {",
+            "  uint32_t index;",
+            "  for (index = 0U; index < 8U; ++index)",
+            "    value->value_bytes[index] = (uint8_t)(significand >> (8U * index));",
+            "  value->value_bytes[8] = (uint8_t)sign_exponent;",
+            "  value->value_bytes[9] = (uint8_t)(sign_exponent >> 8U);",
+            "}",
+            "",
+            "static uint64_t harness_x87_significand(const stage_b_x87_value *value) {",
+            "  uint64_t result = 0U; uint32_t index;",
+            "  for (index = 0U; index < 8U; ++index)",
+            "    result |= (uint64_t)value->value_bytes[index] << (8U * index);",
+            "  return result;",
+            "}",
+            "",
+            "static uint16_t harness_x87_sign_exponent(const stage_b_x87_value *value) {",
+            "  return (uint16_t)((uint16_t)value->value_bytes[8] |",
+            "      ((uint16_t)value->value_bytes[9] << 8U));",
+            "}",
+            "",
+            "static void harness_x87_from_fp64(uint64_t bits, stage_b_x87_value *value) {",
+            "  uint64_t fraction = bits & UINT64_C(0x000fffffffffffff);",
+            "  uint32_t exponent = (uint32_t)((bits >> 52U) & UINT64_C(0x7ff));",
+            "  uint16_t sign = (uint16_t)((bits >> 48U) & UINT64_C(0x8000));",
+            "  uint64_t significand; uint16_t extended_exponent; uint32_t highest;",
+            "  if (exponent == 0U && fraction == 0U) { significand = 0U; extended_exponent = 0U; value->tag = 1U; }",
+            "  else if (exponent == 0U) {",
+            "    highest = 0U; while ((fraction >> (highest + 1U)) != 0U) ++highest;",
+            "    significand = fraction << (63U - highest);",
+            "    extended_exponent = (uint16_t)((int32_t)highest - 1074 + 16383); value->tag = 0U;",
+            "  } else if (exponent == 0x7ffU) {",
+            "    significand = UINT64_C(0x8000000000000000) | (fraction << 11U);",
+            "    extended_exponent = UINT16_C(0x7fff); value->tag = 2U;",
+            "  } else {",
+            "    significand = UINT64_C(0x8000000000000000) | (fraction << 11U);",
+            "    extended_exponent = (uint16_t)((int32_t)exponent - 1023 + 16383); value->tag = 0U;",
+            "  }",
+            "  harness_x87_set_bytes(value, significand, (uint16_t)(sign | extended_exponent));",
+            "  value->empty = 0U;",
+            "}",
+            "",
+            "static uint32_t harness_x87_to_fp64(const stage_b_x87_value *value, uint64_t *bits) {",
+            "  const uint64_t fraction_mask = UINT64_C(0x000fffffffffffff);",
+            "  uint64_t significand = harness_x87_significand(value), fraction;",
+            "  uint16_t sign_exponent = harness_x87_sign_exponent(value);",
+            "  uint32_t exponent = sign_exponent & UINT16_C(0x7fff);",
+            "  uint64_t sign = (uint64_t)(sign_exponent & UINT16_C(0x8000)) << 48U;",
+            "  int32_t unbiased; uint32_t shift;",
+            "  if (value->empty != 0U) return 0U;",
+            "  if (exponent == 0U) { if (significand != 0U) return 0U; *bits = sign; return 1U; }",
+            "  if (exponent == 0x7fffU) {",
+            "    if ((significand & UINT64_C(0x8000000000000000)) == 0U || (significand & UINT64_C(0x7ff)) != 0U) return 0U;",
+            "    fraction = (significand >> 11U) & fraction_mask;",
+            "    *bits = sign | UINT64_C(0x7ff0000000000000) | fraction; return 1U;",
+            "  }",
+            "  if ((significand & UINT64_C(0x8000000000000000)) == 0U) return 0U;",
+            "  unbiased = (int32_t)exponent - 16383;",
+            "  if (unbiased >= -1022 && unbiased <= 1023) {",
+            "    if ((significand & UINT64_C(0x7ff)) != 0U) return 0U;",
+            "    fraction = (significand >> 11U) & fraction_mask;",
+            "    *bits = sign | ((uint64_t)(unbiased + 1023) << 52U) | fraction; return 1U;",
+            "  }",
+            "  if (unbiased < -1074 || unbiased >= -1022) return 0U;",
+            "  shift = (uint32_t)(63 - (unbiased + 1074));",
+            "  if (shift >= 64U || (significand & ((UINT64_C(1) << shift) - 1U)) != 0U) return 0U;",
+            "  fraction = significand >> shift; if (fraction > fraction_mask) return 0U;",
+            "  *bits = sign | fraction; return 1U;",
+            "}",
+            "",
+            "static uint32_t harness_x87_push(stage_b_machine_state *state, stage_b_x87_value value) {",
+            "  uint32_t index, top; if (state->x87_stack[7].empty == 0U) return 0U;",
+            "  for (index = 7U; index > 0U; --index) state->x87_stack[index] = state->x87_stack[index - 1U];",
+            "  state->x87_stack[0] = value; top = ((state->x87_status >> 11U) + 7U) & 7U;",
+            "  state->x87_status = (uint16_t)((state->x87_status & UINT16_C(0xc7ff)) | (uint16_t)(top << 11U));",
+            "  return 1U;",
+            "}",
+            "",
+            "static uint32_t harness_x87_pop(stage_b_machine_state *state) {",
+            "  uint32_t index, top; if (state->x87_stack[0].empty != 0U) return 0U;",
+            "  for (index = 0U; index < 7U; ++index) state->x87_stack[index] = state->x87_stack[index + 1U];",
+            "  memset(&state->x87_stack[7], 0, sizeof(state->x87_stack[7]));",
+            "  state->x87_stack[7].empty = 1U; state->x87_stack[7].tag = 3U;",
+            "  top = ((state->x87_status >> 11U) + 1U) & 7U;",
+            "  state->x87_status = (uint16_t)((state->x87_status & UINT16_C(0xc7ff)) | (uint16_t)(top << 11U));",
+            "  return 1U;",
+            "}",
+            "",
+            "static stage_b_call_status harness_execute_typed_x87_operation(",
+            "    stage_b_runtime *runtime, const stage_b_typed_x87_operation *program,",
+            "    const stage_b_machine_state *input, stage_b_machine_state *output) {",
+            "  uint32_t valid = 0U, fault = 0U, address, first, second; uint64_t bits;",
+            "  stage_b_x87_value value, temporary;",
+            "  if (runtime == 0 || program == 0 || input == 0 || output == 0 || program->mnemonic == 0)",
+            "    return STAGE_B_CALL_UNIMPLEMENTED;",
+            "  *output = *input;",
+            "  if (program->operand_kind == 3U && program->operand_width == 8U && strcmp(program->mnemonic, \"fld\") == 0) {",
+            "    address = harness_x87_address(program, input, &valid); if (!valid) return STAGE_B_CALL_UNIMPLEMENTED;",
+            "    first = runtime->read(runtime->context, address, 4U, &fault);",
+            "    second = runtime->read(runtime->context, address + 4U, 4U, &fault);",
+            "    if (fault) return STAGE_B_CALL_MEMORY_FAULT; bits = first | ((uint64_t)second << 32U);",
+            "    harness_x87_from_fp64(bits, &value); return harness_x87_push(output, value) ? STAGE_B_CALL_OK : STAGE_B_CALL_UNIMPLEMENTED;",
+            "  }",
+            "  if (program->operand_kind == 3U && program->operand_width == 8U && strcmp(program->mnemonic, \"fstp\") == 0) {",
+            "    address = harness_x87_address(program, input, &valid); if (!valid || !harness_x87_to_fp64(&input->x87_stack[0], &bits)) return STAGE_B_CALL_UNIMPLEMENTED;",
+            "    runtime->write(runtime->context, address, 4U, (uint32_t)bits, &fault);",
+            "    runtime->write(runtime->context, address + 4U, 4U, (uint32_t)(bits >> 32U), &fault);",
+            "    if (fault) return STAGE_B_CALL_MEMORY_FAULT; return harness_x87_pop(output) ? STAGE_B_CALL_OK : STAGE_B_CALL_UNIMPLEMENTED;",
+            "  }",
+            "  if (program->operand_kind == 2U && strcmp(program->mnemonic, \"fxch\") == 0 &&",
+            "      program->stack_register_count == 2U && program->stack_register_0 < 8U && program->stack_register_1 < 8U) {",
+            "    if (input->x87_stack[program->stack_register_0].empty != 0U || input->x87_stack[program->stack_register_1].empty != 0U) return STAGE_B_CALL_UNIMPLEMENTED;",
+            "    temporary = output->x87_stack[program->stack_register_0];",
+            "    output->x87_stack[program->stack_register_0] = output->x87_stack[program->stack_register_1];",
+            "    output->x87_stack[program->stack_register_1] = temporary; return STAGE_B_CALL_OK;",
+            "  }",
+            "  if (program->operand_kind == 2U && strcmp(program->mnemonic, \"fstp\") == 0 &&",
+            "      program->stack_register_count == 1U && program->stack_register_0 < 8U) {",
+            "    if (input->x87_stack[0].empty != 0U) return STAGE_B_CALL_UNIMPLEMENTED;",
+            "    output->x87_stack[program->stack_register_0] = input->x87_stack[0];",
+            "    return harness_x87_pop(output) ? STAGE_B_CALL_OK : STAGE_B_CALL_UNIMPLEMENTED;",
+            "  }",
+            "  return STAGE_B_CALL_UNIMPLEMENTED;",
+            "}",
+            "#endif",
             "",
             "static void harness_atomic_compare_exchange_impl(",
             "    void *opaque, uint32_t address, uint32_t width,",
@@ -3037,8 +3662,42 @@ def _render_regional_harness(
             "  if (*fault) return;",
             "  *observed = current;",
             "  *exchanged = current == expected;",
-            "  if (*exchanged)",
-            "    harness_write(opaque, address, width, desired, fault);",
+            "  harness_write(",
+            "      opaque, address, width, *exchanged ? desired : current, fault);",
+            "}",
+            "",
+            "static void harness_atomic_exchange_impl(",
+            "    void *opaque, uint32_t address, uint32_t width,",
+            "    uint32_t desired, uint32_t *observed, uint32_t *fault) {",
+            "  uint32_t current = harness_read(opaque, address, width, fault);",
+            "  if (*fault) return;",
+            "  *observed = current;",
+            "  harness_write(opaque, address, width, desired, fault);",
+            "}",
+            "",
+            "static int harness_observe_stack_input(",
+            "    harness_context *context, harness_event *record,",
+            "    const stage_b_machine_state *input, uint32_t offset,",
+            "    uint32_t width) {",
+            "  uint32_t actual, fault = 0U, index;",
+            "  if (offset > UINT32_MAX - input->esp) {",
+            "    context->event_overflow = 1U; return 0;",
+            "  }",
+            "  actual = harness_read(context, input->esp + offset, width, &fault);",
+            "  if (fault) { context->event_overflow = 1U; return 0; }",
+            "  for (index = 0U; index < record->stack_input_count; ++index) {",
+            "    stage_b_stack_input *item = &record->stack_inputs[index];",
+            "    if (item->offset == offset && item->width == width) {",
+            "      if (item->value != actual) { context->event_overflow = 1U; return 0; }",
+            "      return 1;",
+            "    }",
+            "  }",
+            "  if (record->stack_input_count >= 16U) {",
+            "    context->event_overflow = 1U; return 0;",
+            "  }",
+            "  record->stack_inputs[record->stack_input_count++] =",
+            "      (stage_b_stack_input){ offset, width, actual };",
+            "  return 1;",
             "}",
             "",
             "void stage_b_runtime_atomic_compare_exchange(",
@@ -3054,18 +3713,121 @@ def _render_regional_harness(
             "      observed, exchanged, fault);",
             "}",
             "",
+            "void stage_b_runtime_atomic_exchange(",
+            "    stage_b_runtime *runtime, uint32_t address, uint32_t width,",
+            "    uint32_t desired, uint32_t *observed, uint32_t *fault) {",
+            "  if (fault == 0) return;",
+            "  *fault = 1U;",
+            "  if (runtime == 0 || observed == 0) return;",
+            "  *fault = 0U;",
+            "  harness_atomic_exchange_impl(",
+            "      runtime->context, address, width, desired, observed, fault);",
+            "}",
+            "",
             "static stage_b_call_status harness_external(",
             "    stage_b_runtime *runtime, const stage_b_call_event *event,",
             "    const stage_b_machine_state *input, stage_b_machine_state *output) {",
             "  harness_context *context = (harness_context *)runtime->context;",
-            "  uint32_t index;",
+            "  harness_event *record;",
+            "  uint32_t event_index, index;",
             "  *output = *input;",
-            "  context->event_count += 1U;",
-            "  snprintf(context->event_identity, sizeof(context->event_identity),",
-            "      \"%s!%s\", event->dll ? event->dll : \"\", event->symbol ? event->symbol : \"\");",
-            "  context->event_argument_count = event->argument_count < 16U ? event->argument_count : 16U;",
-            "  for (index = 0U; index < context->event_argument_count; ++index)",
-            "    context->event_arguments[index] = event->arguments[index];",
+            "  event_index = context->event_count;",
+            f"  if (context->event_count >= {event_capacity}U) {{",
+            "    context->event_overflow = 1U;",
+            "    context->event_count += 1U;",
+            "    return STAGE_B_CALL_OK;",
+            "  }",
+            "  record = &context->events[context->event_count++];",
+            "  if (event->kind == STAGE_B_CALL_INDIRECT)",
+            "    snprintf(record->identity, sizeof(record->identity), \"indirect-call\");",
+            "  else",
+            "    snprintf(record->identity, sizeof(record->identity),",
+            "        \"%s!%s\", event->dll ? event->dll : \"\", event->symbol ? event->symbol : \"\");",
+            "  record->kind = (uint32_t)event->kind;",
+            "  record->instruction_rva = event->instruction_rva;",
+            "  record->call_index = event->call_index;",
+            "  record->target_rva = event->target_rva;",
+            "  record->return_rva = event->return_rva;",
+            "  record->ordinal = event->ordinal;",
+            "  record->has_ordinal = event->has_ordinal;",
+            "  if (event->argument_count > 16U || event->stack_input_count > 16U)",
+            "    context->event_overflow = 1U;",
+            "  record->argument_count = event->argument_count < 16U ? event->argument_count : 16U;",
+            "  for (index = 0U; index < record->argument_count; ++index)",
+            "    record->arguments[index] = event->arguments[index];",
+            "  record->stack_input_count = event->stack_input_count < 16U ? event->stack_input_count : 16U;",
+            "  for (index = 0U; index < record->stack_input_count; ++index)",
+            "    record->stack_inputs[index] = event->stack_inputs[index];",
+            *call_stack_observation_lines,
+            "  record->registers[0] = input->eax; record->registers[1] = input->ebx;",
+            "  record->registers[2] = input->ecx; record->registers[3] = input->edx;",
+            "  record->registers[4] = input->esi; record->registers[5] = input->edi;",
+            "  record->registers[6] = input->ebp; record->registers[7] = input->esp;",
+            "  record->flags[0] = input->cf; record->flags[1] = input->zf;",
+            "  record->flags[2] = input->sf; record->flags[3] = input->of;",
+            "  record->flags[4] = input->pf; record->flags[5] = input->df;",
+            "  if (event_index < context->response_count) {",
+            "    const harness_response *response = &context->responses[event_index];",
+            "    if (response->register_mask & UINT32_C(0x01)) output->eax = response->registers[0];",
+            "    if (response->register_mask & UINT32_C(0x02)) output->ebx = response->registers[1];",
+            "    if (response->register_mask & UINT32_C(0x04)) output->ecx = response->registers[2];",
+            "    if (response->register_mask & UINT32_C(0x08)) output->edx = response->registers[3];",
+            "    if (response->register_mask & UINT32_C(0x10)) output->esi = response->registers[4];",
+            "    if (response->register_mask & UINT32_C(0x20)) output->edi = response->registers[5];",
+            "    if (response->register_mask & UINT32_C(0x40)) output->ebp = response->registers[6];",
+            "    if (response->register_mask & UINT32_C(0x80)) output->esp = response->registers[7];",
+            "    if (response->flag_mask & UINT32_C(0x01)) output->cf = response->flags[0];",
+            "    if (response->flag_mask & UINT32_C(0x02)) output->zf = response->flags[1];",
+            "    if (response->flag_mask & UINT32_C(0x04)) output->sf = response->flags[2];",
+            "    if (response->flag_mask & UINT32_C(0x08)) output->of = response->flags[3];",
+            "    if (response->flag_mask & UINT32_C(0x10)) output->pf = response->flags[4];",
+            "    if (response->flag_mask & UINT32_C(0x20)) output->df = response->flags[5];",
+            "#ifdef STAGE_B_MACHINE_STATE_HAS_EFLAGS",
+            "    output->eflags =",
+            "        (output->eflags & ~UINT32_C(0x00000cd5)) |",
+            "        ((output->cf & 1U) << 0) | ((output->pf & 1U) << 2) |",
+            "        ((output->zf & 1U) << 6) | ((output->sf & 1U) << 7) |",
+            "        ((output->df & 1U) << 10) | ((output->of & 1U) << 11);",
+            "#endif",
+            "    for (index = 0U; index < response->write_count; ++index) {",
+            "      const harness_response_write *write = &response->writes[index];",
+            "      uint32_t base, address, byte_index, fault = 0U;",
+            "      if (write->location_kind == 0U) {",
+            "        if (write->location_value >= event->argument_count) {",
+            "          context->event_overflow = 1U;",
+            "          return STAGE_B_CALL_MEMORY_FAULT;",
+            "        }",
+            "        base = event->arguments[write->location_value];",
+            "      } else if (write->location_kind == 1U) {",
+            "        if (write->location_value > UINT32_MAX - input->esp) {",
+            "          context->event_overflow = 1U;",
+            "          return STAGE_B_CALL_MEMORY_FAULT;",
+            "        }",
+            "        base = harness_read(context, input->esp + write->location_value, 4U, &fault);",
+            "        if (fault) {",
+            "          context->event_overflow = 1U;",
+            "          return STAGE_B_CALL_MEMORY_FAULT;",
+            "        }",
+            "      } else {",
+            "        context->event_overflow = 1U;",
+            "        return STAGE_B_CALL_MEMORY_FAULT;",
+            "      }",
+            "      if (write->offset > UINT32_MAX - base ||",
+            "          (write->byte_count > 0U &&",
+            "           write->byte_count - 1U > UINT32_MAX - (base + write->offset))) {",
+            "        context->event_overflow = 1U;",
+            "        return STAGE_B_CALL_MEMORY_FAULT;",
+            "      }",
+            "      address = base + write->offset;",
+            "      for (byte_index = 0U; byte_index < write->byte_count; ++byte_index) {",
+            "        harness_write(context, address + byte_index, 1U, write->bytes[byte_index], &fault);",
+            "        if (fault) {",
+            "          context->event_overflow = 1U;",
+            "          return STAGE_B_CALL_MEMORY_FAULT;",
+            "        }",
+            "      }",
+            "    }",
+            "  }",
             "  return STAGE_B_CALL_OK;",
             "}",
             "",
@@ -3076,7 +3838,9 @@ def _render_regional_harness(
             "  return runtime->external_call_fallback(runtime, event, input, output);",
             "}",
             "",
-            "static void initialize_context(harness_context *context, const harness_initial_byte *bytes, uint32_t count) {",
+            "static void initialize_context(harness_context *context,",
+            "    const harness_initial_byte *bytes, uint32_t count,",
+            "    const harness_response *responses, uint32_t response_count) {",
             "  uint32_t index;",
             "  memset(context, 0, sizeof(*context));",
             "  for (index = 0U; index < count; ++index) {",
@@ -3084,16 +3848,28 @@ def _render_regional_harness(
             "    context->bytes[index].value = bytes[index].value;",
             "  }",
             "  context->byte_count = count;",
+            "  context->responses = responses;",
+            "  context->response_count = response_count;",
             "}",
             "",
             "static int cluster_contains_rva(uint32_t rva) {",
             f"  switch (rva) {{ {cluster_rva_cases} return 1; default: return 0; }}",
             "}",
             "",
+            "static int image_address_to_rva(uint32_t address, uint32_t *rva) {",
+            f"  const uint32_t image_base = UINT32_C(0x{image_base:08x});",
+            f"  const uint32_t image_size = UINT32_C(0x{image_size:08x});",
+            "  if (rva == 0 || image_size == 0U || address < image_base ||",
+            "      address - image_base >= image_size)",
+            "    return 0;",
+            "  *rva = address - image_base;",
+            "  return 1;",
+            "}",
+            "",
             "static stage_b_step_result run_baseline_cluster(",
             "    stage_b_runtime *runtime, stage_b_machine_state *state) {",
             f"  uint32_t current = UINT32_C(0x{int(manifest.cluster['entry_rva']):08x});",
-            "  uint32_t step;",
+            "  uint32_t step, indirect_rva;",
             "  stage_b_step_result result = { STAGE_B_UNIMPLEMENTED, current, 0U };",
             "  for (step = 0U; step < 4096U; ++step) {",
             "    result = stage_b_interpreter_step(runtime, state, current);",
@@ -3101,6 +3877,13 @@ def _render_regional_harness(
             "         result.kind == STAGE_B_JUMP || result.kind == STAGE_B_BRANCH) &&",
             "        cluster_contains_rva(result.target_rva)) {",
             "      current = result.target_rva;",
+            "      continue;",
+            "    }",
+            "    if (result.kind == STAGE_B_INDIRECT_JUMP &&",
+            "        (cluster_contains_rva(result.value) ||",
+            "         (image_address_to_rva(result.value, &indirect_rva) &&",
+            "          cluster_contains_rva(indirect_rva)))) {",
+            "      current = cluster_contains_rva(result.value) ? result.value : indirect_rva;",
             "      continue;",
             "    }",
             "    return result;",
@@ -3124,32 +3907,62 @@ def _render_regional_harness(
             "    }",
             "    putchar('\\n');",
             "  }",
-            "  printf(\"E %c %u %u %s %u\", side, case_index, context->event_count,",
-            "      context->event_count ? context->event_identity : \"-\", context->event_argument_count);",
-            "  for (index = 0U; index < context->event_argument_count; ++index)",
-            "    printf(\" %u\", context->event_arguments[index]);",
-            "  putchar('\\n');",
+            "  printf(\"W %c %u %u %u\\n\", side, case_index, context->write_count,",
+            "      context->write_overflow);",
+            "  for (index = 0U; index < context->write_count && index < 512U; ++index)",
+            "    printf(\"B %c %u %u %u\\n\", side, case_index,",
+            "        context->writes[index].address, context->writes[index].value);",
+            "  printf(\"E %c %u %u %u\\n\", side, case_index, context->event_count,",
+            "      context->event_overflow);",
+            f"  for (index = 0U; index < context->event_count && index < {event_capacity}U; ++index) {{",
+            "    uint32_t argument_index, stack_index;",
+            "    harness_event *event = &context->events[index];",
+            "    printf(\"T %c %u %u %s %u %u %u %u %u %u %u %u %u\",",
+            "        side, case_index, index, event->identity, event->kind,",
+            "        event->instruction_rva, event->call_index, event->target_rva,",
+            "        event->return_rva, event->ordinal, event->has_ordinal,",
+            "        event->argument_count, event->stack_input_count);",
+            "    for (argument_index = 0U; argument_index < 8U; ++argument_index)",
+            "      printf(\" %u\", event->registers[argument_index]);",
+            "    for (argument_index = 0U; argument_index < 6U; ++argument_index)",
+            "      printf(\" %u\", event->flags[argument_index]);",
+            "    for (argument_index = 0U;",
+            "         argument_index < event->argument_count;",
+            "         ++argument_index)",
+            "      printf(\" %u\", event->arguments[argument_index]);",
+            "    for (stack_index = 0U; stack_index < event->stack_input_count; ++stack_index)",
+            "      printf(\" %u %u %u\", event->stack_inputs[stack_index].offset,",
+            "          event->stack_inputs[stack_index].width,",
+            "          event->stack_inputs[stack_index].value);",
+            "    putchar('\\n');",
+            "  }",
             "}",
             "",
             "static void run_case(uint32_t case_index, const stage_b_machine_state *initial,",
             "    const harness_initial_byte *bytes, uint32_t byte_count,",
-            "    const harness_view *views, uint32_t view_count) {",
+            "    const harness_view *views, uint32_t view_count,",
+            "    const harness_response *responses, uint32_t response_count) {",
             "  stage_b_machine_state baseline_state = *initial, replacement_state = *initial;",
             "  harness_context baseline_context, replacement_context;",
             "  stage_b_runtime baseline_runtime, replacement_runtime;",
             "  stage_b_step_result baseline_result, replacement_result;",
-            "  initialize_context(&baseline_context, bytes, byte_count);",
-            "  initialize_context(&replacement_context, bytes, byte_count);",
+            "  initialize_context(&baseline_context, bytes, byte_count, responses, response_count);",
+            "  initialize_context(&replacement_context, bytes, byte_count, responses, response_count);",
             "  memset(&baseline_runtime, 0, sizeof(baseline_runtime));",
             "  baseline_runtime.context = &baseline_context;",
             "  baseline_runtime.read = harness_read;",
             "  baseline_runtime.write = harness_write;",
             "  baseline_runtime.atomic_compare_exchange = harness_atomic_compare_exchange_impl;",
+            "  baseline_runtime.atomic_exchange = harness_atomic_exchange_impl;",
             "  baseline_runtime.external_call_fallback = harness_external;",
+            "#ifdef STAGE_B_MACHINE_STATE_HAS_X87",
+            "  baseline_runtime.execute_typed_x87_operation = harness_execute_typed_x87_operation;",
+            "#endif",
             "  replacement_runtime = baseline_runtime;",
             "  replacement_runtime.context = &replacement_context;",
             "  baseline_result = run_baseline_cluster(&baseline_runtime, &baseline_state);",
             f"  replacement_result = {symbol}(&replacement_runtime, &replacement_state);",
+            *fallback_lines,
             "  emit_observation('b', case_index, baseline_result, &baseline_state, &baseline_context, views, view_count);",
             "  emit_observation('r', case_index, replacement_result, &replacement_state, &replacement_context, views, view_count);",
             "}",
@@ -3164,6 +3977,63 @@ def _render_regional_harness(
     )
 
 
+def _regional_call_stack_observations(
+    cases: Mapping[str, Any],
+) -> tuple[tuple[int, tuple[tuple[int, int], ...]], ...]:
+    """Validate explicit call-state observations requested by a checked profile."""
+
+    rows = _array(
+        cases.get("call_stack_observations", []),
+        "regional call stack observations",
+    )
+    result = []
+    seen_events: set[int] = set()
+    for index, raw in enumerate(rows):
+        row = _object(raw, f"regional call stack observation {index}")
+        if set(row) != {"event_index", "slots"}:
+            raise StageAInputError(
+                "regional call stack observation has unexpected fields"
+            )
+        event_index = int(row["event_index"])
+        if not 0 <= event_index < 16 or event_index in seen_events:
+            raise StageAInputError(
+                "regional call stack observation event index is invalid or duplicate"
+            )
+        seen_events.add(event_index)
+        slots = []
+        seen_slots: set[tuple[int, int]] = set()
+        for slot_index, raw_slot in enumerate(
+            _array(row.get("slots"), f"regional call stack slots {index}")
+        ):
+            slot = _object(
+                raw_slot,
+                f"regional call stack observation {index} slot {slot_index}",
+            )
+            if set(slot) != {"offset", "width"}:
+                raise StageAInputError(
+                    "regional call stack observation slot has unexpected fields"
+                )
+            offset = int(slot["offset"])
+            width = int(slot["width"])
+            identity = (offset, width)
+            if (
+                not 0 <= offset <= 0xFFFFFFFF
+                or width not in {1, 2, 4}
+                or identity in seen_slots
+            ):
+                raise StageAInputError(
+                    "regional call stack observation slot is invalid or duplicate"
+                )
+            seen_slots.add(identity)
+            slots.append(identity)
+        if not slots:
+            raise StageAInputError(
+                "regional call stack observation must contain at least one slot"
+            )
+        result.append((event_index, tuple(slots)))
+    return tuple(sorted(result))
+
+
 def _parse_regional_observations(
     *, manifest: RegionReplacementManifest, cases: Mapping[str, Any], text: str
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -3175,7 +4045,16 @@ def _parse_regional_observations(
         if len(fields) < 4 or fields[1] not in {"b", "r"}:
             raise StageAInputError(f"malformed regional harness observation: {raw!r}")
         key = (fields[1], int(fields[2]))
-        observed = parsed.setdefault(key, {"memory": {}, "event": None})
+        observed = parsed.setdefault(
+            key,
+            {
+                "memory": {},
+                "write_summary": None,
+                "writes": {},
+                "event_summary": None,
+                "events": {},
+            },
+        )
         if fields[0] == "O":
             if len(fields) != 21:
                 raise StageAInputError(f"malformed state observation: {raw!r}")
@@ -3189,15 +4068,70 @@ def _parse_regional_observations(
             observed["memory"][int(fields[3])] = {
                 "base": int(fields[4]), "after": fields[5]
             }
+        elif fields[0] == "W":
+            if len(fields) != 5:
+                raise StageAInputError(f"malformed write summary: {raw!r}")
+            observed["write_summary"] = {
+                "count": int(fields[3]),
+                "overflow": int(fields[4]),
+            }
+        elif fields[0] == "B":
+            if len(fields) != 5:
+                raise StageAInputError(f"malformed guest-write record: {raw!r}")
+            address = int(fields[3])
+            if address in observed["writes"]:
+                raise StageAInputError(f"duplicate guest-write record: {raw!r}")
+            observed["writes"][address] = int(fields[4])
         elif fields[0] == "E":
-            count = int(fields[3])
-            argument_count = int(fields[5])
-            if len(fields) != 6 + argument_count:
-                raise StageAInputError(f"malformed event observation: {raw!r}")
-            observed["event"] = {
-                "count": count,
+            if len(fields) != 5:
+                raise StageAInputError(f"malformed event summary: {raw!r}")
+            observed["event_summary"] = {
+                "count": int(fields[3]),
+                "overflow": int(fields[4]),
+            }
+        elif fields[0] == "T":
+            if len(fields) < 28:
+                raise StageAInputError(f"malformed event trace record: {raw!r}")
+            event_index = int(fields[3])
+            argument_count = int(fields[12])
+            stack_input_count = int(fields[13])
+            expected_fields = 28 + argument_count + 3 * stack_input_count
+            if len(fields) != expected_fields or event_index in observed["events"]:
+                raise StageAInputError(f"malformed event trace record: {raw!r}")
+            state_start = 14
+            arguments_start = state_start + len(_REGISTERS) + len(_FLAGS)
+            stack_start = arguments_start + argument_count
+            state_values = [int(value) for value in fields[state_start:arguments_start]]
+            stack_values = [int(value) for value in fields[stack_start:]]
+            observed["events"][event_index] = {
                 "identity": fields[4],
-                "arguments": [int(value) for value in fields[6:]],
+                "arguments": [
+                    int(value)
+                    for value in fields[arguments_start:stack_start]
+                ],
+                "machine_call": {
+                    "kind": int(fields[5]),
+                    "instruction_rva": int(fields[6]),
+                    "call_index": int(fields[7]),
+                    "target_rva": int(fields[8]),
+                    "return_rva": int(fields[9]),
+                    "ordinal": int(fields[10]),
+                    "has_ordinal": bool(int(fields[11])),
+                    "registers": dict(
+                        zip(_REGISTERS, state_values[: len(_REGISTERS)], strict=True)
+                    ),
+                    "flags": dict(
+                        zip(_FLAGS, state_values[len(_REGISTERS) :], strict=True)
+                    ),
+                    "stack_inputs": [
+                        {
+                            "offset": stack_values[index],
+                            "width": stack_values[index + 1],
+                            "value": stack_values[index + 2],
+                        }
+                        for index in range(0, len(stack_values), 3)
+                    ],
+                },
             }
         else:
             raise StageAInputError(f"unknown regional observation record: {raw!r}")
@@ -3212,7 +4146,12 @@ def _parse_regional_observations(
         for index, raw_case in enumerate(_array(cases.get("cases"), "reconstruction cases")):
             case = _object(raw_case, f"reconstruction case {index}")
             observed = parsed.get((side, index))
-            if observed is None or "result" not in observed or observed.get("event") is None:
+            if (
+                observed is None
+                or "result" not in observed
+                or observed.get("write_summary") is None
+                or observed.get("event_summary") is None
+            ):
                 raise StageAInputError(f"regional harness omitted {side} case {index}")
             result_kind, target_rva, result_value = observed["result"]
             kind = {
@@ -3246,18 +4185,91 @@ def _parse_regional_observations(
                         "after": observed["memory"][view_index]["after"],
                     }
                 )
-            event_record = observed["event"]
-            external_events = []
-            if int(event_record["count"]) != len(external_expected):
+            write_summary = observed["write_summary"]
+            write_records = observed["writes"]
+            if (
+                int(write_summary["overflow"]) != 0
+                or int(write_summary["count"]) != len(write_records)
+            ):
                 raise StageAInputError(
-                    f"regional harness emitted {event_record['count']} events; expected {len(external_expected)}"
+                    "regional harness emitted an incomplete guest-write set: "
+                    f"count={write_summary['count']} "
+                    f"overflow={write_summary['overflow']} "
+                    f"records={len(write_records)}"
                 )
-            for expected in external_expected:
+            guest_memory_writes = [
+                {"address": address, "after": f"{write_records[address]:02x}"}
+                for address in sorted(write_records)
+            ]
+            event_summary = observed["event_summary"]
+            event_records = observed["events"]
+            external_events = []
+            if (
+                int(event_summary["overflow"]) != 0
+                or int(event_summary["count"]) != len(event_records)
+                or set(event_records) != set(range(len(event_records)))
+            ):
+                raise StageAInputError(
+                    "regional harness emitted an incomplete external trace: "
+                    f"count={event_summary['count']} overflow={event_summary['overflow']} "
+                    f"records={sorted(event_records)} expected={len(external_expected)}"
+                )
+            has_checked_sites = all(
+                "instruction_rva" in item and "return_rva" in item
+                for item in external_expected
+            )
+            expected_by_site = (
+                {
+                    (
+                        str(item["identity"]),
+                        int(item["instruction_rva"]),
+                        int(item["return_rva"]),
+                    ): item
+                    for item in external_expected
+                }
+                if has_checked_sites
+                else {}
+            )
+            if has_checked_sites and len(expected_by_site) != len(external_expected):
+                raise StageAInputError("regional manifest has ambiguous external-event sites")
+            if not has_checked_sites and len(event_records) > len(external_expected):
+                raise StageAInputError(
+                    "legacy regional manifest cannot describe a repeated external event"
+                )
+            for event_index in range(len(event_records)):
+                event_record = event_records[event_index]
+                machine_call = _object(
+                    event_record.get("machine_call"), "observed machine call"
+                )
+                site_key = (
+                    str(event_record["identity"]),
+                    int(machine_call["instruction_rva"]),
+                    int(machine_call["return_rva"]),
+                )
+                expected = (
+                    expected_by_site.get(site_key)
+                    if has_checked_sites
+                    else external_expected[event_index]
+                )
+                if expected is None:
+                    raise StageAInputError(
+                        "regional harness external trace uses an undeclared call site: "
+                        f"event={event_index} identity={event_record['identity']} "
+                        f"instruction_rva=0x{int(machine_call['instruction_rva']):08x}"
+                    )
+                if not has_checked_sites and event_record["identity"] != expected["identity"]:
+                    raise StageAInputError(
+                        "legacy regional harness external trace is not a declared prefix: "
+                        f"event={event_index} observed={event_record['identity']} "
+                        f"expected={expected['identity']}"
+                    )
                 external_events.append(
                     {
-                        "id": expected["id"], "kind": expected["kind"],
+                        "id": expected["id"],
+                        "kind": expected["kind"],
                         "identity": event_record["identity"],
                         "arguments": event_record["arguments"],
+                        "machine_call": event_record["machine_call"],
                         "memory_reads": [], "result": {}, "memory_writes": [],
                         "callbacks": [],
                     }
@@ -3269,6 +4281,7 @@ def _parse_regional_observations(
                     "live_inputs": live_inputs,
                     "live_outputs": live_outputs,
                     "memory_views": observed_memory,
+                    "guest_memory_writes": guest_memory_writes,
                     "control": {
                         "id": control["id"], "kind": kind,
                         "target_unit_id": target_unit,

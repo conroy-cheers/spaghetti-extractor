@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -86,6 +87,21 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
             ),
         )
 
+    def test_proof_preparation_does_not_import_isa_oracle_tooling(self):
+        self._assert_clean_import(
+            "spaghetti_extractor.relational.preparation_cli",
+            (
+                "spaghetti_extractor.isa_cli",
+                "spaghetti_extractor.isa_campaign",
+                "spaghetti_extractor.isa_catalog",
+                "spaghetti_extractor.isa_catalog_enrichment",
+                "spaghetti_extractor.isa_conformance",
+                "spaghetti_extractor.isa_corpus_generator",
+                "spaghetti_extractor.isa_kernel_qualification",
+                "spaghetti_extractor.isa_side_adapter",
+            ),
+        )
+
     def test_side_cli_does_not_import_pair_or_mapping_phases(self):
         self._assert_clean_import(
             "spaghetti_extractor.relational.side_cli",
@@ -127,7 +143,7 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
             analysis_source._lean_x87_state_only_pair,
         )
 
-    def test_analysis_kernel_copier_emits_only_decode_dependencies(self):
+    def test_analysis_kernel_copier_emits_closed_analysis_dependencies(self):
         from spaghetti_extractor.relational.lean.analysis_source import (
             _copy_relational_analysis_kernel_sources,
         )
@@ -138,12 +154,14 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
             "Formal.lean",
             "RelationalX87Decode.lean",
             "ISAQualification.lean",
-            "Relational.lean",
             "RelationalDecode.lean",
             "RelationalISAQualification.lean",
             "RelationalLoader.lean",
             "RelationalFiniteIndex.lean",
             "RelationalMachine.lean",
+            "RelationalMemory.lean",
+            "Relational.lean",
+            "RelationalPEMachineStep.lean",
             "RelationalPEExecution.lean",
             "RelationalX87Machine.lean",
         }
@@ -155,6 +173,35 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
                 {path.name for path in destination.iterdir()},
                 expected,
             )
+
+            for source in destination.glob("*.lean"):
+                for imported in re.findall(
+                    r"(?m)^import StageA\.([A-Za-z0-9_]+)$",
+                    source.read_text(encoding="utf-8"),
+                ):
+                    self.assertIn(
+                        f"{imported}.lean",
+                        expected,
+                        f"{source.name} imports an omitted analysis-kernel module",
+                    )
+
+    def test_proof_kernel_inventory_is_closed(self):
+        from spaghetti_extractor.relational.schema import RELATIONAL_KERNEL_MODULES
+
+        expected = set(RELATIONAL_KERNEL_MODULES)
+        source_root = self.repo / "src" / "spaghetti_extractor" / "lean" / "StageA"
+        for module in RELATIONAL_KERNEL_MODULES:
+            source = source_root / f"{module}.lean"
+            self.assertTrue(source.is_file(), source)
+            for imported in re.findall(
+                r"(?m)^import StageA\.([A-Za-z0-9_]+)$",
+                source.read_text(encoding="utf-8"),
+            ):
+                self.assertIn(
+                    imported,
+                    expected,
+                    f"{source.name} imports an omitted proof-kernel module",
+                )
 
 
 if __name__ == "__main__":

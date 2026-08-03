@@ -332,6 +332,87 @@ class ContractToolTests(unittest.TestCase):
             self.assertEqual(binding["verdict"], "incomplete")
             self.assertFalse(binding["acceptance_authority"])
 
+    def test_reference_contract_binds_v2_prepared_proof_artifact_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            report = write_relational_report(
+                root / "report",
+                original=original,
+                candidate=candidate,
+                status="incomplete",
+            )
+            (report / "verdict.json").unlink()
+            proof_ir = report / "relational-proof-ir.json"
+            artifact_manifest = report / "artifact-manifest.json"
+            artifact_manifest.write_text("{}\n", encoding="utf-8")
+            prepared = report / "prepared-proof.json"
+            prepared.write_text(json.dumps({
+                "format": "stage-a-prepared-relational-v2",
+                "status": "prepared",
+                "profile": "x86-pe32-lean-relational-v3",
+                "model": REFERENCE_CONTRACT_MODEL_ID,
+                "original_sha256": sha256_file(original),
+                "candidate_sha256": sha256_file(candidate),
+                "proof_ir_sha256": sha256_file(proof_ir),
+                "artifact_manifest_sha256": sha256_file(artifact_manifest),
+            }), encoding="utf-8")
+
+            contract = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                validation_report=prepared,
+                out=root / "reference-contract.json",
+            )
+
+            binding = contract["constraints"]["validation_report_artifact_binding"]
+            self.assertEqual(binding["status"], "satisfied", binding)
+            self.assertTrue(binding["checks"]["artifact_manifest"])
+
+            artifact_manifest.write_text("{\"tampered\": true}\n", encoding="utf-8")
+            contract = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                validation_report=prepared,
+                out=root / "tampered-reference-contract.json",
+            )
+            binding = contract["constraints"]["validation_report_artifact_binding"]
+            self.assertEqual(binding["status"], "incomplete", binding)
+            self.assertFalse(binding["checks"]["artifact_manifest"])
+
+    def test_reference_contract_rejects_v2_without_artifact_manifest_binding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            report = write_relational_report(
+                root / "report",
+                original=original,
+                candidate=candidate,
+                status="incomplete",
+            )
+            (report / "verdict.json").unlink()
+            proof_ir = report / "relational-proof-ir.json"
+            prepared = report / "prepared-proof.json"
+            prepared.write_text(json.dumps({
+                "format": "stage-a-prepared-relational-v2",
+                "status": "prepared",
+                "profile": "x86-pe32-lean-relational-v3",
+                "model": REFERENCE_CONTRACT_MODEL_ID,
+                "original_sha256": sha256_file(original),
+                "candidate_sha256": sha256_file(candidate),
+                "proof_ir_sha256": sha256_file(proof_ir),
+            }), encoding="utf-8")
+
+            with self.assertRaisesRegex(StageAInputError, "relational v3"):
+                stage_a_export_reference_contract(
+                    original=original,
+                    candidate=candidate,
+                    validation_report=prepared,
+                    out=root / "reference-contract.json",
+                )
+
     def test_reference_contract_rejects_v2_report_shape(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -617,6 +698,55 @@ class ContractToolTests(unittest.TestCase):
             self.assertEqual(
                 transfer["ordered_events"][0],
                 {"family": "external", "instruction_rva": 0x1000, **event},
+            )
+
+    def test_call_stack_inputs_sample_memory_after_register_reuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            encoded = bytes.fromhex(
+                "8954240c"  # mov [esp+12], edx
+                "8b54245c"  # mov edx, [esp+92]
+                "89542410"  # mov [esp+16], edx
+                "ff1540204000"  # call [WriteFile]
+            )
+            original.write_bytes(pe32_import_image(encoded, symbol="WriteFile"))
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1000 + len(encoded))
+            mapping = BlockMapping(
+                id="stack-input-register-reuse",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "stack_input_register_reuse"},
+            )
+
+            transfer = _semantic_transfer_contract(
+                binary,
+                mapping,
+                "stack_input_register_reuse",
+                {"model": REFERENCE_CONTRACT_MODEL_ID},
+            )
+
+            self.assertEqual(transfer["status"], "reimplementable", transfer)
+            event = transfer["external_events"][0]
+            stack_inputs = {
+                item["offset"]: item["value"] for item in event["stack_inputs"]
+            }
+            self.assertEqual(set(stack_inputs), {12, 16})
+            for offset in (12, 16):
+                self.assertEqual(stack_inputs[offset]["op"], "load")
+                self.assertEqual(stack_inputs[offset]["width"], 4)
+                self.assertEqual(stack_inputs[offset]["address"]["op"], "add32")
+                self.assertIn(
+                    {"op": "const", "width": 32, "value": offset},
+                    stack_inputs[offset]["address"]["args"],
+                )
+            self.assertNotEqual(
+                stack_inputs[12],
+                {"op": "reg", "width": 32, "name": "edx"},
             )
 
     def test_semantic_transfer_keeps_writable_refptr_jump_indirect(self):

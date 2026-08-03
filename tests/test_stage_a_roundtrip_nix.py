@@ -1938,7 +1938,7 @@ class StageARoundtripNixTests(unittest.TestCase):
             "stage_b_native_runtime.py",
             "stage_b_pe_composer.py",
         ):
-            self.assertIn(excluded, opaque_source)
+            self.assertNotIn(excluded, opaque_source)
 
     def test_semantic_component_hybrid_has_candidate_only_functional_suite(
         self,
@@ -2803,17 +2803,19 @@ class StageARoundtripNixTests(unittest.TestCase):
             qualification,
         )
 
-    def test_lean_graph_retains_focused_logs_and_axiom_metadata(self) -> None:
+    def test_lean_graph_keeps_ca_nodes_deterministic_and_axiom_checked(self) -> None:
         graph = (self.repo / "nix" / "stage-a-lean-graph.nix").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn('mkdir -p "$out/StageA" "$out/logs"', graph)
-        self.assertIn('compile_stdout": f"logs/{module}.stdout"', graph)
-        self.assertIn('compile_stderr": f"logs/{module}.stderr"', graph)
-        self.assertIn('"maximum_resident_kib"', graph)
-        self.assertIn('"resource_usage": resource_usage', graph)
+        self.assertIn('outputs = [ "out" ];', graph)
+        self.assertNotIn('"audit"\n                    ];', graph)
+        self.assertNotIn('compile_stdout": f"logs/{module}.stdout"', graph)
+        self.assertNotIn('compile_stderr": f"logs/{module}.stderr"', graph)
+        self.assertNotIn('"maximum_resident_kib"', graph)
+        self.assertNotIn('"resource_usage": resource_usage', graph)
         self.assertIn("${pkgs.time}/bin/time -v", graph)
+        self.assertIn("Stage A Lean resource summary:", graph)
         self.assertNotIn("measureResources", graph)
         self.assertIn('"axiom_audit": {', graph)
         self.assertIn('"complete": all(value is not None', graph)
@@ -2850,9 +2852,12 @@ class StageARoundtripNixTests(unittest.TestCase):
             graph,
         )
         self.assertIn("self.${dependency}.stable", graph)
-        self.assertIn('"stage-a-lean-${node.id}-stable"', graph)
-        self.assertIn("stable = stableDrv.out;", graph)
-        self.assertIn("stableAudit = stableDrv.audit;", graph)
+        self.assertNotIn('"stage-a-lean-${node.id}-stable"', graph)
+        self.assertIn("stable = rawDrv.out;", graph)
+        self.assertNotIn("stableAudit", graph)
+        self.assertIn(
+            ': > "$out/nix-support/stage-a-direct-dependencies"', graph
+        )
         self.assertIn("module-build-packs.json", graph)
         self.assertIn("stage-a-lean-build-packs-v1", graph)
         self.assertRegex(graph, r"standaloneSource\s*=\s*module:")
@@ -2875,7 +2880,7 @@ class StageARoundtripNixTests(unittest.TestCase):
             'lib.optionalAttrs contentAddressed { __contentAddressed = true; }',
             graph,
         )
-        self.assertIn('2> >(tee "$audit/logs/${module}.stderr" >&2)', graph)
+        self.assertIn('2> >(tee "logs/${module}.stderr" >&2)', graph)
 
     def test_lean_graph_metadata_reads_only_the_aggregate_source_root(
         self,
@@ -3007,39 +3012,9 @@ class StageARoundtripNixTests(unittest.TestCase):
                 if "inputDrvs" in detached_payload
                 else detached_payload["inputs"]["drvs"]
             )
-            stable_target_drvs = [
-                path if path.startswith("/") else f"/nix/store/{path}"
-                for path in detached_input_drvs
-                if path.endswith("-stage-a-lean-target-pack-stable.drv")
-            ]
-            self.assertEqual(len(stable_target_drvs), 1)
-            stable_target = subprocess.run(
-                ["nix", "derivation", "show", stable_target_drvs[0]],
-                cwd=self.repo,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            self.assertEqual(
-                stable_target.returncode,
-                0,
-                stable_target.stderr,
-            )
-            stable_document = json.loads(stable_target.stdout)
-            stable_derivations = stable_document.get(
-                "derivations",
-                stable_document,
-            )
-            stable_payload = next(iter(stable_derivations.values()))
-            stable_input_drvs = (
-                stable_payload["inputDrvs"]
-                if "inputDrvs" in stable_payload
-                else stable_payload["inputs"]["drvs"]
-            )
             target_node_drvs = [
                 path if path.startswith("/") else f"/nix/store/{path}"
-                for path in stable_input_drvs
+                for path in detached_input_drvs
                 if path.endswith("-stage-a-lean-target-pack.drv")
             ]
             self.assertEqual(len(target_node_drvs), 1)

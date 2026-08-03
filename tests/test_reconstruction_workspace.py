@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import subprocess
@@ -18,10 +19,13 @@ from spaghetti_extractor.reconstruction_workspace import (
     RECONSTRUCTION_STATUS_FORMAT,
     RECONSTRUCTION_WORKSPACE_FORMAT,
     _affine_register_address,
+    _checked_machine_abi_comparison,
     _executable_alias_cases,
     _generate_cases,
     _manual_memory_fields,
+    _regional_call_stack_observations,
     _render_manual_contract,
+    _render_regional_harness,
     _synthesize_cluster_validation,
     check_reconstruction_workspace,
     create_reconstruction_workspace,
@@ -30,7 +34,10 @@ from spaghetti_extractor.reconstruction_workspace import (
     write_reconstruction_plan,
     write_reconstruction_status,
 )
-from spaghetti_extractor.region_replacement import REGION_OBSERVATIONS_FORMAT
+from spaghetti_extractor.region_replacement import (
+    REGION_OBSERVATIONS_FORMAT,
+    load_region_replacement_manifest,
+)
 from spaghetti_extractor.stage_binary import StageAInputError
 from spaghetti_extractor.util import sha256_file, write_json
 
@@ -257,7 +264,7 @@ typedef enum stage_b_call_event_kind { STAGE_B_CALL_EXTERNAL_IMPORT, STAGE_B_CAL
 typedef struct stage_b_stack_input { uint32_t offset,width,value; } stage_b_stack_input;
 typedef struct stage_b_call_event { stage_b_call_event_kind kind; uint32_t instruction_rva,call_index,target_rva,return_rva; const char *dll,*symbol; uint32_t ordinal,has_ordinal; const uint32_t *arguments; uint32_t argument_count; const stage_b_stack_input *stack_inputs; uint32_t stack_input_count; } stage_b_call_event;
 typedef stage_b_call_status (*stage_b_external_call_handler)(stage_b_runtime *,const stage_b_call_event *,const stage_b_machine_state *,stage_b_machine_state *);
-struct stage_b_runtime { void *context; uint32_t (*read)(void *,uint32_t,uint32_t,uint32_t *); void (*write)(void *,uint32_t,uint32_t,uint32_t,uint32_t *); void (*atomic_compare_exchange)(void *,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t *,uint32_t *,uint32_t *); stage_b_external_call_handler external_call_fallback; };
+struct stage_b_runtime { void *context; uint32_t (*read)(void *,uint32_t,uint32_t,uint32_t *); void (*write)(void *,uint32_t,uint32_t,uint32_t,uint32_t *); void (*atomic_compare_exchange)(void *,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t *,uint32_t *,uint32_t *); void (*atomic_exchange)(void *,uint32_t,uint32_t,uint32_t,uint32_t *,uint32_t *); stage_b_external_call_handler external_call_fallback; };
 stage_b_call_status stage_b_invoke_call(stage_b_runtime *,const stage_b_call_event *,const stage_b_machine_state *,stage_b_machine_state *);
 typedef enum stage_b_control_kind { STAGE_B_FALLTHROUGH,STAGE_B_JUMP,STAGE_B_BRANCH,STAGE_B_RETURN,STAGE_B_INDIRECT_JUMP,STAGE_B_DIVIDE_ERROR,STAGE_B_MEMORY_FAULT,STAGE_B_UNIMPLEMENTED,STAGE_B_EXTERNAL_FAULT,STAGE_B_EXTERNAL_JUMP } stage_b_control_kind;
 typedef struct stage_b_step_result { stage_b_control_kind kind; uint32_t target_rva,value; } stage_b_step_result;
@@ -371,6 +378,61 @@ class ReconstructionWorkspaceTests(unittest.TestCase):
         ]
         self.assertEqual(len(claimed_units), len(set(claimed_units)))
         self.assertFalse(first["executes_original_binary"])
+
+    def test_regional_call_stack_observations_are_canonical_and_fail_closed(self) -> None:
+        payload = {
+            "call_stack_observations": [
+                {
+                    "event_index": 2,
+                    "slots": [
+                        {"offset": 8, "width": 4},
+                        {"offset": 0, "width": 1},
+                    ],
+                },
+                {
+                    "event_index": 0,
+                    "slots": [{"offset": 4, "width": 2}],
+                },
+            ]
+        }
+
+        self.assertEqual(
+            _regional_call_stack_observations(payload),
+            (
+                (0, ((4, 2),)),
+                (2, ((8, 4), (0, 1))),
+            ),
+        )
+        payload["call_stack_observations"][0]["slots"].append(
+            {"offset": 8, "width": 4}
+        )
+        with self.assertRaisesRegex(StageAInputError, "invalid or duplicate"):
+            _regional_call_stack_observations(payload)
+
+    def test_checked_machine_abi_comparison_is_bound_and_fail_closed(self) -> None:
+        contract = {
+            "contract_id": 11,
+            "template": "pe32-stdcall-v1",
+            "argument_words": 2,
+            "profile_binding": {
+                "profile_id": "pe32-kernel32-lockstep-v1",
+                "profile_sha256": "9" * 64,
+            },
+        }
+
+        first = _checked_machine_abi_comparison({"abi_contract": contract})
+        second = _checked_machine_abi_comparison({"abi_contract": contract})
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["mode"], "checked_machine_abi_v1")
+        self.assertRegex(first["abi_contract_sha256"], r"^[0-9a-f]{64}$")
+        self.assertIsNone(_checked_machine_abi_comparison({}))
+
+        malformed = copy.deepcopy(contract)
+        malformed["profile_binding"]["profile_sha256"] = "not-a-hash"
+        self.assertIsNone(
+            _checked_machine_abi_comparison({"abi_contract": malformed})
+        )
 
     def test_finite_dispatch_cases_bind_selector_register_exhaustively(self) -> None:
         unit = _unit(
@@ -741,6 +803,163 @@ class ReconstructionWorkspaceTests(unittest.TestCase):
             any("left != right" in line for line in locations[0]["edited"])
         )
 
+    def test_regional_harness_follows_only_in_component_indirect_jumps(self) -> None:
+        write_reconstruction_plan(machine_ir=self.machine_ir, out=self.plan)
+        workspace = create_reconstruction_workspace(
+            plan=self.plan,
+            machine_ir=self.machine_ir,
+            interpreter_package=self.interpreter,
+            entry_rva=0x1000,
+            out_dir=self.root / "workspace-indirect-routing",
+        )
+        manifest = load_region_replacement_manifest(
+            workspace.manifest, source_root=workspace.root
+        )
+        cases = json.loads(
+            (workspace.root / "tests" / "cases.json").read_text(encoding="utf-8")
+        )
+        cases["address_space"] = {
+            "kind": "pe32_image_rva_v1",
+            "image_base": 0x400000,
+            "size_of_image": 0x30000,
+        }
+
+        harness = _render_regional_harness(manifest, cases)
+
+        self.assertIn("result.kind == STAGE_B_INDIRECT_JUMP", harness)
+        self.assertIn(
+            "const uint32_t image_base = UINT32_C(0x00400000);", harness
+        )
+        self.assertIn("image_address_to_rva(result.value, &indirect_rva)", harness)
+        self.assertIn(
+            "current = cluster_contains_rva(result.value) ? result.value : indirect_rva;",
+            harness,
+        )
+        self.assertRegex(
+            harness,
+            r"if \(result\.kind == STAGE_B_INDIRECT_JUMP[\s\S]*?continue;[\s\S]*?return result;",
+        )
+
+        x87_harness = _render_regional_harness(
+            manifest, cases, typed_x87_runtime=True
+        )
+        self.assertIn("harness_execute_typed_x87_operation", x87_harness)
+        self.assertIn(
+            "opaque, address, width, *exchanged ? desired : current, fault",
+            harness,
+        )
+        self.assertIn(
+            ".x87_stack = {"
+            "{ .empty = 1U, .tag = 3U }",
+            x87_harness,
+        )
+        self.assertIn(
+            "baseline_runtime.execute_typed_x87_operation = "
+            "harness_execute_typed_x87_operation;",
+            x87_harness,
+        )
+
+        cases["address_space"]["size_of_image"] = 0
+        with self.assertRaisesRegex(StageAInputError, "address space is invalid"):
+            _render_regional_harness(manifest, cases)
+
+    def test_regional_harness_scripts_external_responses_by_event_index(self) -> None:
+        write_reconstruction_plan(machine_ir=self.machine_ir, out=self.plan)
+        workspace = create_reconstruction_workspace(
+            plan=self.plan,
+            machine_ir=self.machine_ir,
+            interpreter_package=self.interpreter,
+            entry_rva=0x2000,
+            out_dir=self.root / "workspace-response-script",
+        )
+        manifest = load_region_replacement_manifest(
+            workspace.manifest, source_root=workspace.root
+        )
+        cases = json.loads(
+            (workspace.root / "tests" / "cases.json").read_text(encoding="utf-8")
+        )
+        cases["cases"][0]["external_responses"] = [
+            {
+                "eax": 0x11223344,
+                "registers": {"esp": 0x70000020, "ecx": 0xAABBCCDD},
+                "flags": {"cf": 1, "zf": 0},
+                "memory_writes": [
+                    {"argument_index": 0, "offset": 4, "bytes": "00112233"}
+                ],
+            },
+            {
+                "eax": 0x55667788,
+                "memory_writes": [
+                    {"stack_pointer_offset": 8, "offset": 0, "bytes": "aabb"}
+                ],
+            },
+        ]
+
+        harness = _render_regional_harness(manifest, cases)
+
+        self.assertIn(
+            "static const uint8_t response_0_0_write_0_bytes[] = { "
+            "UINT8_C(0x00), UINT8_C(0x11), UINT8_C(0x22), UINT8_C(0x33) };",
+            harness,
+        )
+        self.assertIn(
+            "static const harness_response_write response_0_0_writes[] = { "
+            "{ 0U, UINT32_C(0x00000000), UINT32_C(0x00000004), "
+            "response_0_0_write_0_bytes, 4U } };",
+            harness,
+        )
+        self.assertIn(
+            "{ 1U, UINT32_C(0x00000008), UINT32_C(0x00000000), "
+            "response_0_1_write_0_bytes, 2U }",
+            harness,
+        )
+        self.assertIn("static const harness_response responses_0[]", harness)
+        self.assertIn("if (event_index < context->response_count)", harness)
+        self.assertIn(
+            "if (response->register_mask & UINT32_C(0x80)) output->esp = response->registers[7];",
+            harness,
+        )
+        self.assertIn(
+            "if (response->flag_mask & UINT32_C(0x01)) output->cf = response->flags[0];",
+            harness,
+        )
+        self.assertIn("UINT32_C(0x70000020)", harness)
+        self.assertIn("UINT32_C(0xaabbccdd)", harness)
+        self.assertIn("base = event->arguments[write->location_value];", harness)
+        self.assertIn(
+            "base = harness_read(context, input->esp + write->location_value, "
+            "4U, &fault);",
+            harness,
+        )
+        self.assertIn(
+            "harness_write(context, address + byte_index, 1U, "
+            "write->bytes[byte_index], &fault);",
+            harness,
+        )
+        self.assertIn("context->write_overflow", harness)
+        self.assertIn('printf("W %c %u %u %u\\n"', harness)
+        self.assertIn('printf("B %c %u %u %u\\n"', harness)
+
+        cases["cases"][0]["external_responses"][0]["memory_writes"][0][
+            "argument_index"
+        ] = 16
+        with self.assertRaisesRegex(StageAInputError, "location is invalid"):
+            _render_regional_harness(manifest, cases)
+
+        cases["cases"][0]["external_responses"] = [
+            {"eax": index} for index in range(20)
+        ]
+        expanded = _render_regional_harness(manifest, cases)
+        self.assertIn("harness_event events[20];", expanded)
+        self.assertIn("context->event_count >= 20U", expanded)
+        self.assertIn("index < 20U", expanded)
+
+        cases["cases"][0]["external_responses"] = [
+            {"eax": index} for index in range(257)
+        ]
+        with self.assertRaisesRegex(StageAInputError, "more than 256"):
+            _render_regional_harness(manifest, cases)
+
     def test_candidate_only_check_promotion_and_status(self) -> None:
         write_reconstruction_plan(machine_ir=self.machine_ir, out=self.plan)
         workspaces = []
@@ -764,10 +983,94 @@ class ReconstructionWorkspaceTests(unittest.TestCase):
             self.assertFalse(report["executes_original_binary"])
             workspaces.append(workspace.root)
 
+        parent_root = workspaces[0]
+        child_root = workspaces[1]
+        child_manifest = load_region_replacement_manifest(
+            child_root / "region-replacement.json", source_root=child_root
+        )
+        child_support = {
+            str(item["role"]): item for item in child_manifest.support_sources
+        }
+        dependency_root = (
+            parent_root / "src" / "component-dependencies" / "child-component"
+        )
+        dependency_root.mkdir(parents=True)
+        dependency_source = dependency_root / "implementation.c"
+        dependency_header = dependency_root / "implementation.h"
+        shutil.copyfile(
+            child_root / str(child_support["portable_source"]["path"]),
+            dependency_source,
+        )
+        shutil.copyfile(
+            child_root / str(child_support["portable_header"]["path"]),
+            dependency_header,
+        )
+        parent_manifest_path = parent_root / "region-replacement.json"
+        parent_manifest = json.loads(parent_manifest_path.read_text(encoding="utf-8"))
+        parent_manifest["support_sources"].extend(
+            [
+                {
+                    "path": dependency_source.relative_to(parent_root).as_posix(),
+                    "role": "adapter_support",
+                    "sha256": sha256_file(dependency_source),
+                },
+                {
+                    "path": dependency_header.relative_to(parent_root).as_posix(),
+                    "role": "portable_header",
+                    "sha256": sha256_file(dependency_header),
+                },
+            ]
+        )
+        write_json(parent_manifest_path, parent_manifest)
+        rebound = rebind_reconstruction_workspace(workspace=parent_root)
+        observations = _observations(rebound.to_payload())
+        baseline = parent_root / "baseline-observations.json"
+        replacement = parent_root / "replacement-observations.json"
+        write_json(baseline, observations)
+        write_json(replacement, observations)
+        report = check_reconstruction_workspace(
+            workspace=parent_root,
+            baseline_observations=baseline,
+            replacement_observations=replacement,
+        )
+        self.assertEqual(report["status"], "qualified")
+
+        parent_only = self.root / "promoted-parent-only"
+        parent_registry = promote_reconstruction_workspaces(
+            workspaces=[parent_root], out_dir=parent_only
+        )
+        parent_promoted_manifest = load_region_replacement_manifest(
+            parent_only / parent_registry["entries"][0]["manifest"],
+            source_root=parent_only,
+        )
+        parent_support_paths = {
+            str(item["path"]) for item in parent_promoted_manifest.support_sources
+        }
+        self.assertTrue(
+            any(
+                "component-dependencies/child-component/implementation.c" in path
+                for path in parent_support_paths
+            )
+        )
+
         promoted = self.root / "promoted"
         registry = promote_reconstruction_workspaces(workspaces=workspaces, out_dir=promoted)
         self.assertEqual(registry["format"], RECONSTRUCTION_REGISTRY_FORMAT)
         self.assertEqual(registry["counts"]["replacements"], 3)
+        aggregate_parent = next(
+            item
+            for item in registry["entries"]
+            if item["id"] == parent_promoted_manifest.id
+        )
+        aggregate_parent_manifest = load_region_replacement_manifest(
+            promoted / aggregate_parent["manifest"], source_root=promoted
+        )
+        self.assertFalse(
+            any(
+                "component-dependencies/child-component" in str(item["path"])
+                for item in aggregate_parent_manifest.support_sources
+            )
+        )
         status_path = self.root / "status.json"
         status = write_reconstruction_status(
             plan=self.plan, registry=promoted / "reconstruction-registry.json", out=status_path

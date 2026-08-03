@@ -138,7 +138,29 @@ def _machine_ir_pre_call_tail_unit() -> dict[str, object]:
             "register_writes": [],
             "flag_writes": [],
             "memory_events": [],
-            "external_events": [],
+            "external_events": [
+                {
+                    "kind": "external_call",
+                    "return_rva": 0x1002,
+                    "dll": "msvcrt.dll",
+                    "symbol": "_unlock",
+                    "ordinal": None,
+                    "register_inputs": registers,
+                    "flag_inputs": flags,
+                    "arguments": [],
+                    "stack_inputs": [
+                        {
+                            "offset": 0,
+                            "width": 4,
+                            "value": {
+                                "op": "const",
+                                "value": 17,
+                                "width": 32,
+                            },
+                        }
+                    ],
+                }
+            ],
             "faults": [],
             "ordered_events": [],
             "edge_conditions": [],
@@ -164,6 +186,231 @@ def _machine_ir_pre_call_tail_unit() -> dict[str, object]:
                     "instructions": 2,
                     "x87_singletons": 0,
                     "ordinary_instructions": 2,
+                    "blockers": 0,
+                },
+            },
+        },
+    }
+
+
+def _machine_ir_stack_call_after_register_reuse_unit() -> dict[str, object]:
+    registers = {
+        name: {"op": "reg", "name": name, "width": 32}
+        for name in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+    }
+    flags = {
+        name: {"op": "flag", "name": name}
+        for name in ("cf", "zf", "sf", "of", "pf", "df")
+    }
+
+    def address(offset: int) -> dict[str, object]:
+        return {
+            "op": "add32",
+            "args": [
+                registers["esp"],
+                {"op": "const", "value": offset, "width": 32},
+            ],
+        }
+
+    def load(offset: int) -> dict[str, object]:
+        return {"op": "load", "width": 4, "address": address(offset)}
+
+    frame_esp = {
+        "op": "sub32",
+        "args": [
+            registers["esp"],
+            {"op": "const", "value": 28, "width": 32},
+        ],
+    }
+
+    def aggregate_load(offset: int) -> dict[str, object]:
+        return {
+            "op": "load",
+            "width": 4,
+            "address": {
+                "op": "add32",
+                "args": [
+                    frame_esp,
+                    {"op": "const", "value": offset, "width": 32},
+                ],
+            },
+        }
+
+    empty_effects = {
+        "register_writes": [],
+        "defined_flag_writes": [],
+        "undefined_flag_writes": [],
+        "ordered_events": [],
+    }
+    stack_inputs = [
+        {"offset": offset, "width": 4, "value": aggregate_load(offset)}
+        for offset in (12, 16)
+    ]
+    call = {
+        "kind": "external_call",
+        "instruction_rva": 0x100F,
+        "return_rva": 0x1015,
+        "dll": "fixture.dll",
+        "symbol": "Consume",
+        "ordinal": None,
+        "register_inputs": registers,
+        "flag_inputs": flags,
+        "arguments": [],
+        "stack_inputs": stack_inputs,
+    }
+    records = [
+        {
+            "rva_start": 0x1000,
+            "rva_end": 0x1003,
+            "instruction_class": "ordinary_symbolic_instruction",
+            "classification": {
+                "status": "proposal_requires_lean_exact_byte_replay",
+                "proof_authority": False,
+                "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                "checked_executor": "StageA.Formal.executeInstruction",
+            },
+            "effects": {
+                **empty_effects,
+                "register_writes": [{"register": "esp", "value": frame_esp}],
+                "control": {"kind": "fallthrough", "target_rva": 0x1003},
+            },
+        },
+        {
+            "rva_start": 0x1003,
+            "rva_end": 0x1007,
+            "instruction_class": "ordinary_symbolic_instruction",
+            "classification": {
+                "status": "proposal_requires_lean_exact_byte_replay",
+                "proof_authority": False,
+                "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                "checked_executor": "StageA.Formal.executeInstruction",
+            },
+            "effects": {
+                **empty_effects,
+                "ordered_events": [{
+                    "family": "memory",
+                    "kind": "write",
+                    "width": 4,
+                    "address": address(12),
+                    "value": registers["edx"],
+                }],
+                "control": {"kind": "fallthrough", "target_rva": 0x1007},
+            },
+        },
+        {
+            "rva_start": 0x1007,
+            "rva_end": 0x100B,
+            "instruction_class": "ordinary_symbolic_instruction",
+            "classification": {
+                "status": "proposal_requires_lean_exact_byte_replay",
+                "proof_authority": False,
+                "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                "checked_executor": "StageA.Formal.executeInstruction",
+            },
+            "effects": {
+                **empty_effects,
+                "register_writes": [{"register": "edx", "value": load(92)}],
+                "ordered_events": [{
+                    "family": "memory",
+                    "kind": "read",
+                    "width": 4,
+                    "address": address(92),
+                }],
+                "control": {"kind": "fallthrough", "target_rva": 0x100B},
+            },
+        },
+        {
+            "rva_start": 0x100B,
+            "rva_end": 0x100F,
+            "instruction_class": "ordinary_symbolic_instruction",
+            "classification": {
+                "status": "proposal_requires_lean_exact_byte_replay",
+                "proof_authority": False,
+                "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                "checked_executor": "StageA.Formal.executeInstruction",
+            },
+            "effects": {
+                **empty_effects,
+                "ordered_events": [{
+                    "family": "memory",
+                    "kind": "write",
+                    "width": 4,
+                    "address": address(16),
+                    "value": registers["edx"],
+                }],
+                "control": {"kind": "fallthrough", "target_rva": 0x100F},
+            },
+        },
+        {
+            "rva_start": 0x100F,
+            "rva_end": 0x1015,
+            "instruction_class": "ordinary_symbolic_instruction",
+            "classification": {
+                "status": "proposal_requires_lean_exact_byte_replay",
+                "proof_authority": False,
+                "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                "checked_executor": "StageA.Formal.executeInstruction",
+            },
+            "effects": {
+                **empty_effects,
+                "ordered_events": [{
+                    "family": "external",
+                    **call,
+                    "stack_inputs": [],
+                }],
+                "control": {
+                    "kind": "external_jump",
+                    "dll": "fixture.dll",
+                    "symbol": "Consume",
+                    "ordinal": None,
+                },
+            },
+        },
+    ]
+    return {
+        "format": "stage-a-machine-ir-v2",
+        "record_kind": "unit",
+        "id": "semantic-transfer:stack-call-after-register-reuse",
+        "status": "qualified",
+        "reachable": True,
+        "source": {
+            "original": {"rva_start": 0x1000, "rva_end": 0x1015, "size": 21},
+            "contract_sha256": _SHA_A,
+            "instruction_bytes_sha256": _SHA_B,
+        },
+        "instructions": [],
+        "x87_micro_ops": [],
+        "semantics": {
+            "pre_state": {},
+            "register_writes": [],
+            "flag_writes": [],
+            "memory_events": [],
+            "external_events": [call],
+            "faults": [],
+            "ordered_events": [],
+            "edge_conditions": [],
+            "outcome": {
+                "kind": "external_jump",
+                "dll": "fixture.dll",
+                "symbol": "Consume",
+                "ordinal": None,
+            },
+            "stack_delta": None,
+            "counts": {},
+            "fpu_state": None,
+            "instruction_effect_schedule": {
+                "format": "stage-a-instruction-ordered-effect-schedule-v1",
+                "status": "complete",
+                "proof_authority": False,
+                "ordering": "strict_contiguous_rva_order",
+                "rva_start": 0x1000,
+                "rva_end": 0x1015,
+                "records": records,
+                "blockers": [],
+                "counts": {
+                    "instructions": 5,
+                    "x87_singletons": 0,
+                    "ordinary_instructions": 5,
                     "blockers": 0,
                 },
             },
@@ -318,10 +565,111 @@ class StageBInterpreterBackendTests(unittest.TestCase):
             )
 
             self.assertLess(set_esp, call)
+            self.assertEqual(len(transfer.calls[0].stack_inputs), 1)
+            self.assertEqual(transfer.calls[0].stack_inputs[0][:2], (0, 4))
             self.assertFalse(any(
                 action.op == "set_reg" and action.aux == 7
                 for action in transfer.actions[call + 1:]
             ))
+
+    def test_machine_ir_call_stack_inputs_read_memory_after_register_reuse(self) -> None:
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("C compiler is unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine = root / "machine-ir.jsonl"
+            _write_machine(
+                machine,
+                [_machine_ir_stack_call_after_register_reuse_unit()],
+            )
+            package_dir = root / "package"
+            write_stage_b_interpreter_package(machine_ir=machine, out=package_dir)
+            harness = root / "harness.c"
+            harness.write_text(
+                r'''
+#include "state-machine-interpreter.h"
+
+typedef struct fixture_context {
+  uint32_t word_12, word_16, observed;
+} fixture_context;
+
+static uint32_t read_word(
+    void *raw, uint32_t address, uint32_t width, uint32_t *fault) {
+  fixture_context *context = (fixture_context *)raw;
+  if (width != 4U) { *fault = 1U; return 0U; }
+  if (address == 0x1040U) return 0xbbbbbbbbU;
+  if (address == 0x0ff0U) return context->word_12;
+  if (address == 0x0ff4U) return context->word_16;
+  *fault = 1U;
+  return 0U;
+}
+
+static void write_word(
+    void *raw, uint32_t address, uint32_t width, uint32_t value,
+    uint32_t *fault) {
+  fixture_context *context = (fixture_context *)raw;
+  if (width != 4U) { *fault = 1U; return; }
+  if (address == 0x0ff0U) { context->word_12 = value; return; }
+  if (address == 0x0ff4U) { context->word_16 = value; return; }
+  *fault = 1U;
+}
+
+stage_b_call_status stage_b_dispatch_external_call(
+    stage_b_runtime *runtime, const stage_b_call_event *event,
+    const stage_b_machine_state *input, stage_b_machine_state *output) {
+  fixture_context *context = (fixture_context *)runtime->context;
+  if (event->stack_input_count != 2U) return STAGE_B_CALL_UNIMPLEMENTED;
+  if (event->stack_inputs[0].offset != 12U ||
+      event->stack_inputs[0].value != 0xaaaaaaaaU ||
+      event->stack_inputs[1].offset != 16U ||
+      event->stack_inputs[1].value != 0xbbbbbbbbU)
+    return STAGE_B_CALL_UNIMPLEMENTED;
+  context->observed = 1U;
+  *output = *input;
+  return STAGE_B_CALL_OK;
+}
+
+int main(void) {
+  fixture_context context = {0U, 0U, 0U};
+  stage_b_runtime runtime = {0};
+  stage_b_machine_state state = {0};
+  stage_b_step_result result;
+  runtime.context = &context;
+  runtime.read = read_word;
+  runtime.write = write_word;
+  state.esp = 0x1000U;
+  state.edx = 0xaaaaaaaaU;
+  result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
+  if (context.observed != 1U) return 1;
+  if (context.word_12 != 0xaaaaaaaaU ||
+      context.word_16 != 0xbbbbbbbbU) return 2;
+  if (result.kind == STAGE_B_MEMORY_FAULT ||
+      result.kind == STAGE_B_UNIMPLEMENTED) return 3;
+  return 0;
+}
+''',
+                encoding="ascii",
+            )
+            executable = root / "stack-call-after-register-reuse"
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=c11",
+                    "-Werror",
+                    "-I",
+                    str(package_dir),
+                    str(package_dir / "state-machine-interpreter.c"),
+                    str(package_dir / "state-machine-program.c"),
+                    str(harness),
+                    "-o",
+                    str(executable),
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            subprocess.run([str(executable)], check=True)
 
     def test_machine_ir_terminal_branch_reads_final_instruction_state(self) -> None:
         compiler = shutil.which("cc")
@@ -866,6 +1214,18 @@ int main(void) {
                 "long double",
                 (first / "state-machine-interpreter.c").read_text(encoding="ascii"),
             )
+            interpreter_header = (
+                first / "state-machine-interpreter.h"
+            ).read_text(encoding="ascii")
+            interpreter_source = (
+                first / "state-machine-interpreter.c"
+            ).read_text(encoding="ascii")
+            self.assertIn("uint32_t fallback_on_unimplemented;", interpreter_header)
+            self.assertIn(
+                "result.kind==STAGE_B_UNIMPLEMENTED&&override->fallback_on_unimplemented",
+                interpreter_source,
+            )
+            self.assertIn("t=stage_b_program_lookup(source_rva);", interpreter_source)
             for source in ("state-machine-interpreter.c", "state-machine-program.c"):
                 subprocess.run(
                     [

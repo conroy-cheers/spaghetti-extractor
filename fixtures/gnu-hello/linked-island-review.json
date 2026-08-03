@@ -1,0 +1,25 @@
+{
+  "format": "stage-b-linked-island-review-v1",
+  "islands": [
+    {
+      "authority": "operator_reviewed_exact_range",
+      "id": "application:gnu-hello",
+      "kind": "application",
+      "provenance_hints": [
+        "reviewed application object ranges; names are non-authoritative"
+      ],
+      "ranges": [
+        {
+          "rva_end": 5920,
+          "rva_start": 5184
+        },
+        {
+          "rva_end": 83496,
+          "rva_start": 83272
+        }
+      ]
+    }
+  ],
+  "original_binary_sha256": "71b228f2babc9d3b4095ecf355db676c8ed8b45a7c8a7d350f47e962b4bf554c",
+  "review_sha256": "4ebdbe0fac9fc6d02c1b6ec67f14ab48fcee160ecd63ab18aa5133671d9abf34"
+}

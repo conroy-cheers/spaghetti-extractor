@@ -94,6 +94,26 @@ qualified regions into an override registry:
 nix build .#stage-b-gnu-hello-reconstruction-registry --no-link
 ```
 
+Classify application, import-thunk, linked dependency, compiler-support, and
+unknown machine units using pinned public/private artifact catalogs:
+
+```sh
+nix build .#stage-b-gnu-hello-linked-islands --no-link
+nix build .#stage-b-gnu-hello-library-hypotheses --no-link
+nix build .#stage-b-gnu-hello-dynamic-library-requirements --no-link
+nix build .#stage-b-gnu-hello-library-replacement-plan --no-link
+nix build .#stage-b-jq-linked-islands --no-link
+nix build .#stage-b-linked-library-analysis-smoke --no-link
+```
+
+Recognition is static-only and never authorizes replacement by library name or
+byte identity. A reusable interface contract plus checked component evidence is
+still required before portable C can replace an island; ambiguous and unknown
+regions remain explicit machine-IR fallback. This permits old SDK, compiler,
+and private-library catalogs without requiring a centralized copy of every
+historical implementation. See
+[the semantic component framework](docs/semantic-component-framework.md#federated-linked-library-recognition).
+
 The generic DAG is defined in
 `nix/stage-b-reconstruction-workspace.nix`. Its Python commands are phase
 workers and interactive diagnostics; an accepted repository artifact is the
@@ -111,8 +131,39 @@ nix build .#stage-b-gnu-hello-atomic-workspace-check --no-link
 nix build .#stage-b-gnu-hello-callback-workspace-check --no-link
 ```
 
-Runtime tests remain disabled as an acceptance path while rooted static
-control closure is incomplete.
+Build the independent idiomatic-C GNU Hello application and its assurance
+bundle:
+
+```sh
+nix build .#stage-b-gnu-hello-idiomatic-source-binding --no-link
+nix build .#stage-b-gnu-hello-idiomatic-candidate --no-link
+nix build .#stage-b-gnu-hello-idiomatic-functional-suite --no-link
+nix build .#stage-b-gnu-hello-idiomatic-assurance --no-link
+```
+
+Validate the static machine-call-to-source handoff and candidate dependency
+envelope separately:
+
+```sh
+nix build .#stage-b-gnu-hello-source-call-substitution-smoke --no-link
+```
+
+This closes and assigns all 41 calls in the reviewed GNU Hello application
+islands, checks all 31 Clang-inventoried source calls, and rejects candidate PE
+imports outside the bound 52-entry toolchain/source envelope. Its three
+source-component contracts remain explicitly unqualified, so this check does
+not claim source equivalence.
+
+The static binding closes all 83 machine-IR units in the reviewed
+`src/hello.o` text ranges. The other 7,778 units remain explicitly outside the
+application-source scope as linked runtime and library code. The source-only
+candidate passes all nine applicable expected-output cases under headless
+Wine. Its assurance status is `behavior_validated` and its equivalence status
+is deliberately `not_proven`; neither the static binding nor runtime suite may
+authorize a machine override or a Stage A pass.
+
+Runtime tests are candidate-only veto evidence, not an acceptance path while
+rooted static control closure is incomplete.
 
 Export the versioned schema, artifact, Lean-interface, and parallel-workstream
 boundaries used by Stage A development:
@@ -198,6 +249,23 @@ Bootstrap a jq skeleton from the Stage A contract:
 ```sh
 nix build .#stage-b-jq-skeleton --no-link
 ```
+
+Build the static jq component graph and all currently qualified operator-owned
+portable-C replacements:
+
+```sh
+nix build .#stage-b-jq-component-interfaces --no-link
+nix build .#stage-b-jq-component-registry --no-link
+```
+
+The registry validates twenty tracked portable-C implementations with CBMC
+and at least ten candidate-only regional cases each. Fourteen have total
+activation. The constant-string collection, x87 callback dispatcher, bounded
+PE32 section walk, DBCS-aware Windows path scanner, and byte/wide bounded
+string-length loops have checked guards and fall back to the canonical machine
+IR outside their domains. Together they unconditionally replace 70 machine
+units and conditionally replace another 129.
+This is component-level evidence, not a whole-program jq assurance result.
 
 After the state machine has been exported once, regenerate only the semantic-C
 implementation and repair queue without repeating PE extraction, Ghidra, or

@@ -916,6 +916,14 @@ typedef void (*stage_b_atomic_compare_exchange_handler)(
     uint32_t *exchanged,
     uint32_t *fault);
 
+typedef void (*stage_b_atomic_exchange_handler)(
+    void *context,
+    uint32_t address,
+    uint32_t width,
+    uint32_t desired,
+    uint32_t *observed,
+    uint32_t *fault);
+
 typedef uint32_t (*stage_b_code_target_resolver)(
     stage_b_runtime *runtime,
     uint32_t target_word,
@@ -933,6 +941,7 @@ struct stage_b_runtime {
   uint32_t (*read)(void *context, uint32_t address, uint32_t width, uint32_t *fault);
   void (*write)(void *context, uint32_t address, uint32_t width, uint32_t value, uint32_t *fault);
   stage_b_atomic_compare_exchange_handler atomic_compare_exchange;
+  stage_b_atomic_exchange_handler atomic_exchange;
   uint32_t (*undefined_value)(
       void *context, uint32_t slot, const stage_b_machine_state *input,
       uint32_t defined_value);
@@ -949,6 +958,14 @@ void stage_b_runtime_atomic_compare_exchange(
     uint32_t desired,
     uint32_t *observed,
     uint32_t *exchanged,
+    uint32_t *fault);
+
+void stage_b_runtime_atomic_exchange(
+    stage_b_runtime *runtime,
+    uint32_t address,
+    uint32_t width,
+    uint32_t desired,
+    uint32_t *observed,
     uint32_t *fault);
 
 stage_b_call_status stage_b_invoke_call(

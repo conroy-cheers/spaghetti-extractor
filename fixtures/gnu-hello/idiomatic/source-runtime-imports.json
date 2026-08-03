@@ -1,0 +1,31 @@
+{
+  "format": "stage-b-reviewed-source-runtime-imports-v1",
+  "profile_id": "gnu-hello-2.12.3-idiomatic-mingw32-v1",
+  "imports": [
+    {"dll": "kernel32.dll", "symbol": "GetModuleHandleA", "ordinal": null},
+    {"dll": "kernel32.dll", "symbol": "GetProcAddress", "ordinal": null},
+    {"dll": "kernel32.dll", "symbol": "IsDBCSLeadByteEx", "ordinal": null},
+    {"dll": "kernel32.dll", "symbol": "MultiByteToWideChar", "ordinal": null},
+    {"dll": "kernel32.dll", "symbol": "WideCharToMultiByte", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "__p___mb_cur_max", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "_errno", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "_lock", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "_unlock", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "atoi", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "ferror", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "fputc", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "fwrite", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "localeconv", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "puts", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "setlocale", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "strchr", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "strcmp", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "strerror", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "wcslen", "ordinal": null}
+  ],
+  "authority": {
+    "reviewed_for_pinned_source_and_toolchain": true,
+    "derived_from_candidate_during_audit": false,
+    "proves_source_semantics": false
+  }
+}

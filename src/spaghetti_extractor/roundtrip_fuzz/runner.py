@@ -1264,7 +1264,10 @@ def _prepared_cache_matches(
     except (OSError, json.JSONDecodeError):
         return False
     return (
-        manifest.get("format") == "stage-a-prepared-relational-v1"
+        manifest.get("format") in {
+            "stage-a-prepared-relational-v1",
+            "stage-a-prepared-relational-v2",
+        }
         and manifest.get("original_sha256") == case.artifact("original_pe").sha256
         and manifest.get("candidate_sha256") == case.artifact("candidate_pe").sha256
         and interface == stage_a_interface_manifest()

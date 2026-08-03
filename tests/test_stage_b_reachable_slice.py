@@ -103,6 +103,42 @@ class StageBReachableSliceTests(unittest.TestCase):
             self.assertEqual([row["id"] for row in rows], ["transfer-0", "transfer-2"])
             self.assertIn("no proof authority", report["authority"])
 
+    def test_accepts_v2_prepared_proof_with_artifact_manifest_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prepared, graph, acceptance, state_machine = _fixture(root)
+            payload = json.loads(prepared.read_text(encoding="utf-8"))
+            payload["format"] = "stage-a-prepared-relational-v2"
+            payload["artifact_manifest_sha256"] = "a" * 64
+            _write_json(prepared, payload)
+
+            report = write_stage_b_reachable_slice(
+                prepared_proof=prepared,
+                product_graph=graph,
+                whole_program_acceptance=acceptance,
+                state_machine=state_machine,
+                out_dir=root / "out",
+            )
+
+            self.assertEqual(report["status"], "ready")
+
+    def test_rejects_v2_prepared_proof_without_artifact_manifest_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prepared, graph, acceptance, state_machine = _fixture(root)
+            payload = json.loads(prepared.read_text(encoding="utf-8"))
+            payload["format"] = "stage-a-prepared-relational-v2"
+            _write_json(prepared, payload)
+
+            with self.assertRaisesRegex(StageAInputError, "artifact manifest"):
+                write_stage_b_reachable_slice(
+                    prepared_proof=prepared,
+                    product_graph=graph,
+                    whole_program_acceptance=acceptance,
+                    state_machine=state_machine,
+                    out_dir=root / "out",
+                )
+
     def test_rejects_incomplete_acceptance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

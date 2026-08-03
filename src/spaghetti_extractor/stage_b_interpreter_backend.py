@@ -475,7 +475,10 @@ class _TransferCompiler:
             elif family == "fault":
                 self._fault_event(event)
             elif family == "external":
-                self._external_event(event, external_index)
+                self._external_event(
+                    self._instruction_call_boundary(event, external_index),
+                    external_index,
+                )
                 external_index += 1
             else:
                 raise StageBInterpreterError(
@@ -502,6 +505,78 @@ class _TransferCompiler:
 
         self.actions.extend(updates)
         self.actions.append(_Action("sync_eflags"))
+
+    def _instruction_call_boundary(
+        self, event: Mapping[str, Any], event_index: int
+    ) -> Mapping[str, Any]:
+        """Bind an exact call instruction to its transfer-level ABI inventory."""
+
+        if event.get("kind") not in {
+            "external_call",
+            "internal_call",
+            "indirect_call",
+        }:
+            return event
+        aggregate_events = _optional_list(self.row.get("external_events"))
+        if event_index >= len(aggregate_events):
+            return event
+        aggregate = _object(
+            aggregate_events[event_index],
+            f"{self.identity} aggregate external event {event_index}",
+        )
+        identity_fields = (
+            "kind",
+            "dll",
+            "symbol",
+            "ordinal",
+            "target_rva",
+            "return_rva",
+        )
+        if any(
+            event.get(field) != aggregate.get(field)
+            for field in identity_fields
+        ):
+            raise StageBInterpreterError(
+                f"{self.identity}: instruction and aggregate call identities differ",
+                code="instruction_call_boundary_mismatch",
+            )
+        merged = dict(event)
+        for field in ("arguments", "stack_inputs"):
+            local = _optional_list(event.get(field))
+            boundary = _optional_list(aggregate.get(field))
+            # Instruction-local inventories already describe the exact call
+            # state.  The aggregate inventory is a required fallback for
+            # values prepared by preceding instructions in the same unit.
+            selected = local or boundary
+            if field == "stack_inputs" and not local:
+                selected = [
+                    self._instruction_local_stack_input(raw)
+                    for raw in selected
+                ]
+            merged[field] = selected
+        return merged
+
+    def _instruction_local_stack_input(self, raw: Any) -> Mapping[str, Any]:
+        """Sample an aggregate ABI slot from current ESP at the call."""
+
+        item = _object(raw, f"{self.identity} aggregate stack input")
+        offset = _nonnegative(item.get("offset"), "stack input offset")
+        width = _width(item.get("width"))
+        return {
+            "offset": offset,
+            "width": width,
+            "value": {
+                "op": "load",
+                "width": width,
+                "address": {
+                    "op": "add32",
+                    "args": [
+                        {"op": "reg", "name": "esp", "width": 32},
+                        {"op": "const", "value": offset, "width": 32},
+                    ],
+                },
+            },
+        }
 
     @property
     def identity(self) -> str:
@@ -1007,7 +1082,10 @@ class _TransferCompiler:
             elif family == "fault":
                 self._fault_event(event)
             elif family == "external":
-                self._external_event(event, external_index)
+                self._external_event(
+                    self._instruction_call_boundary(event, external_index),
+                    external_index,
+                )
                 external_index += 1
             else:
                 raise StageBInterpreterError(
@@ -1905,12 +1983,20 @@ def _typed_x87_payload(program: _TypedX87Program) -> dict[str, Any]:
 
 def _interpreter_runtime_header() -> str:
     header = _runtime_header()
-    replay_record = """typedef struct stage_b_typed_x87_operation {
+    replay_record = """#define STAGE_B_MACHINE_STATE_HAS_X87 1
+
+typedef struct stage_b_typed_x87_operation {
   uint32_t image_base, rva_start, rva_end, source_size;
   const char *operation_identity;
   const char *contract_sha256;
   const char *checked_decoder;
   const char *checked_executor;
+  const char *mnemonic;
+  uint32_t operand_kind, operand_width;
+  uint32_t stack_register_count, stack_register_0, stack_register_1;
+  uint32_t base_register, index_register, scale;
+  int32_t displacement;
+  uint32_t image_rva, has_image_rva;
 } stage_b_typed_x87_operation;
 
 """
@@ -1961,6 +2047,7 @@ typedef stage_b_step_result (*stage_b_region_override_fn)(
 typedef struct stage_b_region_override {
   uint32_t entry_rva;
   stage_b_region_override_fn function;
+  uint32_t fallback_on_unimplemented;
   const char *replacement_id;
   const char *cluster_id;
 } stage_b_region_override;
@@ -2086,6 +2173,20 @@ def _render_transfer_data(prefix: str, row: _Transfer) -> list[str]:
         f"static const stage_b_typed_x87_operation {prefix}_x87_operations[] = {{"
     )
     for operation in row.x87_operations:
+        operand = operation.operation.operand
+        register_codes = {
+            None: 0,
+            "eax": 1,
+            "ebx": 2,
+            "ecx": 3,
+            "edx": 4,
+            "esi": 5,
+            "edi": 6,
+            "ebp": 7,
+            "esp": 8,
+        }
+        operand_kinds = {"none": 0, "ax": 1, "stack": 2, "memory": 3}
+        stack_registers = (*operand.registers, 0, 0)
         lines.append(
             "  { "
             f"0x{operation.image_base:08x}U, 0x{operation.rva_start:08x}U, "
@@ -2093,11 +2194,18 @@ def _render_transfer_data(prefix: str, row: _Transfer) -> list[str]:
             f"{_c_string(operation.operation.identity)}, "
             f"{_c_string(operation.contract_sha256)}, "
             f"{_c_string(operation.checked_decoder)}, "
-            f"{_c_string(operation.checked_executor)} "
+            f"{_c_string(operation.checked_executor)}, "
+            f"{_c_string(operation.operation.mnemonic)}, "
+            f"{operand_kinds[operand.kind]}U, {operand.width}U, "
+            f"{len(operand.registers)}U, {stack_registers[0]}U, "
+            f"{stack_registers[1]}U, {register_codes[operand.base]}U, "
+            f"{register_codes[operand.index]}U, {operand.scale}U, "
+            f"{operand.displacement}, {operand.image_rva or 0}U, "
+            f"{1 if operand.image_rva is not None else 0}U "
             "},"
         )
     if not row.x87_operations:
-        lines.append("  { 0U,0U,0U,0U,0,0,0,0 },")
+        lines.append("  { 0 },")
     lines.append("};")
     lines.append(f"static const stage_b_program_action {prefix}_actions[] = {{")
     lines.extend("  " + _c_action(action) + "," for action in row.actions)
@@ -2372,8 +2480,13 @@ stage_b_step_result stage_b_interpreter_step(
     result=override->function(rt,&overridden);
     if(!stage_b_region_override_result_valid(result))
       return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
-    *state=overridden;
-    return result;
+    if(result.kind==STAGE_B_UNIMPLEMENTED&&override->fallback_on_unimplemented){
+      if(result.target_rva!=source_rva||result.value!=0U)
+        return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
+    }else{
+      *state=overridden;
+      return result;
+    }
   }
   t=stage_b_program_lookup(source_rva);
   if(!t||t->word_count>STAGE_B_MAX_WORD_NODES||t->x87_count!=0U)

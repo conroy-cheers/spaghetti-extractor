@@ -2,9 +2,9 @@
   "format": "stage-b-semantic-component-declarations-v1",
   "program_id": "gnu-hello-pe32-reference-v1",
   "bindings": {
-    "machine_ir_sha256": "82cf817a094e72283aef43fddad4e4814f87b03a09d00b0ef07d2b18d1eaad9c",
-    "machine_ir_manifest_sha256": "7bc7cf0cf27aee094b0dda2558254b80437b12e4ef1de432a83a617c134b3481",
-    "reconstruction_plan_sha256": "e677ddfd4dcb47d6d66edd2be2728ffb3ac1dea63c653ea9921438ee97c9234c",
+    "machine_ir_sha256": "e0fe4074996aa44c86d9cf6909b1a186a7a0aa3849708d028f4b3536738307ad",
+    "machine_ir_manifest_sha256": "d8914543d5120887626d01d4e4db8292a84d0194639d7d8ecebae16a324ce056",
+    "reconstruction_plan_sha256": "fe821c8456c83f984c107a83cc7f595f1898f057882436817e4e024f10b825a1",
     "original_binary_sha256": "71b228f2babc9d3b4095ecf355db676c8ed8b45a7c8a7d350f47e962b4bf554c"
   },
   "components": [
@@ -24,6 +24,8 @@
         "short-option-classifier",
         "static-word-initialization",
         "rotate-pending-words",
+        "windows-error-message-lookup",
+        "bounded-string-length",
         "finite-selector-dispatch",
         "alias-sensitive-word-update"
       ],
@@ -53,8 +55,8 @@
       "logical_interface": {
         "status": "proposed",
         "parameters": [
-          {"id": "left", "type": "uint32_t", "machine_source": "eax"},
-          {"id": "right", "type": "uint32_t", "machine_source": "edx"}
+          {"id": "left", "type": "uint32_t", "machine_source": "ebx"},
+          {"id": "right", "type": "uint32_t", "machine_source": "eax"}
         ],
         "results": [{"id": "route", "type": "boolean_branch"}],
         "objects": [], "persistent_state": [], "services": [],
@@ -75,7 +77,7 @@
       "expected_reachability": "exact",
       "membership": {
         "unit_ids": [],
-        "cluster_ids": ["cluster:00001040:ebe49b972cfd"]
+        "cluster_ids": ["cluster:00001040:4524e8cf5e7d"]
       },
       "children": [],
       "logical_interface": {
@@ -129,7 +131,7 @@
       "expected_reachability": "exact",
       "membership": {
         "unit_ids": [],
-        "cluster_ids": ["cluster:00001137:b9e945f1eb4f"]
+        "cluster_ids": ["cluster:00001137:c29adadf5d20"]
       },
       "children": [],
       "logical_interface": {
@@ -278,6 +280,144 @@
       "emission": {"policy": "function", "symbol": "rotate_pending_words"},
       "evidence": [],
       "assumptions": [{"id": "logical-shape-unvalidated", "claim": "the proposed array and range-window interpretation has not yet been refined against machine IR"}]
+    },
+    {
+      "id": "windows-error-message-lookup",
+      "label": "Windows error message lookup",
+      "purpose": "Lift a complete finite integer-to-static-string procedure while retaining checked guest-address translation in the adapter.",
+      "kind": "procedure",
+      "sharing": "exclusive",
+      "expected_reachability": "exact",
+      "membership": {
+        "unit_ids": [
+          "semantic-transfer:original-cutpoint-0000587c-00005887",
+          "semantic-transfer:original-cutpoint-00005887-0000588e",
+          "semantic-transfer:original-cutpoint-0000588e-00005898",
+          "semantic-transfer:original-cutpoint-00005898-0000589f",
+          "semantic-transfer:original-cutpoint-0000589f-000058a1",
+          "semantic-transfer:original-cutpoint-000058a1-000058a6",
+          "semantic-transfer:original-cutpoint-000058a6-000058b2",
+          "semantic-transfer:original-cutpoint-000058b2-000058b8",
+          "semantic-transfer:original-cutpoint-000058b8-000058c4",
+          "semantic-transfer:original-cutpoint-000058c4-000058d6",
+          "semantic-transfer:original-cutpoint-000058d6-000058d8",
+          "semantic-transfer:original-cutpoint-000058d8-000058e4",
+          "semantic-transfer:original-cutpoint-000058e4-000058ea",
+          "semantic-transfer:original-cutpoint-000058ea-000058f6",
+          "semantic-transfer:original-cutpoint-000058f6-00005908",
+          "semantic-transfer:original-cutpoint-00005908-0000590a",
+          "semantic-transfer:original-cutpoint-0000590a-00005911",
+          "semantic-transfer:original-cutpoint-00005911-00005918",
+          "semantic-transfer:original-cutpoint-00005918-0000591f",
+          "semantic-transfer:original-cutpoint-0000591f-00005929",
+          "semantic-transfer:original-cutpoint-00005929-00005933",
+          "semantic-transfer:original-cutpoint-00005933-0000593d",
+          "semantic-transfer:original-cutpoint-0000593d-00005947",
+          "semantic-transfer:original-cutpoint-00005947-00005951",
+          "semantic-transfer:original-cutpoint-00005951-0000595b",
+          "semantic-transfer:original-cutpoint-0000595b-00005965",
+          "semantic-transfer:original-cutpoint-00005965-0000596f",
+          "semantic-transfer:original-cutpoint-0000596f-00005979",
+          "semantic-transfer:original-cutpoint-00005979-00005983",
+          "semantic-transfer:original-cutpoint-00005983-0000598d",
+          "semantic-transfer:original-cutpoint-0000598d-00005997",
+          "semantic-transfer:original-cutpoint-00005997-000059a1",
+          "semantic-transfer:original-cutpoint-000059a1-000059ab",
+          "semantic-transfer:original-cutpoint-000059ab-000059b5",
+          "semantic-transfer:original-cutpoint-000059b5-000059bf",
+          "semantic-transfer:original-cutpoint-000059bf-000059c9",
+          "semantic-transfer:original-cutpoint-000059c9-000059d3",
+          "semantic-transfer:original-cutpoint-000059d3-000059dd",
+          "semantic-transfer:original-cutpoint-000059dd-000059e7",
+          "semantic-transfer:original-cutpoint-000059e7-000059f9",
+          "semantic-transfer:original-cutpoint-000059f9-000059fe",
+          "semantic-transfer:original-cutpoint-000059fe-00005a10",
+          "semantic-transfer:original-cutpoint-00005a10-00005a15"
+        ],
+        "cluster_ids": []
+      },
+      "children": [],
+      "logical_interface": {
+        "status": "proposed",
+        "parameters": [
+          {"id": "error_number", "type": "int32_t", "machine_source": "stack_argument_0"}
+        ],
+        "results": [
+          {"id": "message", "type": "const char *", "machine_result": "eax"}
+        ],
+        "objects": [
+          {"id": "error-message-table", "kind": "immutable_finite_string_table"}
+        ],
+        "persistent_state": [],
+        "services": [],
+        "preconditions": [],
+        "postconditions": [
+          {"id": "finite-message-lookup", "claim": "known error numbers return their exact static message and unknown values return null"}
+        ],
+        "observations": [{"kind": "return"}, {"kind": "static_data_result"}]
+      },
+      "refinement": {
+        "status": "not_started",
+        "stages": [
+          {"from": "machine_ir", "to": "finite_lookup", "status": "not_started"},
+          {"from": "finite_lookup", "to": "portable_c", "status": "not_started"}
+        ]
+      },
+      "emission": {"policy": "function", "symbol": "lookup_windows_error_message"},
+      "evidence": [],
+      "assumptions": []
+    },
+    {
+      "id": "bounded-string-length",
+      "label": "Bounded byte-string length",
+      "purpose": "Exercise guarded lifting of a complete loop over a bounded read-only byte sequence.",
+      "kind": "procedure",
+      "sharing": "exclusive",
+      "expected_reachability": "potential",
+      "membership": {
+        "unit_ids": [
+          "semantic-transfer:original-cutpoint-00013cd0-00013cdb",
+          "semantic-transfer:original-cutpoint-00013cdb-00013ce1",
+          "semantic-transfer:original-cutpoint-00013ce1-00013ce3",
+          "semantic-transfer:original-cutpoint-00013cf0-00013cf9",
+          "semantic-transfer:original-cutpoint-00013cf9-00013cfb",
+          "semantic-transfer:original-cutpoint-00013cfb-00013d00",
+          "semantic-transfer:original-cutpoint-00013d00-00013d07",
+          "semantic-transfer:original-cutpoint-00013d07-00013d08"
+        ],
+        "cluster_ids": []
+      },
+      "children": [],
+      "logical_interface": {
+        "status": "proposed",
+        "parameters": [
+          {"id": "bytes", "type": "const uint8_t *", "machine_source": "stack_argument_0"},
+          {"id": "limit", "type": "uint32_t", "machine_source": "stack_argument_1"}
+        ],
+        "results": [{"id": "length", "type": "uint32_t", "machine_result": "eax"}],
+        "objects": [{"id": "byte-string", "kind": "bounded_read_only_byte_array"}],
+        "persistent_state": [],
+        "services": [],
+        "preconditions": [
+          {"id": "readable-prefix", "claim": "bytes is readable through the first zero byte or limit"}
+        ],
+        "postconditions": [
+          {"id": "bounded-length", "claim": "result is the least zero-byte index below limit, or limit"}
+        ],
+        "observations": [{"kind": "return"}]
+      },
+      "refinement": {
+        "status": "not_started",
+        "stages": [
+          {"from": "machine_ir", "to": "loop_invariant", "status": "not_started"},
+          {"from": "loop_invariant", "to": "portable_c", "status": "not_started"}
+        ]
+      },
+      "emission": {"policy": "function", "symbol": "bounded_string_length"},
+      "evidence": [],
+      "assumptions": [
+        {"id": "guarded-domain", "claim": "the portable override activates only for limits within its checked finite bound"}
+      ]
     },
     {
       "id": "finite-selector-dispatch",

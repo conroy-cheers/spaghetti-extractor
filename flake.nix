@@ -19,12 +19,21 @@
         mkStageARelationalAnalysisGraph = import ./nix/stage-a-relational-analysis-graph.nix;
         mkStageARoundtripCorpus = import ./nix/stage-a-roundtrip-corpus.nix;
         mkStageARoundtripSmoke = import ./nix/stage-a-roundtrip-smoke.nix;
+        mkStageBComponentAnalysis = import ./nix/stage-b-component-analysis.nix;
+        mkStageBLinkedLibraryAnalysis = import ./nix/stage-b-linked-libraries.nix;
+        mkStageBSourceCallSubstitutions =
+          import ./nix/stage-b-source-call-substitutions.nix;
       };
 
       packages = forAllSystems (
         system:
         let
           pkgs = import nixpkgs { inherit system; };
+          vintagePkgs = import nixpkgs {
+            inherit system;
+            config.allowUnfreePredicate = package:
+              pkgs.lib.hasPrefix "open-watcom-bin" (pkgs.lib.getName package);
+          };
           mingw32 = pkgs.pkgsCross.mingw32;
           mingw32Oniguruma = mingw32.oniguruma.overrideAttrs (old: {
             meta = (old.meta or { }) // {
@@ -159,6 +168,13 @@
               ./nix/stage-a-register-dataflow-graph.nix
               ./nix/stage-a-relational-analysis-graph.nix
               ./nix/stage-b-native-object-graph.nix
+              ./nix/stage-b-component-discovery.nix
+              ./nix/stage-b-component-analysis.nix
+              ./nix/stage-b-component-interfaces.nix
+              ./nix/stage-b-component-selection.nix
+              ./nix/stage-b-interpreter-package.nix
+              ./nix/stage-b-linked-libraries.nix
+              ./nix/stage-b-python-sources.nix
               ./nix/stage-b-reconstruction-workspace.nix
               ./nix/stage-b-semantic-components.nix
               ./nix/stage-b-semantic-component-workspaces.nix
@@ -171,6 +187,93 @@
             # proof-only edits from regenerating binaries and analyses.
             fileset = pkgs.lib.fileset.difference ./src ./src/spaghetti_extractor/lean;
           };
+          stageBStaticAnalysisPythonFiles = pkgs.lib.fileset.unions [
+              ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/_contract_tools/abi.py
+              ./src/spaghetti_extractor/_contract_tools/common.py
+              ./src/spaghetti_extractor/_contract_tools/map_generation.py
+              ./src/spaghetti_extractor/_contract_tools/reference_contract.py
+              ./src/spaghetti_extractor/_contract_tools/symbolic_execution.py
+              ./src/spaghetti_extractor/artifact_formats.py
+              ./src/spaghetti_extractor/errors.py
+              ./src/spaghetti_extractor/machine_import_profiles.py
+              ./src/spaghetti_extractor/opaque_reconstruction.py
+              ./src/spaghetti_extractor/pe.py
+              ./src/spaghetti_extractor/reconstruction_control.py
+              ./src/spaghetti_extractor/reconstruction_ir.py
+              ./src/spaghetti_extractor/stage_b_state_machine.py
+              ./src/spaghetti_extractor/stage_binary.py
+              ./src/spaghetti_extractor/util.py
+              ./src/spaghetti_extractor/relational/__init__.py
+              ./src/spaghetti_extractor/relational/artifacts.py
+              ./src/spaghetti_extractor/relational/binary_inventory.py
+              ./src/spaghetti_extractor/relational/contract.py
+              ./src/spaghetti_extractor/relational/model.py
+              ./src/spaghetti_extractor/relational/reference_contract.py
+              ./src/spaghetti_extractor/relational/schema.py
+              ./src/spaghetti_extractor/relational/semantic_cutpoints.py
+              ./src/spaghetti_extractor/relational/side_extraction_artifact.py
+              ./src/spaghetti_extractor/relational/x87_profile.py
+              ./src/spaghetti_extractor/roundtrip_fuzz/__init__.py
+              ./src/spaghetti_extractor/roundtrip_fuzz/image_contract.py
+            ];
+          stageBStaticAnalysisPythonSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = stageBStaticAnalysisPythonFiles;
+          };
+          stageBPlanningPythonSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              stageBStaticAnalysisPythonFiles
+              ./src/spaghetti_extractor/reconstruction_composition.py
+              ./src/spaghetti_extractor/reconstruction_contract_analysis.py
+              ./src/spaghetti_extractor/reconstruction_validation.py
+              ./src/spaghetti_extractor/reconstruction_workspace.py
+              ./src/spaghetti_extractor/region_replacement.py
+            ];
+          };
+          stageBComponentDiscoveryPythonSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/component_discovery.py
+            ];
+          };
+          stageBComponentSelectionPythonSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/artifact_formats.py
+              ./src/spaghetti_extractor/component_selection.py
+              ./src/spaghetti_extractor/util.py
+            ];
+          };
+          stageBSemanticComponentPythonSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/artifact_formats.py
+              ./src/spaghetti_extractor/linked_library_contracts.py
+              ./src/spaghetti_extractor/semantic_components.py
+              ./src/spaghetti_extractor/util.py
+            ];
+          };
+          stageBComponentInterfacePythonSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/artifact_formats.py
+              ./src/spaghetti_extractor/component_interface.py
+              ./src/spaghetti_extractor/util.py
+            ];
+          };
+          stageBPythonSources =
+            import ./nix/stage-b-python-sources.nix { inherit pkgs; };
+          stageBInterpreterPythonSource = stageBPythonSources.interpreter;
+          stageBComponentWorkspacePythonSource = stageBPythonSources.workspace;
+          stageBLinkedLibraryPythonSource = stageBPythonSources.linkedLibraries;
+          stageBSourceCallSubstitutionPythonSource =
+            stageBPythonSources.sourceCallSubstitutions;
           spaghetti-extractor-roundtrip = mkPythonWorker {
             name = "spaghetti-extractor";
             source = spaghettiExtractorRoundtripSource;
@@ -443,8 +546,8 @@
           spaghettiExtractorAnalysisPythonFiles = [
             ./src/spaghetti_extractor/__init__.py
             ./src/spaghetti_extractor/artifact_formats.py
-            ./src/spaghetti_extractor/contract_tools.py
-            ./src/spaghetti_extractor/_contract_tools
+            ./src/spaghetti_extractor/_contract_tools/common.py
+            ./src/spaghetti_extractor/_contract_tools/map_generation.py
             ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/isa_semantic_forms.py
             ./src/spaghetti_extractor/pe.py
@@ -738,8 +841,8 @@
             fileset = pkgs.lib.fileset.unions [
               ./src/spaghetti_extractor/__init__.py
               ./src/spaghetti_extractor/artifact_formats.py
-              ./src/spaghetti_extractor/contract_tools.py
-              ./src/spaghetti_extractor/_contract_tools
+              ./src/spaghetti_extractor/_contract_tools/common.py
+              ./src/spaghetti_extractor/_contract_tools/map_generation.py
               ./src/spaghetti_extractor/errors.py
               ./src/spaghetti_extractor/isa_semantic_forms.py
               ./src/spaghetti_extractor/pe.py
@@ -916,8 +1019,6 @@
           spaghettiExtractorRegionFactsPythonFiles = [
             ./src/spaghetti_extractor/__init__.py
             ./src/spaghetti_extractor/artifact_formats.py
-            ./src/spaghetti_extractor/contract_tools.py
-            ./src/spaghetti_extractor/_contract_tools
             ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/pe.py
             ./src/spaghetti_extractor/stage_binary.py
@@ -976,8 +1077,8 @@
           };
           spaghettiExtractorMappingPythonFiles = [
             ./src/spaghetti_extractor/__init__.py
-            ./src/spaghetti_extractor/contract_tools.py
-            ./src/spaghetti_extractor/_contract_tools
+            ./src/spaghetti_extractor/_contract_tools/common.py
+            ./src/spaghetti_extractor/_contract_tools/map_generation.py
             ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/pe.py
             ./src/spaghetti_extractor/stage_binary.py
@@ -1005,8 +1106,8 @@
           spaghettiExtractorSidePythonFiles = [
             ./src/spaghetti_extractor/__init__.py
             ./src/spaghetti_extractor/artifact_formats.py
-            ./src/spaghetti_extractor/contract_tools.py
-            ./src/spaghetti_extractor/_contract_tools
+            ./src/spaghetti_extractor/_contract_tools/common.py
+            ./src/spaghetti_extractor/_contract_tools/map_generation.py
             ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/isa_semantic_forms.py
             ./src/spaghetti_extractor/pe.py
@@ -1736,10 +1837,16 @@
                   echo "missing hello-${label}.map" >&2
                   exit 1
                 fi
+                archive_path="$(find . -path '*/lib/libhello.a' -type f -print -quit)"
+                if [ -z "$archive_path" ]; then
+                  echo "missing exact linked libhello.a" >&2
+                  exit 1
+                fi
                 fixture_dir="$out/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/${label}"
                 mkdir -p "$fixture_dir"
                 cp "$map_path" "$fixture_dir/hello.map"
                 cp "$out/bin/hello.exe" "$fixture_dir/hello.exe"
+                cp "$archive_path" "$fixture_dir/libhello.a"
               '';
               meta = (old.meta or { }) // {
                 platforms = (old.meta.platforms or [ ]) ++ [ "i686-windows" ];
@@ -3293,13 +3400,14 @@
               }
               ''
                 fixture_dir="${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment"
+                profile_dir="${spaghetti-extractor-profiles}/share/spaghetti-extractor/profiles"
                 mkdir -p "$out"
                 spaghetti-extractor-mapping generate-relation-contract \
                   --original "$fixture_dir/jq-original.exe" \
                   --candidate "$fixture_dir/jq-candidate.exe" \
                   --mapping "${stage-a-jq-static-map}/jq-block-map.json" \
-                  --external-profile "${./profiles/pe32-kernel32-lockstep-v1.json}" \
-                  --external-profile "${./profiles/pe32-msvcrt-lockstep-v1.json}" \
+                  --external-profile "$profile_dir/pe32-kernel32-lockstep-v1.json" \
+                  --external-profile "$profile_dir/pe32-msvcrt-lockstep-v1.json" \
                   --out "$out/jq-relation-contract.json" \
                   > "$out/generate-relation.stdout"
               '';
@@ -3979,6 +4087,8 @@
             sourceRoot = spaghettiExtractorCoreSource;
             leanSourceRoot = relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
             originalFixture = stage-a-gnu-hello-original;
+            linkedIslands =
+              "${stageBGnuHelloLinkedLibraryAnalysis.linkedIslands}/linked-islands.json";
             nativeSourceApprovedToolchainAxiom =
               "StageA.GeneratedRelational.GnuHelloNativeSourceEnvironmentFamily.pinnedCompilerLoweringCorrect";
           };
@@ -4000,6 +4110,14 @@
             gnuHelloRoundtrip.reconstructionPlan;
           stage-b-gnu-hello-semantic-components =
             gnuHelloRoundtrip.semanticComponents;
+          stage-b-gnu-hello-component-proposals =
+            gnuHelloRoundtrip.componentProposals;
+          stage-b-gnu-hello-selected-component-declarations =
+            gnuHelloRoundtrip.selectedComponentDeclarations;
+          stage-b-gnu-hello-selected-component-catalog =
+            gnuHelloRoundtrip.selectedSemanticComponents;
+          stage-b-gnu-hello-component-interfaces =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.componentInterfaces;
           stage-b-gnu-hello-component-slices =
             gnuHelloRoundtrip.semanticComponentWorkspaceDag.componentSlices;
           stage-b-gnu-hello-regional-interpreter-kernel =
@@ -4012,6 +4130,14 @@
             gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.external-call;
           stage-b-gnu-hello-internal-call-component-qualification =
             gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.internal-call;
+          stage-b-gnu-hello-short-option-component-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.short-option;
+          stage-b-gnu-hello-rotate-component-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.rotate;
+          stage-b-gnu-hello-windows-error-component-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.windows-error;
+          stage-b-gnu-hello-bounded-string-length-component-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.bounded-string-length;
           stage-b-gnu-hello-atomic-component-qualification =
             gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.atomic;
           stage-b-gnu-hello-callback-component-qualification =
@@ -4020,10 +4146,28 @@
             gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.dispatch;
           stage-b-gnu-hello-typed-memory-component-qualification =
             gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.typed-memory;
+          stage-b-gnu-hello-ascii-to-lower-component-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.ascii-to-lower;
+          stage-b-gnu-hello-ascii-string-compare-component-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.ascii-string-compare;
+          stage-b-gnu-hello-last-path-component-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.last-path-component;
+          stage-b-gnu-hello-memory-regions-equal-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.memory-regions-equal;
+          stage-b-gnu-hello-program-name-selection-qualification =
+            gnuHelloRoundtrip.semanticComponentWorkspaceDag.qualifications.program-name-selection;
           stage-b-gnu-hello-component-hybrid-candidate =
             gnuHelloRoundtrip.semanticComponentHybridCandidate;
           stage-b-gnu-hello-component-hybrid-functional-suite =
             gnuHelloRoundtrip.semanticComponentHybridFunctionalSuite;
+          stage-b-gnu-hello-idiomatic-source-binding =
+            gnuHelloRoundtrip.idiomaticSourceBinding;
+          stage-b-gnu-hello-idiomatic-candidate =
+            gnuHelloRoundtrip.idiomaticCandidate;
+          stage-b-gnu-hello-idiomatic-functional-suite =
+            gnuHelloRoundtrip.idiomaticFunctionalSuite;
+          stage-b-gnu-hello-idiomatic-assurance =
+            gnuHelloRoundtrip.idiomaticAssurance;
           stage-b-gnu-hello-lifting-evidence =
             gnuHelloRoundtrip.reconstructionLiftingEvidence;
           stage-b-gnu-hello-branch-workspace =
@@ -5820,6 +5964,1161 @@
               printf '%s\n' "${stage-a-roundtrip-spike-corpus}"
             '';
           };
+          stageBJqComponentAnalysis =
+            let
+              fixtureDir = "${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment";
+              profileDir = "${spaghetti-extractor-profiles}/share/spaghetti-extractor/profiles";
+            in
+            import ./nix/stage-b-component-analysis.nix {
+              inherit pkgs pythonEnv;
+              sideTool = spaghetti-extractor-side;
+              staticPythonSource = stageBStaticAnalysisPythonSource;
+              planningPythonSource = stageBPlanningPythonSource;
+              componentDiscoveryPythonSource = stageBComponentDiscoveryPythonSource;
+              original = "${fixtureDir}/jq-original.exe";
+              externalProfile = "${profileDir}/pe32-msvcrt-machine-runtime-v1.json";
+              indirectTargetProfile = "${profileDir}/pe32-static-cutpoints-and-paired-callables-v1.json";
+              namePrefix = "stage-b-jq";
+            };
+          stageBMinimalHelloComponentAnalysis =
+            let
+              fixtureDir = "${stage-a-minimal-hello-original}/share/spaghetti-extractor/stage-a-minimal-hello-fixtures/original";
+              profileDir = "${spaghetti-extractor-profiles}/share/spaghetti-extractor/profiles";
+            in
+            import ./nix/stage-b-component-analysis.nix {
+              inherit pkgs pythonEnv;
+              sideTool = spaghetti-extractor-side;
+              staticPythonSource = stageBStaticAnalysisPythonSource;
+              planningPythonSource = stageBPlanningPythonSource;
+              componentDiscoveryPythonSource = stageBComponentDiscoveryPythonSource;
+              original = "${fixtureDir}/hello.exe";
+              externalProfile = "${profileDir}/pe32-msvcrt-machine-runtime-v1.json";
+              indirectTargetProfile = "${profileDir}/pe32-static-cutpoints-and-paired-callables-v1.json";
+              namePrefix = "stage-b-minimal-hello";
+              maxUnits = 64;
+            };
+          stageBMingwRuntimeArtifactCorpus =
+            pkgs.runCommand "stage-b-mingw-runtime-artifact-corpus-v1"
+              {
+                nativeBuildInputs = [ ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+                __contentAddressed = true;
+              }
+              ''
+                set -euo pipefail
+                mkdir -p "$out/artifacts"
+                cp ${mingw32.windows.mingw_w64}/lib/libmingw32.a \
+                  "$out/artifacts/libmingw32.a"
+                cp ${mingw32.windows.mingw_w64}/lib/libmingwex.a \
+                  "$out/artifacts/libmingwex.a"
+                cp ${mingw32.windows.pthreads}/lib/libpthread.a \
+                  "$out/artifacts/libpthread.a"
+              '';
+          stageBMingwRuntimeArtifactInputs =
+            pkgs.runCommand "stage-b-mingw-runtime-artifact-inputs-v1"
+              {
+                nativeBuildInputs = [ pythonEnv ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+                __contentAddressed = true;
+              }
+              ''
+                set -euo pipefail
+                export PYTHONHASHSEED=0
+                export LC_ALL=C.UTF-8
+                export SOURCE_DATE_EPOCH=1
+                export PYTHONPATH=${stageBLinkedLibraryPythonSource}/src
+                ${pythonEnv}/bin/python3 - "$out" <<'PY'
+                import pathlib
+                import sys
+                from spaghetti_extractor.linked_libraries import (
+                    bind_library_artifact_inputs,
+                )
+                from spaghetti_extractor.util import write_json
+
+                payload = bind_library_artifact_inputs({
+                    "format": "stage-b-library-artifact-inputs-v2",
+                    "catalog_id": "nixpkgs-mingw32-runtime-v1",
+                    "snapshot": {
+                        "id": "nixpkgs-mingw32-runtime-v1",
+                        "target": {
+                            "architecture": "i686",
+                            "object_format": "coff",
+                            "abi": "mingw32",
+                        },
+                    },
+                    "artifacts": [
+                        {
+                            "id": name.removesuffix(".a"),
+                            "path": f"artifacts/{name}",
+                            "visibility": "public",
+                            "redistributable": True,
+                            "island_kind": "compiler_linker_support",
+                            "retention_model": "unknown",
+                            "library_identity": {
+                                "family_id": (
+                                    "winpthreads" if name == "libpthread.a"
+                                    else "mingw-w64-crt"
+                                ),
+                                "component_id": name.removeprefix("lib").removesuffix(".a"),
+                                "release_id": "nixpkgs-pinned",
+                                "build_id": "nixpkgs-mingw32-runtime-v1",
+                                "abi_id": "mingw32",
+                            },
+                            "provenance": {
+                                "kind": "pinned_nix_store_artifact",
+                                "names_are_authoritative": False,
+                            },
+                        }
+                        for name in (
+                            "libmingw32.a",
+                            "libmingwex.a",
+                            "libpthread.a",
+                        )
+                    ],
+                })
+                write_json(pathlib.Path(sys.argv[1]), payload)
+                PY
+              '';
+          stageBGnuHelloArtifactCorpus =
+            pkgs.runCommand "stage-b-gnu-hello-library-artifact-corpus-v1"
+              {
+                nativeBuildInputs = [ ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+                __contentAddressed = true;
+              }
+              ''
+                set -euo pipefail
+                mkdir -p "$out/artifacts"
+                cp ${stageBMingwRuntimeArtifactCorpus}/artifacts/*.a "$out/artifacts/"
+                cp \
+                  ${stage-a-gnu-hello-original}/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/original/libhello.a \
+                  "$out/artifacts/libhello.a"
+              '';
+          stageBGnuHelloArtifactInputs =
+            pkgs.runCommand "stage-b-gnu-hello-library-artifact-inputs-v1"
+              {
+                nativeBuildInputs = [ pythonEnv ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+                __contentAddressed = true;
+              }
+              ''
+                set -euo pipefail
+                export PYTHONHASHSEED=0
+                export LC_ALL=C.UTF-8
+                export SOURCE_DATE_EPOCH=1
+                export PYTHONPATH=${stageBLinkedLibraryPythonSource}/src
+                ${pythonEnv}/bin/python3 - "$out" <<'PY'
+                import pathlib
+                import sys
+                from spaghetti_extractor.linked_libraries import bind_library_artifact_inputs
+                from spaghetti_extractor.util import write_json
+
+                artifacts = []
+                for name in ("libmingw32.a", "libmingwex.a", "libpthread.a"):
+                    artifacts.append({
+                        "id": name.removesuffix(".a"),
+                        "path": f"artifacts/{name}",
+                        "visibility": "public",
+                        "redistributable": True,
+                        "island_kind": "compiler_linker_support",
+                        "retention_model": "unknown",
+                        "library_identity": {
+                            "family_id": "winpthreads" if name == "libpthread.a" else "mingw-w64-crt",
+                            "component_id": name.removeprefix("lib").removesuffix(".a"),
+                            "release_id": "nixpkgs-pinned",
+                            "build_id": "nixpkgs-mingw32-runtime-v1",
+                            "abi_id": "mingw32",
+                        },
+                        "provenance": {
+                            "kind": "pinned_nix_store_artifact",
+                            "names_are_authoritative": False,
+                        },
+                    })
+                artifacts.append({
+                    "id": "gnu-hello-libhello",
+                    "path": "artifacts/libhello.a",
+                    "visibility": "public",
+                    "redistributable": True,
+                    "island_kind": "linked_dependency",
+                    "retention_model": "archive_member",
+                    "library_identity": {
+                        "family_id": "gnu-hello-gnulib",
+                        "component_id": "libhello",
+                        "release_id": "2.12.3",
+                        "build_id": "nixpkgs-stage-a-gnu-hello-original",
+                        "abi_id": "mingw32",
+                    },
+                    "provenance": {
+                        "kind": "exact_link_input_from_pinned_nix_build",
+                        "names_are_authoritative": False,
+                    },
+                })
+                payload = bind_library_artifact_inputs({
+                    "format": "stage-b-library-artifact-inputs-v2",
+                    "catalog_id": "gnu-hello-2.12.3-mingw32-link-inputs-v1",
+                    "snapshot": {
+                        "id": "gnu-hello-2.12.3-mingw32-link-inputs-v1",
+                        "target": {
+                            "architecture": "i686",
+                            "object_format": "coff",
+                            "abi": "mingw32",
+                        },
+                    },
+                    "artifacts": artifacts,
+                })
+                write_json(pathlib.Path(sys.argv[1]), payload)
+                PY
+              '';
+          stageBOpenWatcom19ArtifactCorpus =
+            pkgs.runCommand "stage-b-openwatcom19-artifact-corpus-v1"
+              {
+                nativeBuildInputs = [ vintagePkgs.open-watcom-bin ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+                __contentAddressed = true;
+              }
+              ''
+                set -euo pipefail
+                mkdir -p "$out/artifacts"
+                cat > vintage.c <<'C'
+                unsigned long vintage_rotate(unsigned long value) {
+                  return (value << 5) | (value >> 27);
+                }
+                C
+                wcc386 -q -bt=nt \
+                  -fo="$out/artifacts/openwatcom19-vintage.obj" vintage.c
+              '';
+          stageBOpenWatcom19ArtifactInputs =
+            pkgs.runCommand "stage-b-openwatcom19-artifact-inputs-v1"
+              {
+                nativeBuildInputs = [ pythonEnv ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+                __contentAddressed = true;
+              }
+              ''
+                set -euo pipefail
+                export PYTHONHASHSEED=0
+                export LC_ALL=C.UTF-8
+                export SOURCE_DATE_EPOCH=1
+                export PYTHONPATH=${stageBLinkedLibraryPythonSource}/src
+                ${pythonEnv}/bin/python3 - "$out" <<'PY'
+                import pathlib
+                import sys
+                from spaghetti_extractor.linked_libraries import (
+                    bind_library_artifact_inputs,
+                )
+                from spaghetti_extractor.util import write_json
+
+                payload = bind_library_artifact_inputs({
+                    "format": "stage-b-library-artifact-inputs-v2",
+                    "catalog_id": "openwatcom19-vintage-v1",
+                    "snapshot": {
+                        "id": "openwatcom19-vintage-v1",
+                        "target": {
+                            "architecture": "i686",
+                            "object_format": "omf",
+                            "abi": "watcom-nt",
+                        },
+                    },
+                    "artifacts": [{
+                        "id": "openwatcom19-vintage-object",
+                        "path": "artifacts/openwatcom19-vintage.obj",
+                        "visibility": "public",
+                        "redistributable": True,
+                        "island_kind": "compiler_linker_support",
+                        "retention_model": "unknown",
+                        "library_identity": {
+                            "family_id": "open-watcom-runtime",
+                            "component_id": "vintage-object",
+                            "release_id": "1.9",
+                            "build_id": "openwatcom19-vintage-v1",
+                            "abi_id": "watcom-nt",
+                        },
+                        "provenance": {
+                            "kind": "pinned_nix_toolchain_fixture",
+                            "toolchain": "Open Watcom 1.9",
+                            "names_are_authoritative": False,
+                        },
+                    }],
+                })
+                write_json(pathlib.Path(sys.argv[1]), payload)
+                PY
+              '';
+          stageBOpenWatcom19ArtifactAnalysis =
+            import ./nix/stage-b-linked-libraries.nix {
+              inherit pkgs pythonEnv;
+              pythonSource = stageBLinkedLibraryPythonSource;
+              original = null;
+              machineIr = null;
+              artifactInputs = stageBOpenWatcom19ArtifactInputs;
+              artifactRoot = stageBOpenWatcom19ArtifactCorpus;
+              namePrefix = "stage-b-openwatcom19";
+            };
+          stageBJqLinkedLibraryAnalysis =
+            let
+              fixtureDir = "${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment";
+            in
+            import ./nix/stage-b-linked-libraries.nix {
+              inherit pkgs pythonEnv;
+              pythonSource = stageBLinkedLibraryPythonSource;
+              original = "${fixtureDir}/jq-original.exe";
+              machineIr = stageBJqComponentAnalysis.machineIr;
+              review = ./fixtures/jq/linked-island-review.json;
+              artifactInputs = stageBMingwRuntimeArtifactInputs;
+              artifactRoot = stageBMingwRuntimeArtifactCorpus;
+              namePrefix = "stage-b-jq";
+            };
+          stageBGnuHelloLinkedLibraryAnalysis =
+            import ./nix/stage-b-linked-libraries.nix {
+              inherit pkgs pythonEnv;
+              pythonSource = stageBLinkedLibraryPythonSource;
+              original = "${stage-a-gnu-hello-original}/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/original/hello.exe";
+              machineIr = gnuHelloRoundtrip.machineIr;
+              review = ./fixtures/gnu-hello/linked-island-review.json;
+              artifactInputs = stageBGnuHelloArtifactInputs;
+              artifactRoot = stageBGnuHelloArtifactCorpus;
+              machineImportReport =
+                "${gnuHelloRoundtrip.staticMachineImportContractsLean}/machine-import-contract-report.json";
+              namePrefix = "stage-b-gnu-hello";
+            };
+          stageBGnuHelloSourceAst =
+            pkgs.runCommand "stage-b-gnu-hello-source-clang-ast-v1"
+              {
+                nativeBuildInputs = [ mingw32.stdenv.cc pkgs.clang ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+                __contentAddressed = true;
+              }
+              ''
+                set -euo pipefail
+                export LC_ALL=C.UTF-8
+                mkdir -p "$out"
+                gcc_include="$(${mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc \
+                  -print-file-name=include)"
+                gcc_include_fixed="$(${mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc \
+                  -print-file-name=include-fixed)"
+                mingw_headers="$(realpath "$gcc_include/../../../../../i686-w64-mingw32/sys-include")"
+                ${pkgs.clang}/bin/clang \
+                  --target=i686-w64-windows-gnu \
+                  -std=c11 -fsyntax-only \
+                  -nostdinc \
+                  -I ${./fixtures/gnu-hello/idiomatic} \
+                  -isystem "$gcc_include" \
+                  -isystem "$gcc_include_fixed" \
+                  -isystem "$mingw_headers" \
+                  -Wno-everything \
+                  -Xclang -ast-dump=json \
+                  ${./fixtures/gnu-hello/idiomatic}/hello.c \
+                  > "$out/clang-ast.json"
+                test -s "$out/clang-ast.json"
+              '';
+          stageBGnuHelloToolchainRuntimeImports =
+            pkgs.runCommand "stage-b-gnu-hello-toolchain-runtime-imports-v1"
+              {
+                nativeBuildInputs = [ mingw32.stdenv.cc pythonEnv ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+                __contentAddressed = true;
+              }
+              ''
+                set -euo pipefail
+                export PYTHONHASHSEED=0
+                export LC_ALL=C.UTF-8
+                export SOURCE_DATE_EPOCH=1
+                export PYTHONPATH=${stageBSourceCallSubstitutionPythonSource}/src
+                mkdir -p "$out"
+                cat > baseline.c <<'C'
+                int main(void) { return 0; }
+                C
+                ${mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc \
+                  -std=c11 -O2 -Wall -Wextra -Werror \
+                  -o baseline.exe baseline.c
+                ${pythonEnv}/bin/python3 - baseline.exe \
+                  "$out/allowed-runtime-imports.json" <<'PY'
+                import pathlib
+                import sys
+
+                from spaghetti_extractor.stage_binary import _parse_stage_a_pe
+                from spaghetti_extractor.source_call_substitution import (
+                    bind_allowed_runtime_imports,
+                )
+                from spaghetti_extractor.util import write_json
+
+                binary = _parse_stage_a_pe(pathlib.Path(sys.argv[1]))
+                imports = sorted(
+                    (
+                        {
+                            "dll": item.dll.lower(),
+                            "symbol": item.symbol,
+                            "ordinal": item.ordinal,
+                        }
+                        for item in binary.imports
+                    ),
+                    key=lambda item: (
+                        item["dll"], item["symbol"] or "", item["ordinal"] or -1
+                    ),
+                )
+                write_json(pathlib.Path(sys.argv[2]), bind_allowed_runtime_imports({
+                    "format": "stage-b-allowed-runtime-imports-v1",
+                    "profile_id": "nixpkgs-mingw32-c11-o2-console-baseline-v1",
+                    "executes_original_binary": False,
+                    "imports": imports,
+                    "authority": {
+                        "derived_from_candidate": False,
+                        "pinned_toolchain_baseline": True,
+                        "proves_source_semantics": False,
+                    },
+                }))
+                PY
+              '';
+          stageBGnuHelloDependencyEnvelope =
+            pkgs.runCommand "stage-b-gnu-hello-dependency-envelope-v1"
+              {
+                nativeBuildInputs = [ pkgs.jq pythonEnv ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+                __contentAddressed = true;
+              }
+              ''
+                set -euo pipefail
+                export PYTHONHASHSEED=0
+                export LC_ALL=C.UTF-8
+                export PYTHONPATH=${stageBSourceCallSubstitutionPythonSource}/src
+                mkdir -p "$out"
+                jq -s '
+                  {
+                    format: "stage-b-allowed-runtime-imports-v1",
+                    profile_id: "gnu-hello-2.12.3-idiomatic-mingw32-v1",
+                    executes_original_binary: false,
+                    inputs: {
+                      toolchain_profile: .[0].profile_id,
+                      source_profile: .[1].profile_id
+                    },
+                    imports: (
+                      ([.[0].imports[], .[1].imports[]]) |
+                      unique_by([.dll, (.symbol // ""), (.ordinal // -1)]) |
+                      sort_by([.dll, (.symbol // ""), (.ordinal // -1)])
+                    ),
+                    authority: {
+                      derived_from_candidate_during_audit: false,
+                      pinned_toolchain_baseline: true,
+                      reviewed_source_runtime_closure: true,
+                      proves_source_semantics: false
+                    }
+                  }
+                ' \
+                  ${stageBGnuHelloToolchainRuntimeImports}/allowed-runtime-imports.json \
+                  ${./fixtures/gnu-hello/idiomatic/source-runtime-imports.json} \
+                  > envelope.json
+                jq -e '.imports | length == 52' \
+                  envelope.json >/dev/null
+                ${pythonEnv}/bin/python3 - envelope.json \
+                  "$out/allowed-runtime-imports.json" <<'PY'
+                import json
+                import pathlib
+                import sys
+
+                from spaghetti_extractor.source_call_substitution import (
+                    bind_allowed_runtime_imports,
+                )
+                from spaghetti_extractor.util import write_json
+
+                payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+                write_json(pathlib.Path(sys.argv[2]), bind_allowed_runtime_imports(payload))
+                PY
+              '';
+          stageBGnuHelloSourceCallPipeline =
+            import ./nix/stage-b-source-call-substitutions.nix {
+              inherit pkgs pythonEnv;
+              pythonSource = stageBSourceCallSubstitutionPythonSource;
+              sourceBinding =
+                "${gnuHelloRoundtrip.idiomaticSourceBinding}/source-project-binding.json";
+              original =
+                "${stage-a-gnu-hello-original}/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/original/hello.exe";
+              machineIr = gnuHelloRoundtrip.machineIr;
+              linkedIslands =
+                "${stageBGnuHelloLinkedLibraryAnalysis.linkedIslands}/linked-islands.json";
+              dynamicRequirements =
+                "${stageBGnuHelloLinkedLibraryAnalysis.dynamicRequirements}/dynamic-library-requirements.json";
+              clangAst = "${stageBGnuHelloSourceAst}/clang-ast.json";
+              sourceRoot = ./fixtures/gnu-hello/idiomatic;
+              proposeSourceComponents = true;
+              candidate = "${gnuHelloRoundtrip.idiomaticCandidate}/candidate.exe";
+              allowedRuntimeImports =
+                "${stageBGnuHelloDependencyEnvelope}/allowed-runtime-imports.json";
+              namePrefix = "stage-b-gnu-hello";
+            };
+          stage-b-gnu-hello-proposed-source-components =
+            stageBGnuHelloSourceCallPipeline.proposedSourceComponents;
+          stage-b-gnu-hello-call-frontier =
+            stageBGnuHelloSourceCallPipeline.callFrontier;
+          stage-b-gnu-hello-toolchain-runtime-imports =
+            stageBGnuHelloToolchainRuntimeImports;
+          stage-b-gnu-hello-dependency-envelope =
+            stageBGnuHelloDependencyEnvelope;
+          stage-b-gnu-hello-call-substitution-plan =
+            stageBGnuHelloSourceCallPipeline.callPlan;
+          stage-b-gnu-hello-source-call-inventory =
+            stageBGnuHelloSourceCallPipeline.sourceInventory;
+          stage-b-gnu-hello-source-call-binding-report =
+            stageBGnuHelloSourceCallPipeline.sourceBindingReport;
+          stage-b-gnu-hello-candidate-dependency-audit =
+            stageBGnuHelloSourceCallPipeline.candidateAudit;
+          stage-b-gnu-hello-source-call-substitution-smoke =
+            pkgs.runCommand "stage-b-gnu-hello-source-call-substitution-smoke-v1"
+              {
+                nativeBuildInputs = [ pkgs.jq ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+                __contentAddressed = true;
+              }
+              ''
+                set -euo pipefail
+                frontier=${stageBGnuHelloSourceCallPipeline.callFrontier}/call-frontier.json
+                plan=${stageBGnuHelloSourceCallPipeline.callPlan}/call-substitution-plan.json
+                source_report=${stageBGnuHelloSourceCallPipeline.sourceBindingReport}/source-call-binding-report.json
+                dependency_audit=${stageBGnuHelloSourceCallPipeline.candidateAudit}/candidate-dependency-audit.json
+                jq -e '
+                  .status == "complete" and .counts.calls == 41 and
+                  .counts.resolved == 41 and .counts.incomplete == 0 and
+                  (.issues | length) == 0
+                ' "$frontier" >/dev/null
+                jq -e '
+                  .status == "incomplete" and
+                  .counts.frontier_calls == 41 and
+                  .counts.assigned_frontier_calls == 41 and
+                  .counts.plans == 3 and .counts.ready == 0 and
+                  .counts.incomplete == 3 and .counts.violated == 0 and
+                  all(.issues[]; .status == "incomplete" and
+                    .code == "callable_interface_unqualified")
+                ' "$plan" >/dev/null
+                jq -e '
+                  .status == "incomplete" and .counts.plans == 3 and
+                  .counts.bindings == 3 and .counts.source_calls == 31 and
+                  .counts.covered_by_source_component == 31 and
+                  .counts.unbound_source_local == 0 and
+                  all(.issues[]; .status == "incomplete" and
+                    .code == "call_plan_not_ready")
+                ' "$source_report" >/dev/null
+                jq -e '
+                  .status == "pass" and .counts.expected == 52 and
+                  .counts.observed == 52 and .counts.unexpected == 0 and
+                  (.executes_original_binary | not)
+                ' "$dependency_audit" >/dev/null
+                mkdir -p "$out"
+                ln -s ${stageBGnuHelloSourceCallPipeline.callFrontier} "$out/call-frontier"
+                ln -s ${stageBGnuHelloSourceCallPipeline.callPlan} "$out/call-plan"
+                ln -s ${stageBGnuHelloSourceCallPipeline.sourceBindingReport} "$out/source-binding-report"
+                ln -s ${stageBGnuHelloSourceCallPipeline.candidateAudit} "$out/candidate-audit"
+              '';
+          stage-b-component-analysis-smoke =
+            pkgs.runCommand "stage-b-component-analysis-smoke-v1"
+              {
+                nativeBuildInputs = [ pkgs.jq ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+                __contentAddressed = true;
+              }
+              ''
+                machine="${stageBMinimalHelloComponentAnalysis.machineIr}/machine-ir-manifest.json"
+                plan="${stageBMinimalHelloComponentAnalysis.reconstructionPlan}/reconstruction-plan.json"
+                proposals="${stageBMinimalHelloComponentAnalysis.componentProposals}/component-proposals.json"
+                jq -e '
+                  .format == "stage-a-machine-ir-v2" and
+                  (.status == "qualified" or .status == "incomplete") and
+                  .counts.units > 0 and .coverage.counts.unknown_bytes == 0 and
+                  .counts.violated_issues == 0 and
+                  (.authority | contains("no original execution"))
+                ' "$machine" >/dev/null
+                jq -e '
+                  .format == "stage-b-reconstruction-plan-v1" and
+                  (.status == "qualified" or .status == "incomplete") and
+                  .counts.clusters > 0 and (.executes_original_binary | not)
+                ' "$plan" >/dev/null
+                jq -e '
+                  .format == "stage-b-component-proposal-set-v1" and
+                  (.executes_original_binary | not) and
+                  (.authority.can_authorize_replacement | not) and
+                  .coverage.exact.complete and .coverage.potential.complete and
+                  (.proposals | length) > 0
+                ' "$proposals" >/dev/null
+                mkdir -p "$out"
+                ln -s "${stageBMinimalHelloComponentAnalysis.machineIr}" "$out/machine-ir"
+                ln -s "${stageBMinimalHelloComponentAnalysis.reconstructionPlan}" "$out/reconstruction-plan"
+                ln -s "${stageBMinimalHelloComponentAnalysis.componentProposals}" "$out/component-proposals"
+              '';
+          stage-b-linked-library-analysis-smoke =
+            pkgs.runCommand "stage-b-linked-library-analysis-smoke-v1"
+              {
+                nativeBuildInputs = [ pkgs.jq ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+                __contentAddressed = true;
+              }
+              ''
+                mkdir -p "$out"
+                for manifest in \
+                  ${stageBJqLinkedLibraryAnalysis.linkedIslands}/linked-islands.json \
+                  ${stageBGnuHelloLinkedLibraryAnalysis.linkedIslands}/linked-islands.json
+                do
+                  jq -e '
+                    .format == "stage-b-linked-island-manifest-v2" and
+                    (.executes_original_binary | not) and
+                    .coverage.classified_exactly_once and
+                    .coverage.classified_units == .coverage.machine_units and
+                    .coverage.units_by_kind.application > 0 and
+                    (.authority.artifact_recognition_authorizes_replacement | not)
+                  ' "$manifest" >/dev/null
+                done
+                watcom_index="${stageBOpenWatcom19ArtifactAnalysis.artifactIndex}/library-artifact-index.json"
+                jq -e '
+                  .format == "stage-b-library-artifact-index-v2" and
+                  .status == "indexed" and (.executes_original_binary | not) and
+                  .counts.function_fingerprints == 1 and
+                  any(.artifacts[];
+                    .index.kind == "omf_object" and
+                    any(.index.public_symbols[]; .name == "vintage_rotate_") and
+                    any(.index.function_fingerprints[];
+                      .matchable == false and
+                      .blocker == "unresolved_omf_fixupp_records"))
+                ' "$watcom_index" >/dev/null
+                gnu_hypotheses="${stageBGnuHelloLinkedLibraryAnalysis.libraryHypotheses}/library-hypotheses.json"
+                jq -e '
+                  .format == "stage-b-library-hypothesis-set-v1" and
+                  .status == "inferred" and (.executes_original_binary | not) and
+                  .counts.hypotheses >= 2 and
+                  .counts.exact_artifact >= 10 and
+                  .counts.ambiguous == 0 and
+                  (.authority.can_authorize_replacement | not) and
+                  all(.selected_placements[];
+                    .identity_status == "exact_artifact" and
+                    (.target.unit_ids | length) > 0)
+                ' "$gnu_hypotheses" >/dev/null
+                gnu_dynamic="${stageBGnuHelloLinkedLibraryAnalysis.dynamicRequirements}/dynamic-library-requirements.json"
+                jq -e '
+                  .format == "stage-b-dynamic-library-requirements-v1" and
+                  (.executes_original_binary | not) and
+                  .counts.import_identities == (.imports | length) and
+                  .counts.callsites == (.callsites | length) and
+                  .counts.callsites > 0 and
+                  .counts.qualified_reachable_callsites > 0 and
+                  all(.callsites[];
+                    (.status == "qualified" or .status == "incomplete") and
+                    (.import.dll | length) > 0 and
+                    ((.import.symbol | length) > 0 or .import.ordinal != null))
+                ' "$gnu_dynamic" >/dev/null
+                gnu_plan="${stageBGnuHelloLinkedLibraryAnalysis.replacementPlan}/replacement-plan.json"
+                jq -e --arg dynamic_hash "$(jq -r .requirements_sha256 "$gnu_dynamic")" '
+                  .format == "stage-b-library-replacement-plan-v1" and
+                  (.executes_original_binary | not) and
+                  .bindings.dynamic_requirements_sha256 == $dynamic_hash and
+                  .counts.dynamic_callsites == (.dynamic_callsites | length) and
+                  .counts.ready_dynamic_callsites > 0 and
+                  .counts.incomplete_dynamic_callsites > 0 and
+                  .counts.ready_dynamic_callsites + .counts.incomplete_dynamic_callsites == .counts.dynamic_callsites and
+                  (.completion.fallback_counts_as_lifting_progress | not) and
+                  (.completion.idiomatic_source_complete | not)
+                ' "$gnu_plan" >/dev/null
+                cp ${stageBJqLinkedLibraryAnalysis.linkedIslands}/linked-islands.json \
+                  "$out/jq-linked-islands.json"
+                cp ${stageBGnuHelloLinkedLibraryAnalysis.linkedIslands}/linked-islands.json \
+                  "$out/gnu-hello-linked-islands.json"
+                cp "$gnu_hypotheses" \
+                  "$out/gnu-hello-library-hypotheses.json"
+                cp "$gnu_dynamic" \
+                  "$out/gnu-hello-dynamic-library-requirements.json"
+                cp "$gnu_plan" \
+                  "$out/gnu-hello-library-replacement-plan.json"
+                cp "$watcom_index" "$out/openwatcom19-artifact-index.json"
+              '';
+          stage-b-jq-machine-ir = stageBJqComponentAnalysis.machineIr;
+          stage-b-jq-linked-islands = stageBJqLinkedLibraryAnalysis.linkedIslands;
+          stage-b-gnu-hello-linked-islands =
+            stageBGnuHelloLinkedLibraryAnalysis.linkedIslands;
+          stage-b-gnu-hello-library-hypotheses =
+            stageBGnuHelloLinkedLibraryAnalysis.libraryHypotheses;
+          stage-b-gnu-hello-dynamic-library-requirements =
+            stageBGnuHelloLinkedLibraryAnalysis.dynamicRequirements;
+          stage-b-gnu-hello-library-replacement-plan =
+            stageBGnuHelloLinkedLibraryAnalysis.replacementPlan;
+          stage-b-openwatcom19-library-artifact-index =
+            stageBOpenWatcom19ArtifactAnalysis.artifactIndex;
+          stage-b-jq-machine-ir-interpreter =
+            import ./nix/stage-b-interpreter-package.nix {
+              inherit pkgs pythonEnv;
+              pythonSource = stageBInterpreterPythonSource;
+              machineIr = stageBJqComponentAnalysis.machineIr;
+              namePrefix = "stage-b-jq";
+            };
+          stage-b-jq-reconstruction-plan =
+            stageBJqComponentAnalysis.reconstructionPlan;
+          stage-b-jq-component-proposals =
+            stageBJqComponentAnalysis.componentProposals;
+          stage-b-jq-selected-component-declarations =
+            import ./nix/stage-b-component-selection.nix {
+              inherit pkgs pythonEnv;
+              pythonSource = stageBComponentSelectionPythonSource;
+              componentProposals = stageBJqComponentAnalysis.componentProposals;
+              selection = ./fixtures/jq/component-selection.json;
+              namePrefix = "stage-b-jq";
+            };
+          stage-b-jq-selected-component-catalog =
+            import ./nix/stage-b-semantic-components.nix {
+              inherit pkgs pythonEnv;
+              pythonSource = stageBSemanticComponentPythonSource;
+              machineIr = stageBJqComponentAnalysis.machineIr;
+              reconstructionPlan = stageBJqComponentAnalysis.reconstructionPlan;
+              declarations = "${stage-b-jq-selected-component-declarations}/semantic-component-declarations.json";
+              namePrefix = "stage-b-jq-selected";
+            };
+          stageBJqSelection = builtins.fromJSON (builtins.readFile ./fixtures/jq/component-selection.json);
+          stageBJqSelectedComponents = map
+            (component: {
+              name = component.id;
+              componentId = component.id;
+            selection = component;
+            selectionProgramId = stageBJqSelection.program_id;
+            selectionProposalSetSha256 = stageBJqSelection.proposal_set_sha256;
+          })
+            stageBJqSelection.components;
+          stageBJqComponentInterfaceDag =
+            import ./nix/stage-b-component-interfaces.nix {
+              inherit pkgs pythonEnv;
+              pythonSource = stageBComponentInterfacePythonSource;
+              machineIr = stageBJqComponentAnalysis.machineIr;
+              semanticComponentCatalog = stage-b-jq-selected-component-catalog;
+              namePrefix = "stage-b-jq-selected";
+              components = stageBJqSelectedComponents;
+            };
+          stage-b-jq-component-interfaces =
+            stageBJqComponentInterfaceDag.bundle;
+          stageBJqMutableTokenCursorProfilePythonSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset =
+                ./src/spaghetti_extractor_component_profiles/mutable_token_cursor_match_v1.py;
+            };
+          stageBJqPrefixedUnaryBytePredicateProfilePythonSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset =
+                ./src/spaghetti_extractor_component_profiles/prefixed_unary_byte_predicate_v1.py;
+            };
+          stageBJqOpaqueValueServicePrefixProfilePythonSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset =
+                ./src/spaghetti_extractor_component_profiles/opaque_value_service_prefix_v1.py;
+            };
+          stageBJqStatusNormalizeTerminalServiceProfilePythonSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset =
+                ./src/spaghetti_extractor_component_profiles/status_normalize_terminal_service_v1.py;
+            };
+          stageBJqConstantBufferWriteProfilePythonSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset =
+                ./src/spaghetti_extractor_component_profiles/constant_buffer_write_v1.py;
+            };
+          stageBJqConstantStringCollectionProfilePythonSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset =
+                ./src/spaghetti_extractor_component_profiles/constant_string_collection_v1.py;
+            };
+          stageBJqOpaqueValueConsumerProfilePythonSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset =
+                ./src/spaghetti_extractor_component_profiles/opaque_value_consumer_v1.py;
+            };
+          stageBJqOpaqueOutputPipelineProfilePythonSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset =
+                ./src/spaghetti_extractor_component_profiles/opaque_output_pipeline_v1.py;
+            };
+          stageBJqOpaqueValueLabelPrefixProfilePythonSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset =
+                ./src/spaghetti_extractor_component_profiles/opaque_value_label_prefix_v1.py;
+            };
+          stageBJqStdcallWideConversionIterationProfilePythonSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset =
+                ./src/spaghetti_extractor_component_profiles/stdcall_wide_conversion_iteration_v1.py;
+            };
+          stageBJqOptionalFp64RecordCallbackProfilePythonSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset =
+                ./src/spaghetti_extractor_component_profiles/optional_fp64_record_callback_v1.py;
+            };
+          stageBJqPe32HeaderQueryProfilePythonSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset =
+                ./src/spaghetti_extractor_component_profiles/pe32_header_query_v1.py;
+            };
+          stageBJqWindowsPathInfoScanProfilePythonSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset =
+                ./src/spaghetti_extractor_component_profiles/windows_path_info_scan_v1.py;
+            };
+          stageBJqStaticAtomicWordProfilePythonSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset =
+                ./src/spaghetti_extractor_component_profiles/static_atomic_word_v1.py;
+            };
+          stageBJqBoundedWideStringLengthProfilePythonSource =
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset =
+                ./src/spaghetti_extractor_component_profiles/bounded_wide_string_length_v1.py;
+            };
+          stageBJqFrontendProfilePythonSources = {
+                mutable_token_cursor_match_v1 =
+                  stageBJqMutableTokenCursorProfilePythonSource;
+                prefixed_unary_byte_predicate_v1 =
+                  stageBJqPrefixedUnaryBytePredicateProfilePythonSource;
+                opaque_value_service_prefix_v1 =
+                  stageBJqOpaqueValueServicePrefixProfilePythonSource;
+                status_normalize_terminal_service_v1 =
+                  stageBJqStatusNormalizeTerminalServiceProfilePythonSource;
+                constant_buffer_write_v1 =
+                  stageBJqConstantBufferWriteProfilePythonSource;
+                constant_string_collection_v1 =
+                  stageBJqConstantStringCollectionProfilePythonSource;
+                opaque_value_consumer_v1 =
+                  stageBJqOpaqueValueConsumerProfilePythonSource;
+                opaque_output_pipeline_v1 =
+                  stageBJqOpaqueOutputPipelineProfilePythonSource;
+                opaque_value_label_prefix_v1 =
+                  stageBJqOpaqueValueLabelPrefixProfilePythonSource;
+                stdcall_wide_conversion_iteration_v1 =
+                  stageBJqStdcallWideConversionIterationProfilePythonSource;
+                optional_fp64_record_callback_v1 =
+                  stageBJqOptionalFp64RecordCallbackProfilePythonSource;
+                pe32_header_query_v1 =
+                  stageBJqPe32HeaderQueryProfilePythonSource;
+                windows_path_info_scan_v1 =
+                  stageBJqWindowsPathInfoScanProfilePythonSource;
+                static_atomic_word_v1 =
+                  stageBJqStaticAtomicWordProfilePythonSource;
+                bounded_wide_string_length_v1 =
+                  stageBJqBoundedWideStringLengthProfilePythonSource;
+              };
+              stageBJqFrontendComponentConfigurations = [
+                {
+                  name = "option-name-match";
+                  componentId = "option-name-match";
+                  proofProfile = "mutable_token_cursor_match_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/option-name-match.c;
+                  staticImage =
+                    "${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment/jq-original.exe";
+                }
+                {
+                  name = "option-token-classifier";
+                  componentId = "option-token-classifier";
+                  proofProfile = "prefixed_unary_byte_predicate_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/option-token-classifier.c;
+                }
+                {
+                  name = "stderr-value-kind-route";
+                  componentId = "stderr-value-kind-route";
+                  proofProfile = "opaque_value_service_prefix_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/stderr-value-kind-route.c;
+                }
+                {
+                  name = "debug-value-prefix";
+                  componentId = "debug-value-prefix";
+                  proofProfile = "opaque_value_label_prefix_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/debug-value-prefix.c;
+                  staticImage =
+                    "${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment/jq-original.exe";
+                }
+                {
+                  name = "usage-exit-route";
+                  componentId = "usage-exit-route";
+                  proofProfile = "status_normalize_terminal_service_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/usage-exit-route.c;
+                }
+                {
+                  name = "usage-write-route";
+                  componentId = "usage-write-route";
+                  proofProfile = "constant_buffer_write_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/usage-write-route.c;
+                  staticImage =
+                    "${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment/jq-original.exe";
+                }
+                {
+                  name = "option-value-collection";
+                  componentId = "option-value-collection";
+                  proofProfile = "constant_string_collection_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/option-value-collection.c;
+                  staticImage =
+                    "${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment/jq-original.exe";
+                }
+                {
+                  name = "output-value-release";
+                  componentId = "output-value-release";
+                  proofProfile = "opaque_value_consumer_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/output-value-release.c;
+                }
+                {
+                  name = "output-value-dump";
+                  componentId = "output-value-dump";
+                  proofProfile = "opaque_value_consumer_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/output-value-dump.c;
+                }
+                {
+                  name = "output-value-pipeline";
+                  componentId = "output-value-pipeline";
+                  proofProfile = "opaque_output_pipeline_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/output-value-pipeline.c;
+                }
+                {
+                  name = "wide-argument-conversion-tail";
+                  componentId = "wide-argument-conversion-tail";
+                  proofProfile = "stdcall_wide_conversion_iteration_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/wide-argument-conversion-tail.c;
+                }
+                {
+                  name = "math-error-callback-dispatch";
+                  componentId = "math-error-callback-dispatch";
+                  proofProfile = "optional_fp64_record_callback_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/math-error-callback-dispatch.c;
+                  staticImage =
+                    "${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment/jq-original.exe";
+                }
+                {
+                  name = "pe32-section-count";
+                  componentId = "pe32-section-count";
+                  proofProfile = "pe32_header_query_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/pe32-section-count.c;
+                }
+                {
+                  name = "pe32-image-base";
+                  componentId = "pe32-image-base";
+                  proofProfile = "pe32_header_query_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/pe32-image-base.c;
+                }
+                {
+                  name = "pe32-section-for-address";
+                  componentId = "pe32-section-for-address";
+                  proofProfile = "pe32_header_query_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/pe32-section-for-address.c;
+                }
+                {
+                  name = "windows-path-info-scan";
+                  componentId = "windows-path-info-scan";
+                  proofProfile = "windows_path_info_scan_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/windows-path-info-scan.c;
+                }
+                {
+                  name = "invalid-parameter-handler-get";
+                  componentId = "invalid-parameter-handler-get";
+                  proofProfile = "static_atomic_word_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/invalid-parameter-handler-get.c;
+                }
+                {
+                  name = "invalid-parameter-handler-exchange";
+                  componentId = "invalid-parameter-handler-exchange";
+                  proofProfile = "static_atomic_word_v1";
+                  expectedCases = 10;
+                  portableSource =
+                    ./fixtures/jq/components/invalid-parameter-handler-exchange.c;
+                }
+                {
+                  name = "bounded-string-length";
+                  componentId = "bounded-string-length";
+                  proofProfile = "bounded_string_length_v1";
+                  expectedCases = 153;
+                  portableSource =
+                    ./fixtures/jq/components/bounded-string-length.c;
+                }
+                {
+                  name = "bounded-wide-string-length";
+                  componentId = "bounded-wide-string-length";
+                  proofProfile = "bounded_wide_string_length_v1";
+                  expectedCases = 153;
+                  portableSource =
+                    ./fixtures/jq/components/bounded-wide-string-length.c;
+                }
+              ];
+            stageBJqFrontendComponents = map (
+            componentConfig:
+            componentConfig
+            // {
+              selection =
+                (builtins.head (
+                  builtins.filter (
+                    selected: selected.componentId == componentConfig.componentId
+                  ) stageBJqSelectedComponents
+                )).selection;
+              selectionProgramId = stageBJqSelection.program_id;
+              selectionProposalSetSha256 = stageBJqSelection.proposal_set_sha256;
+            }
+          ) stageBJqFrontendComponentConfigurations;
+          mkStageBJqFrontendWorkspaceDag =
+            components:
+            import ./nix/stage-b-semantic-component-workspaces.nix {
+              inherit pkgs pythonEnv;
+              pythonSource = stageBComponentWorkspacePythonSource;
+              componentSelectionPythonSource = stageBComponentSelectionPythonSource;
+              semanticComponentPythonSource = stageBSemanticComponentPythonSource;
+              componentInterfacePythonSource = stageBComponentInterfacePythonSource;
+              profilePythonSources = stageBJqFrontendProfilePythonSources;
+              machineIr = stageBJqComponentAnalysis.machineIr;
+              interpreterPackage = stage-b-jq-machine-ir-interpreter;
+              reconstructionPlan = stageBJqComponentAnalysis.reconstructionPlan;
+              semanticComponentCatalog = stage-b-jq-selected-component-catalog;
+              componentProposals = stageBJqComponentAnalysis.componentProposals;
+              linkedIslands =
+                "${stageBJqLinkedLibraryAnalysis.linkedIslands}/linked-islands.json";
+              namePrefix = "stage-b-jq";
+              inherit components;
+            };
+          stageBJqFrontendWorkspaceDag = mkStageBJqFrontendWorkspaceDag stageBJqFrontendComponents;
+          stageBJqOptionNameMatchIsolatedDag = mkStageBJqFrontendWorkspaceDag (
+            builtins.filter (component: component.name == "option-name-match") stageBJqFrontendComponents
+          );
+          stage-b-jq-component-granularity-smoke =
+            assert
+              toString stageBJqFrontendWorkspaceDag.qualifications.option-name-match
+              == toString stageBJqOptionNameMatchIsolatedDag.qualifications.option-name-match;
+            pkgs.runCommand "stage-b-jq-component-granularity-smoke-v1" { } ''
+              mkdir -p "$out"
+              ln -s ${stageBJqFrontendWorkspaceDag.qualifications.option-name-match} \
+                "$out/option-name-match-qualification"
+            '';
+          stage-b-jq-option-name-match-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.option-name-match;
+          stage-b-jq-option-name-match-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.option-name-match;
+          stage-b-jq-option-token-classifier-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.option-token-classifier;
+          stage-b-jq-option-token-classifier-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.option-token-classifier;
+          stage-b-jq-stderr-value-kind-route-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.stderr-value-kind-route;
+          stage-b-jq-stderr-value-kind-route-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.stderr-value-kind-route;
+          stage-b-jq-debug-value-prefix-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.debug-value-prefix;
+          stage-b-jq-debug-value-prefix-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.debug-value-prefix;
+          stage-b-jq-usage-exit-route-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.usage-exit-route;
+          stage-b-jq-usage-exit-route-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.usage-exit-route;
+          stage-b-jq-usage-write-route-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.usage-write-route;
+          stage-b-jq-usage-write-route-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.usage-write-route;
+          stage-b-jq-option-value-collection-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.option-value-collection;
+          stage-b-jq-option-value-collection-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.option-value-collection;
+          stage-b-jq-output-value-release-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.output-value-release;
+          stage-b-jq-output-value-release-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.output-value-release;
+          stage-b-jq-output-value-dump-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.output-value-dump;
+          stage-b-jq-output-value-dump-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.output-value-dump;
+          stage-b-jq-output-value-pipeline-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.output-value-pipeline;
+          stage-b-jq-output-value-pipeline-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.output-value-pipeline;
+          stage-b-jq-wide-argument-conversion-tail-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.wide-argument-conversion-tail;
+          stage-b-jq-wide-argument-conversion-tail-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.wide-argument-conversion-tail;
+          stage-b-jq-math-error-callback-dispatch-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.math-error-callback-dispatch;
+          stage-b-jq-math-error-callback-dispatch-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.math-error-callback-dispatch;
+          stage-b-jq-pe32-section-count-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.pe32-section-count;
+          stage-b-jq-pe32-section-count-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.pe32-section-count;
+          stage-b-jq-pe32-image-base-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.pe32-image-base;
+          stage-b-jq-pe32-image-base-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.pe32-image-base;
+          stage-b-jq-pe32-section-for-address-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.pe32-section-for-address;
+          stage-b-jq-pe32-section-for-address-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.pe32-section-for-address;
+          stage-b-jq-windows-path-info-scan-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.windows-path-info-scan;
+          stage-b-jq-windows-path-info-scan-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.windows-path-info-scan;
+          stage-b-jq-invalid-parameter-handler-get-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.invalid-parameter-handler-get;
+          stage-b-jq-invalid-parameter-handler-get-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.invalid-parameter-handler-get;
+          stage-b-jq-invalid-parameter-handler-exchange-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.invalid-parameter-handler-exchange;
+          stage-b-jq-invalid-parameter-handler-exchange-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.invalid-parameter-handler-exchange;
+          stage-b-jq-bounded-string-length-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.bounded-string-length;
+          stage-b-jq-bounded-string-length-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.bounded-string-length;
+          stage-b-jq-bounded-wide-string-length-workspace =
+            stageBJqFrontendWorkspaceDag.workspaces.bounded-wide-string-length;
+          stage-b-jq-bounded-wide-string-length-qualification =
+            stageBJqFrontendWorkspaceDag.qualifications.bounded-wide-string-length;
+          stage-b-jq-component-registry =
+            stageBJqFrontendWorkspaceDag.registry;
           stage-b-jq-skeleton =
             pkgs.runCommand "stage-b-jq-skeleton"
               {
@@ -6017,18 +7316,35 @@
             stage-b-gnu-hello-machine-ir-native-runtime
             stage-b-gnu-hello-reconstruction-plan
             stage-b-gnu-hello-semantic-components
+            stage-b-gnu-hello-selected-component-catalog
+            stage-b-gnu-hello-component-proposals
+            stage-b-gnu-hello-selected-component-declarations
+            stage-b-gnu-hello-component-interfaces
             stage-b-gnu-hello-component-slices
             stage-b-gnu-hello-regional-interpreter-kernel
             stage-b-gnu-hello-component-registry
             stage-b-gnu-hello-branch-component-qualification
             stage-b-gnu-hello-external-call-component-qualification
             stage-b-gnu-hello-internal-call-component-qualification
+            stage-b-gnu-hello-short-option-component-qualification
+            stage-b-gnu-hello-rotate-component-qualification
+            stage-b-gnu-hello-windows-error-component-qualification
+            stage-b-gnu-hello-bounded-string-length-component-qualification
             stage-b-gnu-hello-atomic-component-qualification
             stage-b-gnu-hello-callback-component-qualification
             stage-b-gnu-hello-dispatch-component-qualification
             stage-b-gnu-hello-typed-memory-component-qualification
+            stage-b-gnu-hello-ascii-to-lower-component-qualification
+            stage-b-gnu-hello-ascii-string-compare-component-qualification
+            stage-b-gnu-hello-last-path-component-qualification
+            stage-b-gnu-hello-memory-regions-equal-qualification
+            stage-b-gnu-hello-program-name-selection-qualification
             stage-b-gnu-hello-component-hybrid-candidate
             stage-b-gnu-hello-component-hybrid-functional-suite
+            stage-b-gnu-hello-idiomatic-source-binding
+            stage-b-gnu-hello-idiomatic-candidate
+            stage-b-gnu-hello-idiomatic-functional-suite
+            stage-b-gnu-hello-idiomatic-assurance
             stage-b-gnu-hello-lifting-evidence
             stage-b-gnu-hello-branch-workspace
             stage-b-gnu-hello-external-call-workspace
@@ -6400,6 +7716,72 @@
             stage-a-relational-tests-acceptance-dynamic-spill
             stage-a-relational-tests-acceptance-direct-call-static-writes
             stage-b-jq-skeleton
+            stage-b-component-analysis-smoke
+            stage-b-linked-library-analysis-smoke
+            stage-b-jq-machine-ir
+            stage-b-jq-linked-islands
+            stage-b-gnu-hello-linked-islands
+            stage-b-gnu-hello-library-hypotheses
+            stage-b-gnu-hello-dynamic-library-requirements
+            stage-b-gnu-hello-library-replacement-plan
+            stage-b-gnu-hello-call-frontier
+            stage-b-gnu-hello-toolchain-runtime-imports
+            stage-b-gnu-hello-dependency-envelope
+            stage-b-gnu-hello-proposed-source-components
+            stage-b-gnu-hello-call-substitution-plan
+            stage-b-gnu-hello-source-call-inventory
+            stage-b-gnu-hello-source-call-binding-report
+            stage-b-gnu-hello-candidate-dependency-audit
+            stage-b-gnu-hello-source-call-substitution-smoke
+            stage-b-openwatcom19-library-artifact-index
+            stage-b-jq-machine-ir-interpreter
+            stage-b-jq-reconstruction-plan
+            stage-b-jq-component-proposals
+            stage-b-jq-selected-component-declarations
+            stage-b-jq-selected-component-catalog
+            stage-b-jq-component-interfaces
+            stage-b-jq-option-name-match-workspace
+            stage-b-jq-option-name-match-qualification
+            stage-b-jq-option-token-classifier-workspace
+            stage-b-jq-option-token-classifier-qualification
+            stage-b-jq-stderr-value-kind-route-workspace
+            stage-b-jq-stderr-value-kind-route-qualification
+            stage-b-jq-debug-value-prefix-workspace
+            stage-b-jq-debug-value-prefix-qualification
+            stage-b-jq-usage-exit-route-workspace
+            stage-b-jq-usage-exit-route-qualification
+            stage-b-jq-usage-write-route-workspace
+            stage-b-jq-usage-write-route-qualification
+            stage-b-jq-option-value-collection-workspace
+            stage-b-jq-option-value-collection-qualification
+            stage-b-jq-output-value-release-workspace
+            stage-b-jq-output-value-release-qualification
+            stage-b-jq-output-value-dump-workspace
+            stage-b-jq-output-value-dump-qualification
+            stage-b-jq-output-value-pipeline-workspace
+            stage-b-jq-output-value-pipeline-qualification
+            stage-b-jq-wide-argument-conversion-tail-workspace
+            stage-b-jq-wide-argument-conversion-tail-qualification
+            stage-b-jq-math-error-callback-dispatch-workspace
+            stage-b-jq-math-error-callback-dispatch-qualification
+            stage-b-jq-pe32-section-count-workspace
+            stage-b-jq-pe32-section-count-qualification
+            stage-b-jq-pe32-image-base-workspace
+            stage-b-jq-pe32-image-base-qualification
+            stage-b-jq-pe32-section-for-address-workspace
+            stage-b-jq-pe32-section-for-address-qualification
+            stage-b-jq-windows-path-info-scan-workspace
+            stage-b-jq-windows-path-info-scan-qualification
+            stage-b-jq-invalid-parameter-handler-get-workspace
+            stage-b-jq-invalid-parameter-handler-get-qualification
+            stage-b-jq-invalid-parameter-handler-exchange-workspace
+            stage-b-jq-invalid-parameter-handler-exchange-qualification
+            stage-b-jq-bounded-string-length-workspace
+            stage-b-jq-bounded-string-length-qualification
+            stage-b-jq-bounded-wide-string-length-workspace
+            stage-b-jq-bounded-wide-string-length-qualification
+            stage-b-jq-component-granularity-smoke
+            stage-b-jq-component-registry
             stage-b-jq-skeleton-root
             ;
         }
@@ -6471,6 +7853,7 @@
             stage-a-gnu-hello-preflight
             stage-b-gnu-hello-lifting-evidence
             stage-b-gnu-hello-semantic-components
+            stage-b-gnu-hello-selected-component-catalog
             stage-a-gnu-hello-roundtrip-smoke
             stage-a-gnu-hello-roundtrip-runtime-foundation-proof
             stage-a-gnu-hello-roundtrip-launch-binding-proof

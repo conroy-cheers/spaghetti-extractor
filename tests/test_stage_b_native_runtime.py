@@ -642,12 +642,19 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             self.assertIn("stage_b_native_flat_write", source)
             self.assertIn("stage_b_native_atomic_compare_exchange", source)
             self.assertIn("stage_b_runtime_atomic_compare_exchange", source)
+            self.assertIn("stage_b_native_atomic_exchange", source)
+            self.assertIn("stage_b_runtime_atomic_exchange", source)
             self.assertIn(
                 ".atomic_compare_exchange = "
                 "stage_b_native_atomic_compare_exchange",
                 source,
             )
+            self.assertIn(
+                ".atomic_exchange = stage_b_native_atomic_exchange",
+                source,
+            )
             self.assertIn("__atomic_compare_exchange_n", source)
+            self.assertIn("__atomic_exchange_n", source)
             self.assertIn("STAGE_B_NATIVE_IMAGE_SCN_MEM_EXECUTE", source)
             self.assertIn("stage_b_native_transfer_rvas", source)
             self.assertIn("stage_b_program_lookup(rva)", source)
@@ -679,6 +686,9 @@ class StageBNativeRuntimeTests(unittest.TestCase):
                 package["inputs"]["runtime_abi"][
                     "atomic_compare_exchange_handler"
                 ]
+            )
+            self.assertTrue(
+                package["inputs"]["runtime_abi"]["atomic_exchange_handler"]
             )
 
     def test_modeled_termination_and_root_callback_buffers_are_emitted(self) -> None:

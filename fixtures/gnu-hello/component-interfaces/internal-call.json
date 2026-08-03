@@ -1,0 +1,354 @@
+{
+  "adapter_effects": [
+    {
+      "effect": {
+        "family": "register_write",
+        "index": 0,
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "reason": "machine_register_projection"
+    },
+    {
+      "effect": {
+        "family": "register_write",
+        "index": 1,
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "reason": "machine_register_projection"
+    },
+    {
+      "effect": {
+        "family": "register_write",
+        "index": 2,
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "reason": "machine_register_projection"
+    },
+    {
+      "effect": {
+        "family": "register_write",
+        "index": 3,
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "reason": "machine_register_projection"
+    },
+    {
+      "effect": {
+        "family": "register_write",
+        "index": 4,
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "reason": "machine_register_projection"
+    },
+    {
+      "effect": {
+        "family": "register_write",
+        "index": 5,
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "reason": "machine_register_projection"
+    },
+    {
+      "effect": {
+        "family": "register_write",
+        "index": 6,
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "reason": "machine_register_projection"
+    },
+    {
+      "effect": {
+        "family": "register_write",
+        "index": 7,
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "reason": "machine_register_projection"
+    },
+    {
+      "effect": {
+        "family": "flag_write",
+        "index": 0,
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "reason": "machine_flag_projection"
+    },
+    {
+      "effect": {
+        "family": "flag_write",
+        "index": 1,
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "reason": "machine_flag_projection"
+    },
+    {
+      "effect": {
+        "family": "flag_write",
+        "index": 2,
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "reason": "machine_flag_projection"
+    },
+    {
+      "effect": {
+        "family": "flag_write",
+        "index": 3,
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "reason": "machine_flag_projection"
+    },
+    {
+      "effect": {
+        "family": "flag_write",
+        "index": 4,
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "reason": "machine_flag_projection"
+    },
+    {
+      "effect": {
+        "family": "flag_write",
+        "index": 5,
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "reason": "machine_flag_projection"
+    },
+    {
+      "effect": {
+        "family": "external_event",
+        "index": 0,
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "reason": "internal_call_frame"
+    },
+    {
+      "effect": {
+        "family": "register_write",
+        "index": 0,
+        "unit_id": "semantic-transfer:original-cutpoint-0000a290-0000a293"
+      },
+      "reason": "machine_register_projection"
+    },
+    {
+      "effect": {
+        "family": "register_write",
+        "index": 1,
+        "unit_id": "semantic-transfer:original-cutpoint-0000a290-0000a293"
+      },
+      "reason": "machine_register_projection"
+    },
+    {
+      "effect": {
+        "family": "flag_write",
+        "index": 0,
+        "unit_id": "semantic-transfer:original-cutpoint-0000a290-0000a293"
+      },
+      "reason": "machine_flag_projection"
+    },
+    {
+      "effect": {
+        "family": "flag_write",
+        "index": 1,
+        "unit_id": "semantic-transfer:original-cutpoint-0000a290-0000a293"
+      },
+      "reason": "machine_flag_projection"
+    },
+    {
+      "effect": {
+        "family": "flag_write",
+        "index": 2,
+        "unit_id": "semantic-transfer:original-cutpoint-0000a290-0000a293"
+      },
+      "reason": "machine_flag_projection"
+    },
+    {
+      "effect": {
+        "family": "flag_write",
+        "index": 3,
+        "unit_id": "semantic-transfer:original-cutpoint-0000a290-0000a293"
+      },
+      "reason": "machine_flag_projection"
+    },
+    {
+      "effect": {
+        "family": "flag_write",
+        "index": 4,
+        "unit_id": "semantic-transfer:original-cutpoint-0000a290-0000a293"
+      },
+      "reason": "machine_flag_projection"
+    },
+    {
+      "effect": {
+        "family": "memory_event",
+        "index": 0,
+        "unit_id": "semantic-transfer:original-cutpoint-0000a290-0000a293"
+      },
+      "reason": "stack_frame_projection"
+    }
+  ],
+  "bindings": {
+    "catalog_artifact_sha256": "3cd8665dc3abb04daefcac773bf27553c03eee7e947737accf64fbbf9cf56157",
+    "catalog_sha256": "26b87ccab42f50e3a587a346ea3b42cbda564044deb99212629e6cfe27726732",
+    "component_sha256": "e111797d1fff6911bf56cd961bc0a5abd3949ae7a0e5af211bba190d291ae2e7",
+    "machine_ir_manifest_sha256": "d8914543d5120887626d01d4e4db8292a84d0194639d7d8ecebae16a324ce056",
+    "machine_ir_sha256": "e0fe4074996aa44c86d9cf6909b1a186a7a0aa3849708d028f4b3536738307ad",
+    "original_binary_sha256": "71b228f2babc9d3b4095ecf355db676c8ed8b45a7c8a7d350f47e962b4bf554c"
+  },
+  "claims": [],
+  "component_id": "static-word-initialization",
+  "format": "stage-b-component-interface-spec-v1",
+  "interface_spec_sha256": "777baf465b28c6517a1d8fb1c431b90cb34e1da0e886400dec57cc0051e45c2f",
+  "objects": [
+    {
+      "base": {
+        "op": "const",
+        "value": 4391748,
+        "width": 32
+      },
+      "fields": [
+        {
+          "event_refs": [
+            {
+              "family": "memory_event",
+              "index": 0,
+              "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+            }
+          ],
+          "id": "value",
+          "offset": 0,
+          "permissions": [
+            "read"
+          ],
+          "width": 4
+        }
+      ],
+      "id": "machine_object_0000",
+      "kind": "machine_memory_location"
+    },
+    {
+      "base": {
+        "name": "eax",
+        "op": "reg",
+        "width": 32
+      },
+      "fields": [
+        {
+          "event_refs": [
+            {
+              "family": "memory_event",
+              "index": 1,
+              "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+            }
+          ],
+          "id": "value",
+          "offset": 0,
+          "permissions": [
+            "write"
+          ],
+          "width": 4
+        }
+      ],
+      "id": "machine_object_0001",
+      "kind": "machine_memory_location"
+    }
+  ],
+  "parameters": [
+    {
+      "id": "input_eax",
+      "machine_source": {
+        "evidence": {
+          "json_pointer": "/semantics/external_events/0/register_inputs/eax",
+          "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+        },
+        "kind": "register",
+        "name": "eax",
+        "width": 32
+      },
+      "type": "uint32_t"
+    },
+    {
+      "id": "input_ebx",
+      "machine_source": {
+        "evidence": {
+          "json_pointer": "/semantics/external_events/0/register_inputs/ebx",
+          "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+        },
+        "kind": "register",
+        "name": "ebx",
+        "width": 32
+      },
+      "type": "uint32_t"
+    },
+    {
+      "id": "input_ecx",
+      "machine_source": {
+        "evidence": {
+          "json_pointer": "/semantics/external_events/0/register_inputs/ecx",
+          "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+        },
+        "kind": "register",
+        "name": "ecx",
+        "width": 32
+      },
+      "type": "uint32_t"
+    },
+    {
+      "id": "input_edi",
+      "machine_source": {
+        "evidence": {
+          "json_pointer": "/semantics/external_events/0/register_inputs/edi",
+          "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+        },
+        "kind": "register",
+        "name": "edi",
+        "width": 32
+      },
+      "type": "uint32_t"
+    },
+    {
+      "id": "input_edx",
+      "machine_source": {
+        "evidence": {
+          "json_pointer": "/semantics/instruction_effect_schedule/records/1/effects/memory_events/0/value",
+          "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+        },
+        "kind": "register",
+        "name": "edx",
+        "width": 32
+      },
+      "type": "uint32_t"
+    },
+    {
+      "id": "input_esi",
+      "machine_source": {
+        "evidence": {
+          "json_pointer": "/semantics/external_events/0/register_inputs/esi",
+          "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+        },
+        "kind": "register",
+        "name": "esi",
+        "width": 32
+      },
+      "type": "uint32_t"
+    }
+  ],
+  "policy": {
+    "english_claims_authority": "none"
+  },
+  "results": [
+    {
+      "control": {
+        "outcome_kind": "fallthrough",
+        "routes": [
+          {
+            "target_rva": 4622,
+            "when": "always"
+          }
+        ],
+        "unit_id": "semantic-transfer:original-cutpoint-00001201-0000120e"
+      },
+      "id": "control_semantic-transfer_original-cutpoint-00001201-0000120e",
+      "kind": "control"
+    }
+  ],
+  "services": []
+}

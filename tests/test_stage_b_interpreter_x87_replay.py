@@ -697,8 +697,8 @@ static stage_b_step_result malformed_override(
 }
 
 static const stage_b_region_override overrides[] = {
-  {0x1000U, valid_override, "valid", "fixture"},
-  {0x3000U, malformed_override, "malformed", "fixture"},
+  {0x1000U, valid_override, 0U, "valid", "fixture"},
+  {0x3000U, malformed_override, 0U, "malformed", "fixture"},
 };
 
 const stage_b_region_override *stage_b_region_override_lookup(uint32_t rva) {
@@ -793,7 +793,11 @@ int main(void) {
             ).read_text(encoding="ascii")
             self.assertIn("stage_b_typed_x87_handler", runtime_header)
             self.assertIn("execute_typed_x87_operation", runtime_header)
+            self.assertIn("STAGE_B_MACHINE_STATE_HAS_X87", runtime_header)
+            self.assertIn("const char *mnemonic", runtime_header)
+            self.assertIn("uint32_t operand_kind, operand_width", runtime_header)
             self.assertIn("static const stage_b_typed_x87_operation", program_source)
+            self.assertIn('"fld1"', program_source)
             self.assertNotIn("0xd9U,0xe8U", program_source)
             self.assertIn("{ 25U, 1U, 0U, {0U,0U,0U,0U,0U} }", program_source)
             self.assertEqual(

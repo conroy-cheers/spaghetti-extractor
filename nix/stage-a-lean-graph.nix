@@ -525,10 +525,7 @@ else
               pkgs.runCommand (lib.strings.sanitizeDerivationName "stage-a-lean-${node.id}")
                 (
                   {
-                    outputs = [
-                      "out"
-                      "audit"
-                    ];
+                    outputs = [ "out" ];
                     nativeBuildInputs = [
                       pkgs.lean4
                       pkgs.python3
@@ -559,8 +556,8 @@ else
                   // lib.optionalAttrs contentAddressed { __contentAddressed = true; }
                 )
                 ''
-                  mkdir -p "$out/StageA" \
-                    "$audit/StageA" "$audit/logs" source/StageA compiled/StageA
+                  mkdir -p "$out/StageA" "$out/nix-support" \
+                    source/StageA compiled/StageA logs
                   ulimit -s unlimited 2>/dev/null || true
                   cat > source-hashes <<'HASHES'
                   ${sourceChecks node}
@@ -657,13 +654,13 @@ else
                       in
                       ''
                         ${pkgs.time}/bin/time -v \
-                          -o "$audit/logs/${module}.resource" \
+                          -o "logs/${module}.resource" \
                           ${pkgs.lean4}/bin/lean -j ${leanJobs} --trust=0 \
                           -R source \
                           -o "compiled/StageA/${module}.olean" \
                           "source/StageA/${module}.lean" \
-                          > >(tee "$audit/logs/${module}.stdout") \
-                          2> >(tee "$audit/logs/${module}.stderr" >&2)
+                          > >(tee "logs/${module}.stdout") \
+                          2> >(tee "logs/${module}.stderr" >&2)
                       ''
                     else
                       ''
@@ -672,28 +669,26 @@ else
                         # scheduler remains the sole owner of memory concurrency.
                         for module in ${lib.escapeShellArgs node.modules}; do
                             ${pkgs.time}/bin/time -v \
-                              -o "$audit/logs/$module.resource" \
+                              -o "logs/$module.resource" \
                               ${pkgs.lean4}/bin/lean -j 1 --trust=0 \
                               -R source \
                               -o "compiled/StageA/$module.olean" \
                               "source/StageA/$module.lean" \
-                              > >(tee "$audit/logs/$module.stdout") \
-                              2> >(tee "$audit/logs/$module.stderr" >&2)
+                              > >(tee "logs/$module.stdout") \
+                              2> >(tee "logs/$module.stderr" >&2)
                         done
                       ''
                   }
                   ${lib.concatMapStringsSep "\n" (module: ''
                     cp "compiled/StageA/${module}.olean" "$out/StageA/${module}.olean"
+                    cp "source/StageA/${module}.lean" "$out/StageA/${module}.lean"
                   '') node.modules}
-                  ${lib.concatMapStringsSep "\n" (module: ''
-                    cp "source/StageA/${module}.lean" "$audit/StageA/${module}.lean"
-                  '') node.modules}
-                  cat > "$audit/module-result.json" <<'JSON'
+                  cat > "$out/module-result.json" <<'JSON'
                   ${metadata}
                   JSON
                   ${pkgs.python3}/bin/python3 - \
-                    "$audit/module-result.json" "$out/interface.json" \
-                    "$out/StageA" "$audit/logs" ${dependencyArgs} <<'PY'
+                    "$out/module-result.json" "$out/interface.json" \
+                    "$out/StageA" logs ${dependencyArgs} <<'PY'
                   import hashlib
                   import json
                   import pathlib
@@ -763,7 +758,6 @@ else
                       ).read_text(encoding="utf-8")
                       stdout_path = logs / f"{module}.stdout"
                       stderr_path = logs / f"{module}.stderr"
-                      resource_path = logs / f"{module}.resource"
                       combined = "\n".join((
                           stdout_path.read_text(encoding="utf-8"),
                           stderr_path.read_text(encoding="utf-8"),
@@ -793,41 +787,10 @@ else
                           ), None)
                           for request in requested
                       }
-                      resource_usage = None
-                      if resource_path.is_file():
-                          fields = {}
-                          for line in resource_path.read_text(encoding="utf-8").splitlines():
-                              parts = line.strip().rsplit(": ", 1)
-                              if len(parts) == 2:
-                                  key, value = parts
-                                  fields[key] = value.strip()
-                          resource_usage = {
-                              "elapsed_wall_clock": fields.get(
-                                  "Elapsed (wall clock) time (h:mm:ss or m:ss)"
-                              ),
-                              "user_seconds": float(fields["User time (seconds)"]),
-                              "system_seconds": float(fields["System time (seconds)"]),
-                              "maximum_resident_kib": int(
-                                  fields["Maximum resident set size (kbytes)"]
-                              ),
-                              "log": f"logs/{module}.resource",
-                              "log_sha256": hashlib.sha256(
-                                  resource_path.read_bytes()
-                              ).hexdigest(),
-                          }
                       outputs.append({
                           "module": module,
                           "olean_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                           "olean_bytes": path.stat().st_size,
-                          "compile_stdout": f"logs/{module}.stdout",
-                          "compile_stderr": f"logs/{module}.stderr",
-                          "compile_stdout_sha256": hashlib.sha256(
-                              stdout_path.read_bytes()
-                          ).hexdigest(),
-                          "compile_stderr_sha256": hashlib.sha256(
-                              stderr_path.read_bytes()
-                          ).hexdigest(),
-                          "resource_usage": resource_usage,
                           "axiom_audit": {
                               "requested": requested,
                               "inventories": matched,
@@ -866,42 +829,23 @@ else
                       encoding="utf-8",
                   )
                   PY
-                '';
-            stableDrv =
-              pkgs.runCommand
-                (lib.strings.sanitizeDerivationName
-                  "stage-a-lean-${node.id}-stable")
-                {
-                  outputs = [
-                    "out"
-                    "audit"
-                  ];
-                  nativeBuildInputs = [ pkgs.coreutils ];
-                  preferLocalBuild = false;
-                  allowSubstitutes = true;
-                }
-                ''
-                  mkdir -p "$out/nix-support" "$audit"
-                  ln -s "${rawDrv.out}/StageA" "$out/StageA"
-                  ln -s "${rawDrv.out}/interface.json" "$out/interface.json"
                   : > "$out/nix-support/stage-a-direct-dependencies"
                   for dependency in ${dependencyArgs}; do
                     printf '%s\n' "$dependency" \
                       >> "$out/nix-support/stage-a-direct-dependencies"
                   done
-                  ln -s "${rawDrv.audit}/StageA" "$audit/StageA"
-                  ln -s "${rawDrv.audit}/logs" "$audit/logs"
-                  ln -s "${rawDrv.audit}/module-result.json" \
-                    "$audit/module-result.json"
+                  for resource in logs/*.resource; do
+                    echo "Stage A Lean resource summary: $(basename "$resource")" >&2
+                    sed -n '/User time (seconds)/p; /System time (seconds)/p; /Elapsed (wall clock)/p; /Maximum resident set size/p' \
+                      "$resource" >&2
+                  done
                 '';
           in
           {
             name = node.id;
             value = {
               out = rawDrv.out;
-              audit = rawDrv.audit;
-              stable = stableDrv.out;
-              stableAudit = stableDrv.audit;
+              stable = rawDrv.out;
             };
           }
         ) activeGraphNodes
@@ -1096,7 +1040,6 @@ else
       node:
       let
         semantic = nodeDrvs.${node}.stable;
-        audit = nodeDrvs.${node}.stableAudit;
       in
       pkgs.runCommand (lib.strings.sanitizeDerivationName "stage-a-lean-${node}-detached")
         (
@@ -1108,15 +1051,12 @@ else
           // lib.optionalAttrs contentAddressed { __contentAddressed = true; }
         )
         ''
-          mkdir -p "$out/StageA" "$out/logs"
+          mkdir -p "$out/StageA"
           ln -s "${semantic}" "$out/proof-node-root"
-          for source in "${semantic}"/StageA/*.olean "${audit}"/StageA/*.lean; do
+          for source in "${semantic}"/StageA/*.olean "${semantic}"/StageA/*.lean; do
             ln -s "$source" "$out/StageA/$(basename "$source")"
           done
-          for source in "${audit}"/logs/*; do
-            ln -s "$source" "$out/logs/$(basename "$source")"
-          done
-          cp "${audit}/module-result.json" "$out/module-result.json"
+          cp "${semantic}/module-result.json" "$out/module-result.json"
         ''
     ) selectedTargetNodes;
     selectedTargetBundle =
@@ -1134,7 +1074,7 @@ else
           // lib.optionalAttrs bundleContentAddressed { __contentAddressed = true; }
         )
         ''
-          mkdir -p "$out/StageA" "$out/logs" "$out/node-results" \
+          mkdir -p "$out/StageA" "$out/node-results" \
             "$out/proof-node-roots"
           ${lib.concatMapStringsSep "\n" (
             entry:
@@ -1152,30 +1092,18 @@ else
             let
               node = entry.value;
               index = entry.index;
-              audit = nodeDrvs.${node}.stableAudit;
+              semantic = nodeDrvs.${node}.stable;
               resultName = toString index;
             in
             ''
-              cp "${audit}/module-result.json" \
+              cp "${semantic}/module-result.json" \
                 "$out/node-results/${resultName}.json"
-              for source in "${audit}"/StageA/*.lean; do
+              for source in "${semantic}"/StageA/*.lean; do
                 destination="$out/StageA/$(basename "$source")"
                 if [ -e "$destination" ] \
                     && [ "$(readlink -f "$destination")" \
                       != "$(readlink -f "$source")" ]; then
                   echo "conflicting target-bundle module: $(basename "$source")" >&2
-                  exit 1
-                fi
-                if [ ! -e "$destination" ]; then
-                  ln -s "$source" "$destination"
-                fi
-              done
-              for source in "${audit}"/logs/*; do
-                destination="$out/logs/$(basename "$source")"
-                if [ -e "$destination" ] \
-                    && [ "$(readlink -f "$destination")" \
-                      != "$(readlink -f "$source")" ]; then
-                  echo "conflicting target-bundle log: $(basename "$source")" >&2
                   exit 1
                 fi
                 if [ ! -e "$destination" ]; then

@@ -3648,11 +3648,19 @@ def _load_stage_a_validation_report(path: Path | None) -> dict[str, Any] | None:
         report_manifest_sha256 = sha256_file(verdict_path)
     elif prepared_path.is_file():
         prepared = _load_json(prepared_path)
+        prepared_format = prepared.get("format")
         if (
-            prepared.get("format") != "stage-a-prepared-relational-v1"
+            prepared_format not in {
+                "stage-a-prepared-relational-v1",
+                "stage-a-prepared-relational-v2",
+            }
             or prepared.get("status") != "prepared"
             or prepared.get("profile") != "x86-pe32-lean-relational-v3"
             or prepared.get("model") != REFERENCE_CONTRACT_MODEL_ID
+            or (
+                prepared_format == "stage-a-prepared-relational-v2"
+                and not isinstance(prepared.get("artifact_manifest_sha256"), str)
+            )
         ):
             raise StageAInputError(
                 "reference contracts require a relational v3 prepared proof"
@@ -3685,6 +3693,9 @@ def _load_stage_a_validation_report(path: Path | None) -> dict[str, Any] | None:
             "composition_progress_sha256": prepared.get(
                 "composition_progress_sha256"
             ),
+            "artifact_manifest_sha256": prepared.get(
+                "artifact_manifest_sha256"
+            ),
             "proof": {"theorem": None, "lean": {"status": "not_built"}},
         }
     else:
@@ -3709,6 +3720,7 @@ def _load_stage_a_validation_report(path: Path | None) -> dict[str, Any] | None:
         "relational-product-graph.json",
         "whole-program-acceptance.json",
         "composition-progress.json",
+        "artifact-manifest.json",
     ):
         artifact_path = report / name
         if artifact_path.is_file():
@@ -3812,6 +3824,7 @@ def _reference_validation_report_binding_constraint(
         "relational-product-graph.json": "product_graph_sha256",
         "whole-program-acceptance.json": "whole_program_acceptance_sha256",
         "composition-progress.json": "composition_progress_sha256",
+        "artifact-manifest.json": "artifact_manifest_sha256",
     }
     for artifact_name, verdict_field in artifact_hash_fields.items():
         expected = verdict.get(verdict_field)

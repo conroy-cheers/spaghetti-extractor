@@ -7,20 +7,9 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 from urllib.parse import urlencode
 
-from ..isa_cli import (
-    load_isa_semantic_kernel_binding,
-    select_isa_kernel_qualification_for_inventory,
-)
-from ..isa_kernel_qualification import (
-    ISAKernelQualificationError,
-    QualificationStatus,
-    SemanticKernelBinding,
-    parse_kernel_qualification,
-    serialize_kernel_selection,
-)
 from ..stage_binary import StageABinary, StageAInputError
 from ..util import sha256_bytes, sha256_file, write_json
 from .analysis_artifact import validate_relational_analysis
@@ -50,6 +39,9 @@ from .ir import CompositionProgressIR, RelationalProofIR, WholeProgramAcceptance
 from .lean.compiler import _relational_cache_dir
 from .report import STAGE_A_NIX_BUILD_REPORT_FORMAT
 
+if TYPE_CHECKING:
+    from ..isa_kernel_qualification import SemanticKernelBinding
+
 
 _LEAN_SOURCE_ROOT = Path(__file__).resolve().parent.parent / "lean" / "StageA"
 _NIX_PUBLIC_KEY_RE = re.compile(r"^[^:\s]+:[A-Za-z0-9+/]+={0,2}$")
@@ -74,6 +66,36 @@ _ISA_KERNEL_SEMANTICS_MODULES = (
     "ISAConformance",
     "ISAConformanceRunner",
 )
+
+
+def load_isa_semantic_kernel_binding(*args: Any, **kwargs: Any) -> Any:
+    """Load the ISA qualification stack only for qualification/report commands."""
+
+    from ..isa_cli import load_isa_semantic_kernel_binding as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def select_isa_kernel_qualification_for_inventory(
+    *args: Any, **kwargs: Any
+) -> Any:
+    from ..isa_cli import (
+        select_isa_kernel_qualification_for_inventory as implementation,
+    )
+
+    return implementation(*args, **kwargs)
+
+
+def parse_kernel_qualification(*args: Any, **kwargs: Any) -> Any:
+    from ..isa_kernel_qualification import parse_kernel_qualification as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def serialize_kernel_selection(*args: Any, **kwargs: Any) -> Any:
+    from ..isa_kernel_qualification import serialize_kernel_selection as implementation
+
+    return implementation(*args, **kwargs)
 
 
 def _nix_executable() -> str:
@@ -1293,6 +1315,11 @@ def _evaluate_isa_kernel_prerequisite(
     qualification_path: Path,
     semantic_kernel_path: Path,
 ) -> dict[str, Any]:
+    from ..isa_kernel_qualification import (
+        ISAKernelQualificationError,
+        QualificationStatus,
+    )
+
     semantic_kernel = _validate_isa_semantic_kernel_source(
         semantic_kernel_path=semantic_kernel_path,
         prepared=prepared,
@@ -1374,6 +1401,8 @@ def stage_a_build_relational(
     isa_kernel_qualification: Path | None = None,
     isa_semantic_kernel: Path | None = None,
 ) -> dict[str, Any]:
+    from ..isa_kernel_qualification import QualificationStatus
+
     prepared = Path(prepared).resolve()
     out = Path(out).resolve()
     graph = _validate_prepared_relational(prepared)
@@ -2394,6 +2423,11 @@ def _finalize_local_proof_ir(
 def _check_nix_relational_report(
     *, report: Path, verdict: dict[str, Any], out: Path | None
 ) -> dict[str, Any]:
+    from ..isa_kernel_qualification import (
+        ISAKernelQualificationError,
+        QualificationStatus,
+    )
+
     checks: dict[str, bool] = {
         "report_pass": verdict.get("verdict") == "pass",
         "profile_matches": verdict.get("profile") == STAGE_A_RELATIONAL_PROFILE_ID,

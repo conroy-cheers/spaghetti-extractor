@@ -1,0 +1,188 @@
+{
+  "components": [
+    {
+      "emission": {"policy": "function", "symbol": "jq_isoption"},
+      "id": "option-name-match",
+      "kind": "procedure",
+      "label": "Option name match",
+      "purpose": "Recognize one option name while retaining the exact strcmp service boundary",
+      "proposal_id": "component-proposal:94826d396280c4c7c88c",
+      "proposal_binding_sha256": "9ba21d69d48aa4b7e59fb84c83c87b3220ae247a452999983a7650bd22854b59"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_usage_exit_route"},
+      "id": "usage-exit-route",
+      "kind": "procedure",
+      "label": "Usage termination route",
+      "purpose": "Normalize the status code and retain the exact terminal exit service",
+      "proposal_id": "component-proposal:93957e62c09fdff6b499",
+      "proposal_binding_sha256": "fa34ae8babd00d15c9d403f4300c4f8c8c72b666c135e353b361aa04f3f5b9e1"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_usage_write_route"},
+      "id": "usage-write-route",
+      "kind": "procedure",
+      "label": "Usage output route",
+      "purpose": "Write the static usage payload and continue at the termination route",
+      "proposal_id": "component-proposal:da380235f8ee183cfcd2",
+      "proposal_binding_sha256": "fe4627144d4310d1d1a6b447714ab02775b4fe8922e06f9e22034c2ecaaaf9b9"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_stderr_value_kind"},
+      "id": "stderr-value-kind-route",
+      "kind": "procedure",
+      "label": "Stderr callback value-kind route",
+      "purpose": "Validate a potential callback component independently of ordinary root reachability",
+      "proposal_id": "component-proposal:33d5945e35dd46fdbb9d",
+      "proposal_binding_sha256": "1aa1ddf7afaac3fa21c10b2707dac3f37d85267bc346c07fd0d0f7e893f07074"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_debug_value_prefix"},
+      "id": "debug-value-prefix",
+      "kind": "procedure",
+      "label": "Debug callback value prefix",
+      "purpose": "Group callback-local value construction and one opaque formatting boundary",
+      "proposal_id": "component-proposal:2bfec345a637b9bd4924",
+      "proposal_binding_sha256": "1c6b977cd8e7762849ee8ed231aeb6c4d66974cdf802cce04865a88c8d44d36c"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_isoptish"},
+      "id": "option-token-classifier",
+      "kind": "procedure",
+      "label": "Option token classifier",
+      "purpose": "Recognize option-like tokens while preserving the imported character-class query",
+      "proposal_id": "component-proposal:3164a94533ac6c351720",
+      "proposal_binding_sha256": "7b5e5e5bdeb99a1b5894eb5f4fd217d483308573cb01582cb56e786f6a088f93"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_release_output_value"},
+      "id": "output-value-release",
+      "kind": "procedure",
+      "label": "Output value release",
+      "purpose": "Release one opaque output value through the exact libjq service boundary",
+      "proposal_id": "component-proposal:39cf02e2de9dd71dfb61",
+      "proposal_binding_sha256": "e2ea508e39bcd49be49bfe4fc8d90b5aabcee676e8b0c10b2ac3f9223d8d107c"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_dump_output_value"},
+      "id": "output-value-dump",
+      "kind": "procedure",
+      "label": "Output value dump",
+      "purpose": "Dump one opaque output value and its scalar formatting argument through the exact libjq service boundary",
+      "proposal_id": "component-proposal:d642483e0326e8206b40",
+      "proposal_binding_sha256": "38072ca50fe9993b8feaa7e412d1c4c4e0d1d1aad0292302acb6b118f0023e89"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_prepare_output_value"},
+      "id": "output-value-pipeline",
+      "kind": "procedure",
+      "label": "Output value pipeline",
+      "purpose": "Open the output callback, copy one opaque value through its hidden result, and dump it through the exact service sequence",
+      "proposal_id": "component-proposal:fd682576c4d497485646",
+      "proposal_binding_sha256": "1f988849ec7c79067e0e885fe55fa9a33844369c65ff8119baeda025897943e9"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_option_value_collection"},
+      "id": "option-value-collection",
+      "kind": "procedure",
+      "label": "Option value collection",
+      "purpose": "Coarsen one-entry option processing around array and string construction services",
+      "proposal_id": "component-proposal:ff54942947e1193fcc84",
+      "proposal_binding_sha256": "8280ee477c0ffa2ba9752442fbf5a37b3290765e87ff9475570f1abf5964d32e"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_wide_argument_tail"},
+      "id": "wide-argument-conversion-tail",
+      "kind": "procedure",
+      "label": "Wide argument conversion tail",
+      "purpose": "Exercise a bounded wmain loop proposal with an unresolved service represented at the interface",
+      "proposal_id": "component-proposal:3f8d901df3a4ca8a0c9d",
+      "proposal_binding_sha256": "b9725f0bbee67a52586f400a8329f1527a66a81720956ec108029aa070bb8236"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_math_error_callback_dispatch"},
+      "id": "math-error-callback-dispatch",
+      "kind": "procedure",
+      "label": "Optional math-error callback dispatch",
+      "purpose": "Lift an optional callback over a checked scalar and FP64 record while preserving its indirect-call boundary",
+      "proposal_id": "component-proposal:2d0a7f82eb7c9bd4aae6",
+      "proposal_binding_sha256": "a89dd4d80ab0361c138ae818815f8877450da7c6daa4648479302727bbe4453d"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_pe32_section_count"},
+      "id": "pe32-section-count",
+      "kind": "procedure",
+      "label": "Validated PE32 section count",
+      "purpose": "Lift a short-circuit PE32 header validation and section-count query into a portable parsed-header operation",
+      "proposal_id": "component-proposal:22f51cb15cfd277ad725",
+      "proposal_binding_sha256": "6b8b6fbe9951870305245b221161da63291de687e3e878876ea37a0088b318ff"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_pe32_image_base"},
+      "id": "pe32-image-base",
+      "kind": "procedure",
+      "label": "Validated PE32 image base",
+      "purpose": "Lift the sibling PE32 validation query that returns the mapped image base for valid headers",
+      "proposal_id": "component-proposal:797ae6d0e72be041b9cc",
+      "proposal_binding_sha256": "f54a0e0a187a4dc26598ac8adc73ae392493b5ec7dd06743b36413cf95c2ce66"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_pe32_section_for_address"},
+      "id": "pe32-section-for-address",
+      "kind": "procedure",
+      "label": "PE32 section for address",
+      "purpose": "Lift validated PE32 section-table traversal with exact unsigned first-match behavior",
+      "proposal_id": "component-proposal:a7a0679d26e882aa4d75",
+      "proposal_binding_sha256": "36c168645fa8e3ba908c24545e79cfa97f59a2bfa36733794c4fc94f7ebb73ee"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_windows_path_info_scan"},
+      "id": "windows-path-info-scan",
+      "kind": "procedure",
+      "label": "Windows path component scan",
+      "purpose": "Lift the DBCS-aware UNC and DOS-drive path scanner behind dirname and basename",
+      "proposal_id": "component-proposal:c89697492c5eda3d9f63",
+      "proposal_binding_sha256": "a528f7379176357e74bca1dc1c38dbd46a8db0d6c129dfee1afe6aa95e1257b7"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_invalid_parameter_handler_get"},
+      "id": "invalid-parameter-handler-get",
+      "kind": "procedure",
+      "label": "Invalid-parameter handler getter",
+      "purpose": "Lift the fixed runtime handler-slot load into a portable state accessor",
+      "proposal_id": "component-proposal:5876759cc5097f5a06a7",
+      "proposal_binding_sha256": "2012ca945a71cc811af239c378b1dd9ab6020016869b5cb2a3df4aeb19d32d3a"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "jq_invalid_parameter_handler_exchange"},
+      "id": "invalid-parameter-handler-exchange",
+      "kind": "procedure",
+      "label": "Invalid-parameter handler exchange",
+      "purpose": "Lift the fixed runtime handler-slot xchg while retaining its atomic semantics",
+      "proposal_id": "component-proposal:976b1fcd6b1936fd0b8a",
+      "proposal_binding_sha256": "6c1ab52d1e30e319ea2acc4f911fb56a6113d3d60a1a18b8447fa35e750292e1"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "bounded_string_length"},
+      "id": "bounded-string-length",
+      "kind": "procedure",
+      "label": "Bounded byte-string length",
+      "purpose": "Lift the complete MinGW strnlen loop through the reusable bounded-string contract",
+      "proposal_id": "component-proposal:2591111f2418d8da7b5d",
+      "proposal_binding_sha256": "4e42280b32e2cc7f36143d6abed31908b31439c1294de3cef40d479aabcb885f"
+    },
+    {
+      "emission": {"policy": "function", "symbol": "bounded_wide_string_length"},
+      "id": "bounded-wide-string-length",
+      "kind": "procedure",
+      "label": "Bounded wide-string length",
+      "purpose": "Lift the complete MinGW wcsnlen loop through a checked 16-bit element contract",
+      "proposal_id": "component-proposal:ca6b8a62407fa700b709",
+      "proposal_binding_sha256": "61df884174459d262adf2af4662a9cfcdb15f5babd442e5e9ef8a411964496dc"
+    }
+  ],
+  "format": "stage-b-component-selection-v1",
+  "program_id": "jq-pe32-frontend-reference-v1",
+  "proposal_set_sha256": "7f95ea182b20df2ac3e92344d19533f187c9ea652bac3ec2843aee5f64ca708f",
+  "selection_sha256": "674d15ea64053c012bdcbd74e56ca348a09b2326fb01adb45c3c270e5de6d9d8"
+}
