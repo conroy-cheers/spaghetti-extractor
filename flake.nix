@@ -4091,6 +4091,17 @@
                 "$out/proof-binding.json"
               printf '%s\n' 7 > "$out/candidate-exit-status"
             '';
+          dxball = import ./nix/dxball.nix {
+            inherit pkgs;
+            spaghettiExtractor = spaghetti-extractor;
+            sideTool = spaghetti-extractor-side;
+          };
+          stage-a-dxball-source-archive = dxball.sourceArchive;
+          stage-a-dxball-installer = dxball.installer;
+          stage-a-dxball-original-runtime = dxball.originalRuntime;
+          stage-a-dxball-original-smoke = dxball.originalSmoke;
+          stage-a-dxball-original-inventory = dxball.originalInventory;
+          stage-a-dxball-opaque-static-export = dxball.opaqueStaticExport;
           gnuHelloRoundtrip = import ./nix/gnu-hello-roundtrip.nix {
             inherit pkgs pythonEnv mingw32;
             spaghettiExtractor = spaghetti-extractor;
@@ -7610,6 +7621,12 @@
             stage-a-winapi-hello-relation-contract
             stage-a-winapi-hello-prepared-proof
             stage-a-winapi-hello-check
+            stage-a-dxball-source-archive
+            stage-a-dxball-installer
+            stage-a-dxball-original-runtime
+            stage-a-dxball-original-smoke
+            stage-a-dxball-original-inventory
+            stage-a-dxball-opaque-static-export
             stage-a-gnu-hello-fixtures
             stage-a-gnu-hello-original-inventory
             stage-a-gnu-hello-candidate-inventory
@@ -8278,6 +8295,8 @@
             stage-a-exit-check
             stage-a-exit-behavior-smoke
             stage-a-winapi-hello-check
+            stage-a-dxball-original-smoke
+            stage-a-dxball-original-inventory
             stage-a-gnu-hello-preflight
             stage-b-gnu-hello-lifting-evidence
             stage-b-gnu-hello-semantic-components
