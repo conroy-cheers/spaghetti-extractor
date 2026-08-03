@@ -1240,6 +1240,12 @@ def _read_register_expr(name: str, registers: dict[str, tuple[Any, ...]]) -> tup
     value = registers.get(base)
     if value is None:
         return None
+    if (
+        value[0] == "write_bits"
+        and int(value[2]) == offset
+        and int(value[3]) == width
+    ):
+        return _expr_mask(value[4], width)
     if offset:
         value = _expr_lshr(value, ("const", offset))
     return _expr_mask(value, width)
@@ -1256,10 +1262,13 @@ def _write_register_expr(name: str, value: tuple[Any, ...], registers: dict[str,
     current = registers.get(base)
     if current is None:
         return False
-    field_mask = ((1 << width) - 1) << offset
-    clear_mask = (~field_mask) & 0xFFFFFFFF
-    shifted = _expr_shl(value, ("const", offset)) if offset else value
-    registers[base] = _expr_or(_expr_and(current, ("const", clear_mask)), shifted)
+    if (
+        current[0] == "write_bits"
+        and int(current[2]) == offset
+        and int(current[3]) == width
+    ):
+        current = current[1]
+    registers[base] = ("write_bits", current, offset, width, value)
     return True
 
 def _operand_expr(
@@ -1661,16 +1670,30 @@ def _mem_address_expr(insn: Any, operand: Any, registers: dict[str, tuple[Any, .
     return _canonical_expr(expr)
 
 def _expr_add(left: tuple[Any, ...], right: tuple[Any, ...]) -> tuple[Any, ...]:
-    left = _canonical_expr(left)
-    right = _canonical_expr(right)
-    if left == ("const", 0):
-        return right
-    if right == ("const", 0):
-        return left
-    if left[0] == "const" and right[0] == "const":
-        return ("const", (int(left[1]) + int(right[1])) & 0xFFFFFFFF)
-    terms = sorted(_flatten_expr("add", left) + _flatten_expr("add", right), key=repr)
-    return ("add", *terms)
+    return _canonical_add_parts((left, right))
+
+
+def _canonical_add_parts(parts: tuple[Any, ...]) -> tuple[Any, ...]:
+    """Canonicalize an associative sum without recursively refolding it."""
+
+    constant = 0
+    terms: list[tuple[Any, ...]] = []
+    for part in parts:
+        canonical = _canonical_expr(part)
+        flattened = _flatten_expr("add", canonical)
+        for term in flattened:
+            if term[0] == "const":
+                constant = (constant + int(term[1])) & 0xFFFFFFFF
+            else:
+                terms.append(term)
+    if constant:
+        terms.append(("const", constant))
+    if not terms:
+        return ("const", 0)
+    ordered = sorted(terms, key=repr)
+    if len(ordered) == 1:
+        return ordered[0]
+    return ("add", *ordered)
 
 def _expr_sub(left: tuple[Any, ...], right: tuple[Any, ...]) -> tuple[Any, ...]:
     left = _canonical_expr(left)
@@ -1963,10 +1986,7 @@ def _canonical_expr(expr: Any) -> Any:
     if op in {"reg", "flag", "true", "false", "env_response", "call_response", "call_flag", "undefined_bv", "undefined_flag"}:
         return expr
     if op == "add":
-        result: tuple[Any, ...] = ("const", 0)
-        for part in expr[1:]:
-            result = _expr_add(result, _canonical_expr(part))
-        return result
+        return _canonical_add_parts(expr[1:])
     if op == "sub":
         return _expr_sub(_canonical_expr(expr[1]), _canonical_expr(expr[2]))
     if op == "mul":
@@ -1992,6 +2012,20 @@ def _canonical_expr(expr: Any) -> Any:
         return _expr_ashr(_canonical_expr(expr[2]), _canonical_expr(expr[3]), int(expr[1]))
     if op == "sext":
         return _expr_sign_extend(_canonical_expr(expr[2]), int(expr[1]))
+    if op == "write_bits":
+        base = _canonical_expr(expr[1])
+        offset = int(expr[2])
+        width = int(expr[3])
+        value = _expr_mask(_canonical_expr(expr[4]), width)
+        if (
+            isinstance(base, tuple)
+            and len(base) == 5
+            and base[0] == "write_bits"
+            and int(base[2]) == offset
+            and int(base[3]) == width
+        ):
+            base = base[1]
+        return ("write_bits", base, offset, width, value)
     if op == "ite":
         return _expr_ite(_canonical_expr(expr[1]), _canonical_expr(expr[2]), _canonical_expr(expr[3]))
     if op == "not":

@@ -1758,6 +1758,39 @@ def _semantic_expr_json(value: Any) -> Any:
         return result
     if op == "undefined_flag":
         return {"op": "undefined_flag", "reason": str(value[1]), "id": str(value[2])}
+    if op == "write_bits":
+        offset = int(value[2])
+        width = int(value[3])
+        field_mask = (((1 << width) - 1) << offset) & 0xFFFFFFFF
+        clear_mask = (~field_mask) & 0xFFFFFFFF
+        inserted = _semantic_expr_json(value[4])
+        if offset:
+            inserted = {
+                "op": "shl32",
+                "args": [
+                    inserted,
+                    {"op": "const", "width": 32, "value": offset},
+                ],
+            }
+        return {
+            "op": "or32",
+            "args": [
+                {
+                    "op": "and32",
+                    "args": [
+                        _semantic_expr_json(value[1]),
+                        {"op": "const", "width": 32, "value": clear_mask},
+                    ],
+                },
+                {
+                    "op": "and32",
+                    "args": [
+                        inserted,
+                        {"op": "const", "width": 32, "value": field_mask},
+                    ],
+                },
+            ],
+        }
     if op in {"true", "false"}:
         return {"op": op}
     op_map = {

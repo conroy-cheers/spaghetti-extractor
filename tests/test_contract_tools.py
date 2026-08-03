@@ -608,6 +608,33 @@ class ContractToolTests(unittest.TestCase):
             self.assertEqual(writes["edi"]["op"], "add32")
             self.assertIn('"value": 740', json.dumps(writes["edi"]))
 
+    def test_semantic_transfer_canonicalizes_repeated_byte_adds_compactly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            encoded = bytes.fromhex("0404" * 16)
+            original = self._write_pe(root / "original.exe", encoded)
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1000 + len(encoded))
+            mapping = BlockMapping(
+                id="repeated-byte-adds",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "repeated_byte_adds"},
+            )
+
+            transfer = _semantic_transfer_contract(
+                binary,
+                mapping,
+                "repeated_byte_adds",
+                {"model": REFERENCE_CONTRACT_MODEL_ID},
+            )
+
+            self.assertEqual(transfer["status"], "reimplementable", transfer)
+            self.assertLess(len(json.dumps(transfer)), 200_000)
+
     def test_rep_stosd_supports_symbolic_count_and_retains_small_unroll(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
