@@ -195,6 +195,7 @@ let
       ../src/spaghetti_extractor/__init__.py
       ../src/spaghetti_extractor/artifact_formats.py
       ../src/spaghetti_extractor/linked_library_contracts.py
+      ../src/spaghetti_extractor/source_graph.py
       ../src/spaghetti_extractor/source_project.py
       ../src/spaghetti_extractor/util.py
     ];

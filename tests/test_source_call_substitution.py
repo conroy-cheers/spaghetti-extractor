@@ -31,6 +31,7 @@ from spaghetti_extractor.source_call_substitution import (
     propose_source_component_bindings,
 )
 from spaghetti_extractor.source_project import SOURCE_PROJECT_BINDING_FORMAT
+from spaghetti_extractor.source_graph import source_function_closure
 from spaghetti_extractor.util import sha256_file, write_json
 from tests.pe_fixtures import pe32_image, pe32_import_image
 
@@ -460,12 +461,148 @@ class SourceCallSubstitutionTests(unittest.TestCase):
             out=self.root / "source-inventory.json",
         )
 
-        self.assertEqual(inventory["counts"], {"calls": 2, "direct": 2, "indirect": 0})
+        self.assertEqual(
+            inventory["counts"],
+            {"calls": 2, "direct": 2, "indirect": 0, "function_references": 0},
+        )
         self.assertEqual(
             {call["callee"] for call in inventory["calls"]},
             {"direct_call", "macro_call"},
         )
         self.assertTrue(all(call["source"]["path"] == "hello.c" for call in inventory["calls"]))
+
+    def test_source_inventory_tracks_address_taken_local_callback(self) -> None:
+        source = self.root / "callback.c"
+        source.write_text(
+            "static void callback(void) {}\n"
+            "void register_callback(void (*callback)(void));\n"
+            "int caller(void) { register_callback(callback); return 0; }\n",
+            encoding="ascii",
+        )
+        ast = {
+            "kind": "TranslationUnitDecl",
+            "inner": [
+                {
+                    "kind": "FunctionDecl",
+                    "name": "callback",
+                    "range": {"begin": {"file": str(source), "offset": 0}},
+                    "inner": [{"kind": "CompoundStmt"}],
+                },
+                {
+                    "kind": "FunctionDecl",
+                    "name": "caller",
+                    "range": {"begin": {"file": str(source), "offset": 82}},
+                    "inner": [
+                        {
+                            "kind": "CompoundStmt",
+                            "inner": [
+                                {
+                                    "kind": "CallExpr",
+                                    "range": {
+                                        "begin": {"file": str(source), "offset": 101}
+                                    },
+                                    "inner": [
+                                        {
+                                            "kind": "DeclRefExpr",
+                                            "range": {
+                                                "begin": {
+                                                    "file": str(source),
+                                                    "offset": 101,
+                                                }
+                                            },
+                                            "referencedDecl": {
+                                                "kind": "FunctionDecl",
+                                                "name": "register_callback",
+                                            },
+                                        },
+                                        {
+                                            "kind": "DeclRefExpr",
+                                            "range": {
+                                                "begin": {
+                                                    "file": str(source),
+                                                    "offset": 119,
+                                                }
+                                            },
+                                            "referencedDecl": {
+                                                "kind": "FunctionDecl",
+                                                "name": "callback",
+                                            },
+                                        },
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ],
+        }
+        write_json(self.root / "callback-ast.json", ast)
+
+        inventory = inventory_clang_source_calls(
+            ast_json=self.root / "callback-ast.json",
+            source_root=self.root,
+            source_hashes=[{"path": "callback.c", "sha256": sha256_file(source)}],
+            out=self.root / "callback-inventory.json",
+        )
+
+        self.assertEqual(inventory["counts"]["function_references"], 1)
+        self.assertEqual(
+            inventory["function_references"][0]["target_symbol"], "callback"
+        )
+        self.assertEqual(
+            source_function_closure(
+                ["caller"], inventory["calls"], inventory["function_references"]
+            ),
+            {"caller", "callback"},
+        )
+
+    def test_source_inventory_disambiguates_macro_expansion_calls(self) -> None:
+        source = self.root / "macro.c"
+        source.write_text("int caller(void) { return TWO_CALLS(foo()); }\n", encoding="ascii")
+        call = {
+            "kind": "CallExpr",
+            "range": {"begin": {"file": str(source), "offset": 26}},
+            "inner": [
+                {
+                    "kind": "DeclRefExpr",
+                    "referencedDecl": {"kind": "FunctionDecl", "name": "foo"},
+                }
+            ],
+        }
+        ast = {
+            "kind": "TranslationUnitDecl",
+            "inner": [
+                {
+                    "kind": "FunctionDecl",
+                    "name": "caller",
+                    "range": {"begin": {"file": str(source), "offset": 0}},
+                    "inner": [
+                        {
+                            "kind": "CompoundStmt",
+                            "inner": [call, json.loads(json.dumps(call))],
+                        }
+                    ],
+                }
+            ],
+        }
+        write_json(self.root / "macro-ast.json", ast)
+
+        inventory = inventory_clang_source_calls(
+            ast_json=self.root / "macro-ast.json",
+            source_root=self.root,
+            source_hashes=[{"path": "macro.c", "sha256": sha256_file(source)}],
+            out=self.root / "macro-inventory.json",
+        )
+
+        self.assertEqual(inventory["counts"]["calls"], 2)
+        self.assertEqual(len({row["id"] for row in inventory["calls"]}), 2)
+        self.assertEqual(
+            sorted(
+                (row["source_occurrence"] for row in inventory["calls"]),
+                key=lambda row: row["ordinal"],
+            ),
+            [{"ordinal": 0, "count": 2}, {"ordinal": 1, "count": 2}],
+        )
 
     def test_qualified_cluster_can_bind_to_source_component(self) -> None:
         frontier = generate_call_frontier(

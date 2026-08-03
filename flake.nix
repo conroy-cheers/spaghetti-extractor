@@ -184,6 +184,7 @@
               ./nix/stage-b-semantic-component-workspaces.nix
               ./nix/stage-b-source-call-substitutions.nix
               ./nix/stage-b-source-component-assurance.nix
+              ./nix/stage-b-functional-suite.nix
               ./nix/jq-idiomatic.nix
               ./nix/stage-b-upstream-shell-suite.nix
             ];
@@ -6307,7 +6308,10 @@
           stageBGnuHelloSourceAst =
             pkgs.runCommand "stage-b-gnu-hello-source-clang-ast-v1"
               {
-                nativeBuildInputs = [ mingw32.stdenv.cc pkgs.clang ];
+                nativeBuildInputs = [
+                  mingw32.stdenv.cc
+                  pkgs.llvmPackages.clang-unwrapped
+                ];
                 preferLocalBuild = false;
                 allowSubstitutes = true;
                 __contentAddressed = true;
@@ -6321,11 +6325,14 @@
                 gcc_include_fixed="$(${mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc \
                   -print-file-name=include-fixed)"
                 mingw_headers="$(realpath "$gcc_include/../../../../../i686-w64-mingw32/sys-include")"
-                ${pkgs.clang}/bin/clang \
+                clang=${pkgs.llvmPackages.clang-unwrapped}/bin/clang
+                clang_resource="$($clang -print-resource-dir)"
+                "$clang" \
                   --target=i686-w64-windows-gnu \
                   -std=c11 -fsyntax-only \
                   -nostdinc \
                   -I ${./fixtures/gnu-hello/idiomatic} \
+                  -isystem "$clang_resource/include" \
                   -isystem "$gcc_include" \
                   -isystem "$gcc_include_fixed" \
                   -isystem "$mingw_headers" \
@@ -6503,6 +6510,12 @@
               export LC_ALL=C.UTF-8
               export PYTHONPATH=${stageBSourceCallSubstitutionPythonSource}/src
               mkdir -p "$out"
+              jq -e '
+                .format == "stage-b-candidate-dependency-audit-v1" and
+                .status == "pass" and (.executes_original_binary | not) and
+                .counts.observed == 53 and .counts.unexpected == 0
+              ' ${stageBGnuHelloSourceCallPipeline.candidateAudit}/candidate-dependency-audit.json \
+                >/dev/null
               ${pythonEnv}/bin/python3 - \
                 ${gnuHelloRoundtrip.idiomaticSourceBinding}/source-project-binding.json \
                 ${gnuHelloRoundtrip.idiomaticCandidate}/candidate.exe \
@@ -6524,6 +6537,9 @@
                   out=pathlib.Path(sys.argv[6]),
               )
               PY
+              cp \
+                ${stageBGnuHelloSourceCallPipeline.candidateAudit}/candidate-dependency-audit.json \
+                "$out/candidate-dependency-audit.json"
               jq -e '
                 .format == "stage-b-source-project-assurance-v1" and
                 .status == "behavior_validated" and
@@ -7293,7 +7309,10 @@
           stageBJqSourceAst = pkgs.runCommand
             "stage-b-jq-idiomatic-source-clang-ast-v1"
             {
-              nativeBuildInputs = [ mingw32.stdenv.cc pkgs.clang ];
+              nativeBuildInputs = [
+                mingw32.stdenv.cc
+                pkgs.llvmPackages.clang-unwrapped
+              ];
               preferLocalBuild = false;
               allowSubstitutes = true;
               __contentAddressed = true;
@@ -7307,11 +7326,14 @@
               gcc_include_fixed="$(${mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc \
                 -print-file-name=include-fixed)"
               mingw_headers="$(realpath "$gcc_include/../../../../../i686-w64-mingw32/sys-include")"
-              ${pkgs.clang}/bin/clang \
+              clang=${pkgs.llvmPackages.clang-unwrapped}/bin/clang
+              clang_resource="$($clang -print-resource-dir)"
+              "$clang" \
                 --target=i686-w64-windows-gnu \
                 -std=c11 -fsyntax-only -nostdinc \
                 -I ${./fixtures/jq/idiomatic} \
                 -I ${stage-a-jq-original}/include \
+                -isystem "$clang_resource/include" \
                 -isystem "$gcc_include" \
                 -isystem "$gcc_include_fixed" \
                 -isystem "$mingw_headers" \

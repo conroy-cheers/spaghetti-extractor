@@ -402,9 +402,30 @@ class SourceProjectTests(unittest.TestCase):
         inventory_core = {
             "format": "stage-b-source-call-inventory-v1",
             "bindings": {"sources": binding["sources"]},
-            "definitions": [{"symbol": "main"}],
-            "calls": [],
-            "counts": {"calls": 0, "direct": 0, "indirect": 0},
+            "definitions": [{"symbol": "callback"}, {"symbol": "main"}],
+            "calls": [
+                {
+                    "id": "source-call:callback-output",
+                    "callee": "puts",
+                    "callee_scope": "external",
+                    "enclosing_function": "callback",
+                }
+            ],
+            "function_references": [
+                {
+                    "id": "source-function-reference:main-callback",
+                    "kind": "function_value",
+                    "enclosing_function": "main",
+                    "target_symbol": "callback",
+                    "target_scope": "source_local",
+                }
+            ],
+            "counts": {
+                "calls": 1,
+                "direct": 1,
+                "indirect": 0,
+                "function_references": 1,
+            },
         }
         inventory = {
             **inventory_core,
@@ -419,8 +440,8 @@ class SourceProjectTests(unittest.TestCase):
                 "source_inventory_sha256": inventory["inventory_sha256"]
             },
             "counts": {
-                "source_calls": 0,
-                "covered_by_source_component": 0,
+                "source_calls": 1,
+                "covered_by_source_component": 1,
                 "unbound_source_local": 0,
             },
             "issues": [],
@@ -512,6 +533,10 @@ class SourceProjectTests(unittest.TestCase):
         self.assertEqual(payload["status"], "behavior_validated")
         self.assertEqual(payload["counts"]["behavior_validated"], 1)
         self.assertEqual(payload["issues"], [])
+        self.assertEqual(
+            payload["components"][0]["source"]["closure_symbols"],
+            ["callback", "main"],
+        )
         self.assertFalse(payload["authority"]["proves_equivalence"])
         self.assertFalse(payload["authority"]["can_authorize_machine_override"])
 

@@ -34,6 +34,7 @@ from .linked_library_contracts import (
     validate_linked_island_manifest,
 )
 from .source_project import SOURCE_PROJECT_BINDING_FORMAT
+from .source_graph import source_function_closure
 from .stage_binary import _parse_stage_a_pe
 from .util import sha256_file, write_json
 
@@ -817,17 +818,31 @@ def inventory_clang_source_calls(
     )
     project_symbol_set = {str(value) for value in project_symbols}
     calls: list[dict[str, Any]] = []
+    function_references: list[dict[str, Any]] = []
     _walk_clang_ast(
         ast,
         calls,
+        function_references,
         root,
         expected,
+        ast_path=(),
         current_function=None,
         fallback_source=fallback_source,
         definitions=definitions,
         project_symbols=project_symbol_set,
     )
+    _disambiguate_source_artifact_ids(calls, prefix="source-call:")
+    _disambiguate_source_artifact_ids(
+        function_references, prefix="source-function-reference:"
+    )
     calls.sort(key=lambda item: (item["source"]["path"], item["source"]["offset"], item["id"]))
+    function_references.sort(
+        key=lambda item: (
+            item["source"]["path"],
+            item["source"]["offset"],
+            item["id"],
+        )
+    )
     core = {
         "format": SOURCE_CALL_INVENTORY_FORMAT,
         "status": "inventoried",
@@ -838,10 +853,12 @@ def inventory_clang_source_calls(
             for symbol in sorted(definitions)
         ],
         "calls": calls,
+        "function_references": function_references,
         "counts": {
             "calls": len(calls),
             "direct": sum(item["kind"] == "direct" for item in calls),
             "indirect": sum(item["kind"] == "indirect" for item in calls),
+            "function_references": len(function_references),
         },
     }
     payload = {**core, "inventory_sha256": _canonical_sha256(core)}
@@ -996,7 +1013,13 @@ def check_source_call_bindings(
     for plan_id in sorted(set(plans) - used_plans):
         issue = _issue("incomplete", "call_plan_has_no_source_call", plan_id=plan_id)
         issues.append(issue)
-    covered_functions = _source_component_closure(component_roots, calls.values())
+    function_references = [
+        _object(row, "source function reference")
+        for row in inventory.get("function_references", [])
+    ]
+    covered_functions = source_function_closure(
+        component_roots, calls.values(), function_references
+    )
     unbound_source_local = 0
     covered_by_source_component = 0
     for call_id in sorted(set(calls) - used_calls):
@@ -1028,6 +1051,7 @@ def check_source_call_bindings(
             "incomplete_or_violated": len(issues),
             "unbound_source_local": unbound_source_local,
             "covered_by_source_component": covered_by_source_component,
+            "source_function_references": len(function_references),
         },
     }
     payload = {**core, "report_sha256": _canonical_sha256(core)}
@@ -1102,29 +1126,6 @@ def audit_candidate_dependencies(
     payload = {**core, "audit_sha256": _canonical_sha256(core)}
     write_json(Path(out), payload)
     return payload
-
-
-def _source_component_closure(
-    roots: Iterable[str], calls: Iterable[Mapping[str, Any]]
-) -> set[str]:
-    """Return source functions implemented transitively by component roots."""
-
-    rows = list(calls)
-    covered = {str(root) for root in roots}
-    changed = True
-    while changed:
-        changed = False
-        for call in rows:
-            callee = call.get("callee")
-            if (
-                call.get("enclosing_function") in covered
-                and call.get("callee_scope") == "source_local"
-                and isinstance(callee, str)
-                and callee not in covered
-            ):
-                covered.add(callee)
-                changed = True
-    return covered
 
 
 def _check_frontier_bindings(
@@ -1559,9 +1560,11 @@ def _interface_matches_call(interface: Mapping[str, Any], call: Mapping[str, Any
 def _walk_clang_ast(
     node: Mapping[str, Any],
     calls: list[dict[str, Any]],
+    function_references: list[dict[str, Any]],
     root: Path,
     expected: Mapping[str, str],
     *,
+    ast_path: tuple[int, ...],
     current_function: str | None,
     fallback_source: str | None,
     definitions: Mapping[str, Mapping[str, Any]],
@@ -1595,20 +1598,75 @@ def _walk_clang_ast(
                     "source": source,
                     "type": copy.deepcopy(node.get("type")),
                     "argument_count": max(0, len(node.get("inner", [])) - 1),
+                    "_ast_path": ast_path,
                 }
             )
-    for child in node.get("inner", []) or []:
+    if kind == "DeclRefExpr" and current_function is not None:
+        referenced = node.get("referencedDecl")
+        if isinstance(referenced, Mapping):
+            target = referenced.get("name")
+            if (
+                referenced.get("kind") == "FunctionDecl"
+                and isinstance(target, str)
+                and target in definitions
+            ):
+                source = _clang_source_location(
+                    node, root, expected, fallback_source=fallback_source
+                )
+                if source is not None:
+                    reference_id = "source-function-reference:" + sha256(
+                        (
+                            f"{source['path']}:{source['offset']}:"
+                            f"{current_function}:{target}"
+                        ).encode("utf-8")
+                    ).hexdigest()[:24]
+                    function_references.append(
+                        {
+                            "id": reference_id,
+                            "kind": "function_value",
+                            "enclosing_function": current_function,
+                            "target_symbol": target,
+                            "target_scope": "source_local",
+                            "source": source,
+                            "_ast_path": ast_path,
+                        }
+                    )
+    for child_index, child in enumerate(node.get("inner", []) or []):
         if isinstance(child, Mapping):
             _walk_clang_ast(
                 child,
                 calls,
+                function_references,
                 root,
                 expected,
+                ast_path=ast_path + (child_index,),
                 current_function=current_function,
                 fallback_source=fallback_source,
                 definitions=definitions,
                 project_symbols=project_symbols,
             )
+
+
+def _disambiguate_source_artifact_ids(
+    rows: list[dict[str, Any]], *, prefix: str
+) -> None:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        groups.setdefault(str(row["id"]), []).append(row)
+    for base_id, group in groups.items():
+        ordered = sorted(group, key=lambda row: tuple(row["_ast_path"]))
+        for occurrence, row in enumerate(ordered):
+            ast_path = tuple(row.pop("_ast_path"))
+            if len(ordered) == 1:
+                continue
+            path_text = ".".join(str(value) for value in ast_path)
+            row["id"] = prefix + sha256(
+                f"{base_id}:{path_text}".encode("ascii")
+            ).hexdigest()[:24]
+            row["source_occurrence"] = {
+                "ordinal": occurrence,
+                "count": len(ordered),
+            }
 
 
 def _clang_source_definitions(

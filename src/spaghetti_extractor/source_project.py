@@ -18,6 +18,7 @@ from .linked_library_contracts import (
     LinkedLibraryContractError,
     validate_linked_island_manifest,
 )
+from .source_graph import source_function_closure
 from .util import sha256_file, write_json
 
 
@@ -591,6 +592,10 @@ def assess_source_components(
         _object(row, "source call")
         for row in _array(inventory.get("calls"), "source calls")
     ]
+    function_references = [
+        _object(row, "source function reference")
+        for row in inventory.get("function_references", [])
+    ]
     component_rows: list[dict[str, Any]] = []
     covered_call_ids: set[str] = set()
     for island_id in sorted(set(project_islands) & set(planned)):
@@ -608,13 +613,20 @@ def assess_source_components(
             row_issues.append(
                 _source_component_issue("violated", "source_definition_missing", island_id)
             )
-        closure = _source_function_closure(symbol, calls)
+        closure = source_function_closure(
+            [symbol], calls, function_references
+        )
         component_calls = [
             row
             for row in calls
             if row.get("enclosing_function") in closure
         ]
         component_call_ids = {str(row["id"]) for row in component_calls}
+        component_reference_ids = {
+            str(row["id"])
+            for row in function_references
+            if row.get("enclosing_function") in closure
+        }
         covered_call_ids.update(component_call_ids)
         functional_ids = list(evidence["functional_case_ids"])
         upstream_ids = list(evidence["upstream_case_ids"])
@@ -651,6 +663,8 @@ def assess_source_components(
                     "closure_symbols": sorted(closure),
                     "call_ids": sorted(component_call_ids),
                     "call_count": len(component_call_ids),
+                    "function_reference_ids": sorted(component_reference_ids),
+                    "function_reference_count": len(component_reference_ids),
                 },
                 "evidence": {
                     "classes": ["integration", "assumed"],
@@ -903,26 +917,6 @@ def _read_self_hashed(
     if observed != _canonical_sha256(core):
         raise SourceProjectError(f"{description} self-hash is stale")
     return payload
-
-
-def _source_function_closure(
-    root: str, calls: list[Mapping[str, Any]]
-) -> set[str]:
-    closure = {root}
-    changed = True
-    while changed:
-        changed = False
-        for call in calls:
-            callee = call.get("callee")
-            if (
-                call.get("enclosing_function") in closure
-                and call.get("callee_scope") == "source_local"
-                and isinstance(callee, str)
-                and callee not in closure
-            ):
-                closure.add(callee)
-                changed = True
-    return closure
 
 
 def _case_evidence_issues(

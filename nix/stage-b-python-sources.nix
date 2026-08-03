@@ -76,6 +76,7 @@ let
   ];
   sourceCallSubstitutionFiles = lib.fileset.unions [
     linkedLibraryFiles
+    ../src/spaghetti_extractor/source_graph.py
     ../src/spaghetti_extractor/source_project.py
     ../src/spaghetti_extractor/source_call_substitution.py
   ];
