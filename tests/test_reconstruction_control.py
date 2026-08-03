@@ -270,6 +270,44 @@ class RootedReachabilityTests(unittest.TestCase):
         self.assertEqual(result["potential_units"], [])
         self.assertEqual(result["unreachable_units"], ["isolated"])
 
+    def test_unresolved_edge_from_unreachable_unit_does_not_block_closure(self) -> None:
+        result = derive_rooted_reachable_units(
+            units=["root", "isolated"],
+            roots=["root"],
+            direct_edges=[
+                {"source_unit_id": "isolated", "target_unit_id": "missing"}
+            ],
+        )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["reachable_units"], ["root"])
+        self.assertEqual(result["potential_units"], [])
+        self.assertEqual(result["unreachable_units"], ["isolated"])
+        self.assertEqual(result["frontiers"], [])
+        self.assertEqual(result["issues"], [])
+
+    def test_unresolved_edge_from_unknown_unit_remains_incomplete(self) -> None:
+        result = derive_rooted_reachable_units(
+            units=["root"],
+            roots=["root"],
+            direct_edges=[
+                {"source_unit_id": "missing", "target_unit_id": "root"}
+            ],
+        )
+
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["reachable_units"], ["root"])
+        self.assertEqual(result["frontiers"], [])
+        self.assertEqual(
+            result["issues"],
+            [
+                {
+                    "code": "unresolved_direct_edge",
+                    "source_unit_id": "missing",
+                }
+            ],
+        )
+
     def test_calls_and_finite_indirect_targets_extend_reachability(self) -> None:
         units = [
             {"id": "root", "rva": 0x1000},

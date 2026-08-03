@@ -1,9 +1,11 @@
 { pkgs
-, spaghettiExtractor
+, pythonEnv
 , sideTool
 }:
 
 let
+  lib = pkgs.lib;
+  python = "${pythonEnv}/bin/python3";
   archive = pkgs.fetchurl {
     name = "dxball-1.09-distributable.zip";
     url = "https://archive.org/download/dxball-19/DXBall19.zip";
@@ -34,6 +36,49 @@ let
     export FONTCONFIG_FILE=${wineFontsConf}
     mkdir -p "$HOME" "$XDG_CACHE_HOME"
   '';
+  opaqueStaticPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/_contract_tools
+      ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/contract_tools.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/machine_import_profiles.py
+      ../src/spaghetti_extractor/opaque_reconstruction.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_b_state_machine.py
+      ../src/spaghetti_extractor/stage_binary.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/artifacts.py
+      ../src/spaghetti_extractor/relational/binary_inventory.py
+      ../src/spaghetti_extractor/relational/contract.py
+      ../src/spaghetti_extractor/relational/model.py
+      ../src/spaghetti_extractor/relational/reference_contract.py
+      ../src/spaghetti_extractor/relational/schema.py
+      ../src/spaghetti_extractor/relational/semantic_cutpoints.py
+      ../src/spaghetti_extractor/relational/side_extraction_artifact.py
+      ../src/spaghetti_extractor/relational/x87_profile.py
+      ../src/spaghetti_extractor/roundtrip_fuzz/__init__.py
+      ../src/spaghetti_extractor/roundtrip_fuzz/image_contract.py
+    ];
+  };
+  machineIrPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/machine_import_profiles.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_binary.py
+      ../src/spaghetti_extractor/stage_b_state_machine.py
+      ../src/spaghetti_extractor/reconstruction_ir.py
+      ../src/spaghetti_extractor/reconstruction_control.py
+    ];
+  };
 in
 rec {
   sourceArchive = archive;
@@ -224,22 +269,94 @@ rec {
 
   opaqueStaticExport = pkgs.runCommand "stage-a-dxball-1.09-opaque-static-export"
     {
-      nativeBuildInputs = [ pkgs.jq spaghettiExtractor ];
+      nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
       preferLocalBuild = false;
       allowSubstitutes = true;
       __contentAddressed = true;
     }
     ''
-      spaghetti-extractor stage-a-export-opaque-reconstruction \
-        --original ${originalRuntime}/runtime/DXBall.exe \
-        --inventory ${originalInventory}/inventory.json \
-        --out "$out"
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${opaqueStaticPythonSource}/src
+      test ! -e ${opaqueStaticPythonSource}/src/spaghetti_extractor/reconstruction_ir.py
+      ${python} - \
+        ${lib.escapeShellArg "${originalRuntime}/runtime/DXBall.exe"} \
+        ${lib.escapeShellArg "${originalInventory}/inventory.json"} \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.opaque_reconstruction import (
+          stage_a_export_opaque_reconstruction,
+      )
+
+      original, inventory, output = map(pathlib.Path, sys.argv[1:])
+      stage_a_export_opaque_reconstruction(
+          original=original,
+          inventory=inventory,
+          out=output,
+      )
+      PY
       jq -e '
         .format == "stage-a-opaque-static-export-v1" and
         .status == "ready" and
         .counts.regions > 0 and
         .counts.transfers > 0
       ' "$out/opaque-static-export.json" >/dev/null
+    '';
+
+  machineIr = pkgs.runCommand "stage-a-dxball-1.09-machine-ir"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${machineIrPythonSource}/src
+      test ! -e ${machineIrPythonSource}/src/spaghetti_extractor/opaque_reconstruction.py
+      ${python} - \
+        ${lib.escapeShellArg "${opaqueStaticExport}/state-machine.jsonl"} \
+        ${lib.escapeShellArg "${originalRuntime}/runtime/DXBall.exe"} \
+        ${lib.escapeShellArg "${opaqueStaticExport}/reference-contract.json"} \
+        ${lib.escapeShellArg "${../profiles/pe32-static-cutpoints-and-paired-callables-v1.json}"} \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.reconstruction_ir import export_machine_ir_package
+
+      state_machine, original, reference, target_profile, output = map(
+          pathlib.Path, sys.argv[1:]
+      )
+      export_machine_ir_package(
+          state_machine=state_machine,
+          original_pe=original,
+          reference_contract=reference,
+          indirect_target_profile=target_profile,
+          out=output,
+      )
+      PY
+      # The artifact is useful repair input, but unresolved rooted frontiers
+      # must keep this initial export incomplete.
+      jq -e '
+        .format == "stage-a-machine-ir-v2" and
+        .status == "incomplete" and
+        .binary.sha256 == "${executableSha256}" and
+        .counts.units == 8989 and
+        .counts.violated_issues == 0 and
+        .counts.incomplete_issues > 0 and
+        .coverage.counts.unknown_bytes == 0 and
+        .control.counts.roots == 1 and
+        .control.counts.exact_reachable_units > 0 and
+        .control.counts.potential_reachable_units > 0 and
+        .control.reachability.status == "incomplete" and
+        .control.counts.rooted_frontiers > 0
+      ' "$out/machine-ir-manifest.json" >/dev/null
     '';
 
 }

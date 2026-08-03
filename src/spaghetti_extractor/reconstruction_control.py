@@ -364,7 +364,17 @@ def derive_rooted_reachable_units(
         for kind, source, target in sorted(edge_rows)
         if source in reachable
     ]
-    sorted_issues = _deduplicate_mappings(issues)
+    # Edge proposals whose sources are outside the rooted closure cannot make
+    # those sources reachable. Keep global inventory/root failures, but do not
+    # let malformed outgoing control from a confirmed-unreached unit prevent a
+    # complete rooted result.
+    sorted_issues = _deduplicate_mappings(
+        issue
+        for issue in issues
+        if not isinstance(issue.get("source_unit_id"), str)
+        or issue["source_unit_id"] not in unit_ids
+        or issue["source_unit_id"] in reachable
+    )
     not_reached = unit_ids - reachable
     incomplete = bool(frontiers or sorted_issues)
     potential = not_reached if incomplete else set()
