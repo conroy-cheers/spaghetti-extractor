@@ -8,6 +8,12 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
 
+from .artifact_formats import (
+    SOURCE_CALL_BINDING_REPORT_FORMAT,
+    SOURCE_CALL_INVENTORY_FORMAT,
+    SOURCE_COMPONENT_ASSURANCE_FORMAT,
+    SOURCE_COMPONENT_EVIDENCE_PLAN_FORMAT,
+)
 from .linked_library_contracts import (
     LinkedLibraryContractError,
     validate_linked_island_manifest,
@@ -19,6 +25,12 @@ SOURCE_PROJECT_SPEC_FORMAT = "stage-b-source-project-spec-v1"
 SOURCE_PROJECT_BINDING_FORMAT = "stage-b-source-project-binding-v1"
 SOURCE_PROJECT_BUILD_FORMAT = "stage-b-source-project-build-v1"
 SOURCE_PROJECT_ASSURANCE_FORMAT = "stage-b-source-project-assurance-v1"
+
+_SOURCE_COMPONENT_PROFILE = "high-assurance-source-reconstruction-v1"
+_REQUIRED_SOURCE_COMPONENT_ASSUMPTIONS = {
+    "integration_coverage_is_not_exhaustive",
+    "machine_to_source_component_equivalence_not_proven",
+}
 
 
 class SourceProjectError(ValueError):
@@ -338,6 +350,7 @@ def assess_source_project(
     candidate_binary: Path | str,
     functional_report: Path | str,
     upstream_report: Path | str | None = None,
+    component_assurance: Path | str | None = None,
     out: Path | str,
 ) -> dict[str, Any]:
     """Combine static binding and candidate-only tests without claiming proof."""
@@ -350,58 +363,38 @@ def assess_source_project(
     observed_binding_hash = binding_core.pop("binding_sha256", None)
     if observed_binding_hash != _canonical_sha256(binding_core):
         raise SourceProjectError("source-project binding self-hash is stale")
-    report_path = Path(functional_report)
-    report = _read_object(report_path, "functional report")
-    if report.get("format") != "stage-b-functional-report-v1":
-        raise SourceProjectError("unsupported functional report format")
-    report_status = report.get("status")
-    if report_status not in {"pass", "fail"}:
-        raise SourceProjectError("functional report has an invalid status")
-    counts = _object(report.get("counts"), "functional report counts")
-    case_count = counts.get("cases")
-    passed_count = counts.get("passed")
-    failed_count = counts.get("failed")
-    if (
-        not all(
-            isinstance(value, int) and not isinstance(value, bool) and value >= 0
-            for value in (case_count, passed_count, failed_count)
-        )
-        or case_count != passed_count + failed_count
-    ):
-        raise SourceProjectError("functional report counts are inconsistent")
-    oracle = _object(report.get("oracle"), "functional report oracle")
-    if oracle.get("original_runtime_observations") is not False:
-        raise SourceProjectError(
-            "source-project assurance requires an explicit candidate-only oracle"
-        )
     candidate = Path(candidate_binary)
     if not candidate.is_file():
         raise SourceProjectError("source-project candidate binary is missing")
     candidate_sha256 = sha256_file(candidate)
-    candidate_binding = _object(
-        _object(report.get("binary_bindings"), "functional binary bindings").get(
-            "candidate"
-        ),
-        "functional candidate binding",
-    )
-    if (
-        candidate_binding.get("provided") is not True
-        or candidate_binding.get("exists") is not True
-        or candidate_binding.get("sha256") != candidate_sha256
-    ):
-        raise SourceProjectError(
-            "functional report is not bound to the source-project candidate"
-        )
+    report_path = Path(functional_report)
+    functional = _validate_functional_report(report_path, candidate_sha256)
+    report_status = functional["status"]
+    counts = functional["counts"]
+    case_count = counts["cases"]
+    passed_count = counts["passed"]
+    failed_count = counts["failed"]
+    report = functional["report"]
     upstream = (
         None
         if upstream_report is None
         else _validate_upstream_report(Path(upstream_report), candidate_sha256)
+    )
+    component = (
+        None
+        if component_assurance is None
+        else _validate_source_component_assurance(
+            Path(component_assurance),
+            project=project,
+            candidate_sha256=candidate_sha256,
+        )
     )
     passed = (
         report_status == "pass"
         and failed_count == 0
         and passed_count == case_count
         and (upstream is None or upstream["status"] == "pass")
+        and (component is None or component["status"] == "behavior_validated")
     )
     core = {
         "format": SOURCE_PROJECT_ASSURANCE_FORMAT,
@@ -416,6 +409,9 @@ def assess_source_project(
             "functional_report_sha256": sha256_file(report_path),
             "upstream_suite_report_sha256": (
                 None if upstream is None else upstream["report_sha256"]
+            ),
+            "source_component_assurance_sha256": (
+                None if component is None else component["assurance_sha256"]
             ),
         },
         "coverage": copy.deepcopy(project.get("coverage")),
@@ -439,17 +435,361 @@ def assess_source_project(
                 }
             ),
         },
+        "components": (
+            None
+            if component is None
+            else {
+                "status": component["status"],
+                "counts": copy.deepcopy(component["counts"]),
+                "evidence_profile": component["evidence_profile"],
+                "equivalence_status": component["equivalence_status"],
+            }
+        ),
         "authority": {
             "class": "candidate_only_behavior_evidence",
             "proves_equivalence": False,
             "can_authorize_machine_override": False,
             "runtime_failure_is_veto": True,
             "full_upstream_suite_required": upstream is not None,
+            "complete_source_component_evidence_required": component is not None,
         },
     }
     payload = {**core, "assurance_sha256": _canonical_sha256(core)}
     write_json(Path(out), payload)
     return payload
+
+
+def bind_source_component_evidence_plan(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Normalize the operator-authored evidence policy for source islands."""
+
+    core = _copy_object(payload, "source-component evidence plan")
+    core.pop("plan_sha256", None)
+    if core.get("format") != SOURCE_COMPONENT_EVIDENCE_PLAN_FORMAT:
+        raise SourceProjectError("unsupported source-component evidence plan format")
+    if core.get("evidence_profile") != _SOURCE_COMPONENT_PROFILE:
+        raise SourceProjectError("unsupported source-component evidence profile")
+    _nonempty(core.get("program_id"), "source-component program ID")
+    _sha256(
+        core.get("source_project_specification_sha256"),
+        "source-project specification SHA-256",
+    )
+    assumptions = _string_set(
+        core.get("accepted_assumptions"), "source-component assumptions"
+    )
+    if not _REQUIRED_SOURCE_COMPONENT_ASSUMPTIONS.issubset(assumptions):
+        raise SourceProjectError(
+            "source-component plan omits required non-proof assumptions"
+        )
+    components = _array(core.get("components"), "source-component evidence rows")
+    if not components:
+        raise SourceProjectError("source-component evidence plan has no components")
+    seen: set[str] = set()
+    for raw in components:
+        row = _object(raw, "source-component evidence row")
+        island_id = _nonempty(row.get("island_id"), "source island ID")
+        if island_id in seen:
+            raise SourceProjectError(f"duplicate source-component island: {island_id}")
+        seen.add(island_id)
+        _nonempty(row.get("source_symbol"), "source-component symbol")
+        functional = _string_set(
+            row.get("functional_case_ids"),
+            f"source component {island_id} functional cases",
+        )
+        upstream = _string_set(
+            row.get("upstream_case_ids", []),
+            f"source component {island_id} upstream cases",
+        )
+        if not functional and not upstream:
+            raise SourceProjectError(
+                f"source component {island_id} has no behavioral evidence"
+            )
+        row["functional_case_ids"] = sorted(functional)
+        row["upstream_case_ids"] = sorted(upstream)
+    core["accepted_assumptions"] = sorted(assumptions)
+    core["components"] = sorted(
+        (copy.deepcopy(dict(_object(row, "source-component evidence row"))) for row in components),
+        key=lambda row: row["island_id"],
+    )
+    return {**core, "plan_sha256": _canonical_sha256(core)}
+
+
+def assess_source_components(
+    *,
+    binding: Path | str,
+    source_inventory: Path | str,
+    source_call_report: Path | str,
+    functional_report: Path | str,
+    upstream_report: Path | str,
+    evidence_plan: Path | str | Mapping[str, Any],
+    out: Path | str,
+) -> dict[str, Any]:
+    """Account for every source island with explicit, candidate-only evidence."""
+
+    binding_path = Path(binding)
+    project = _read_self_hashed(
+        binding_path,
+        SOURCE_PROJECT_BINDING_FORMAT,
+        "binding_sha256",
+        "source-project binding",
+    )
+    inventory_path = Path(source_inventory)
+    inventory = _read_self_hashed(
+        inventory_path,
+        SOURCE_CALL_INVENTORY_FORMAT,
+        "inventory_sha256",
+        "source-call inventory",
+    )
+    report_path = Path(source_call_report)
+    call_report = _read_self_hashed(
+        report_path,
+        SOURCE_CALL_BINDING_REPORT_FORMAT,
+        "report_sha256",
+        "source-call binding report",
+    )
+    plan = (
+        bind_source_component_evidence_plan(evidence_plan)
+        if isinstance(evidence_plan, Mapping)
+        else _read_bound_source_component_plan(Path(evidence_plan))
+    )
+    if plan["program_id"] != project.get("program_id"):
+        raise SourceProjectError("source-component plan/project identity mismatch")
+    if (
+        plan["source_project_specification_sha256"]
+        != project.get("bindings", {}).get("specification_sha256")
+    ):
+        raise SourceProjectError("source-component plan/project specification is stale")
+    if inventory.get("bindings", {}).get("sources") != project.get("sources"):
+        raise SourceProjectError("source-component inventory/source binding is stale")
+    if (
+        call_report.get("bindings", {}).get("source_inventory_sha256")
+        != inventory["inventory_sha256"]
+    ):
+        raise SourceProjectError("source-call report/inventory binding is stale")
+
+    functional_path = Path(functional_report)
+    functional = _validate_functional_report(functional_path, None)
+    candidate_sha256 = functional["candidate_sha256"]
+    upstream_path = Path(upstream_report)
+    upstream = _validate_upstream_report(upstream_path, candidate_sha256)
+    functional_cases = functional["cases"]
+    upstream_cases = upstream["cases"]
+
+    project_islands = {str(row["id"]): row for row in project["islands"]}
+    planned = {str(row["island_id"]): row for row in plan["components"]}
+    issues: list[dict[str, Any]] = []
+    for island_id in sorted(set(project_islands) - set(planned)):
+        issues.append(_source_component_issue("incomplete", "missing_component_evidence", island_id))
+    for island_id in sorted(set(planned) - set(project_islands)):
+        issues.append(_source_component_issue("violated", "unknown_source_island", island_id))
+
+    definitions = {
+        str(row["symbol"]): row for row in _array(inventory.get("definitions"), "source definitions")
+    }
+    calls = [
+        _object(row, "source call")
+        for row in _array(inventory.get("calls"), "source calls")
+    ]
+    component_rows: list[dict[str, Any]] = []
+    covered_call_ids: set[str] = set()
+    for island_id in sorted(set(project_islands) & set(planned)):
+        island = project_islands[island_id]
+        evidence = planned[island_id]
+        symbol = str(island["source_symbol"])
+        row_issues: list[dict[str, Any]] = []
+        if evidence.get("source_symbol") != symbol:
+            row_issues.append(
+                _source_component_issue(
+                    "violated", "source_component_symbol_mismatch", island_id
+                )
+            )
+        if symbol not in definitions:
+            row_issues.append(
+                _source_component_issue("violated", "source_definition_missing", island_id)
+            )
+        closure = _source_function_closure(symbol, calls)
+        component_calls = [
+            row
+            for row in calls
+            if row.get("enclosing_function") in closure
+        ]
+        component_call_ids = {str(row["id"]) for row in component_calls}
+        covered_call_ids.update(component_call_ids)
+        functional_ids = list(evidence["functional_case_ids"])
+        upstream_ids = list(evidence["upstream_case_ids"])
+        row_issues.extend(
+            _case_evidence_issues(
+                island_id=island_id,
+                family="functional",
+                required=functional_ids,
+                observed=functional_cases,
+            )
+        )
+        row_issues.extend(
+            _case_evidence_issues(
+                island_id=island_id,
+                family="upstream",
+                required=upstream_ids,
+                observed=upstream_cases,
+            )
+        )
+        issues.extend(row_issues)
+        component_rows.append(
+            {
+                "island_id": island_id,
+                "source_symbol": symbol,
+                "status": "behavior_validated" if not row_issues else _issue_status(row_issues),
+                "machine": {
+                    "unit_ids": copy.deepcopy(island["unit_ids"]),
+                    "unit_count": island["unit_count"],
+                    "unit_contract_sha256": island["unit_contract_sha256"],
+                    "boundary": copy.deepcopy(island["boundary"]),
+                },
+                "source": {
+                    "definition": copy.deepcopy(definitions.get(symbol)),
+                    "closure_symbols": sorted(closure),
+                    "call_ids": sorted(component_call_ids),
+                    "call_count": len(component_call_ids),
+                },
+                "evidence": {
+                    "classes": ["integration", "assumed"],
+                    "functional_case_ids": functional_ids,
+                    "upstream_case_ids": upstream_ids,
+                },
+                "issues": row_issues,
+            }
+        )
+
+    all_call_ids = {str(row["id"]) for row in calls}
+    for call_id in sorted(all_call_ids - covered_call_ids):
+        issues.append(
+            _source_component_issue(
+                "incomplete", "source_call_outside_component_closure", call_id
+            )
+        )
+    call_counts = _object(call_report.get("counts"), "source-call report counts")
+    call_report_acceptable = (
+        call_counts.get("source_calls") == len(calls)
+        and call_counts.get("covered_by_source_component") == len(calls)
+        and call_counts.get("unbound_source_local") == 0
+        and all(
+            issue.get("status") == "incomplete"
+            and issue.get("code") == "call_plan_not_ready"
+            for issue in _array(call_report.get("issues"), "source-call report issues")
+        )
+    )
+    if not call_report_acceptable:
+        issues.append(
+            _source_component_issue(
+                "violated", "source_call_coverage_report_not_acceptable", "source-calls"
+            )
+        )
+    status = "behavior_validated" if not issues else _issue_status(issues)
+    core = {
+        "format": SOURCE_COMPONENT_ASSURANCE_FORMAT,
+        "status": status,
+        "equivalence_status": "not_proven",
+        "executes_original_binary": False,
+        "program_id": project["program_id"],
+        "evidence_profile": plan["evidence_profile"],
+        "bindings": {
+            "source_project_binding_sha256": project["binding_sha256"],
+            "source_inventory_sha256": inventory["inventory_sha256"],
+            "source_call_report_sha256": call_report["report_sha256"],
+            "functional_report_sha256": sha256_file(functional_path),
+            "upstream_report_sha256": sha256_file(upstream_path),
+            "candidate_binary_sha256": candidate_sha256,
+            "evidence_plan_sha256": plan["plan_sha256"],
+        },
+        "accepted_assumptions": copy.deepcopy(plan["accepted_assumptions"]),
+        "components": component_rows,
+        "issues": sorted(issues, key=lambda row: (row["status"], row["code"], row["location"])),
+        "counts": {
+            "components": len(project_islands),
+            "behavior_validated": sum(row["status"] == "behavior_validated" for row in component_rows),
+            "incomplete_or_violated": len(issues),
+            "machine_units": sum(int(row["unit_count"]) for row in project["islands"]),
+            "source_calls": len(calls),
+            "covered_source_calls": len(covered_call_ids),
+            "functional_cases": len(functional_cases),
+            "upstream_cases": len(upstream_cases),
+        },
+        "authority": {
+            "class": "candidate_only_component_behavior_evidence",
+            "proves_equivalence": False,
+            "can_authorize_machine_override": False,
+            "all_source_islands_require_evidence": True,
+            "all_source_calls_require_component_coverage": True,
+            "runtime_failure_is_veto": True,
+        },
+    }
+    payload = {**core, "assurance_sha256": _canonical_sha256(core)}
+    write_json(Path(out), payload)
+    return payload
+
+
+def _validate_functional_report(
+    path: Path, candidate_sha256: str | None
+) -> dict[str, Any]:
+    report = _read_object(path, "functional report")
+    if report.get("format") != "stage-b-functional-report-v1":
+        raise SourceProjectError("unsupported functional report format")
+    status = report.get("status")
+    if status not in {"pass", "fail"}:
+        raise SourceProjectError("functional report has an invalid status")
+    counts = _checked_counts(report.get("counts"), "functional report")
+    oracle = _object(report.get("oracle"), "functional report oracle")
+    if oracle.get("original_runtime_observations") is not False:
+        raise SourceProjectError(
+            "source-project assurance requires an explicit candidate-only oracle"
+        )
+    candidate_binding = _object(
+        _object(report.get("binary_bindings"), "functional binary bindings").get(
+            "candidate"
+        ),
+        "functional candidate binding",
+    )
+    observed_candidate_sha256 = _sha256(
+        candidate_binding.get("sha256"), "functional candidate SHA-256"
+    )
+    if (
+        candidate_binding.get("provided") is not True
+        or candidate_binding.get("exists") is not True
+        or (
+            candidate_sha256 is not None
+            and observed_candidate_sha256 != candidate_sha256
+        )
+    ):
+        raise SourceProjectError(
+            "functional report is not bound to the source-project candidate"
+        )
+    raw_cases = _array(report.get("cases"), "functional report cases")
+    cases: dict[str, Mapping[str, Any]] = {}
+    for raw_case in raw_cases:
+        case = _object(raw_case, "functional report case")
+        case_id = _nonempty(case.get("id"), "functional case ID")
+        if case_id in cases:
+            raise SourceProjectError(f"duplicate functional case ID: {case_id}")
+        if case.get("status") not in {"pass", "fail"}:
+            raise SourceProjectError("functional report case has an invalid status")
+        cases[case_id] = case
+    if len(cases) != counts["cases"]:
+        raise SourceProjectError("functional report case inventory is incomplete")
+    passed = sum(case["status"] == "pass" for case in cases.values())
+    if (
+        passed != counts["passed"]
+        or len(cases) - passed != counts["failed"]
+        or (status == "pass") != (passed == len(cases))
+    ):
+        raise SourceProjectError("functional report status disagrees with its cases")
+    return {
+        "report": report,
+        "status": status,
+        "counts": counts,
+        "cases": cases,
+        "candidate_sha256": observed_candidate_sha256,
+    }
 
 
 def _validate_upstream_report(
@@ -467,30 +807,29 @@ def _validate_upstream_report(
     oracle = _object(report.get("oracle"), "upstream shell-suite oracle")
     if oracle.get("original_runtime_observations") is not False:
         raise SourceProjectError("upstream shell-suite report observed the original binary")
-    counts = _object(report.get("counts"), "upstream shell-suite counts")
-    case_count = counts.get("cases")
-    passed_count = counts.get("passed")
-    failed_count = counts.get("failed")
-    if (
-        not all(
-            isinstance(value, int) and not isinstance(value, bool) and value >= 0
-            for value in (case_count, passed_count, failed_count)
-        )
-        or case_count == 0
-        or case_count != passed_count + failed_count
-    ):
-        raise SourceProjectError("upstream shell-suite counts are inconsistent")
+    counts = _checked_counts(report.get("counts"), "upstream shell-suite")
+    case_count = counts["cases"]
+    passed_count = counts["passed"]
+    failed_count = counts["failed"]
+    if case_count == 0:
+        raise SourceProjectError("upstream shell-suite must not be empty")
     cases = _array(report.get("cases"), "upstream shell-suite cases")
     if len(cases) != case_count:
         raise SourceProjectError("upstream shell-suite case inventory is incomplete")
+    cases_by_id: dict[str, Mapping[str, Any]] = {}
     for raw_case in cases:
         case = _object(raw_case, "upstream shell-suite case")
+        case_id = _nonempty(case.get("id"), "upstream shell-suite case ID")
+        if case_id in cases_by_id:
+            raise SourceProjectError(f"duplicate upstream case ID: {case_id}")
         if (
             case.get("format") != "stage-b-upstream-shell-case-report-v1"
             or case.get("executes_original_binary") is not False
             or case.get("candidate_binary_sha256") != candidate_sha256
+            or case.get("status") not in {"pass", "fail"}
         ):
             raise SourceProjectError("upstream shell-suite case binding is stale")
+        cases_by_id[case_id] = case
     status = report.get("status")
     if status not in {"pass", "fail"}:
         raise SourceProjectError("upstream shell-suite report has an invalid status")
@@ -505,6 +844,141 @@ def _validate_upstream_report(
         "counts": copy.deepcopy(dict(counts)),
         "original_runtime_observations": False,
         "report_sha256": sha256_file(path),
+        "cases": cases_by_id,
+    }
+
+
+def _validate_source_component_assurance(
+    path: Path,
+    *,
+    project: Mapping[str, Any],
+    candidate_sha256: str,
+) -> dict[str, Any]:
+    assurance = _read_self_hashed(
+        path,
+        SOURCE_COMPONENT_ASSURANCE_FORMAT,
+        "assurance_sha256",
+        "source-component assurance",
+    )
+    if (
+        assurance.get("program_id") != project.get("program_id")
+        or assurance.get("bindings", {}).get("source_project_binding_sha256")
+        != project.get("binding_sha256")
+        or assurance.get("bindings", {}).get("candidate_binary_sha256")
+        != candidate_sha256
+    ):
+        raise SourceProjectError("source-component assurance binding is stale")
+    if assurance.get("equivalence_status") != "not_proven":
+        raise SourceProjectError("source-component assurance overstates equivalence")
+    counts = _object(assurance.get("counts"), "source-component assurance counts")
+    if (
+        counts.get("components") != len(project.get("islands", []))
+        or counts.get("behavior_validated") != counts.get("components")
+        or counts.get("incomplete_or_violated") != 0
+    ):
+        raise SourceProjectError("source-component assurance coverage is incomplete")
+    return assurance
+
+
+def _read_bound_source_component_plan(path: Path) -> dict[str, Any]:
+    supplied = _read_object(path, "source-component evidence plan")
+    expected = supplied.get("plan_sha256")
+    bound = bind_source_component_evidence_plan(supplied)
+    if expected != bound["plan_sha256"]:
+        raise SourceProjectError("source-component evidence plan self-hash is stale")
+    return bound
+
+
+def _read_self_hashed(
+    path: Path,
+    expected_format: str,
+    hash_key: str,
+    description: str,
+) -> dict[str, Any]:
+    payload = _read_object(path, description)
+    if payload.get("format") != expected_format:
+        raise SourceProjectError(f"unsupported {description} format")
+    core = copy.deepcopy(payload)
+    observed = core.pop(hash_key, None)
+    if observed != _canonical_sha256(core):
+        raise SourceProjectError(f"{description} self-hash is stale")
+    return payload
+
+
+def _source_function_closure(
+    root: str, calls: list[Mapping[str, Any]]
+) -> set[str]:
+    closure = {root}
+    changed = True
+    while changed:
+        changed = False
+        for call in calls:
+            callee = call.get("callee")
+            if (
+                call.get("enclosing_function") in closure
+                and call.get("callee_scope") == "source_local"
+                and isinstance(callee, str)
+                and callee not in closure
+            ):
+                closure.add(callee)
+                changed = True
+    return closure
+
+
+def _case_evidence_issues(
+    *,
+    island_id: str,
+    family: str,
+    required: list[str],
+    observed: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    for case_id in required:
+        case = observed.get(case_id)
+        if case is None:
+            issues.append(
+                _source_component_issue(
+                    "violated", f"unknown_{family}_case", f"{island_id}:{case_id}"
+                )
+            )
+        elif case.get("status") != "pass":
+            issues.append(
+                _source_component_issue(
+                    "violated", f"failed_{family}_case", f"{island_id}:{case_id}"
+                )
+            )
+    return issues
+
+
+def _source_component_issue(status: str, code: str, location: str) -> dict[str, Any]:
+    return {"status": status, "code": code, "location": location}
+
+
+def _issue_status(issues: list[Mapping[str, Any]]) -> str:
+    return (
+        "violated"
+        if any(issue.get("status") == "violated" for issue in issues)
+        else "incomplete"
+    )
+
+
+def _checked_counts(value: Any, description: str) -> dict[str, int]:
+    counts = _object(value, f"{description} counts")
+    case_count = counts.get("cases")
+    passed_count = counts.get("passed")
+    failed_count = counts.get("failed")
+    if (
+        not all(
+            isinstance(item, int) and not isinstance(item, bool) and item >= 0
+            for item in (case_count, passed_count, failed_count)
+        )
+        or case_count != passed_count + failed_count
+    ):
+        raise SourceProjectError(f"{description} counts are inconsistent")
+    return {
+        "cases": case_count,
+        "passed": passed_count,
+        "failed": failed_count,
     }
 
 
@@ -681,6 +1155,24 @@ def _nonempty(value: Any, description: str) -> str:
     return value
 
 
+def _sha256(value: Any, description: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise SourceProjectError(f"{description} must be a lowercase SHA-256")
+    return value
+
+
+def _string_set(value: Any, description: str) -> set[str]:
+    rows = _array(value, description)
+    result = {_nonempty(item, description) for item in rows}
+    if len(result) != len(rows):
+        raise SourceProjectError(f"{description} contains duplicates")
+    return result
+
+
 def _canonical_sha256(value: Any) -> str:
     return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -691,7 +1183,9 @@ __all__ = [
     "SOURCE_PROJECT_BINDING_FORMAT",
     "SOURCE_PROJECT_BUILD_FORMAT",
     "SOURCE_PROJECT_SPEC_FORMAT",
+    "assess_source_components",
     "assess_source_project",
+    "bind_source_component_evidence_plan",
     "bind_source_project",
     "bind_source_project_specification",
 ]

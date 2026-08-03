@@ -46,6 +46,7 @@ spaghetti_extractor = [ "lean/**/*.lean" ]
   "nix/stage-b-component-selection.nix",
   "nix/stage-b-linked-libraries.nix",
   "nix/stage-b-source-call-substitutions.nix",
+  "nix/stage-b-source-component-assurance.nix",
   "nix/stage-b-upstream-shell-suite.nix",
   "nix/stage-b-native-object-graph.nix",
   "nix/stage-b-semantic-component-workspaces.nix",

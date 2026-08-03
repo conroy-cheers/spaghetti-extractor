@@ -79,7 +79,11 @@ from .component_interface import (
     write_component_interface_refinement,
 )
 from .component_selection import materialize_component_declarations
-from .source_project import assess_source_project, bind_source_project
+from .source_project import (
+    assess_source_components,
+    assess_source_project,
+    bind_source_project,
+)
 from .linked_libraries import (
     bind_interface_contract_catalog,
     bind_library_artifact_inputs,
@@ -928,8 +932,35 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     source_assurance.add_argument("--binding", type=Path, required=True)
     source_assurance.add_argument("--candidate-binary", type=Path, required=True)
     source_assurance.add_argument("--functional-report", type=Path, required=True)
+    source_assurance.add_argument("--upstream-report", type=Path)
+    source_assurance.add_argument("--component-assurance", type=Path)
     source_assurance.add_argument("--out", type=Path, required=True)
     source_assurance.set_defaults(func=_cmd_stage_b_assess_source_project)
+
+    source_component_assurance = subcommands.add_parser(
+        "stage-b-assess-source-components",
+        help="bind source islands to candidate-only component behavior evidence",
+    )
+    source_component_assurance.add_argument("--binding", type=Path, required=True)
+    source_component_assurance.add_argument(
+        "--source-inventory", type=Path, required=True
+    )
+    source_component_assurance.add_argument(
+        "--source-call-report", type=Path, required=True
+    )
+    source_component_assurance.add_argument(
+        "--functional-report", type=Path, required=True
+    )
+    source_component_assurance.add_argument(
+        "--upstream-report", type=Path, required=True
+    )
+    source_component_assurance.add_argument(
+        "--evidence-plan", type=Path, required=True
+    )
+    source_component_assurance.add_argument("--out", type=Path, required=True)
+    source_component_assurance.set_defaults(
+        func=_cmd_stage_b_assess_source_components
+    )
 
     library_inputs = subcommands.add_parser(
         "stage-b-bind-library-artifact-inputs",
@@ -2696,6 +2727,8 @@ def _cmd_stage_b_assess_source_project(args: Any) -> dict[str, Any]:
         binding=args.binding,
         candidate_binary=args.candidate_binary,
         functional_report=args.functional_report,
+        upstream_report=args.upstream_report,
+        component_assurance=args.component_assurance,
         out=args.out,
     )
     return {
@@ -2704,6 +2737,29 @@ def _cmd_stage_b_assess_source_project(args: Any) -> dict[str, Any]:
         "assurance_status": payload["status"],
         "equivalence_status": payload["equivalence_status"],
         "program_id": payload["program_id"],
+        "out": str(args.out),
+    }
+
+
+def _cmd_stage_b_assess_source_components(args: Any) -> dict[str, Any]:
+    payload = assess_source_components(
+        binding=args.binding,
+        source_inventory=args.source_inventory,
+        source_call_report=args.source_call_report,
+        functional_report=args.functional_report,
+        upstream_report=args.upstream_report,
+        evidence_plan=args.evidence_plan,
+        out=args.out,
+    )
+    return {
+        "format": "stage-b-source-component-assessment-result-v1",
+        "status": (
+            "pass" if payload["status"] == "behavior_validated" else "fail"
+        ),
+        "assurance_status": payload["status"],
+        "equivalence_status": payload["equivalence_status"],
+        "program_id": payload["program_id"],
+        "components": payload["counts"]["components"],
         "out": str(args.out),
     }
 

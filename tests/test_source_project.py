@@ -8,7 +8,9 @@ from pathlib import Path
 
 from spaghetti_extractor.source_project import (
     SourceProjectError,
+    assess_source_components,
     assess_source_project,
+    bind_source_component_evidence_plan,
     bind_source_project,
     bind_source_project_specification,
 )
@@ -235,6 +237,11 @@ class SourceProjectTests(unittest.TestCase):
                 "status": "pass",
                 "suite_id": "fixture-suite",
                 "counts": {"cases": 3, "passed": 3, "failed": 0},
+                "cases": [
+                    {"id": "case-1", "status": "pass"},
+                    {"id": "case-2", "status": "pass"},
+                    {"id": "case-3", "status": "pass"},
+                ],
                 "oracle": {"original_runtime_observations": False},
                 "binary_bindings": {
                     "candidate": {
@@ -260,6 +267,7 @@ class SourceProjectTests(unittest.TestCase):
         failed_report = json.loads(report.read_text(encoding="utf-8"))
         failed_report["status"] = "fail"
         failed_report["counts"] = {"cases": 3, "passed": 2, "failed": 1}
+        failed_report["cases"][0]["status"] = "fail"
         write_json(report, failed_report)
         failed = assess_source_project(
             binding=binding,
@@ -275,6 +283,11 @@ class SourceProjectTests(unittest.TestCase):
                 **failed_report,
                 "status": "pass",
                 "counts": {"cases": 3, "passed": 3, "failed": 0},
+                "cases": [
+                    {"id": "case-1", "status": "pass"},
+                    {"id": "case-2", "status": "pass"},
+                    {"id": "case-3", "status": "pass"},
+                ],
             },
         )
 
@@ -318,6 +331,7 @@ class SourceProjectTests(unittest.TestCase):
                 "status": "pass",
                 "suite_id": "fixture-extended",
                 "counts": {"cases": 1, "passed": 1, "failed": 0},
+                "cases": [{"id": "functional-1", "status": "pass"}],
                 "oracle": {"original_runtime_observations": False},
                 "binary_bindings": {
                     "candidate": {
@@ -376,6 +390,130 @@ class SourceProjectTests(unittest.TestCase):
                 upstream_report=upstream,
                 out=self.root / "stale-upstream.json",
             )
+
+    def test_source_component_assurance_accounts_for_every_island(self) -> None:
+        binding_path = self.root / "binding.json"
+        binding = bind_source_project(
+            machine_ir=self.machine,
+            specification=self.specification,
+            source_root=self.sources,
+            out=binding_path,
+        )
+        inventory_core = {
+            "format": "stage-b-source-call-inventory-v1",
+            "bindings": {"sources": binding["sources"]},
+            "definitions": [{"symbol": "main"}],
+            "calls": [],
+            "counts": {"calls": 0, "direct": 0, "indirect": 0},
+        }
+        inventory = {
+            **inventory_core,
+            "inventory_sha256": _canonical_sha256(inventory_core),
+        }
+        inventory_path = self.root / "inventory.json"
+        write_json(inventory_path, inventory)
+        report_core = {
+            "format": "stage-b-source-call-binding-report-v1",
+            "status": "incomplete",
+            "bindings": {
+                "source_inventory_sha256": inventory["inventory_sha256"]
+            },
+            "counts": {
+                "source_calls": 0,
+                "covered_by_source_component": 0,
+                "unbound_source_local": 0,
+            },
+            "issues": [],
+        }
+        report_path = self.root / "source-call-report.json"
+        write_json(
+            report_path,
+            {**report_core, "report_sha256": _canonical_sha256(report_core)},
+        )
+        candidate = self.root / "candidate.exe"
+        candidate.write_bytes(b"MZcandidate")
+        candidate_sha256 = sha256_file(candidate)
+        functional_path = self.root / "functional.json"
+        write_json(
+            functional_path,
+            {
+                "format": "stage-b-functional-report-v1",
+                "status": "pass",
+                "suite_id": "fixture-functional",
+                "counts": {"cases": 1, "passed": 1, "failed": 0},
+                "cases": [{"id": "functional-1", "status": "pass"}],
+                "oracle": {"original_runtime_observations": False},
+                "binary_bindings": {
+                    "candidate": {
+                        "provided": True,
+                        "exists": True,
+                        "sha256": candidate_sha256,
+                    }
+                },
+            },
+        )
+        upstream_path = self.root / "upstream.json"
+        write_json(
+            upstream_path,
+            {
+                "format": "stage-b-upstream-shell-suite-report-v1",
+                "status": "pass",
+                "suite_id": "fixture-upstream",
+                "suite_scope": "full",
+                "upstream_suite": True,
+                "source_revision": "1.0",
+                "executes_original_binary": False,
+                "oracle": {"original_runtime_observations": False},
+                "counts": {"cases": 1, "passed": 1, "failed": 0},
+                "cases": [
+                    {
+                        "format": "stage-b-upstream-shell-case-report-v1",
+                        "id": "upstream-1",
+                        "status": "pass",
+                        "executes_original_binary": False,
+                        "candidate_binary_sha256": candidate_sha256,
+                    }
+                ],
+            },
+        )
+        plan = bind_source_component_evidence_plan(
+            {
+                "format": "stage-b-source-component-evidence-plan-v1",
+                "evidence_profile": "high-assurance-source-reconstruction-v1",
+                "program_id": binding["program_id"],
+                "source_project_specification_sha256": binding["bindings"][
+                    "specification_sha256"
+                ],
+                "accepted_assumptions": [
+                    "integration_coverage_is_not_exhaustive",
+                    "machine_to_source_component_equivalence_not_proven",
+                ],
+                "components": [
+                    {
+                        "island_id": "entry",
+                        "source_symbol": "main",
+                        "functional_case_ids": ["functional-1"],
+                        "upstream_case_ids": ["upstream-1"],
+                    }
+                ],
+            }
+        )
+
+        payload = assess_source_components(
+            binding=binding_path,
+            source_inventory=inventory_path,
+            source_call_report=report_path,
+            functional_report=functional_path,
+            upstream_report=upstream_path,
+            evidence_plan=plan,
+            out=self.root / "component-assurance.json",
+        )
+
+        self.assertEqual(payload["status"], "behavior_validated")
+        self.assertEqual(payload["counts"]["behavior_validated"], 1)
+        self.assertEqual(payload["issues"], [])
+        self.assertFalse(payload["authority"]["proves_equivalence"])
+        self.assertFalse(payload["authority"]["can_authorize_machine_override"])
 
 
 def _unit(start: int, end: int, targets: list[int], *, events: list[dict] | None = None) -> dict:

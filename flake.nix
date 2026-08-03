@@ -23,6 +23,8 @@
         mkStageBLinkedLibraryAnalysis = import ./nix/stage-b-linked-libraries.nix;
         mkStageBSourceCallSubstitutions =
           import ./nix/stage-b-source-call-substitutions.nix;
+        mkStageBSourceComponentAssurance =
+          import ./nix/stage-b-source-component-assurance.nix;
         mkStageBUpstreamShellSuite = import ./nix/stage-b-upstream-shell-suite.nix;
       };
 
@@ -180,6 +182,7 @@
               ./nix/stage-b-semantic-components.nix
               ./nix/stage-b-semantic-component-workspaces.nix
               ./nix/stage-b-source-call-substitutions.nix
+              ./nix/stage-b-source-component-assurance.nix
               ./nix/stage-b-upstream-shell-suite.nix
             ];
           };
@@ -4172,7 +4175,7 @@
           stage-b-gnu-hello-idiomatic-upstream-suite =
             gnuHelloRoundtrip.idiomaticUpstreamSuite;
           stage-b-gnu-hello-idiomatic-assurance =
-            gnuHelloRoundtrip.idiomaticAssurance;
+            stageBGnuHelloCompleteAssurance;
           stage-b-gnu-hello-lifting-evidence =
             gnuHelloRoundtrip.reconstructionLiftingEvidence;
           stage-b-gnu-hello-branch-workspace =
@@ -6458,6 +6461,78 @@
                 "${stageBGnuHelloDependencyEnvelope}/allowed-runtime-imports.json";
               namePrefix = "stage-b-gnu-hello";
             };
+          stage-b-gnu-hello-source-component-assurance =
+            import ./nix/stage-b-source-component-assurance.nix {
+              inherit pkgs pythonEnv;
+              pythonSource = stageBSourceCallSubstitutionPythonSource;
+              namePrefix = "stage-b-gnu-hello";
+              binding =
+                "${gnuHelloRoundtrip.idiomaticSourceBinding}/source-project-binding.json";
+              sourceInventory =
+                "${stageBGnuHelloSourceCallPipeline.sourceInventory}/source-call-inventory.json";
+              sourceCallReport =
+                "${stageBGnuHelloSourceCallPipeline.sourceBindingReport}/source-call-binding-report.json";
+              functionalReport =
+                "${gnuHelloRoundtrip.idiomaticFunctionalSuite}/functional-report.json";
+              upstreamReport =
+                "${gnuHelloRoundtrip.idiomaticUpstreamSuite}/upstream-suite-report.json";
+              evidencePlan =
+                ./fixtures/gnu-hello/idiomatic/source-component-evidence.json;
+            };
+          stageBGnuHelloCompleteAssurance = pkgs.runCommand
+            "stage-b-gnu-hello-idiomatic-complete-assurance-v1"
+            {
+              nativeBuildInputs = [ pythonEnv pkgs.jq ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+              __contentAddressed = true;
+            }
+            ''
+              set -euo pipefail
+              export PYTHONHASHSEED=0
+              export LC_ALL=C.UTF-8
+              export PYTHONPATH=${stageBSourceCallSubstitutionPythonSource}/src
+              mkdir -p "$out"
+              ${pythonEnv}/bin/python3 - \
+                ${gnuHelloRoundtrip.idiomaticSourceBinding}/source-project-binding.json \
+                ${gnuHelloRoundtrip.idiomaticCandidate}/candidate.exe \
+                ${gnuHelloRoundtrip.idiomaticFunctionalSuite}/functional-report.json \
+                ${gnuHelloRoundtrip.idiomaticUpstreamSuite}/upstream-suite-report.json \
+                ${stage-b-gnu-hello-source-component-assurance}/source-component-assurance.json \
+                "$out/source-project-assurance.json" <<'PY'
+              import pathlib
+              import sys
+
+              from spaghetti_extractor.source_project import assess_source_project
+
+              assess_source_project(
+                  binding=pathlib.Path(sys.argv[1]),
+                  candidate_binary=pathlib.Path(sys.argv[2]),
+                  functional_report=pathlib.Path(sys.argv[3]),
+                  upstream_report=pathlib.Path(sys.argv[4]),
+                  component_assurance=pathlib.Path(sys.argv[5]),
+                  out=pathlib.Path(sys.argv[6]),
+              )
+              PY
+              jq -e '
+                .format == "stage-b-source-project-assurance-v1" and
+                .status == "behavior_validated" and
+                .equivalence_status == "not_proven" and
+                (.executes_original_binary | not) and
+                .functional.status == "pass" and
+                .functional.counts.cases == 11 and
+                .functional.upstream_suite.status == "pass" and
+                .functional.upstream_suite.counts.cases == 7 and
+                .components.status == "behavior_validated" and
+                .components.counts.components == 3 and
+                .components.counts.behavior_validated == 3 and
+                .components.counts.incomplete_or_violated == 0 and
+                .authority.full_upstream_suite_required and
+                .authority.complete_source_component_evidence_required and
+                (.authority.proves_equivalence | not) and
+                (.authority.can_authorize_machine_override | not)
+              ' "$out/source-project-assurance.json" >/dev/null
+            '';
           stage-b-gnu-hello-proposed-source-components =
             stageBGnuHelloSourceCallPipeline.proposedSourceComponents;
           stage-b-gnu-hello-call-frontier =
@@ -7351,6 +7426,7 @@
             stage-b-gnu-hello-idiomatic-functional-suite
             stage-b-gnu-hello-idiomatic-upstream-suite
             stage-b-gnu-hello-idiomatic-assurance
+            stage-b-gnu-hello-source-component-assurance
             stage-b-gnu-hello-lifting-evidence
             stage-b-gnu-hello-branch-workspace
             stage-b-gnu-hello-external-call-workspace

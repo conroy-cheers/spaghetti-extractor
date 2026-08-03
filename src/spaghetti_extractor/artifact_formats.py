@@ -99,6 +99,10 @@ CALL_SUBSTITUTION_PLAN_FORMAT = "stage-b-call-substitution-plan-v1"
 SOURCE_CALL_INVENTORY_FORMAT = "stage-b-source-call-inventory-v1"
 SOURCE_CALL_BINDINGS_FORMAT = "stage-b-source-call-bindings-v1"
 SOURCE_CALL_BINDING_REPORT_FORMAT = "stage-b-source-call-binding-report-v1"
+SOURCE_COMPONENT_EVIDENCE_PLAN_FORMAT = (
+    "stage-b-source-component-evidence-plan-v1"
+)
+SOURCE_COMPONENT_ASSURANCE_FORMAT = "stage-b-source-component-assurance-v1"
 CANDIDATE_DEPENDENCY_AUDIT_FORMAT = "stage-b-candidate-dependency-audit-v1"
 ALLOWED_RUNTIME_IMPORTS_FORMAT = "stage-b-allowed-runtime-imports-v1"
 
@@ -172,5 +176,7 @@ __all__ = [
     "SOURCE_CALL_BINDING_REPORT_FORMAT",
     "SOURCE_CALL_BINDINGS_FORMAT",
     "SOURCE_CALL_INVENTORY_FORMAT",
+    "SOURCE_COMPONENT_ASSURANCE_FORMAT",
+    "SOURCE_COMPONENT_EVIDENCE_PLAN_FORMAT",
     "SOURCE_SUBSTITUTION_CATALOG_FORMAT",
 ]
