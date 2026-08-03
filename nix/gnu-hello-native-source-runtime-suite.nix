@@ -20,7 +20,7 @@ in
   suite_id = "gnu-hello-2.12.3-candidate-functional";
   suite_name = "GNU Hello 2.12.3 candidate functional suite";
   suite_kind = "curated_expected_output";
-  suite_scope = "upstream-applicable";
+  suite_scope = "full";
   upstream_suite = true;
 
   coverage = {
@@ -35,11 +35,9 @@ in
       "traditional-1"
       "operand-1"
       "last-1"
+      "atexit-1"
     ];
-    excluded_upstream_cases = {
-      "atexit-1" =
-        "requires the Unix /dev/full device, which is unavailable to a WinPE process";
-    };
+    excluded_upstream_cases = { };
   };
 
   cases = [
@@ -69,6 +67,7 @@ in
         "Report bugs to: bug-hello@gnu.org"
         "GNU Hello home page: <https://www.gnu.org/software/hello/>"
         "General help using GNU software: <https://www.gnu.org/gethelp/>"
+        "Report GNU Hello translation bugs to <https://translationproject.org/team/>"
       ];
       expected_stderr = "";
     }
@@ -133,6 +132,14 @@ in
       expected_stderr = "";
     }
     {
+      id = "traditional-last";
+      args = [ "-g" "my hello" "-t" ];
+      env = cLocale;
+      expected_returncode = 0;
+      expected_stdout = lines [ "hello, world" ];
+      expected_stderr = "";
+    }
+    {
       id = "operand-1";
       args = [ "first" "second" ];
       env = cLocale;
@@ -141,6 +148,17 @@ in
       expected_stderr = lines [
         "${programName}: extra operand: first"
         "Try '${programName} --help' for more information."
+      ];
+    }
+    {
+      id = "atexit-1";
+      args = [ ];
+      env = cLocale;
+      stdout_sink = "full_device";
+      expected_returncode = 1;
+      expected_stdout = "";
+      expected_stderr = lines [
+        "${programName}: write error: No space left on device"
       ];
     }
   ];

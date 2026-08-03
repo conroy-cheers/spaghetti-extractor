@@ -75,6 +75,85 @@ class StageBFunctionalShardTests(unittest.TestCase):
                 for stream in ("stdout", "stderr"):
                     self.assertTrue(Path(case["candidate"][stream]["path"]).is_file())
 
+    def test_full_device_stdout_sink_exposes_flush_failures(self) -> None:
+        if not Path("/dev/full").is_char_device():
+            self.skipTest("/dev/full is unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            candidate = root / "candidate.py"
+            candidate.write_text(
+                "import os\n"
+                "import sys\n"
+                "try:\n"
+                "    os.write(1, b'output')\n"
+                "except OSError as error:\n"
+                "    sys.stderr.write(f'write error:{error.errno}\\n')\n"
+                "    raise SystemExit(1)\n",
+                encoding="ascii",
+            )
+            suite = root / "suite.json"
+            write_json(
+                suite,
+                {
+                    "format": "stage-b-functional-suite-v1",
+                    "cases": [
+                        {
+                            "id": "full-output",
+                            "stdout_sink": "full_device",
+                            "expected_returncode": 1,
+                            "expected_stdout": "",
+                            "expected_stderr": "write error:28\n",
+                        }
+                    ],
+                },
+            )
+
+            report = stage_b_run_functional_case(
+                suite=suite,
+                case_id="full-output",
+                candidate_command=(sys.executable, str(candidate)),
+                candidate_binary=candidate,
+                out=root / "case",
+            )
+
+            self.assertEqual(report["status"], "pass")
+            case = report["case"]
+            self.assertEqual(case["stdout_sink"], "full_device")
+            self.assertEqual(
+                case["candidate"]["stdout_sink"],
+                {"kind": "full_device", "path": "/dev/full"},
+            )
+            self.assertEqual(case["candidate"]["stdout"]["bytes"], 0)
+
+    def test_rejects_unknown_stdout_sink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            suite = root / "suite.json"
+            write_json(
+                suite,
+                {
+                    "format": "stage-b-functional-suite-v1",
+                    "cases": [
+                        {
+                            "id": "unsafe-output",
+                            "stdout_sink": "/tmp/arbitrary",
+                            "expected_returncode": 0,
+                            "expected_stdout": "",
+                            "expected_stderr": "",
+                        }
+                    ],
+                },
+            )
+            with self.assertRaisesRegex(
+                StageBFunctionalInputError, "stdout_sink must be capture or full_device"
+            ):
+                stage_b_run_functional_case(
+                    suite=suite,
+                    case_id="unsafe-output",
+                    candidate_command=(sys.executable, "-c", "pass"),
+                    out=root / "case",
+                )
+
     def test_aggregate_rejects_missing_or_tampered_cases(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

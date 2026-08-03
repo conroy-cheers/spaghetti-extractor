@@ -5,6 +5,7 @@ import os
 import re
 import signal
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -469,6 +470,7 @@ def _materialized_suite_cases(payload: Any) -> list[dict[str, Any]]:
         _case_stdin(normalized)
         _case_env(normalized)
         _case_cwd(normalized)
+        _case_stdout_sink(normalized)
         _case_expected_output(normalized)
         for timeout_key in ("timeout_seconds", "candidate_timeout_seconds"):
             if timeout_key not in normalized:
@@ -531,6 +533,7 @@ def _run_functional_case(
     env = _case_env(case)
     env_sha256 = _env_sha256(env)
     cwd = _case_cwd(case)
+    stdout_sink = _case_stdout_sink(case)
     expected = _case_expected_output(case)
     candidate = _run_observed_process(
         command=(*candidate_command, *args),
@@ -540,6 +543,7 @@ def _run_functional_case(
         timeout_seconds=candidate_timeout,
         out_prefix=case_out / "candidate",
         strip_stderr_line_regexes=strip_stderr_line_regexes,
+        stdout_sink=stdout_sink,
     )
     expectation = _functional_expected_output_result(candidate, expected)
     timeout_failure = bool(candidate.get("timed_out"))
@@ -552,6 +556,7 @@ def _run_functional_case(
         "candidate_timeout_seconds": candidate_timeout,
         "stdin_sha256": sha256_bytes(stdin_bytes),
         "cwd": cwd,
+        "stdout_sink": stdout_sink,
         "env_keys": sorted(env),
         "env_sha256": env_sha256,
         "expected": expected,
@@ -572,15 +577,34 @@ def _run_observed_process(
     timeout_seconds: float,
     out_prefix: Path,
     strip_stderr_line_regexes: tuple[str, ...] | list[str],
+    stdout_sink: str,
 ) -> dict[str, Any]:
     stdout_path = out_prefix.with_suffix(".stdout")
     stderr_path = out_prefix.with_suffix(".stderr")
     command_list = list(command)
+    stdout_file = None
+    stdout_target: Any = subprocess.PIPE
+    stdout_sink_path: str | None = None
+    if stdout_sink == "full_device":
+        full_device = Path("/dev/full")
+        try:
+            mode = full_device.stat().st_mode
+        except OSError as exc:
+            raise StageBFunctionalInputError(
+                "functional full_device stdout sink requires /dev/full"
+            ) from exc
+        if not stat.S_ISCHR(mode):
+            raise StageBFunctionalInputError(
+                "functional full_device stdout sink requires character device /dev/full"
+            )
+        stdout_file = full_device.open("wb", buffering=0)
+        stdout_target = stdout_file
+        stdout_sink_path = str(full_device)
     try:
         proc = subprocess.Popen(
             command_list,
             stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
+            stdout=stdout_target,
             stderr=subprocess.PIPE,
             cwd=cwd,
             env={**os.environ, **env},
@@ -613,6 +637,9 @@ def _run_observed_process(
                 _terminate_process_group(proc, signal.SIGKILL)
                 proc.wait()
         raise
+    finally:
+        if stdout_file is not None:
+            stdout_file.close()
     stdout_path.write_bytes(stdout)
     stderr = _strip_matching_lines(stderr, strip_stderr_line_regexes)
     stderr_path.write_bytes(stderr)
@@ -621,6 +648,10 @@ def _run_observed_process(
         "cwd": cwd,
         "returncode": returncode,
         "timed_out": timed_out,
+        "stdout_sink": {
+            "kind": stdout_sink,
+            "path": stdout_sink_path,
+        },
         "stdout": _stream_artifact(stdout_path, stdout),
         "stderr": _stream_artifact(stderr_path, stderr),
     }
@@ -665,6 +696,15 @@ def _case_cwd(case: dict[str, Any]) -> str | None:
     if not isinstance(cwd, str) or not cwd:
         raise StageBFunctionalInputError("functional suite case cwd must be a non-empty string when present")
     return cwd
+
+
+def _case_stdout_sink(case: dict[str, Any]) -> str:
+    sink = case.get("stdout_sink", "capture")
+    if not isinstance(sink, str) or sink not in {"capture", "full_device"}:
+        raise StageBFunctionalInputError(
+            "functional suite case stdout_sink must be capture or full_device"
+        )
+    return sink
 
 
 def _case_expected_output(case: dict[str, Any]) -> dict[str, Any]:
@@ -724,6 +764,7 @@ def _functional_case_manifest(cases: list[dict[str, Any]]) -> list[dict[str, Any
             "args": list(case.get("args") or []),
             "stdin_sha256": str(case.get("stdin_sha256") or ""),
             "cwd": case.get("cwd"),
+            "stdout_sink": case.get("stdout_sink", "capture"),
             "env_sha256": str(case.get("env_sha256") or ""),
             "timeout_seconds": case.get("timeout_seconds"),
             "candidate_timeout_seconds": case.get("candidate_timeout_seconds"),

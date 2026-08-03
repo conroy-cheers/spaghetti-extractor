@@ -138,6 +138,7 @@ bundle:
 nix build .#stage-b-gnu-hello-idiomatic-source-binding --no-link
 nix build .#stage-b-gnu-hello-idiomatic-candidate --no-link
 nix build .#stage-b-gnu-hello-idiomatic-functional-suite --no-link
+nix build .#stage-b-gnu-hello-idiomatic-upstream-suite --no-link
 nix build .#stage-b-gnu-hello-idiomatic-assurance --no-link
 ```
 
@@ -149,16 +150,17 @@ nix build .#stage-b-gnu-hello-source-call-substitution-smoke --no-link
 ```
 
 This closes and assigns all 41 calls in the reviewed GNU Hello application
-islands, checks all 31 Clang-inventoried source calls, and rejects candidate PE
-imports outside the bound 52-entry toolchain/source envelope. Its three
+islands, checks all 45 Clang-inventoried source calls, and rejects candidate PE
+imports outside the bound 53-entry toolchain/source envelope. Its three
 source-component contracts remain explicitly unqualified, so this check does
 not claim source equivalence.
 
 The static binding closes all 83 machine-IR units in the reviewed
 `src/hello.o` text ranges. The other 7,778 units remain explicitly outside the
 application-source scope as linked runtime and library code. The source-only
-candidate passes all nine applicable expected-output cases under headless
-Wine. Its assurance status is `behavior_validated` and its equivalence status
+candidate passes eleven extended expected-output cases and all seven unmodified
+GNU Hello 2.12.3 upstream test scripts under headless Wine. Its assurance
+status is `behavior_validated` and its equivalence status
 is deliberately `not_proven`; neither the static binding nor runtime suite may
 authorize a machine override or a Stage A pass.
 

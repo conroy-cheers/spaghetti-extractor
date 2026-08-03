@@ -337,6 +337,7 @@ def assess_source_project(
     binding: Path | str,
     candidate_binary: Path | str,
     functional_report: Path | str,
+    upstream_report: Path | str | None = None,
     out: Path | str,
 ) -> dict[str, Any]:
     """Combine static binding and candidate-only tests without claiming proof."""
@@ -391,7 +392,17 @@ def assess_source_project(
         raise SourceProjectError(
             "functional report is not bound to the source-project candidate"
         )
-    passed = report_status == "pass" and failed_count == 0 and passed_count == case_count
+    upstream = (
+        None
+        if upstream_report is None
+        else _validate_upstream_report(Path(upstream_report), candidate_sha256)
+    )
+    passed = (
+        report_status == "pass"
+        and failed_count == 0
+        and passed_count == case_count
+        and (upstream is None or upstream["status"] == "pass")
+    )
     core = {
         "format": SOURCE_PROJECT_ASSURANCE_FORMAT,
         "status": "behavior_validated" if passed else "violated",
@@ -403,6 +414,9 @@ def assess_source_project(
             "source_project_binding_artifact_sha256": sha256_file(binding_path),
             "candidate_binary_sha256": candidate_sha256,
             "functional_report_sha256": sha256_file(report_path),
+            "upstream_suite_report_sha256": (
+                None if upstream is None else upstream["report_sha256"]
+            ),
         },
         "coverage": copy.deepcopy(project.get("coverage")),
         "functional": {
@@ -410,17 +424,88 @@ def assess_source_project(
             "status": report_status,
             "counts": copy.deepcopy(dict(counts)),
             "original_runtime_observations": False,
+            "upstream_suite": (
+                None
+                if upstream is None
+                else {
+                    key: copy.deepcopy(upstream[key])
+                    for key in (
+                        "suite_id",
+                        "source_revision",
+                        "status",
+                        "counts",
+                        "original_runtime_observations",
+                    )
+                }
+            ),
         },
         "authority": {
             "class": "candidate_only_behavior_evidence",
             "proves_equivalence": False,
             "can_authorize_machine_override": False,
             "runtime_failure_is_veto": True,
+            "full_upstream_suite_required": upstream is not None,
         },
     }
     payload = {**core, "assurance_sha256": _canonical_sha256(core)}
     write_json(Path(out), payload)
     return payload
+
+
+def _validate_upstream_report(
+    path: Path, candidate_sha256: str
+) -> dict[str, Any]:
+    report = _read_object(path, "upstream shell-suite report")
+    if report.get("format") != "stage-b-upstream-shell-suite-report-v1":
+        raise SourceProjectError("unsupported upstream shell-suite report format")
+    if (
+        report.get("suite_scope") != "full"
+        or report.get("upstream_suite") is not True
+        or report.get("executes_original_binary") is not False
+    ):
+        raise SourceProjectError("upstream shell-suite report is not a full candidate-only suite")
+    oracle = _object(report.get("oracle"), "upstream shell-suite oracle")
+    if oracle.get("original_runtime_observations") is not False:
+        raise SourceProjectError("upstream shell-suite report observed the original binary")
+    counts = _object(report.get("counts"), "upstream shell-suite counts")
+    case_count = counts.get("cases")
+    passed_count = counts.get("passed")
+    failed_count = counts.get("failed")
+    if (
+        not all(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            for value in (case_count, passed_count, failed_count)
+        )
+        or case_count == 0
+        or case_count != passed_count + failed_count
+    ):
+        raise SourceProjectError("upstream shell-suite counts are inconsistent")
+    cases = _array(report.get("cases"), "upstream shell-suite cases")
+    if len(cases) != case_count:
+        raise SourceProjectError("upstream shell-suite case inventory is incomplete")
+    for raw_case in cases:
+        case = _object(raw_case, "upstream shell-suite case")
+        if (
+            case.get("format") != "stage-b-upstream-shell-case-report-v1"
+            or case.get("executes_original_binary") is not False
+            or case.get("candidate_binary_sha256") != candidate_sha256
+        ):
+            raise SourceProjectError("upstream shell-suite case binding is stale")
+    status = report.get("status")
+    if status not in {"pass", "fail"}:
+        raise SourceProjectError("upstream shell-suite report has an invalid status")
+    if (status == "pass") != (failed_count == 0 and passed_count == case_count):
+        raise SourceProjectError("upstream shell-suite status disagrees with its cases")
+    return {
+        "suite_id": _nonempty(report.get("suite_id"), "upstream suite ID"),
+        "source_revision": _nonempty(
+            report.get("source_revision"), "upstream source revision"
+        ),
+        "status": status,
+        "counts": copy.deepcopy(dict(counts)),
+        "original_runtime_observations": False,
+        "report_sha256": sha256_file(path),
+    }
 
 
 def bind_source_project_specification(payload: Mapping[str, Any]) -> dict[str, Any]:

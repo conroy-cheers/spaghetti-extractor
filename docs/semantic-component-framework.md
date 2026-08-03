@@ -698,15 +698,16 @@ nix build --no-link \
   .#stage-b-gnu-hello-component-hybrid-functional-suite
 ```
 
-The current suite passes all nine curated expected-output cases, covering the
+The current suite passes all eleven expected-output cases, covering the
 default greeting, help, version, invalid options, traditional mode, short and
-long custom greetings, option precedence, and excess operands. These tests are
-candidate-only veto evidence. They do not change the incomplete whole-program
-portable-source status.
+long custom greetings, option precedence, excess operands, and buffered-output
+failure through `/dev/full`. This covers all seven scripts in the upstream GNU
+Hello 2.12.3 suite. These tests are candidate-only veto evidence. They do not
+change the incomplete whole-program portable-source status.
 
 The independent idiomatic-C application project covers all 83 machine units in
 the reviewed `src/hello.o` ranges and contains no interpreter or machine-state
-runtime. It passes the same nine-case suite. The remaining 7,778 original units
+runtime. It passes the same eleven-case suite. The remaining 7,778 original units
 are linked CRT and library implementation, so this establishes complete
 declared application-object source coverage, not a whole-image source lift.
 Its final source-project artifact reports `behavior_validated` with
@@ -724,7 +725,7 @@ its library identity is unknown.
 
 The generic proposal phase groups those 41 calls into three exact machine
 clusters corresponding to `main`, `hello_parse_options`, and
-`hello_print_help`. Clang inventories 31 calls in the idiomatic source; all 31
+`hello_print_help`. Clang inventories 45 calls in the idiomatic source; all 45
 are covered by those components, including transitive source-local helpers.
 The call plan intentionally remains `incomplete`, with exactly one
 `source_component_semantics_not_qualified` work item per component. A catalog
@@ -734,19 +735,23 @@ proposal.
 The candidate dependency audit is independent of runtime behavior. A trivial
 program built by the pinned MinGW toolchain supplies the startup/runtime import
 baseline, a reviewed source-runtime closure supplies the additional imports,
-and the bound 52-entry envelope is compared with the candidate PE import table.
-The current candidate has 52 expected imports and no unexpected imports. The
+and the bound 53-entry envelope is compared with the candidate PE import table.
+The current candidate has 53 expected imports and no unexpected imports. The
 audit records the candidate, call-plan, and dependency-envelope hashes; it does
 not prove source semantics.
 
 ```sh
 nix build --no-link \
   .#stage-b-gnu-hello-source-call-substitution-smoke \
-  .#stage-b-gnu-hello-idiomatic-functional-suite
+  .#stage-b-gnu-hello-idiomatic-functional-suite \
+  .#stage-b-gnu-hello-idiomatic-upstream-suite
 ```
 
 The first derivation is a fast static aggregate. The second runs only the
-candidate under `xvfb-run -a wine` and currently passes all nine curated cases.
+candidate under `xvfb-run -a wine` and currently passes all eleven extended
+cases. The third runs the seven unmodified upstream 2.12.3 shell scripts in
+independently cached shards; all seven pass, and the normally time-dependent
+full-moon case uses a recorded fixed clock so it executes rather than skips.
 Closing this reviewed application call frontier is not the same as closing the
 whole-image reachability frontier or proving the three source components.
 

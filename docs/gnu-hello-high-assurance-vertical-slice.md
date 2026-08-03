@@ -29,8 +29,9 @@ candidate. Its reviewed scope consists of both code ranges contributed by
 source islands, with zero scoped units remaining. The other 7,778 units are
 explicitly classified as out-of-scope linked runtime and library code.
 
-That source-only candidate passes all nine applicable GNU Hello expected-output
-cases under `xvfb-run -a wine`, with no original runtime observations. Its
+That source-only candidate passes all eleven GNU Hello expected-output cases,
+covering every script in the upstream 2.12.3 suite, under `xvfb-run -a wine`,
+with no original runtime observations. Its
 assurance artifact reports `behavior_validated` and `not_proven`; this is strong
 candidate-only reconstruction evidence, not a whole-program equivalence claim.
 
@@ -67,6 +68,7 @@ Build the independent application source project:
 nix build --no-link .#stage-b-gnu-hello-idiomatic-source-binding
 nix build --no-link .#stage-b-gnu-hello-idiomatic-candidate
 nix build --no-link .#stage-b-gnu-hello-idiomatic-functional-suite
+nix build --no-link .#stage-b-gnu-hello-idiomatic-upstream-suite
 nix build --no-link .#stage-b-gnu-hello-idiomatic-assurance
 ```
 

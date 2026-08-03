@@ -688,7 +688,7 @@ class StageARoundtripNixTests(unittest.TestCase):
             "-- xvfb-run -a wine cmd /d /c hello.exe", runtime
         )
         self.assertIn(".oracle.original_runtime_observations | not", runtime)
-        self.assertIn(".counts.cases == 9", runtime)
+        self.assertIn(".counts.cases == 11", runtime)
         self.assertIn(
             'functional.add_argument("--candidate-binary", type=Path)',
             cli,

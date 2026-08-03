@@ -13,6 +13,7 @@
     {"dll": "msvcrt.dll", "symbol": "_unlock", "ordinal": null},
     {"dll": "msvcrt.dll", "symbol": "atoi", "ordinal": null},
     {"dll": "msvcrt.dll", "symbol": "ferror", "ordinal": null},
+    {"dll": "msvcrt.dll", "symbol": "fflush", "ordinal": null},
     {"dll": "msvcrt.dll", "symbol": "fputc", "ordinal": null},
     {"dll": "msvcrt.dll", "symbol": "fwrite", "ordinal": null},
     {"dll": "msvcrt.dll", "symbol": "localeconv", "ordinal": null},

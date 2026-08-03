@@ -40,7 +40,7 @@ class GnuHelloNativeSourceRuntimeSuiteTests(unittest.TestCase):
         self.assertEqual(self.suite["format"], "stage-b-functional-suite-v1")
         self.assertEqual(self.suite["target_name"], "gnu-hello")
         self.assertTrue(self.suite["upstream_suite"])
-        self.assertEqual(self.suite["suite_scope"], "upstream-applicable")
+        self.assertEqual(self.suite["suite_scope"], "full")
 
         cases = self.suite["cases"]
         self.assertIsInstance(cases, list)
@@ -55,7 +55,9 @@ class GnuHelloNativeSourceRuntimeSuiteTests(unittest.TestCase):
                 "greeting-1",
                 "greeting-2",
                 "last-1",
+                "traditional-last",
                 "operand-1",
+                "atexit-1",
             ],
         )
         for case in cases:
@@ -108,12 +110,22 @@ class GnuHelloNativeSourceRuntimeSuiteTests(unittest.TestCase):
         self.assertEqual(len(cases["greeting-2"]["expected_stdout"]), 446)
         self.assertTrue(cases["greeting-2"]["expected_stdout"].endswith("hhh!" + CRLF))
         self.assertEqual(cases["last-1"]["expected_stdout"], "my hello" + CRLF)
+        self.assertEqual(
+            cases["traditional-last"]["expected_stdout"], "hello, world" + CRLF
+        )
         self.assertEqual(cases["operand-1"]["expected_returncode"], 1)
         self.assertEqual(cases["operand-1"]["expected_stdout"], "")
         self.assertEqual(
             cases["operand-1"]["expected_stderr"],
             f"{PROGRAM_NAME}: extra operand: first{CRLF}"
             f"Try '{PROGRAM_NAME} --help' for more information.{CRLF}",
+        )
+        self.assertEqual(cases["atexit-1"]["stdout_sink"], "full_device")
+        self.assertEqual(cases["atexit-1"]["expected_returncode"], 1)
+        self.assertEqual(cases["atexit-1"]["expected_stdout"], "")
+        self.assertEqual(
+            cases["atexit-1"]["expected_stderr"],
+            f"{PROGRAM_NAME}: write error: No space left on device{CRLF}",
         )
 
     def test_upstream_coverage_is_explicit(self) -> None:
@@ -127,9 +139,10 @@ class GnuHelloNativeSourceRuntimeSuiteTests(unittest.TestCase):
                 "traditional-1",
                 "operand-1",
                 "last-1",
+                "atexit-1",
             ],
         )
-        self.assertIn("atexit-1", coverage["excluded_upstream_cases"])
+        self.assertEqual(coverage["excluded_upstream_cases"], {})
 
 
 if __name__ == "__main__":

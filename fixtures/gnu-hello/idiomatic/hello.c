@@ -1,5 +1,6 @@
 #include "hello.h"
 
+#include <errno.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -57,11 +58,13 @@ hello_options hello_parse_options(int argc, char **argv, FILE *errors) {
       return result;
     }
     if (strcmp(argument, "--traditional") == 0) {
+      result.greeting = NULL;
       result.traditional = 1;
       continue;
     }
     if (strncmp(argument, "--greeting=", 11) == 0) {
       result.greeting = argument + 11;
+      result.traditional = 0;
       continue;
     }
     if (strcmp(argument, "--greeting") == 0) {
@@ -70,12 +73,14 @@ hello_options hello_parse_options(int argc, char **argv, FILE *errors) {
                             "option '--greeting' requires an argument", NULL, 0);
       }
       result.greeting = argv[index];
+      result.traditional = 0;
       continue;
     }
     if (argument[0] == '-' && argument[1] != '\0') {
       const char *option = argument + 1;
       while (*option != '\0') {
         if (*option == 't') {
+          result.greeting = NULL;
           result.traditional = 1;
           ++option;
           continue;
@@ -90,6 +95,7 @@ hello_options hello_parse_options(int argc, char **argv, FILE *errors) {
             return option_error(errors, program_name,
                                 "option requires an argument -- ", "g", 1);
           }
+          result.traditional = 0;
           break;
         }
         if (argument[1] == '-') {
@@ -125,7 +131,9 @@ void hello_print_help(FILE *output, const char *program_name) {
         "\n"
         "Report bugs to: bug-hello@gnu.org\n"
         "GNU Hello home page: <https://www.gnu.org/software/hello/>\n"
-        "General help using GNU software: <https://www.gnu.org/gethelp/>\n",
+        "General help using GNU software: <https://www.gnu.org/gethelp/>\n"
+        "Report GNU Hello translation bugs to "
+        "<https://translationproject.org/team/>\n",
         output);
 }
 
@@ -142,6 +150,20 @@ void hello_print_version(FILE *output) {
         output);
 }
 
+static int hello_finish_output(const char *program_name, int status) {
+  if (fflush(stdout) == EOF || ferror(stdout)) {
+    int saved_errno = errno;
+
+    fprintf(stderr, "%s: write error", program_name);
+    if (saved_errno != 0) {
+      fprintf(stderr, ": %s", strerror(saved_errno));
+    }
+    fputc('\n', stderr);
+    return 1;
+  }
+  return status;
+}
+
 int main(int argc, char **argv) {
   const char *program_name = hello_program_name(argc > 0 ? argv[0] : NULL);
   hello_options options = hello_parse_options(argc, argv, stderr);
@@ -149,12 +171,12 @@ int main(int argc, char **argv) {
   switch (options.action) {
   case HELLO_ACTION_HELP:
     hello_print_help(stdout, program_name);
-    return 0;
+    return hello_finish_output(program_name, 0);
   case HELLO_ACTION_VERSION:
     hello_print_version(stdout);
-    return 0;
+    return hello_finish_output(program_name, 0);
   case HELLO_ACTION_ERROR:
-    return 1;
+    return hello_finish_output(program_name, 1);
   case HELLO_ACTION_GREET:
     break;
   }
@@ -166,5 +188,5 @@ int main(int argc, char **argv) {
   } else {
     puts("Hello, world!");
   }
-  return ferror(stdout) ? 1 : 0;
+  return hello_finish_output(program_name, 0);
 }

@@ -23,6 +23,7 @@
         mkStageBLinkedLibraryAnalysis = import ./nix/stage-b-linked-libraries.nix;
         mkStageBSourceCallSubstitutions =
           import ./nix/stage-b-source-call-substitutions.nix;
+        mkStageBUpstreamShellSuite = import ./nix/stage-b-upstream-shell-suite.nix;
       };
 
       packages = forAllSystems (
@@ -178,6 +179,8 @@
               ./nix/stage-b-reconstruction-workspace.nix
               ./nix/stage-b-semantic-components.nix
               ./nix/stage-b-semantic-component-workspaces.nix
+              ./nix/stage-b-source-call-substitutions.nix
+              ./nix/stage-b-upstream-shell-suite.nix
             ];
           };
           spaghettiExtractorRoundtripSource = pkgs.lib.fileset.toSource {
@@ -4166,6 +4169,8 @@
             gnuHelloRoundtrip.idiomaticCandidate;
           stage-b-gnu-hello-idiomatic-functional-suite =
             gnuHelloRoundtrip.idiomaticFunctionalSuite;
+          stage-b-gnu-hello-idiomatic-upstream-suite =
+            gnuHelloRoundtrip.idiomaticUpstreamSuite;
           stage-b-gnu-hello-idiomatic-assurance =
             gnuHelloRoundtrip.idiomaticAssurance;
           stage-b-gnu-hello-lifting-evidence =
@@ -6415,7 +6420,7 @@
                   ${stageBGnuHelloToolchainRuntimeImports}/allowed-runtime-imports.json \
                   ${./fixtures/gnu-hello/idiomatic/source-runtime-imports.json} \
                   > envelope.json
-                jq -e '.imports | length == 52' \
+                jq -e '.imports | length == 53' \
                   envelope.json >/dev/null
                 ${pythonEnv}/bin/python3 - envelope.json \
                   "$out/allowed-runtime-imports.json" <<'PY'
@@ -6499,15 +6504,15 @@
                 ' "$plan" >/dev/null
                 jq -e '
                   .status == "incomplete" and .counts.plans == 3 and
-                  .counts.bindings == 3 and .counts.source_calls == 31 and
-                  .counts.covered_by_source_component == 31 and
+                  .counts.bindings == 3 and .counts.source_calls == 45 and
+                  .counts.covered_by_source_component == 45 and
                   .counts.unbound_source_local == 0 and
                   all(.issues[]; .status == "incomplete" and
                     .code == "call_plan_not_ready")
                 ' "$source_report" >/dev/null
                 jq -e '
-                  .status == "pass" and .counts.expected == 52 and
-                  .counts.observed == 52 and .counts.unexpected == 0 and
+                  .status == "pass" and .counts.expected == 53 and
+                  .counts.observed == 53 and .counts.unexpected == 0 and
                   (.executes_original_binary | not)
                 ' "$dependency_audit" >/dev/null
                 mkdir -p "$out"
@@ -7344,6 +7349,7 @@
             stage-b-gnu-hello-idiomatic-source-binding
             stage-b-gnu-hello-idiomatic-candidate
             stage-b-gnu-hello-idiomatic-functional-suite
+            stage-b-gnu-hello-idiomatic-upstream-suite
             stage-b-gnu-hello-idiomatic-assurance
             stage-b-gnu-hello-lifting-evidence
             stage-b-gnu-hello-branch-workspace

@@ -4749,7 +4749,7 @@ let
         .upstream_suite and
         .oracle.kind == "expected_output" and
         (.oracle.original_runtime_observations | not) and
-        .counts.cases == 9 and .counts.passed == 9 and .counts.failed == 0 and
+        .counts.cases == 11 and .counts.passed == 11 and .counts.failed == 0 and
         .commands.candidate[0:3] == ["xvfb-run", "-a", "wine"]
       ' "$out/functional-report.json" >/dev/null
     '';
@@ -4907,6 +4907,94 @@ let
     candidateManifestFormat = "stage-b-source-project-build-v1";
     requireMachineIr = false;
   };
+  idiomaticUpstreamTestsSource = pkgs.stdenvNoCC.mkDerivation {
+    pname = "gnu-hello-upstream-tests";
+    version = mingw32.hello.version;
+    src = mingw32.hello.src;
+    dontConfigure = true;
+    dontBuild = true;
+    dontFixup = true;
+    installPhase = ''
+      runHook preInstall
+      mkdir -p "$out"
+      cp -R tests "$out/tests"
+      runHook postInstall
+    '';
+  };
+  idiomaticUpstreamRuntime = pkgs.runCommand
+    "stage-b-gnu-hello-idiomatic-upstream-runtime-v1"
+    { }
+    ''
+      mkdir -p "$out"
+      ln -s ${idiomaticCandidate}/candidate.exe "$out/hello.exe"
+    '';
+  idiomaticUpstreamCandidateRunner = pkgs.writeShellApplication {
+    name = "hello";
+    runtimeInputs = [
+      pkgs.wineWow64Packages.stable
+      pkgs.xvfb-run
+    ];
+    text = ''
+      export WINEPREFIX="''${WINEPREFIX:-$TMPDIR/wine}"
+      export WINEDEBUG=-all
+      export WINEDLLOVERRIDES="mscoree,mshtml="
+      export FONTCONFIG_FILE=${wineFontsConf}
+      export XDG_CACHE_HOME="''${XDG_CACHE_HOME:-$TMPDIR/cache}"
+      mkdir -p "$WINEPREFIX" "$XDG_CACHE_HOME"
+      if [ ! -e "$WINEPREFIX/.spaghetti-extractor-ready" ]; then
+        xvfb-run -a wineboot -u >/dev/null 2>&1
+        touch "$WINEPREFIX/.spaghetti-extractor-ready"
+      fi
+      cd ${idiomaticUpstreamRuntime}
+      exec xvfb-run -a wine cmd /d /c hello "$@"
+    '';
+  };
+  idiomaticUpstreamFixedDate = pkgs.writeShellScriptBin "date" ''
+    if [ "$#" -eq 1 ] && [ "$1" = "+%Y %j %H %M %S" ]; then
+      printf '%s\n' '2026 003 00 00 00'
+      exit 0
+    fi
+    exec ${pkgs.coreutils}/bin/date "$@"
+  '';
+  idiomaticUpstreamTestNames = [
+    "hello-1"
+    "greeting-1"
+    "greeting-2"
+    "traditional-1"
+    "operand-1"
+    "last-1"
+    "atexit-1"
+  ];
+  idiomaticUpstreamSuiteDag = import ./stage-b-upstream-shell-suite.nix {
+    inherit pkgs;
+    namePrefix = "stage-b-gnu-hello-idiomatic-upstream-suite-v1";
+    targetName = "gnu-hello";
+    suiteId = "gnu-hello-2.12.3-upstream-tests";
+    suiteName = "GNU Hello 2.12.3 upstream test scripts";
+    sourceRevision = mingw32.hello.version;
+    candidateBinary = "${idiomaticCandidate}/candidate.exe";
+    runner = "${pkgs.bash}/bin/bash";
+    tests = map (name: {
+      id = name;
+      script = "${idiomaticUpstreamTestsSource}/tests/${name}";
+    }) idiomaticUpstreamTestNames;
+    environment = {
+      HELLO = "${idiomaticUpstreamCandidateRunner}/bin/hello";
+      DIFF = "${pkgs.diffutils}/bin/diff";
+      GREP = "${pkgs.gnugrep}/bin/grep";
+      PATH = lib.makeBinPath [
+        idiomaticUpstreamFixedDate
+        pkgs.coreutils
+        pkgs.diffutils
+        pkgs.gnugrep
+      ];
+    };
+    nativeBuildInputs = [
+      pkgs.diffutils
+      pkgs.gnugrep
+    ];
+  };
+  idiomaticUpstreamSuite = idiomaticUpstreamSuiteDag.aggregate;
   idiomaticAssurance = pkgs.runCommand
     "stage-b-gnu-hello-idiomatic-assurance-v1"
     {
@@ -4925,6 +5013,7 @@ let
         ${idiomaticSourceBinding}/source-project-binding.json \
         ${idiomaticCandidate}/candidate.exe \
         ${idiomaticFunctionalSuite}/functional-report.json \
+        ${idiomaticUpstreamSuite}/upstream-suite-report.json \
         "$out/source-project-assurance.json" <<'PY'
       import pathlib
       import sys
@@ -4935,7 +5024,8 @@ let
           binding=pathlib.Path(sys.argv[1]),
           candidate_binary=pathlib.Path(sys.argv[2]),
           functional_report=pathlib.Path(sys.argv[3]),
-          out=pathlib.Path(sys.argv[4]),
+          upstream_report=pathlib.Path(sys.argv[4]),
+          out=pathlib.Path(sys.argv[5]),
       )
       PY
       jq -e '
@@ -4944,9 +5034,14 @@ let
         .equivalence_status == "not_proven" and
         (.executes_original_binary | not) and
         .functional.status == "pass" and
-        .functional.counts.cases == 9 and
+        .functional.counts.cases == 11 and
         .functional.counts.failed == 0 and
+        .functional.upstream_suite.status == "pass" and
+        .functional.upstream_suite.counts.cases == 7 and
+        .functional.upstream_suite.counts.passed == 7 and
+        .functional.upstream_suite.counts.failed == 0 and
         (.functional.original_runtime_observations | not) and
+        .authority.full_upstream_suite_required and
         (.authority.proves_equivalence | not) and
         (.authority.can_authorize_machine_override | not)
       ' "$out/source-project-assurance.json" >/dev/null
@@ -5261,7 +5356,7 @@ let
         .upstream_suite and
         .oracle.kind == "expected_output" and
         (.oracle.original_runtime_observations | not) and
-        .counts.cases == 9 and .counts.passed == 9 and .counts.failed == 0 and
+        .counts.cases == 11 and .counts.passed == 11 and .counts.failed == 0 and
         .commands.candidate[0:3] == ["xvfb-run", "-a", "wine"]
       ' "$out/functional-report.json" >/dev/null
     '';
@@ -9850,6 +9945,7 @@ assert !(builtins.elem nativeSourceApprovedToolchainAxiom standardLogicalAxioms)
     idiomaticSourceBinding
     idiomaticCandidate
     idiomaticFunctionalSuite
+    idiomaticUpstreamSuite
     idiomaticAssurance
     reconstructionLiftingEvidence
     reconstructionBranchWorkspace

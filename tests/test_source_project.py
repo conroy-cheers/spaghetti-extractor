@@ -299,6 +299,84 @@ class SourceProjectTests(unittest.TestCase):
                 out=self.root / "rejected.json",
             )
 
+    def test_assurance_can_require_a_full_upstream_shell_suite(self) -> None:
+        binding = self.root / "binding.json"
+        bind_source_project(
+            machine_ir=self.machine,
+            specification=self.specification,
+            source_root=self.sources,
+            out=binding,
+        )
+        candidate = self.root / "candidate.exe"
+        candidate.write_bytes(b"MZcandidate")
+        candidate_sha256 = sha256_file(candidate)
+        functional = self.root / "functional.json"
+        write_json(
+            functional,
+            {
+                "format": "stage-b-functional-report-v1",
+                "status": "pass",
+                "suite_id": "fixture-extended",
+                "counts": {"cases": 1, "passed": 1, "failed": 0},
+                "oracle": {"original_runtime_observations": False},
+                "binary_bindings": {
+                    "candidate": {
+                        "provided": True,
+                        "exists": True,
+                        "sha256": candidate_sha256,
+                    }
+                },
+            },
+        )
+        upstream = self.root / "upstream.json"
+        upstream_payload = {
+            "format": "stage-b-upstream-shell-suite-report-v1",
+            "status": "pass",
+            "suite_id": "fixture-upstream",
+            "suite_scope": "full",
+            "upstream_suite": True,
+            "source_revision": "1.0",
+            "executes_original_binary": False,
+            "oracle": {"original_runtime_observations": False},
+            "counts": {"cases": 1, "passed": 1, "failed": 0},
+            "cases": [
+                {
+                    "format": "stage-b-upstream-shell-case-report-v1",
+                    "id": "upstream-1",
+                    "status": "pass",
+                    "executes_original_binary": False,
+                    "candidate_binary_sha256": candidate_sha256,
+                }
+            ],
+        }
+        write_json(upstream, upstream_payload)
+
+        payload = assess_source_project(
+            binding=binding,
+            candidate_binary=candidate,
+            functional_report=functional,
+            upstream_report=upstream,
+            out=self.root / "assurance.json",
+        )
+
+        self.assertEqual(payload["status"], "behavior_validated")
+        self.assertTrue(payload["authority"]["full_upstream_suite_required"])
+        self.assertEqual(
+            payload["functional"]["upstream_suite"]["counts"],
+            {"cases": 1, "passed": 1, "failed": 0},
+        )
+
+        upstream_payload["cases"][0]["candidate_binary_sha256"] = "0" * 64
+        write_json(upstream, upstream_payload)
+        with self.assertRaisesRegex(SourceProjectError, "case binding is stale"):
+            assess_source_project(
+                binding=binding,
+                candidate_binary=candidate,
+                functional_report=functional,
+                upstream_report=upstream,
+                out=self.root / "stale-upstream.json",
+            )
+
 
 def _unit(start: int, end: int, targets: list[int], *, events: list[dict] | None = None) -> dict:
     return {
