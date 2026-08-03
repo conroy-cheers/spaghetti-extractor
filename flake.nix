@@ -25,6 +25,7 @@
           import ./nix/stage-b-source-call-substitutions.nix;
         mkStageBSourceComponentAssurance =
           import ./nix/stage-b-source-component-assurance.nix;
+        mkStageBFunctionalSuite = import ./nix/stage-b-functional-suite.nix;
         mkStageBUpstreamShellSuite = import ./nix/stage-b-upstream-shell-suite.nix;
       };
 
@@ -281,6 +282,14 @@
           stageBLinkedLibraryPythonSource = stageBPythonSources.linkedLibraries;
           stageBSourceCallSubstitutionPythonSource =
             stageBPythonSources.sourceCallSubstitutions;
+          stageBFunctionalPythonSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./src/spaghetti_extractor/__init__.py
+              ./src/spaghetti_extractor/util.py
+              ./src/spaghetti_extractor/stage_b_functional.py
+            ];
+          };
           spaghetti-extractor-roundtrip = mkPythonWorker {
             name = "spaghetti-extractor";
             source = spaghettiExtractorRoundtripSource;
@@ -7201,18 +7210,301 @@
           stage-b-jq-component-registry =
             stageBJqFrontendWorkspaceDag.registry;
           stageBJqIdiomatic = import ./nix/jq-idiomatic.nix {
-            inherit pkgs mingw32;
+            inherit pkgs mingw32 pythonEnv;
             jqPackage = stage-a-jq-original;
             jqSource = stage-a-jq-original.src;
             oniguruma = mingw32Oniguruma;
             sourceRoot = ./fixtures/jq/idiomatic;
+            functionalPythonSource = stageBFunctionalPythonSource;
           };
           stage-b-jq-idiomatic-candidate = stageBJqIdiomatic.candidate;
           stage-b-jq-idiomatic-smoke = stageBJqIdiomatic.smoke;
+          stage-b-jq-idiomatic-functional-suite =
+            stageBJqIdiomatic.functionalSuite;
+          stage-b-jq-idiomatic-upstream-suite =
+            stageBJqIdiomatic.upstreamSuite;
           stage-b-jq-idiomatic-upstream-jqtest =
             stageBJqIdiomatic.upstreamTests.jqtest;
           stage-b-jq-idiomatic-upstream-shtest =
             stageBJqIdiomatic.upstreamTests.shtest;
+          stage-b-jq-idiomatic-upstream-mantest =
+            stageBJqIdiomatic.upstreamTests.mantest;
+          stage-b-jq-idiomatic-upstream-utf8test =
+            stageBJqIdiomatic.upstreamTests.utf8test;
+          stage-b-jq-idiomatic-upstream-base64test =
+            stageBJqIdiomatic.upstreamTests.base64test;
+          stage-b-jq-idiomatic-upstream-uritest =
+            stageBJqIdiomatic.upstreamTests.uritest;
+          stage-b-jq-idiomatic-upstream-onigtest =
+            stageBJqIdiomatic.upstreamTests.onigtest;
+          stage-b-jq-idiomatic-upstream-manonigtest =
+            stageBJqIdiomatic.upstreamTests.manonigtest;
+          stageBJqSourceBinding = pkgs.runCommand
+            "stage-b-jq-idiomatic-source-binding-v1"
+            {
+              nativeBuildInputs = [ pythonEnv pkgs.jq ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+              __contentAddressed = true;
+            }
+            ''
+              set -euo pipefail
+              export PYTHONHASHSEED=0
+              export LC_ALL=C.UTF-8
+              export PYTHONPATH=${stageBSourceCallSubstitutionPythonSource}/src
+              mkdir -p "$out"
+              ${pythonEnv}/bin/python3 - \
+                ${stageBJqComponentAnalysis.machineIr} \
+                ${./fixtures/jq/idiomatic/source-project.json} \
+                ${./fixtures/jq/idiomatic} \
+                ${stageBJqLinkedLibraryAnalysis.linkedIslands}/linked-islands.json \
+                "$out/source-project-binding.json" <<'PY'
+              import pathlib
+              import sys
+
+              from spaghetti_extractor.source_project import bind_source_project
+
+              bind_source_project(
+                  machine_ir=pathlib.Path(sys.argv[1]),
+                  specification=pathlib.Path(sys.argv[2]),
+                  source_root=pathlib.Path(sys.argv[3]),
+                  linked_islands=pathlib.Path(sys.argv[4]),
+                  out=pathlib.Path(sys.argv[5]),
+              )
+              PY
+              jq -e '
+                .format == "stage-b-source-project-binding-v1" and
+                .status == "bound" and .equivalence_status == "not_proven" and
+                (.executes_original_binary | not) and
+                .program_id == "jq-1.8.1-idiomatic-source-v1" and
+                (.islands | length) == 1 and
+                .coverage.source_bound_units == 1144 and
+                .coverage.reviewed_scope.required_machine_units == 1144 and
+                .coverage.reviewed_scope.source_bound_machine_units == 1144 and
+                .coverage.reviewed_scope.remaining_machine_units == 0 and
+                .coverage.reviewed_scope.fully_source_bound and
+                .coverage.linked_islands.source_bound_application_units == 1144 and
+                .coverage.linked_islands.remaining_application_units == 0 and
+                .coverage.linked_islands.all_source_units_are_reviewed_application and
+                (.authority.proves_source_semantics | not) and
+                (.authority.can_authorize_machine_override | not)
+              ' "$out/source-project-binding.json" >/dev/null
+            '';
+          stageBJqSourceAst = pkgs.runCommand
+            "stage-b-jq-idiomatic-source-clang-ast-v1"
+            {
+              nativeBuildInputs = [ mingw32.stdenv.cc pkgs.clang ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+              __contentAddressed = true;
+            }
+            ''
+              set -euo pipefail
+              export LC_ALL=C.UTF-8
+              mkdir -p "$out"
+              gcc_include="$(${mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc \
+                -print-file-name=include)"
+              gcc_include_fixed="$(${mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc \
+                -print-file-name=include-fixed)"
+              mingw_headers="$(realpath "$gcc_include/../../../../../i686-w64-mingw32/sys-include")"
+              ${pkgs.clang}/bin/clang \
+                --target=i686-w64-windows-gnu \
+                -std=c11 -fsyntax-only -nostdinc \
+                -I ${./fixtures/jq/idiomatic} \
+                -I ${stage-a-jq-original}/include \
+                -isystem "$gcc_include" \
+                -isystem "$gcc_include_fixed" \
+                -isystem "$mingw_headers" \
+                -Wno-everything \
+                -Xclang -ast-dump=json \
+                ${./fixtures/jq/idiomatic/jq_cli.c} \
+                > "$out/clang-ast.json"
+              test -s "$out/clang-ast.json"
+            '';
+          stageBJqDependencyEnvelope = pkgs.runCommand
+            "stage-b-jq-idiomatic-dependency-envelope-v1"
+            {
+              nativeBuildInputs = [ pythonEnv pkgs.jq ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+              __contentAddressed = true;
+            }
+            ''
+              set -euo pipefail
+              export PYTHONHASHSEED=0
+              export LC_ALL=C.UTF-8
+              export PYTHONPATH=${stageBSourceCallSubstitutionPythonSource}/src
+              fixture_dir=${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment
+              mkdir -p "$out"
+              ${pythonEnv}/bin/python3 - \
+                "$fixture_dir/jq-original.exe" \
+                "$out/allowed-runtime-imports.json" <<'PY'
+              import pathlib
+              import sys
+
+              from spaghetti_extractor.source_call_substitution import (
+                  bind_allowed_runtime_imports,
+              )
+              from spaghetti_extractor.stage_binary import _parse_stage_a_pe
+              from spaghetti_extractor.util import write_json
+
+              original = pathlib.Path(sys.argv[1])
+              binary = _parse_stage_a_pe(original)
+              imports = sorted(
+                  (
+                      {
+                          "dll": item.dll.lower(),
+                          "symbol": item.symbol,
+                          "ordinal": item.ordinal,
+                      }
+                      for item in binary.imports
+                  ),
+                  key=lambda item: (
+                      item["dll"], item["symbol"] or "", item["ordinal"] or -1
+                  ),
+              )
+              write_json(
+                  pathlib.Path(sys.argv[2]),
+                  bind_allowed_runtime_imports({
+                      "format": "stage-b-allowed-runtime-imports-v1",
+                      "profile_id": "jq-1.8.1-original-static-import-envelope-v1",
+                      "executes_original_binary": False,
+                      "imports": imports,
+                      "authority": {
+                          "derived_from_candidate": False,
+                          "derived_from_original_static_import_table": True,
+                          "proves_source_semantics": False,
+                      },
+                  }),
+              )
+              PY
+              jq -e '
+                .format == "stage-b-allowed-runtime-imports-v1" and
+                (.executes_original_binary | not) and
+                (.imports | length) == 120 and
+                .authority.derived_from_original_static_import_table and
+                (.authority.derived_from_candidate | not)
+              ' "$out/allowed-runtime-imports.json" >/dev/null
+            '';
+          stageBJqSourceCallPipeline =
+            let
+              fixtureDir = "${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment";
+            in
+            import ./nix/stage-b-source-call-substitutions.nix {
+              inherit pkgs pythonEnv;
+              pythonSource = stageBSourceCallSubstitutionPythonSource;
+              sourceBinding =
+                "${stageBJqSourceBinding}/source-project-binding.json";
+              original = "${fixtureDir}/jq-original.exe";
+              machineIr = stageBJqComponentAnalysis.machineIr;
+              linkedIslands =
+                "${stageBJqLinkedLibraryAnalysis.linkedIslands}/linked-islands.json";
+              dynamicRequirements =
+                "${stageBJqLinkedLibraryAnalysis.dynamicRequirements}/dynamic-library-requirements.json";
+              clangAst = "${stageBJqSourceAst}/clang-ast.json";
+              sourceRoot = ./fixtures/jq/idiomatic;
+              proposeSourceComponents = true;
+              candidate = "${stageBJqIdiomatic.candidate}/candidate.exe";
+              allowedRuntimeImports =
+                "${stageBJqDependencyEnvelope}/allowed-runtime-imports.json";
+              namePrefix = "stage-b-jq-idiomatic";
+            };
+          stage-b-jq-idiomatic-source-component-assurance =
+            import ./nix/stage-b-source-component-assurance.nix {
+              inherit pkgs pythonEnv;
+              pythonSource = stageBSourceCallSubstitutionPythonSource;
+              namePrefix = "stage-b-jq-idiomatic";
+              binding =
+                "${stageBJqSourceBinding}/source-project-binding.json";
+              sourceInventory =
+                "${stageBJqSourceCallPipeline.sourceInventory}/source-call-inventory.json";
+              sourceCallReport =
+                "${stageBJqSourceCallPipeline.sourceBindingReport}/source-call-binding-report.json";
+              functionalReport =
+                "${stageBJqIdiomatic.functionalSuite}/functional-report.json";
+              upstreamReport =
+                "${stageBJqIdiomatic.upstreamSuite}/upstream-suite-report.json";
+              evidencePlan =
+                ./fixtures/jq/idiomatic/source-component-evidence.json;
+            };
+          stageBJqCompleteAssurance = pkgs.runCommand
+            "stage-b-jq-idiomatic-complete-assurance-v1"
+            {
+              nativeBuildInputs = [ pythonEnv pkgs.jq ];
+              preferLocalBuild = false;
+              allowSubstitutes = true;
+              __contentAddressed = true;
+            }
+            ''
+              set -euo pipefail
+              export PYTHONHASHSEED=0
+              export LC_ALL=C.UTF-8
+              export PYTHONPATH=${stageBSourceCallSubstitutionPythonSource}/src
+              mkdir -p "$out"
+              jq -e '
+                .format == "stage-b-candidate-dependency-audit-v1" and
+                .status == "pass" and (.executes_original_binary | not) and
+                .counts.observed == 116 and .counts.unexpected == 0
+              ' ${stageBJqSourceCallPipeline.candidateAudit}/candidate-dependency-audit.json \
+                >/dev/null
+              ${pythonEnv}/bin/python3 - \
+                ${stageBJqSourceBinding}/source-project-binding.json \
+                ${stageBJqIdiomatic.candidate}/candidate.exe \
+                ${stageBJqIdiomatic.functionalSuite}/functional-report.json \
+                ${stageBJqIdiomatic.upstreamSuite}/upstream-suite-report.json \
+                ${stage-b-jq-idiomatic-source-component-assurance}/source-component-assurance.json \
+                "$out/source-project-assurance.json" <<'PY'
+              import pathlib
+              import sys
+
+              from spaghetti_extractor.source_project import assess_source_project
+
+              assess_source_project(
+                  binding=pathlib.Path(sys.argv[1]),
+                  candidate_binary=pathlib.Path(sys.argv[2]),
+                  functional_report=pathlib.Path(sys.argv[3]),
+                  upstream_report=pathlib.Path(sys.argv[4]),
+                  component_assurance=pathlib.Path(sys.argv[5]),
+                  out=pathlib.Path(sys.argv[6]),
+              )
+              PY
+              cp \
+                ${stageBJqSourceCallPipeline.candidateAudit}/candidate-dependency-audit.json \
+                "$out/candidate-dependency-audit.json"
+              jq -e '
+                .format == "stage-b-source-project-assurance-v1" and
+                .status == "behavior_validated" and
+                .equivalence_status == "not_proven" and
+                (.executes_original_binary | not) and
+                .coverage.source_bound_units == 1144 and
+                .coverage.reviewed_scope.fully_source_bound and
+                .coverage.linked_islands.remaining_application_units == 0 and
+                .functional.status == "pass" and
+                .functional.counts.cases == 15 and
+                .functional.counts.failed == 0 and
+                .functional.upstream_suite.status == "pass" and
+                .functional.upstream_suite.counts.cases == 8 and
+                .functional.upstream_suite.counts.passed == 8 and
+                .functional.upstream_suite.counts.failed == 0 and
+                .components.status == "behavior_validated" and
+                .components.counts.components == 1 and
+                .components.counts.behavior_validated == 1 and
+                .components.counts.machine_units == 1144 and
+                .components.counts.incomplete_or_violated == 0 and
+                .authority.full_upstream_suite_required and
+                .authority.complete_source_component_evidence_required and
+                (.authority.proves_equivalence | not) and
+                (.authority.can_authorize_machine_override | not)
+              ' "$out/source-project-assurance.json" >/dev/null
+            '';
+          stage-b-jq-idiomatic-source-binding = stageBJqSourceBinding;
+          stage-b-jq-idiomatic-source-call-inventory =
+            stageBJqSourceCallPipeline.sourceInventory;
+          stage-b-jq-idiomatic-source-call-binding-report =
+            stageBJqSourceCallPipeline.sourceBindingReport;
+          stage-b-jq-idiomatic-candidate-dependency-audit =
+            stageBJqSourceCallPipeline.candidateAudit;
+          stage-b-jq-idiomatic-complete-assurance = stageBJqCompleteAssurance;
           stage-b-jq-skeleton =
             pkgs.runCommand "stage-b-jq-skeleton"
               {
@@ -7880,8 +8172,22 @@
             stage-b-jq-component-registry
             stage-b-jq-idiomatic-candidate
             stage-b-jq-idiomatic-smoke
+            stage-b-jq-idiomatic-functional-suite
+            stage-b-jq-idiomatic-upstream-suite
             stage-b-jq-idiomatic-upstream-jqtest
             stage-b-jq-idiomatic-upstream-shtest
+            stage-b-jq-idiomatic-upstream-mantest
+            stage-b-jq-idiomatic-upstream-utf8test
+            stage-b-jq-idiomatic-upstream-base64test
+            stage-b-jq-idiomatic-upstream-uritest
+            stage-b-jq-idiomatic-upstream-onigtest
+            stage-b-jq-idiomatic-upstream-manonigtest
+            stage-b-jq-idiomatic-source-binding
+            stage-b-jq-idiomatic-source-call-inventory
+            stage-b-jq-idiomatic-source-call-binding-report
+            stage-b-jq-idiomatic-candidate-dependency-audit
+            stage-b-jq-idiomatic-source-component-assurance
+            stage-b-jq-idiomatic-complete-assurance
             stage-b-jq-skeleton-root
             ;
         }

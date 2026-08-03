@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import re
@@ -713,36 +715,78 @@ def _case_expected_output(case: dict[str, Any]) -> dict[str, Any]:
         raise StageBFunctionalInputError("functional suite case expected_returncode must be present")
     if isinstance(value, bool) or not isinstance(value, int):
         raise StageBFunctionalInputError("functional suite case expected_returncode must be an integer")
-    stdout, stdout_policy = _case_expected_stream(case, "stdout")
-    stderr, stderr_policy = _case_expected_stream(case, "stderr")
+    stdout = _case_expected_stream(case, "stdout")
+    stderr = _case_expected_stream(case, "stderr")
     return {
         "returncode": value,
-        "stdout": stdout,
-        "stdout_policy": stdout_policy,
-        "stderr": stderr,
-        "stderr_policy": stderr_policy,
+        "stdout": stdout["text"],
+        "stdout_base64": stdout["base64"],
+        "stdout_policy": stdout["policy"],
+        "stdout_sha256": stdout["sha256"],
+        "stdout_bytes": stdout["bytes"],
+        "stderr": stderr["text"],
+        "stderr_base64": stderr["base64"],
+        "stderr_policy": stderr["policy"],
+        "stderr_sha256": stderr["sha256"],
+        "stderr_bytes": stderr["bytes"],
     }
 
 
-def _case_expected_stream(case: dict[str, Any], stream: str) -> tuple[str | None, str]:
+def _case_expected_stream(case: dict[str, Any], stream: str) -> dict[str, Any]:
     direct_key = f"expected_{stream}"
     text_key = f"expected_{stream}_text"
+    base64_key = f"expected_{stream}_base64"
     policy_key = f"expected_{stream}_policy"
     policy = case.get(policy_key, "exact")
     if policy not in {"exact", "any"}:
         raise StageBFunctionalInputError(f"functional suite case {policy_key} must be exact or any")
-    if direct_key in case and text_key in case:
-        raise StageBFunctionalInputError(f"functional suite case cannot contain both {direct_key} and {text_key}")
+    supplied = [key for key in (direct_key, text_key, base64_key) if key in case]
+    if len(supplied) > 1:
+        raise StageBFunctionalInputError(
+            f"functional suite case cannot contain multiple {stream} expectations"
+        )
     if policy == "any":
-        if direct_key in case or text_key in case:
+        if supplied:
             raise StageBFunctionalInputError(f"functional suite case cannot combine {policy_key}=any with {direct_key}")
-        return None, "any"
-    if direct_key not in case and text_key not in case:
+        return {
+            "text": None,
+            "base64": None,
+            "policy": "any",
+            "sha256": None,
+            "bytes": None,
+        }
+    if not supplied:
         raise StageBFunctionalInputError(f"functional suite case {direct_key} must be present")
+    if base64_key in case:
+        encoded = case[base64_key]
+        if not isinstance(encoded, str):
+            raise StageBFunctionalInputError(
+                f"functional suite case {base64_key} must be a string"
+            )
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise StageBFunctionalInputError(
+                f"functional suite case {base64_key} is invalid"
+            ) from exc
+        return {
+            "text": None,
+            "base64": encoded,
+            "policy": "exact",
+            "sha256": sha256_bytes(data),
+            "bytes": len(data),
+        }
     value = case.get(direct_key, case.get(text_key))
     if not isinstance(value, str):
         raise StageBFunctionalInputError(f"functional suite case {direct_key} must be a string")
-    return value, "exact"
+    data = value.encode("utf-8")
+    return {
+        "text": value,
+        "base64": None,
+        "policy": "exact",
+        "sha256": sha256_bytes(data),
+        "bytes": len(data),
+    }
 
 
 def _case_side_timeout_seconds(case: dict[str, Any], key: str, default: float) -> float:
@@ -796,15 +840,13 @@ def _stream_artifact(path: Path, data: bytes) -> dict[str, Any]:
 
 
 def _functional_expected_output_result(candidate: dict[str, Any], expected: dict[str, Any]) -> dict[str, Any]:
-    actual_stdout = str(candidate.get("stdout", {}).get("preview") or "")
-    actual_stderr = str(candidate.get("stderr", {}).get("preview") or "")
     stdout_exact = expected.get("stdout_policy", "exact") == "exact"
     stderr_exact = expected.get("stderr_policy", "exact") == "exact"
     passed = (
         candidate.get("returncode") == expected["returncode"]
         and candidate.get("timed_out") is False
-        and (not stdout_exact or actual_stdout == expected["stdout"])
-        and (not stderr_exact or actual_stderr == expected["stderr"])
+        and (not stdout_exact or _exact_stream_matches(candidate, expected, "stdout"))
+        and (not stderr_exact or _exact_stream_matches(candidate, expected, "stderr"))
     )
     return {
         "status": "pass" if passed else "fail",
@@ -812,16 +854,22 @@ def _functional_expected_output_result(candidate: dict[str, Any], expected: dict
         "actual_returncode": candidate.get("returncode"),
         "actual_timed_out": candidate.get("timed_out"),
         "expected_stdout_policy": expected.get("stdout_policy", "exact"),
-        "expected_stdout_sha256": None
-        if not isinstance(expected.get("stdout"), str)
-        else sha256_bytes(expected["stdout"].encode("utf-8")),
+        "expected_stdout_sha256": expected.get("stdout_sha256"),
         "actual_stdout_sha256": candidate.get("stdout", {}).get("sha256"),
         "expected_stderr_policy": expected.get("stderr_policy", "exact"),
-        "expected_stderr_sha256": None
-        if not isinstance(expected.get("stderr"), str)
-        else sha256_bytes(expected["stderr"].encode("utf-8")),
+        "expected_stderr_sha256": expected.get("stderr_sha256"),
         "actual_stderr_sha256": candidate.get("stderr", {}).get("sha256"),
     }
+
+
+def _exact_stream_matches(
+    candidate: dict[str, Any], expected: dict[str, Any], stream: str
+) -> bool:
+    artifact = candidate.get(stream, {})
+    return (
+        artifact.get("sha256") == expected.get(f"{stream}_sha256")
+        and artifact.get("bytes") == expected.get(f"{stream}_bytes")
+    )
 
 
 def _functional_mismatch(
@@ -836,9 +884,9 @@ def _functional_mismatch(
         fields.append("timeout")
     if candidate.get("returncode") != expected["returncode"]:
         fields.append("returncode")
-    if expected.get("stdout_policy", "exact") == "exact" and str(candidate.get("stdout", {}).get("preview") or "") != expected["stdout"]:
+    if expected.get("stdout_policy", "exact") == "exact" and not _exact_stream_matches(candidate, expected, "stdout"):
         fields.append("stdout")
-    if expected.get("stderr_policy", "exact") == "exact" and str(candidate.get("stderr", {}).get("preview") or "") != expected["stderr"]:
+    if expected.get("stderr_policy", "exact") == "exact" and not _exact_stream_matches(candidate, expected, "stderr"):
         fields.append("stderr")
     result: dict[str, Any] = {"fields": fields, "expectation": expectation}
     return result

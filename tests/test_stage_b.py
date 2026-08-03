@@ -8925,6 +8925,78 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["runner"]["strip_stderr_line_regexes"], [r"^runner noise$"])
             self.assertEqual(result["cases"][0]["candidate"]["stderr"]["bytes"], 0)
 
+    def test_run_functional_suite_compares_binary_output_from_base64(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = root / "candidate.py"
+            candidate.write_text(
+                "import sys\nsys.stdout.buffer.write(b'a\\0b\\0')\n",
+                encoding="utf-8",
+            )
+            suite = root / "suite.json"
+            suite.write_text(
+                json.dumps(
+                    {
+                        "cases": [
+                            {
+                                "id": "binary-output",
+                                "expected_returncode": 0,
+                                "expected_stdout_base64": "YQBiAA==",
+                                "expected_stderr": "",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = stage_b_run_functional_suite(
+                suite=suite,
+                candidate_command=(sys.executable, str(candidate)),
+                candidate_binary=candidate,
+                out=root / "functional",
+            )
+
+            self.assertEqual(result["status"], "pass")
+            expected = result["cases"][0]["expected"]
+            self.assertEqual(expected["stdout_base64"], "YQBiAA==")
+            self.assertEqual(expected["stdout_bytes"], 4)
+
+    def test_run_functional_suite_compares_more_than_preview_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = root / "candidate.py"
+            candidate.write_text(
+                "import sys\nsys.stdout.write('a' * 4096 + 'X')\n",
+                encoding="utf-8",
+            )
+            suite = root / "suite.json"
+            suite.write_text(
+                json.dumps(
+                    {
+                        "cases": [
+                            {
+                                "id": "long-output",
+                                "expected_returncode": 0,
+                                "expected_stdout": "a" * 4096,
+                                "expected_stderr": "",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = stage_b_run_functional_suite(
+                suite=suite,
+                candidate_command=(sys.executable, str(candidate)),
+                candidate_binary=candidate,
+                out=root / "functional",
+            )
+
+            self.assertEqual(result["status"], "fail")
+            self.assertEqual(result["cases"][0]["mismatch"]["fields"], ["stdout"])
+
     def test_run_functional_suite_kills_process_group_on_timeout(self):
         if os.name != "posix":
             self.skipTest("process-group timeout cleanup is POSIX-specific")
