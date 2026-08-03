@@ -274,6 +274,31 @@ class StageABinaryInventoryTests(StageARelationalTestBase):
             )
             parse_binary_cutpoint_inventory(payload)
 
+    def test_inventory_classifies_undecodable_zero_fill_suffix_as_padding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = self._write_pe(root / "hello.exe", b"\xeb\xfe\x00")
+
+            payload = stage_a_inventory_binary(
+                binary=binary,
+                side="original",
+                out=root / "inventory.json",
+            )
+
+            self.assertEqual(payload["status"], "pass")
+            self.assertEqual(
+                [row["span"] for row in payload["regions"]],
+                [{"rva_start": 0x1000, "size": 2}],
+            )
+            self.assertEqual(
+                [
+                    {"rva": row["rva"], "size": row["size"]}
+                    for row in payload["padding_waivers"]
+                ],
+                [{"rva": 0x1002, "size": 1}],
+            )
+            parse_binary_cutpoint_inventory(payload)
+
     def test_duplicate_executable_section_names_are_valid(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

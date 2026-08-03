@@ -1063,9 +1063,14 @@ def _section_gap_code_blocks(
                 waivers.append(_padding_waiver(binary_name, span))
                 continue
 
+            recovery_span = _decodable_prefix_before_padding_suffix(
+                binary, span, data
+            )
             recovered = [
                 item
-                for item in _recover_basic_blocks(binary, span.rva_start, span.rva_end)
+                for item in _recover_basic_blocks(
+                    binary, recovery_span.rva_start, recovery_span.rva_end
+                )
                 if span.rva_start <= int(item["rva_start"]) < int(item["rva_end"]) <= span.rva_end
             ]
             recovered_ranges: list[BlockSide] = []
@@ -1134,6 +1139,26 @@ def _section_gap_code_blocks(
                     queue.append(residue)
     code_blocks.sort(key=lambda item: (item["block"].rva_start, item["block"].rva_end))
     return code_blocks, waivers
+
+
+def _decodable_prefix_before_padding_suffix(
+    binary: StageABinary,
+    span: BlockSide,
+    data: bytes,
+) -> BlockSide:
+    """Keep an exact decode prefix when only verified tail padding is invalid."""
+
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
+    instructions = list(dis.disasm(data, binary.image_base + span.rva_start))
+    decoded = sum(int(instruction.size) for instruction in instructions)
+    if decoded == len(data) or decoded <= 0:
+        return span
+    suffix = data[decoded:]
+    suffix_start = span.rva_start + decoded
+    if not _is_padding_bytes(binary, suffix_start, suffix):
+        return span
+    return BlockSide(span.rva_start, suffix_start)
+
 
 def _trim_padding_edges(binary: StageABinary, block: BlockSide, data: bytes) -> tuple[list[BlockSide], BlockSide | None, bytes]:
     dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
