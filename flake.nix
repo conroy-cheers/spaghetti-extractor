@@ -183,6 +183,7 @@
               ./nix/stage-b-semantic-component-workspaces.nix
               ./nix/stage-b-source-call-substitutions.nix
               ./nix/stage-b-source-component-assurance.nix
+              ./nix/jq-idiomatic.nix
               ./nix/stage-b-upstream-shell-suite.nix
             ];
           };
@@ -7199,6 +7200,19 @@
             stageBJqFrontendWorkspaceDag.qualifications.bounded-wide-string-length;
           stage-b-jq-component-registry =
             stageBJqFrontendWorkspaceDag.registry;
+          stageBJqIdiomatic = import ./nix/jq-idiomatic.nix {
+            inherit pkgs mingw32;
+            jqPackage = stage-a-jq-original;
+            jqSource = stage-a-jq-original.src;
+            oniguruma = mingw32Oniguruma;
+            sourceRoot = ./fixtures/jq/idiomatic;
+          };
+          stage-b-jq-idiomatic-candidate = stageBJqIdiomatic.candidate;
+          stage-b-jq-idiomatic-smoke = stageBJqIdiomatic.smoke;
+          stage-b-jq-idiomatic-upstream-jqtest =
+            stageBJqIdiomatic.upstreamTests.jqtest;
+          stage-b-jq-idiomatic-upstream-shtest =
+            stageBJqIdiomatic.upstreamTests.shtest;
           stage-b-jq-skeleton =
             pkgs.runCommand "stage-b-jq-skeleton"
               {
@@ -7864,6 +7878,10 @@
             stage-b-jq-bounded-wide-string-length-qualification
             stage-b-jq-component-granularity-smoke
             stage-b-jq-component-registry
+            stage-b-jq-idiomatic-candidate
+            stage-b-jq-idiomatic-smoke
+            stage-b-jq-idiomatic-upstream-jqtest
+            stage-b-jq-idiomatic-upstream-shtest
             stage-b-jq-skeleton-root
             ;
         }
