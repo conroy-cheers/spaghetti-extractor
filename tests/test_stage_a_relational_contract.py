@@ -1636,17 +1636,15 @@ class StageARelationalContractTests(StageARelationalTestBase):
         evaluator = (
             Path(__file__).parents[1] / "nix" / "stage-a-lean-graph.nix"
         ).read_text(encoding="utf-8")
-        proof_nodes = evaluator.split("nodeDrvs =", 1)[1].split(
-            "\n  rootNode =", 1
+        proof_nodes = evaluator.split("\n    nodeDrvs =", 1)[1].split(
+            "\n    rootNode =", 1
         )[0]
 
         self.assertNotIn("preferLocalBuild = true", proof_nodes)
         self.assertGreaterEqual(evaluator.count("preferLocalBuild = false"), 3)
-        self.assertEqual(evaluator.count("lean -j 2"), 2)
-        self.assertIn(
-            'leanJobs = if builtins.elem node.resource_class [',
-            evaluator,
-        )
+        self.assertEqual(evaluator.count("lean -j 2"), 1)
+        self.assertIn("leanJobs =", evaluator)
+        self.assertIn("builtins.elem node.resource_class [", evaluator)
         self.assertIn('"large-memory"', evaluator)
         self.assertIn('"high-memory"', evaluator)
         self.assertIn("lean -j ${leanJobs}", evaluator)
@@ -1660,16 +1658,15 @@ class StageARelationalContractTests(StageARelationalTestBase):
         self.assertNotIn("/bin/xargs", evaluator)
         self.assertNotIn("dependencyClosures", evaluator)
         self.assertIn("node.dependencies", evaluator)
-        self.assertIn("inherited-olean-index", evaluator)
-        self.assertIn("inherited-node-result-index", evaluator)
+        self.assertIn('interface = resolved / "interface.json"', evaluator)
+        self.assertIn("stage-a-direct-dependencies", evaluator)
         detached = evaluator.split("selectedNodeResults =", 1)[1].split(
-            "\nin\n", 1
+            "selectedTargetBundle =", 1
         )[0]
         self.assertIn("-detached", detached)
-        self.assertIn('cp -L "${source}"/StageA/*.olean', detached)
-        self.assertIn('cp "${source}/module-result.json"', detached)
-        self.assertNotIn("inherited-olean-index", detached)
-        self.assertNotIn("inherited-node-result-index", detached)
+        self.assertIn('ln -s "${semantic}" "$out/proof-node-root"', detached)
+        self.assertIn('"${semantic}"/StageA/*.olean', detached)
+        self.assertIn('cp "${semantic}/module-result.json"', detached)
 
     def test_nix_finalization_requires_the_whole_program_theorem(self):
         proof_ir = {
