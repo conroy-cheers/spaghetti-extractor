@@ -579,11 +579,13 @@ rec {
       PY
       # The artifact is useful repair input, but unresolved rooted frontiers
       # must keep this initial export incomplete.
-      jq -e '
+      jq -e \
+        --slurpfile static_export \
+          ${opaqueStaticExport}/opaque-static-export.json '
         .format == "stage-a-machine-ir-v2" and
         .status == "incomplete" and
         .binary.sha256 == "${executableSha256}" and
-        .counts.units == 8989 and
+        .counts.units == $static_export[0].counts.regions and
         .counts.violated_issues == 0 and
         .counts.incomplete_issues > 0 and
         .coverage.counts.unknown_bytes == 0 and
