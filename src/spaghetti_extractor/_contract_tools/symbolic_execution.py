@@ -264,6 +264,22 @@ def _symbolic_execute(
             registers["esp"] = _expr_add(registers["esp"], ("const", stack_adjust))
             terminated = True
             continue
+        if mnemonic == "leave":
+            frame = registers["ebp"]
+            registers["ebp"] = _memory_read_expr(
+                frame,
+                memory_events,
+                memory_writes,
+                memory_epoch=memory_epoch,
+            )
+            registers["esp"] = _expr_add(frame, ("const", 4))
+            continue
+        if mnemonic in {"clc", "cld", "std"}:
+            if mnemonic == "clc":
+                flags["cf"] = ("false",)
+            else:
+                flags["df"] = ("true",) if mnemonic == "std" else ("false",)
+            continue
         if mnemonic == "mov":
             if len(operands) != 2:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported mov operand shape")
@@ -306,6 +322,23 @@ def _symbolic_execute(
             new_esp = _expr_sub(registers["esp"], ("const", 4))
             _memory_write_expr(new_esp, 32, value, memory_events, memory_writes)
             registers["esp"] = new_esp
+            continue
+        if mnemonic in {"pushal", "pushad"}:
+            original_esp = registers["esp"]
+            saved = (
+                registers["eax"],
+                registers["ecx"],
+                registers["edx"],
+                registers["ebx"],
+                original_esp,
+                registers["ebp"],
+                registers["esi"],
+                registers["edi"],
+            )
+            for index, value in enumerate(saved, start=1):
+                address = _expr_sub(original_esp, ("const", 4 * index))
+                _memory_write_expr(address, 32, value, memory_events, memory_writes)
+            registers["esp"] = _expr_sub(original_esp, ("const", 32))
             continue
         if mnemonic == "pop":
             if len(operands) != 1 or operands[0].type != X86_OP_REG:

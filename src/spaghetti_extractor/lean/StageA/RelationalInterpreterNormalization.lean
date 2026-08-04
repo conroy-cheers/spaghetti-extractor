@@ -144,7 +144,7 @@ def decodedOrderedEffects? (pe : PE32) (imports : List PEImport)
   | .popAll => some (List.replicate 8 (.read .dword))
   | .pushReg _ | .pushFlags => some [.write .dword]
   | .pushAll => some (List.replicate 8 (.write .dword))
-  | .clearDirection => some []
+  | .clearCarry | .clearDirection | .setDirection => some []
   | .load32 .. | .movFs32 .. => some [.read .dword]
   | .store32 .. => some [.write .dword]
   | .callRel32 _ => some [.write .dword, .call .internal]
@@ -457,7 +457,8 @@ def exactInstructionMemoryEvents? (pe : PE32) (imports : List PEImport)
       .cmpImm .. | .branchEqual .. | .jumpRel8 .. | .jumpRel32 .. |
       .lea .. | .zeroReg .. | .leaAddress .. | .branchCondition .. |
       .convertWordToDword | .convertDwordToQuad | .bitTestRegister .. |
-      .clearDirection | .moveDwords _ | .storeDwords _ => some []
+      .clearCarry | .clearDirection | .setDirection |
+      .moveDwords _ | .storeDwords _ => some []
   | .ret | .retPop _ =>
       some [readEvent before before.registers.esp .dword]
   | .popReg _ => some [readEvent before before.registers.esp .dword]

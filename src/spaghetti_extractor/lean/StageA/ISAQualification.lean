@@ -63,7 +63,9 @@ inductive InstructionSemanticForm where
   | pushAll
   | popAll
   | popFlags
+  | clearCarry
   | clearDirection
+  | setDirection
   | leave
   | lea (hasOffset : Bool)
   | load32 (hasOffset : Bool)
@@ -164,7 +166,9 @@ def Instruction.semanticForm : Instruction -> InstructionSemanticForm
   | .pushAll => .pushAll
   | .popAll => .popAll
   | .popFlags => .popFlags
+  | .clearCarry => .clearCarry
   | .clearDirection => .clearDirection
+  | .setDirection => .setDirection
   | .leave => .leave
   | .lea _ _ offset => .lea (offset != 0)
   | .load32 _ _ offset => .load32 (offset != 0)

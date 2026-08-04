@@ -280,7 +280,7 @@ def instructionMemoryEffectFree : Instruction -> Bool
       .cmpImm _ _ | .branchEqual _ _ | .jumpRel8 _ | .jumpRel32 _ |
       .lea _ _ _ | .zeroReg _ | .leaAddress _ _ | .branchCondition _ _ _ |
       .convertWordToDword | .convertDwordToQuad | .bitTestRegister _ _ |
-      .clearDirection => true
+      .clearCarry | .clearDirection | .setDirection => true
   | .movFromOperand _ source | .movZeroExtend _ source _ |
       .movSignExtend _ source _ | .movFromOperandWidth _ _ source |
       .conditionalMove _ _ source | .multiplyFull _ source |

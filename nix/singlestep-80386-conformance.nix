@@ -20,6 +20,9 @@
     "6640" = "sha256-vSs2WrfdEWboqtkKPTx0XntyHtMbIZHLSe1o8GdrqbE=";
     "6646" = "sha256-VMIc+dAW+BoEXgWWo69pegedazTffVajrhWSfY0HKX0=";
     "6648" = "sha256-ZhWtekjRX8KPyt2dnyI/uPDxgVGfSDuDl+YwataqvWA=";
+    "F8" = "sha256-4b5wfFGAdfDRbS57SpMZs9zqgGaa0m12+V+2LidLPMw=";
+    "FC" = "sha256-c4PkNOXzsqzsl9s6Xng7uc7iPMJBZbnLQ1crq+5Yu74=";
+    "FD" = "sha256-k4ifpZV8uGSNA7GJwdhuOCmOWv5ECX7ep3dP0WS1UWU=";
     "6601" = "sha256-JRUro0fHoK0nK7SPmQNaLA/K2evHFYbmCCTNruR+KEg=";
     "6605" = "sha256-81bxHlKFQiLcAL3fv2Sho995+SqZj3GfogwsMpeKgSM=";
     "6629" = "sha256-DpTZuNfcD44WPQTqDM86KmprBmFE9Mivf3NOpsSg48A=";

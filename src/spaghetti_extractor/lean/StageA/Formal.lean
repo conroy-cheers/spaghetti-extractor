@@ -2475,7 +2475,9 @@ inductive Instruction where
   | pushAll
   | popAll
   | popFlags
+  | clearCarry
   | clearDirection
+  | setDirection
   | leave
   | lea (destination base : Reg) (offset : Nat)
   | load32 (destination base : Reg) (offset : Nat)
@@ -3017,7 +3019,9 @@ def decodeGenericInstruction : Bytes -> Option DecodedInstruction
         | 0x60 => some { instruction := .pushAll, size := 1, trailing := tail }
         | 0x61 => some { instruction := .popAll, size := 1, trailing := tail }
         | 0x9d => some { instruction := .popFlags, size := 1, trailing := tail }
+        | 0xf8 => some { instruction := .clearCarry, size := 1, trailing := tail }
         | 0xfc => some { instruction := .clearDirection, size := 1, trailing := tail }
+        | 0xfd => some { instruction := .setDirection, size := 1, trailing := tail }
         | 0x68 => do
             let value <- readU32 tail 0
             pure {
@@ -3901,10 +3905,29 @@ def executeInstructionWithContext (context : SymbolicImageContext)
         flags := some (flagsFromWordExpression restored)
         comparison := none
       })
+  | .clearCarry =>
+      let base := Expr.bitAnd state.eflagsExpression (.constant 0xfffffffe)
+      some (.next {
+        state with
+        flagsBase := some base
+        flags := some (flagsFromWordExpression base)
+        comparison := none
+      })
   | .clearDirection =>
       let base := Expr.bitAnd state.eflagsExpression (.constant 0xfffffbff)
       some (.next {
-        state with flagsBase := some base, flags := none, comparison := none
+        state with
+        flagsBase := some base
+        flags := some (flagsFromWordExpression base)
+        comparison := none
+      })
+  | .setDirection =>
+      let base := Expr.bitOr state.eflagsExpression (.constant 0x00000400)
+      some (.next {
+        state with
+        flagsBase := some base
+        flags := some (flagsFromWordExpression base)
+        comparison := none
       })
   | .leave =>
       let stack := state.registers.ebp

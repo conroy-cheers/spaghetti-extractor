@@ -1607,16 +1607,21 @@
           singlestep-80386-conformance = pkgs.callPackage ./nix/singlestep-80386-conformance.nix {
             inherit spaghetti-extractor;
           };
-          singlestep-80386-inc-dec-conformance =
+          singlestep-80386-state-ops-conformance =
             pkgs.callPackage ./nix/singlestep-80386-conformance.nix {
               inherit spaghetti-extractor;
               opcodeFiles = [
                 "6640"
                 "6646"
                 "6648"
+                "F8"
+                "FC"
+                "FD"
               ];
               shardCount = 1;
             };
+          singlestep-80386-inc-dec-conformance =
+            singlestep-80386-state-ops-conformance;
           stageABochs80386ShardIndices = pkgs.lib.range 0 15;
           stageABochs80386Opcodes = [
             "6601"
@@ -1771,29 +1776,32 @@
                 ''
           ) stageABochs80386ShardIndices
           ) stageABochs80386Opcodes;
-          stageAIncDec80386Opcodes = [
+          stageAStateOps80386Opcodes = [
             "6640"
             "6646"
             "6648"
+            "F8"
+            "FC"
+            "FD"
           ];
-          stageAIncDec80386Backends = [
+          stageAStateOps80386Backends = [
             "lean"
             "unicorn"
             "bochs"
           ];
-          stageAIncDec80386Runs = pkgs.lib.concatMap (
+          stageAStateOps80386Runs = pkgs.lib.concatMap (
             opcode:
             map (
               backend:
               let
                 imported =
-                  singlestep-80386-inc-dec-conformance.importDerivations.${opcode}."0";
+                  singlestep-80386-state-ops-conformance.importDerivations.${opcode}."0";
               in
               {
                 inherit backend opcode;
                 result = import ./nix/stage-a-isa-conformance.nix {
                   inherit pkgs;
-                  name = "stage-a-isa-inc-dec-${pkgs.lib.toLower opcode}-${backend}";
+                  name = "stage-a-isa-state-ops-${pkgs.lib.toLower opcode}-${backend}";
                   spaghettiExtractor = spaghetti-extractor;
                   kernelCache = stage-a-isa-kernel-cache;
                   corpus = imported + "/corpus.json";
@@ -1805,10 +1813,10 @@
                   contentAddressed = true;
                 };
               }
-            ) stageAIncDec80386Backends
-          ) stageAIncDec80386Opcodes;
-          stage-a-isa-conformance-inc-dec = pkgs.runCommand
-            "stage-a-isa-conformance-inc-dec"
+            ) stageAStateOps80386Backends
+          ) stageAStateOps80386Opcodes;
+          stage-a-isa-conformance-state-ops = pkgs.runCommand
+            "stage-a-isa-conformance-state-ops"
             {
               nativeBuildInputs = [ pkgs.jq ];
               preferLocalBuild = false;
@@ -1831,14 +1839,14 @@
                   and .proof_authority == false
                   and .closes_stage_a_proof == false
                 ' ${run.result}/result.json > /dev/null
-              '') stageAIncDec80386Runs}
+              '') stageAStateOps80386Runs}
               cat > "$out/index.json" <<'JSON'
               ${builtins.toJSON {
                 format = "stage-a-isa-conformance-evidence-set-v1";
-                suite = "SingleStepTests-80386-INC-DEC-Bochs-Unicorn-Lean";
-                source_revision = singlestep-80386-inc-dec-conformance.sourceRevision;
-                opcodes = stageAIncDec80386Opcodes;
-                backends = stageAIncDec80386Backends;
+                suite = "SingleStepTests-80386-State-Ops-Bochs-Unicorn-Lean";
+                source_revision = singlestep-80386-state-ops-conformance.sourceRevision;
+                opcodes = stageAStateOps80386Opcodes;
+                backends = stageAStateOps80386Backends;
                 trust = {
                   role = "isa_conformance_evidence_only";
                   proof_authority = false;
@@ -1847,6 +1855,7 @@
               }}
               JSON
             '';
+          stage-a-isa-conformance-inc-dec = stage-a-isa-conformance-state-ops;
           stageABochs80386EvidenceIndex = pkgs.lib.concatMap (
             opcode:
             map (shardIndex: {
@@ -7695,6 +7704,7 @@
             stage-a-isa-core-smoke-campaign
             stage-a-isa-core-smoke-bundle
             singlestep-80386-conformance
+            singlestep-80386-state-ops-conformance
             singlestep-80386-inc-dec-conformance
             spaghetti-extractor
             spaghetti-extractor-analysis
@@ -7723,6 +7733,7 @@
             stage-a-tiny-c0-source-behavior-smoke
             stage-a-analysis-source-boundary-check
             stage-a-isa-conformance-bochs-80386
+            stage-a-isa-conformance-state-ops
             stage-a-isa-conformance-inc-dec
             stage-a-isa-kernel-cache
             stage-a-isa-kernel-identity
@@ -8415,7 +8426,7 @@
           inherit (packages)
             spaghetti-extractor
             stage-a-isa-conformance-bochs-80386
-            stage-a-isa-conformance-inc-dec
+            stage-a-isa-conformance-state-ops
             stage-a-isa-core-smoke-qualification
             stage-a-fixtures-check
             stage-a-exit-check

@@ -595,6 +595,104 @@ class ContractToolTests(unittest.TestCase):
             self.assertEqual(symbolic["status"], "incomplete")
             self.assertIn("only 32-bit inc/dec", symbolic["blocker"])
 
+    def test_symbolic_execution_models_pushal_with_original_esp_slot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            encoded = bytes.fromhex("60")
+            original = self._write_pe(root / "pushal.exe", encoded)
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1001)
+            mapping = BlockMapping(
+                id="pushal",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "pushal"},
+            )
+
+            symbolic = _symbolic_execute(
+                binary,
+                side,
+                binary.pe.get_data(side.rva_start, side.size),
+                "original",
+                mapping,
+            )
+
+            self.assertEqual(symbolic["status"], "ok", symbolic)
+            observables = symbolic["observables"]
+            writes = observables["memory_events"]
+            self.assertEqual([event[0] for event in writes], ["write"] * 8)
+            self.assertEqual(
+                [event[2] for event in writes],
+                [
+                    ("reg", "eax"),
+                    ("reg", "ecx"),
+                    ("reg", "edx"),
+                    ("reg", "ebx"),
+                    ("reg", "esp"),
+                    ("reg", "ebp"),
+                    ("reg", "esi"),
+                    ("reg", "edi"),
+                ],
+            )
+            self.assertEqual(
+                observables["reg:esp"],
+                ("sub", ("reg", "esp"), ("const", 32)),
+            )
+
+    def test_symbolic_execution_models_leave_and_flag_controls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = {
+                "leave": (bytes.fromhex("c9"), None),
+                "clc": (bytes.fromhex("f8"), ("cf", ("false",))),
+                "cld": (bytes.fromhex("fc"), ("df", ("false",))),
+                "std": (bytes.fromhex("fd"), ("df", ("true",))),
+            }
+            for name, (encoded, flag_update) in cases.items():
+                with self.subTest(name=name):
+                    original = self._write_pe(root / f"{name}.exe", encoded)
+                    binary = _parse_stage_a_pe(original)
+                    side = BlockSide(0x1000, 0x1000 + len(encoded))
+                    mapping = BlockMapping(
+                        id=name,
+                        original=side,
+                        candidate=side,
+                        kind="code",
+                        reachable=True,
+                        invariant_checked=True,
+                        source={"function": name},
+                    )
+
+                    symbolic = _symbolic_execute(
+                        binary,
+                        side,
+                        binary.pe.get_data(side.rva_start, side.size),
+                        "original",
+                        mapping,
+                    )
+
+                    self.assertEqual(symbolic["status"], "ok", symbolic)
+                    observables = symbolic["observables"]
+                    if name == "leave":
+                        self.assertEqual(
+                            observables["reg:ebp"],
+                            ("mem32", ("reg", "ebp")),
+                        )
+                        self.assertEqual(
+                            observables["reg:esp"],
+                            ("add", ("const", 4), ("reg", "ebp")),
+                        )
+                        self.assertEqual(
+                            [event[0] for event in observables["memory_events"]],
+                            ["read"],
+                        )
+                    else:
+                        flag, value = flag_update
+                        self.assertEqual(observables[f"flag:{flag}"], value)
+
     def test_semantic_transfer_adds_fs_base_to_segmented_memory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
