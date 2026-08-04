@@ -1420,6 +1420,7 @@ def _semantic_instruction_effect_schedule(
             external_call_index_base=external_call_index,
         )
         if instruction_symbolic.get("status") != "ok":
+            final_symbolic = instruction_symbolic
             blockers.append(
                 _semantic_instruction_effect_blocker(
                     index, instruction, instruction_symbolic
