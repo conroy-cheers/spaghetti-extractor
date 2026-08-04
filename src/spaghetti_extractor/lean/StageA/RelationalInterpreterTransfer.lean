@@ -315,7 +315,8 @@ def instructionMemoryEffectFree : Instruction -> Bool
       .store32 _ _ _ | .callRel32 _ | .callImport _ | .jumpImport _ |
       .x87LoadStack _ | .x87LoadConstant _ | .x87Exchange _ |
       .x87StoreStack _ _ | .x87Unary _ | .x87BinaryStack _ _ _ _ |
-      .x87CompareStack _ _ _ _ | .x87LoadMemory _ _ |
+      .x87CompareStack _ _ _ _ | .x87CompareMemory _ _ _ _ |
+      .x87LoadMemory _ _ |
       .x87StoreMemory _ _ _ | .x87BinaryMemory _ _ _ |
       .x87LoadControl _ | .x87StoreControl _ | .x87SaveState _ |
       .x87RestoreState _ | .x87Wait | .x87Initialize |

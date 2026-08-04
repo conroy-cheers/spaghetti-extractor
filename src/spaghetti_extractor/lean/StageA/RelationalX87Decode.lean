@@ -30,6 +30,8 @@ def storeFormat : X87StoreFormat -> StageA.X87.StoreFormat
 
 def unaryOperation : X87UnaryOperation -> StageA.X87.UnaryOperation
   | .negate => .negate
+  | .sine => .sine
+  | .cosine => .cosine
 
 def binaryOperation : X87BinaryOperation -> StageA.X87.BinaryOperation
   | .add => .add
@@ -74,6 +76,11 @@ def instructionDescriptor? : Instruction -> Option InstructionDescriptor
       command := .compareStack mode destination index pop
       waitMode := .waiting
       memoryOperand := none
+    }
+  | .x87CompareMemory mode format source pop => some {
+      command := .compareMemory mode (loadFormat format) pop
+      waitMode := .waiting
+      memoryOperand := some source
     }
   | .x87LoadMemory format source => some {
       command := .loadMemory (loadFormat format)

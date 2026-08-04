@@ -41,6 +41,8 @@ def StoreFormat.byteWidth : StoreFormat -> Nat
 
 inductive UnaryOperation where
   | negate
+  | sine
+  | cosine
 deriving Repr, DecidableEq
 
 inductive BinaryOperation where
@@ -164,6 +166,7 @@ inductive Command where
       (destination source : Nat) (pop : Bool)
   | compareStack (mode : CompareMode) (destination : CompareDestination)
       (index : Nat) (pop : Bool)
+  | compareMemory (mode : CompareMode) (format : LoadFormat) (pop : Bool)
   | loadMemory (format : LoadFormat)
   | storeMemory (format : StoreFormat) (rounding : RoundingMode) (pop : Bool)
   | binaryMemory (operation : BinaryOperation) (format : LoadFormat)
@@ -258,7 +261,8 @@ structure MachineEffect where
 deriving Repr, DecidableEq
 
 def Command.expectedOperandBytes : Command -> Option Nat
-  | .loadMemory format | .binaryMemory _ format => some format.byteWidth
+  | .loadMemory format | .binaryMemory _ format | .compareMemory _ format _ =>
+      some format.byteWidth
   | .loadControl => some 2
   | _ => none
 
@@ -277,6 +281,7 @@ def Command.eflagsWriteMask : Command -> BitVec 32
 
 def Command.usesMemoryOperand : Command -> Bool
   | .loadMemory _ | .storeMemory _ _ _ | .binaryMemory _ _ |
+      .compareMemory _ _ _ |
       .loadControl | .storeControl => true
   | _ => false
 

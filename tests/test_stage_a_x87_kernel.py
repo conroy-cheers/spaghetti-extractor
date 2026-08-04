@@ -142,6 +142,23 @@ example :
     (decodeCommandExact [0xd8, 0xd1]).map (fun decoded => decoded.command) =
       some (.compareStack .ordered .status 1 false) := by decide
 example :
+    (decodeCommandExact [0xda, 0x4d, 0x20]).map (fun decoded => decoded.command) =
+      some (.binaryMemory .multiply .int32) := by decide
+example :
+    (decodeCommandExact [0xda, 0x64, 0x24, 0x04]).map
+        (fun decoded => decoded.command) =
+      some (.binaryMemory .subtract .int32) := by decide
+example :
+    (decodeCommandExact [0xdc, 0x1d, 0x58, 0x50, 0x41, 0x00]).map
+        (fun decoded => decoded.command) =
+      some (.compareMemory .ordered .float64 true) := by decide
+example :
+    (decodeCommandExact [0xd9, 0xfe]).map (fun decoded => decoded.command) =
+      some (.unary .sine) := by decide
+example :
+    (decodeCommandExact [0xd9, 0xff]).map (fun decoded => decoded.command) =
+      some (.unary .cosine) := by decide
+example :
     (decodeCommandExact [0xdb, 0xe3]).map (fun decoded =>
       (decoded.command, decoded.waitMode)) = some (.initialize, .noWait) := by decide
 example :

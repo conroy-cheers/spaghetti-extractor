@@ -862,6 +862,12 @@ def _symbolic_execute(
             "fsubp",
             "fsubr",
             "fsubrp",
+            "fiadd",
+            "fimul",
+            "fisub",
+            "fisubr",
+            "fidiv",
+            "fidivr",
             "fmul",
             "fmulp",
             "fdiv",
@@ -874,12 +880,18 @@ def _symbolic_execute(
             "fnstcw",
             "fldcw",
             "fnstsw",
+            "fcom",
+            "fcomp",
+            "ficom",
+            "ficomp",
             "fcomi",
             "fcomip",
             "fucomi",
             "fucomip",
             "fcompi",
             "fucompi",
+            "fsin",
+            "fcos",
             "fninit",
         }:
             fpu_touched = True
@@ -935,14 +947,36 @@ def _symbolic_execute(
                 if mnemonic in {"fstp", "fistp", "fisttp"}:
                     _x87_pop(fpu_stack)
                 continue
-            if mnemonic in {"fadd", "fsub", "fsubr", "fmul", "fdiv", "fdivr"}:
+            if mnemonic in {
+                "fadd",
+                "fsub",
+                "fsubr",
+                "fmul",
+                "fdiv",
+                "fdivr",
+                "fiadd",
+                "fisub",
+                "fisubr",
+                "fimul",
+                "fidiv",
+                "fidivr",
+            }:
                 value = fpu_stack[0]
                 if operands:
-                    value = _x87_operand_value(insn, operands[0], registers, memory_events, memory_writes, fpu_stack, memory_epoch=memory_epoch)
+                    value = _x87_operand_value(
+                        insn,
+                        operands[0],
+                        registers,
+                        memory_events,
+                        memory_writes,
+                        fpu_stack,
+                        memory_epoch=memory_epoch,
+                        integer=mnemonic.startswith("fi"),
+                    )
                     if value is None:
                         return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported x87 arithmetic operand")
-                op = mnemonic[1:]
-                if mnemonic in {"fsubr", "fdivr"}:
+                op = mnemonic[2:] if mnemonic.startswith("fi") else mnemonic[1:]
+                if mnemonic in {"fsubr", "fdivr", "fisubr", "fidivr"}:
                     fpu_stack[0] = _x87_binary(op, value, fpu_stack[0])
                 else:
                     fpu_stack[0] = _x87_binary(op, fpu_stack[0], value)
@@ -966,6 +1000,19 @@ def _symbolic_execute(
                 continue
             if mnemonic == "fchs":
                 fpu_stack[0] = ("fpu_neg", _canonical_expr(fpu_stack[0]))
+                continue
+            if mnemonic in {"fsin", "fcos"}:
+                fpu_stack[0] = (
+                    f"fpu_{mnemonic[1:]}",
+                    _canonical_expr(fpu_stack[0]),
+                    _canonical_expr(fpu_control),
+                )
+                fpu_status = (
+                    "fpu_transcendental_status",
+                    mnemonic,
+                    _canonical_expr(fpu_status),
+                    _canonical_expr(fpu_stack[0]),
+                )
                 continue
             if mnemonic == "fxam":
                 fpu_status = ("fpu_fxam", _canonical_expr(fpu_stack[0]))
@@ -991,6 +1038,45 @@ def _symbolic_execute(
                     return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only fnstsw ax is modeled")
                 if not _write_register_expr("ax", ("fpu_status_word", fpu_status), registers):
                     return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported fnstsw destination")
+                continue
+            if mnemonic in {"fcom", "fcomp", "ficom", "ficomp"}:
+                if len(operands) != 1:
+                    return _symbolic_incomplete(
+                        binary_name,
+                        "unsupported_semantics",
+                        rva,
+                        mnemonic,
+                        insn.op_str,
+                        "unsupported x87 status-compare operand shape",
+                    )
+                right = _x87_operand_value(
+                    insn,
+                    operands[0],
+                    registers,
+                    memory_events,
+                    memory_writes,
+                    fpu_stack,
+                    memory_epoch=memory_epoch,
+                    integer=mnemonic.startswith("fi"),
+                )
+                if right is None:
+                    return _symbolic_incomplete(
+                        binary_name,
+                        "unsupported_semantics",
+                        rva,
+                        mnemonic,
+                        insn.op_str,
+                        "unsupported x87 status-compare operand",
+                    )
+                fpu_status = (
+                    "fpu_compare_status",
+                    "ordered",
+                    _canonical_expr(fpu_status),
+                    _canonical_expr(fpu_stack[0]),
+                    _canonical_expr(right),
+                )
+                if mnemonic in {"fcomp", "ficomp"}:
+                    _x87_pop(fpu_stack)
                 continue
             if mnemonic in {"fcomi", "fcomip", "fucomi", "fucomip", "fcompi", "fucompi"}:
                 index = _x87_st_index(insn.op_str) if insn.op_str else 1

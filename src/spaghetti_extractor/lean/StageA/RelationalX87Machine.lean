@@ -129,6 +129,8 @@ theorem commandStepInput_valid
       descriptor.command.expectedOperandBytes = some 8 ∨
       descriptor.command.expectedOperandBytes = some 10 := by
     cases descriptor.command <;> try simp [StageA.X87.Command.expectedOperandBytes]
+    case compareMemory _mode format _pop =>
+      cases format <;> simp [StageA.X87.LoadFormat.byteWidth]
     all_goals
       first
       | (rename_i format; cases format <;>

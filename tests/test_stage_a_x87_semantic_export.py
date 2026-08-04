@@ -38,6 +38,57 @@ def _physical_observables() -> dict[str, object]:
 
 
 class StageAX87SemanticExportTests(unittest.TestCase):
+    def test_dxball_x87_forms_export_checked_singleton_replay(self) -> None:
+        forms = (
+            ("fimul", bytes.fromhex("da4d20")),
+            ("fisub", bytes.fromhex("da642404")),
+            ("fcomp", bytes.fromhex("dc1d58504100")),
+            ("fsin", bytes.fromhex("d9fe")),
+            ("fcos", bytes.fromhex("d9ff")),
+        )
+        for mnemonic, encoded in forms:
+            with (
+                self.subTest(mnemonic=mnemonic),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                original = root / "original.exe"
+                original.write_bytes(pe32_image(encoded))
+                binary = _parse_stage_a_pe(original)
+                side = BlockSide(0x1000, 0x1000 + len(encoded))
+                mapping = BlockMapping(
+                    id=f"x87-{mnemonic}",
+                    original=side,
+                    candidate=side,
+                    kind="code",
+                    reachable=True,
+                    invariant_checked=True,
+                    source={"function": f"x87_{mnemonic}"},
+                )
+
+                transfer = _semantic_transfer_contract(
+                    binary,
+                    mapping,
+                    f"x87_{mnemonic}",
+                    {"model": REFERENCE_CONTRACT_MODEL_ID},
+                )
+
+            self.assertEqual(
+                transfer["blocker_category"],
+                "x87_physical_state_requires_native_exact_command_replay",
+            )
+            schedule = transfer["instruction_effect_schedule"]
+            self.assertEqual(schedule["status"], "complete")
+            self.assertEqual(schedule["counts"]["x87_singletons"], 1)
+            self.assertEqual(schedule["counts"]["blockers"], 0)
+            record = schedule["records"][0]
+            self.assertEqual(
+                record["instruction_class"],
+                "x87_singleton_checked_replay",
+            )
+            self.assertEqual(record["classification"]["mnemonic_guidance"], mnemonic)
+            self.assertEqual(record["bytes"], encoded.hex())
+
     def test_complete_physical_observables_are_preserved_for_stage_b(self) -> None:
         state = _semantic_fpu_state_from_observables(_physical_observables())
 
@@ -264,7 +315,7 @@ class StageAX87SemanticExportTests(unittest.TestCase):
     def test_mixed_transfer_reports_exact_rva_when_effect_is_unrepresentable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            encoded = bytes.fromhex("d9e8f2ae")  # fld1; repne scasb
+            encoded = bytes.fromhex("d9e80fa2")  # fld1; cpuid
             original = root / "original.exe"
             original.write_bytes(pe32_image(encoded))
             binary = _parse_stage_a_pe(original)
@@ -292,17 +343,17 @@ class StageAX87SemanticExportTests(unittest.TestCase):
         self.assertEqual(schedule["counts"]["blockers"], 1)
         blocker = schedule["blockers"][0]
         self.assertEqual(blocker["rva"], 0x1002)
-        self.assertEqual(blocker["bytes"], "f2ae")
-        self.assertEqual(blocker["bytes_sha256"], sha256_bytes(b"\xf2\xae"))
+        self.assertEqual(blocker["bytes"], "0fa2")
+        self.assertEqual(blocker["bytes_sha256"], sha256_bytes(b"\x0f\xa2"))
         self.assertEqual(blocker["category"], "unsupported_semantics")
-        self.assertIn("instruction repne scasb", blocker["blocker"])
+        self.assertIn("instruction cpuid", blocker["blocker"])
         self.assertEqual(transfer["blocker_category"], "unsupported_semantics")
-        self.assertIn("instruction repne scasb", transfer["blocker"])
+        self.assertIn("instruction cpuid", transfer["blocker"])
 
     def test_first_unrepresentable_instruction_propagates_actual_blocker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            encoded = bytes.fromhex("f2ae90")  # repne scasb; nop
+            encoded = bytes.fromhex("0fa290")  # cpuid; nop
             original = root / "original.exe"
             original.write_bytes(pe32_image(encoded))
             binary = _parse_stage_a_pe(original)
@@ -329,7 +380,7 @@ class StageAX87SemanticExportTests(unittest.TestCase):
         self.assertEqual(schedule["counts"]["instructions"], 0)
         self.assertEqual(schedule["blockers"][0]["category"], "unsupported_semantics")
         self.assertEqual(transfer["blocker_category"], "unsupported_semantics")
-        self.assertIn("instruction repne scasb", transfer["blocker"])
+        self.assertIn("instruction cpuid", transfer["blocker"])
 
     def test_non_x87_transfer_remains_reimplementable_without_fpu_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

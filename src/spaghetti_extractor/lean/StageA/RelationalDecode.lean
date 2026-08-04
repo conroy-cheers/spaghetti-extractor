@@ -745,6 +745,8 @@ def x87StoreFormat : X87StoreFormat → Json
 
 def x87UnaryOperation : X87UnaryOperation → Json
   | .negate => "negate"
+  | .sine => "sine"
+  | .cosine => "cosine"
 
 def x87BinaryOperation : X87BinaryOperation → Json
   | .add => "add"

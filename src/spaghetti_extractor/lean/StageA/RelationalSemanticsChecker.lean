@@ -9,7 +9,7 @@ x87 memory-load forms. This predicate is deliberately conservative: a dynamic
 address still remains on the PE-dependent side until a later certificate proves
 that its symbolic address cannot be an immutable image address. -/
 def instructionImageContextIndependent : Instruction -> Bool
-  | .x87LoadMemory .. | .x87BinaryMemory .. => false
+  | .x87LoadMemory .. | .x87BinaryMemory .. | .x87CompareMemory .. => false
   | _ => true
 
 theorem executeInstructionWithContext_eq_of_imageContextIndependent

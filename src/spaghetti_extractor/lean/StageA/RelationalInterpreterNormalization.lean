@@ -226,7 +226,8 @@ def decodedOrderedEffects? (pe : PE32) (imports : List PEImport)
       some [.read .dword, .write .dword]
   | .x87LoadStack .. | .x87LoadConstant .. | .x87Exchange .. |
       .x87StoreStack .. | .x87Unary .. | .x87BinaryStack .. |
-      .x87CompareStack .. | .x87LoadMemory .. | .x87StoreMemory .. |
+      .x87CompareStack .. | .x87CompareMemory .. |
+      .x87LoadMemory .. | .x87StoreMemory .. |
       .x87BinaryMemory .. | .x87LoadControl .. | .x87StoreControl .. |
       .x87SaveState .. | .x87RestoreState .. | .x87Wait | .x87Initialize |
       .x87StoreStatusAx | .x87Examine => none
@@ -569,7 +570,8 @@ def exactInstructionMemoryEvents? (pe : PE32) (imports : List PEImport)
       some [readEvent before address .dword, writeEvent after address .dword]
   | .x87LoadStack .. | .x87LoadConstant .. | .x87Exchange .. |
       .x87StoreStack .. | .x87Unary .. | .x87BinaryStack .. |
-      .x87CompareStack .. | .x87LoadMemory .. | .x87StoreMemory .. |
+      .x87CompareStack .. | .x87CompareMemory .. |
+      .x87LoadMemory .. | .x87StoreMemory .. |
       .x87BinaryMemory .. | .x87LoadControl .. | .x87StoreControl .. |
       .x87SaveState .. | .x87RestoreState .. | .x87Wait | .x87Initialize |
       .x87StoreStatusAx | .x87Examine => none

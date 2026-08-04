@@ -600,6 +600,12 @@ private def instructionMetadataJson : Instruction -> Json
   | .clearDirection => Json.mkObj [
       ("constructor", toJson "clearDirection")
     ]
+  | .setDirection => Json.mkObj [
+      ("constructor", toJson "setDirection")
+    ]
+  | .clearCarry => Json.mkObj [
+      ("constructor", toJson "clearCarry")
+    ]
   | .leave => Json.mkObj [("constructor", toJson "leave")]
   | .lea destination base offset => Json.mkObj [
       ("constructor", toJson "lea"),
@@ -851,6 +857,13 @@ private def instructionMetadataJson : Instruction -> Json
       ("index", toJson index),
       ("pop", toJson pop)
     ]
+  | .x87CompareMemory mode format source pop => Json.mkObj [
+      ("constructor", toJson "x87CompareMemory"),
+      ("mode", toJson (reprStr mode)),
+      ("format", toJson (reprStr format)),
+      ("source", addressingJson source),
+      ("pop", toJson pop)
+    ]
   | .x87LoadMemory format source => Json.mkObj [
       ("constructor", toJson "x87LoadMemory"),
       ("format", toJson (reprStr format)),
@@ -899,6 +912,9 @@ private def instructionMetadataJson : Instruction -> Json
   | .storeDwords repeated => Json.mkObj [
       ("constructor", toJson "storeDwords"),
       ("repeated", toJson repeated)
+    ]
+  | .scanByteNotEqual => Json.mkObj [
+      ("constructor", toJson "scanByteNotEqual")
     ]
   | .callIndirect target => Json.mkObj [
       ("constructor", toJson "callIndirect"),
@@ -2744,7 +2760,7 @@ def _derive_enrichment(
         operation = _condition_name(
             row.get("operation"), f"{context}.operation"
         )
-        if operation != "negate":
+        if operation not in {"negate", "sine", "cosine"}:
             raise StageAInputError(
                 f"{context}.operation is not a reviewed x87 unary operation"
             )
@@ -2812,6 +2828,7 @@ def _derive_enrichment(
         "x87LoadMemory",
         "x87StoreMemory",
         "x87BinaryMemory",
+        "x87CompareMemory",
     }:
         if constructor == "x87StoreMemory":
             row = _exact_fields(
@@ -2836,6 +2853,8 @@ def _derive_enrichment(
                 | (
                     {"operation"}
                     if constructor == "x87BinaryMemory"
+                    else {"mode", "pop"}
+                    if constructor == "x87CompareMemory"
                     else set()
                 ),
                 context,
@@ -2859,6 +2878,18 @@ def _derive_enrichment(
                         f"{context}.operation is not a reviewed x87 binary operation"
                     )
                 stack_inputs = stack_outputs = 1
+            elif constructor == "x87CompareMemory":
+                mode = _condition_name(row.get("mode"), f"{context}.mode")
+                if mode not in {"ordered", "unordered"}:
+                    raise StageAInputError(
+                        f"{context}.mode is not a reviewed x87 compare mode"
+                    )
+                address = _address(row.get("source"), f"{context}.source")
+                pop = row.get("pop")
+                if not isinstance(pop, bool):
+                    raise StageAInputError(f"{context}.pop must be a boolean")
+                stack_inputs = 1
+                stack_outputs = 0 if pop else 1
             else:
                 stack_inputs, stack_outputs = 0, 1
         width_bits = _x87_format_width(
@@ -3200,7 +3231,13 @@ def _derive_enrichment(
             if register is not None:
                 effects.append(register)
         return _resolved(effects=effects, eflags=_ARITHMETIC_FLAGS)
-    if constructor in {"pushFlags", "popFlags", "clearDirection"}:
+    if constructor in {
+        "pushFlags",
+        "popFlags",
+        "clearDirection",
+        "setDirection",
+        "clearCarry",
+    }:
         _exact_fields(instruction, {"constructor"}, context)
         effects: list[dict[str, Any]] = [
             {
@@ -3214,7 +3251,7 @@ def _derive_enrichment(
                 ),
             }
         ]
-        if constructor != "clearDirection":
+        if constructor in {"pushFlags", "popFlags"}:
             effects.append(
                 _memory_effect(
                     address={
@@ -3238,12 +3275,38 @@ def _derive_enrichment(
                 effects.append(register)
         return _resolved(
             effects=effects,
-            eflags=(
-                0
-                if constructor == "pushFlags"
-                else 0x400 if constructor == "clearDirection" else 0x003F7FD7
-            ),
+            eflags={
+                "pushFlags": 0,
+                "popFlags": 0x003F7FD7,
+                "clearDirection": 0x400,
+                "setDirection": 0x400,
+                "clearCarry": 0x1,
+            }[constructor],
         )
+    if constructor == "scanByteNotEqual":
+        _exact_fields(instruction, {"constructor"}, context)
+        effects = [
+            _memory_effect(
+                address={
+                    "base": "edi",
+                    "index": None,
+                    "scale": 1,
+                    "displacement": 0,
+                    "segment": "flat",
+                },
+                access="read",
+                width_bits=8,
+                role="source",
+            )
+        ]
+        register = _register_effect_around_memory(
+            reads=["eax", "ecx", "edi"],
+            writes=["ecx", "edi"],
+            effects=effects,
+        )
+        if register is not None:
+            effects.append(register)
+        return _resolved(effects=effects, eflags=_ARITHMETIC_FLAGS)
     if constructor in {"pushAll", "popAll"}:
         _exact_fields(instruction, {"constructor"}, context)
         effects = [

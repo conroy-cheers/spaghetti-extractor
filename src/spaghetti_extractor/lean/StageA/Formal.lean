@@ -73,6 +73,8 @@ deriving Repr, DecidableEq
 
 inductive X87UnaryOperation where
   | negate
+  | sine
+  | cosine
 deriving Repr, DecidableEq
 
 inductive X87BinaryOperation where
@@ -2587,6 +2589,8 @@ inductive Instruction where
   | x87BinaryStack (operation : X87BinaryOperation) (destination source : Nat) (pop : Bool)
   | x87CompareStack (mode : StageA.X87.CompareMode)
       (destination : StageA.X87.CompareDestination) (index : Nat) (pop : Bool)
+  | x87CompareMemory (mode : StageA.X87.CompareMode)
+      (format : X87LoadFormat) (source : Addressing) (pop : Bool)
   | x87LoadMemory (format : X87LoadFormat) (source : Addressing)
   | x87StoreMemory (format : X87StoreFormat) (destination : Addressing) (pop : Bool)
   | x87BinaryMemory (operation : X87BinaryOperation) (format : X87LoadFormat) (source : Addressing)
@@ -2806,16 +2810,28 @@ def decodeX87MemoryInstruction (opcode : Nat) (bytes : Bytes) : Option DecodedIn
     | 0xdb, .edi => some (.x87StoreMemory .float80 address true)
     | 0xd8, .eax => some (.x87BinaryMemory .add .float32 address)
     | 0xd8, .ecx => some (.x87BinaryMemory .multiply .float32 address)
+    | 0xd8, .edx => some (.x87CompareMemory .ordered .float32 address false)
+    | 0xd8, .ebx => some (.x87CompareMemory .ordered .float32 address true)
     | 0xd8, .esp => some (.x87BinaryMemory .subtract .float32 address)
     | 0xd8, .ebp => some (.x87BinaryMemory .reverseSubtract .float32 address)
     | 0xd8, .esi => some (.x87BinaryMemory .divide .float32 address)
     | 0xd8, .edi => some (.x87BinaryMemory .reverseDivide .float32 address)
     | 0xdc, .eax => some (.x87BinaryMemory .add .float64 address)
     | 0xdc, .ecx => some (.x87BinaryMemory .multiply .float64 address)
+    | 0xdc, .edx => some (.x87CompareMemory .ordered .float64 address false)
+    | 0xdc, .ebx => some (.x87CompareMemory .ordered .float64 address true)
     | 0xdc, .esp => some (.x87BinaryMemory .subtract .float64 address)
     | 0xdc, .ebp => some (.x87BinaryMemory .reverseSubtract .float64 address)
     | 0xdc, .esi => some (.x87BinaryMemory .divide .float64 address)
     | 0xdc, .edi => some (.x87BinaryMemory .reverseDivide .float64 address)
+    | 0xda, .eax => some (.x87BinaryMemory .add .int32 address)
+    | 0xda, .ecx => some (.x87BinaryMemory .multiply .int32 address)
+    | 0xda, .edx => some (.x87CompareMemory .ordered .int32 address false)
+    | 0xda, .ebx => some (.x87CompareMemory .ordered .int32 address true)
+    | 0xda, .esp => some (.x87BinaryMemory .subtract .int32 address)
+    | 0xda, .ebp => some (.x87BinaryMemory .reverseSubtract .int32 address)
+    | 0xda, .esi => some (.x87BinaryMemory .divide .int32 address)
+    | 0xda, .edi => some (.x87BinaryMemory .reverseDivide .int32 address)
     | _, _ => none
   pure { instruction, size := 1 + parsed.size, trailing := parsed.trailing }
 
@@ -2828,6 +2844,10 @@ def decodeX87RegisterInstruction : Bytes -> Option DecodedInstruction
         decoded (.x87Exchange (modrm - 0xc8))
       else if opcode == 0xd9 && modrm == 0xe0 then
         decoded (.x87Unary .negate)
+      else if opcode == 0xd9 && modrm == 0xfe then
+        decoded (.x87Unary .sine)
+      else if opcode == 0xd9 && modrm == 0xff then
+        decoded (.x87Unary .cosine)
       else if opcode == 0xd9 && modrm == 0xe8 then
         decoded (.x87LoadConstant (0x3fff * (2 ^ 64) + (2 ^ 63)))
       else if opcode == 0xd9 && modrm == 0xee then
@@ -4485,6 +4505,7 @@ def executeInstructionWithContext (context : SymbolicImageContext)
         parity := some (.equal (.x87CompareBit left right state.x87.control 1) (.constant 1))
       }
       some (.next { state with x87 := nextX87, flags := some flags, comparison := none })
+  | .x87CompareMemory _ _ _ _ => none
   | .x87LoadMemory format source =>
       let address := source.expression state.registers
       let value :=

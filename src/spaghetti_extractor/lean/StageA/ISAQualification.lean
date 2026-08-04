@@ -124,6 +124,8 @@ inductive InstructionSemanticForm where
   | x87BinaryStack (operation : X87BinaryOperation) (pop : Bool)
   | x87CompareStack (mode : StageA.X87.CompareMode)
       (destination : StageA.X87.CompareDestination) (pop : Bool)
+  | x87CompareMemory (mode : StageA.X87.CompareMode)
+      (format : X87LoadFormat) (source : AddressingSemanticForm) (pop : Bool)
   | x87LoadMemory (format : X87LoadFormat) (source : AddressingSemanticForm)
   | x87StoreMemory (format : X87StoreFormat)
       (destination : AddressingSemanticForm) (pop : Bool)
@@ -233,6 +235,8 @@ def Instruction.semanticForm : Instruction -> InstructionSemanticForm
   | .x87BinaryStack operation _ _ pop => .x87BinaryStack operation pop
   | .x87CompareStack mode destination _ pop =>
       .x87CompareStack mode destination pop
+  | .x87CompareMemory mode format source pop =>
+      .x87CompareMemory mode format source.semanticForm pop
   | .x87LoadMemory format source => .x87LoadMemory format source.semanticForm
   | .x87StoreMemory format destination pop =>
       .x87StoreMemory format destination.semanticForm pop

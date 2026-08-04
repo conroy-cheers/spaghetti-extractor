@@ -1247,6 +1247,21 @@ class StageBNativeEngineTests(unittest.TestCase):
             ("db28", "fld", "xword ptr [eax]", "fld TBYTE PTR [eax]"),
             ("d920", "fldenv", "[eax]", "fldenv [eax]"),
             ("dd30", "fnsave", "dword ptr [eax]", "fnsave [eax]"),
+            (
+                "da4d20",
+                "fimul",
+                "dword ptr [ebp + 0x20]",
+                "fimul DWORD PTR [ebp + 0x20]",
+            ),
+            (
+                "da642404",
+                "fisub",
+                "dword ptr [esp + 4]",
+                "fisub DWORD PTR [esp + 0x4]",
+            ),
+            ("dc18", "fcomp", "qword ptr [eax]", "fcomp QWORD PTR [eax]"),
+            ("d9fe", "fsin", "", "fsin"),
+            ("d9ff", "fcos", "", "fcos"),
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
