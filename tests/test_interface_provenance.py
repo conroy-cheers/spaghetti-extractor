@@ -133,6 +133,32 @@ def create_child_call(
     )
 
 
+def ordinary_indirect_call(
+    identifier: str = "ordinary",
+    rva: int = 0x1350,
+) -> dict[str, object]:
+    esp4 = sub(reg("esp"), const(4))
+    esp8 = sub(esp4, const(4))
+    writes = [
+        {"kind": "write", "width": 4, "address": esp4, "value": const(1)},
+        {"kind": "write", "width": 4, "address": esp8, "value": const(2)},
+    ]
+    event = {
+        "kind": "indirect_call",
+        "return_rva": rva + 1,
+        "target": reg("edi"),
+        "register_inputs": {name: reg(name) for name in REGISTERS},
+    }
+    event["register_inputs"]["esp"] = esp8
+    return unit(
+        identifier,
+        rva,
+        memory=writes,
+        events=[event],
+        ordered=[*writes, event],
+    )
+
+
 def edge(source: str, target: str) -> dict[str, object]:
     return {"source_unit_id": source, "target_unit_id": target}
 
@@ -446,6 +472,150 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(recovery["status"], "incomplete")
         self.assertEqual(recovery["failure"]["code"], "call_esp_origin_unresolved")
 
+    def test_recovered_import_preserves_interface_and_stack_origins(self) -> None:
+        show_window = MachineImportIdentity(
+            "user32.dll", "symbol", "ShowWindow"
+        )
+        selected = self._selected_abi(show_window, argument_words=2)
+        units = [
+            factory_unit(),
+            unit("object", 0x1200, writes=[{
+                "register": "eax",
+                "value": load(const(SLOT)),
+            }]),
+            unit("save", 0x1210, writes=[{
+                "register": "esi",
+                "value": reg("eax"),
+            }]),
+            ordinary_indirect_call(),
+            unit("restore", 0x1360, writes=[{
+                "register": "eax",
+                "value": reg("esi"),
+            }]),
+            unit("vtable", 0x1370, writes=[{
+                "register": "ecx",
+                "value": load(reg("eax")),
+            }]),
+            unit(
+                "prepare",
+                0x1380,
+                writes=[{
+                    "register": "esp",
+                    "value": sub(reg("esp"), const(4)),
+                }],
+                memory=[{
+                    "kind": "write",
+                    "width": 4,
+                    "address": sub(reg("esp"), const(4)),
+                    "value": const(CHILD_SLOT),
+                }],
+            ),
+            create_child_call(rva=0x1390),
+            unit("child", 0x13A0, writes=[{
+                "register": "eax",
+                "value": load(const(CHILD_SLOT)),
+            }]),
+            unit("child-vtable", 0x13B0, writes=[{
+                "register": "ecx",
+                "value": load(reg("eax")),
+            }]),
+            indirect_call(),
+        ]
+        direct = [
+            edge("factory", "object"),
+            edge("object", "save"),
+            edge("save", "ordinary"),
+            edge("ordinary", "restore"),
+            edge("restore", "vtable"),
+            edge("vtable", "prepare"),
+            edge("prepare", "create"),
+            edge("create", "child"),
+            edge("child", "child-vtable"),
+            edge("child-vtable", "call"),
+        ]
+        result = self._run(
+            units,
+            direct,
+            roots=["factory"],
+            recovered_indirect_edges=[{
+                "id": "exit:ordinary",
+                "kind": "indirect_call",
+                "status": "recovered",
+                "source_unit_id": "ordinary",
+                "source_event_index": 0,
+                "target_rvas": [],
+                "target_unit_ids": [],
+                "external_targets": [selected.as_json()],
+            }],
+            extra_import_abis={show_window: selected},
+        )
+
+        recovery = next(
+            row
+            for row in result["call_argument_recoveries"]
+            if row.get("method") == "CreateChild"
+        )
+        self.assertEqual(recovery["status"], "complete")
+        self.assertEqual(result["resolutions"][0]["status"], "recovered")
+
+    def test_conflicting_recovered_call_cleanup_fails_closed(self) -> None:
+        show_window = MachineImportIdentity(
+            "user32.dll", "symbol", "ShowWindow"
+        )
+        cdecl_call = MachineImportIdentity(
+            "example.dll", "symbol", "CdeclCall"
+        )
+        stdcall = self._selected_abi(show_window, argument_words=2)
+        cdecl = self._selected_abi(
+            cdecl_call,
+            argument_words=2,
+            abi_template="pe32-cdecl-v1",
+        )
+        units = [
+            factory_unit(),
+            ordinary_indirect_call(),
+            unit("object", 0x1360, writes=[{
+                "register": "eax",
+                "value": load(const(SLOT)),
+            }]),
+            unit("vtable", 0x1370, writes=[{
+                "register": "ecx",
+                "value": load(reg("eax")),
+            }]),
+            create_child_call(rva=0x1390),
+            indirect_call(),
+        ]
+        result = self._run(
+            units,
+            [
+                edge("factory", "ordinary"),
+                edge("ordinary", "object"),
+                edge("object", "vtable"),
+                edge("vtable", "create"),
+                edge("create", "call"),
+            ],
+            roots=["factory"],
+            recovered_indirect_edges=[{
+                "id": "exit:ordinary",
+                "kind": "indirect_call",
+                "status": "recovered",
+                "source_unit_id": "ordinary",
+                "source_event_index": 0,
+                "target_rvas": [],
+                "target_unit_ids": [],
+                "external_targets": [stdcall.as_json(), cdecl.as_json()],
+            }],
+            extra_import_abis={show_window: stdcall, cdecl_call: cdecl},
+        )
+
+        recovery = next(
+            row
+            for row in result["call_argument_recoveries"]
+            if row.get("method") == "CreateChild"
+        )
+        self.assertEqual(recovery["status"], "incomplete")
+        self.assertEqual(recovery["failure"]["code"], "call_esp_origin_unresolved")
+
     def _run(
         self,
         units: list[dict[str, object]],
@@ -453,6 +623,10 @@ class InterfaceProvenanceTests(unittest.TestCase):
         *,
         roots: list[str],
         internal_edges: list[dict[str, object]] | None = None,
+        recovered_indirect_edges: list[dict[str, object]] | None = None,
+        extra_import_abis: dict[
+            MachineImportIdentity, SelectedImportABI
+        ] | None = None,
         stack_slot_budget: int = 256,
     ) -> dict[str, object]:
         identity = MachineImportIdentity("example.dll", "symbol", "CreateThing")
@@ -466,12 +640,14 @@ class InterfaceProvenanceTests(unittest.TestCase):
             entry_key="machine_import_signatures",
             entry_index=0,
         )
+        import_abis = {identity: selected}
+        import_abis.update(extra_import_abis or {})
         return recover_external_interface_targets(
             units=units,
             roots=roots,
             direct_edges=direct,
             internal_call_edges=internal_edges or [],
-            recovered_indirect_edges=[],
+            recovered_indirect_edges=recovered_indirect_edges or [],
             indirect_exits=[{
                 "id": "exit:call",
                 "source_unit_id": "call",
@@ -481,10 +657,29 @@ class InterfaceProvenanceTests(unittest.TestCase):
                 "target_expression": load(reg("ecx")),
             }],
             profiles=[self.profile],
-            import_abis={identity: selected},
+            import_abis=import_abis,
             internal_call_preserved_registers={},
             image_base=IMAGE_BASE,
             stack_slot_budget=stack_slot_budget,
+        )
+
+    @staticmethod
+    def _selected_abi(
+        identity: MachineImportIdentity,
+        *,
+        argument_words: int | None,
+        abi_template: str = "pe32-stdcall-v1",
+    ) -> SelectedImportABI:
+        abi = resolve_machine_call_abi(abi_template)
+        assert abi is not None
+        return SelectedImportABI(
+            identity=identity,
+            abi=abi,
+            profile_id="fixture",
+            profile_sha256="1" * 64,
+            entry_key="machine_import_signatures",
+            entry_index=1,
+            argument_words=argument_words,
         )
 
 

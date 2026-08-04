@@ -135,6 +135,7 @@ def recover_external_interface_targets(
         internal_call_edges=internal_call_edges,
         recovered_indirect_edges=recovered_indirect_edges,
     )
+    recovered_calls = _recovered_call_inventory(recovered_indirect_edges)
     roots_set = {str(root) for root in roots if str(root) in by_id}
     known_slots: dict[int, _Value] = {}
     final: _RunResult | None = None
@@ -150,6 +151,7 @@ def recover_external_interface_targets(
             import_abis=import_abis,
             internal_call_preserved_registers=internal_call_preserved_registers,
             internal_call_stack_cleanup=call_stack_cleanup,
+            recovered_calls=recovered_calls,
             image_base=image_base,
             known_slots=known_slots,
             finite_value_budget=finite_value_budget,
@@ -184,6 +186,7 @@ def recover_external_interface_targets(
             import_abis=import_abis,
             internal_call_preserved_registers=internal_call_preserved_registers,
             internal_call_stack_cleanup=call_stack_cleanup,
+            recovered_calls=recovered_calls,
             image_base=image_base,
             known_slots=known_slots,
             finite_value_budget=finite_value_budget,
@@ -287,6 +290,7 @@ def _run_dataflow(
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
     internal_call_stack_cleanup: Mapping[int, int],
+    recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
     image_base: int,
     known_slots: Mapping[int, _Value],
     finite_value_budget: int,
@@ -322,6 +326,7 @@ def _run_dataflow(
             import_abis=import_abis,
             internal_call_preserved_registers=internal_call_preserved_registers,
             internal_call_stack_cleanup=internal_call_stack_cleanup,
+            recovered_calls=recovered_calls,
             image_base=image_base,
             known_slots=known_slots,
             finite_value_budget=finite_value_budget,
@@ -375,6 +380,7 @@ def _run_dataflow(
             import_abis=import_abis,
             internal_call_preserved_registers=internal_call_preserved_registers,
             internal_call_stack_cleanup=internal_call_stack_cleanup,
+            recovered_calls=recovered_calls,
             image_base=image_base,
             known_slots=known_slots,
             finite_value_budget=finite_value_budget,
@@ -423,6 +429,7 @@ def _transfer_unit(
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
     internal_call_stack_cleanup: Mapping[int, int],
+    recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
     image_base: int,
     known_slots: Mapping[int, _Value],
     finite_value_budget: int,
@@ -484,6 +491,7 @@ def _transfer_unit(
             import_abis=import_abis,
             internal_call_preserved_registers=internal_call_preserved_registers,
             internal_call_stack_cleanup=internal_call_stack_cleanup,
+            recovered_calls=recovered_calls,
             image_base=image_base,
             known_slots=known_slots,
             budget=finite_value_budget,
@@ -639,6 +647,7 @@ def _call_contract(
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
     internal_call_stack_cleanup: Mapping[int, int],
+    recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
     image_base: int,
     known_slots: Mapping[int, _Value],
     budget: int,
@@ -736,7 +745,20 @@ def _call_contract(
     )
     methods = _method_origins(targets, inventory)
     if methods is None:
-        return _CallFacts(None, None, None, None, outputs), issues, argument_recoveries
+        recovered = recovered_calls.get((unit_id, event_index))
+        facts = _recovered_call_facts(
+            recovered,
+            inventory=inventory,
+            import_abis=import_abis,
+            internal_call_preserved_registers=internal_call_preserved_registers,
+            internal_call_stack_cleanup=internal_call_stack_cleanup,
+            image_base=image_base,
+        )
+        return (
+            facts or _CallFacts(None, None, None, None, outputs),
+            issues,
+            argument_recoveries,
+        )
     preserved_sets = [set(method.abi.preserved_registers) for _, method in methods]
     preserved = preserved_sets[0]
     for values in preserved_sets[1:]:
@@ -792,6 +814,140 @@ def _call_contract(
         issues,
         argument_recoveries,
     )
+
+
+def _recovered_call_facts(
+    recovery: Mapping[str, Any] | None,
+    *,
+    inventory: _ProfileInventory,
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    internal_call_preserved_registers: Mapping[int, frozenset[str]],
+    internal_call_stack_cleanup: Mapping[int, int],
+    image_base: int,
+) -> _CallFacts | None:
+    if recovery is None or recovery.get("status") != "recovered":
+        return None
+    raw_external = recovery.get("external_targets", [])
+    raw_target_rvas = recovery.get("target_rvas", [])
+    raw_target_units = recovery.get("target_unit_ids", [])
+    if not _is_sequence(raw_external) or not _is_sequence(raw_target_rvas):
+        return None
+    if not _is_sequence(raw_target_units):
+        return None
+    if raw_target_units and not raw_target_rvas:
+        return None
+
+    alternatives: list[_CallFacts] = []
+    for raw in raw_external:
+        if not isinstance(raw, Mapping):
+            return None
+        facts = _external_target_call_facts(
+            raw,
+            inventory=inventory,
+            import_abis=import_abis,
+        )
+        if facts is None:
+            return None
+        alternatives.append(facts)
+    for raw_rva in raw_target_rvas:
+        target_rva = _integer(raw_rva)
+        if target_rva is None:
+            return None
+        target_address = (image_base + target_rva) & 0xFFFFFFFF
+        preserved = internal_call_preserved_registers.get(target_address)
+        cleanup = internal_call_stack_cleanup.get(target_address)
+        if preserved is None or cleanup is None:
+            return None
+        alternatives.append(_CallFacts(preserved, None, None, cleanup, {}))
+    return _combine_call_facts(alternatives)
+
+
+def _external_target_call_facts(
+    target: Mapping[str, Any],
+    *,
+    inventory: _ProfileInventory,
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+) -> _CallFacts | None:
+    protocol = _mapping(target.get("external_protocol"))
+    if protocol:
+        profile_sha256 = protocol.get("profile_sha256")
+        interface_id = protocol.get("interface_id")
+        offset = _integer(protocol.get("offset"))
+        if (
+            not isinstance(profile_sha256, str)
+            or not isinstance(interface_id, str)
+            or offset is None
+        ):
+            return None
+        method = inventory.method(profile_sha256, interface_id, offset)
+        profile = inventory.profiles.get(profile_sha256)
+        if (
+            method is None
+            or profile is None
+            or protocol.get("profile_id") != profile.profile_id
+            or protocol.get("kind") != "pe32-interface-method"
+            or protocol.get("method") != method.name
+            or protocol.get("slot") != method.slot
+            or _mapping(target.get("abi")) != method.abi.as_json()
+            or _integer(target.get("argument_words")) != method.argument_words
+        ):
+            return None
+        return _CallFacts(
+            frozenset(method.abi.preserved_registers),
+            method.abi,
+            method.argument_words,
+            _abi_stack_cleanup(method.abi, method.argument_words),
+            {},
+        )
+
+    identity = _event_import_identity(_mapping(target.get("import")))
+    selected = import_abis.get(identity) if identity is not None else None
+    raw_argument_words = target.get("argument_words")
+    if (
+        selected is None
+        or _mapping(target.get("abi")) != selected.abi.as_json()
+        or (
+            raw_argument_words is not None
+            and _integer(raw_argument_words) != selected.argument_words
+        )
+        or (raw_argument_words is None and selected.argument_words is not None)
+    ):
+        return None
+    return _CallFacts(
+        frozenset(selected.abi.preserved_registers),
+        selected.abi,
+        selected.argument_words,
+        _abi_stack_cleanup(selected.abi, selected.argument_words),
+        {},
+    )
+
+
+def _combine_call_facts(alternatives: Sequence[_CallFacts]) -> _CallFacts | None:
+    if not alternatives or any(facts.preserved is None for facts in alternatives):
+        return None
+    preserved = set(alternatives[0].preserved or ())
+    for facts in alternatives[1:]:
+        preserved.intersection_update(facts.preserved or ())
+    abis = {facts.abi for facts in alternatives}
+    argument_counts = {facts.argument_words for facts in alternatives}
+    cleanups = {facts.stack_cleanup_bytes for facts in alternatives}
+    return _CallFacts(
+        frozenset(preserved),
+        next(iter(abis)) if len(abis) == 1 else None,
+        next(iter(argument_counts)) if len(argument_counts) == 1 else None,
+        (
+            next(iter(cleanups))
+            if len(cleanups) == 1 and None not in cleanups
+            else None
+        ),
+        {},
+    )
+
+
+def _abi_stack_cleanup(abi: MachineCallABI, argument_words: int | None) -> int | None:
+    if not abi.callee_cleanup:
+        return 0
+    return argument_words * 4 if argument_words is not None else None
 
 
 def _recover_call_arguments(
@@ -1390,6 +1546,29 @@ def _outgoing_edges(
     return result
 
 
+def _recovered_call_inventory(
+    recoveries: Sequence[Mapping[str, Any]],
+) -> dict[tuple[str, int], Mapping[str, Any]]:
+    result: dict[tuple[str, int], Mapping[str, Any]] = {}
+    for recovery in recoveries:
+        if (
+            recovery.get("status") != "recovered"
+            or recovery.get("kind") != "indirect_call"
+        ):
+            continue
+        source = recovery.get("source_unit_id")
+        event_index = _integer(recovery.get("source_event_index"))
+        if not isinstance(source, str) or event_index is None:
+            continue
+        key = (source, event_index)
+        if key in result:
+            raise ValueError(
+                "interface provenance received duplicate recovered call sites"
+            )
+        result[key] = recovery
+    return result
+
+
 def _join_state(
     states: dict[str, _State],
     target: str,
@@ -1624,6 +1803,10 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 def _integer(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _is_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
 
 
 __all__ = [
