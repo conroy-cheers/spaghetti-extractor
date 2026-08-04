@@ -2033,9 +2033,10 @@ def _definedness_use_payload(
                 next_action="repair stable undefined-slot assignment",
             )
         evidence_slots[slot] = raw_slot
-    if set(evidence_slots) != set(uses_by_slot):
+    missing_slots = set(uses_by_slot) - set(evidence_slots)
+    if missing_slots:
         raise StageBInterpreterError(
-            "compiled undefined nodes and definedness evidence have different slots",
+            "compiled undefined nodes are missing definedness evidence",
             code="definedness_evidence_incomplete",
             next_action="regenerate interpreter and definedness evidence from one state machine",
         )
@@ -2086,6 +2087,8 @@ def _definedness_use_payload(
                 ensure_ascii=True,
             ).encode("ascii")
         ),
+        "evidence_slot_count": len(evidence_slots),
+        "unused_evidence_slot_count": len(set(evidence_slots) - set(uses_by_slot)),
         "undefined_node_count": sum(len(uses) for uses in uses_by_slot.values()),
         "slots": slots,
     }

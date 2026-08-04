@@ -850,6 +850,60 @@ int main(void) {
                 }],
             )
 
+    def test_blocked_transfer_definedness_slots_do_not_abort_package(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine = root / "state-machine.jsonl"
+            compiled = _row(
+                expression={
+                    "op": "undefined_bv",
+                    "width": 32,
+                    "id": "fixture:compiled:undefined:eax",
+                    "reason": "fixture",
+                }
+            )
+            blocked = _row(
+                expression={
+                    "op": "undefined_bv",
+                    "width": 32,
+                    "id": "fixture:blocked:undefined:eax",
+                    "reason": "fixture",
+                },
+            )
+            blocked["id"] = "semantic-transfer:blocked"
+            blocked["contract_sha256"] = "c" * 64
+            blocked["instruction_bytes_sha256"] = "d" * 64
+            blocked["original"] = {
+                "rva_start": 0x2000,
+                "rva_end": 0x2003,
+                "size": 3,
+            }
+            blocked["outcome"] = {"kind": "unsupported"}
+            _write_machine(machine, [compiled, blocked])
+
+            package = write_stage_b_interpreter_package(
+                state_machine=machine,
+                out=root / "package",
+            )
+
+            self.assertEqual(package["status"], "incomplete")
+            self.assertEqual(package["counts"]["transfers"], 1)
+            self.assertEqual(package["counts"]["blocked_transfers"], 1)
+            program = json.loads(
+                (root / "package/state-machine-interpreter-program.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            metadata = program["definedness_use"]
+            self.assertEqual(metadata["evidence_slot_count"], 2)
+            self.assertEqual(metadata["unused_evidence_slot_count"], 1)
+            self.assertEqual(metadata["undefined_node_count"], 1)
+            self.assertEqual(len(metadata["slots"]), 1)
+            self.assertEqual(
+                metadata["slots"][0]["uses"][0]["transfer_id"],
+                "semantic-transfer:fixture",
+            )
+
     def test_value_indexed_undefined_node_retains_exact_input_expression(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
