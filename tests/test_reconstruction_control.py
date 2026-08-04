@@ -308,6 +308,56 @@ class RootedReachabilityTests(unittest.TestCase):
             ],
         )
 
+    def test_unresolved_frontiers_retain_distinct_target_locations(self) -> None:
+        result = derive_rooted_reachable_units(
+            units=[{"id": "root", "rva": 0x1000}],
+            roots=["root"],
+            internal_call_edges=[
+                {
+                    "kind": "internal_call",
+                    "source_unit_id": "root",
+                    "source_rva": 0x1004,
+                    "source_event_index": 0,
+                    "target_rva": 0x2000,
+                },
+                {
+                    "kind": "internal_call",
+                    "source_unit_id": "root",
+                    "source_rva": 0x1004,
+                    "source_event_index": 1,
+                    "target_rva": 0x3000,
+                },
+            ],
+        )
+
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(len(result["frontiers"]), 2)
+        self.assertEqual(
+            [
+                {
+                    key: frontier[key]
+                    for key in (
+                        "source_rva",
+                        "source_event_index",
+                        "target_rva",
+                    )
+                }
+                for frontier in result["frontiers"]
+            ],
+            [
+                {
+                    "source_rva": 0x1004,
+                    "source_event_index": 0,
+                    "target_rva": 0x2000,
+                },
+                {
+                    "source_rva": 0x1004,
+                    "source_event_index": 1,
+                    "target_rva": 0x3000,
+                },
+            ],
+        )
+
     def test_calls_and_finite_indirect_targets_extend_reachability(self) -> None:
         units = [
             {"id": "root", "rva": 0x1000},

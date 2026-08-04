@@ -4101,6 +4101,7 @@
           stage-a-dxball-original-smoke = dxball.originalSmoke;
           stage-a-dxball-original-inventory = dxball.originalInventory;
           stage-a-dxball-opaque-static-export = dxball.opaqueStaticExport;
+          stage-b-dxball-rooted-state-machine = dxball.rootedStateMachine;
           stage-a-dxball-machine-ir = dxball.machineIr;
           gnuHelloRoundtrip = import ./nix/gnu-hello-roundtrip.nix {
             inherit pkgs pythonEnv mingw32;
@@ -7627,6 +7628,7 @@
             stage-a-dxball-original-smoke
             stage-a-dxball-original-inventory
             stage-a-dxball-opaque-static-export
+            stage-b-dxball-rooted-state-machine
             stage-a-dxball-machine-ir
             stage-a-gnu-hello-fixtures
             stage-a-gnu-hello-original-inventory

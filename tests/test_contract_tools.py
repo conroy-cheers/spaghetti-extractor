@@ -142,6 +142,7 @@ class ContractToolTests(unittest.TestCase):
         self.assertIn("stage-a-fuzz-run", subcommands)
         self.assertIn("stage-b-check-contract", subcommands)
         self.assertIn("stage-b-audit-contract", subcommands)
+        self.assertIn("stage-b-augment-rooted-views", subcommands)
         self.assertNotIn("stage-a-legacy-validate", subcommands)
         self.assertNotIn("stage-a-prove-relational", subcommands)
         self.assertNotIn("stage-a-validate-contract-candidate", subcommands)

@@ -49,6 +49,9 @@ from .roundtrip_fuzz.phase0 import generate_phase0_corpus
 from .roundtrip_fuzz.image_contract import load_stage_a_load_image_contract
 from .opaque_reconstruction import stage_a_export_opaque_reconstruction
 from .reconstruction_ir import export_machine_ir_package
+from .rooted_state_machine import (
+    augment_state_machine_with_rooted_instruction_views,
+)
 from .reconstruction_validation import check_semantic_claim
 from .reconstruction_assurance import (
     write_assurance_report,
@@ -1790,6 +1793,24 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     padding_bridges.add_argument("--report", type=Path, required=True)
     padding_bridges.set_defaults(func=_cmd_stage_b_augment_padding_bridges)
 
+    rooted_views = subcommands.add_parser(
+        "stage-b-augment-rooted-views",
+        help=(
+            "iteratively add exact instruction views for rooted unresolved "
+            "direct-control targets"
+        ),
+    )
+    rooted_views.add_argument("--state-machine", type=Path, required=True)
+    rooted_views.add_argument("--machine-ir-manifest", type=Path, required=True)
+    rooted_views.add_argument("--original", type=Path, required=True)
+    rooted_views.add_argument("--reference-contract", type=Path, required=True)
+    rooted_views.add_argument("--indirect-target-profile", type=Path)
+    rooted_views.add_argument("--instruction-budget", type=int, default=65536)
+    rooted_views.add_argument("--iteration-budget", type=int, default=32)
+    rooted_views.add_argument("--out", type=Path, required=True)
+    rooted_views.add_argument("--report", type=Path, required=True)
+    rooted_views.set_defaults(func=_cmd_stage_b_augment_rooted_views)
+
     prepare_source = subcommands.add_parser(
         "stage-a-prepare-source-equivalence",
         help="emit canonical C0 source and Lean source-attestation inputs",
@@ -2971,6 +2992,20 @@ def _cmd_stage_b_augment_padding_bridges(args: Any) -> dict[str, Any]:
     }
     write_json(args.report, payload)
     return payload
+
+
+def _cmd_stage_b_augment_rooted_views(args: Any) -> dict[str, Any]:
+    return augment_state_machine_with_rooted_instruction_views(
+        state_machine=args.state_machine,
+        machine_ir_manifest=args.machine_ir_manifest,
+        original_pe=args.original,
+        reference_contract=args.reference_contract,
+        indirect_target_profile=args.indirect_target_profile,
+        instruction_budget=args.instruction_budget,
+        iteration_budget=args.iteration_budget,
+        out=args.out,
+        report=args.report,
+    )
 
 
 def _cmd_stage_a_prepare_source_equivalence(args: Any) -> dict[str, Any]:

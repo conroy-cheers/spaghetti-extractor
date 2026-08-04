@@ -79,6 +79,27 @@ let
       ../src/spaghetti_extractor/reconstruction_control.py
     ];
   };
+  rootedStateMachinePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/_contract_tools
+      ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/machine_import_profiles.py
+      ../src/spaghetti_extractor/util.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_binary.py
+      ../src/spaghetti_extractor/stage_b_state_machine.py
+      ../src/spaghetti_extractor/recursive_decode.py
+      ../src/spaghetti_extractor/reconstruction_ir.py
+      ../src/spaghetti_extractor/reconstruction_control.py
+      ../src/spaghetti_extractor/rooted_state_machine.py
+      ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/relational/semantic_cutpoints.py
+      ../src/spaghetti_extractor/relational/x87_profile.py
+    ];
+  };
 in
 rec {
   sourceArchive = archive;
@@ -306,7 +327,7 @@ rec {
       ' "$out/opaque-static-export.json" >/dev/null
     '';
 
-  machineIr = pkgs.runCommand "stage-a-dxball-1.09-machine-ir"
+  baseMachineIr = pkgs.runCommand "stage-a-dxball-1.09-base-machine-ir"
     {
       nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
       preferLocalBuild = false;
@@ -355,6 +376,113 @@ rec {
         .control.counts.exact_reachable_units > 0 and
         .control.counts.potential_reachable_units > 0 and
         .control.reachability.status == "incomplete" and
+        .control.counts.rooted_frontiers > 0
+      ' "$out/machine-ir-manifest.json" >/dev/null
+    '';
+
+  rootedStateMachine = pkgs.runCommand
+    "stage-b-dxball-1.09-rooted-state-machine"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${rootedStateMachinePythonSource}/src
+      test ! -e ${rootedStateMachinePythonSource}/src/spaghetti_extractor/component_workspace.py
+      mkdir -p "$out"
+      ${python} - \
+        ${lib.escapeShellArg "${opaqueStaticExport}/state-machine.jsonl"} \
+        ${lib.escapeShellArg "${baseMachineIr}/machine-ir-manifest.json"} \
+        ${lib.escapeShellArg "${originalRuntime}/runtime/DXBall.exe"} \
+        ${lib.escapeShellArg "${opaqueStaticExport}/reference-contract.json"} \
+        ${lib.escapeShellArg "${../profiles/pe32-static-cutpoints-and-paired-callables-v1.json}"} \
+        "$out/state-machine.jsonl" \
+        "$out/rooted-view-augmentation.json" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.rooted_state_machine import (
+          augment_state_machine_with_rooted_instruction_views,
+      )
+
+      state_machine, manifest, original, reference, target_profile, output, report = map(
+          pathlib.Path, sys.argv[1:]
+      )
+      augment_state_machine_with_rooted_instruction_views(
+          state_machine=state_machine,
+          machine_ir_manifest=manifest,
+          original_pe=original,
+          reference_contract=reference,
+          indirect_target_profile=target_profile,
+          out=output,
+          report=report,
+      )
+      PY
+      jq -e '
+        .format == "stage-b-rooted-state-machine-augmentation-v1" and
+        .status == "complete" and
+        .counts.iterations > 1 and
+        .counts.seed_targets > 1 and
+        .counts.supplemental_transfers > 15 and
+        .counts.output_transfers > 9004 and
+        .counts.merge_destinations >= 3 and
+        .counts.remaining_rooted_direct_targets == 0 and
+        .counts.issues == 0 and
+        (.trust.executes_original_binary | not) and
+        .trust.recursive_decode_is_proposal_only and
+        .trust.exact_pe_binding_required_downstream
+      ' "$out/rooted-view-augmentation.json" >/dev/null
+    '';
+
+  machineIr = pkgs.runCommand "stage-a-dxball-1.09-machine-ir"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${machineIrPythonSource}/src
+      ${python} - \
+        ${lib.escapeShellArg "${rootedStateMachine}/state-machine.jsonl"} \
+        ${lib.escapeShellArg "${originalRuntime}/runtime/DXBall.exe"} \
+        ${lib.escapeShellArg "${opaqueStaticExport}/reference-contract.json"} \
+        ${lib.escapeShellArg "${../profiles/pe32-static-cutpoints-and-paired-callables-v1.json}"} \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.reconstruction_ir import export_machine_ir_package
+
+      state_machine, original, reference, target_profile, output = map(
+          pathlib.Path, sys.argv[1:]
+      )
+      export_machine_ir_package(
+          state_machine=state_machine,
+          original_pe=original,
+          reference_contract=reference,
+          indirect_target_profile=target_profile,
+          out=output,
+      )
+      PY
+      jq -e '
+        .format == "stage-a-machine-ir-v2" and
+        .status == "incomplete" and
+        .binary.sha256 == "${executableSha256}" and
+        .counts.units > 9004 and
+        .counts.violated_issues == 0 and
+        .coverage.counts.unknown_bytes == 0 and
+        .control.reachability.status == "incomplete" and
+        ([.control.reachability.frontiers[] |
+          select(.reason == "unresolved_internal_call_target")] | length) == 0 and
         .control.counts.rooted_frontiers > 0
       ' "$out/machine-ir-manifest.json" >/dev/null
     '';

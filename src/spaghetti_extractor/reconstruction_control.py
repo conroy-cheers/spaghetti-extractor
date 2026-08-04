@@ -1016,6 +1016,9 @@ def _frontier(
             "source_unit_id": source,
             "kind": record.get("kind"),
             "reason": reason,
+            "source_rva": record.get("source_rva"),
+            "source_event_index": record.get("source_event_index"),
+            "target_rva": record.get("target_rva"),
             "target_expression": record.get("target_expression"),
         },
     )
@@ -1025,6 +1028,9 @@ def _frontier(
         "kind": str(record.get("kind", "indirect")),
         "reason": reason,
     }
+    for field in ("source_rva", "source_event_index", "target_rva"):
+        if _is_u32(record.get(field)):
+            result[field] = int(record[field])
     if "target_expression" in record:
         result["target_expression"] = copy.deepcopy(record["target_expression"])
     failure = record.get("failure")
