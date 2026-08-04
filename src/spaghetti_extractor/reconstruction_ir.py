@@ -22,12 +22,14 @@ from .external_interface_profiles import (
     ExternalInterfaceProfile,
     load_external_interface_profile,
 )
+from .finite_value_domain import FiniteU32Dataflow
 from .import_abi import SelectedImportABI, load_selected_import_abis
 from .interface_provenance import recover_external_interface_targets
 from .internal_call_summaries import derive_internal_call_preservation_summaries
 from .machine_import_profiles import MachineImportIdentity
 from .reconstruction_control import (
     derive_rooted_reachable_units,
+    pe32_jump_table_index_expression,
     recover_static_pe32_jump_table_inventory,
 )
 from .stage_b_state_machine import (
@@ -1475,41 +1477,15 @@ def _control_inventory(
         for root in roots
         if isinstance(root.get("rva"), int) and int(root["rva"]) in starts
     ]
-    static_recoveries: list[dict[str, Any]] = []
-    for exit_record in indirect:
-        source_unit = next(
-            unit for unit in units if unit["id"] == exit_record["source_unit_id"]
-        )
-        predecessors = _indirect_predecessor_evidence(source_unit, units)
-        recovery = recover_static_pe32_jump_table_inventory(
-            target_expression=exit_record.get("target_expression") or {},
-            predecessor_evidence=predecessors,
-            image_base=binary.image_base,
-            sections=binary.sections,
-            read_rva=lambda rva, size: bytes(binary.pe.get_data(rva, size)),
-            valid_target_rvas=starts,
-        )
-        recovery.update(
-            {
-                "id": exit_record["id"],
-                "source_unit_id": exit_record["source_unit_id"],
-                "source_rva": exit_record["source_rva"],
-                "source_event_index": exit_record.get("source_event_index"),
-                "kind": exit_record["kind"],
-                "target_unit_ids": [
-                    starts[rva]["id"] for rva in recovery.get("target_rvas", [])
-                    if rva in starts
-                ],
-            }
-        )
-        static_recoveries.append(recovery)
-
     direct_control_edges = [
         item for item in direct if item["kind"] == "direct_control"
     ]
     internal_call_edges = [
         item for item in direct if item["kind"] == "internal_call"
     ]
+    static_recoveries: list[dict[str, Any]] = []
+    static_control_rounds = 0
+    static_control_converged = True
     control_fixed_point_rounds = 0
     control_fixed_point_converged = True
     while True:
@@ -1518,6 +1494,19 @@ def _control_inventory(
             for root in roots
             if isinstance(root.get("rva"), int) and int(root["rva"]) in starts
         ]
+        (
+            static_recoveries,
+            static_rounds,
+            static_converged,
+        ) = _static_jump_table_recovery_fixed_point(
+            binary=binary,
+            units=units,
+            starts=starts,
+            indirect_exits=indirect,
+            root_unit_ids=root_unit_ids,
+        )
+        static_control_rounds += static_rounds
+        static_control_converged &= static_converged
         (
             value_provenance,
             external_interface_provenance,
@@ -1569,6 +1558,22 @@ def _control_inventory(
                 ),
             )
         )
+    if not static_control_converged:
+        issues.append(
+            ExportIssue(
+                status="incomplete",
+                category="static_jump_table_fixed_point_budget_exceeded",
+                message="finite index domains and static target inventories did not converge",
+                next_action="increase the generic fixed-point budget or reduce the finite domain",
+                location=SourceLocation(
+                    None,
+                    None,
+                    None,
+                    RvaSpan(binary.entrypoint_rva, binary.entrypoint_rva + 1),
+                    "control.static_jump_tables",
+                ),
+            )
+        )
 
     for exit_record, static_recovery, selected_recovery in zip(
         indirect, static_recoveries, recovered_targets, strict=True
@@ -1576,7 +1581,10 @@ def _control_inventory(
         source_unit = next(
             unit for unit in units if unit["id"] == exit_record["source_unit_id"]
         )
-        if selected_recovery["status"] == "recovered":
+        unit_binding_complete = _indirect_recovery_unit_binding_complete(
+            selected_recovery, starts
+        )
+        if selected_recovery["status"] == "recovered" and unit_binding_complete:
             exit_record["closure"] = "checked_finite_target_inventory"
             exit_record["target_rvas"] = list(
                 selected_recovery.get("target_rvas", [])
@@ -1618,7 +1626,16 @@ def _control_inventory(
             if profiled
             else "unresolved"
         )
-        recovery_failure = selected_recovery.get("failure")
+        if selected_recovery.get("status") == "recovered":
+            recovery_failure: Mapping[str, Any] = {
+                "code": "unmaterialized_indirect_target",
+                "message": (
+                    "a checked finite target inventory contains an executable "
+                    "RVA without one exact machine-IR unit"
+                ),
+            }
+        else:
+            recovery_failure = selected_recovery.get("failure")
         if not isinstance(recovery_failure, Mapping):
             recovery_failure = static_recovery["failure"]
         exit_record["recovery_failure"] = copy.deepcopy(recovery_failure)
@@ -1683,9 +1700,13 @@ def _control_inventory(
             "internal_call_preservation": internal_call_preservation,
             "analysis_fixed_point": {
                 "status": (
-                    "complete" if control_fixed_point_converged else "incomplete"
+                    "complete"
+                    if control_fixed_point_converged and static_control_converged
+                    else "incomplete"
                 ),
                 "rounds": control_fixed_point_rounds,
+                "static_jump_table_rounds": static_control_rounds,
+                "static_jump_table_converged": static_control_converged,
                 "callback_root_reanalysis": True,
             },
             "reachability": reachability,
@@ -1719,6 +1740,137 @@ def _control_inventory(
         },
         issues,
     )
+
+
+def _indirect_recovery_unit_binding_complete(
+    recovery: Mapping[str, Any],
+    starts: Mapping[int, Mapping[str, Any]],
+) -> bool:
+    raw_rvas = recovery.get("target_rvas", [])
+    raw_ids = recovery.get("target_unit_ids", [])
+    if (
+        not isinstance(raw_rvas, Sequence)
+        or isinstance(raw_rvas, (str, bytes))
+        or not isinstance(raw_ids, Sequence)
+        or isinstance(raw_ids, (str, bytes))
+    ):
+        return False
+    target_rvas = []
+    for raw_rva in raw_rvas:
+        if (
+            isinstance(raw_rva, bool)
+            or not isinstance(raw_rva, int)
+            or not 0 <= raw_rva < 2**32
+        ):
+            return False
+        target_rvas.append(raw_rva)
+    if any(rva not in starts for rva in target_rvas):
+        return False
+    expected_ids = {str(starts[rva]["id"]) for rva in target_rvas}
+    return {str(value) for value in raw_ids} == expected_ids
+
+
+def _static_jump_table_recovery_fixed_point(
+    *,
+    binary: StageABinary,
+    units: Sequence[Mapping[str, Any]],
+    starts: Mapping[int, Mapping[str, Any]],
+    indirect_exits: Sequence[Mapping[str, Any]],
+    root_unit_ids: Sequence[str],
+    max_rounds: int = 16,
+) -> tuple[list[dict[str, Any]], int, bool]:
+    units_by_id = {str(unit["id"]): unit for unit in units}
+    selected: list[dict[str, Any]] = []
+    previous_signature: str | None = None
+    for round_index in range(1, max_rounds + 1):
+        dataflow = FiniteU32Dataflow(
+            units=units,
+            roots=root_unit_ids,
+            recovered_indirect_targets=selected,
+        )
+        recoveries: list[dict[str, Any]] = []
+        for exit_record in indirect_exits:
+            source_unit_id = str(exit_record["source_unit_id"])
+            source_unit = units_by_id[source_unit_id]
+            target_expression = exit_record.get("target_expression") or {}
+            index_expression = pe32_jump_table_index_expression(target_expression)
+            finite_domain = (
+                dataflow.expression_domain(source_unit_id, index_expression)
+                if index_expression is not None
+                else None
+            )
+            recovery = recover_static_pe32_jump_table_inventory(
+                target_expression=target_expression,
+                predecessor_evidence=_indirect_predecessor_evidence(
+                    source_unit, units
+                ),
+                image_base=binary.image_base,
+                sections=binary.sections,
+                read_rva=lambda rva, size: bytes(binary.pe.get_data(rva, size)),
+                finite_index_domain=finite_domain,
+                valid_target_rvas=None,
+            )
+            target_rvas = [
+                int(rva)
+                for rva in recovery.get("target_rvas", [])
+                if isinstance(rva, int) and not isinstance(rva, bool)
+            ]
+            resolved_target_rvas = sorted(
+                rva for rva in target_rvas if rva in starts
+            )
+            unmaterialized_target_rvas = sorted(
+                rva for rva in target_rvas if rva not in starts
+            )
+            recovery.update(
+                {
+                    "id": exit_record["id"],
+                    "source_unit_id": source_unit_id,
+                    "source_rva": exit_record["source_rva"],
+                    "source_event_index": exit_record.get("source_event_index"),
+                    "kind": exit_record["kind"],
+                    "finite_index_domain": finite_domain,
+                    "target_unit_ids": [
+                        starts[rva]["id"] for rva in resolved_target_rvas
+                    ],
+                    "unit_binding": {
+                        "status": (
+                            "complete"
+                            if recovery.get("status") == "recovered"
+                            and not unmaterialized_target_rvas
+                            else "incomplete"
+                        ),
+                        "resolved_target_rvas": resolved_target_rvas,
+                        "unmaterialized_target_rvas": unmaterialized_target_rvas,
+                    },
+                }
+            )
+            recoveries.append(recovery)
+        signature = sha256_bytes(
+            json.dumps(
+                [
+                    {
+                        "id": row.get("id"),
+                        "status": row.get("status"),
+                        "index_values": (
+                            row["index"].get("values")
+                            if isinstance(row.get("index"), Mapping)
+                            else None
+                        ),
+                        "target_rvas": row.get("target_rvas"),
+                        "target_unit_ids": row.get("target_unit_ids"),
+                        "failure": row.get("failure"),
+                    }
+                    for row in recoveries
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        selected = recoveries
+        if signature == previous_signature:
+            return selected, round_index, True
+        previous_signature = signature
+    return selected, max_rounds, False
 
 
 def _callback_registration_roots(

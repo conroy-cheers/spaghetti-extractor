@@ -64,6 +64,19 @@ let
       ../src/spaghetti_extractor/util.py
     ];
   };
+  importAbiPythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/import_abi.py
+      ../src/spaghetti_extractor/machine_abi.py
+      ../src/spaghetti_extractor/machine_import_profiles.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_binary.py
+      ../src/spaghetti_extractor/util.py
+    ];
+  };
   opaqueStaticPythonSource = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.unions [
@@ -101,6 +114,7 @@ let
       ../src/spaghetti_extractor/call_arguments.py
       ../src/spaghetti_extractor/errors.py
       ../src/spaghetti_extractor/external_interface_profiles.py
+      ../src/spaghetti_extractor/finite_value_domain.py
       ../src/spaghetti_extractor/import_abi.py
       ../src/spaghetti_extractor/interface_provenance.py
       ../src/spaghetti_extractor/internal_call_summaries.py
@@ -124,6 +138,7 @@ let
       ../src/spaghetti_extractor/call_arguments.py
       ../src/spaghetti_extractor/errors.py
       ../src/spaghetti_extractor/external_interface_profiles.py
+      ../src/spaghetti_extractor/finite_value_domain.py
       ../src/spaghetti_extractor/import_abi.py
       ../src/spaghetti_extractor/interface_provenance.py
       ../src/spaghetti_extractor/internal_call_summaries.py
@@ -382,7 +397,8 @@ rec {
       export PYTHONHASHSEED=0
       export LC_ALL=C.UTF-8
       export SOURCE_DATE_EPOCH=1
-      export PYTHONPATH=${machineIrPythonSource}/src
+      export PYTHONPATH=${importAbiPythonSource}/src
+      test ! -e ${importAbiPythonSource}/src/spaghetti_extractor/reconstruction_ir.py
       mkdir -p "$out"
       ${python} - \
         ${lib.escapeShellArg "${originalRuntime}/runtime/DXBall.exe"} \
@@ -657,7 +673,9 @@ rec {
         .counts.supplemental_transfers > 15 and
         .counts.output_transfers > 9004 and
         .counts.merge_destinations >= 3 and
+        .counts.remaining_rooted_control_targets == 0 and
         .counts.remaining_rooted_direct_targets == 0 and
+        .counts.remaining_rooted_indirect_targets == 0 and
         .counts.issues == 0 and
         (.trust.executes_original_binary | not) and
         .trust.recursive_decode_is_proposal_only and

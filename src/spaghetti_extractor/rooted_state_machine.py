@@ -45,7 +45,7 @@ def augment_state_machine_with_rooted_instruction_views(
     machine_import_profiles: Sequence[Path] = (),
     external_interface_profiles: Sequence[Path] = (),
 ) -> dict[str, Any]:
-    """Add exact one-instruction views for rooted unresolved direct targets.
+    """Add exact one-instruction views for rooted unmaterialized control targets.
 
     Recursive discovery and symbolic transfer generation are proposal logic.
     Every emitted row retains a Stage A reference binding, and the downstream
@@ -85,12 +85,17 @@ def augment_state_machine_with_rooted_instruction_views(
         current_manifest = manifest
         iterations: list[dict[str, Any]] = []
         all_seed_targets: set[int] = set()
+        all_direct_seed_targets: set[int] = set()
+        all_indirect_seed_targets: set[int] = set()
         all_views: list[dict[str, Any]] = []
         all_merges: list[dict[str, Any]] = []
         all_issues: list[dict[str, Any]] = []
         status = "incomplete"
         for iteration_index in range(iteration_budget):
-            seeds = _rooted_unresolved_direct_targets(current_manifest)
+            pending_targets = _rooted_unmaterialized_control_targets(
+                current_manifest
+            )
+            seeds = pending_targets["all"]
             if not seeds:
                 status = "complete"
                 break
@@ -123,12 +128,16 @@ def augment_state_machine_with_rooted_instruction_views(
                 for view in discovery["views"]
             ]
             all_seed_targets.update(seeds)
+            all_direct_seed_targets.update(pending_targets["direct"])
+            all_indirect_seed_targets.update(pending_targets["indirect"])
             all_views.extend(discovery["views"])
             all_merges.extend(discovery["merge_destinations"])
             all_issues.extend(discovery["issues"])
             iterations.append({
                 "index": iteration_index,
                 "seed_targets": seeds,
+                "direct_seed_targets": pending_targets["direct"],
+                "indirect_seed_targets": pending_targets["indirect"],
                 "decoded_instruction_count": discovery[
                     "decoded_instruction_count"
                 ],
@@ -145,7 +154,7 @@ def augment_state_machine_with_rooted_instruction_views(
                     "status": "incomplete",
                     "code": "rooted_decode_made_no_progress",
                     "message": (
-                        "rooted direct targets remain but recursive discovery "
+                        "rooted control targets remain but recursive discovery "
                         "produced no new instruction views"
                     ),
                     "pending_rvas": seeds,
@@ -172,16 +181,18 @@ def augment_state_machine_with_rooted_instruction_views(
                     "iterated machine-IR manifest",
                 )
         else:
-            pending = _rooted_unresolved_direct_targets(current_manifest)
-            if pending:
+            pending_targets = _rooted_unmaterialized_control_targets(
+                current_manifest
+            )
+            if pending_targets["all"]:
                 all_issues.append({
                     "status": "incomplete",
                     "code": "rooted_decode_iteration_budget_exhausted",
                     "message": (
-                        "rooted state-machine augmentation did not close direct "
+                        "rooted state-machine augmentation did not close "
                         "control within its iteration budget"
                     ),
-                    "pending_rvas": pending,
+                    "pending_rvas": pending_targets["all"],
                 })
     finally:
         binary.pe.close()
@@ -190,7 +201,8 @@ def augment_state_machine_with_rooted_instruction_views(
     out.parent.mkdir(parents=True, exist_ok=True)
     write_stage_b_state_machine(out, merged)
 
-    final_seeds = _rooted_unresolved_direct_targets(current_manifest)
+    final_targets = _rooted_unmaterialized_control_targets(current_manifest)
+    final_seeds = final_targets["all"]
     status = (
         "complete"
         if not final_seeds and not all_issues
@@ -205,7 +217,9 @@ def augment_state_machine_with_rooted_instruction_views(
         "views": all_views,
         "merge_destinations": all_merges,
         "issues": all_issues,
-        "remaining_rooted_direct_targets": final_seeds,
+        "remaining_rooted_control_targets": final_seeds,
+        "remaining_rooted_indirect_targets": final_targets["indirect"],
+        "remaining_rooted_direct_targets": final_targets["direct"],
     }
     payload = {
         "format": ROOTED_STATE_MACHINE_AUGMENTATION_FORMAT,
@@ -224,11 +238,15 @@ def augment_state_machine_with_rooted_instruction_views(
         "counts": {
             "iterations": len(iterations),
             "seed_targets": len(all_seed_targets),
+            "direct_seed_targets": len(all_direct_seed_targets),
+            "indirect_seed_targets": len(all_indirect_seed_targets),
             "base_transfers": len(base_rows),
             "supplemental_transfers": len(all_views),
             "output_transfers": len(merged),
             "merge_destinations": len(all_merges),
-            "remaining_rooted_direct_targets": len(final_seeds),
+            "remaining_rooted_control_targets": len(final_seeds),
+            "remaining_rooted_direct_targets": len(final_targets["direct"]),
+            "remaining_rooted_indirect_targets": len(final_targets["indirect"]),
             "issues": len(all_issues),
         },
         "trust": {
@@ -306,26 +324,66 @@ def _view_transfer(
 
 
 def _rooted_unresolved_direct_targets(manifest: Mapping[str, Any]) -> list[int]:
+    return _rooted_unmaterialized_control_targets(manifest)["direct"]
+
+
+def _rooted_unmaterialized_control_targets(
+    manifest: Mapping[str, Any],
+) -> dict[str, list[int]]:
     control = _mapping(manifest.get("control"), "machine-IR control inventory")
     reachability = _mapping(
         control.get("reachability"), "machine-IR reachability inventory"
     )
     raw_reachable = reachability.get("reachable_units")
     raw_targets = control.get("direct_targets")
-    if not isinstance(raw_reachable, list) or not isinstance(raw_targets, list):
+    raw_recoveries = control.get("recovered_indirect_targets")
+    raw_source_map = manifest.get("source_map")
+    if (
+        not isinstance(raw_reachable, list)
+        or not isinstance(raw_targets, list)
+        or not isinstance(raw_recoveries, list)
+        or not isinstance(raw_source_map, list)
+    ):
         raise StageAInputError("machine-IR rooted control inventory is malformed")
     reachable = {
         str(value)
         for value in raw_reachable
         if isinstance(value, str) and value
     }
-    return sorted({
+    materialized = {
+        _u32(row.get("rva_start"), "machine-IR source-map start")
+        for row in raw_source_map
+        if isinstance(row, Mapping)
+    }
+    direct = sorted({
         _u32(row.get("target_rva"), "unresolved direct target")
         for row in raw_targets
         if isinstance(row, Mapping)
         and row.get("status") == "incomplete"
         and row.get("source_unit_id") in reachable
-    })
+    } - materialized)
+    indirect_targets: set[int] = set()
+    for row in raw_recoveries:
+        if (
+            not isinstance(row, Mapping)
+            or row.get("status") != "recovered"
+            or row.get("source_unit_id") not in reachable
+        ):
+            continue
+        raw_rvas = row.get("target_rvas")
+        if not isinstance(raw_rvas, list):
+            raise StageAInputError(
+                "recovered indirect target inventory is malformed"
+            )
+        indirect_targets.update(
+            _u32(rva, "recovered indirect target") for rva in raw_rvas
+        )
+    indirect = sorted(indirect_targets - materialized)
+    return {
+        "all": sorted(set(direct) | set(indirect)),
+        "direct": direct,
+        "indirect": indirect,
+    }
 
 
 def _validate_manifest_bindings(

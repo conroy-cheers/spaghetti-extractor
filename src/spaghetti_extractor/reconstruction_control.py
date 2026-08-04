@@ -26,6 +26,15 @@ _UNSIGNED_LESS_EQUAL_OPS = frozenset(
 _REGISTER_OPS = frozenset({"input_reg", "reg", "register"})
 
 
+def pe32_jump_table_index_expression(
+    target_expression: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return the exact index expression from a supported PE32 table load."""
+
+    shape = _indexed_load_shape(target_expression)
+    return copy.deepcopy(dict(shape[1])) if shape is not None else None
+
+
 def recover_static_pe32_jump_table_inventory(
     *,
     target_expression: Mapping[str, Any],
@@ -33,6 +42,7 @@ def recover_static_pe32_jump_table_inventory(
     image_base: int,
     sections: Sequence[Mapping[str, Any] | Any],
     read_rva: RvaReader,
+    finite_index_domain: Mapping[str, Any] | None = None,
     valid_target_rvas: Iterable[int] | None = None,
     max_entries: int = 4096,
 ) -> dict[str, Any]:
@@ -40,9 +50,9 @@ def recover_static_pe32_jump_table_inventory(
 
     Supported target expressions are a 32-bit load from ``base + index * 4``;
     multiplication by four and a left shift by two are treated identically.
-    Every incoming predecessor must establish the same unsigned upper bound.
-    Guard expressions are preferred, while typed ``cmp``/unsigned-jcc evidence
-    can independently establish or cross-check the bound.
+    The index domain may come from bounded machine-IR dataflow. Otherwise every
+    incoming predecessor must establish the same unsigned upper bound. Wrapped
+    or sparse domains are read entry-by-entry instead of widening their span.
 
     Analysis failures are data, not exceptions: an incomplete result has an
     empty target inventory and a stable failure code.  Invalid API parameters
@@ -69,79 +79,131 @@ def recover_static_pe32_jump_table_inventory(
         remap_shape[1] if remap_shape is not None else index_expression
     )
     evidence_rows: list[dict[str, Any]] = []
-    bounds: set[int] = set()
-    if not predecessor_evidence:
-        return _table_failure(
-            kind,
-            "missing_predecessor_evidence",
-            "no predecessor proves a finite index bound",
-        )
-    for ordinal, row in enumerate(
-        sorted(predecessor_evidence, key=_canonical_mapping_key)
+    index_values: list[int] | None = None
+    dataflow_evidence: dict[str, Any] | None = None
+    if (
+        remap_shape is None
+        and isinstance(finite_index_domain, Mapping)
+        and finite_index_domain.get("status") == "complete"
     ):
-        if not isinstance(row, Mapping):
+        expected_expression_sha256 = sha256(
+            _canonical_json(index_expression).encode("utf-8")
+        ).hexdigest()
+        raw_values = finite_index_domain.get("values")
+        if (
+            finite_index_domain.get("format")
+            != "stage-a-finite-u32-expression-domain-v1"
+            or finite_index_domain.get("expression_sha256")
+            != expected_expression_sha256
+            or not isinstance(raw_values, list)
+            or any(not _is_u32(value) for value in raw_values)
+        ):
             return _table_failure(
                 kind,
-                "invalid_predecessor_evidence",
-                "predecessor evidence contains a non-mapping row",
+                "invalid_finite_index_domain",
+                (
+                    "finite index-domain evidence is malformed or bound to "
+                    "another expression"
+                ),
             )
-        guard = _predecessor_path_guard(row)
-        guard_bound = (
-            _guard_upper_exclusive(guard, bound_expression)
-            if guard is not None
-            else None
-        )
-        instruction_bound = _instruction_upper_exclusive(row, bound_expression)
-        row_bounds = {
-            value
-            for value in (guard_bound, instruction_bound)
-            if value is not None
-        }
-        if len(row_bounds) > 1:
+        index_values = sorted({int(value) for value in raw_values})
+        if not index_values or len(index_values) > max_entries:
+            return _table_failure(
+                kind,
+                "invalid_index_bound",
+                "finite index domain is empty or exceeds the resolver cap",
+            )
+        dataflow_evidence = copy.deepcopy(dict(finite_index_domain))
+        evidence_rows.append({
+            "source_unit_id": str(
+                finite_index_domain.get("source_unit_id", "finite-u32-dataflow")
+            ),
+            "values": index_values,
+            "sources": ["finite_u32_dataflow"],
+        })
+
+    source_upper_exclusive: int | None = None
+    if index_values is None:
+        bounds: set[int] = set()
+        if not predecessor_evidence:
+            return _table_failure(
+                kind,
+                "missing_predecessor_evidence",
+                "no predecessor proves a finite index bound",
+            )
+        for ordinal, row in enumerate(
+            sorted(predecessor_evidence, key=_canonical_mapping_key)
+        ):
+            if not isinstance(row, Mapping):
+                return _table_failure(
+                    kind,
+                    "invalid_predecessor_evidence",
+                    "predecessor evidence contains a non-mapping row",
+                )
+            guard = _predecessor_path_guard(row)
+            guard_bound = (
+                _guard_upper_exclusive(guard, bound_expression)
+                if guard is not None
+                else None
+            )
+            instruction_bound = _instruction_upper_exclusive(row, bound_expression)
+            row_bounds = {
+                value
+                for value in (guard_bound, instruction_bound)
+                if value is not None
+            }
+            if len(row_bounds) > 1:
+                return _table_failure(
+                    kind,
+                    "ambiguous_index_bound",
+                    "guard and instruction evidence disagree on the index bound",
+                )
+            if not row_bounds:
+                return _table_failure(
+                    kind,
+                    "unresolved_index_bound",
+                    (
+                        "an incoming predecessor does not prove a supported "
+                        "unsigned bound"
+                    ),
+                )
+            upper = next(iter(row_bounds))
+            bounds.add(upper)
+            sources = []
+            if guard_bound is not None:
+                sources.append("guard")
+            if instruction_bound is not None:
+                sources.append("instructions")
+            evidence_rows.append(
+                {
+                    "source_unit_id": str(
+                        row.get(
+                            "source_unit_id",
+                            row.get("unit_id", f"predecessor:{ordinal}"),
+                        )
+                    ),
+                    "upper_exclusive": upper,
+                    "sources": sources,
+                }
+            )
+        if len(bounds) != 1:
             return _table_failure(
                 kind,
                 "ambiguous_index_bound",
-                "guard and instruction evidence disagree on the index bound",
+                "incoming predecessors establish different index bounds",
             )
-        if not row_bounds:
+        source_upper_exclusive = next(iter(bounds))
+        if source_upper_exclusive <= 0 or source_upper_exclusive > max_entries:
             return _table_failure(
                 kind,
-                "unresolved_index_bound",
-                "an incoming predecessor does not prove a supported unsigned bound",
+                "invalid_index_bound",
+                "recovered index bound is empty or exceeds the resolver cap",
             )
-        upper = next(iter(row_bounds))
-        bounds.add(upper)
-        sources = []
-        if guard_bound is not None:
-            sources.append("guard")
-        if instruction_bound is not None:
-            sources.append("instructions")
-        evidence_rows.append(
-            {
-                "source_unit_id": str(
-                    row.get("source_unit_id", row.get("unit_id", f"predecessor:{ordinal}"))
-                ),
-                "upper_exclusive": upper,
-                "sources": sources,
-            }
-        )
-    if len(bounds) != 1:
-        return _table_failure(
-            kind,
-            "ambiguous_index_bound",
-            "incoming predecessors establish different index bounds",
-        )
-    source_upper_exclusive = next(iter(bounds))
-    if source_upper_exclusive <= 0 or source_upper_exclusive > max_entries:
-        return _table_failure(
-            kind,
-            "invalid_index_bound",
-            "recovered index bound is empty or exceeds the resolver cap",
-        )
+        index_values = list(range(source_upper_exclusive))
 
     remap: dict[str, Any] | None = None
-    upper_exclusive = source_upper_exclusive
     if remap_shape is not None:
+        assert source_upper_exclusive is not None
         remap_address, remap_index, remap_form = remap_shape
         remap_resolution = _resolve_section_address(
             remap_address,
@@ -186,15 +248,14 @@ def recover_static_pe32_jump_table_inventory(
                 "unreadable_index_remap",
                 "byte-remap reader did not return the exact requested bytes",
             )
-        values = sorted(set(remap_bytes))
-        if not values:
+        index_values = sorted(set(remap_bytes))
+        if not index_values:
             return _table_failure(
                 kind,
                 "empty_index_remap",
                 "byte-remap table has no values",
             )
-        upper_exclusive = values[-1] + 1
-        if upper_exclusive > max_entries:
+        if len(index_values) > max_entries:
             return _table_failure(
                 kind,
                 "invalid_index_bound",
@@ -211,14 +272,14 @@ def recover_static_pe32_jump_table_inventory(
             "rva_end": remap_rva + source_upper_exclusive,
             "section": _section_name(remap_section),
             "bytes_sha256": sha256(remap_bytes).hexdigest(),
-            "possible_values": values,
+            "possible_values": index_values,
         }
 
     table_resolution = _resolve_section_address(
         table_address,
         image_base=image_base,
         sections=sections,
-        size=upper_exclusive * 4,
+        size=1,
         require_executable=False,
     )
     if table_resolution is None:
@@ -241,22 +302,6 @@ def recover_static_pe32_jump_table_inventory(
             "jump table is writable and cannot define a static target inventory",
         )
 
-    byte_count = upper_exclusive * 4
-    try:
-        table_bytes = read_rva(table_rva, byte_count)
-    except Exception:
-        return _table_failure(
-            kind,
-            "unreadable_table",
-            "jump-table bytes could not be read",
-        )
-    if not isinstance(table_bytes, bytes) or len(table_bytes) != byte_count:
-        return _table_failure(
-            kind,
-            "unreadable_table",
-            "jump-table reader did not return the exact requested bytes",
-        )
-
     allowed_targets = None
     if valid_target_rvas is not None:
         values = list(valid_target_rvas)
@@ -269,8 +314,56 @@ def recover_static_pe32_jump_table_inventory(
         allowed_targets = frozenset(int(value) for value in values)
 
     entries: list[dict[str, Any]] = []
-    for index in range(upper_exclusive):
-        raw = table_bytes[index * 4 : index * 4 + 4]
+    table_bytes_by_index: list[tuple[int, bytes]] = []
+    for index in index_values:
+        entry_address = (table_address + index * 4) & 0xFFFFFFFF
+        entry_resolution = _resolve_section_address(
+            entry_address,
+            image_base=image_base,
+            sections=sections,
+            size=4,
+            require_executable=False,
+        )
+        if entry_resolution is None:
+            return _table_failure(
+                kind,
+                "invalid_table_address",
+                f"jump-table index {index} does not identify one PE32 table entry",
+            )
+        entry_rva, entry_section, entry_address_model = entry_resolution
+        if (
+            not _section_flag(entry_section, "readable")
+            or _section_flag(entry_section, "writable")
+            or _section_name(entry_section) != _section_name(table_section)
+        ):
+            failure_code = (
+                "writable_table"
+                if _section_flag(entry_section, "writable")
+                else "invalid_table_address"
+            )
+            return _table_failure(
+                kind,
+                failure_code,
+                (
+                    "jump-table entries do not remain in one immutable "
+                    "readable section"
+                ),
+            )
+        try:
+            raw = read_rva(entry_rva, 4)
+        except Exception:
+            return _table_failure(
+                kind,
+                "unreadable_table",
+                "jump-table bytes could not be read",
+            )
+        if not isinstance(raw, bytes) or len(raw) != 4:
+            return _table_failure(
+                kind,
+                "unreadable_table",
+                "jump-table reader did not return one exact entry",
+            )
+        table_bytes_by_index.append((index, raw))
         target_address = int.from_bytes(raw, "little")
         resolution = _resolve_section_address(
             target_address,
@@ -295,7 +388,9 @@ def recover_static_pe32_jump_table_inventory(
         entries.append(
             {
                 "index": index,
-                "entry_rva": table_rva + index * 4,
+                "entry_address": entry_address,
+                "entry_address_model": entry_address_model,
+                "entry_rva": entry_rva,
                 "target_address": target_address,
                 "target_address_model": target_address_model,
                 "target_rva": target_rva,
@@ -304,30 +399,46 @@ def recover_static_pe32_jump_table_inventory(
         )
 
     target_rvas = sorted({int(entry["target_rva"]) for entry in entries})
+    entry_rvas = sorted(int(entry["entry_rva"]) for entry in entries)
+    contiguous = entry_rvas == list(
+        range(entry_rvas[0], entry_rvas[0] + len(entry_rvas) * 4, 4)
+    )
+    contiguous_from_zero = index_values == list(range(len(index_values)))
+    table_bytes = b"".join(raw for _index, raw in table_bytes_by_index)
+    table_inventory = b"".join(
+        index.to_bytes(4, "little") + raw
+        for index, raw in table_bytes_by_index
+    )
     return {
         "status": "recovered",
         "closure": "checked_finite_target_inventory",
         "kind": kind,
         "index": {
             "expression": copy.deepcopy(dict(index_expression)),
-            "lower_inclusive": 0,
-            "upper_exclusive": upper_exclusive,
+            "lower_inclusive": 0 if contiguous_from_zero else None,
+            "upper_exclusive": len(index_values) if contiguous_from_zero else None,
+            "values": index_values,
+            "value_count": len(index_values),
+            "dataflow_evidence": dataflow_evidence,
             "remap": remap,
             "bound_evidence": sorted(
                 evidence_rows,
-                key=lambda row: (row["source_unit_id"], row["upper_exclusive"]),
+                key=_canonical_mapping_key,
             ),
         },
         "table": {
             "address": table_address,
             "address_model": address_model,
             "expression_form": expression_form,
-            "rva_start": table_rva,
-            "rva_end": table_rva + byte_count,
+            "rva_start": entry_rvas[0],
+            "rva_end": entry_rvas[-1] + 4,
             "entry_width": 4,
-            "entry_count": upper_exclusive,
+            "entry_count": len(index_values),
+            "index_values": index_values,
+            "contiguous": contiguous,
             "section": _section_name(table_section),
             "bytes_sha256": sha256(table_bytes).hexdigest(),
+            "inventory_sha256": sha256(table_inventory).hexdigest(),
         },
         "entries": entries,
         "target_rvas": target_rvas,
@@ -1160,21 +1271,25 @@ def _indirect_target_ids(
     record: Mapping[str, Any], unit_ids: set[str], rva_index: Mapping[int, set[str]]
 ) -> tuple[str, ...] | None:
     raw_ids = record.get("target_unit_ids", record.get("target_ids"))
+    id_targets: set[str] | None = None
     if isinstance(raw_ids, Sequence) and not isinstance(raw_ids, (str, bytes)):
-        targets = {str(value) for value in raw_ids}
-        return tuple(sorted(targets)) if targets <= unit_ids else None
+        id_targets = {str(value) for value in raw_ids}
+        if not id_targets <= unit_ids:
+            return None
     raw_rvas = record.get("target_rvas")
     if isinstance(raw_rvas, Sequence) and not isinstance(raw_rvas, (str, bytes)):
-        result = set()
+        rva_targets = set()
         for raw_rva in raw_rvas:
             if not _is_u32(raw_rva):
                 return None
             matches = rva_index.get(int(raw_rva), set())
             if len(matches) != 1:
                 return None
-            result.update(matches)
-        return tuple(sorted(result))
-    return ()
+            rva_targets.update(matches)
+        if id_targets is not None and id_targets != rva_targets:
+            return None
+        return tuple(sorted(rva_targets))
+    return tuple(sorted(id_targets)) if id_targets is not None else ()
 
 
 def _indirect_external_targets(
@@ -1495,6 +1610,7 @@ derive_rooted_reachability = derive_rooted_reachable_units
 __all__ = [
     "derive_rooted_reachability",
     "derive_rooted_reachable_units",
+    "pe32_jump_table_index_expression",
     "propose_semantic_clusters",
     "recover_static_pe32_indexed_jump_table",
     "recover_static_pe32_jump_table_inventory",

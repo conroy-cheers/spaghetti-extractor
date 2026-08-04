@@ -300,6 +300,66 @@ class StaticPE32JumpTableTests(unittest.TestCase):
         self.assertEqual(writable["status"], "incomplete")
         self.assertEqual(writable["failure"]["code"], "writable_index_remap")
 
+    def test_recovers_wrapped_sparse_finite_index_domain(self) -> None:
+        target_rvas = [0x1100, 0x1110, 0x1120, 0x1130]
+        index = {"op": "reg", "name": "ecx", "width": 32}
+        table_address = IMAGE_BASE + TABLE_RVA + 16
+        expression = {
+            "op": "load",
+            "width": 4,
+            "address": {
+                "op": "add32",
+                "args": [
+                    {"op": "const", "value": table_address, "width": 32},
+                    {
+                        "op": "mul32",
+                        "args": [index, {"op": "const", "value": 4, "width": 32}],
+                    },
+                ],
+            },
+        }
+        values = [0xFFFFFFFC, 0xFFFFFFFD, 0xFFFFFFFE, 0xFFFFFFFF]
+        domain = {
+            "format": "stage-a-finite-u32-expression-domain-v1",
+            "status": "complete",
+            "source_unit_id": "dispatch",
+            "expression_sha256": sha256(
+                json.dumps(index, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+            "values": values,
+        }
+
+        result = recover_static_pe32_jump_table_inventory(
+            target_expression=expression,
+            predecessor_evidence=[],
+            image_base=IMAGE_BASE,
+            sections=_sections(),
+            read_rva=_reader(_table_bytes(target_rvas)),
+            finite_index_domain=domain,
+            valid_target_rvas=target_rvas,
+        )
+
+        self.assertEqual(result["status"], "recovered")
+        self.assertEqual(result["index"]["values"], values)
+        self.assertIsNone(result["index"]["upper_exclusive"])
+        self.assertEqual(result["table"]["rva_start"], TABLE_RVA)
+        self.assertEqual(result["table"]["rva_end"], TABLE_RVA + 16)
+        self.assertTrue(result["table"]["contiguous"])
+        self.assertEqual(result["target_rvas"], target_rvas)
+
+        malformed = recover_static_pe32_jump_table_inventory(
+            target_expression=expression,
+            predecessor_evidence=[],
+            image_base=IMAGE_BASE,
+            sections=_sections(),
+            read_rva=_reader(_table_bytes(target_rvas)),
+            finite_index_domain={**domain, "expression_sha256": "0" * 64},
+        )
+        self.assertEqual(
+            malformed["failure"]["code"],
+            "invalid_finite_index_domain",
+        )
+
     def test_unresolved_or_ambiguous_bounds_do_not_read_a_table(self) -> None:
         reads = []
 
@@ -565,6 +625,39 @@ class RootedReachabilityTests(unittest.TestCase):
         self.assertEqual(result["edges"], [])
         self.assertEqual(len(result["frontiers"]), 1)
         self.assertEqual(result["frontiers"][0]["id"], "exit:partial")
+
+    def test_partial_rva_binding_cannot_be_hidden_by_known_unit_ids(self) -> None:
+        result = derive_rooted_reachable_units(
+            units=[
+                {"id": "root", "rva": 0x1000},
+                {"id": "known", "rva": 0x1100},
+            ],
+            roots=["root"],
+            recovered_indirect_targets=[
+                {
+                    "id": "exit:partial-rvas",
+                    "source_unit_id": "root",
+                    "status": "recovered",
+                    "target_rvas": [0x1100, 0x1200],
+                    "target_unit_ids": ["known"],
+                }
+            ],
+            indirect_exits=[
+                {
+                    "id": "exit:partial-rvas",
+                    "source_unit_id": "root",
+                    "kind": "indirect_jump",
+                }
+            ],
+        )
+
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["reachable_units"], ["root"])
+        self.assertEqual(result["edges"], [])
+        self.assertEqual(
+            [frontier["id"] for frontier in result["frontiers"]],
+            ["exit:partial-rvas"],
+        )
 
     def test_finite_external_target_closes_exit_without_internal_edge(self) -> None:
         result = derive_rooted_reachable_units(
