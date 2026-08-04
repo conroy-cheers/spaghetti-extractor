@@ -36,6 +36,20 @@ let
     export FONTCONFIG_FILE=${wineFontsConf}
     mkdir -p "$HOME" "$XDG_CACHE_HOME"
   '';
+  directxInterfacePythonSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/external_interface_ast.py
+      ../src/spaghetti_extractor/external_interface_profiles.py
+      ../src/spaghetti_extractor/machine_abi.py
+      ../src/spaghetti_extractor/machine_import_profiles.py
+      ../src/spaghetti_extractor/pe.py
+      ../src/spaghetti_extractor/stage_binary.py
+      ../src/spaghetti_extractor/util.py
+    ];
+  };
   opaqueStaticPythonSource = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.unions [
@@ -70,8 +84,11 @@ let
     fileset = lib.fileset.unions [
       ../src/spaghetti_extractor/__init__.py
       ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/call_arguments.py
       ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/external_interface_profiles.py
       ../src/spaghetti_extractor/import_abi.py
+      ../src/spaghetti_extractor/interface_provenance.py
       ../src/spaghetti_extractor/internal_call_summaries.py
       ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/machine_import_profiles.py
@@ -90,8 +107,11 @@ let
       ../src/spaghetti_extractor/__init__.py
       ../src/spaghetti_extractor/_contract_tools
       ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/call_arguments.py
       ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/external_interface_profiles.py
       ../src/spaghetti_extractor/import_abi.py
+      ../src/spaghetti_extractor/interface_provenance.py
       ../src/spaghetti_extractor/internal_call_summaries.py
       ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/machine_import_profiles.py
@@ -376,6 +396,67 @@ rec {
       ' "$out/import-abi-profile.json" >/dev/null
     '';
 
+  directxInterfaceProfile = pkgs.runCommand
+    "stage-a-pe32-mingw-directx-interface-profile"
+    {
+      nativeBuildInputs = [
+        pkgs.jq
+        pkgs.llvmPackages.clang-unwrapped
+        pythonEnv
+      ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${directxInterfacePythonSource}/src
+      headers=${pkgs.pkgsCross.mingw32.windows.mingw_w64_headers}/include
+      printf '%s\n' \
+        '#define CINTERFACE' \
+        '#include <ddraw.h>' \
+        '#include <dsound.h>' | \
+        ${pkgs.llvmPackages.clang-unwrapped}/bin/clang \
+          --target=i686-w64-windows-gnu \
+          -isystem "$headers" \
+          -Xclang -ast-dump=json \
+          -fsyntax-only -x c - > "$TMPDIR/directx-ast.json"
+      mkdir -p "$out"
+      ${python} - \
+        "$TMPDIR/directx-ast.json" \
+        ${lib.escapeShellArg "${../profiles/pe32-mingw-directx-interface-extraction-v1.json}"} \
+        "$headers/ddraw.h" \
+        "$headers/dsound.h" \
+        "$out/interface-profile.json" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.external_interface_ast import (
+          extract_external_interface_profile,
+      )
+
+      ast, spec, ddraw, dsound, output = map(pathlib.Path, sys.argv[1:])
+      extract_external_interface_profile(
+          ast_json=ast,
+          spec=spec,
+          headers=[ddraw, dsound],
+          out=output,
+      )
+      PY
+      jq -e '
+        .format == "stage-a-external-interface-profile-v1" and
+        .status == "complete" and
+        .model == "x86-pe32" and
+        .counts.factories == 2 and
+        .counts.interfaces > 10 and
+        .counts.methods > 100 and
+        ([.factories[].argument_words] | unique) == [3]
+      ' "$out/interface-profile.json" >/dev/null
+      test ! -e "$out/directx-ast.json"
+    '';
+
   baseMachineIr = pkgs.runCommand "stage-a-dxball-1.09-base-machine-ir"
     {
       nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
@@ -396,12 +477,13 @@ rec {
         ${lib.escapeShellArg "${opaqueStaticExport}/reference-contract.json"} \
         ${lib.escapeShellArg "${../profiles/pe32-static-cutpoints-and-paired-callables-v1.json}"} \
         ${lib.escapeShellArg "${importAbiProfile}/import-abi-profile.json"} \
+        ${lib.escapeShellArg "${directxInterfaceProfile}/interface-profile.json"} \
         "$out" <<'PY'
       import pathlib
       import sys
       from spaghetti_extractor.reconstruction_ir import export_machine_ir_package
 
-      state_machine, original, reference, target_profile, import_profile, output = map(
+      state_machine, original, reference, target_profile, import_profile, interface_profile, output = map(
           pathlib.Path, sys.argv[1:]
       )
       export_machine_ir_package(
@@ -409,7 +491,8 @@ rec {
           original_pe=original,
           reference_contract=reference,
           indirect_target_profile=target_profile,
-          machine_import_profiles=[import_profile],
+          machine_import_profiles=[import_profile, interface_profile],
+          external_interface_profiles=[interface_profile],
           out=output,
       )
       PY
@@ -454,6 +537,7 @@ rec {
         ${lib.escapeShellArg "${opaqueStaticExport}/reference-contract.json"} \
         ${lib.escapeShellArg "${../profiles/pe32-static-cutpoints-and-paired-callables-v1.json}"} \
         ${lib.escapeShellArg "${importAbiProfile}/import-abi-profile.json"} \
+        ${lib.escapeShellArg "${directxInterfaceProfile}/interface-profile.json"} \
         "$out/state-machine.jsonl" \
         "$out/rooted-view-augmentation.json" <<'PY'
       import pathlib
@@ -462,7 +546,7 @@ rec {
           augment_state_machine_with_rooted_instruction_views,
       )
 
-      state_machine, manifest, original, reference, target_profile, import_profile, output, report = map(
+      state_machine, manifest, original, reference, target_profile, import_profile, interface_profile, output, report = map(
           pathlib.Path, sys.argv[1:]
       )
       augment_state_machine_with_rooted_instruction_views(
@@ -471,7 +555,8 @@ rec {
           original_pe=original,
           reference_contract=reference,
           indirect_target_profile=target_profile,
-          machine_import_profiles=[import_profile],
+          machine_import_profiles=[import_profile, interface_profile],
+          external_interface_profiles=[interface_profile],
           out=output,
           report=report,
       )
@@ -511,12 +596,13 @@ rec {
         ${lib.escapeShellArg "${opaqueStaticExport}/reference-contract.json"} \
         ${lib.escapeShellArg "${../profiles/pe32-static-cutpoints-and-paired-callables-v1.json}"} \
         ${lib.escapeShellArg "${importAbiProfile}/import-abi-profile.json"} \
+        ${lib.escapeShellArg "${directxInterfaceProfile}/interface-profile.json"} \
         "$out" <<'PY'
       import pathlib
       import sys
       from spaghetti_extractor.reconstruction_ir import export_machine_ir_package
 
-      state_machine, original, reference, target_profile, import_profile, output = map(
+      state_machine, original, reference, target_profile, import_profile, interface_profile, output = map(
           pathlib.Path, sys.argv[1:]
       )
       export_machine_ir_package(
@@ -524,7 +610,8 @@ rec {
           original_pe=original,
           reference_contract=reference,
           indirect_target_profile=target_profile,
-          machine_import_profiles=[import_profile],
+          machine_import_profiles=[import_profile, interface_profile],
+          external_interface_profiles=[interface_profile],
           out=output,
       )
       PY

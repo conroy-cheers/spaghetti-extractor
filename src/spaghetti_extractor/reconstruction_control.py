@@ -1011,14 +1011,60 @@ def _indirect_target_ids(
 
 def _indirect_external_targets(
     record: Mapping[str, Any],
-) -> tuple[tuple[str, str, str | int], ...] | None:
+) -> tuple[tuple[Any, ...], ...] | None:
     raw_targets = record.get("external_targets", [])
     if not isinstance(raw_targets, Sequence) or isinstance(raw_targets, (str, bytes)):
         return None
-    result: set[tuple[str, str, str | int]] = set()
+    result: set[tuple[Any, ...]] = set()
     for raw in raw_targets:
         if not isinstance(raw, Mapping):
             return None
+        protocol = raw.get("external_protocol")
+        if isinstance(protocol, Mapping):
+            if raw.get("import") is not None:
+                return None
+            kind = protocol.get("kind")
+            profile_id = protocol.get("profile_id")
+            profile_sha256 = protocol.get("profile_sha256")
+            interface_id = protocol.get("interface_id")
+            method = protocol.get("method")
+            slot = protocol.get("slot")
+            offset = protocol.get("offset")
+            abi = raw.get("abi")
+            argument_words = raw.get("argument_words")
+            if (
+                kind != "pe32-interface-method"
+                or not isinstance(profile_id, str)
+                or not profile_id
+                or not isinstance(profile_sha256, str)
+                or len(profile_sha256) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in profile_sha256
+                )
+                or not isinstance(interface_id, str)
+                or not interface_id
+                or not isinstance(method, str)
+                or not method
+                or not _is_u32(slot)
+                or not _is_u32(offset)
+                or int(offset) != int(slot) * 4
+                or not isinstance(abi, Mapping)
+                or abi.get("template")
+                not in {"pe32-cdecl-v1", "pe32-stdcall-v1"}
+                or not isinstance(argument_words, int)
+                or isinstance(argument_words, bool)
+                or not 1 <= argument_words <= 64
+            ):
+                return None
+            result.add((
+                "protocol",
+                profile_sha256,
+                interface_id,
+                int(slot),
+                method,
+            ))
+            continue
         imported = raw.get("import", raw)
         if not isinstance(imported, Mapping):
             return None

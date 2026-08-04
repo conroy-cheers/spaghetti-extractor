@@ -18,7 +18,12 @@ from typing import Any, Iterable, Mapping, Sequence
 import capstone
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
+from .external_interface_profiles import (
+    ExternalInterfaceProfile,
+    load_external_interface_profile,
+)
 from .import_abi import SelectedImportABI, load_selected_import_abis
+from .interface_provenance import recover_external_interface_targets
 from .internal_call_summaries import derive_internal_call_preservation_summaries
 from .machine_import_profiles import MachineImportIdentity
 from .reconstruction_control import (
@@ -215,6 +220,7 @@ def export_machine_ir_package(
     reference_contract: Path | None = None,
     indirect_target_profile: Path | None = None,
     machine_import_profiles: Sequence[Path] = (),
+    external_interface_profiles: Sequence[Path] = (),
 ) -> MachineIRPackage:
     """Validate and export a deterministic, byte-free PE32 machine IR package."""
 
@@ -249,6 +255,13 @@ def export_machine_ir_package(
         for path in machine_import_profiles
     )
     import_abis = load_selected_import_abis(import_profile_paths)
+    interface_profile_paths = tuple(
+        _regular_file(path, "external interface profile")
+        for path in external_interface_profiles
+    )
+    interface_profiles = tuple(
+        load_external_interface_profile(path) for path in interface_profile_paths
+    )
     rows = _read_canonical_rows(state_path)
     _validate_unique_units(rows)
     prepared = [
@@ -278,6 +291,7 @@ def export_machine_ir_package(
         reference,
         target_profile=target_profile,
         import_abis=import_abis,
+        interface_profiles=interface_profiles,
     )
     issues.extend(control_issues)
     external = _external_inventory(prepared)
@@ -351,6 +365,16 @@ def export_machine_ir_package(
             "machine_import_profiles": [
                 {"path": path.name, "sha256": sha256_file(path)}
                 for path in import_profile_paths
+            ],
+            "external_interface_profiles": [
+                {
+                    "path": path.name,
+                    "sha256": profile.sha256,
+                    "id": profile.profile_id,
+                }
+                for path, profile in zip(
+                    interface_profile_paths, interface_profiles, strict=True
+                )
             ],
         },
         "binary": _binary_inventory(binary),
@@ -1111,8 +1135,16 @@ def _control_provenance_fixed_point(
     indirect_exits: Sequence[Mapping[str, Any]],
     static_recoveries: Sequence[Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    interface_profiles: Sequence[ExternalInterfaceProfile],
     max_rounds: int = 16,
-) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], int, bool]:
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    list[dict[str, Any]],
+    int,
+    bool,
+]:
     imports = [
         {
             "dll": imported.dll,
@@ -1132,6 +1164,12 @@ def _control_provenance_fixed_point(
         "counts": {"call_targets": 0, "complete_summaries": 0},
     }
     provenance: dict[str, Any] = {}
+    interface_provenance: dict[str, Any] = {
+        "format": "stage-a-external-interface-provenance-v1",
+        "status": "complete" if not interface_profiles else "incomplete",
+        "resolutions": [],
+        "counts": {"recovered_method_exits": 0},
+    }
     converged = False
     rounds = 0
     for rounds in range(1, max_rounds + 1):
@@ -1164,8 +1202,22 @@ def _control_provenance_fixed_point(
             import_abis=import_abis,
             internal_call_preserved_registers=preserved_by_address,
         )
+        interface_provenance = recover_external_interface_targets(
+            units=units,
+            roots=root_unit_ids,
+            direct_edges=direct_edges,
+            internal_call_edges=internal_call_edges,
+            recovered_indirect_edges=selected_recoveries,
+            indirect_exits=indirect_exits,
+            profiles=interface_profiles,
+            import_abis=import_abis,
+            internal_call_preserved_registers=preserved_by_address,
+            image_base=binary.image_base,
+        )
         selected_recoveries = _prefer_indirect_recoveries(
-            static_recoveries, provenance["resolutions"]
+            static_recoveries,
+            provenance["resolutions"],
+            interface_provenance["resolutions"],
         )
         signature = _control_fixed_point_signature(
             internal_summaries, selected_recoveries
@@ -1174,29 +1226,70 @@ def _control_provenance_fixed_point(
             converged = True
             break
         previous_signature = signature
-    return provenance, internal_summaries, selected_recoveries, rounds, converged
+    return (
+        provenance,
+        interface_provenance,
+        internal_summaries,
+        selected_recoveries,
+        rounds,
+        converged,
+    )
 
 
 def _prefer_indirect_recoveries(
     static_recoveries: Sequence[Mapping[str, Any]],
-    provenance_recoveries: Sequence[Mapping[str, Any]],
+    *proposal_sets: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    provenance_by_id = {
-        str(row.get("id")): row for row in provenance_recoveries
-    }
+    proposals_by_id = [
+        {str(row.get("id")): row for row in proposals}
+        for proposals in proposal_sets
+    ]
     result: list[dict[str, Any]] = []
     for static in static_recoveries:
-        provenance = provenance_by_id.get(str(static.get("id")))
-        selected = (
-            static
-            if static.get("status") == "recovered"
-            else provenance
-            if isinstance(provenance, Mapping)
-            and provenance.get("status") == "recovered"
-            else static
-        )
+        candidates = [
+            candidate
+            for candidate in (
+                static,
+                *(
+                    proposals.get(str(static.get("id")))
+                    for proposals in proposals_by_id
+                ),
+            )
+            if isinstance(candidate, Mapping)
+            and candidate.get("status") == "recovered"
+        ]
+        signatures = {
+            _indirect_recovery_signature(candidate) for candidate in candidates
+        }
+        if len(signatures) > 1:
+            selected = {
+                **dict(static),
+                "status": "incomplete",
+                "closure": "unresolved",
+                "target_rvas": [],
+                "target_unit_ids": [],
+                "external_targets": [],
+                "failure": {
+                    "code": "conflicting_indirect_recovery_evidence",
+                    "message": "independent finite target mechanisms disagree",
+                },
+            }
+        else:
+            selected = candidates[0] if candidates else static
         result.append(copy.deepcopy(dict(selected)))
     return result
+
+
+def _indirect_recovery_signature(recovery: Mapping[str, Any]) -> str:
+    return sha256_bytes(json.dumps(
+        {
+            "target_rvas": recovery.get("target_rvas", []),
+            "target_unit_ids": recovery.get("target_unit_ids", []),
+            "external_targets": recovery.get("external_targets", []),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8"))
 
 
 def _control_fixed_point_signature(
@@ -1234,6 +1327,7 @@ def _control_inventory(
     *,
     target_profile: Mapping[str, Any] | None,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    interface_profiles: Sequence[ExternalInterfaceProfile],
 ) -> tuple[dict[str, Any], list[ExportIssue]]:
     starts = {int(unit["source"]["original"]["rva_start"]): unit for unit in units}
     block_starts = {
@@ -1415,6 +1509,7 @@ def _control_inventory(
         ]
         (
             value_provenance,
+            external_interface_provenance,
             internal_call_preservation,
             recovered_targets,
             fixed_point_rounds,
@@ -1428,6 +1523,7 @@ def _control_inventory(
             indirect_exits=indirect,
             static_recoveries=static_recoveries,
             import_abis=import_abis,
+            interface_profiles=interface_profiles,
         )
         control_fixed_point_rounds += fixed_point_rounds
         control_fixed_point_converged &= fixed_point_converged
@@ -1489,7 +1585,12 @@ def _control_inventory(
                 }
             else:
                 exit_record["recovery"] = {
-                    "kind": "bounded_value_provenance",
+                    "kind": (
+                        "bounded_external_interface_provenance"
+                        if selected_recovery.get("closure")
+                        == "checked_profile_interface_method_inventory"
+                        else "bounded_value_provenance"
+                    ),
                     "closure": selected_recovery["closure"],
                     "origin_count": selected_recovery.get("origin_count"),
                 }
@@ -1506,16 +1607,17 @@ def _control_inventory(
             if profiled
             else "unresolved"
         )
-        exit_record["recovery_failure"] = copy.deepcopy(
-            static_recovery["failure"]
-        )
+        recovery_failure = selected_recovery.get("failure")
+        if not isinstance(recovery_failure, Mapping):
+            recovery_failure = static_recovery["failure"]
+        exit_record["recovery_failure"] = copy.deepcopy(recovery_failure)
         issues.append(
             ExportIssue(
                 status="incomplete",
                 category="unresolved_indirect_control",
                 message=(
                     "indirect control exit has no checked finite target inventory: "
-                    + str(static_recovery["failure"]["message"])
+                    + str(recovery_failure["message"])
                 ),
                 next_action=(
                     "supply path-sensitive bounds and an immutable checked target table; "
@@ -1566,6 +1668,7 @@ def _control_inventory(
                 key=lambda item: (item["source_rva"], item["source_unit_id"]),
             ),
             "value_provenance": value_provenance,
+            "external_interface_provenance": external_interface_provenance,
             "internal_call_preservation": internal_call_preservation,
             "analysis_fixed_point": {
                 "status": (

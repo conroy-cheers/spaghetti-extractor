@@ -13,6 +13,7 @@ from .util import sha256_file
 
 MACHINE_IMPORT_PROFILE_FORMATS = frozenset({
     "stage-a-external-environment-profile-v1",
+    "stage-a-external-interface-profile-v1",
     "stage-a-static-machine-import-profile-v1",
 })
 

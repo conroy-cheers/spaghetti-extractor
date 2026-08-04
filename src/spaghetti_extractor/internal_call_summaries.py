@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
 from .import_abi import SelectedImportABI
+from .machine_abi import resolve_machine_call_abi
 from .machine_import_profiles import MachineImportIdentity
 
 
@@ -471,6 +472,14 @@ def _call_preserved(
         return frozenset()
     alternatives: list[set[str]] = []
     for external in recovery.get("external_targets", []):
+        protocol = _mapping(external.get("external_protocol"))
+        if protocol:
+            raw_abi = _mapping(external.get("abi"))
+            abi = resolve_machine_call_abi(raw_abi.get("template"))
+            if abi is None or raw_abi != abi.as_json():
+                return frozenset()
+            alternatives.append(set(abi.preserved_registers))
+            continue
         identity = _event_import_identity(_mapping(external.get("import")))
         selected = import_abis.get(identity) if identity is not None else None
         if selected is None:

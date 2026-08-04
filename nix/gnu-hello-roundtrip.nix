@@ -149,8 +149,11 @@ let
     fileset = lib.fileset.unions [
       ../src/spaghetti_extractor/__init__.py
       ../src/spaghetti_extractor/artifact_formats.py
+      ../src/spaghetti_extractor/call_arguments.py
       ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/external_interface_profiles.py
       ../src/spaghetti_extractor/import_abi.py
+      ../src/spaghetti_extractor/interface_provenance.py
       ../src/spaghetti_extractor/internal_call_summaries.py
       ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/machine_import_profiles.py
@@ -279,6 +282,9 @@ let
       ../src/spaghetti_extractor/component_selection.py
       ../src/spaghetti_extractor/component_workspace.py
       ../src/spaghetti_extractor/finite_component_contract.py
+      ../src/spaghetti_extractor/call_arguments.py
+      ../src/spaghetti_extractor/external_interface_profiles.py
+      ../src/spaghetti_extractor/interface_provenance.py
       ../src/spaghetti_extractor/linked_library_contracts.py
       ../src/spaghetti_extractor/reconstruction_assurance.py
       ../src/spaghetti_extractor/import_abi.py

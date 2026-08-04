@@ -502,6 +502,82 @@ class RootedReachabilityTests(unittest.TestCase):
             }],
         )
 
+    def test_profile_bound_interface_method_closes_external_exit(self) -> None:
+        result = derive_rooted_reachable_units(
+            units=["root", "continuation"],
+            roots=["root"],
+            direct_edges=[{
+                "source_unit_id": "root",
+                "target_unit_id": "continuation",
+            }],
+            recovered_indirect_targets=[{
+                "id": "exit:method",
+                "source_unit_id": "root",
+                "status": "recovered",
+                "target_unit_ids": [],
+                "external_targets": [{
+                    "external_protocol": {
+                        "kind": "pe32-interface-method",
+                        "profile_id": "fixture",
+                        "profile_sha256": "a" * 64,
+                        "interface_id": "IThing",
+                        "method": "Release",
+                        "slot": 2,
+                        "offset": 8,
+                    },
+                    "abi": {
+                        "template": "pe32-stdcall-v1",
+                        "preserved_registers": ["ebp", "ebx", "edi", "esi"],
+                        "clobbered_registers": ["eax", "ecx", "edx"],
+                        "callee_cleanup": True,
+                    },
+                    "argument_words": 1,
+                    "out_interfaces": [],
+                }],
+            }],
+            indirect_exits=[{
+                "id": "exit:method",
+                "source_unit_id": "root",
+                "kind": "indirect_call",
+            }],
+        )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["frontiers"], [])
+
+    def test_malformed_interface_method_target_remains_frontier(self) -> None:
+        result = derive_rooted_reachable_units(
+            units=["root"],
+            roots=["root"],
+            recovered_indirect_targets=[{
+                "id": "exit:method",
+                "source_unit_id": "root",
+                "status": "recovered",
+                "target_unit_ids": [],
+                "external_targets": [{
+                    "external_protocol": {
+                        "kind": "pe32-interface-method",
+                        "profile_id": "fixture",
+                        "profile_sha256": "a" * 64,
+                        "interface_id": "IThing",
+                        "method": "Release",
+                        "slot": 2,
+                        "offset": 12,
+                    },
+                    "abi": {"template": "pe32-stdcall-v1"},
+                    "argument_words": 1,
+                }],
+            }],
+            indirect_exits=[{
+                "id": "exit:method",
+                "source_unit_id": "root",
+                "kind": "indirect_call",
+            }],
+        )
+
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(len(result["frontiers"]), 1)
+
 
 class SemanticClusterTests(unittest.TestCase):
     def test_loop_scc_and_maximal_chains_stop_at_cutpoints(self) -> None:

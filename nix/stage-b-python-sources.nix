@@ -22,9 +22,12 @@ let
   runtimeFiles = lib.fileset.unions [
     ../src/spaghetti_extractor/__init__.py
     ../src/spaghetti_extractor/artifact_formats.py
+    ../src/spaghetti_extractor/call_arguments.py
     ../src/spaghetti_extractor/errors.py
     ../src/spaghetti_extractor/callable_external_runtime.py
+    ../src/spaghetti_extractor/external_interface_profiles.py
     ../src/spaghetti_extractor/import_abi.py
+    ../src/spaghetti_extractor/interface_provenance.py
     ../src/spaghetti_extractor/internal_call_summaries.py
     ../src/spaghetti_extractor/machine_abi.py
     ../src/spaghetti_extractor/machine_import_profiles.py

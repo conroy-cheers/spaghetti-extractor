@@ -16,6 +16,7 @@ from spaghetti_extractor.reconstruction_ir import (
     _Instruction,
     _callback_registration_roots,
     _newly_eligible_callback_roots,
+    _prefer_indirect_recoveries,
     _recover_unknown_fallthrough,
     export_machine_ir_package,
 )
@@ -272,6 +273,35 @@ def _raw_instruction_keys(value: object) -> set[str]:
 
 
 class ReconstructionIRTests(unittest.TestCase):
+    def test_conflicting_indirect_recovery_mechanisms_fail_closed(self) -> None:
+        static = [{
+            "id": "exit",
+            "status": "incomplete",
+            "failure": {"code": "unresolved"},
+        }]
+        value = [{
+            "id": "exit",
+            "status": "recovered",
+            "target_rvas": [0x1000],
+            "target_unit_ids": ["one"],
+            "external_targets": [],
+        }]
+        interface = [{
+            "id": "exit",
+            "status": "recovered",
+            "target_rvas": [],
+            "target_unit_ids": [],
+            "external_targets": [{"external_protocol": {"kind": "different"}}],
+        }]
+
+        selected = _prefer_indirect_recoveries(static, value, interface)[0]
+
+        self.assertEqual(selected["status"], "incomplete")
+        self.assertEqual(
+            selected["failure"]["code"],
+            "conflicting_indirect_recovery_evidence",
+        )
+
     def test_unknown_non_control_terminal_instruction_recovers_fallthrough(self):
         instruction = _Instruction(
             rva=0x1000,

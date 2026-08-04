@@ -1,0 +1,49 @@
+{
+  "format": "stage-a-external-interface-extraction-spec-v1",
+  "id": "pe32-mingw-directx-legacy-interfaces-v1",
+  "model": "x86-pe32",
+  "headers": [
+    {
+      "include": "ddraw.h",
+      "sha256": "61d08b3a5c0d4d424eabca772f4704eb6536a6c23ca2b798f2fab345a4d76066"
+    },
+    {
+      "include": "dsound.h",
+      "sha256": "dd4b92cbeacbd172668e9a6dbfec5f8340cb421af40c31a5cab6b323509732d9"
+    }
+  ],
+  "interface_prefixes": [
+    "IDirectDraw",
+    "IDirectSound"
+  ],
+  "factories": [
+    {
+      "id": "ddraw.dll!DirectDrawCreate",
+      "import": {
+        "dll": "ddraw.dll",
+        "symbol": "DirectDrawCreate"
+      },
+      "declaration": "DirectDrawCreate",
+      "out_interfaces": [
+        {
+          "argument_index": 1,
+          "interface_id": "IDirectDraw"
+        }
+      ]
+    },
+    {
+      "id": "dsound.dll!ordinal-1",
+      "import": {
+        "dll": "dsound.dll",
+        "ordinal": 1
+      },
+      "declaration": "DirectSoundCreate",
+      "out_interfaces": [
+        {
+          "argument_index": 1,
+          "interface_id": "IDirectSound"
+        }
+      ]
+    }
+  ]
+}

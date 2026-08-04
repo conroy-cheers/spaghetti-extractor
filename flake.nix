@@ -204,8 +204,11 @@
               ./src/spaghetti_extractor/_contract_tools/reference_contract.py
               ./src/spaghetti_extractor/_contract_tools/symbolic_execution.py
               ./src/spaghetti_extractor/artifact_formats.py
+              ./src/spaghetti_extractor/call_arguments.py
               ./src/spaghetti_extractor/errors.py
+              ./src/spaghetti_extractor/external_interface_profiles.py
               ./src/spaghetti_extractor/import_abi.py
+              ./src/spaghetti_extractor/interface_provenance.py
               ./src/spaghetti_extractor/internal_call_summaries.py
               ./src/spaghetti_extractor/machine_abi.py
               ./src/spaghetti_extractor/machine_import_profiles.py
@@ -4120,6 +4123,7 @@
           stage-a-dxball-original-inventory = dxball.originalInventory;
           stage-a-dxball-opaque-static-export = dxball.opaqueStaticExport;
           stage-a-dxball-import-abi-profile = dxball.importAbiProfile;
+          stage-a-dxball-directx-interface-profile = dxball.directxInterfaceProfile;
           stage-b-dxball-rooted-state-machine = dxball.rootedStateMachine;
           stage-a-dxball-machine-ir = dxball.machineIr;
           gnuHelloRoundtrip = import ./nix/gnu-hello-roundtrip.nix {
@@ -7655,6 +7659,7 @@
             stage-a-dxball-original-inventory
             stage-a-dxball-opaque-static-export
             stage-a-dxball-import-abi-profile
+            stage-a-dxball-directx-interface-profile
             stage-b-dxball-rooted-state-machine
             stage-a-dxball-machine-ir
             stage-a-gnu-hello-fixtures
