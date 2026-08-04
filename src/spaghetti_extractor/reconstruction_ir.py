@@ -19,6 +19,7 @@ import capstone
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
 from .import_abi import SelectedImportABI, load_selected_import_abis
+from .internal_call_summaries import derive_internal_call_preservation_summaries
 from .machine_import_profiles import MachineImportIdentity
 from .reconstruction_control import (
     derive_rooted_reachable_units,
@@ -68,6 +69,31 @@ _DIRECT_OUTCOME_FIELDS = {
     "jump": ("target_rva",),
     "branch": ("true_target_rva", "false_target_rva"),
 }
+_CONTROL_FLOW_GROUPS = frozenset({
+    "branch_relative",
+    "call",
+    "int",
+    "iret",
+    "jump",
+    "ret",
+})
+_NON_FALLTHROUGH_MNEMONICS = frozenset({
+    "hlt",
+    "int",
+    "int1",
+    "int3",
+    "into",
+    "iret",
+    "iretd",
+    "iretq",
+    "syscall",
+    "sysenter",
+    "sysexit",
+    "sysret",
+    "ud0",
+    "ud1",
+    "ud2",
+})
 
 
 class MachineIRExportError(StageAInputError):
@@ -513,6 +539,11 @@ def _prepare_unit(
     }
     semantics["fpu_state"] = fpu_state
     semantics["instruction_effect_schedule"] = schedule
+    control_recovery = _recover_unknown_fallthrough(
+        semantics["outcome"], instructions, span
+    )
+    if control_recovery is not None:
+        semantics["outcome"] = copy.deepcopy(control_recovery["outcome"])
     control_disposition = _control_disposition(row, identity)
     control_targets = _outcome_targets(
         semantics["outcome"],
@@ -557,6 +588,7 @@ def _prepare_unit(
                 and semantics["outcome"].get("kind") in {"indirect_call", "indirect_jump"}
             ),
             "disposition": control_disposition,
+            "recovery": control_recovery,
         },
         "source_status": {
             "reachable": row.get("reachable"),
@@ -568,6 +600,37 @@ def _prepare_unit(
         },
     }
     return unit
+
+
+def _recover_unknown_fallthrough(
+    outcome: Any,
+    instructions: Sequence[_Instruction],
+    span: RvaSpan,
+) -> dict[str, Any] | None:
+    if (
+        not isinstance(outcome, Mapping)
+        or outcome.get("kind") != "unknown"
+        or not instructions
+    ):
+        return None
+    last = instructions[-1]
+    if (
+        last.end != span.end
+        or _CONTROL_FLOW_GROUPS.intersection(last.groups)
+        or last.mnemonic.lower() in _NON_FALLTHROUGH_MNEMONICS
+    ):
+        return None
+    return {
+        "kind": "exact_decode_non_control_fallthrough",
+        "proof_authority": False,
+        "required_replay": "Lean must decode the exact terminal instruction as non-control",
+        "terminal_instruction": {
+            "rva": last.rva,
+            "sha256": last.digest,
+            "mnemonic_guidance": last.mnemonic,
+        },
+        "outcome": {"kind": "fallthrough", "target_rva": span.end},
+    }
 
 
 def _semantic_unit_qualified(
@@ -1038,6 +1101,132 @@ def _coverage_inventory(
     )
 
 
+def _control_provenance_fixed_point(
+    *,
+    binary: StageABinary,
+    units: Sequence[Mapping[str, Any]],
+    root_unit_ids: Sequence[str],
+    direct_edges: Sequence[Mapping[str, Any]],
+    internal_call_edges: Sequence[Mapping[str, Any]],
+    indirect_exits: Sequence[Mapping[str, Any]],
+    static_recoveries: Sequence[Mapping[str, Any]],
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    max_rounds: int = 16,
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], int, bool]:
+    imports = [
+        {
+            "dll": imported.dll,
+            "symbol": imported.symbol,
+            "ordinal": imported.ordinal,
+            "thunk_rva": imported.thunk_rva,
+        }
+        for imported in binary.imports
+    ]
+    selected_recoveries = [copy.deepcopy(dict(row)) for row in static_recoveries]
+    previous_signature: str | None = None
+    internal_summaries: dict[str, Any] = {
+        "format": "stage-a-internal-call-preservation-v1",
+        "status": "complete",
+        "proof_authority": False,
+        "summaries": [],
+        "counts": {"call_targets": 0, "complete_summaries": 0},
+    }
+    provenance: dict[str, Any] = {}
+    converged = False
+    rounds = 0
+    for rounds in range(1, max_rounds + 1):
+        internal_summaries = derive_internal_call_preservation_summaries(
+            units=units,
+            roots=root_unit_ids,
+            direct_edges=direct_edges,
+            internal_call_edges=internal_call_edges,
+            recovered_indirect_targets=selected_recoveries,
+            indirect_exits=indirect_exits,
+            import_abis=import_abis,
+        )
+        preserved_by_address = {
+            (binary.image_base + int(row["target_rva"])) & 0xFFFFFFFF:
+                frozenset(str(register) for register in row["preserved_registers"])
+            for row in internal_summaries["summaries"]
+            if row.get("status") == "complete"
+            and isinstance(row.get("target_rva"), int)
+            and isinstance(row.get("preserved_registers"), list)
+        }
+        provenance = recover_indirect_targets_from_value_provenance(
+            units=units,
+            roots=root_unit_ids,
+            direct_edges=direct_edges,
+            internal_call_edges=internal_call_edges,
+            recovered_indirect_edges=selected_recoveries,
+            indirect_exits=indirect_exits,
+            image_base=binary.image_base,
+            imports=imports,
+            import_abis=import_abis,
+            internal_call_preserved_registers=preserved_by_address,
+        )
+        selected_recoveries = _prefer_indirect_recoveries(
+            static_recoveries, provenance["resolutions"]
+        )
+        signature = _control_fixed_point_signature(
+            internal_summaries, selected_recoveries
+        )
+        if signature == previous_signature:
+            converged = True
+            break
+        previous_signature = signature
+    return provenance, internal_summaries, selected_recoveries, rounds, converged
+
+
+def _prefer_indirect_recoveries(
+    static_recoveries: Sequence[Mapping[str, Any]],
+    provenance_recoveries: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    provenance_by_id = {
+        str(row.get("id")): row for row in provenance_recoveries
+    }
+    result: list[dict[str, Any]] = []
+    for static in static_recoveries:
+        provenance = provenance_by_id.get(str(static.get("id")))
+        selected = (
+            static
+            if static.get("status") == "recovered"
+            else provenance
+            if isinstance(provenance, Mapping)
+            and provenance.get("status") == "recovered"
+            else static
+        )
+        result.append(copy.deepcopy(dict(selected)))
+    return result
+
+
+def _control_fixed_point_signature(
+    summaries: Mapping[str, Any], recoveries: Sequence[Mapping[str, Any]]
+) -> str:
+    payload = {
+        "summaries": [
+            {
+                "target_unit_id": row.get("target_unit_id"),
+                "status": row.get("status"),
+                "preserved_registers": row.get("preserved_registers"),
+            }
+            for row in summaries.get("summaries", [])
+            if isinstance(row, Mapping)
+        ],
+        "recoveries": [
+            {
+                "id": row.get("id"),
+                "status": row.get("status"),
+                "target_unit_ids": row.get("target_unit_ids"),
+                "external_targets": row.get("external_targets"),
+            }
+            for row in recoveries
+        ],
+    }
+    return sha256_bytes(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+
+
 def _control_inventory(
     binary: StageABinary,
     units: Sequence[Mapping[str, Any]],
@@ -1210,43 +1399,76 @@ def _control_inventory(
         )
         static_recoveries.append(recovery)
 
-    value_provenance = recover_indirect_targets_from_value_provenance(
-        units=units,
-        roots=root_unit_ids,
-        direct_edges=[item for item in direct if item["kind"] == "direct_control"],
-        internal_call_edges=[item for item in direct if item["kind"] == "internal_call"],
-        recovered_indirect_edges=static_recoveries,
-        indirect_exits=indirect,
-        image_base=binary.image_base,
-        imports=[
-            {
-                "dll": imported.dll,
-                "symbol": imported.symbol,
-                "ordinal": imported.ordinal,
-                "thunk_rva": imported.thunk_rva,
-            }
-            for imported in binary.imports
-        ],
-        import_abis=import_abis,
-    )
-    provenance_by_id = {
-        str(row["id"]): row for row in value_provenance["resolutions"]
-    }
-    recovered_targets: list[dict[str, Any]] = []
-    for exit_record, recovery in zip(indirect, static_recoveries, strict=True):
+    direct_control_edges = [
+        item for item in direct if item["kind"] == "direct_control"
+    ]
+    internal_call_edges = [
+        item for item in direct if item["kind"] == "internal_call"
+    ]
+    control_fixed_point_rounds = 0
+    control_fixed_point_converged = True
+    while True:
+        root_unit_ids = [
+            starts[int(root["rva"])]["id"]
+            for root in roots
+            if isinstance(root.get("rva"), int) and int(root["rva"]) in starts
+        ]
+        (
+            value_provenance,
+            internal_call_preservation,
+            recovered_targets,
+            fixed_point_rounds,
+            fixed_point_converged,
+        ) = _control_provenance_fixed_point(
+            binary=binary,
+            units=units,
+            root_unit_ids=root_unit_ids,
+            direct_edges=direct_control_edges,
+            internal_call_edges=internal_call_edges,
+            indirect_exits=indirect,
+            static_recoveries=static_recoveries,
+            import_abis=import_abis,
+        )
+        control_fixed_point_rounds += fixed_point_rounds
+        control_fixed_point_converged &= fixed_point_converged
+        reachability = derive_rooted_reachable_units(
+            units=units,
+            roots=root_unit_ids,
+            direct_edges=direct_control_edges,
+            internal_call_edges=internal_call_edges,
+            recovered_indirect_targets=recovered_targets,
+            indirect_exits=indirect,
+        )
+        reachable_sources = set(reachability["reachable_units"])
+        newly_eligible = _newly_eligible_callback_roots(
+            callback_root_proposals, reachable_sources, roots_by_rva
+        )
+        if not newly_eligible:
+            break
+        for proposal in newly_eligible:
+            roots_by_rva[int(proposal["rva"])] = proposal
+        roots = list(roots_by_rva.values())
+
+    if not control_fixed_point_converged:
+        issues.append(
+            ExportIssue(
+                status="incomplete",
+                category="control_provenance_fixed_point_budget_exceeded",
+                message="call preservation and value provenance did not converge",
+                next_action="increase the generic fixed-point budget or reduce the abstract domain",
+                location=SourceLocation(
+                    None, None, None, RvaSpan(binary.entrypoint_rva, binary.entrypoint_rva + 1),
+                    "control.fixed_point",
+                ),
+            )
+        )
+
+    for exit_record, static_recovery, selected_recovery in zip(
+        indirect, static_recoveries, recovered_targets, strict=True
+    ):
         source_unit = next(
             unit for unit in units if unit["id"] == exit_record["source_unit_id"]
         )
-        provenance = provenance_by_id.get(str(exit_record["id"]))
-        selected_recovery = (
-            recovery
-            if recovery["status"] == "recovered"
-            else provenance
-            if isinstance(provenance, Mapping)
-            and provenance.get("status") == "recovered"
-            else recovery
-        )
-        recovered_targets.append(copy.deepcopy(dict(selected_recovery)))
         if selected_recovery["status"] == "recovered":
             exit_record["closure"] = "checked_finite_target_inventory"
             exit_record["target_rvas"] = list(
@@ -1258,12 +1480,12 @@ def _control_inventory(
             exit_record["external_targets"] = copy.deepcopy(
                 selected_recovery.get("external_targets", [])
             )
-            if selected_recovery is recovery:
+            if static_recovery["status"] == "recovered":
                 exit_record["recovery"] = {
-                    "kind": recovery["kind"],
-                    "index": recovery["index"],
-                    "table": recovery["table"],
-                    "entries": recovery["entries"],
+                    "kind": static_recovery["kind"],
+                    "index": static_recovery["index"],
+                    "table": static_recovery["table"],
+                    "entries": static_recovery["entries"],
                 }
             else:
                 exit_record["recovery"] = {
@@ -1284,14 +1506,16 @@ def _control_inventory(
             if profiled
             else "unresolved"
         )
-        exit_record["recovery_failure"] = copy.deepcopy(recovery["failure"])
+        exit_record["recovery_failure"] = copy.deepcopy(
+            static_recovery["failure"]
+        )
         issues.append(
             ExportIssue(
                 status="incomplete",
                 category="unresolved_indirect_control",
                 message=(
                     "indirect control exit has no checked finite target inventory: "
-                    + str(recovery["failure"]["message"])
+                    + str(static_recovery["failure"]["message"])
                 ),
                 next_action=(
                     "supply path-sensitive bounds and an immutable checked target table; "
@@ -1301,29 +1525,6 @@ def _control_inventory(
             )
         )
 
-    while True:
-        root_unit_ids = [
-            starts[int(root["rva"])]["id"]
-            for root in roots
-            if isinstance(root.get("rva"), int) and int(root["rva"]) in starts
-        ]
-        reachability = derive_rooted_reachable_units(
-            units=units,
-            roots=root_unit_ids,
-            direct_edges=[item for item in direct if item["kind"] == "direct_control"],
-            internal_call_edges=[item for item in direct if item["kind"] == "internal_call"],
-            recovered_indirect_targets=recovered_targets,
-            indirect_exits=indirect,
-        )
-        reachable_sources = set(reachability["reachable_units"])
-        newly_eligible = _newly_eligible_callback_roots(
-            callback_root_proposals, reachable_sources, roots_by_rva
-        )
-        if not newly_eligible:
-            break
-        for proposal in newly_eligible:
-            roots_by_rva[int(proposal["rva"])] = proposal
-        roots = list(roots_by_rva.values())
     exact_reachable = set(reachability["reachable_units"])
     starts_by_id = {str(unit["id"]): unit for unit in units}
     potentially_reachable = (
@@ -1365,6 +1566,14 @@ def _control_inventory(
                 key=lambda item: (item["source_rva"], item["source_unit_id"]),
             ),
             "value_provenance": value_provenance,
+            "internal_call_preservation": internal_call_preservation,
+            "analysis_fixed_point": {
+                "status": (
+                    "complete" if control_fixed_point_converged else "incomplete"
+                ),
+                "rounds": control_fixed_point_rounds,
+                "callback_root_reanalysis": True,
+            },
             "reachability": reachability,
             "checked_jump_table_targets": checked_targets,
             "indirect_target_profile": (

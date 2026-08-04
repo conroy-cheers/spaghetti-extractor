@@ -12,8 +12,11 @@ from spaghetti_extractor.reconstruction_ir import (
     MACHINE_IR_FORMAT,
     MACHINE_IR_MANIFEST_FILENAME,
     MachineIRExportError,
+    RvaSpan,
+    _Instruction,
     _callback_registration_roots,
     _newly_eligible_callback_roots,
+    _recover_unknown_fallthrough,
     export_machine_ir_package,
 )
 from spaghetti_extractor.stage_b_state_machine import (
@@ -269,6 +272,52 @@ def _raw_instruction_keys(value: object) -> set[str]:
 
 
 class ReconstructionIRTests(unittest.TestCase):
+    def test_unknown_non_control_terminal_instruction_recovers_fallthrough(self):
+        instruction = _Instruction(
+            rva=0x1000,
+            size=1,
+            digest="0" * 64,
+            mnemonic="inc",
+            operands=(),
+            registers_read=("eax",),
+            registers_written=("eax",),
+            groups=("not64bitmode",),
+        )
+
+        recovered = _recover_unknown_fallthrough(
+            {"kind": "unknown"}, [instruction], RvaSpan(0x1000, 0x1001)
+        )
+
+        self.assertEqual(
+            recovered["outcome"],
+            {"kind": "fallthrough", "target_rva": 0x1001},
+        )
+
+    def test_unknown_control_or_trap_instruction_does_not_recover_fallthrough(self):
+        def instruction(mnemonic: str, groups: tuple[str, ...]) -> _Instruction:
+            return _Instruction(
+                rva=0x1000,
+                size=2,
+                digest="0" * 64,
+                mnemonic=mnemonic,
+                operands=(),
+                registers_read=(),
+                registers_written=(),
+                groups=groups,
+            )
+
+        span = RvaSpan(0x1000, 0x1002)
+        self.assertIsNone(
+            _recover_unknown_fallthrough(
+                {"kind": "unknown"}, [instruction("jmp", ("jump",))], span
+            )
+        )
+        self.assertIsNone(
+            _recover_unknown_fallthrough(
+                {"kind": "unknown"}, [instruction("ud2", ())], span
+            )
+        )
+
     def test_global_target_profile_does_not_replace_finite_site_inventory(self) -> None:
         row = _row(
             "semantic-transfer:indirect",

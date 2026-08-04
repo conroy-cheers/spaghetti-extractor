@@ -24,6 +24,9 @@ let
     ../src/spaghetti_extractor/artifact_formats.py
     ../src/spaghetti_extractor/errors.py
     ../src/spaghetti_extractor/callable_external_runtime.py
+    ../src/spaghetti_extractor/import_abi.py
+    ../src/spaghetti_extractor/internal_call_summaries.py
+    ../src/spaghetti_extractor/machine_abi.py
     ../src/spaghetti_extractor/machine_import_profiles.py
     ../src/spaghetti_extractor/util.py
     ../src/spaghetti_extractor/pe.py
@@ -40,6 +43,7 @@ let
     ../src/spaghetti_extractor/relational/x87_profile.py
     ../src/spaghetti_extractor/reconstruction_ir.py
     ../src/spaghetti_extractor/reconstruction_control.py
+    ../src/spaghetti_extractor/value_provenance.py
     ../src/spaghetti_extractor/reconstruction_composition.py
     ../src/spaghetti_extractor/reconstruction_contract_analysis.py
     ../src/spaghetti_extractor/reconstruction_validation.py

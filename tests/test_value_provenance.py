@@ -84,6 +84,7 @@ def _run(
     *,
     abis: dict[MachineImportIdentity, SelectedImportABI] | None = None,
     internal_edges: list[dict[str, object]] | None = None,
+    internal_preservation: dict[int, frozenset[str]] | None = None,
 ) -> dict[str, object]:
     return recover_indirect_targets_from_value_provenance(
         units=units,
@@ -99,6 +100,7 @@ def _run(
             "thunk_rva": IAT_RVA,
         }],
         import_abis=abis if abis is not None else {_identity(): _abi()},
+        internal_call_preserved_registers=internal_preservation,
     )
 
 
@@ -204,6 +206,40 @@ class ValueProvenanceTests(unittest.TestCase):
         )
 
         self.assertEqual(result["resolutions"][0]["status"], "recovered")
+
+    def test_complete_internal_summary_preserves_caller_register_origin(self) -> None:
+        units = [
+            _unit("root", 0x1000, writes=[{"register": "esi", "value": _load(IMAGE_BASE + IAT_RVA)}]),
+            _unit("caller", 0x1010, events=[_call("internal_call")]),
+            _unit("after", 0x1020, events=[_call("indirect_call")]),
+            _unit("callee", 0x1400),
+        ]
+        edges = [
+            {"source_unit_id": "root", "target_unit_id": "caller"},
+            {"source_unit_id": "caller", "target_unit_id": "after"},
+        ]
+        internal_edges = [{
+            "source_unit_id": "caller",
+            "target_unit_id": "callee",
+            "source_event_index": 0,
+        }]
+
+        recovered = _run(
+            units,
+            edges,
+            [_exit("after", 0x1020)],
+            internal_edges=internal_edges,
+            internal_preservation={IMAGE_BASE + 0x1400: frozenset({"esi"})},
+        )
+        missing = _run(
+            units,
+            edges,
+            [_exit("after", 0x1020)],
+            internal_edges=internal_edges,
+        )
+
+        self.assertEqual(recovered["resolutions"][0]["status"], "recovered")
+        self.assertEqual(missing["resolutions"][0]["status"], "incomplete")
 
     def test_exact_code_address_resolves_one_internal_target(self) -> None:
         units = [

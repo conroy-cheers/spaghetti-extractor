@@ -72,6 +72,7 @@ let
       ../src/spaghetti_extractor/artifact_formats.py
       ../src/spaghetti_extractor/errors.py
       ../src/spaghetti_extractor/import_abi.py
+      ../src/spaghetti_extractor/internal_call_summaries.py
       ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/machine_import_profiles.py
       ../src/spaghetti_extractor/util.py
@@ -91,6 +92,7 @@ let
       ../src/spaghetti_extractor/artifact_formats.py
       ../src/spaghetti_extractor/errors.py
       ../src/spaghetti_extractor/import_abi.py
+      ../src/spaghetti_extractor/internal_call_summaries.py
       ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/machine_import_profiles.py
       ../src/spaghetti_extractor/util.py

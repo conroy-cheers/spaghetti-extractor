@@ -205,6 +205,9 @@
               ./src/spaghetti_extractor/_contract_tools/symbolic_execution.py
               ./src/spaghetti_extractor/artifact_formats.py
               ./src/spaghetti_extractor/errors.py
+              ./src/spaghetti_extractor/import_abi.py
+              ./src/spaghetti_extractor/internal_call_summaries.py
+              ./src/spaghetti_extractor/machine_abi.py
               ./src/spaghetti_extractor/machine_import_profiles.py
               ./src/spaghetti_extractor/opaque_reconstruction.py
               ./src/spaghetti_extractor/pe.py
@@ -213,13 +216,13 @@
               ./src/spaghetti_extractor/stage_b_state_machine.py
               ./src/spaghetti_extractor/stage_binary.py
               ./src/spaghetti_extractor/util.py
+              ./src/spaghetti_extractor/value_provenance.py
               ./src/spaghetti_extractor/relational/__init__.py
               ./src/spaghetti_extractor/relational/artifacts.py
               ./src/spaghetti_extractor/relational/binary_inventory.py
               ./src/spaghetti_extractor/relational/contract.py
               ./src/spaghetti_extractor/relational/model.py
               ./src/spaghetti_extractor/relational/reference_contract.py
-              ./src/spaghetti_extractor/machine_abi.py
               ./src/spaghetti_extractor/relational/schema.py
               ./src/spaghetti_extractor/relational/semantic_cutpoints.py
               ./src/spaghetti_extractor/relational/side_extraction_artifact.py

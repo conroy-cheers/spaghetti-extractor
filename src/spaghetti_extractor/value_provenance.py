@@ -58,12 +58,14 @@ def recover_indirect_targets_from_value_provenance(
     image_base: int,
     imports: Sequence[Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    internal_call_preserved_registers: Mapping[int, frozenset[str]] | None = None,
     finite_target_budget: int = 64,
 ) -> dict[str, Any]:
     """Recover finite code/import targets through checked register carries."""
 
     if finite_target_budget <= 0:
         raise ValueError("finite target budget must be positive")
+    internal_preservation = internal_call_preserved_registers or {}
     by_id = {str(unit["id"]): unit for unit in units}
     if len(by_id) != len(units):
         raise ValueError("value provenance requires unique unit IDs")
@@ -135,6 +137,8 @@ def recover_indirect_targets_from_value_provenance(
             input_states[source_id],
             iat=iat,
             import_abis=import_abis,
+            internal_call_preserved_registers=internal_preservation,
+            image_base=image_base,
             budget=finite_target_budget,
         )
         evaluations += 1
@@ -251,6 +255,8 @@ def _transfer_unit(
     *,
     iat: Mapping[int, MachineImportIdentity],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    internal_call_preserved_registers: Mapping[int, frozenset[str]],
+    image_base: int,
     budget: int,
 ) -> tuple[_Transfer, int]:
     events = _events(unit)
@@ -273,10 +279,12 @@ def _transfer_unit(
             input_state,
             iat=iat,
             import_abis=import_abis,
+            internal_call_preserved_registers=internal_call_preserved_registers,
+            image_base=image_base,
             budget=budget,
         )
         output = {register: None for register in _REGISTERS}
-        if abi is not None and event.get("kind") != "internal_call":
+        if abi is not None:
             for register in abi:
                 output[register] = pre_call.get(register)
         return _Transfer(output, tuple(call_entries)), exceeded
@@ -321,6 +329,8 @@ def _event_abi(
     *,
     iat: Mapping[int, MachineImportIdentity],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    internal_call_preserved_registers: Mapping[int, frozenset[str]],
+    image_base: int,
     budget: int,
 ) -> frozenset[str] | None:
     kind = event.get("kind")
@@ -329,14 +339,40 @@ def _event_abi(
         identity = _event_import_identity(event)
         if identity is not None:
             identities.add(identity)
+    elif kind == "internal_call":
+        target_rva = _integer(event.get("target_rva"))
+        if target_rva is None:
+            return None
+        return internal_call_preserved_registers.get(
+            (image_base + target_rva) & 0xFFFFFFFF
+        )
     elif kind == "indirect_call":
         origins = _evaluate(event.get("target"), input_state, iat=iat, budget=budget)
         if origins is None or not origins:
             return None
+        preserved_alternatives: list[set[str]] = []
         for origin in origins:
-            if origin.kind != "import":
+            if origin.kind == "import":
+                identity = _origin_import_identity(origin)
+                selected = import_abis.get(identity)
+                if selected is None:
+                    return None
+                preserved_alternatives.append(set(selected.abi.preserved_registers))
+            elif origin.kind == "exact":
+                preserved = internal_call_preserved_registers.get(
+                    int(origin.key[0]) & 0xFFFFFFFF
+                )
+                if preserved is None:
+                    return None
+                preserved_alternatives.append(set(preserved))
+            else:
                 return None
-            identities.add(_origin_import_identity(origin))
+        if not preserved_alternatives:
+            return None
+        result = preserved_alternatives[0]
+        for preserved in preserved_alternatives[1:]:
+            result &= preserved
+        return frozenset(result)
     else:
         return None
     selected = [import_abis.get(identity) for identity in sorted(identities)]
