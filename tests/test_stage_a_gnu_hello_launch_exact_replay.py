@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.relational.lean.gnu_hello_launch_exact_replay import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_launch_exact_replay import (
     GnuHelloLaunchExactReplayError,
     GnuHelloLaunchExactReplayFunction,
     GnuHelloLaunchExactReplayPlan,

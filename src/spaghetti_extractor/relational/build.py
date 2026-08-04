@@ -2972,7 +2972,7 @@ def _write_relational_module_graph(
         source_bytes = sum(logical_modules[module]["source_bytes"] for module in modules)
         if "RelationalLaunchRealizabilityCertificate" in modules:
             # This compact certificate reduces all checked launch-frame leaves.
-            # GNU hello measured an 8.0 GiB peak despite a small source file, so
+            # A small validation target measured an 8.0 GiB peak, so
             # source size is not a useful estimator for this module.
             return "high-memory", max(10240, source_bytes // 1024 * 3)
         if any(
@@ -3022,9 +3022,9 @@ def _write_relational_module_graph(
         if "RelationalStaticContext" in modules:
             return "high-memory", max(4096, source_bytes // 1024 * 3)
         if any(module.startswith("RelationalStaticCodeMapChunk") for module in modules):
-            # The generated source is small, but reducing indexed lookups through a
-            # jq-sized imported map dominates the Lean process's resident set. Full
-            # jq measurements peak near 9 GiB per module, independent of source size.
+            # The generated source is small, but reducing indexed lookups through
+            # large imported maps dominates the Lean process's resident set. Representative
+            # application-scale measurements peak near 9 GiB per module, independent of source size.
             return "high-memory", max(
                 10240, source_bytes // 1024 * 3
             )
@@ -3044,7 +3044,7 @@ def _write_relational_module_graph(
                 "RelationalReachableProduct",
             )
         ):
-            # Each checker reduces indexed lookups through the full imported jq
+            # Each checker reduces indexed lookups through the full imported
             # graph. Six GiB is conservative for the bounded 16-entry chunks.
             return "high-memory", max(6144, source_bytes // 1024 * 3)
         if re.search(

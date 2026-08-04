@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from spaghetti_extractor.errors import StageAInputError
-from spaghetti_extractor.relational.lean.gnu_hello_runtime_foundation import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_runtime_foundation import (
     GNU_HELLO_RUNTIME_FOUNDATION_MANIFEST,
     GnuHelloRuntimeFoundationSpec,
     build_gnu_hello_runtime_foundation_plan,

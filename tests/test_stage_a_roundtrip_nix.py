@@ -18,28 +18,36 @@ class StageARoundtripNixTests(unittest.TestCase):
         self.smoke_nix = self.repo / "nix" / "stage-a-roundtrip-smoke.nix"
         self.builders_file = self.repo / "nix" / "stage-a-builders"
         self.flake_nix = self.repo / "flake.nix"
-        self.gnu_hello_nix = self.repo / "nix" / "gnu-hello-roundtrip.nix"
+        self.gnu_hello_nix = self.repo / "targets" / "gnu-hello" / "default.nix"
         self.gnu_hello_driver = (
-            self.repo / "nix" / "gnu-hello-roundtrip-driver.py"
+            self.repo / "targets" / "gnu-hello" / "nix" / "gnu-hello-roundtrip-driver.py"
         )
         self.gnu_hello_direct_call_semantics_driver = (
-            self.repo / "nix" / "gnu-hello-direct-call-semantics.py"
+            self.repo / "targets" / "gnu-hello" / "nix" / "gnu-hello-direct-call-semantics.py"
         )
         self.gnu_hello_direct_call_fixed_point_driver = (
-            self.repo / "nix" / "gnu-hello-direct-call-fixed-point.py"
+            self.repo / "targets" / "gnu-hello" / "nix" / "gnu-hello-direct-call-fixed-point.py"
         )
         self.gnu_hello_stack_dynamic_hints = (
-            self.repo / "nix" / "gnu-hello-stack-dynamic-hints.json"
+            self.repo / "targets" / "gnu-hello" / "nix" / "gnu-hello-stack-dynamic-hints.json"
         )
         self.gnu_hello_stack_dynamic_driver = (
-            self.repo / "nix" / "gnu-hello-stack-dynamic-authority.py"
+            self.repo / "targets" / "gnu-hello" / "nix" / "gnu-hello-stack-dynamic-authority.py"
         )
         self.proof_source_aggregate_driver = (
             self.repo / "nix" / "stage-a-proof-source-aggregate.py"
         )
         self.gnu_hello_diagnostic_driver = (
-            self.repo / "nix" / "gnu-hello-roundtrip-diagnostic.py"
+            self.repo / "targets" / "gnu-hello" / "nix" / "gnu-hello-roundtrip-diagnostic.py"
         )
+
+    @staticmethod
+    def _hermetic_nix_eval_env(root: Path) -> dict[str, str]:
+        config = root / "nixpkgs-config.nix"
+        config.write_text("{}\n", encoding="ascii")
+        environment = os.environ.copy()
+        environment["NIXPKGS_CONFIG"] = str(config)
+        return environment
 
     def test_direct_call_summary_resources_limit_recursive_lean_nodes(
         self,
@@ -353,7 +361,7 @@ class StageARoundtripNixTests(unittest.TestCase):
             lane,
         )
         self.assertIn(
-            "proofPythonFiles = lib.fileset.difference",
+            "proofPythonFiles = lib.fileset.unions",
             lane,
         )
         self.assertIn('"executes_original_binary": False', driver)
@@ -424,12 +432,16 @@ class StageARoundtripNixTests(unittest.TestCase):
         self,
     ) -> None:
         lane = self.gnu_hello_nix.read_text(encoding="utf-8")
-        start = lane.index("proofPythonFiles = lib.fileset.difference")
+        start = lane.index("proofPythonFiles = lib.fileset.unions")
         end = lane.index("proofPythonSource =", start)
         proof_files = lane[start:end]
 
         self.assertNotIn(
             "../src/spaghetti_extractor/relational/build.py",
+            proof_files,
+        )
+        self.assertNotIn(
+            "../../src/spaghetti_extractor/machine_abi.py",
             proof_files,
         )
         self.assertIn(
@@ -587,7 +599,7 @@ class StageARoundtripNixTests(unittest.TestCase):
         )
         self.assertIn("--offline-nix-inspection", lane)
         self.assertIn(
-            "stage-a-gnu-hello-native-source-acceptance-declarations-v3",
+            "stage-a-native-source-acceptance-declarations-v1",
             lane,
         )
         self.assertIn(
@@ -952,7 +964,7 @@ class StageARoundtripNixTests(unittest.TestCase):
             enrichment,
         )
         self.assertIn(
-            "import ./stage-a-isa-qualification-graph.nix",
+            "import ../../nix/stage-a-isa-qualification-graph.nix",
             enrichment,
         )
         self.assertIn(
@@ -1989,8 +2001,16 @@ class StageARoundtripNixTests(unittest.TestCase):
         component_dag = (
             self.repo / "nix" / "stage-b-semantic-component-workspaces.nix"
         ).read_text(encoding="utf-8")
-        self.assertIn("componentSlices = pkgs.runCommand", component_dag)
-        self.assertIn("regionalKernel = pkgs.runCommand", component_dag)
+        self.assertIn("componentSlices =", component_dag)
+        self.assertIn(
+            'pkgs.runCommand "${namePrefix}-component-slices-v1"',
+            component_dag,
+        )
+        self.assertIn("regionalKernel =", component_dag)
+        self.assertIn(
+            'pkgs.runCommand "${namePrefix}-regional-interpreter-kernel-v1"',
+            component_dag,
+        )
         self.assertIn("component_slice=package / matches[0][\"path\"]", component_dag)
         self.assertIn("regional_kernel=pathlib.Path(sys.argv[4])", component_dag)
 
@@ -2053,7 +2073,7 @@ class StageARoundtripNixTests(unittest.TestCase):
         machine_end = lane.index("reconstructionInterpreter =", machine_start)
         machine = lane[machine_start:machine_end]
         self.assertIn('.status == "incomplete"', machine)
-        self.assertIn('.control.counts.closed_indirect_exits == 3', machine)
+        self.assertIn('.control.counts.closed_indirect_exits == 4', machine)
 
     def test_candidate_kernel_closures_do_not_depend_on_global_proof_sources(
         self,
@@ -2976,6 +2996,7 @@ class StageARoundtripNixTests(unittest.TestCase):
                     str(expression),
                 ],
                 cwd=self.repo,
+                env=self._hermetic_nix_eval_env(root),
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -3105,6 +3126,7 @@ class StageARoundtripNixTests(unittest.TestCase):
             process = subprocess.run(
                 ["nix", "eval", "--impure", "--json", "--file", str(expression)],
                 cwd=self.repo,
+                env=self._hermetic_nix_eval_env(root),
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -3142,6 +3164,7 @@ class StageARoundtripNixTests(unittest.TestCase):
             process = subprocess.run(
                 ["nix", "eval", "--impure", "--json", "--file", str(expression)],
                 cwd=self.repo,
+                env=self._hermetic_nix_eval_env(root),
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

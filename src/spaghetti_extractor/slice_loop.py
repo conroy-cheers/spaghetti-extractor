@@ -54,40 +54,7 @@ CONCRETE_SOURCE_KINDS = frozenset(
     }
 )
 
-TARGET_DEFAULTS: dict[str, dict[str, Any]] = {
-    "jq": {
-        "stage_a_check_attr": "stage-a-jq-fixtures-check",
-        "skeleton_attr": "stage-b-jq-skeleton",
-        "final_check_attrs": [
-            "stage-a-jq-fixtures-check",
-            "stage-b-jq-skeleton",
-        ],
-        "stage_a_check_reference_contract": Path("generated/jq-reference-contract.json"),
-        "stage_a_check_unit_contract_dir": Path("generated"),
-        "skeleton_root_dir": Path("share/spaghetti-extractor/stage-b/jq/skeleton"),
-        "candidate_root_dir": Path("share/spaghetti-extractor/stage-b/jq/generated-closure-candidate"),
-        "candidate_exe": "jq-stage-b-generated-closure-candidate.exe",
-        "candidate_map": "jq-stage-b-generated-closure-candidate.map",
-        "skeleton_manifest": "skeleton-manifest.json",
-        "candidate_provenance": "candidate-provenance.json",
-        "build_report": "decompiled-c-generated-closure-link-report.json",
-        "build_target": "i686-w64-mingw32",
-        "build_compiler": "i686-w64-mingw32-cc",
-        "build_command_json": [
-            "bash",
-            "-lc",
-            'exec "$SPAGHETTI_EXTRACTOR_SLICE_REPO_ROOT/tools/spaghetti-extractor-build-jq-candidate.sh"',
-        ],
-        "candidate_modules": [
-            {
-                "name": "libjq-1.dll",
-                "candidate": "libjq-1.dll",
-                "linker_map": "libjq-1.generated-closure.link.map",
-                "skeleton_manifest": "libjq-1-skeleton-manifest.json",
-            }
-        ],
-    }
-}
+SLICE_TARGET_PROFILE_FORMAT = "spaghetti-extractor-slice-target-profile-v1"
 
 
 class SliceLoopInputError(Exception):
@@ -103,7 +70,12 @@ def main(argv: list[str] | None = None) -> int:
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     prepare = subcommands.add_parser("prepare", help="materialize cached Stage A/B artifacts for local slice work")
-    prepare.add_argument("target", help="target name, e.g. jq")
+    prepare.add_argument("target", help="target identifier from the selected target profile")
+    prepare.add_argument(
+        "--target-profile",
+        type=Path,
+        help="optional target-owned artifact-layout and Nix-attribute profile",
+    )
     prepare.add_argument("--stage-a-check-root", type=Path, help="realized stage-a check output root")
     prepare.add_argument("--candidate-root", type=Path, help="realized candidate package output root")
     prepare.add_argument("--skeleton-root", type=Path, help="realized source-only skeleton root")
@@ -198,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
 def _cmd_prepare(args: Any) -> int:
     result = prepare_workspace(
         target=args.target,
+        target_profile=args.target_profile,
         work_dir=args.work_dir,
         stage_a_check_root=args.stage_a_check_root,
         candidate_root=args.candidate_root,
@@ -291,6 +264,7 @@ def prepare_workspace(
     *,
     target: str,
     work_dir: Path,
+    target_profile: Path | None = None,
     stage_a_check_root: Path | None = None,
     candidate_root: Path | None = None,
     skeleton_root: Path | None = None,
@@ -305,7 +279,7 @@ def prepare_workspace(
     copy_candidate_source: bool = True,
     force: bool = False,
 ) -> dict[str, Any]:
-    defaults = _target_defaults(target)
+    defaults = _load_target_profile(target_profile)
     workspace = _workspace_dir(work_dir, target)
     workspace.mkdir(parents=True, exist_ok=True)
     logs_dir = workspace / "logs"
@@ -344,11 +318,25 @@ def prepare_workspace(
             raise SliceLoopInputError(
                 "prepare requires --reference-contract, --stage-a-check-root, or --realize-nix for a known target"
             )
-        reference_contract = Path(stage_a_check_root) / Path(defaults["stage_a_check_reference_contract"])
+        configured = defaults.get("stage_a_check_reference_contract")
+        reference_contract = (
+            Path(stage_a_check_root) / Path(str(configured))
+            if configured
+            else _discover_unique_artifact(
+                Path(stage_a_check_root), "*reference-contract.json", "reference contract"
+            )
+        )
     if unit_contract_dir is None and stage_a_check_root is not None:
-        unit_contract_dir = Path(stage_a_check_root) / Path(defaults["stage_a_check_unit_contract_dir"])
+        configured = defaults.get("stage_a_check_unit_contract_dir")
+        if configured:
+            unit_contract_dir = Path(stage_a_check_root) / Path(str(configured))
     if candidate_dir is None and candidate_root is not None:
-        candidate_dir = Path(candidate_root) / Path(defaults["candidate_root_dir"])
+        configured = defaults.get("candidate_root_dir")
+        candidate_dir = (
+            Path(candidate_root) / Path(str(configured))
+            if configured
+            else Path(candidate_root)
+        )
 
     reference_contract = _require_file(Path(reference_contract), "reference contract")
     if unit_contract_dir is not None:
@@ -390,6 +378,10 @@ def prepare_workspace(
         "prepared_at": utc_now(),
         "workspace": str(workspace),
         "repo_root": str(Path.cwd()),
+        "target_profile": {
+            "path": None if target_profile is None else str(target_profile),
+            "settings": defaults,
+        },
         "policy": {
             "stage_a_contract_first": True,
             "original_runtime_tracing": False,
@@ -578,7 +570,7 @@ def slice_build(
 ) -> dict[str, Any]:
     workspace = _workspace_dir(work_dir, target)
     manifest = _load_manifest(workspace)
-    defaults = _target_defaults(target)
+    defaults = _manifest_target_profile(manifest)
     safe_focus = _safe_name(focus or "all")
     build_dir = workspace / "builds" / safe_focus / "current"
     out_dir = workspace / "candidate" / "out"
@@ -748,7 +740,7 @@ def slice_check(
 ) -> dict[str, Any]:
     workspace = _workspace_dir(work_dir, target)
     manifest = _load_manifest(workspace)
-    defaults = _target_defaults(target)
+    defaults = _manifest_target_profile(manifest)
     paths = _contract_paths(manifest, workspace)
     current = _load_current_candidate(workspace)
     candidate_info = _build_candidate_info(
@@ -1951,10 +1943,29 @@ def _candidate_artifacts(candidate_dir: Path | None, defaults: dict[str, Any]) -
         "candidate_provenance": defaults.get("candidate_provenance"),
         "build_report": defaults.get("build_report"),
     }
+    inferred_patterns = {
+        "candidate": "*.exe",
+        "linker_map": "*.map",
+        "skeleton_manifest": "skeleton-manifest.json",
+        "candidate_provenance": "candidate-provenance.json",
+        "build_report": "*report.json",
+    }
     for key, rel in fields.items():
-        if not rel:
+        path = candidate_dir / str(rel) if rel else None
+        if path is None:
+            matches = sorted(
+                item
+                for item in candidate_dir.glob(inferred_patterns[key])
+                if item.is_file()
+            )
+            if len(matches) == 1:
+                path = matches[0]
+            elif key == "linker_map" and isinstance(result.get("candidate"), str):
+                matching_map = Path(str(result["candidate"])).with_suffix(".map")
+                if matching_map.is_file():
+                    path = matching_map
+        if path is None:
             continue
-        path = candidate_dir / str(rel)
         if path.exists():
             result[key] = str(path)
             if path.is_file():
@@ -2022,6 +2033,15 @@ def _build_candidate_info(
             info[key] = str(explicit[key])
         elif path.exists():
             info[key] = str(path)
+    if candidate is None and not output_defaults["candidate"].exists():
+        candidate_matches = sorted(path for path in out_dir.glob("*.exe") if path.is_file())
+        if len(candidate_matches) == 1:
+            info["candidate"] = str(candidate_matches[0])
+    if linker_map_candidate is None and not output_defaults["linker_map"].exists():
+        candidate_path = Path(str(info.get("candidate") or ""))
+        matching_map = candidate_path.with_suffix(".map")
+        if matching_map.is_file():
+            info["linker_map"] = str(matching_map)
     return info
 
 
@@ -2293,8 +2313,35 @@ def _current_candidate_path(workspace: Path) -> Path:
     return workspace / "candidate" / "current-candidate.json"
 
 
-def _target_defaults(target: str) -> dict[str, Any]:
-    return dict(TARGET_DEFAULTS.get(target, {}))
+def _load_target_profile(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    payload = _load_json(Path(path))
+    if not isinstance(payload, dict) or payload.get("format") != SLICE_TARGET_PROFILE_FORMAT:
+        raise SliceLoopInputError(
+            f"target profile must have format {SLICE_TARGET_PROFILE_FORMAT}"
+        )
+    settings = payload.get("settings")
+    if not isinstance(settings, dict):
+        raise SliceLoopInputError("target profile settings must be an object")
+    return dict(settings)
+
+
+def _manifest_target_profile(manifest: dict[str, Any]) -> dict[str, Any]:
+    profile = manifest.get("target_profile")
+    if not isinstance(profile, dict):
+        return {}
+    settings = profile.get("settings")
+    return dict(settings) if isinstance(settings, dict) else {}
+
+
+def _discover_unique_artifact(root: Path, pattern: str, label: str) -> Path:
+    matches = sorted(path for path in root.rglob(pattern) if path.is_file())
+    if len(matches) != 1:
+        raise SliceLoopInputError(
+            f"cannot infer {label}: found {len(matches)} files matching {pattern!r} under {root}"
+        )
+    return matches[0]
 
 
 def _load_json(path: Path) -> Any:

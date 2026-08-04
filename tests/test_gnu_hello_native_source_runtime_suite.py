@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SUITE = ROOT / "nix" / "gnu-hello-native-source-runtime-suite.nix"
+SUITE = ROOT / "targets" / "gnu-hello" / "nix" / "gnu-hello-native-source-runtime-suite.nix"
 PROGRAM_NAME = r"Z:\nix\store\candidate\bin\hello.exe"
 CRLF = "\r\n"
 C_LOCALE = {"LANG": "", "LANGUAGE": "", "LC_ALL": "C", "LC_MESSAGES": ""}

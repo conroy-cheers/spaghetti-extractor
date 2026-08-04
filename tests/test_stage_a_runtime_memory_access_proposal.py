@@ -7,9 +7,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from spaghetti_extractor.relational.lean.gnu_hello_source_transition_index import (
-    GNU_HELLO_SOURCE_TRANSITION_DECLARATIONS_FORMAT,
-)
+from spaghetti_extractor.artifact_formats import SOURCE_TRANSITION_DECLARATIONS_FORMAT
 from spaghetti_extractor.relational.lean.runtime_memory_access_proposal import (
     RUNTIME_MEMORY_ACCESS_PROPOSAL_FORMAT,
     RUNTIME_MEMORY_PARTITION_CHECK_INPUTS_FORMAT,
@@ -131,7 +129,7 @@ def _fixture(
     declarations = _write_json(
         root / "source-target-effect-declarations.json",
         {
-            "format": GNU_HELLO_SOURCE_TRANSITION_DECLARATIONS_FORMAT,
+            "format": SOURCE_TRANSITION_DECLARATIONS_FORMAT,
             "imports": ["StageA.GeneratedEffects"],
             "module_prefix": "GeneratedGnuHelloSourceTransitionIndex",
             "namespace": "StageA.GeneratedRelational.GnuHelloSourceTransitionIndex",

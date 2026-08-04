@@ -1,0 +1,23 @@
+{
+  "format": "stage-b-linked-island-intent-v1",
+  "islands": [
+    {
+      "authority": "operator_reviewed_exact_range",
+      "id": "application:gnu-hello",
+      "kind": "application",
+      "provenance_hints": [
+        "reviewed application object ranges; names are non-authoritative"
+      ],
+      "ranges": [
+        {
+          "rva_end": 5920,
+          "rva_start": 5184
+        },
+        {
+          "rva_end": 83496,
+          "rva_start": 83272
+        }
+      ]
+    }
+  ]
+}

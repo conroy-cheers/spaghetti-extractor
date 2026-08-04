@@ -10,7 +10,7 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DRIVER_PATH = REPO_ROOT / "nix" / "gnu-hello-roundtrip-driver.py"
+DRIVER_PATH = REPO_ROOT / "targets" / "gnu-hello" / "nix" / "gnu-hello-roundtrip-driver.py"
 
 
 def _load_driver():

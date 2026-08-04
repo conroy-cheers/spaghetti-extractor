@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
-from spaghetti_extractor.relational.lean.gnu_hello_acceptance_requirements import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_acceptance_requirements import (
     GnuHelloAcceptanceRequirementsSpec,
     build_gnu_hello_acceptance_requirements_plan,
     gnu_hello_acceptance_requirements_source,
@@ -41,6 +41,7 @@ class StageAGnuHelloAcceptanceRequirementsKernelTests(unittest.TestCase):
         )
         fixture_module = "StageA.GnuHelloAcceptanceFixture"
         spec = GnuHelloAcceptanceRequirementsSpec(
+            candidate_root_rva=5152,
             original_module=fixture_module,
             reachability_module=fixture_module,
             original_carrier_module=fixture_module,
@@ -68,6 +69,7 @@ class StageAGnuHelloAcceptanceRequirementsKernelTests(unittest.TestCase):
             for module in (
                 "RelationalInterpreterMixedKernelComposition",
                 "RelationalInterpreterMixedProfile",
+                "RelationalInterpreterMixedExternalComponent",
                 "RelationalCallableExternalMixedBridge",
                 "RelationalInterpreterNativeLaunch",
             ):
@@ -86,6 +88,7 @@ class StageAGnuHelloAcceptanceRequirementsKernelTests(unittest.TestCase):
             for module in (
                 "RelationalInterpreterMixedKernelComposition",
                 "RelationalInterpreterMixedProfile",
+                "RelationalInterpreterMixedExternalComponent",
                 "RelationalCallableExternalMixedBridge",
                 "RelationalInterpreterNativeLaunch",
             ):
@@ -131,6 +134,7 @@ open StageA.Relational.CallableExternalExecution
 open StageA.Relational.Interpreter
 open StageA.Relational.InterpreterKernel
 open StageA.Relational.InterpreterKernelABI
+open StageA.Relational.InterpreterMixedConstructiveSourceClassifier
 open StageA.Relational.InterpreterMixedContext
 open StageA.Relational.InterpreterMixedKernelComposition
 open StageA.Relational.InterpreterMixedProfile
@@ -196,6 +200,7 @@ axiom candidateAuthority (environment : NativeWorldEnvironment) :
   ExactNativeCandidateAuthority (candidateProgram environment)
 
 def compiledProgram : CompiledKernelProgram := { functions := [] }
+axiom stepEntry : ExactCandidateKernelEntry compiledProgram
 
 end StageA.GnuHelloAcceptanceFixture
 
@@ -331,7 +336,20 @@ def Requirements.candidateAuthority (requirements : Requirements) :
 
 end StageA.GeneratedRelational.GnuHelloConstructiveSourceCoverageBindings
 
+namespace StageA.GeneratedRelational.InterpreterMixedSourceCoverage
+
+axiom generatedExactOriginalSemanticSourceCoverage
+    (requirements :
+      StageA.GeneratedRelational.GnuHelloConstructiveSourceCoverageBindings.Requirements) :
+    ExactOriginalSemanticSourceCoverage originalContext originalAuthority launch
+      originalRoot reachability requirements.candidate
+      requirements.candidateAuthority
+
+end StageA.GeneratedRelational.InterpreterMixedSourceCoverage
+
 namespace StageA.GeneratedRelational.GnuHelloConstructiveSourceRules
+
+def generatedInterpreterStepEntry := stepEntry
 
 axiom generatedInvariant
     (requirements :

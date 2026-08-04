@@ -53,10 +53,8 @@ The checked Phase 0 record is in
 The complete bounded-profile qualification and measurements are in
 [`stage-a-round-trip-fuzzing-report.md`](stage-a-round-trip-fuzzing-report.md),
 with machine-readable evidence in
-[`stage-a-round-trip-feasibility-report.json`](stage-a-round-trip-feasibility-report.json),
-[`stage-a-round-trip-qualification-evidence.json`](stage-a-round-trip-qualification-evidence.json),
-and
-[`stage-a-round-trip-discovery-qualification.json`](stage-a-round-trip-discovery-qualification.json).
+the machine-readable reports emitted by
+`nix build .#stage-a-roundtrip-promoted-check --no-link`.
 
 This completion is a go decision for using the structured corpus as a rapid
 qualification layer. It is not a claim of complete IA-32, Windows, jq, or

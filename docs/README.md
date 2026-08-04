@@ -1,5 +1,10 @@
 # Documentation Index
 
+The [canonical repository map](../REPOSITORY_MAP.md) is the top-level ownership
+and dependency index for every implementation, proof, build, target, validator,
+and test subsystem. Use it as the starting point for architecture and cleanup
+work.
+
 The primary project direction is
 [high-assurance-reimplementation-direction.md](high-assurance-reimplementation-direction.md).
 It defines how formal checking, independent ISA qualification, executable IR,
@@ -10,7 +15,10 @@ theorem is no longer the primary completion condition.
 The implemented GNU Hello validation of that direction, including exact
 coverage counts, assumptions, candidate-only runtime policy, regional mutation
 feedback, and remaining scalability risk, is documented in
-[gnu-hello-high-assurance-vertical-slice.md](gnu-hello-high-assurance-vertical-slice.md).
+[the GNU Hello target report](../targets/gnu-hello/docs/high-assurance-vertical-slice.md).
+
+The dependency and authored/generated-data boundary for in-tree validation
+consumers is documented in [target-bundles.md](target-bundles.md).
 
 The operator-defined hierarchy, exact machine-boundary derivation, logical
 interface proposal model, and residual coverage ledger are documented in

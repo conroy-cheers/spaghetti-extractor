@@ -1,0 +1,306 @@
+{
+  "format": "stage-b-component-intent-v1",
+  "program_id": "jq-pe32-frontend-reference-v1",
+  "components": [
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_isoption"
+      },
+      "id": "option-name-match",
+      "kind": "procedure",
+      "label": "Option name match",
+      "purpose": "Recognize one option name while retaining the exact strcmp service boundary",
+      "selector": {
+        "entry_rva": 5184,
+        "end_rva": 5279,
+        "proposal_kind": "call_target_return_closure"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_usage_exit_route"
+      },
+      "id": "usage-exit-route",
+      "kind": "procedure",
+      "label": "Usage termination route",
+      "purpose": "Normalize the status code and retain the exact terminal exit service",
+      "selector": {
+        "entry_rva": 5528,
+        "end_rva": 5550,
+        "proposal_kind": "single_entry_control_closure"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_usage_write_route"
+      },
+      "id": "usage-write-route",
+      "kind": "procedure",
+      "label": "Usage output route",
+      "purpose": "Write the static usage payload and continue at the termination route",
+      "selector": {
+        "entry_rva": 5550,
+        "end_rva": 5580,
+        "proposal_kind": "single_entry_control_closure"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_stderr_value_kind"
+      },
+      "id": "stderr-value-kind-route",
+      "kind": "procedure",
+      "label": "Stderr callback value-kind route",
+      "purpose": "Validate a potential callback component independently of ordinary root reachability",
+      "selector": {
+        "entry_rva": 5714,
+        "end_rva": 5780,
+        "proposal_kind": "epilogue_absorption"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_debug_value_prefix"
+      },
+      "id": "debug-value-prefix",
+      "kind": "procedure",
+      "label": "Debug callback value prefix",
+      "purpose": "Group callback-local value construction and one opaque formatting boundary",
+      "selector": {
+        "entry_rva": 6105,
+        "end_rva": 6204,
+        "proposal_kind": "epilogue_absorption"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_isoptish"
+      },
+      "id": "option-token-classifier",
+      "kind": "procedure",
+      "label": "Option token classifier",
+      "purpose": "Recognize option-like tokens while preserving the imported character-class query",
+      "selector": {
+        "entry_rva": 6450,
+        "end_rva": 6503,
+        "proposal_kind": "call_target_return_closure"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_release_output_value"
+      },
+      "id": "output-value-release",
+      "kind": "procedure",
+      "label": "Output value release",
+      "purpose": "Release one opaque output value through the exact libjq service boundary",
+      "selector": {
+        "entry_rva": 7387,
+        "end_rva": 7430,
+        "proposal_kind": "single_entry_control_closure"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_dump_output_value"
+      },
+      "id": "output-value-dump",
+      "kind": "procedure",
+      "label": "Output value dump",
+      "purpose": "Dump one opaque output value and its scalar formatting argument through the exact libjq service boundary",
+      "selector": {
+        "entry_rva": 6827,
+        "end_rva": 6867,
+        "proposal_kind": "epilogue_absorption"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_prepare_output_value"
+      },
+      "id": "output-value-pipeline",
+      "kind": "procedure",
+      "label": "Output value pipeline",
+      "purpose": "Open the output callback, copy one opaque value through its hidden result, and dump it through the exact service sequence",
+      "selector": {
+        "entry_rva": 7943,
+        "end_rva": 8055,
+        "proposal_kind": "single_entry_control_closure"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_option_value_collection"
+      },
+      "id": "option-value-collection",
+      "kind": "procedure",
+      "label": "Option value collection",
+      "purpose": "Coarsen one-entry option processing around array and string construction services",
+      "selector": {
+        "entry_rva": 10455,
+        "end_rva": 14771,
+        "proposal_kind": "external_event_branch_coarsening"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_wide_argument_tail"
+      },
+      "id": "wide-argument-conversion-tail",
+      "kind": "procedure",
+      "label": "Wide argument conversion tail",
+      "purpose": "Exercise a bounded wmain loop proposal with an unresolved service represented at the interface",
+      "selector": {
+        "entry_rva": 18847,
+        "end_rva": 18933,
+        "proposal_kind": "epilogue_absorption"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_math_error_callback_dispatch"
+      },
+      "id": "math-error-callback-dispatch",
+      "kind": "procedure",
+      "label": "Optional math-error callback dispatch",
+      "purpose": "Lift an optional callback over a checked scalar and FP64 record while preserving its indirect-call boundary",
+      "selector": {
+        "entry_rva": 21229,
+        "end_rva": 21318,
+        "proposal_kind": "single_entry_control_closure"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_pe32_section_count"
+      },
+      "id": "pe32-section-count",
+      "kind": "procedure",
+      "label": "Validated PE32 section count",
+      "purpose": "Lift a short-circuit PE32 header validation and section-count query into a portable parsed-header operation",
+      "selector": {
+        "entry_rva": 22912,
+        "end_rva": 22973,
+        "proposal_kind": "call_target_return_closure"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_pe32_image_base"
+      },
+      "id": "pe32-image-base",
+      "kind": "procedure",
+      "label": "Validated PE32 image base",
+      "purpose": "Lift the sibling PE32 validation query that returns the mapped image base for valid headers",
+      "selector": {
+        "entry_rva": 23104,
+        "end_rva": 23164,
+        "proposal_kind": "call_target_return_closure"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_pe32_section_for_address"
+      },
+      "id": "pe32-section-for-address",
+      "kind": "procedure",
+      "label": "PE32 section for address",
+      "purpose": "Lift validated PE32 section-table traversal with exact unsigned first-match behavior",
+      "selector": {
+        "entry_rva": 22768,
+        "end_rva": 22897,
+        "proposal_kind": "call_target_return_closure"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_windows_path_info_scan"
+      },
+      "id": "windows-path-info-scan",
+      "kind": "procedure",
+      "label": "Windows path component scan",
+      "purpose": "Lift the DBCS-aware UNC and DOS-drive path scanner behind dirname and basename",
+      "selector": {
+        "entry_rva": 23584,
+        "end_rva": 24141,
+        "proposal_kind": "call_target_return_closure"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_invalid_parameter_handler_get"
+      },
+      "id": "invalid-parameter-handler-get",
+      "kind": "procedure",
+      "label": "Invalid-parameter handler getter",
+      "purpose": "Lift the fixed runtime handler-slot load into a portable state accessor",
+      "selector": {
+        "entry_rva": 49952,
+        "end_rva": 49958,
+        "proposal_kind": "singleton"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "jq_invalid_parameter_handler_exchange"
+      },
+      "id": "invalid-parameter-handler-exchange",
+      "kind": "procedure",
+      "label": "Invalid-parameter handler exchange",
+      "purpose": "Lift the fixed runtime handler-slot xchg while retaining its atomic semantics",
+      "selector": {
+        "entry_rva": 49968,
+        "end_rva": 49979,
+        "proposal_kind": "call_target_return_closure"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "bounded_string_length"
+      },
+      "id": "bounded-string-length",
+      "kind": "procedure",
+      "label": "Bounded byte-string length",
+      "purpose": "Lift the complete MinGW strnlen loop through the reusable bounded-string contract",
+      "selector": {
+        "entry_rva": 48272,
+        "end_rva": 48328,
+        "proposal_kind": "call_target_return_closure"
+      }
+    },
+    {
+      "emission": {
+        "policy": "function",
+        "symbol": "bounded_wide_string_length"
+      },
+      "id": "bounded-wide-string-length",
+      "kind": "procedure",
+      "label": "Bounded wide-string length",
+      "purpose": "Lift the complete MinGW wcsnlen loop through a checked 16-bit element contract",
+      "selector": {
+        "entry_rva": 47680,
+        "end_rva": 47719,
+        "proposal_kind": "call_target_return_closure"
+      }
+    }
+  ]
+}

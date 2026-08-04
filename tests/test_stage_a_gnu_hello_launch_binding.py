@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.relational.lean.gnu_hello_launch_binding import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_launch_binding import (
     GNU_HELLO_ACTIVE_BRIDGE_RVA,
     GNU_HELLO_ENTRY_RVA,
     GNU_HELLO_ORIGINAL_ENTRY_TARGET_ID,
@@ -17,7 +17,7 @@ from spaghetti_extractor.relational.lean.gnu_hello_launch_binding import (
     gnu_hello_launch_binding_source,
     write_gnu_hello_launch_binding,
 )
-from spaghetti_extractor.relational.lean.gnu_hello_acceptance_requirements import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_acceptance_requirements import (
     build_gnu_hello_acceptance_requirements_plan,
     gnu_hello_acceptance_requirements_source,
 )

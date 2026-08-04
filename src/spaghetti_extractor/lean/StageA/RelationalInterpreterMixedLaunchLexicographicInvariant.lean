@@ -105,32 +105,7 @@ theorem LexicographicLoopRankSpec.stepChecked_rank_decreases
       rw [remainingExact, Nat.add_mul]
       omega
 
-/-- GNU hello's generated transfer table contains exactly 5,697 records.  The
-binary-search interval width is bounded by the same count. -/
-def gnuHelloTransferValidationRankSpec : LexicographicLoopRankSpec := {
-  recordCount := 5697
-  lookupRankBound := 5697
-}
-
-theorem gnuHelloTransferValidationRankSpec_exact :
-    gnuHelloTransferValidationRankSpec.recordCount = 5697 /\
-      gnuHelloTransferValidationRankSpec.lookupRankBound = 5697 := by
-  decide
-
-theorem gnuHelloTransferValidationStep_rank_decreases
-    (kind : LexicographicLoopStep)
-    (before after : LexicographicLoopRankState)
-    (checked :
-      gnuHelloTransferValidationRankSpec.stepChecked kind before after =
-        true) :
-    gnuHelloTransferValidationRankSpec.rank after <
-      gnuHelloTransferValidationRankSpec.rank before :=
-  gnuHelloTransferValidationRankSpec.stepChecked_rank_decreases kind before
-    after checked
-
 #print axioms LexicographicLoopRankSpec.stateChecked_sound
 #print axioms LexicographicLoopRankSpec.stepChecked_rank_decreases
-#print axioms gnuHelloTransferValidationRankSpec_exact
-#print axioms gnuHelloTransferValidationStep_rank_decreases
 
 end StageA.Relational.InterpreterMixedLaunchLexicographicInvariant

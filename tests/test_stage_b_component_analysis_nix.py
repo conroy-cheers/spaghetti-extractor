@@ -4,7 +4,7 @@ import json
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.component_selection import bind_component_selection
+from spaghetti_extractor.target_intent import validate_authored_intent
 
 
 class StageBComponentAnalysisNixTests(unittest.TestCase):
@@ -109,41 +109,41 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         )
         self.assertIn("stage-b-jq-component-granularity-smoke", flake)
         self.assertIn("stage-b-jq-component-registry", flake)
-        self.assertIn("./fixtures/jq/components/option-name-match.c", flake)
-        self.assertIn("./fixtures/jq/components/option-token-classifier.c", flake)
-        self.assertIn("./fixtures/jq/components/stderr-value-kind-route.c", flake)
-        self.assertIn("./fixtures/jq/components/usage-exit-route.c", flake)
-        self.assertIn("./fixtures/jq/components/usage-write-route.c", flake)
-        self.assertIn("./fixtures/jq/components/option-value-collection.c", flake)
-        self.assertIn("./fixtures/jq/components/output-value-release.c", flake)
-        self.assertIn("./fixtures/jq/components/output-value-dump.c", flake)
-        self.assertIn("./fixtures/jq/components/output-value-pipeline.c", flake)
-        self.assertIn("./fixtures/jq/components/debug-value-prefix.c", flake)
+        self.assertIn("./targets/jq/source/components/option-name-match.c", flake)
+        self.assertIn("./targets/jq/source/components/option-token-classifier.c", flake)
+        self.assertIn("./targets/jq/source/components/stderr-value-kind-route.c", flake)
+        self.assertIn("./targets/jq/source/components/usage-exit-route.c", flake)
+        self.assertIn("./targets/jq/source/components/usage-write-route.c", flake)
+        self.assertIn("./targets/jq/source/components/option-value-collection.c", flake)
+        self.assertIn("./targets/jq/source/components/output-value-release.c", flake)
+        self.assertIn("./targets/jq/source/components/output-value-dump.c", flake)
+        self.assertIn("./targets/jq/source/components/output-value-pipeline.c", flake)
+        self.assertIn("./targets/jq/source/components/debug-value-prefix.c", flake)
         self.assertIn(
-            "./fixtures/jq/components/wide-argument-conversion-tail.c", flake
+            "./targets/jq/source/components/wide-argument-conversion-tail.c", flake
         )
         self.assertIn(
-            "./fixtures/jq/components/math-error-callback-dispatch.c", flake
+            "./targets/jq/source/components/math-error-callback-dispatch.c", flake
         )
-        self.assertIn("./fixtures/jq/components/pe32-section-count.c", flake)
-        self.assertIn("./fixtures/jq/components/pe32-image-base.c", flake)
+        self.assertIn("./targets/jq/source/components/pe32-section-count.c", flake)
+        self.assertIn("./targets/jq/source/components/pe32-image-base.c", flake)
         self.assertIn(
-            "./fixtures/jq/components/pe32-section-for-address.c", flake
-        )
-        self.assertIn(
-            "./fixtures/jq/components/windows-path-info-scan.c", flake
+            "./targets/jq/source/components/pe32-section-for-address.c", flake
         )
         self.assertIn(
-            "./fixtures/jq/components/invalid-parameter-handler-get.c", flake
+            "./targets/jq/source/components/windows-path-info-scan.c", flake
         )
         self.assertIn(
-            "./fixtures/jq/components/invalid-parameter-handler-exchange.c", flake
+            "./targets/jq/source/components/invalid-parameter-handler-get.c", flake
         )
         self.assertIn(
-            "./fixtures/jq/components/bounded-string-length.c", flake
+            "./targets/jq/source/components/invalid-parameter-handler-exchange.c", flake
         )
         self.assertIn(
-            "./fixtures/jq/components/bounded-wide-string-length.c", flake
+            "./targets/jq/source/components/bounded-string-length.c", flake
+        )
+        self.assertIn(
+            "./targets/jq/source/components/bounded-wide-string-length.c", flake
         )
         self.assertIn("opaque_value_service_prefix_v1", flake)
         self.assertIn("status_normalize_terminal_service_v1", flake)
@@ -233,24 +233,27 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("fixtures/jq", module.lower())
         self.assertNotIn("wine", module.lower())
 
-    def test_jq_selection_is_frontend_scoped_and_self_bound(self) -> None:
-        path = self.repo / "fixtures" / "jq" / "component-selection.json"
+    def test_jq_component_intent_is_frontend_scoped_and_unbound(self) -> None:
+        path = self.repo / "targets" / "jq" / "intent" / "components.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
 
+        validate_authored_intent(
+            payload,
+            expected_format="stage-b-component-intent-v1",
+            context=path.relative_to(self.repo).as_posix(),
+        )
         self.assertEqual(payload["program_id"], "jq-pe32-frontend-reference-v1")
         self.assertEqual(len(payload["components"]), 20)
-        self.assertEqual(
-            bind_component_selection(payload)["selection_sha256"],
-            payload["selection_sha256"],
-        )
-        self.assertEqual(
-            len({item["proposal_id"] for item in payload["components"]}), 20
-        )
         self.assertTrue(
             all(
-                len(item.get("proposal_binding_sha256", "")) == 64
+                set(item["selector"]).issuperset(
+                    {"entry_rva", "end_rva", "proposal_kind"}
+                )
                 for item in payload["components"]
             )
+        )
+        self.assertTrue(
+            all("proposal_id" not in item for item in payload["components"])
         )
         self.assertIn(
             "stderr-value-kind-route",

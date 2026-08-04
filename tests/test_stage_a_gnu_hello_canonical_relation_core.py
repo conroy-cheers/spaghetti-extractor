@@ -8,7 +8,7 @@ import pytest
 
 
 def _driver():
-    path = Path(__file__).parents[1] / "nix/gnu-hello-canonical-relation-core.py"
+    path = Path(__file__).parents[1] / "targets/gnu-hello/nix/gnu-hello-canonical-relation-core.py"
     spec = importlib.util.spec_from_file_location("gnu_hello_relation_core", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

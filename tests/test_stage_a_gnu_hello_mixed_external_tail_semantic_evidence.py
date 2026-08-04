@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.relational.lean.gnu_hello_mixed_external_tail_semantic_evidence import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_mixed_external_tail_semantic_evidence import (
     GNU_HELLO_MIXED_EXTERNAL_TAIL_SEMANTIC_EVIDENCE_BUNDLE,
     GnuHelloMixedExternalTailSemanticEvidenceGenerationError,
     GnuHelloMixedExternalTailSemanticEvidenceSpec,

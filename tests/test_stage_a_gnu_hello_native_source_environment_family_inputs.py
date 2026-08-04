@@ -8,10 +8,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from spaghetti_extractor.relational.lean.gnu_hello_native_source_environment_family import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_native_source_environment_family import (
     write_gnu_hello_native_source_environment_family,
 )
-from spaghetti_extractor.relational.lean.gnu_hello_native_source_environment_family_inputs import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_native_source_environment_family_inputs import (
     GNU_HELLO_ENVIRONMENT_FAMILY_INPUTS_MODULE,
     GNU_HELLO_ENVIRONMENT_FAMILY_INPUTS_REPORT_FORMAT,
     GnuHelloEnvironmentFamilyInputProducerError,
@@ -310,7 +310,7 @@ class StageAGnuHelloNativeSourceEnvironmentFamilyInputTests(unittest.TestCase):
             self.assertFalse(report["acceptance_authority"])
 
             with mock.patch(
-                "spaghetti_extractor.relational.lean."
+                "spaghetti_extractor_target_gnu_hello."
                 "gnu_hello_native_source_environment_family."
                 "validate_native_source_bundle_manifest",
                 return_value=copy.deepcopy(fixture.bundle),

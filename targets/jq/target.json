@@ -1,0 +1,19 @@
+{
+  "format": "spaghetti-extractor-target-bundle-v1",
+  "id": "jq",
+  "display_name": "jq 1.8.1 PE32 frontend",
+  "input": {
+    "kind": "pe32",
+    "expected_sha256": "5020eab56380107673165fdd1a7ee0532d926d614fab06fd6134394e0030b685"
+  },
+  "paths": {
+    "nix": "default.nix",
+    "components": "intent/components.json",
+    "linked_islands": "intent/linked-islands.json",
+    "slice_profile": "intent/slice-loop.json",
+    "source_projects": ["intent/source/project.json"],
+    "source_evidence": ["intent/source/evidence.json"],
+    "source_roots": ["source/components", "source/idiomatic"],
+    "tests": ["tests/functional-suite.json"]
+  }
+}

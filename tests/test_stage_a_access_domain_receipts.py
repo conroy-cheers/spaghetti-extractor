@@ -590,7 +590,7 @@ class StageATypedAccessFaultQualificationGenerationTests(
             source = (
                 output
                 / "StageA"
-                / "GeneratedGnuHelloAccessFaultQualificationShard0000.lean"
+                / "GeneratedAccessFaultQualificationShard0000.lean"
             ).read_text(encoding="utf-8")
             self.assertIn("TypedAccessFaultQualification", source)
             self.assertIn("Certificate.checked .original", source)

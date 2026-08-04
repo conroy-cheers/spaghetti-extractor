@@ -167,7 +167,7 @@ class StageAISAQualificationGraphTests(unittest.TestCase):
 
     def test_gnu_proof_report_retains_non_authoritative_isa_policy(self) -> None:
         gnu_source = (
-            self.repo / "nix" / "gnu-hello-roundtrip.nix"
+            self.repo / "targets" / "gnu-hello" / "default.nix"
         ).read_text(encoding="utf-8")
 
         self.assertIn(

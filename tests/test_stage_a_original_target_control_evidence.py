@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
-from spaghetti_extractor.relational.lean.original_target_control_evidence import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_original_target_control_evidence import (
     ORIGINAL_TARGET_CONTROL_BLOCKERS_FORMAT,
     ORIGINAL_TARGET_CONTROL_DECLARATIONS_FORMAT,
     ORIGINAL_TARGET_CONTROL_EVIDENCE_FORMAT,

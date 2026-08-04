@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from spaghetti_extractor.artifact_formats import STATIC_MACHINE_IMPORT_CONTRACTS_FORMAT
-from spaghetti_extractor.relational.lean.gnu_hello_checked_response_family import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_checked_response_family import (
     GNU_HELLO_CHECKED_RESPONSE_FAMILY_INPUT_FORMAT,
     GNU_HELLO_REACHABLE_EXTERNAL_SITE_COUNT,
     GNU_HELLO_REACHABLE_IMPORT_COUNT,

@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DRIVER_PATH = ROOT / "nix" / "gnu-hello-constructive-source-inventory.py"
+DRIVER_PATH = ROOT / "targets" / "gnu-hello" / "nix" / "gnu-hello-constructive-source-inventory.py"
 DRIVER_SPEC = importlib.util.spec_from_file_location(
     "gnu_hello_constructive_source_inventory_driver",
     DRIVER_PATH,

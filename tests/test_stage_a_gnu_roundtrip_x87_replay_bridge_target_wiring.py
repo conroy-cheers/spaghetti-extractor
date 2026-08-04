@@ -9,8 +9,8 @@ from pathlib import Path
 
 
 _ROOT = Path(__file__).parents[1]
-_DRIVER = _ROOT / "nix/gnu-hello-roundtrip-driver.py"
-_NIX = _ROOT / "nix/gnu-hello-roundtrip.nix"
+_DRIVER = _ROOT / "targets/gnu-hello/nix/gnu-hello-roundtrip-driver.py"
+_NIX = _ROOT / "targets/gnu-hello/default.nix"
 _CANDIDATE_ROOT = Path(
     "/nix/store/hwabmhf3h9ps6gcsxnji81pisdij1lg9-"
     "stage-b-gnu-hello-roundtrip-candidate"

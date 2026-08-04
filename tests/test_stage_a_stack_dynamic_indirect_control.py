@@ -103,7 +103,7 @@ def _plan() -> StackDynamicIndirectControlPlan:
 def _load_gnu_hello_driver():
     path = (
         Path(__file__).parents[1]
-        / "nix/gnu-hello-stack-dynamic-authority.py"
+        / "targets/gnu-hello/nix/gnu-hello-stack-dynamic-authority.py"
     )
     name = "test_gnu_hello_stack_dynamic_authority_driver"
     spec = importlib.util.spec_from_file_location(name, path)

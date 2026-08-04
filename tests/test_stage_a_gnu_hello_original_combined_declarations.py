@@ -5,13 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.relational.lean.gnu_hello_original_combined_declarations import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_original_combined_declarations import (
     GnuHelloOriginalCombinedDeclarationsError,
     REACHABILITY_EXPORT_FIELD,
     VALUE_FLOW_EXPORT_FIELD,
     write_gnu_hello_original_combined_declarations,
 )
-from spaghetti_extractor.relational.lean.original_combined_inventory import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_original_combined_inventory import (
     ORIGINAL_COMBINED_CALL_FRAME_DECLARATIONS_FORMAT,
     ORIGINAL_COMBINED_REACHABILITY_DECLARATIONS_FORMAT,
     ORIGINAL_COMBINED_VALUE_FLOW_DECLARATIONS_FORMAT,

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.relational.lean.original_execution_preservation_inputs import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_original_execution_preservation_inputs import (
     ORIGINAL_EXECUTION_PRESERVATION_CONTEXT_FORMAT,
     ORIGINAL_EXECUTION_PRESERVATION_FRONTIER_FORMAT,
     OriginalExecutionPreservationInputsError,

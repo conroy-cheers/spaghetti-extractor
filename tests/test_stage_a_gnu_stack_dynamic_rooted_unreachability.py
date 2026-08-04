@@ -18,7 +18,7 @@ from spaghetti_extractor.relational.original_cutpoint_graph_ir import (
 def _load_driver():
     path = (
         Path(__file__).parents[1]
-        / "nix/gnu-hello-stack-dynamic-authority.py"
+        / "targets/gnu-hello/nix/gnu-hello-stack-dynamic-authority.py"
     )
     specification = importlib.util.spec_from_file_location(
         "gnu_hello_stack_dynamic_authority_rooted_tests",

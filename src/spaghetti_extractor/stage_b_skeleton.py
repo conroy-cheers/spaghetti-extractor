@@ -200,24 +200,6 @@ _DECOMPILED_C_STACK_PROBE_HELPER_MACROS = {
 _DECOMPILED_C_DTOA_LOCK_HELPER_SYMBOL = "dtoa_lock"
 _DECOMPILED_C_DTOA_LOCK_HELPER_DATA_SYMBOLS = ("_dtoa_CS_init", "_dtoa_CritSec")
 _DECOMPILED_C_EXACT_RUNTIME_DATA_SYMBOLS = frozenset()
-_DECOMPILED_C_JQ_RDATA_TABLE_SYMBOLS = frozenset({"___tens_D2A"})
-_DECOMPILED_C_JQ_BSS_ALIAS_DATA_SYMBOL_OFFSETS = {
-    "_dtoa_CritSec": 0x840,
-    "_dtoa_CS_init": 0x878,
-    "_errno_exref": 0x8A4,
-    "_freelist": 0x800,
-    "_handler": 0x8A0,
-    "_internal_mbstate_1": 0x890,
-    "_internal_mbstate_2": 0x898,
-    "_p5s": 0x880,
-    "_pmem_next": 0x884,
-    "_s_mbstate_0": 0x89C,
-    "_setmode_exref": 0x8A8,
-    "_static_path_copy_0": 0x8AC,
-    "stack0xfffffb54": 0x8B0,
-    "stack0xfffffb58": 0x8B4,
-    "stack0xfffffb5c": 0x8B8,
-}
 _DECOMPILED_C_DTOA_LOCK_HELPER_IMPORTS = (
     "DeleteCriticalSection",
     "EnterCriticalSection",
@@ -485,20 +467,7 @@ def stage_b_generate_link_roots(
     return result
 
 def _stage_b_generated_layout_root_symbols(nm_symbols: Iterable[str]) -> list[str]:
-    roots: set[str] = set()
-    exact = {
-        "_stage_b_jq_reference_data",
-        "_stage_b_jq_reference_rdata",
-        "_stage_b_jq_layout_bss_anchor",
-        "_stage_b_jq_layout_idata_pad",
-        "_stage_b_jq_layout_text_tail_pad",
-        "_stage_b_jq_reloc_absolute_pad",
-        "_stage_b_jq_layout_tls_anchor",
-    }
-    for symbol in nm_symbols:
-        if symbol.startswith("_stage_b_contract_section_gap__") or symbol in exact:
-            roots.add(symbol)
-    return sorted(roots)
+    return sorted(symbol for symbol in nm_symbols if symbol.startswith("_stage_b_contract_section_gap__"))
 
 
 def _stage_b_reference_import_roots(
@@ -3904,7 +3873,6 @@ def _render_decompiled_c_source(
         "typedef struct _stage_b_exception { int type; char *name; double arg1; double arg2; double retval; } _exception;",
         "typedef struct _stage_b_startupinfo { int newmode; } _startupinfo;",
         "typedef void (__attribute__((cdecl)) *_invalid_parameter_handler)(const wchar_t *, const wchar_t *, const wchar_t *, unsigned int, uintptr_t);",
-        *(["typedef struct _stage_b_jv { uint32_t word[4]; } stage_b_jv;"] if target_name == "jq" else []),
         "typedef struct stageb_x86_state {",
         "    uint32_t eax;",
         "    uint32_t ebx;",
@@ -3941,7 +3909,6 @@ def _render_decompiled_c_source(
         "    uint32_t zero2;",
         "    uint32_t version;",
         "} pseudoRelocItemV2;",
-        *(["#define STAGE_B_JQ_HAS_LAYOUT_BSS_ANCHOR 1"] if target_name == "jq" else []),
         "#ifndef LOCK",
         "#define LOCK() ((void)0)",
         "#endif",
@@ -3996,157 +3963,6 @@ def _render_decompiled_c_source(
         "#define STAGE_B_SET_PART(value, offset, size, replacement) \\",
         "    do { (value) = (__typeof__(value))stage_b_part_set_u64((uint64_t)(value), (offset), (size), (uint64_t)(uintptr_t)(replacement)); } while (0)",
         "#define STAGE_B_PART_LVALUE(value, offset, type) (*((type *)((unsigned char *)&(value) + (offset))))",
-        *([
-        "#define STAGE_B_JQ_CALL_IOB_SLOT(slot, stream) \\",
-        "    ({ FILE *stage_b_result; \\",
-        "       __asm__ __volatile__(\"movl %1, (%%esp)\\n\\tcall *%2\" \\",
-        "           : \"=a\"(stage_b_result) \\",
-        "           : \"ri\"((int)(stream)), \"m\"(slot) \\",
-        "           : \"ecx\", \"edx\", \"memory\", \"cc\"); \\",
-        "       stage_b_result; })",
-        "",
-        "uintptr_t __cdecl jv_mem_alloc(size_t);",
-        "__attribute__((section(\".bss\"))) static unsigned stage_b_jq_isoption_index;",
-        "static void stage_b_jq_isoption_reset(void) { stage_b_jq_isoption_index = 0; }",
-        "static uintptr_t stage_b_jq_jvp_array_alloc(uint32_t capacity) {",
-        "    size_t bytes = ((size_t)capacity + 1U) * 16U;",
-        "    uint32_t *payload = (uint32_t *)(uintptr_t)jv_mem_alloc(bytes);",
-        "    for (size_t index = 0; index < bytes / sizeof(uint32_t); index++) {",
-        "        payload[index] = 0;",
-        "    }",
-        "    payload[0] = 1;",
-        "    payload[1] = 0;",
-        "    payload[2] = capacity;",
-        "    return (uintptr_t)payload;",
-        "}",
-        "static undefined4 stage_b_jq_jv_array_sized(undefined4 out_value, uint32_t capacity) {",
-        "    uint32_t *out = (uint32_t *)(uintptr_t)out_value;",
-        "    if ((uintptr_t)out < (uintptr_t)0x10000U) {",
-        "        return out_value;",
-        "    }",
-        "    out[0] = 0x86;",
-        "    out[1] = 0;",
-        "    out[2] = (uint32_t)stage_b_jq_jvp_array_alloc(capacity);",
-        "    out[3] = 0;",
-        "    return out_value;",
-        "}",
-        "static uintptr_t stage_b_jq_jvp_string_alloc(size_t length) {",
-        "    size_t bytes = length + 0x11U;",
-        "    uint8_t *payload = (uint8_t *)(uintptr_t)jv_mem_alloc(bytes);",
-        "    for (size_t index = 0; index < bytes; index++) {",
-        "        payload[index] = 0;",
-        "    }",
-        "    ((uint32_t *)payload)[0] = 1;",
-        "    ((uint32_t *)payload)[2] = (uint32_t)(length * 2U);",
-        "    ((uint32_t *)payload)[3] = (uint32_t)length;",
-        "    return (uintptr_t)payload;",
-        "}",
-        "static undefined4 stage_b_jq_jv_string_sized(undefined4 out_value, const uint8_t *data, int length) {",
-        "    size_t safe_length = length < 0 ? 0U : (size_t)length;",
-        "    uint8_t *payload = (uint8_t *)(uintptr_t)stage_b_jq_jvp_string_alloc(safe_length);",
-        "    uint32_t *out = (uint32_t *)(uintptr_t)out_value;",
-        "    if ((uintptr_t)out < (uintptr_t)0x10000U) {",
-        "        return out_value;",
-        "    }",
-        "    if (safe_length != 0U && (uintptr_t)data < (uintptr_t)0x10000U) {",
-        "        safe_length = 0U;",
-        "        data = (const uint8_t *)0;",
-        "    }",
-        "    if (data != (const uint8_t *)0) {",
-        "        for (size_t index = 0; index < safe_length; index++) {",
-        "            payload[0x10U + index] = data[index];",
-        "        }",
-        "    }",
-        "    payload[0x10U + safe_length] = 0;",
-        "    out[0] = 0x85;",
-        "    out[1] = 0;",
-        "    out[2] = (uint32_t)(uintptr_t)payload;",
-        "    out[3] = 0;",
-        "    return out_value;",
-        "}",
-        "static uintptr_t stage_b_jq_jvp_object_alloc(uint32_t size) {",
-        "    if (size == 0 || (size & (size - 1U)) != 0) {",
-        "        size = 8;",
-        "    }",
-        "    size_t bytes = (size_t)size * 0x30U + 8U;",
-        "    uint8_t *payload = (uint8_t *)(uintptr_t)jv_mem_alloc(bytes);",
-        "    for (size_t index = 0; index < bytes; index++) {",
-        "        payload[index] = 0;",
-        "    }",
-        "    ((uint32_t *)payload)[0] = 1;",
-        "    ((uint32_t *)payload)[1] = 0;",
-        "    for (uint32_t index = 0; index < size; index++) {",
-        "        uint32_t *slot = (uint32_t *)(void *)(payload + 8U + (size_t)index * 0x28U);",
-        "        slot[0] = index == 0 ? UINT32_MAX : index - 1U;",
-        "    }",
-        "    for (size_t index = (size_t)size * 0x28U + 8U; index < bytes; index++) {",
-        "        payload[index] = 0xffU;",
-        "    }",
-        "    return (uintptr_t)payload;",
-        "}",
-        "static undefined4 stage_b_jq_jv_object(undefined4 out_value) {",
-        "    uint32_t *out = (uint32_t *)(uintptr_t)out_value;",
-        "    if ((uintptr_t)out < (uintptr_t)0x10000U) {",
-        "        return out_value;",
-        "    }",
-        "    out[0] = 0x87;",
-        "    out[1] = 8;",
-        "    out[2] = (uint32_t)stage_b_jq_jvp_object_alloc(8);",
-        "    out[3] = 0;",
-        "    return out_value;",
-        "}",
-        "#define stage_b_jq_call_jq_realpath(value) ((stage_b_jv (__cdecl *)(stage_b_jv))jq_realpath)(value)",
-        "#define stage_b_jq_call_jq_testsuite(libs, flags, argc, argv) ((int (__cdecl *)(stage_b_jv, int, int, char **))jq_testsuite)((libs), (flags), (argc), (argv))",
-        "#define stage_b_jq_call_jv_array_append(array, value) ((stage_b_jv (__cdecl *)(stage_b_jv, stage_b_jv))jv_array_append)((array), (value))",
-        "#define stage_b_jq_call_jv_string(value) ((stage_b_jv (__cdecl *)(const char *))jv_string)(value)",
-        "static int stage_b_jq_isoption_match(char **cursor, int short_mode, char short_name, const char *long_name) {",
-        "    char *value = cursor ? *cursor : (char *)0;",
-        "    if (value == (char *)0) {",
-        "        return 0;",
-        "    }",
-        "    if (short_mode == 0) {",
-        "        const char *left = value;",
-        "        const char *right = long_name;",
-        "        if (right == (const char *)0) {",
-        "            return 0;",
-        "        }",
-        "        while (*left != '\\0' && *right != '\\0' && *left == *right) {",
-        "            left++;",
-        "            right++;",
-        "        }",
-        "        if (*left != '\\0' || *right != '\\0') {",
-        "            return 0;",
-        "        }",
-        "        *cursor = (char *)0;",
-        "        return 1;",
-        "    }",
-        "    if (short_name == '\\0' || *value != short_name) {",
-        "        return 0;",
-        "    }",
-        "    *cursor = value[1] == '\\0' ? (char *)0 : value + 1;",
-        "    return 1;",
-        "}",
-        "static int __attribute__((optimize(\"no-jump-tables\"))) stage_b_jq_isoption_next(char **cursor, int short_mode) {",
-        "    unsigned index = stage_b_jq_isoption_index++;",
-        "    if (index == 0U) {",
-        "        return stage_b_jq_isoption_match(cursor, short_mode, 'n', \"null-input\");",
-        "    }",
-        "    if (index == 30U) {",
-        "        return stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"help\");",
-        "    }",
-        "    if (index == 31U) {",
-        "        return stage_b_jq_isoption_match(cursor, short_mode, 'V', \"version\");",
-        "    }",
-        "    if (index == 32U) {",
-        "        return stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"build-configuration\");",
-        "    }",
-        "    if (index == 33U) {",
-        "        return stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"run-tests\");",
-        "    }",
-        "    return 0;",
-        "}",
-        "",
-        ] if target_name == "jq" else []),
     ]
     implemented_functions = [
         function
@@ -4168,10 +3984,7 @@ def _render_decompiled_c_source(
     direct_import_alias_symbols = _decompiled_c_direct_import_alias_symbol_names(functions)
     runtime_helper_alias_symbols = _decompiled_c_runtime_helper_alias_symbol_names(functions)
     runtime_helper_aliases = _decompiled_c_runtime_helper_alias_lines(functions)
-    layout_keepalive_required = not _decompiled_c_uses_reference_section_materialization(
-        target_name,
-        reference_contract_payload,
-    )
+    layout_keepalive_required = True
     runtime_bridge = (
         _decompiled_c_runtime_entry_bridge(functions, call_layout_keepalive=layout_keepalive_required)
         if runtime_entry_policy == "bridge"
@@ -4695,12 +4508,6 @@ def _decompiled_c_contract_placeholder(
         )
         if contract_guided_leaf is not None:
             return contract_guided_leaf
-    if name == "jv_is_valid":
-        return _decompiled_c_jq_jv_is_valid_contract_impl(
-            function,
-            call_targets=call_targets or {},
-            call_target_profiles=call_target_profiles or {},
-        )
     rva_start = int(function.get("rva_start") or 0)
     size = int(function.get("size") or 0)
     anchors = _decompiled_c_contract_callsite_anchor_lines(
@@ -6187,29 +5994,6 @@ def _decompiled_c_contract_flow_direct_call_should_use_raw_bytes(
     return False
 
 
-def _decompiled_c_contract_flow_symbolic_call_preserves_rel32(
-    target_name: str,
-    *,
-    target_profile: dict[str, Any] | None,
-) -> bool:
-    # Kept as a narrowly scoped introspection helper for older diagnostics.
-    # Flow lowering emits symbolic calls for resolved direct targets so the
-    # linker, not stale original rel32 bytes, chooses the candidate callee.
-    if target_name.startswith("stage_b_contract_section_gap__"):
-        return True
-    if isinstance(target_profile, dict) and target_profile.get("stage_b_internal_function") is True:
-        return True
-    if isinstance(target_profile, dict) and target_profile.get("stage_b_synthetic_section_gap") is True:
-        return True
-    if isinstance(target_profile, dict) and target_profile.get("runtime_crt_linked") is True:
-        return False
-    if (
-        target_name in _DECOMPILED_C_RUNTIME_ENTRY_NAMES
-        or target_name in _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES
-        or target_name in _DECOMPILED_C_MINGW_CRT_SUPPORT_HELPER_NAMES
-    ):
-        return False
-    return False
 
 
 def _decompiled_c_contract_flow_instruction_byte_lines(instruction: dict[str, Any]) -> list[str]:
@@ -6723,51 +6507,6 @@ def _decompiled_c_semantic_region_register_order(region: dict[str, Any]) -> list
     return result
 
 
-def _decompiled_c_jq_jv_is_valid_contract_impl(
-    function: dict[str, Any],
-    *,
-    call_targets: dict[int, str],
-    call_target_profiles: dict[str, dict[str, Any]],
-) -> str:
-    rva_start = int(function.get("rva_start") or 0)
-    size = int(function.get("size") or 0)
-    target_name = _decompiled_c_i686_c_asm_symbol(str(call_targets.get(0x4A80) or "jv_get_kind"))
-    lines = [
-        "__attribute__((naked, noinline, used))",
-        "uintptr_t __cdecl jv_is_valid()",
-        "{",
-        f"  /* Stage B jq helper recovered from original RVA 0x{rva_start:x}, size {size}. */",
-    ]
-    anchor_lines = _decompiled_c_contract_callsite_anchor_lines(
-        function,
-        call_targets=call_targets,
-        call_target_profiles=call_target_profiles,
-        emit_accumulator=False,
-    )
-    lines.extend(line for line in anchor_lines if line.strip().startswith("/*"))
-    lines.extend(
-        [
-            "  __asm__ __volatile__(",
-            '    "subl $0x2c, %esp\\n\\t"',
-            '    "movl 0x30(%esp), %eax\\n\\t"',
-            '    "movl %eax, (%esp)\\n\\t"',
-            '    "movl 0x34(%esp), %eax\\n\\t"',
-            '    "movl %eax, 0x4(%esp)\\n\\t"',
-            '    "movl 0x38(%esp), %eax\\n\\t"',
-            '    "movl %eax, 0x8(%esp)\\n\\t"',
-            '    "movl 0x3c(%esp), %eax\\n\\t"',
-            '    "movl %eax, 0xc(%esp)\\n\\t"',
-            f'    "call {target_name}\\n\\t"',
-            '    "testl %eax, %eax\\n\\t"',
-            '    "setne %al\\n\\t"',
-            '    "addl $0x2c, %esp\\n\\t"',
-            '    "movzbl %al, %eax\\n\\t"',
-            '    "ret\\n\\t"',
-            "  );",
-            "}",
-        ]
-    )
-    return "\n".join(lines)
 
 
 def _decompiled_c_contract_call_targets(
@@ -7457,17 +7196,6 @@ def _decompiled_c_runtime_entry_bridge(
     )
     return lines
 
-def _decompiled_c_runtime_entry_stubs(functions: list[dict[str, Any]]) -> list[str]:
-    stubs = _decompiled_c_runtime_entry_stubs_by_name(functions)
-    lines: list[str] = []
-    for name in ("WinMainCRTStartup", "mainCRTStartup"):
-        stub = stubs.get(name)
-        if not stub:
-            continue
-        if lines:
-            lines.append("")
-        lines.append(stub)
-    return lines
 
 
 def _decompiled_c_runtime_entry_stubs_by_name(functions: list[dict[str, Any]]) -> dict[str, str]:
@@ -7499,157 +7227,6 @@ def _decompiled_c_runtime_entry_bridge_externs(functions: list[dict[str, Any]]) 
     if not _decompiled_c_runtime_entry_bridge(functions):
         return []
     return ["__wgetmainargs", "exit", "malloc"]
-
-def _decompiled_c_jq_atexit_import_anchor_symbol(functions: list[dict[str, Any]]) -> str:
-    for function in functions:
-        if not _decompiled_c_is_import_thunk(function):
-            continue
-        linkage = function.get("linkage") if isinstance(function.get("linkage"), dict) else {}
-        if str(linkage.get("symbol") or "") != "atexit":
-            continue
-        original_symbol = str(linkage.get("original_symbol") or function.get("name") or "")
-        if original_symbol in _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS and _is_c_identifier(original_symbol):
-            return original_symbol
-    return "atexit"
-
-_DECOMPILED_C_JQ_RDATA_LINKER_SUFFIX_BYTES = 0x38
-_DECOMPILED_C_JQ_TEXT_TAIL_PAD_BYTES = 0x54
-_DECOMPILED_C_JQ_RELOC_ABSOLUTE_PAD_BYTES = 0x368
-
-
-def _decompiled_c_uses_reference_section_materialization(
-    target_name: str,
-    reference_contract_payload: dict[str, Any] | None,
-) -> bool:
-    if target_name != "jq" or reference_contract_payload is None:
-        return False
-    sections = _decompiled_c_reference_sections_by_name(reference_contract_payload)
-    return ".data" in sections and ".rdata" in sections
-
-
-def _decompiled_c_jq_uses_full_layout_contract(reference_contract_payload: dict[str, Any] | None) -> bool:
-    if reference_contract_payload is None:
-        return False
-    sections = _decompiled_c_reference_sections_by_name(reference_contract_payload)
-    text = sections.get(".text")
-    reloc = sections.get(".reloc")
-    if text is None or reloc is None:
-        return False
-    text_size = int(text["rva_end"]) - int(text["rva_start"])
-    reloc_size = int(reloc["rva_end"]) - int(reloc["rva_start"])
-    return text_size == 0xB500 and reloc_size == 0x5A0
-
-
-def _decompiled_c_jq_layout_normalization_pad_lines(reference_contract_payload: dict[str, Any] | None) -> list[str]:
-    if not _decompiled_c_jq_uses_full_layout_contract(reference_contract_payload):
-        return []
-    reloc_entries = (_DECOMPILED_C_JQ_RELOC_ABSOLUTE_PAD_BYTES - 8) // 2
-    return [
-        "__asm__(",
-        "\".section .text$zz_stage_b_jq_layout_tail_pad,\\\"x\\\"\\n\"",
-        "\".globl _stage_b_jq_layout_text_tail_pad\\n\"",
-        "\"_stage_b_jq_layout_text_tail_pad:\\n\"",
-        f"\"  .fill {_DECOMPILED_C_JQ_TEXT_TAIL_PAD_BYTES},1,0x90\\n\"",
-        "\".text\\n\"",
-        ");",
-        "",
-        "__asm__(",
-        "\".section .reloc,\\\"dr\\\"\\n\"",
-        "\".globl _stage_b_jq_reloc_absolute_pad\\n\"",
-        "\"_stage_b_jq_reloc_absolute_pad:\\n\"",
-        "\"  .long 0x1000\\n\"",
-        f"\"  .long {_DECOMPILED_C_JQ_RELOC_ABSOLUTE_PAD_BYTES}\\n\"",
-        f"\"  .fill {reloc_entries},2,0\\n\"",
-        "\".text\\n\"",
-        ");",
-    ]
-
-
-def _decompiled_c_jq_reference_section_materialization_lines(
-    reference_contract_payload: dict[str, Any] | None,
-    functions: list[dict[str, Any]],
-    *,
-    runtime_entry_policy: str,
-) -> list[str]:
-    if reference_contract_payload is None:
-        return []
-    sections = _decompiled_c_reference_sections_by_name(reference_contract_payload)
-    data_section = sections.get(".data")
-    rdata_section = sections.get(".rdata")
-    if data_section is None or rdata_section is None:
-        return []
-    patches = _decompiled_c_reference_section_byte_patches(reference_contract_payload)
-    expressions = _decompiled_c_reference_section_expression_patches(
-        reference_contract_payload,
-        functions,
-        runtime_entry_policy=runtime_entry_policy,
-    )
-    lines: list[str] = []
-    data_lines = _decompiled_c_reference_section_blob_asm(
-        section_name=".data",
-        symbol="stage_b_jq_reference_data",
-        section_asm=".data$000_stage_b_reference_data",
-        section_flags="dw",
-        section=data_section,
-        size=int(data_section["rva_end"]) - int(data_section["rva_start"]),
-        byte_patches=patches,
-        expression_patches=expressions,
-    )
-    if data_lines:
-        lines.extend(data_lines)
-    rdata_section_size = int(rdata_section["rva_end"]) - int(rdata_section["rva_start"])
-    reserve_crt_suffix = rdata_section_size >= _DECOMPILED_C_JQ_RDATA_LINKER_SUFFIX_BYTES
-    rdata_size = (
-        rdata_section_size - _DECOMPILED_C_JQ_RDATA_LINKER_SUFFIX_BYTES
-        if reserve_crt_suffix
-        else rdata_section_size
-    )
-    rdata_lines = _decompiled_c_reference_section_blob_asm(
-        section_name=".rdata",
-        symbol="stage_b_jq_reference_rdata",
-        section_asm=".rdata$000_stage_b_reference_rdata",
-        section_flags="dr",
-        section=rdata_section,
-        size=rdata_size,
-        byte_patches=patches,
-        expression_patches=expressions,
-    )
-    if rdata_lines:
-        if lines:
-            lines.append("")
-        lines.extend(rdata_lines)
-        if reserve_crt_suffix:
-            lines.append("")
-            lines.extend(_decompiled_c_jq_rdata_crt_suffix_lines())
-    return lines
-
-
-def _decompiled_c_jq_rdata_crt_suffix_lines() -> list[str]:
-    return [
-        "__asm__(",
-        "\".section .CRT$XCA,\\\"dr\\\"\\n\"",
-        "\"  .long 0\\n\"",
-        "\".section .CRT$XCZ,\\\"dr\\\"\\n\"",
-        "\"  .long 0\\n\"",
-        "\".section .CRT$XIA,\\\"dr\\\"\\n\"",
-        "\"  .long 0\\n\"",
-        "\".section .CRT$XIZ,\\\"dr\\\"\\n\"",
-        "\"  .long 0\\n\"",
-        "\".section .CRT$XLA,\\\"dr\\\"\\n\"",
-        "\"  .long 0\\n\"",
-        "\".section .CRT$XLC,\\\"dr\\\"\\n\"",
-        "\"  .long ___dyn_tls_init_12\\n\"",
-        "\".section .CRT$XLD,\\\"dr\\\"\\n\"",
-        "\"  .long ___dyn_tls_dtor_12\\n\"",
-        "\".section .CRT$XLZ,\\\"dr\\\"\\n\"",
-        "\"  .long 0\\n\"",
-        "\".section .CRT$XDA,\\\"dr\\\"\\n\"",
-        "\"  .long 0\\n\"",
-        "\".section .CRT$XDZ,\\\"dr\\\"\\n\"",
-        "\"  .long 0\\n\"",
-        "\".text\\n\"",
-        ");",
-    ]
 
 
 def _decompiled_c_reference_sections_by_name(reference_contract_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -7688,6 +7265,70 @@ def _decompiled_c_reference_section_byte_patches(reference_contract_payload: dic
     return patches
 
 
+def _decompiled_c_reference_section_expression_patches(
+    reference_contract_payload: dict[str, Any],
+    functions: list[dict[str, Any]],
+    *,
+    runtime_entry_policy: str,
+) -> dict[int, str]:
+    abi_original = _decompiled_c_reference_abi_original(reference_contract_payload)
+    target_symbols = _decompiled_c_reference_target_symbols(functions, runtime_entry_policy=runtime_entry_policy)
+    original = reference_contract_payload.get("original") if isinstance(reference_contract_payload.get("original"), dict) else {}
+    image_base = _optional_int(original.get("image_base"))
+    if image_base is None:
+        return {}
+    patches: dict[int, str] = {}
+    for item in _decompiled_c_walk_contract_dicts(abi_original):
+        target = item.get("target") if isinstance(item.get("target"), dict) else None
+        if target is None:
+            continue
+        if target.get("kind") == "direct":
+            _decompiled_c_add_reference_pointer_expression(
+                patches,
+                memory_rva=_decompiled_c_callsite_memory_operand_rva(item, image_base=image_base),
+                target_rva=_optional_int(target.get("target_rva")),
+                target_symbols=target_symbols,
+            )
+            continue
+        if target.get("kind") == "function_pointer":
+            source = target.get("source") if isinstance(target.get("source"), dict) else {}
+            recoverable = target.get("recoverable_targets") if isinstance(target.get("recoverable_targets"), list) else []
+            direct_targets = {
+                target_rva
+                for entry in recoverable
+                if isinstance(entry, dict) and entry.get("kind") == "direct"
+                for target_rva in [_optional_int(entry.get("target_rva"))]
+                if target_rva is not None
+            }
+            if len(direct_targets) == 1:
+                _decompiled_c_add_reference_pointer_expression(
+                    patches,
+                    memory_rva=_optional_int(source.get("memory_rva")),
+                    target_rva=next(iter(direct_targets)),
+                    target_symbols=target_symbols,
+                )
+    _decompiled_c_add_reference_switch_table_expressions(
+        patches,
+        functions=functions,
+        target_symbols=target_symbols,
+    )
+    return patches
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 def _decompiled_c_reference_literal_bytes(literal: dict[str, Any]) -> bytes | None:
     text = literal.get("text")
     if not isinstance(text, str):
@@ -7707,57 +7348,6 @@ def _decompiled_c_reference_literal_bytes(literal: dict[str, Any]) -> bytes | No
     return data + (b"\x00" * (size - len(data)))
 
 
-def _decompiled_c_reference_section_expression_patches(
-    reference_contract_payload: dict[str, Any],
-    functions: list[dict[str, Any]],
-    *,
-    runtime_entry_policy: str,
-) -> dict[int, str]:
-    abi_original = _decompiled_c_reference_abi_original(reference_contract_payload)
-    target_symbols = _decompiled_c_reference_target_symbols(functions, runtime_entry_policy=runtime_entry_policy)
-    image_base = _optional_int(
-        (reference_contract_payload.get("original") if isinstance(reference_contract_payload.get("original"), dict) else {}).get("image_base")
-    )
-    if image_base is None:
-        return {}
-    patches: dict[int, str] = {}
-    for item in _decompiled_c_walk_contract_dicts(abi_original):
-        target = item.get("target") if isinstance(item.get("target"), dict) else None
-        if target is None:
-            continue
-        if target.get("kind") == "direct":
-            target_rva = _optional_int(target.get("target_rva"))
-            memory_rva = _decompiled_c_callsite_memory_operand_rva(item, image_base=image_base)
-            _decompiled_c_add_reference_pointer_expression(
-                patches,
-                memory_rva=memory_rva,
-                target_rva=target_rva,
-                target_symbols=target_symbols,
-            )
-            continue
-        if target.get("kind") == "function_pointer":
-            source = target.get("source") if isinstance(target.get("source"), dict) else {}
-            memory_rva = _optional_int(source.get("memory_rva"))
-            recoverable = target.get("recoverable_targets") if isinstance(target.get("recoverable_targets"), list) else []
-            direct_targets = [
-                _optional_int(entry.get("target_rva"))
-                for entry in recoverable
-                if isinstance(entry, dict) and entry.get("kind") == "direct"
-            ]
-            direct_targets = [entry for entry in direct_targets if entry is not None]
-            if len(set(direct_targets)) == 1:
-                _decompiled_c_add_reference_pointer_expression(
-                    patches,
-                    memory_rva=memory_rva,
-                    target_rva=direct_targets[0],
-                    target_symbols=target_symbols,
-                )
-    _decompiled_c_add_reference_switch_table_expressions(
-        patches,
-        functions=functions,
-        target_symbols=target_symbols,
-    )
-    return patches
 
 
 def _decompiled_c_add_reference_switch_table_expressions(
@@ -7883,12 +7473,13 @@ def _decompiled_c_reference_section_required_size(
     expression_patches: dict[int, str],
 ) -> int:
     start = int(section["rva_start"])
+    section_end = int(section["rva_end"])
     end = start
     for rva, data in byte_patches.items():
-        if start <= rva:
+        if start <= rva < section_end:
             end = max(end, rva + len(data))
     for rva in expression_patches:
-        if start <= rva:
+        if start <= rva < section_end:
             end = max(end, rva + 4)
     return max(0, end - start)
 
@@ -7920,8 +7511,8 @@ def _decompiled_c_reference_section_blob_asm(
             raise StageAInputError(f"conflicting Stage A {section_name} materialization bytes at RVA 0x{rva:x}")
         blob[offset:end] = data
     expressions = {
-        rva - start: symbol
-        for rva, symbol in expression_patches.items()
+        rva - start: expression
+        for rva, expression in expression_patches.items()
         if start <= rva < start + size
     }
     if not blob and not expressions:
@@ -7935,13 +7526,12 @@ def _decompiled_c_reference_section_blob_asm(
         f"\"{_c_asm_string_line(asm_symbol)}:\\n\"",
     ]
     lines.extend(_decompiled_c_reference_blob_asm_lines(bytes(blob), expressions))
-    lines.extend(
-        [
-            "\".text\\n\"",
-            ");",
-        ]
-    )
+    lines.extend(["\".text\\n\"", ");"])
     return lines
+
+
+
+
 
 
 def _decompiled_c_reference_blob_asm_lines(blob: bytes, expressions: dict[int, str]) -> list[str]:
@@ -7988,6 +7578,48 @@ def _decompiled_c_reference_bytes_asm_lines(data: bytes) -> list[str]:
     return lines
 
 
+def _decompiled_c_reference_section_materialization_lines(
+    reference_contract_payload: dict[str, Any] | None,
+    functions: list[dict[str, Any]],
+    *,
+    runtime_entry_policy: str,
+) -> list[str]:
+    if reference_contract_payload is None:
+        return []
+    sections = _decompiled_c_reference_sections_by_name(reference_contract_payload)
+    byte_patches = _decompiled_c_reference_section_byte_patches(reference_contract_payload)
+    expression_patches = _decompiled_c_reference_section_expression_patches(
+        reference_contract_payload,
+        functions,
+        runtime_entry_policy=runtime_entry_policy,
+    )
+    lines: list[str] = []
+    for section_name, symbol, section_asm, section_flags in (
+        (".data", "stage_b_reference_data", ".data$000_stage_b_reference_data", "dw"),
+        (".rdata", "stage_b_reference_rdata", ".rdata$000_stage_b_reference_rdata", "dr"),
+    ):
+        section = sections.get(section_name)
+        if section is None:
+            continue
+        size = _decompiled_c_reference_section_required_size(section, byte_patches, expression_patches)
+        section_lines = _decompiled_c_reference_section_blob_asm(
+            section_name=section_name,
+            symbol=symbol,
+            section_asm=section_asm,
+            section_flags=section_flags,
+            section=section,
+            size=size,
+            byte_patches=byte_patches,
+            expression_patches=expression_patches,
+        )
+        if not section_lines:
+            continue
+        if lines:
+            lines.append("")
+        lines.extend(section_lines)
+    return lines
+
+
 def _decompiled_c_layout_support_lines(
     target_name: str,
     functions: list[dict[str, Any]],
@@ -7997,181 +7629,32 @@ def _decompiled_c_layout_support_lines(
     external_function_names: list[str] | tuple[str, ...] = (),
     retained_contract_symbols: list[str] | tuple[str, ...] = (),
 ) -> list[str]:
-    reference_section_lines = (
-        _decompiled_c_jq_reference_section_materialization_lines(
-            reference_contract_payload,
-            functions,
-            runtime_entry_policy=runtime_entry_policy,
-        )
-        if target_name == "jq"
-        else []
+    del target_name, external_function_names
+    reference_section_lines = _decompiled_c_reference_section_materialization_lines(
+        reference_contract_payload,
+        functions,
+        runtime_entry_policy=runtime_entry_policy,
     )
-    contract_anchor_lines = (
-        []
-        if reference_section_lines
-        else _decompiled_c_contract_retention_anchor_lines(retained_contract_symbols)
-    )
-    if target_name != "jq":
-        if not contract_anchor_lines:
-            return ["static void stage_b_layout_keepalive(void) { }"]
-        return [
-            *contract_anchor_lines,
-            "static void stage_b_layout_keepalive(void);",
-            "__attribute__((used, section(\".CRT$XCU\"))) static void (* const stage_b_layout_keepalive_ctor)(void) = stage_b_layout_keepalive;",
-            "static void __attribute__((used, noinline, section(\".text$stage_b_layout_keepalive\"))) stage_b_layout_keepalive(void) {",
-            "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_contract_section_gap_anchor) : \"memory\");",
-            "}",
-        ]
-    atexit_import_anchor = _decompiled_c_jq_atexit_import_anchor_symbol(functions)
-    if reference_section_lines:
-        return [
-            "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[2644];",
-            "__attribute__((used, aligned(1), section(\".tls$stage_b_jq_layout_pad\"))) volatile unsigned char stage_b_jq_layout_tls_anchor[8] = {0};",
-            "__asm__(",
-            "\".section .idata$stage_b_jq_layout_pad,\\\"dr\\\"\\n\"",
-            "\"_stage_b_jq_layout_idata_pad:\\n\"",
-            "\"  .fill 56,1,0\\n\"",
-            "\".text\\n\"",
-            ");",
-            "extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__(\"__imp__SetUnhandledExceptionFilter@4\");",
-            "uintptr_t __cdecl jv_mem_alloc(size_t);",
-            *reference_section_lines,
-            *_decompiled_c_jq_layout_normalization_pad_lines(reference_contract_payload),
-        ]
-    lines = [
-        "static void __cdecl stage_b_jq_layout_text_anchor(void);",
-        "__asm__(",
-        "\".section .text$stage_b_jq_layout_pad,\\\"x\\\"\\n\"",
-        "\"_stage_b_jq_layout_text_anchor:\\n\"",
-        "\"  .fill 0,1,0x90\\n\"",
-        "\".text\\n\"",
-        ");",
-        "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[2644];",
-        "__attribute__((used, aligned(1), section(\".data$stage_b_jq_layout_tail\"))) volatile unsigned char stage_b_jq_layout_data_tail[92] = {0};",
-        "__attribute__((used, aligned(1), section(\".rdata$stage_b_jq_layout_pad\"))) static const unsigned char stage_b_jq_layout_rdata_anchor[4672] = {0};",
-        "__attribute__((used, aligned(1), section(\".tls$stage_b_jq_layout_pad\"))) volatile unsigned char stage_b_jq_layout_tls_anchor[8] = {0};",
-        "__asm__(",
-        "\".section .idata$stage_b_jq_layout_pad,\\\"dr\\\"\\n\"",
-        "\"_stage_b_jq_layout_idata_pad:\\n\"",
-        "\"  .fill 56,1,0\\n\"",
-        "\".text\\n\"",
-        ");",
-        "extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__(\"__imp__SetUnhandledExceptionFilter@4\");",
-        "uintptr_t __cdecl jv_mem_alloc(size_t);",
-        *_decompiled_c_jq_import_anchor_lines(atexit_import_anchor),
+    contract_anchor_lines = _decompiled_c_contract_retention_anchor_lines(retained_contract_symbols)
+    if not reference_section_lines and not contract_anchor_lines:
+        return ["static void stage_b_layout_keepalive(void) { }"]
+    lines = [*reference_section_lines]
+    if reference_section_lines and contract_anchor_lines:
+        lines.append("")
+    lines.extend([
         *contract_anchor_lines,
-        *_decompiled_c_jq_layout_retention_anchor_lines(include_contract_anchor=bool(contract_anchor_lines)),
-    ]
+        "static void stage_b_layout_keepalive(void);",
+        "__attribute__((used, section(\".CRT$XCU\"))) static void (* const stage_b_layout_keepalive_ctor)(void) = stage_b_layout_keepalive;",
+        "static void __attribute__((used, noinline, section(\".text$stage_b_layout_keepalive\"))) stage_b_layout_keepalive(void) {",
+    ])
     if contract_anchor_lines:
-        lines.extend(
-            [
-                "static void stage_b_layout_keepalive(void);",
-                "__attribute__((used, section(\".CRT$XCU\"))) static void (* const stage_b_layout_keepalive_ctor)(void) = stage_b_layout_keepalive;",
-            ]
-        )
-    lines.extend(
-        [
-            "static void __attribute__((used, noinline, section(\".text$stage_b_layout_keepalive\"))) stage_b_layout_keepalive(void) {",
-            "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_layout_anchor) : \"memory\");",
-        ]
-    )
-    lines.extend(
-        [
-        "}",
-        ]
-    )
+        lines.append("    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_contract_section_gap_anchor) : \"memory\");")
+    lines.append("}")
     return lines
 
 
-def _decompiled_c_jq_layout_retention_anchor_lines(*, include_contract_anchor: bool) -> list[str]:
-    anchor_symbol = "stage_b_jq_layout_anchor"
-    anchor_asm_symbol = _decompiled_c_i686_c_asm_symbol(anchor_symbol)
-    targets = [
-        "_stage_b_jq_layout_text_anchor",
-        "_stage_b_jq_import_anchor",
-        "_stage_b_jq_layout_data_tail",
-        "_stage_b_jq_layout_rdata_anchor",
-        "_stage_b_jq_layout_bss_anchor",
-        "_stage_b_jq_layout_tls_anchor",
-        "_stage_b_jq_layout_idata_pad",
-    ]
-    if include_contract_anchor:
-        targets.append("_stage_b_contract_section_gap_anchor")
-    lines = [
-        f"extern const int32_t {anchor_symbol}[];",
-        "__asm__(",
-        "\".section .rdata$stage_b_jq_layout_anchor,\\\"dr\\\"\\n\"",
-        f"\".globl {_c_asm_string_line(anchor_asm_symbol)}\\n\"",
-        f"\"{_c_asm_string_line(anchor_asm_symbol)}:\\n\"",
-    ]
-    lines.extend(
-        f"\"  .long {_c_asm_string_line(target)} - {_c_asm_string_line(anchor_asm_symbol)}\\n\""
-        for target in targets
-    )
-    lines.extend(
-        [
-            "\".text\\n\"",
-            ");",
-        ]
-    )
-    return lines
 
 
-def _decompiled_c_jq_import_anchor_lines(atexit_import_anchor: str) -> list[str]:
-    anchor_symbol = "stage_b_jq_import_anchor"
-    anchor_asm_symbol = _decompiled_c_i686_c_asm_symbol(anchor_symbol)
-    targets = [
-        "_AreFileApisANSI@0",
-        "_GetLastError@0",
-        "_GetModuleHandleA@4",
-        "_GetProcAddress@8",
-        "_IsDBCSLeadByteEx@8",
-        "_MultiByteToWideChar@24",
-        "_WideCharToMultiByte@32",
-        "_Sleep@4",
-        "_TlsGetValue@4",
-        "_VirtualProtect@16",
-        "_VirtualQuery@12",
-        "_WriteFile@20",
-        "__imp__SetUnhandledExceptionFilter@4",
-        "__get_osfhandle",
-        "_isalpha",
-        "_jq_util_input_next_input_cb",
-        "_jv_dumpf",
-        "_jv_invalid_with_msg",
-        "__initterm",
-        "___p___winitenv",
-        "___p__commode",
-        "___p__fmode",
-        "___set_app_type",
-        "__amsg_exit",
-        "__cexit",
-        _decompiled_c_i686_c_asm_symbol(atexit_import_anchor),
-        "_calloc",
-        "_fputs",
-        "_memcpy",
-        "_realloc",
-        "_signal",
-        "_strncmp",
-    ]
-    lines = [
-        f"extern const int32_t {anchor_symbol}[];",
-        "__asm__(",
-        "\".section .rdata$stage_b_jq_import_anchor,\\\"dr\\\"\\n\"",
-        f"\".globl {_c_asm_string_line(anchor_asm_symbol)}\\n\"",
-        f"\"{_c_asm_string_line(anchor_asm_symbol)}:\\n\"",
-    ]
-    lines.extend(
-        f"\"  .long {_c_asm_string_line(target)} - {_c_asm_string_line(anchor_asm_symbol)}\\n\""
-        for target in targets
-    )
-    lines.extend(
-        [
-            "\".text\\n\"",
-            ");",
-        ]
-    )
-    return lines
 
 
 def _decompiled_c_contract_synthetic_section_gap_placeholders(
@@ -8410,19 +7893,11 @@ def _decompiled_c_external_data_symbol_names(functions: list[dict[str, Any]]) ->
 def _decompiled_c_external_data_declaration(symbol: str) -> str:
     if symbol.startswith("pseudoRelocItemV2_ARRAY_"):
         return f"extern pseudoRelocItemV2 {symbol}[2];"
-    if symbol in _DECOMPILED_C_JQ_RDATA_TABLE_SYMBOLS:
-        return _decompiled_c_jq_rdata_table_macro(symbol)
-    if symbol in _DECOMPILED_C_JQ_BSS_ALIAS_DATA_SYMBOL_OFFSETS:
-        return _decompiled_c_jq_bss_alias_data_macro(symbol)
     return f"extern {_decompiled_c_external_data_type(symbol)} {symbol}{_decompiled_c_external_data_asm_label(symbol)};"
 
 def _decompiled_c_external_data_definition(symbol: str) -> str:
     if symbol.startswith("pseudoRelocItemV2_ARRAY_"):
         return f"__attribute__((weak)) pseudoRelocItemV2 {symbol}[2];"
-    if symbol in _DECOMPILED_C_JQ_RDATA_TABLE_SYMBOLS:
-        return ""
-    if symbol in _DECOMPILED_C_JQ_BSS_ALIAS_DATA_SYMBOL_OFFSETS:
-        return ""
     if symbol.startswith("__imp"):
         return f"extern {_decompiled_c_external_data_type(symbol)} {symbol}{_decompiled_c_external_data_asm_label(symbol)};"
     if symbol in _DECOMPILED_C_EXACT_RUNTIME_DATA_SYMBOLS:
@@ -8434,38 +7909,7 @@ def _decompiled_c_external_data_asm_label(symbol: str) -> str:
         return f' __asm__("{symbol}")'
     return ""
 
-def _decompiled_c_jq_bss_alias_data_macro(symbol: str) -> str:
-    offset = _DECOMPILED_C_JQ_BSS_ALIAS_DATA_SYMBOL_OFFSETS[symbol]
-    if symbol == "_dtoa_CritSec":
-        expression = f"(*(byte (*)[0x30])(STAGE_B_JQ_RECOVERED_STATE_BASE + 0x{offset:x}U))"
-    else:
-        expression = f"(*({_decompiled_c_external_data_type(symbol)} *)(STAGE_B_JQ_RECOVERED_STATE_BASE + 0x{offset:x}U))"
-    return "\n".join(
-        [
-            "#ifndef STAGE_B_JQ_RECOVERED_STATE_BASE",
-            "#if defined(STAGE_B_JQ_HAS_LAYOUT_BSS_ANCHOR)",
-            "extern volatile unsigned char stage_b_jq_layout_bss_anchor[];",
-            "#define STAGE_B_JQ_RECOVERED_STATE_BASE stage_b_jq_layout_bss_anchor",
-            "#else",
-            "__attribute__((weak, section(\".bss\"))) volatile unsigned char stage_b_jq_recovered_state_anchor[0x900];",
-            "#define STAGE_B_JQ_RECOVERED_STATE_BASE stage_b_jq_recovered_state_anchor",
-            "#endif",
-            "#endif",
-            f"#define {symbol} {expression}",
-        ]
-    )
 
-def _decompiled_c_jq_rdata_table_macro(symbol: str) -> str:
-    if symbol != "___tens_D2A":
-        raise StageAInputError(f"unsupported jq rdata table alias: {symbol}")
-    values = ", ".join(f"1e{index}" for index in range(24))
-    return "\n".join(
-        [
-            "__attribute__((used, aligned(8), section(\".rdata$stage_b_jq_dtoa_tables\")))",
-            f"static const double stage_b_jq_tens_D2A[24] = {{{values}}};",
-            "#define ___tens_D2A (*(const byte *)(const void *)stage_b_jq_tens_D2A)",
-        ]
-    )
 
 def _decompiled_c_external_data_type(symbol: str) -> str:
     if symbol.startswith("__imp"):
@@ -8911,14 +8355,6 @@ def _decompiled_c_i686_register(register: str) -> str | None:
     return None
 
 
-def _decompiled_c_contract_asm_immediate(argument: str) -> str:
-    text = argument.strip()
-    if text in {"(uintptr_t)0", "(void *)0", "NULL"}:
-        value = 0
-    else:
-        match = re.fullmatch(r"(?:\(uintptr_t\))?(0x[0-9A-Fa-f]+|[0-9]+)", text)
-        value = int(match.group(1), 0) if match is not None else 0
-    return f"$0x{value & 0xFFFFFFFF:x}"
 
 
 def _decompiled_c_contract_target_pops_stack(target_profile: dict[str, Any] | None) -> bool:
@@ -9358,7 +8794,6 @@ _DECOMPILED_C_KNOWN_TYPE_NAMES = {
     "unkint10",
     "unkuint10",
     "pseudoRelocItemV2",
-    "stage_b_jv",
     "uint",
     "ulonglong",
     "ushort",
@@ -9400,10 +8835,6 @@ _DECOMPILED_C_EXTERNAL_PROTOTYPES = {
     "fputs": "extern uintptr_t __attribute__((dllimport)) fputs();",
     "isalpha": "extern uintptr_t __attribute__((dllimport)) isalpha();",
     "isspace": "extern uintptr_t __attribute__((dllimport)) isspace();",
-    "jq_util_input_next_input_cb": "extern uintptr_t __attribute__((dllimport)) jq_util_input_next_input_cb();",
-    "jv_array": "extern stage_b_jv jv_array(void);",
-    "jv_null": "extern stage_b_jv jv_null(void);",
-    "jv_object": "extern stage_b_jv jv_object(void);",
     "signal": "extern uintptr_t __attribute__((dllimport)) signal();",
     "strncmp": "extern uintptr_t __attribute__((dllimport)) strncmp();",
     "vfprintf": "extern int vfprintf(FILE *, const char *, va_list);",
@@ -9420,7 +8851,6 @@ _DECOMPILED_C_RESERVED_IDENTIFIERS = {
     "ROUND",
     "STAGE_B_PART",
     "STAGE_B_PART_LVALUE",
-    "STAGE_B_JQ_CALL_IOB_SLOT",
     "STAGE_B_SET_PART",
     "SUB104",
     "SUB84",
@@ -9445,19 +8875,6 @@ _DECOMPILED_C_RESERVED_IDENTIFIERS = {
     "if",
     "return",
     "sizeof",
-    "stage_b_jq_isoption_match",
-    "stage_b_jq_isoption_next",
-    "stage_b_jq_isoption_reset",
-    "stage_b_jq_call_jq_realpath",
-    "stage_b_jq_call_jq_testsuite",
-    "stage_b_jq_call_jv_array_append",
-    "stage_b_jq_call_jv_string",
-    "stage_b_jq_jv_array_sized",
-    "stage_b_jq_jv_object",
-    "stage_b_jq_jv_string_sized",
-    "stage_b_jq_jvp_array_alloc",
-    "stage_b_jq_jvp_object_alloc",
-    "stage_b_jq_jvp_string_alloc",
     "stage_b_part_get_u64",
     "stage_b_part_mask",
     "stage_b_part_set_u64",
@@ -9524,9 +8941,6 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
     mingw_variadic_print_replacement = _decompiled_c_mingw_variadic_print_replacement(function_name)
     if mingw_variadic_print_replacement:
         return mingw_variadic_print_replacement
-    jq_value_abi_replacement = _decompiled_c_jq_value_abi_replacement(function_name)
-    if jq_value_abi_replacement:
-        return jq_value_abi_replacement
     code = re.sub(r"\(char\s+\[\s*2\s*\]\)\s*(0x[0-9A-Fa-f]+)", r"(uint16_t)\1", code)
     code = _rewrite_atexit_body_calls(code)
     if function_name == "atexit":
@@ -9536,7 +8950,6 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
             code,
         )
     code = _normalize_mingw_variadic_print_signatures(code)
-    code = _normalize_jq_variadic_print_calls(code)
     code = _normalize_ghidra_long_double_array_returns(code)
     code = _normalize_ghidra_array_cast_assignments(code)
     code = _normalize_ghidra_pointer_switch_cases(code)
@@ -9544,34 +8957,17 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
     code = _normalize_ghidra_pointer_data_integer_ops(code)
     code = _normalize_ghidra_pe_header_byte_accesses(code)
     code = _normalize_ghidra_bool_return_concats(code)
-    if function_name == "umain":
-        code = _inject_jq_umain_run_tests_fast_path(code)
-        code = _normalize_umain_iob_stream_calls(code)
-        code = _normalize_jq_oniguruma_parse_depth_limit_call(code)
-        code = _normalize_jq_getenv_argument_calls(code)
-        code = _normalize_jq_jv_constructor_sret_calls(code)
-        code = _normalize_jq_umain_compile_args_filter_lifetime(code)
-        code = _normalize_jq_isoption_dispatch_calls(code)
-        code = _optimize_decompiled_c_function_for_size(code, function_name=function_name)
-    if function_name == "jq_init":
-        code = _normalize_jq_init_stack_init_call(code)
     if function_name in _DECOMPILED_C_DTOA_ALLOCATOR_RETURN_FUNCTION_NAMES:
         code = _normalize_decompiled_dtoa_allocator_return_values(code)
     if function_name in {"_wmain", "wmain"}:
         code = _normalize_mingw_wmain_wide_argv_bridge(code, function_name=function_name)
         code = _optimize_decompiled_c_function_for_size(code, function_name=function_name)
-    if function_name == "usage":
-        code = _optimize_decompiled_c_function_for_size(code, function_name=function_name)
-    if function_name == "dirname":
-        code = _normalize_jq_dirname_path_info_out_params(code)
     if "Treating indirect jump as call" in code:
         code = re.sub(
             r"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)\(([^;{}]*)\);\s*\n\1return(?:\s+0)?;",
             r"\1return \2(\3);",
             code,
         )
-    if function_name in _DECOMPILED_C_ALLOCATOR_RETURN_FUNCTION_NAMES:
-        code = _normalize_decompiled_allocator_return_values(code)
     code = re.sub(
         r"(?m)^void(\s+(?:(?:__cdecl|__fastcall)\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\()",
         r"uintptr_t\1",
@@ -9629,208 +9025,8 @@ def _decompiled_c_mingw_variadic_print_replacement(function_name: str) -> str:
     }
     return replacements.get(function_name, "")
 
-def _decompiled_c_jq_value_abi_replacement(function_name: str) -> str:
-    replacements = {
-        "jvp_array_alloc": "\n".join(
-            [
-                "uintptr_t __cdecl jvp_array_alloc()",
-                "{",
-                "  return stage_b_jq_jvp_array_alloc(0);",
-                "}",
-            ]
-        ),
-        "jvp_array_new": "\n".join(
-            [
-                "uintptr_t __cdecl jvp_array_new()",
-                "{",
-                "  return 0;",
-                "}",
-            ]
-        ),
-        "jvp_string_alloc": "\n".join(
-            [
-                "uintptr_t __cdecl jvp_string_alloc()",
-                "{",
-                "  return stage_b_jq_jvp_string_alloc(0);",
-                "}",
-            ]
-        ),
-        "jvp_string_new": "\n".join(
-            [
-                "uintptr_t __cdecl jvp_string_new()",
-                "{",
-                "  return 0;",
-                "}",
-            ]
-        ),
-        "jvp_string_empty_new": "\n".join(
-            [
-                "uintptr_t __cdecl jvp_string_empty_new()",
-                "{",
-                "  return 0;",
-                "}",
-            ]
-        ),
-        "jvp_object_new": "\n".join(
-            [
-                "ulonglong __cdecl jvp_object_new()",
-                "{",
-                "  return stage_b_jq_jvp_object_alloc(8);",
-                "}",
-            ]
-        ),
-        "stack_init": "\n".join(
-            [
-                "undefined4 __cdecl stack_init()",
-                "{",
-                "  return 0;",
-                "}",
-            ]
-        ),
-        "jv_array_sized": "\n".join(
-            [
-                "undefined4 __cdecl jv_array_sized(undefined4 param_1)",
-                "{",
-                "  return stage_b_jq_jv_array_sized(param_1,0);",
-                "}",
-            ]
-        ),
-        "jv_array": "\n".join(
-            [
-                "undefined4 __cdecl jv_array(undefined4 param_1)",
-                "{",
-                "  return stage_b_jq_jv_array_sized(param_1,0);",
-                "}",
-            ]
-        ),
-        "jv_string_empty": "\n".join(
-            [
-                "undefined4 __cdecl jv_string_empty(undefined4 param_1)",
-                "{",
-                "  return stage_b_jq_jv_string_sized(param_1,(const uint8_t *)0,0);",
-                "}",
-            ]
-        ),
-        "jv_string": "\n".join(
-            [
-                "undefined4 __cdecl jv_string(undefined4 param_1,char *param_2)",
-                "{",
-                "  size_t length = 0;",
-                "  if ((uintptr_t)param_1 < (uintptr_t)0x10000U) {",
-                "    return param_1;",
-                "  }",
-                "  if ((uintptr_t)param_2 < (uintptr_t)0x10000U) {",
-                "    param_2 = (char *)0;",
-                "  }",
-                "  if (param_2 != (char *)0) {",
-                "    while (param_2[length] != '\\0') {",
-                "      length++;",
-                "    }",
-                "  }",
-                "  return stage_b_jq_jv_string_sized(param_1,(const uint8_t *)param_2,(int)length);",
-                "}",
-            ]
-        ),
-        "jv_string_sized": "\n".join(
-            [
-                "undefined4 __cdecl jv_string_sized(undefined4 param_1,byte *param_2,int param_3)",
-                "{",
-                "  return stage_b_jq_jv_string_sized(param_1,(const uint8_t *)param_2,param_3);",
-                "}",
-            ]
-        ),
-        "jv_object": "\n".join(
-            [
-                "undefined4 __cdecl jv_object(undefined4 param_1)",
-                "{",
-                "  return stage_b_jq_jv_object(param_1);",
-                "}",
-            ]
-        ),
-        "jv_true": "\n".join(
-            [
-                "uintptr_t __cdecl jv_true(undefined4 *param_1)",
-                "{",
-                "  param_1[0] = 3;",
-                "  param_1[1] = 0;",
-                "  param_1[2] = 0;",
-                "  param_1[3] = 0;",
-                "  return (uintptr_t)param_1;",
-                "}",
-            ]
-        ),
-        "jv_false": "\n".join(
-            [
-                "uintptr_t __cdecl jv_false(undefined4 *param_1)",
-                "{",
-                "  param_1[0] = 2;",
-                "  param_1[1] = 0;",
-                "  param_1[2] = 0;",
-                "  param_1[3] = 0;",
-                "  return (uintptr_t)param_1;",
-                "}",
-            ]
-        ),
-        "jv_null": "\n".join(
-            [
-                "uintptr_t __cdecl jv_null(undefined4 *param_1)",
-                "{",
-                "  param_1[0] = 1;",
-                "  param_1[1] = 0;",
-                "  param_1[2] = 0;",
-                "  param_1[3] = 0;",
-                "  return (uintptr_t)param_1;",
-                "}",
-            ]
-        ),
-        "jv_invalid": "\n".join(
-            [
-                "uintptr_t __cdecl jv_invalid(undefined4 *param_1)",
-                "{",
-                "  param_1[0] = 0;",
-                "  param_1[1] = 0;",
-                "  param_1[2] = 0;",
-                "  param_1[3] = 0;",
-                "  return (uintptr_t)param_1;",
-                "}",
-            ]
-        ),
-        "jv_number": "\n".join(
-            [
-                "uintptr_t __cdecl jv_number(undefined4 *param_1,undefined8 param_2)",
-                "{",
-                "  param_1[0] = 4;",
-                "  param_1[1] = 0;",
-                "  *(undefined8 *)(param_1 + 2) = param_2;",
-                "  return (uintptr_t)param_1;",
-                "}",
-            ]
-        ),
-    }
-    return replacements.get(function_name, "")
 
-def _normalize_jq_init_stack_init_call(code: str) -> str:
-    return re.sub(
-        r"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)\[0x1b\]\s*=\s*0;\s*\n\1stack_init\(\);",
-        r"\1\2[0x1b] = 0;\n\1\2[10] = 0;\n\1\2[11] = 8;\n\1\2[12] = 0;",
-        code,
-    )
 
-def _normalize_jq_dirname_path_info_out_params(code: str) -> str:
-    if "do_get_path_info();" not in code:
-        return code
-    if not all(token in code for token in ("char *local_20;", "undefined1 *local_1c;", "char *local_10;")):
-        return code
-    match = re.search(
-        r"\bdirname\s*\(\s*char\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
-        code,
-    )
-    path_arg = match.group(1) if match is not None else "param_1"
-    return code.replace(
-        "do_get_path_info();",
-        f"do_get_path_info({path_arg},&local_20,&local_1c,&local_10);",
-        1,
-    )
 
 def _normalize_mingw_wmain_wide_argv_bridge(code: str, *, function_name: str) -> str:
     if "WideCharToMultiByte" not in code or "umain" not in code or "___chkstk_ms" not in code:
@@ -9886,18 +9082,6 @@ def _normalize_mingw_wmain_wide_argv_bridge(code: str, *, function_name: str) ->
             "}",
         ]
     )
-
-_DECOMPILED_C_ALLOCATOR_RETURN_FUNCTION_NAMES = {
-    "jv_mem_alloc",
-    "jv_mem_alloc_unguarded",
-    "jv_mem_calloc",
-    "jv_mem_calloc_unguarded",
-    "jv_mem_realloc",
-    "jv_mem_strdup",
-    "jv_mem_strdup_unguarded",
-    "jq_yyalloc",
-    "jq_yyrealloc",
-}
 
 _DECOMPILED_C_DTOA_ALLOCATOR_RETURN_FUNCTION_NAMES = {
     "__Balloc_D2A",
@@ -9993,18 +9177,6 @@ def _normalize_decompiled_dtoa_allocator_return_values(code: str) -> str:
         code,
     )
 
-def _normalize_decompiled_allocator_return_values(code: str) -> str:
-    allocator_call = r"(?:malloc|calloc|realloc|strdup|_strdup)\([^;\n{}]*\)"
-    code = re.sub(
-        rf"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*({allocator_call});\s*\n(\s*)if\s*\(\s*\2\s*!=\s*0\s*\)\s*\{{\s*\n(\s*)return(?:\s+0)?;\s*\n\4\}}",
-        r"\1\2 = \3;\n\4if (\2 != 0) {\n\5return \2;\n\4}",
-        code,
-    )
-    return re.sub(
-        rf"(?m)^(\s*)({allocator_call});\s*\n\1return(?:\s+0)?;",
-        r"\1return \2;",
-        code,
-    )
 
 def _normalize_ghidra_partial_field_lvalue(match: re.Match[str]) -> str:
     value = match.group(1)
@@ -10082,192 +9254,16 @@ def _normalize_mingw_variadic_print_signatures(code: str) -> str:
     code = code.replace("int __cdecl ___mingw_printf(byte *param_1)", "int __cdecl ___mingw_printf(byte *param_1,...)")
     return code.replace("int __cdecl ___mingw_fprintf(FILE *param_1,byte *param_2)", "int __cdecl ___mingw_fprintf(FILE *param_1,byte *param_2,...)")
 
-def _normalize_umain_iob_stream_calls(code: str) -> str:
-    stream_indices = iter(("1", "2", "1", "2"))
 
-    def replace(match: re.Match[str]) -> str:
-        try:
-            stream = next(stream_indices)
-        except StopIteration:
-            return match.group(0)
-        callee = match.group(1)[:-2]
-        return f"{callee}({stream})"
 
-    return re.sub(
-        r"(?<![A-Za-z0-9_])((?:\(\*\(code \*\)[A-Za-z_][A-Za-z0-9_]*\)|\(\*[A-Za-z_][A-Za-z0-9_]*\)|___acrt_iob_func)\(\))",
-        replace,
-        code,
-        count=4,
-    )
 
-def _normalize_jq_getenv_argument_calls(code: str) -> str:
-    return re.sub(
-        r'(?m)^(\s*)getenv\("JQ_COLORS"\);\s*\n\1([A-Za-z_][A-Za-z0-9_]*)\s*=\s*jq_set_colors\(\);',
-        r'\1\2 = jq_set_colors((char *)getenv("JQ_COLORS"));',
-        code,
-    )
 
-def _normalize_jq_oniguruma_parse_depth_limit_call(code: str) -> str:
-    return re.sub(
-        r"(?m)^(\s*)onig_set_parse_depth_limit\(\);",
-        r"\1onig_set_parse_depth_limit(1024);",
-        code,
-        count=1,
-    )
 
-def _normalize_jq_jv_constructor_sret_calls(code: str) -> str:
-    return re.sub(
-        r"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:\([^;\n]+\)\s*)?([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])?));\s*\n\1(jv_(?:array|object|null))\(\);",
-        r"\1\2 = \3;\n\1*(stage_b_jv *)\4 = \5();",
-        code,
-    )
 
-def _normalize_jq_umain_compile_args_filter_lifetime(code: str) -> str:
-    def replace(match: re.Match[str]) -> str:
-        indent = match.group(1)
-        return f"{indent}jv_string_value();\n{indent}iVar5 = jq_compile_args();\n{indent}jv_free();"
 
-    return re.sub(r"(?m)^(\s*)iVar5 = jq_compile_args\(\);", replace, code, count=1)
 
-def _normalize_jq_variadic_print_calls(code: str) -> str:
-    code = code.replace('___mingw_printf((byte *)"jq-%s\\n");', '___mingw_printf((byte *)"jq-%s\\n","1.8.1");')
-    code = re.sub(
-        r'(___mingw_fprintf\(\s*pFVar2\s*,\s*\(byte \*\)\s*"jq - commandline JSON processor \[version %s\][\s\S]*?"\s*)\);',
-        r'\1,"1.8.1");',
-        code,
-        count=1,
-    )
-    return re.sub(
-        r'(?m)^(\s*)___mingw_printf\(\(byte \*\)"jq-%s\\n","1\.8\.1"\);\s*\n\1goto\s+LAB_[0-9A-Fa-f]+;',
-        r'\1___mingw_printf((byte *)"jq-%s\\n","1.8.1");\n\1return 0;',
-        code,
-    )
 
-def _inject_jq_umain_run_tests_fast_path(code: str) -> str:
-    match = re.search(
-        r"\bumain\s*\(\s*int\s+([A-Za-z_][A-Za-z0-9_]*)\s*,\s*undefined4\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\{",
-        code,
-    )
-    if match is None:
-        return code
-    argc_name = match.group(1)
-    argv_name = match.group(2)
-    fast_path = "\n".join(
-        [
-            "",
-            "  char **stage_b_jq_argv = (char **)(void *){argv};",
-            "  if ({argc} >= 2 && (strcmp(stage_b_jq_argv[1], \"--version\") == 0 || strcmp(stage_b_jq_argv[1], \"-V\") == 0)) {{",
-            "    ___mingw_printf((byte *)\"jq-%s\\n\",\"1.8.1\");",
-            "    return 0;",
-            "  }}",
-            "  if ({argc} >= 5 && strcmp(stage_b_jq_argv[1], \"-L\") == 0 && strcmp(stage_b_jq_argv[3], \"--run-tests\") == 0) {{",
-            "    stage_b_jv stage_b_jq_libs = jv_array();",
-            "    stage_b_jv stage_b_jq_lib_path = stage_b_jq_call_jq_realpath(stage_b_jq_call_jv_string(stage_b_jq_argv[2]));",
-            "    stage_b_jq_libs = stage_b_jq_call_jv_array_append(stage_b_jq_libs, stage_b_jq_lib_path);",
-            "    return (uintptr_t)stage_b_jq_call_jq_testsuite(stage_b_jq_libs, 0, {argc} - 4, stage_b_jq_argv + 4);",
-            "  }}",
-            "  if ({argc} >= 3 && strcmp(stage_b_jq_argv[1], \"--run-tests\") == 0) {{",
-            "    return (uintptr_t)stage_b_jq_call_jq_testsuite(jv_array(), 0, {argc} - 2, stage_b_jq_argv + 2);",
-            "  }}",
-        ]
-    ).format(argc=argc_name, argv=argv_name)
-    insertion = match.end()
-    return code[:insertion] + fast_path + code[insertion:]
 
-def _normalize_jq_isoption_dispatch_calls(code: str) -> str:
-    code = re.sub(
-        r"(?m)^(joined_r0x00402777:\s*)$",
-        r"\1\n  stage_b_jq_isoption_reset();",
-        code,
-    )
-    code = re.sub(
-        r"(?m)^(LAB_00402760:\s*\n\s*apcStack_3c\[0\]\s*=\s*pcVar7\s*\+\s*1;\s*\n)(\s*)if\s*\(\s*pcVar7\[1\]\s*==\s*'-'\s*\)\s*\{",
-        r"\1\2puVar23 = (uint *)0x1;\n\2if (pcVar7[1] == '-') {",
-        code,
-    )
-    code = code.replace("pFVar4 = (FILE *)(*local_448)();", "pFVar4 = (FILE *)(*local_448)(2);")
-    code = _normalize_jq_output_close_stream_calls(code)
-    code = _normalize_jq_late_option_error_stream_calls(code)
-    code = _normalize_jq_binary_mode_stream_calls(code)
-    return code.replace("isoption((int)puVar23)", "stage_b_jq_isoption_next(&apcStack_3c[0], (int)puVar23)")
-
-def _normalize_jq_output_close_stream_calls(code: str) -> str:
-    code = re.sub(
-        r"(?m)^(\s*)pFVar4 = \(FILE \*\)\(\*local_448\)\(2\);\s*\n"
-        r"\1iVar5 = ferror\(pFVar4\);\s*\n"
-        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);",
-        r"\1pFVar4 = (FILE *)(*local_448)(2);\n"
-        r"\1iVar5 = ferror(pFVar4);\n"
-        r"\1pFVar4 = (FILE *)(*pcVar34)(2);",
-        code,
-    )
-    return re.sub(
-        r"(?m)^(\s*)piVar9 = _errno\(\);\s*\n"
-        r"\1strerror\(\*piVar9\);\s*\n"
-        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);",
-        r"\1piVar9 = _errno();\n"
-        r"\1strerror(*piVar9);\n"
-        r"\1pFVar4 = (FILE *)(*pcVar34)(2);",
-        code,
-    )
-
-def _normalize_jq_binary_mode_stream_calls(code: str) -> str:
-    pattern = re.compile(
-        r"(?m)^(\s*)pFVar4 = \(FILE \*\)\(\*local_448\)\(2\);\s*\n"
-        r"\1fflush\(pFVar4\);\s*\n"
-        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);\s*\n"
-        r"\1fflush\(pFVar4\);\s*\n"
-        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);\s*\n"
-        r"\1fileno\(pFVar4\);\s*\n"
-        r"\1pcVar2 = pcStack_430;\s*\n"
-        r"\1\(\*pcStack_430\)\(\);\s*\n"
-        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);\s*\n"
-        r"\1fileno\(pFVar4\);\s*\n"
-        r"\1\(\*pcVar2\)\(\);\s*\n"
-        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);\s*\n"
-        r"\1fileno\(pFVar4\);\s*\n"
-        r"\1\(\*pcVar2\)\(\);"
-    )
-
-    def replace(match: re.Match[str]) -> str:
-        indent = match.group(1)
-        lines = [
-            "pFVar4 = (FILE *)(*local_448)(1);",
-            "fflush(pFVar4);",
-            "pFVar4 = (FILE *)(*pcVar34)(2);",
-            "fflush(pFVar4);",
-            "pFVar4 = (FILE *)(*pcVar34)(0);",
-            "iVar5 = fileno(pFVar4);",
-            "pcVar2 = pcStack_430;",
-            "(*pcStack_430)(iVar5,0x8000);",
-            "pFVar4 = (FILE *)(*pcVar34)(1);",
-            "iVar5 = fileno(pFVar4);",
-            "(*pcVar2)(iVar5,0x8000);",
-            "pFVar4 = (FILE *)(*pcVar34)(2);",
-            "iVar5 = fileno(pFVar4);",
-            "(*pcVar2)(iVar5,0x8000);",
-        ]
-        return "\n".join(f"{indent}{line}" for line in lines)
-
-    return pattern.sub(replace, code, count=1)
-
-def _normalize_jq_late_option_error_stream_calls(code: str) -> str:
-    literals = [
-        r'"jq: --%s takes two parameters \(e\.g\. --%s varname filename\)\\n"',
-        r'"jq: Unknown option --%s\\n"',
-        r'"jq: Unknown option -%c\\n"',
-    ]
-    for literal in literals:
-        code = re.sub(
-            r"(?m)^(\s*)pFVar4 = \(FILE \*\)\(\*local_448\)\(2\);\s*\n"
-            r"(\s*___mingw_fprintf\(pFVar4,\(byte \*\)(?:\s*\n\s*)?"
-            + literal
-            + r")",
-            r"\1pFVar4 = STAGE_B_JQ_CALL_IOB_SLOT(local_448,2);\n\2",
-            code,
-            count=1,
-        )
-    return code
 
 def _render_skeleton_readme(target_name: str, source_language: str, implementation_mode: str) -> str:
     if implementation_mode == "decompiled-c":

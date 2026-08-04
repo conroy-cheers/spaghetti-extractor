@@ -6,7 +6,7 @@
   reconstructionPlan,
   declarations,
   namePrefix,
-  validationProfile ? "generic-v1",
+  validationAssertion ? "",
   linkedIslands ? null,
 }:
 
@@ -24,48 +24,6 @@ let
         and all(.components[];
           .linked_island_membership.identity_authorizes_replacement == false)
       '';
-  profileAssertion =
-    if validationProfile == "generic-v1" then
-      ""
-    else if validationProfile == "gnu-hello-validation-set-v1" then
-      ''
-        and .counts.components == 12
-        and .counts.leaf_components == 11
-        and .counts.aggregate_components == 1
-        and .counts.valid_definitions == 12
-        and any(.components[];
-          .id == "static-word-initialization" and
-          .membership.noncontiguous and
-          (.membership.resolved_unit_ids | length) == 2 and
-          .refinement.machine_to_logical_projection_validated == false)
-        and any(.components[];
-          .id == "rotate-pending-words" and
-          (.membership.resolved_unit_ids | length) == 31 and
-          .machine_boundary.counts.entries == 1 and
-          .machine_boundary.counts.exits == 1 and
-          .refinement.machine_to_logical_projection_validated == false)
-        and any(.components[];
-          .id == "finite-selector-dispatch" and
-          .machine_boundary.exits[0].target_inventory.status == "recovered" and
-          (.machine_boundary.exits[0].target_inventory.target_unit_ids | length) == 12)
-        and any(.components[];
-          .id == "short-option-classifier" and
-          .machine_boundary.boundary_minimization_status == "not_attempted")
-        and any(.components[];
-          .id == "windows-error-message-lookup" and
-          (.membership.resolved_unit_ids | length) == 43 and
-          .machine_boundary.counts.entries == 1 and
-          .machine_boundary.counts.exits == 1 and
-          .machine_boundary.counts.external_events == 0)
-        and any(.components[];
-          .id == "bounded-string-length" and
-          (.membership.resolved_unit_ids | length) == 8 and
-          .machine_boundary.counts.entries == 1 and
-          .machine_boundary.counts.exits == 1 and
-          .machine_boundary.counts.external_events == 0)
-      ''
-    else
-      throw "unsupported semantic-component validation profile: ${validationProfile}";
 in
 pkgs.runCommand "${namePrefix}-semantic-components-v1"
   {
@@ -122,6 +80,6 @@ pkgs.runCommand "${namePrefix}-semantic-components-v1"
       ([.components[].refinement.machine_to_logical_projection_validated] |
         all(. == false))
       ${linkedIslandAssertion}
-      ${profileAssertion}
+      ${validationAssertion}
     ' "$out/semantic-component-catalog.json" >/dev/null
   ''

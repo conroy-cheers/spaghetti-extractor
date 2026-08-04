@@ -29,7 +29,7 @@ NATIVE_SOURCE_ENVIRONMENT_FAMILY_EVIDENCE_AUDIT_MODULE = (
     "GeneratedNativeSourceEnvironmentFamilyEvidenceAudit"
 )
 NATIVE_SOURCE_ACCEPTANCE_DECLARATIONS_FORMAT = (
-    "stage-a-gnu-hello-native-source-acceptance-declarations-v3"
+    "stage-a-native-source-acceptance-declarations-v1"
 )
 NATIVE_SOURCE_ENVIRONMENT_FAMILY_AXIOM_EXPECTATION_FORMAT = (
     "stage-a-native-source-environment-family-axiom-expectation-v1"

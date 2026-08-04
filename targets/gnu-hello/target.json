@@ -1,0 +1,20 @@
+{
+  "format": "spaghetti-extractor-target-bundle-v1",
+  "id": "gnu-hello",
+  "display_name": "GNU Hello 2.12.3 PE32",
+  "input": {
+    "kind": "pe32",
+    "expected_sha256": "71b228f2babc9d3b4095ecf355db676c8ed8b45a7c8a7d350f47e962b4bf554c"
+  },
+  "paths": {
+    "nix": "default.nix",
+    "components": "intent/components.json",
+    "linked_islands": "intent/linked-islands.json",
+    "runtime_imports": "intent/runtime-imports.json",
+    "python": "python",
+    "lean": "lean",
+    "source_projects": ["intent/source/project.json"],
+    "source_evidence": ["intent/source/evidence.json"],
+    "source_roots": ["source/components", "source/idiomatic"]
+  }
+}

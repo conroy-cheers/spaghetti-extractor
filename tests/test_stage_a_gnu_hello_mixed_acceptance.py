@@ -11,10 +11,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
-from spaghetti_extractor.relational.lean.gnu_hello_acceptance_requirements import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_acceptance_requirements import (
     GNU_HELLO_DYNAMIC_REQUIREMENT_KEYS,
 )
-from spaghetti_extractor.relational.lean.gnu_hello_mixed_acceptance import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_mixed_acceptance import (
     GNU_HELLO_MIXED_ACCEPTANCE_MANIFEST,
     GNU_HELLO_MIXED_ACCEPTANCE_PROFILE,
     GNU_HELLO_MIXED_ACCEPTANCE_SOURCE_THEOREM,
@@ -27,7 +27,7 @@ from spaghetti_extractor.relational.schema import RELATIONAL_APPROVED_AXIOMS
 
 
 _MODULE = (
-    "spaghetti_extractor.relational.lean.gnu_hello_mixed_acceptance"
+    "spaghetti_extractor_target_gnu_hello.gnu_hello_mixed_acceptance"
 )
 _IMPORT = re.compile(r"^import StageA\.([A-Za-z0-9_]+)$", re.MULTILINE)
 _AXIOM_LINE = re.compile(r"depends on axioms: \[([^\]]*)\]", re.MULTILINE)
@@ -161,7 +161,7 @@ class StageAGnuHelloMixedAcceptanceTests(unittest.TestCase):
         self.assertNotIn("verdict", message)
 
     def test_fixed_operation_evidence_is_current_world_indexed(self) -> None:
-        from spaghetti_extractor.relational.lean.gnu_hello_mixed_acceptance import (
+        from spaghetti_extractor_target_gnu_hello.gnu_hello_mixed_acceptance import (
             _DYNAMIC_EVIDENCE_EXPRESSIONS,
             _FIXED_IMPORTS,
         )
@@ -344,7 +344,7 @@ class StageAGnuHelloMixedAcceptanceTests(unittest.TestCase):
 
     def test_driver_accepts_only_output_path(self) -> None:
         repo = Path(__file__).resolve().parents[1]
-        driver = repo / "nix/gnu-hello-mixed-acceptance.py"
+        driver = repo / "targets/gnu-hello/nix/gnu-hello-mixed-acceptance.py"
         process = subprocess.run(
             [
                 sys.executable,

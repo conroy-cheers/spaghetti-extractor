@@ -6,6 +6,7 @@ namespace StageA.Relational.InterpreterMixedExternalComponent
 
 open StageA.Formal StageA.Relational
 open StageA.Relational.Interpreter
+open StageA.Relational.InterpreterKernel
 open StageA.Relational.InterpreterMixedConstructiveSourceClassifier
 open StageA.Relational.InterpreterMixedContext
 open StageA.Relational.InterpreterMixedEnvironment
@@ -894,7 +895,9 @@ noncomputable def constructiveRuntimeExternalOperationComponentOfNoCases
       originalAuthority launch originalRoot reachability candidate
       candidateAuthority program candidateRootRva))
     (noExternalOperations :
-      ConstructiveMixedKernelClassificationHasNoExternalOperations rules) :
+      ConstructiveMixedKernelClassificationHasNoExternalOperations rules)
+    {abi : KernelABIRelation}
+    {dispatches : RelationalWorld -> KernelDispatchRelation} :
     forall originalBefore candidateBefore
         (source : ExactOriginalSemanticSource originalContext originalAuthority
           launch originalRoot reachability candidate candidateAuthority)

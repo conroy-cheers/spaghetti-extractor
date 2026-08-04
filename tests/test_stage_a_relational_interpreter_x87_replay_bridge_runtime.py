@@ -690,7 +690,7 @@ class StageAX87ReplayBridgeRuntimeTests(unittest.TestCase):
 
     def test_gnu_phase_is_isolated_from_acceptance(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        lane = (root / "nix/gnu-hello-roundtrip.nix").read_text(encoding="utf-8")
+        lane = (root / "targets/gnu-hello/default.nix").read_text(encoding="utf-8")
         phase = lane[
             lane.index("x87ReplayBridgeRuntimeLean =") :
             lane.index(

@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from spaghetti_extractor.relational.lean.gnu_hello_native_source_compiled_authority_evidence import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_native_source_compiled_authority_evidence import (
     CANDIDATE_STATIC_AUTHORITY_FORMAT,
     COMPILED_AUTHORITY_DECLARATIONS_FORMAT,
     GnuHelloCompiledAuthorityEvidenceError,

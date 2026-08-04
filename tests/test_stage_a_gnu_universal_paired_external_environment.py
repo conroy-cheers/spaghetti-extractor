@@ -7,12 +7,12 @@ from pathlib import Path
 class StageAGnuUniversalPairedExternalEnvironmentTests(unittest.TestCase):
     def test_gnu_source_phase_is_isolated_and_fail_closed(self) -> None:
         root = Path(__file__).parents[1]
-        nix = (root / "nix/gnu-hello-roundtrip.nix").read_text(
+        nix = (root / "targets/gnu-hello/default.nix").read_text(
             encoding="utf-8"
         )
         flake = (root / "flake.nix").read_text(encoding="utf-8")
         driver = (
-            root / "nix/gnu-hello-universal-paired-external-environment.py"
+            root / "targets/gnu-hello/nix/gnu-hello-universal-paired-external-environment.py"
         ).read_text(encoding="utf-8")
 
         attribute = (

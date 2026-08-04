@@ -8,7 +8,7 @@ class StageAGnuRoundtripRuntimeClosureTests(unittest.TestCase):
     def test_candidate_phases_use_only_the_explicit_runtime_closure(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         lane = (
-            repo / "nix" / "gnu-hello-roundtrip.nix"
+            repo / "targets" / "gnu-hello" / "default.nix"
         ).read_text(encoding="utf-8")
         sources = (repo / "nix" / "stage-b-python-sources.nix").read_text(
             encoding="utf-8"
@@ -59,7 +59,7 @@ class StageAGnuRoundtripRuntimeClosureTests(unittest.TestCase):
         self.assertIn("runtimeFiles", native)
         self.assertIn("stage_b_interpreter_native_build.py", native)
         self.assertIn(
-            "stageBPythonSources = import ./stage-b-python-sources.nix",
+            "stageBPythonSources = import ../../nix/stage-b-python-sources.nix",
             lane,
         )
         self.assertIn(
@@ -85,7 +85,7 @@ class StageAGnuRoundtripRuntimeClosureTests(unittest.TestCase):
 
     def test_component_tooling_is_outside_the_proof_emitter_closure(self) -> None:
         repo = Path(__file__).resolve().parents[1]
-        lane = (repo / "nix" / "gnu-hello-roundtrip.nix").read_text(
+        lane = (repo / "targets" / "gnu-hello" / "default.nix").read_text(
             encoding="utf-8"
         )
         sources = (repo / "nix" / "stage-b-python-sources.nix").read_text(

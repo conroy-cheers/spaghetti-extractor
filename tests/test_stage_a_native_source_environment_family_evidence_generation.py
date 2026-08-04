@@ -104,7 +104,7 @@ class StageANativeSourceEnvironmentFamilyEvidenceGenerationTests(
         )
         self.assertEqual(
             declarations["format"],
-            "stage-a-gnu-hello-native-source-acceptance-declarations-v3",
+            "stage-a-native-source-acceptance-declarations-v1",
         )
         self.assertEqual(
             set(declarations), {"format", "bindings", "lean"}

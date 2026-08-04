@@ -11,13 +11,13 @@ import unittest
 from pathlib import Path
 
 from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
-from spaghetti_extractor.relational.lean.gnu_hello_acceptance_requirements import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_acceptance_requirements import (
     GNU_HELLO_CANDIDATE_ROOT_RVA as ACCEPTANCE_CANDIDATE_ROOT_RVA,
 )
-from spaghetti_extractor.relational.lean.gnu_hello_acceptance_requirements import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_acceptance_requirements import (
     GNU_HELLO_INITIAL_RUNTIME_BOUNDARY_RVA as ACCEPTANCE_BOUNDARY_RVA,
 )
-from spaghetti_extractor.relational.lean.gnu_hello_external_component import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_external_component import (
     GNU_HELLO_CANDIDATE_ROOT_RVA,
     GNU_HELLO_EXTERNAL_COMPONENT_MANIFEST,
     GNU_HELLO_EXTERNAL_COMPONENT_MODULE,

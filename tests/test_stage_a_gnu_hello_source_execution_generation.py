@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
-from spaghetti_extractor.relational.lean.gnu_hello_source_execution import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_source_execution import (
     GNU_HELLO_SOURCE_EXECUTION_AUDIT_MODULE,
     GNU_HELLO_SOURCE_EXECUTION_EVIDENCE_FORMAT,
     GnuHelloSourceExecutionGenerationError,

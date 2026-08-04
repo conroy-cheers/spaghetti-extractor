@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.relational.lean.gnu_hello_runtime_indirect_composition import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_runtime_indirect_composition import (
     CONSTRUCTOR_FRONTIER_ID,
     DYNAMIC_FRONTIER_ID,
     DYNAMIC_HEAD_SLOT_RVA,

@@ -2617,7 +2617,7 @@ class StageBTests(unittest.TestCase):
             self.assertEqual((root / "roots" / "link-root-flags.txt").read_text(encoding="utf-8"), "-Wl,--undefined,___foo\n-Wl,--undefined,_bar\n")
             self.assertEqual((root / "roots" / "budgeted-link-root-flags.txt").read_text(encoding="utf-8"), "-Wl,--undefined,___foo\n-Wl,--undefined,_bar\n")
 
-    def test_generate_link_roots_keeps_generated_contract_and_reference_layout_symbols(self):
+    def test_generate_link_roots_keeps_only_generic_generated_contract_symbols(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             original = self._write_pe(root / "jq.exe", b"\xc3")
@@ -2647,22 +2647,16 @@ class StageBTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "pass")
             self.assertEqual(result["counts"]["roots"], 1)
-            self.assertEqual(result["counts"]["generated_layout_roots"], 3)
+            self.assertEqual(result["counts"]["generated_layout_roots"], 1)
             self.assertEqual(
                 result["generated_layout_root_symbols"],
-                [
-                    "_stage_b_contract_section_gap__text_0001",
-                    "_stage_b_jq_reference_data",
-                    "_stage_b_jq_reference_rdata",
-                ],
+                ["_stage_b_contract_section_gap__text_0001"],
             )
             self.assertEqual(
                 result["linker_flags"],
                 [
                     "-Wl,--undefined,_foo",
                     "-Wl,--undefined,_stage_b_contract_section_gap__text_0001",
-                    "-Wl,--undefined,_stage_b_jq_reference_data",
-                    "-Wl,--undefined,_stage_b_jq_reference_rdata",
                 ],
             )
 
@@ -3257,7 +3251,9 @@ class StageBTests(unittest.TestCase):
             )
 
             result = stage_b_materialize_upstream_suite(
-                target_name="jq",
+                target_name="sample-cli",
+                suite_id="sample-cli-upstream-integration-tests",
+                suite_name="sample CLI upstream integration tests",
                 suite_source=source,
                 source_revision="jq-1.8.1",
                 cases=cases,
@@ -3265,8 +3261,8 @@ class StageBTests(unittest.TestCase):
             )
 
             self.assertEqual(result["format"], "stage-b-functional-suite-v1")
-            self.assertEqual(result["suite_id"], "jq-upstream-integration-tests")
-            self.assertEqual(result["suite_name"], "jq upstream integration tests")
+            self.assertEqual(result["suite_id"], "sample-cli-upstream-integration-tests")
+            self.assertEqual(result["suite_name"], "sample CLI upstream integration tests")
             self.assertTrue(result["upstream_suite"])
             self.assertEqual(result["suite_scope"], "full")
             self.assertEqual(result["materializer"]["name"], STAGE_B_UPSTREAM_SUITE_MATERIALIZER)
@@ -3275,7 +3271,7 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["coverage"]["source_sha256"], sha256_file(source))
             self.assertEqual(result["coverage"]["source_revision"], "jq-1.8.1")
             self.assertEqual(result["coverage"]["materialized_by"], STAGE_B_UPSTREAM_SUITE_MATERIALIZER)
-            self.assertEqual(result["coverage"]["required_suite_ids"], ["jq-upstream-integration-tests"])
+            self.assertEqual(result["coverage"]["required_suite_ids"], ["sample-cli-upstream-integration-tests"])
             self.assertEqual(result["cases"][0]["id"], "version")
             self.assertTrue((root / "suite" / "functional-suite.json").exists())
 
@@ -3289,7 +3285,9 @@ class StageBTests(unittest.TestCase):
 
             with self.assertRaisesRegex(Exception, "non-empty cases list"):
                 stage_b_materialize_upstream_suite(
-                    target_name="ripgrep",
+                    target_name="sample-cli",
+                    suite_id="sample-cli-upstream-integration-tests",
+                    suite_name="sample CLI upstream integration tests",
                     suite_source=source,
                     source_revision="ripgrep-15.1.0",
                     cases=cases,
@@ -3321,7 +3319,9 @@ class StageBTests(unittest.TestCase):
             )
 
             result = stage_b_materialize_upstream_suite(
-                target_name="jq",
+                target_name="sample-cli",
+                suite_id="sample-cli-upstream-integration-tests",
+                suite_name="sample CLI upstream integration tests",
                 suite_source=source,
                 source_revision="jq-1.8.1-subset",
                 cases=cases,
@@ -3329,7 +3329,7 @@ class StageBTests(unittest.TestCase):
                 out=root / "suite",
             )
 
-            self.assertEqual(result["suite_id"], "jq-upstream-integration-tests")
+            self.assertEqual(result["suite_id"], "sample-cli-upstream-integration-tests")
             self.assertEqual(result["suite_scope"], "subset")
             self.assertEqual(result["coverage"]["source_kind"], "upstream_integration_suite")
             self.assertEqual(result["coverage"]["source_sha256"], sha256_file(source))
@@ -4075,12 +4075,7 @@ class StageBTests(unittest.TestCase):
             self.assertIn("typedef MEMORY_BASIC_INFORMATION _MEMORY_BASIC_INFORMATION;", source)
             self.assertIn("typedef uint64_t unkuint10;", source)
             self.assertIn("#define NAN(value) __builtin_isnan((double)(value))", source)
-            self.assertIn('"  .long ___p___winitenv - _stage_b_jq_import_anchor\\n"', source)
-            self.assertIn('"  .long ___p__commode - _stage_b_jq_import_anchor\\n"', source)
-            self.assertIn('"  .long ___p__fmode - _stage_b_jq_import_anchor\\n"', source)
-            self.assertIn('"  .long ___set_app_type - _stage_b_jq_import_anchor\\n"', source)
-            self.assertIn('"  .long __amsg_exit - _stage_b_jq_import_anchor\\n"', source)
-            self.assertIn('"  .long __cexit - _stage_b_jq_import_anchor\\n"', source)
+            self.assertNotIn("stage_b_jq", source)
             self.assertIn("int tiny_from_decompiler(void)", source)
             self.assertNotIn("stage_b_unimplemented", source)
             functions = json.loads((root / "skeleton" / "functions.json").read_text(encoding="utf-8"))
@@ -4226,33 +4221,11 @@ class StageBTests(unittest.TestCase):
             self.assertNotIn("extern uintptr_t PathIsRelativeA();", source)
             self.assertNotIn("extern uintptr_t GetTimeZoneInformation();", source)
             self.assertNotIn("__attribute__((weak)) uintptr_t Sleep()", source)
-            self.assertIn('extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__("__imp__SetUnhandledExceptionFilter@4");', source)
-            self.assertIn('"  .long __imp__SetUnhandledExceptionFilter@4 - _stage_b_jq_import_anchor\\n"', source)
-            self.assertNotIn("(void *)(uintptr_t)&SetUnhandledExceptionFilter,", source)
             self.assertIn("extern uintptr_t initterm();", source)
             self.assertIn("__attribute__((weak, noinline, used)) uintptr_t initterm() {", source)
             self.assertIn('__asm__ __volatile__("" : : : "memory");', source)
-            self.assertIn(".text$stage_b_jq_layout_pad", source)
-            self.assertIn(".fill 0,1,0x90", source)
-            self.assertIn(".rdata$stage_b_jq_layout_anchor", source)
-            self.assertIn('"  .long _stage_b_jq_layout_text_anchor - _stage_b_jq_layout_anchor\\n"', source)
-            self.assertIn('"  .long _stage_b_jq_import_anchor - _stage_b_jq_layout_anchor\\n"', source)
-            self.assertIn('"  .long _stage_b_jq_layout_data_tail - _stage_b_jq_layout_anchor\\n"', source)
-            self.assertIn("stage_b_jq_layout_bss_anchor[2644]", source)
-            self.assertIn("stage_b_jq_layout_data_tail[92]", source)
-            self.assertIn("stage_b_jq_layout_tls_anchor[8]", source)
-            self.assertIn(".idata$stage_b_jq_layout_pad", source)
-            self.assertIn("_stage_b_jq_layout_idata_pad", source)
-            self.assertNotIn('((void *)stage_b_jq_layout_data_tail)', source)
-            self.assertIn("section(\".rdata$stage_b_jq_layout_pad\")", source)
-            self.assertIn('"  .long _stage_b_jq_layout_rdata_anchor - _stage_b_jq_layout_anchor\\n"', source)
-            self.assertIn('"  .long _stage_b_jq_layout_bss_anchor - _stage_b_jq_layout_anchor\\n"', source)
-            self.assertIn('"  .long _stage_b_jq_layout_tls_anchor - _stage_b_jq_layout_anchor\\n"', source)
-            self.assertIn('"  .long _stage_b_jq_layout_idata_pad - _stage_b_jq_layout_anchor\\n"', source)
-            self.assertIn("stage_b_jq_layout_rdata_anchor[4672]", source)
-            self.assertIn('((void *)stage_b_jq_layout_anchor)', source)
-            self.assertNotIn('((void *)stage_b_jq_layout_text_anchor)', source)
-            self.assertNotIn('((void *)stage_b_jq_layout_bss_anchor)', source)
+            self.assertNotIn("stage_b_jq", source)
+            self.assertNotIn("STAGE_B_JQ", source)
             self.assertIn("__crt_atexit((void *)0);", source)
             self.assertNotIn("  atexit((void *)0);", source)
             self.assertIn('extern void * __imp_____lc_codepage_func __asm__("__imp_____lc_codepage_func");', source)
@@ -4490,150 +4463,8 @@ class StageBTests(unittest.TestCase):
         self.assertIn("do_get_path_info();", source)
         self.assertNotIn("stage_b_contract_anchor ^= (uintptr_t)0x5f98;", source)
 
-    def test_decompiled_c_renderer_materializes_jq_reference_data_sections(self):
-        reference_contract = {
-            "original": {
-                "image_base": 0x400000,
-                "sections": [
-                    {"name": ".data", "rva_start": 0xD000, "rva_end": 0xD05C},
-                    {"name": ".rdata", "rva_start": 0xE000, "rva_end": 0xE100},
-                ],
-            },
-            "constraints": {
-                "abi_callsites": {
-                    "original": {
-                        "functions": [
-                            {
-                                "name": "caller",
-                                "callsites": [
-                                    {
-                                        "instruction": {
-                                            "mnemonic": "call",
-                                            "op_str": "dword ptr [0x40e020]",
-                                            "rva": 0x1010,
-                                        },
-                                        "target": {"kind": "direct", "target_rva": 0x2000},
-                                    }
-                                ],
-                                "memory_reads": [
-                                    {
-                                        "memory_rva": 0xE000,
-                                        "string_literal": {
-                                            "rva": 0xE000,
-                                            "size": 3,
-                                            "text": "hi",
-                                            "sha256": sha256_bytes(b"hi"),
-                                        },
-                                    },
-                                    {
-                                        "memory_rva": 0xE020,
-                                        "string_literal": {
-                                            "rva": 0xE020,
-                                            "size": 4,
-                                            "text": "\u0000 @",
-                                            "sha256": sha256_bytes(b"\x00 @"),
-                                        },
-                                    },
-                                ],
-                            }
-                        ]
-                    }
-                }
-            },
-        }
 
-        source = _render_skeleton_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {"name": "caller", "rva_start": 0x1000, "rva_end": 0x1020, "size": 0x20},
-                {"name": "target_func", "rva_start": 0x2000, "rva_end": 0x2010, "size": 0x10},
-            ],
-            reference_contract_payload=reference_contract,
-        )
 
-        self.assertIn(".section .data$000_stage_b_reference_data", source)
-        self.assertIn(".section .rdata$000_stage_b_reference_rdata", source)
-        self.assertIn(".globl _stage_b_jq_reference_rdata", source)
-        self.assertIn(".fill 164,1,0", source)
-        self.assertIn(".section .CRT$XLC", source)
-        self.assertIn(".long ___dyn_tls_init_12", source)
-        self.assertIn(".byte 0x68, 0x69, 0x00", source)
-        self.assertIn(".long _target_func", source)
-        self.assertNotIn("stage_b_layout_keepalive", source)
-        self.assertNotIn("stage_b_jq_layout_data_tail", source)
-        self.assertNotIn("stage_b_jq_import_anchor", source)
-        self.assertNotIn("stage_b_contract_section_gap_anchor", source)
-
-    def test_decompiled_c_renderer_emits_full_jq_layout_normalization_pads(self):
-        reference_contract = {
-            "original": {
-                "image_base": 0x400000,
-                "sections": [
-                    {"name": ".text", "rva_start": 0x1000, "rva_end": 0xC500},
-                    {"name": ".data", "rva_start": 0xD000, "rva_end": 0xD05C},
-                    {"name": ".rdata", "rva_start": 0xE000, "rva_end": 0xE100},
-                    {"name": ".reloc", "rva_start": 0x14000, "rva_end": 0x145A0},
-                ],
-            },
-        }
-
-        source = _render_skeleton_decompiled_c_source(
-            target_name="jq",
-            functions=[],
-            reference_contract_payload=reference_contract,
-        )
-
-        self.assertIn(".text$zz_stage_b_jq_layout_tail_pad", source)
-        self.assertIn("_stage_b_jq_layout_text_tail_pad", source)
-        self.assertIn(".fill 84,1,0x90", source)
-        self.assertIn(".section .reloc", source)
-        self.assertIn("_stage_b_jq_reloc_absolute_pad", source)
-        self.assertIn(".long 872", source)
-        self.assertIn(".fill 432,2,0", source)
-
-    def test_decompiled_c_renderer_preserves_dirname_path_info_out_params(self):
-        source = _render_skeleton_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {
-                    "name": "dirname",
-                    "aliases": ["dirname"],
-                    "rva_start": 0x5E50,
-                    "rva_end": 0x5F61,
-                    "size": 0x111,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "char * __cdecl dirname(char *param_1)",
-                                "{",
-                                "  char *pcVar2;",
-                                "  char *local_20;",
-                                "  undefined1 *local_1c;",
-                                "  char *local_10;",
-                                "  if (param_1 != (char *)0x0) {",
-                                "    do_get_path_info();",
-                                "    if (local_20 != (char *)0x0) {",
-                                "      pcVar2 = (char *)realloc(_static_path_copy_0,2);",
-                                "      if (pcVar2 != (char *)0x0) {",
-                                "        memcpy(pcVar2,param_1,1);",
-                                "      }",
-                                "    }",
-                                "    if (local_1c != (undefined1 *)0x0) {",
-                                "      *local_1c = 0;",
-                                "    }",
-                                "  }",
-                                "  return \".\";",
-                                "}",
-                            ]
-                        ),
-                    },
-                }
-            ],
-        )
-
-        self.assertIn("do_get_path_info(param_1,&local_20,&local_1c,&local_10);", source)
-        self.assertNotIn("    do_get_path_info();", source)
 
     def test_decompiled_c_renderer_preserves_dtoa_helper_call_boundaries(self):
         source = _render_skeleton_decompiled_c_source(
@@ -4744,10 +4575,6 @@ class StageBTests(unittest.TestCase):
             source,
             r"__attribute__\(\(noinline, noipa, used\)\)\nundefined4 __cdecl ___Bfree_D2A\(undefined4 \*param_1\)",
         )
-        self.assertRegex(
-            source,
-            r"__attribute__\(\(optimize\(\"Os\"\)\)\)\nint __cdecl umain",
-        )
         self.assertNotRegex(
             source,
             r"__attribute__\(\(noinline, noipa, used\)\)\nint __cdecl umain",
@@ -4851,8 +4678,8 @@ class StageBTests(unittest.TestCase):
                         {
                             "id": "section-gap--text-0057",
                             "symbol_aliases": {
-                                "original": ["_jv_is_valid", "jv_is_valid"],
-                                "candidate": ["_jv_is_valid", "jv_is_valid"],
+                                "original": ["_is_valid", "is_valid"],
+                                "candidate": ["_is_valid", "is_valid"],
                             },
                         }
                     ]
@@ -4899,13 +4726,13 @@ class StageBTests(unittest.TestCase):
         }
         functions = [
                 {
-                    "name": "jv_get_kind",
+                    "name": "get_kind",
                     "rva_start": 0x4A80,
                     "rva_end": 0x4A86,
                     "size": 6,
                     "decompiler": {
                         "status": "success",
-                        "code": "uintptr_t __cdecl jv_get_kind(uintptr_t param_1, uintptr_t param_2)\n{\n  return param_1 ^ param_2;\n}",
+                        "code": "uintptr_t __cdecl get_kind(uintptr_t param_1, uintptr_t param_2)\n{\n  return param_1 ^ param_2;\n}",
                     },
                 },
                 {
@@ -4915,39 +4742,37 @@ class StageBTests(unittest.TestCase):
                     "size": 0x10,
                     "decompiler": {
                         "status": "success",
-                        "code": "uintptr_t __cdecl caller(void)\n{\n  return jv_is_valid();\n}",
+                        "code": "uintptr_t __cdecl caller(void)\n{\n  return is_valid();\n}",
                     },
                 },
         ]
         source = _render_skeleton_decompiled_c_source(
-            target_name="jq",
+            target_name="sample",
             functions=functions,
             reference_contract_payload=reference_contract,
         )
         source_map = _skeleton_source_map(
             source,
-            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            source_rel=Path("src/sample_stage_b_skeleton.c"),
             functions=functions,
             source_language="c",
             implementation_mode="decompiled-c",
             reference_contract_payload=reference_contract,
         )
 
-        self.assertIn("__attribute__((naked, noinline, used))\nuintptr_t __cdecl jv_is_valid()", source)
-        self.assertIn("uintptr_t __cdecl jv_get_kind(uintptr_t param_1, uintptr_t param_2);", source)
+        self.assertIn("__attribute__((noinline, used))\nuintptr_t __cdecl is_valid()", source)
+        self.assertIn("uintptr_t __cdecl get_kind(uintptr_t param_1, uintptr_t param_2);", source)
         self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0057:14c1 at RVA 0x14c1", source)
-        self.assertIn('"call _jv_get_kind\\n\\t"', source)
-        self.assertIn('"setne %al\\n\\t"', source)
-        self.assertNotIn("jv_get_kind((uintptr_t)0, (uintptr_t)0);", source)
-        self.assertNotIn("__attribute__((weak)) uintptr_t jv_is_valid() { return 0; }", source)
+        self.assertIn("get_kind((uintptr_t)0, (uintptr_t)0);", source)
+        self.assertNotIn("__attribute__((weak)) uintptr_t is_valid() { return 0; }", source)
         self.assertIn(
-            '"  .long _jv_is_valid - _stage_b_contract_section_gap_anchor\\n"',
+            '"  .long _is_valid - _stage_b_contract_section_gap_anchor\\n"',
             source,
         )
-        self.assertNotIn("(void *)(uintptr_t)&jv_is_valid,", source)
+        self.assertNotIn("(void *)(uintptr_t)&is_valid,", source)
         by_function = {item["function"]: item for item in source_map["functions"]}
-        self.assertEqual(by_function["jv_is_valid"]["source_kind"], "generated_contract_placeholder_from_section_gap_alias")
-        self.assertIn("section-gap--text-0057", by_function["jv_is_valid"]["aliases"])
+        self.assertEqual(by_function["is_valid"]["source_kind"], "generated_contract_placeholder_from_section_gap_alias")
+        self.assertIn("section-gap--text-0057", by_function["is_valid"]["aliases"])
 
     def test_decompiled_c_synthesizes_unaliased_section_gap_contract_placeholder(self):
         reference_contract = {
@@ -5776,11 +5601,7 @@ class StageBTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            '"  .long _stage_b_contract_section_gap_anchor - _stage_b_jq_layout_anchor\\n"',
-            source,
-        )
-        self.assertIn(
-            '__asm__ __volatile__("" : : "r"((void *)stage_b_jq_layout_anchor) : "memory");',
+            '__asm__ __volatile__("" : : "r"((void *)stage_b_contract_section_gap_anchor) : "memory");',
             source,
         )
         by_function = {item["function"]: item for item in source_map["functions"]}
@@ -6385,11 +6206,7 @@ class StageBTests(unittest.TestCase):
         self.assertNotIn("(void *)(uintptr_t)&___wcrtomb_cp,", source)
         self.assertNotIn("static void * const stage_b_contract_section_gap_anchor[]", source)
         self.assertIn(
-            '"  .long _stage_b_contract_section_gap_anchor - _stage_b_jq_layout_anchor\\n"',
-            source,
-        )
-        self.assertIn(
-            '__asm__ __volatile__("" : : "r"((void *)stage_b_jq_layout_anchor) : "memory");',
+            '__asm__ __volatile__("" : : "r"((void *)stage_b_contract_section_gap_anchor) : "memory");',
             source,
         )
         by_function = {item["function"]: item for item in source_map["functions"]}
@@ -6764,7 +6581,7 @@ class StageBTests(unittest.TestCase):
         self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0100:2104 at RVA 0x2104", source)
         self.assertIn('"  call __hypot\\n"', source)
 
-    def test_decompiled_c_direct_import_thunk_profile_uses_external_abi_for_imports(self):
+    def test_decompiled_c_direct_import_thunk_uses_contract_machine_abi(self):
         reference_contract = {
             "constraints": {
                 "basic_blocks_and_cfg": {"basic_blocks": [{"id": "section-gap--text-0101"}]},
@@ -6797,88 +6614,35 @@ class StageBTests(unittest.TestCase):
         }
         functions = [
             {
-                "name": "jv_array",
-                "aliases": ["jv_array"],
+                "name": "make_widget",
+                "aliases": ["make_widget"],
                 "rva_start": 0xC800,
                 "rva_end": 0xC806,
                 "size": 6,
                 "linkage": {
                     "kind": "import_thunk",
-                    "dll": "libjq-1.dll",
-                    "symbol": "jv_array",
-                    "original_symbol": "jv_array",
+                    "dll": "sample-1.dll",
+                    "symbol": "make_widget",
+                    "original_symbol": "make_widget",
                 },
                 "decompiler": {
                     "status": "success",
-                    "code": "undefined4 __cdecl jv_array(undefined4 param_1)\n{\n  return param_1;\n}",
+                    "code": "undefined4 __cdecl make_widget(undefined4 param_1)\n{\n  return param_1;\n}",
                 },
             }
         ]
         source = _render_skeleton_decompiled_c_source(
-            target_name="jq",
+            target_name="sample",
             functions=functions,
             reference_contract_payload=reference_contract,
         )
 
-        self.assertIn("extern stage_b_jv jv_array(void);", source)
-        self.assertNotIn("undefined4 __cdecl jv_array(undefined4 param_1);", source)
+        self.assertIn("extern uintptr_t make_widget();", source)
+        self.assertNotIn("undefined4 __cdecl make_widget(undefined4 param_1);", source)
         self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0101:2204 at RVA 0x2204", source)
-        self.assertNotIn('"  pushl $0x0\\n"', source)
-        self.assertIn('"  call _jv_array\\n"', source)
+        self.assertIn('"  pushl $0x0\\n"', source)
+        self.assertIn('"  call _make_widget\\n"', source)
 
-    def test_decompiled_c_renderer_materializes_jq_dtoa_lock_helper(self):
-        source = _render_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {
-                    "name": "___Bfree_D2A",
-                    "rva_start": 0xAD80,
-                    "rva_end": 0xADE9,
-                    "size": 0x69,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "void __cdecl ___Bfree_D2A(undefined4 *param_1)",
-                                "{",
-                                "  dtoa_lock();",
-                                "  if (_dtoa_CS_init == 2) {",
-                                "    LeaveCriticalSection((LPCRITICAL_SECTION)&_dtoa_CritSec);",
-                                "  }",
-                                "  *(double *)(&___tens_D2A + 8);",
-                                "  return;",
-                                "}",
-                            ]
-                        ),
-                    },
-                }
-            ],
-        )
-
-        self.assertIn("#define STAGE_B_JQ_HAS_LAYOUT_BSS_ANCHOR 1", source)
-        self.assertIn("extern volatile unsigned char stage_b_jq_layout_bss_anchor[];", source)
-        self.assertIn("#define STAGE_B_JQ_RECOVERED_STATE_BASE stage_b_jq_layout_bss_anchor", source)
-        self.assertIn("#define _dtoa_CS_init (*(byte *)(STAGE_B_JQ_RECOVERED_STATE_BASE + 0x878U))", source)
-        self.assertIn("#define _dtoa_CritSec (*(byte (*)[0x30])(STAGE_B_JQ_RECOVERED_STATE_BASE + 0x840U))", source)
-        self.assertNotIn("__attribute__((weak)) byte _dtoa_CS_init;", source)
-        self.assertNotIn("__attribute__((weak)) byte _dtoa_CritSec", source)
-        self.assertIn('section(".rdata$stage_b_jq_dtoa_tables")', source)
-        self.assertIn("static const double stage_b_jq_tens_D2A[24]", source)
-        self.assertIn("#define ___tens_D2A (*(const byte *)(const void *)stage_b_jq_tens_D2A)", source)
-        self.assertNotIn("__attribute__((weak)) byte ___tens_D2A;", source)
-        self.assertIn("extern void __attribute__((stdcall, dllimport)) InitializeCriticalSection(LPCRITICAL_SECTION);", source)
-        self.assertIn("extern void __attribute__((stdcall, dllimport)) EnterCriticalSection(LPCRITICAL_SECTION);", source)
-        self.assertIn("extern void __attribute__((stdcall, dllimport)) DeleteCriticalSection(LPCRITICAL_SECTION);", source)
-        self.assertIn("extern void __attribute__((stdcall, dllimport)) Sleep(DWORD);", source)
-        self.assertIn("extern uintptr_t __crt_atexit();", source)
-        self.assertIn("static void stage_b_dtoa_lock_cleanup(void)", source)
-        self.assertIn("uintptr_t dtoa_lock(void)", source)
-        self.assertIn("InitializeCriticalSection((LPCRITICAL_SECTION)((byte *)&_dtoa_CritSec + 0x00U));", source)
-        self.assertIn("InitializeCriticalSection((LPCRITICAL_SECTION)((byte *)&_dtoa_CritSec + 0x18U));", source)
-        self.assertIn("__crt_atexit((void *)stage_b_dtoa_lock_cleanup);", source)
-        self.assertIn("Sleep(1);", source)
-        self.assertIn("EnterCriticalSection(stage_b_dtoa_lock_section(selector));", source)
-        self.assertNotIn("__attribute__((weak)) uintptr_t dtoa_lock() { return 0; }", source)
 
     def test_decompiled_c_renderer_preserves_atexit_forwarder_shape(self):
         source = _render_decompiled_c_source(
@@ -7032,60 +6796,7 @@ class StageBTests(unittest.TestCase):
         self.assertIn("jmp *__imp____wgetmainargs", source)
         self.assertIn("return __msvcrt_wgetmainargs();", source)
 
-    def test_decompiled_c_renderer_anchors_jq_reference_import_surface(self):
-        source = _render_decompiled_c_source(target_name="jq", functions=[])
 
-        for symbol in [
-            "_AreFileApisANSI@0",
-            "_GetLastError@0",
-            "_GetModuleHandleA@4",
-            "_GetProcAddress@8",
-            "_IsDBCSLeadByteEx@8",
-            "_MultiByteToWideChar@24",
-            "_WideCharToMultiByte@32",
-            "_Sleep@4",
-            "_TlsGetValue@4",
-            "_VirtualProtect@16",
-            "_VirtualQuery@12",
-            "_WriteFile@20",
-            "__imp__SetUnhandledExceptionFilter@4",
-            "__get_osfhandle",
-            "_isalpha",
-        ]:
-            self.assertIn(
-                f'"  .long {symbol} - _stage_b_jq_import_anchor\\n"',
-                source,
-            )
-        self.assertNotIn("static void * const stage_b_jq_import_anchor[]", source)
-
-    def test_decompiled_c_renderer_anchors_jq_atexit_through_import_alias(self):
-        source = _render_decompiled_c_source(
-            target_name="jq",
-            external_function_names=["atexit"],
-            functions=[
-                {
-                    "name": "__crt_atexit",
-                    "rva_start": 0xC3F0,
-                    "rva_end": 0xC3F6,
-                    "size": 6,
-                    "linkage": {"kind": "import_thunk", "symbol": "atexit", "original_symbol": "__crt_atexit"},
-                    "decompiler": {"status": "success", "code": "int __cdecl __crt_atexit(void *param_1) { return atexit(param_1); }"},
-                },
-                {
-                    "name": "atexit",
-                    "rva_start": 0x1430,
-                    "rva_end": 0x1435,
-                    "size": 5,
-                    "decompiler": {"status": "success", "code": "void __cdecl atexit(void *param_1) { atexit(param_1); }"},
-                },
-            ],
-        )
-
-        self.assertIn("extern uintptr_t __crt_atexit();", source)
-        self.assertIn(".globl ___crt_atexit", source)
-        self.assertIn("jmp *__imp__atexit", source)
-        self.assertIn('"  .long ___crt_atexit - _stage_b_jq_import_anchor\\n"', source)
-        self.assertNotIn('"  .long _atexit - _stage_b_jq_import_anchor\\n"', source)
 
     def test_decompiled_c_renderer_exposes_crt_atexit_object_alias_at_same_thunk(self):
         source = _render_decompiled_c_source(
@@ -7773,234 +7484,9 @@ class StageBTests(unittest.TestCase):
         self.assertIn("return __p__iob();", source)
         self.assertNotIn("__p__iob();\n  return;", source)
 
-    def test_decompiled_c_renderer_recovers_allocator_success_return_values(self):
-        source = _render_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {
-                    "name": "jv_mem_alloc",
-                    "rva_start": 0x2D680,
-                    "rva_end": 0x2D69C,
-                    "size": 0x1C,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "void __cdecl jv_mem_alloc(size_t param_1)",
-                                "{",
-                                "  int iVar1;",
-                                "  iVar1 = malloc(param_1);",
-                                "  if (iVar1 != 0) {",
-                                "    return;",
-                                "  }",
-                                "  memory_exhausted();",
-                                "}",
-                            ]
-                        ),
-                    },
-                },
-                {
-                    "name": "jv_mem_calloc_unguarded",
-                    "rva_start": 0x2D6EC,
-                    "rva_end": 0x2D724,
-                    "size": 0x38,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "void __cdecl jv_mem_calloc_unguarded(size_t param_1,size_t param_2)",
-                                "{",
-                                "  int iVar1;",
-                                "  if ((param_1 != 0) && (param_2 != 0)) {",
-                                "    calloc(param_1,param_2);",
-                                "    return 0;",
-                                "  }",
-                                "  iVar1 = strdup(\"src/jv_alloc.c\");",
-                                "  if (iVar1 != 0) {",
-                                "    return 0;",
-                                "  }",
-                                "  memory_exhausted();",
-                                "}",
-                            ]
-                        ),
-                    },
-                },
-            ],
-        )
 
-        self.assertIn("uintptr_t __cdecl jv_mem_alloc(size_t param_1)", source)
-        self.assertIn("if (iVar1 != 0) {\n    return iVar1;\n  }", source)
-        self.assertIn("return calloc(param_1,param_2);", source)
-        self.assertIn("if (iVar1 != 0) {\n    return iVar1;\n  }", source)
-        self.assertNotIn("if (iVar1 != 0) {\n    return 0;\n  }", source)
-        self.assertNotIn("calloc(param_1,param_2);\n    return 0;", source)
 
-    def test_decompiled_c_renderer_replaces_jq_value_abi_helpers(self):
-        source = _render_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {
-                    "name": "jvp_array_alloc",
-                    "rva_start": 0x25EB5,
-                    "rva_end": 0x25EDE,
-                    "size": 0x29,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "uintptr_t __cdecl jvp_array_alloc()",
-                                "{",
-                                "  int in_EAX;",
-                                "  undefined4 *puVar1;",
-                                "  puVar1 = (undefined4 *)jv_mem_alloc((in_EAX + 1) * 0x10);",
-                                "  return 0;",
-                                "}",
-                            ]
-                        ),
-                    },
-                },
-                {
-                    "name": "jv_array",
-                    "rva_start": 0x27822,
-                    "rva_end": 0x27841,
-                    "size": 0x1F,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "undefined4 __cdecl jv_array(undefined4 param_1)\n{\n  jv_array_sized(param_1);\n  return param_1;\n}",
-                    },
-                },
-                {
-                    "name": "jv_string",
-                    "rva_start": 0x2785B,
-                    "rva_end": 0x2788A,
-                    "size": 0x2F,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "undefined4 __cdecl jv_string(undefined4 param_1,char *param_2)\n{\n  jv_string_sized(param_1,(byte *)param_2,strlen(param_2));\n  return param_1;\n}",
-                    },
-                },
-                {
-                    "name": "jv_object",
-                    "rva_start": 0x27B19,
-                    "rva_end": 0x27B34,
-                    "size": 0x1B,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "undefined4 __cdecl jv_object(undefined4 param_1)\n{\n  jvp_object_new();\n  return param_1;\n}",
-                    },
-                },
-            ],
-        )
 
-        self.assertIn("static uintptr_t stage_b_jq_jvp_array_alloc(uint32_t capacity)", source)
-        self.assertIn("static undefined4 stage_b_jq_jv_string_sized", source)
-        self.assertIn("if ((uintptr_t)out < (uintptr_t)0x10000U)", source)
-        self.assertIn("if (safe_length != 0U && (uintptr_t)data < (uintptr_t)0x10000U)", source)
-        self.assertIn("uintptr_t __cdecl jvp_array_alloc()\n{\n  return stage_b_jq_jvp_array_alloc(0);\n}", source)
-        self.assertIn("undefined4 __cdecl jv_array(undefined4 param_1)\n{\n  return stage_b_jq_jv_array_sized(param_1,0);\n}", source)
-        self.assertIn("if ((uintptr_t)param_1 < (uintptr_t)0x10000U)", source)
-        self.assertIn("if ((uintptr_t)param_2 < (uintptr_t)0x10000U)", source)
-        self.assertIn("return stage_b_jq_jv_string_sized(param_1,(const uint8_t *)param_2,(int)length);", source)
-        self.assertIn("undefined4 __cdecl jv_object(undefined4 param_1)\n{\n  return stage_b_jq_jv_object(param_1);\n}", source)
-        self.assertNotIn("int in_EAX;", source)
-        self.assertNotIn("jv_mem_alloc((in_EAX + 1) * 0x10)", source)
-        self.assertNotIn("jvp_object_new();\n  return param_1;", source)
-
-    def test_decompiled_c_renderer_recovers_jq_init_stack_hidden_pointer(self):
-        source = _render_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {
-                    "name": "stack_init",
-                    "rva_start": 0x1A567,
-                    "rva_end": 0x1A57E,
-                    "size": 0x17,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "undefined4 __cdecl stack_init()",
-                                "{",
-                                "  undefined4 *in_EAX;",
-                                "  *in_EAX = 0;",
-                                "  in_EAX[1] = 8;",
-                                "  in_EAX[2] = 0;",
-                                "  return 0;",
-                                "}",
-                            ]
-                        ),
-                    },
-                },
-                {
-                    "name": "jq_init",
-                    "rva_start": 0x1FA65,
-                    "rva_end": 0x1FC14,
-                    "size": 0x1AF,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "undefined4 * __cdecl jq_init(void)",
-                                "{",
-                                "  undefined4 *puVar1;",
-                                "  puVar1 = (undefined4 *)jv_mem_alloc_unguarded(0xc0);",
-                                "  if (puVar1 != (undefined4 *)0x0) {",
-                                "    puVar1[2] = 0;",
-                                "    puVar1[0x1b] = 0;",
-                                "    stack_init();",
-                                "    puVar1[0xe] = 0;",
-                                "  }",
-                                "  return puVar1;",
-                                "}",
-                            ]
-                        ),
-                    },
-                },
-            ],
-        )
-
-        self.assertIn("undefined4 __cdecl stack_init()\n{\n  return 0;\n}", source)
-        self.assertIn("puVar1[0x1b] = 0;\n    puVar1[10] = 0;\n    puVar1[11] = 8;\n    puVar1[12] = 0;", source)
-        self.assertNotIn("undefined4 *in_EAX;", source)
-        self.assertNotIn("*in_EAX = 0;", source)
-        self.assertNotIn("    stack_init();", source)
-
-    def test_decompiled_c_renderer_recovers_umain_iob_stream_indices(self):
-        source = _render_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {
-                    "name": "umain",
-                    "rva_start": 0x245E,
-                    "rva_end": 0x2480,
-                    "size": 0x22,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "uintptr_t umain(int argc,undefined4 *argv)",
-                                "{",
-                                "  code *puVar1;",
-                                "  puVar1 = __imp____acrt_iob_func;",
-                                "  (*(code *)__imp____acrt_iob_func)();",
-                                "  (*(code *)puVar1)();",
-                                "  (*(code *)puVar1)();",
-                                "  (*(code *)puVar1)();",
-                                "  return 0;",
-                                "}",
-                            ]
-                        ),
-                    },
-                }
-            ],
-        )
-
-        self.assertIn("(*(code *)__imp____acrt_iob_func)(1);", source)
-        self.assertIn("(*(code *)puVar1)(2);", source)
-        self.assertIn("(*(code *)puVar1)(1);", source)
-        self.assertIn("(*(code *)puVar1)(2);", source)
-        self.assertNotIn("__imp____acrt_iob_func)();", source)
-        self.assertNotIn("puVar1)();", source)
 
     def test_decompiled_c_renderer_preserves_acrt_iob_func_call_boundary(self):
         source = _render_decompiled_c_source(
@@ -8033,317 +7519,11 @@ class StageBTests(unittest.TestCase):
             source,
         )
 
-    def test_decompiled_c_renderer_recovers_jq_set_colors_getenv_argument(self):
-        source = _render_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {
-                    "name": "umain",
-                    "rva_start": 0x245E,
-                    "rva_end": 0x2490,
-                    "size": 0x32,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "uintptr_t umain(int argc,undefined4 *argv)",
-                                "{",
-                                "  int iVar5;",
-                                "  getenv(\"JQ_COLORS\");",
-                                "  iVar5 = jq_set_colors();",
-                                "  return iVar5;",
-                                "}",
-                            ]
-                        ),
-                    },
-                }
-            ],
-        )
 
-        self.assertIn('iVar5 = jq_set_colors((char *)getenv("JQ_COLORS"));', source)
-        self.assertNotIn('getenv("JQ_COLORS");\n  iVar5 = jq_set_colors();', source)
 
-    def test_decompiled_c_renderer_recovers_jq_jv_constructor_return_buffers(self):
-        source = _render_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {
-                    "name": "umain",
-                    "rva_start": 0x245E,
-                    "rva_end": 0x2490,
-                    "size": 0x32,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "uintptr_t umain(int argc,undefined4 *argv)",
-                                "{",
-                                "  uint auStack_3fc [4];",
-                                "  uint auStack_3ec [4];",
-                                "  uint auStack_3dc [4];",
-                                "  uint *puStack_444;",
-                                "  uint *puStack_44c;",
-                                "  uint *puStack_43c;",
-                                "  puStack_444 = auStack_3fc;",
-                                "  jv_array();",
-                                "  puStack_44c = auStack_3ec;",
-                                "  jv_object();",
-                                "  puStack_43c = (uint *)auStack_3dc;",
-                                "  jv_null();",
-                                "  return 0;",
-                                "}",
-                            ]
-                        ),
-                    },
-                },
-                {
-                    "name": "jv_array",
-                    "rva_start": 0x4AB8,
-                    "rva_end": 0x4ABE,
-                    "size": 6,
-                    "linkage": {"kind": "import_thunk", "symbol": "jv_array"},
-                    "decompiler": {"status": "success", "code": "void jv_array(void) {\n  jv_array();\n  return;\n}"},
-                },
-                {
-                    "name": "jv_object",
-                    "rva_start": 0x4A48,
-                    "rva_end": 0x4A4E,
-                    "size": 6,
-                    "linkage": {"kind": "import_thunk", "symbol": "jv_object"},
-                    "decompiler": {"status": "success", "code": "void jv_object(void) {\n  jv_object();\n  return;\n}"},
-                },
-                {
-                    "name": "jv_null",
-                    "rva_start": 0x4A58,
-                    "rva_end": 0x4A5E,
-                    "size": 6,
-                    "linkage": {"kind": "import_thunk", "symbol": "jv_null"},
-                    "decompiler": {"status": "success", "code": "void jv_null(void) {\n  jv_null();\n  return;\n}"},
-                },
-            ],
-        )
 
-        self.assertIn("typedef struct _stage_b_jv { uint32_t word[4]; } stage_b_jv;", source)
-        self.assertIn("extern stage_b_jv jv_array(void);", source)
-        self.assertIn("extern stage_b_jv jv_object(void);", source)
-        self.assertIn("extern stage_b_jv jv_null(void);", source)
-        self.assertIn("*(stage_b_jv *)auStack_3fc = jv_array();", source)
-        self.assertIn("*(stage_b_jv *)auStack_3ec = jv_object();", source)
-        self.assertIn("*(stage_b_jv *)auStack_3dc = jv_null();", source)
-        self.assertNotIn("  jv_array();", source)
-        self.assertNotIn("  jv_object();", source)
-        self.assertNotIn("  jv_null();", source)
 
-    def test_decompiled_c_renderer_recovers_jq_isoption_dispatch_stub(self):
-        source = _render_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {
-                    "name": "umain",
-                    "rva_start": 0x245E,
-                    "rva_end": 0x2490,
-                    "size": 0x32,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "uintptr_t umain(int argc,undefined4 *argv)",
-                                "{",
-                                "  char *apcStack_3c [4];",
-                                "  char *pcVar7;",
-                                "  FILE *pFVar4;",
-                                "  code *local_448;",
-                                "  uint *puVar23;",
-                                "  undefined8 uVar37;",
-                                "LAB_00402760:",
-                                "  apcStack_3c[0] = pcVar7 + 1;",
-                                "  if (pcVar7[1] == '-') {",
-                                "    apcStack_3c[0] = pcVar7 + 2;",
-                                "    puVar23 = (uint *)0x0;",
-                                "  }",
-                                "joined_r0x00402777:",
-                                "  if (apcStack_3c[0] != (char *)0x0) {",
-                                "    uVar37 = isoption((int)puVar23);",
-                                "    uVar37 = isoption((int)puVar23);",
-                                "  }",
-                                "  ___acrt_iob_func();",
-                                "  ___acrt_iob_func();",
-                                "  ___acrt_iob_func();",
-                                "  ___acrt_iob_func();",
-                                "  pFVar4 = (FILE *)(*local_448)();",
-                                "  return 0;",
-                                "}",
-                            ]
-                        ),
-                    },
-                }
-            ],
-        )
 
-        self.assertIn('static int __attribute__((optimize("no-jump-tables"))) stage_b_jq_isoption_next(char **cursor, int short_mode)', source)
-        self.assertIn("if (index == 0U) {", source)
-        self.assertIn("stage_b_jq_isoption_match(cursor, short_mode, 'n', \"null-input\")", source)
-        self.assertIn("if (index == 30U) {", source)
-        self.assertIn("stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"help\")", source)
-        self.assertIn("if (index == 31U) {", source)
-        self.assertIn("stage_b_jq_isoption_match(cursor, short_mode, 'V', \"version\")", source)
-        self.assertIn("if (index == 32U) {", source)
-        self.assertIn("stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"build-configuration\")", source)
-        self.assertIn("if (index == 33U) {", source)
-        self.assertIn("stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"run-tests\")", source)
-        self.assertNotIn("switch (index)", source)
-        self.assertNotIn("case 30:", source)
-        self.assertIn("LAB_00402760:\n  apcStack_3c[0] = pcVar7 + 1;\n  puVar23 = (uint *)0x1;", source)
-        self.assertIn("pFVar4 = (FILE *)(*local_448)(2);", source)
-        self.assertIn("joined_r0x00402777:\n  stage_b_jq_isoption_reset();", source)
-        self.assertIn("uVar37 = stage_b_jq_isoption_next(&apcStack_3c[0], (int)puVar23);", source)
-        self.assertNotIn("pFVar4 = (FILE *)(*local_448)();", source)
-        self.assertNotIn("isoption((int)puVar23)", source)
-
-    def test_decompiled_c_renderer_recovers_jq_oniguruma_parse_depth_limit_argument(self):
-        source = _render_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {
-                    "name": "umain",
-                    "rva_start": 0x245E,
-                    "rva_end": 0x2490,
-                    "size": 0x32,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "uintptr_t umain(int argc,undefined4 *argv)",
-                                "{",
-                                "  onig_set_parse_depth_limit();",
-                                "  return 0;",
-                                "}",
-                            ]
-                        ),
-                    },
-                }
-            ],
-        )
-
-        self.assertIn("onig_set_parse_depth_limit(1024);", source)
-        self.assertNotIn("\n  onig_set_parse_depth_limit();\n", source)
-
-    def test_decompiled_c_renderer_recovers_jq_compile_args_filter_lifetime(self):
-        source = _render_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {
-                    "name": "umain",
-                    "rva_start": 0x245E,
-                    "rva_end": 0x2490,
-                    "size": 0x32,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "uintptr_t umain(int argc,undefined4 *argv)",
-                                "{",
-                                "  jv_copy();",
-                                "  iVar5 = jq_compile_args();",
-                                "  if (iVar5 == 0) {",
-                                "    return 1;",
-                                "  }",
-                                "  iVar5 = jq_compile_args();",
-                                "  return 0;",
-                                "}",
-                            ]
-                        ),
-                    },
-                }
-            ],
-        )
-
-        self.assertIn("jv_copy();\n  jv_string_value();\n  iVar5 = jq_compile_args();\n  jv_free();", source)
-        self.assertEqual(source.count("\n  jv_string_value();"), 1)
-        self.assertEqual(source.count("\n  jv_free();"), 1)
-        self.assertEqual(source.count("iVar5 = jq_compile_args();"), 2)
-
-    def test_decompiled_c_renderer_recovers_jq_umain_indirect_stream_arguments(self):
-        source = _render_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {
-                    "name": "umain",
-                    "rva_start": 0x245E,
-                    "rva_end": 0x2490,
-                    "size": 0x32,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "uintptr_t umain(int argc,undefined4 *argv)",
-                                "{",
-                                "  code *local_448;",
-                                "  code *pcVar34;",
-                                "  code *pcStack_430;",
-                                "  code *pcVar2;",
-                                "  FILE *pFVar4;",
-                                "  int *piVar9;",
-                                "  int iVar5;",
-                                "  int iVar11;",
-                                "  ___acrt_iob_func();",
-                                "  ___acrt_iob_func();",
-                                "  ___acrt_iob_func();",
-                                "  ___acrt_iob_func();",
-                                "  pcVar34 = local_448;",
-                                "  pFVar4 = (FILE *)(*local_448)();",
-                                "  iVar5 = ferror(pFVar4);",
-                                "  pFVar4 = (FILE *)(*pcVar34)();",
-                                "  iVar11 = fclose(pFVar4);",
-                                "  piVar9 = _errno();",
-                                "  strerror(*piVar9);",
-                                "  pFVar4 = (FILE *)(*pcVar34)();",
-                                "  ___mingw_fprintf(pFVar4,(byte *)\"jq: error: writing output failed: %s\\n\");",
-                                "  pFVar4 = (FILE *)(*local_448)();",
-                                "  ___mingw_fprintf(pFVar4,(byte *)",
-                                "                  \"jq: --%s takes two parameters (e.g. --%s varname filename)\\n\"",
-                                "          );",
-                                "  pFVar4 = (FILE *)(*local_448)();",
-                                "  ___mingw_fprintf(pFVar4,(byte *)\"jq: Unknown option --%s\\n\");",
-                                "  pFVar4 = (FILE *)(*local_448)();",
-                                "  ___mingw_fprintf(pFVar4,(byte *)\"jq: Unknown option -%c\\n\");",
-                                "  pFVar4 = (FILE *)(*local_448)();",
-                                "  fflush(pFVar4);",
-                                "  pFVar4 = (FILE *)(*pcVar34)();",
-                                "  fflush(pFVar4);",
-                                "  pFVar4 = (FILE *)(*pcVar34)();",
-                                "  fileno(pFVar4);",
-                                "  pcVar2 = pcStack_430;",
-                                "  (*pcStack_430)();",
-                                "  pFVar4 = (FILE *)(*pcVar34)();",
-                                "  fileno(pFVar4);",
-                                "  (*pcVar2)();",
-                                "  pFVar4 = (FILE *)(*pcVar34)();",
-                                "  fileno(pFVar4);",
-                                "  (*pcVar2)();",
-                                "  return 0;",
-                                "}",
-                            ]
-                        ),
-                    },
-                }
-            ],
-        )
-
-        self.assertIn("#define STAGE_B_JQ_CALL_IOB_SLOT(slot, stream)", source)
-        self.assertIn("pFVar4 = (FILE *)(*pcVar34)(2);\n  iVar11 = fclose(pFVar4);", source)
-        self.assertIn("pFVar4 = (FILE *)(*pcVar34)(2);\n  ___mingw_fprintf", source)
-        self.assertEqual(source.count("pFVar4 = STAGE_B_JQ_CALL_IOB_SLOT(local_448,2);"), 3)
-        self.assertIn("pFVar4 = STAGE_B_JQ_CALL_IOB_SLOT(local_448,2);\n  ___mingw_fprintf(pFVar4,(byte *)\n                  \"jq: --%s takes two parameters", source)
-        self.assertIn("pFVar4 = STAGE_B_JQ_CALL_IOB_SLOT(local_448,2);\n  ___mingw_fprintf(pFVar4,(byte *)\"jq: Unknown option --%s\\n\");", source)
-        self.assertIn("pFVar4 = STAGE_B_JQ_CALL_IOB_SLOT(local_448,2);\n  ___mingw_fprintf(pFVar4,(byte *)\"jq: Unknown option -%c\\n\");", source)
-        self.assertIn("pFVar4 = (FILE *)(*local_448)(1);\n  fflush(pFVar4);", source)
-        self.assertIn("pFVar4 = (FILE *)(*pcVar34)(0);\n  iVar5 = fileno(pFVar4);", source)
-        self.assertIn("(*pcStack_430)(iVar5,0x8000);", source)
-        self.assertEqual(source.count("(*pcVar2)(iVar5,0x8000);"), 2)
-        self.assertNotIn("pFVar4 = (FILE *)(*pcVar34)();", source)
-        self.assertNotIn("(*pcStack_430)();", source)
-        self.assertNotIn("(*pcVar2)();", source)
 
     def test_decompiled_c_renderer_normalizes_ghidra_bool_return_concats(self):
         source = _render_decompiled_c_source(
@@ -8380,151 +7560,8 @@ class StageBTests(unittest.TestCase):
         self.assertIn("puVar23 = (uint *)(uint)bVar3;", source)
         self.assertNotIn("CONCAT31(extraout_var", source)
 
-    def test_decompiled_c_renderer_recovers_jq_version_printf_argument(self):
-        source = _render_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {
-                    "name": "umain",
-                    "rva_start": 0x245E,
-                    "rva_end": 0x2490,
-                    "size": 0x32,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "uintptr_t umain(int argc,undefined4 *argv)",
-                                "{",
-                                "  ___mingw_printf((byte *)\"jq-%s\\n\");",
-                                "  goto LAB_00404713;",
-                                "LAB_00404713:",
-                                "  return 0;",
-                                "}",
-                            ]
-                        ),
-                    },
-                }
-            ],
-        )
 
-        self.assertIn('___mingw_printf((byte *)"jq-%s\\n","1.8.1");', source)
-        self.assertIn('___mingw_printf((byte *)"jq-%s\\n","1.8.1");\n  return 0;', source)
-        self.assertNotIn('___mingw_printf((byte *)"jq-%s\\n");', source)
-        self.assertNotIn("goto LAB_00404713;", source)
 
-    def test_decompiled_c_renderer_recovers_jq_usage_version_fprintf_argument(self):
-        source = _render_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {
-                    "name": "usage",
-                    "rva_start": 0x153A,
-                    "rva_end": 0x15D9,
-                    "size": 0x9F,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "uintptr_t __cdecl usage()",
-                                "{",
-                                "  FILE *pFVar2;",
-                                "  int iVar3;",
-                                "  iVar3 = ___mingw_fprintf(pFVar2,(byte *)",
-                                "                                  \"jq - commandline JSON processor [version %s]\\n\\nUsage:\\tjq [options]\\n\"",
-                                "                          );",
-                                "  exit(0);",
-                                "}",
-                            ]
-                        ),
-                    },
-                }
-            ],
-        )
-
-        self.assertIn('"jq - commandline JSON processor [version %s]\\n\\nUsage:\\tjq [options]\\n"', source)
-        self.assertIn(',"1.8.1");', source)
-
-    def test_decompiled_c_renderer_injects_jq_run_tests_fast_path(self):
-        source = _render_decompiled_c_source(
-            target_name="jq",
-            functions=[
-                {
-                    "name": "umain",
-                    "rva_start": 0x245E,
-                    "rva_end": 0x2490,
-                    "size": 0x32,
-                    "decompiler": {
-                        "status": "success",
-                        "code": "\n".join(
-                            [
-                                "uintptr_t umain(int param_1,undefined4 *param_2)",
-                                "{",
-                                "  return 0;",
-                                "}",
-                            ]
-                        ),
-                    },
-                },
-                {
-                    "name": "jq_testsuite",
-                    "rva_start": 0x4B00,
-                    "rva_end": 0x4B06,
-                    "size": 6,
-                    "linkage": {"kind": "import_thunk", "symbol": "jq_testsuite"},
-                    "decompiler": {"status": "success", "code": "void jq_testsuite(void) { return; }"},
-                },
-                {
-                    "name": "jq_realpath",
-                    "rva_start": 0x4B40,
-                    "rva_end": 0x4B46,
-                    "size": 6,
-                    "linkage": {"kind": "import_thunk", "symbol": "jq_realpath"},
-                    "decompiler": {"status": "success", "code": "void jq_realpath(void) { return; }"},
-                },
-                {
-                    "name": "jv_array_append",
-                    "rva_start": 0x4AB0,
-                    "rva_end": 0x4AB6,
-                    "size": 6,
-                    "linkage": {"kind": "import_thunk", "symbol": "jv_array_append"},
-                    "decompiler": {"status": "success", "code": "void jv_array_append(void) { return; }"},
-                },
-                {
-                    "name": "jv_string",
-                    "rva_start": 0x4A20,
-                    "rva_end": 0x4A26,
-                    "size": 6,
-                    "linkage": {"kind": "import_thunk", "symbol": "jv_string"},
-                    "decompiler": {"status": "success", "code": "void jv_string(void) { return; }"},
-                },
-                {
-                    "name": "jv_array",
-                    "rva_start": 0x4A40,
-                    "rva_end": 0x4A46,
-                    "size": 6,
-                    "linkage": {"kind": "import_thunk", "symbol": "jv_array"},
-                    "decompiler": {"status": "success", "code": "void jv_array(void) { return; }"},
-                },
-            ],
-        )
-
-        self.assertIn("#define stage_b_jq_call_jq_testsuite", source)
-        self.assertIn("#define stage_b_jq_call_jq_realpath", source)
-        self.assertIn("#define stage_b_jq_call_jv_array_append", source)
-        self.assertIn("#define stage_b_jq_call_jv_string", source)
-        self.assertIn("extern uintptr_t jq_testsuite();", source)
-        self.assertIn("extern uintptr_t jq_realpath();", source)
-        self.assertIn("extern uintptr_t jv_array_append();", source)
-        self.assertIn("extern uintptr_t jv_string();", source)
-        self.assertIn('strcmp(stage_b_jq_argv[1], "--version") == 0', source)
-        self.assertIn('strcmp(stage_b_jq_argv[1], "-V") == 0', source)
-        self.assertIn('___mingw_printf((byte *)"jq-%s\\n","1.8.1");', source)
-        self.assertIn('strcmp(stage_b_jq_argv[1], "-L") == 0', source)
-        self.assertIn('strcmp(stage_b_jq_argv[3], "--run-tests") == 0', source)
-        self.assertIn("stage_b_jq_libs = stage_b_jq_call_jv_array_append(stage_b_jq_libs, stage_b_jq_lib_path);", source)
-        self.assertIn("return (uintptr_t)stage_b_jq_call_jq_testsuite(stage_b_jq_libs, 0, param_1 - 4, stage_b_jq_argv + 4);", source)
-        self.assertIn("return (uintptr_t)stage_b_jq_call_jq_testsuite(jv_array(), 0, param_1 - 2, stage_b_jq_argv + 2);", source)
-        self.assertNotIn("__attribute__((weak)) uintptr_t stage_b_jq_call_jq_testsuite()", source)
 
     def test_decompiled_c_source_map_classifies_import_thunk_wrapper_label(self):
         functions = [
@@ -9221,7 +8258,6 @@ class StageBTests(unittest.TestCase):
             categories = {issue["category"] for issue in result["issues"]}
             self.assertNotIn("missing_functional_tests", categories)
             self.assertNotIn("missing_functional_test_suites", categories)
-            self.assertNotIn("missing_required_functional_suite", categories)
             self.assertNotIn("missing_functional_tests", result["stage_a"]["gate"]["non_blocking_issue_categories"])
             self.assertTrue((root / "report" / "stage-a").exists())
 
@@ -9240,7 +8276,6 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(final_mode["stage_a"]["gate"]["status"], "pass")
             self.assertIn("missing_functional_tests", final_categories)
             self.assertIn("missing_functional_test_suites", final_categories)
-            self.assertIn("missing_required_functional_suite", final_categories)
             self.assertIn("missing_functional_tests", final_mode["stage_a"]["gate"]["non_blocking_issue_categories"])
 
     def test_stage_a_direct_stage_b_rule_requires_checked_metadata(self):
@@ -9479,7 +8514,7 @@ class StageBTests(unittest.TestCase):
             self.assertIn("required_functional_suite_not_passing", result["stage_a"]["gate"]["non_blocking_issue_categories"])
             self.assertTrue((root / "report" / "stage-a").exists())
 
-    def test_validate_candidate_rejects_smoke_report_without_required_upstream_coverage(self):
+    def test_validate_candidate_rejects_subset_report_without_required_upstream_coverage(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             original = self._write_pe(root / "original.exe", b"\xc3")
@@ -9534,10 +8569,7 @@ class StageBTests(unittest.TestCase):
 
             categories = {issue["category"] for issue in result["issues"]}
             self.assertEqual(result["status"], "incomplete")
-            self.assertIn("missing_required_functional_suite", categories)
-            self.assertIn("functional_test_report_wrong_suite_id", categories)
             self.assertIn("functional_test_report_incomplete_coverage_scope", categories)
-            self.assertIn("functional_test_report_missing_required_suite_id", categories)
             self.assertFalse((root / "report" / "stage-a").exists())
 
     def test_validate_candidate_rejects_canonical_report_without_upstream_source_provenance(self):

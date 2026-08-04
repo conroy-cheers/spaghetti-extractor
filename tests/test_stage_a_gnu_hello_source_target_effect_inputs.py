@@ -8,19 +8,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.relational.lean.gnu_hello_source_target_effect_inputs import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_source_target_effect_inputs import (
     GNU_HELLO_SOURCE_TARGET_EFFECT_INPUTS_MANIFEST_FORMAT,
     GnuHelloSourceTargetEffectInputsError,
     _Target,
     _x87_target_source,
     generate_gnu_hello_source_target_effect_inputs,
 )
-from spaghetti_extractor.relational.lean.gnu_hello_source_target_effects import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_source_target_effects import (
     GNU_HELLO_SOURCE_TARGET_EFFECT_INPUTS_FORMAT,
     GnuHelloSourceTargetEffectsError,
     generate_gnu_hello_source_target_effects,
 )
-from spaghetti_extractor.relational.lean.gnu_hello_source_transition_index import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_source_transition_index import (
     LeanDeclaration,
 )
 

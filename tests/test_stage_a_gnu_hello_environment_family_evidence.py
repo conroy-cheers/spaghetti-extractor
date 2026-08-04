@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
-from spaghetti_extractor.relational.lean.gnu_hello_environment_family_evidence import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_environment_family_evidence import (
     GNU_HELLO_ENVIRONMENT_FAMILY_EVIDENCE_MODULE,
     GNU_HELLO_ENVIRONMENT_FAMILY_EVIDENCE_PROFILE_FORMAT,
     GnuHelloEnvironmentFamilyEvidenceError,

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.relational.lean.gnu_hello_original_target_preservation import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_original_target_preservation import (
     GNU_HELLO_ORIGINAL_TARGET_PRESERVATION_FORMAT,
     GNU_HELLO_ORIGINAL_TARGET_PRESERVATION_NEEDS_FORMAT,
     GnuHelloOriginalTargetPreservationError,

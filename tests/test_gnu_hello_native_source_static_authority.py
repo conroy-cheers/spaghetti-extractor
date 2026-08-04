@@ -11,9 +11,9 @@ class GnuHelloNativeSourceStaticAuthorityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = Path(__file__).parents[1]
         self.driver = (
-            self.repo / "nix" / "gnu-hello-native-source-static-authority.py"
+            self.repo / "targets" / "gnu-hello" / "nix" / "gnu-hello-native-source-static-authority.py"
         )
-        self.lane = self.repo / "nix" / "gnu-hello-roundtrip.nix"
+        self.lane = self.repo / "targets" / "gnu-hello" / "default.nix"
         self.flake = self.repo / "flake.nix"
 
     @staticmethod

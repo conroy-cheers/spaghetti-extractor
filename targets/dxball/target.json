@@ -1,0 +1,12 @@
+{
+  "format": "spaghetti-extractor-target-bundle-v1",
+  "id": "dxball",
+  "display_name": "DX-Ball 1.09 PE32",
+  "input": {
+    "kind": "pe32",
+    "expected_sha256": "191c113582e1f31016a158d40372fa21ea68d9348bf847bbfbc8e7c7bdfe195f"
+  },
+  "paths": {
+    "nix": "default.nix"
+  }
+}

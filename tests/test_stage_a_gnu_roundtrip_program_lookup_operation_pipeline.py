@@ -70,8 +70,8 @@ def _program_lookup_function() -> dict[str, object]:
 class StageAGnuRoundtripProgramLookupOperationPipelineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = Path(__file__).resolve().parents[1]
-        self.driver = self.repo / "nix/gnu-hello-roundtrip-driver.py"
-        self.lane = self.repo / "nix/gnu-hello-roundtrip.nix"
+        self.driver = self.repo / "targets/gnu-hello/nix/gnu-hello-roundtrip-driver.py"
+        self.lane = self.repo / "targets/gnu-hello/default.nix"
         self.flake = self.repo / "flake.nix"
 
     def test_source_phase_pins_artifacts_and_exposes_theorem(self) -> None:

@@ -10,11 +10,11 @@ from dataclasses import replace
 from pathlib import Path
 
 from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
-from spaghetti_extractor.relational.lean.gnu_hello_original_execution_evidence import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_original_execution_evidence import (
     GNU_HELLO_ORIGINAL_EXECUTION_EVIDENCE_FORMAT,
     generate_gnu_hello_original_execution_evidence,
 )
-from spaghetti_extractor.relational.lean.gnu_hello_source_execution import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_source_execution import (
     GNU_HELLO_SOURCE_EXECUTION_AUDIT_MODULE,
     GnuHelloSourceExecutionGenerationError,
     write_gnu_hello_source_execution_from_artifacts,

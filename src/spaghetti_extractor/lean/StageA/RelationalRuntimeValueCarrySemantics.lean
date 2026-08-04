@@ -169,7 +169,7 @@ structure CheckedDecodedLocalRouteTransfer
     outputExpression = locationInputExpression sourceLocation
 
 /-- The local symbolic certificate preserves the route's exact relocated code
-value. This theorem is independent of GNU hello and is usable for any decoded
+value. This theorem is target-independent and is usable for any decoded
 PE32 region whose normalized expression check succeeds. -/
 theorem CheckedDecodedLocalRouteTransfer.preservesOriginal
     {carrierContext : StaticProofContext}

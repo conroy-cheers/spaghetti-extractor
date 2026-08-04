@@ -1,0 +1,27 @@
+{
+  "format": "stage-b-source-project-intent-v1",
+  "program_id": "jq-1.8.1-idiomatic-source-v1",
+  "sources": [
+    {"path": "jq_cli.c"}
+  ],
+  "coverage_scope": {
+    "kind": "reviewed_machine_ranges",
+    "required_ranges": [
+      {
+        "id": "jq-application-object-text",
+        "rva_start": 5184,
+        "rva_end": 18952,
+        "provenance_hint": "src/main.o .text"
+      }
+    ],
+    "out_of_scope_policy": "linked_runtime_and_library_code"
+  },
+  "islands": [
+    {
+      "id": "jq-cli",
+      "source_symbol": "wmain",
+      "entry_rvas": [5184],
+      "ranges": [{"rva_start": 5184, "rva_end": 18952}]
+    }
+  ]
+}

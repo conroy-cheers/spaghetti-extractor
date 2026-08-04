@@ -185,7 +185,7 @@
               ./nix/stage-b-source-call-substitutions.nix
               ./nix/stage-b-source-component-assurance.nix
               ./nix/stage-b-functional-suite.nix
-              ./nix/jq-idiomatic.nix
+              ./nix/stage-b-target-intent.nix
               ./nix/stage-b-upstream-shell-suite.nix
             ];
           };
@@ -207,13 +207,17 @@
               ./src/spaghetti_extractor/call_arguments.py
               ./src/spaghetti_extractor/errors.py
               ./src/spaghetti_extractor/external_interface_profiles.py
+              ./src/spaghetti_extractor/external_operation_profiles.py
+              ./src/spaghetti_extractor/finite_value_domain.py
               ./src/spaghetti_extractor/import_abi.py
               ./src/spaghetti_extractor/interface_provenance.py
               ./src/spaghetti_extractor/internal_call_summaries.py
               ./src/spaghetti_extractor/machine_abi.py
               ./src/spaghetti_extractor/machine_import_profiles.py
               ./src/spaghetti_extractor/opaque_reconstruction.py
+              ./src/spaghetti_extractor/operation_provenance.py
               ./src/spaghetti_extractor/pe.py
+              ./src/spaghetti_extractor/provenance_domain.py
               ./src/spaghetti_extractor/reconstruction_control.py
               ./src/spaghetti_extractor/reconstruction_ir.py
               ./src/spaghetti_extractor/stage_b_state_machine.py
@@ -874,6 +878,7 @@
               ./src/spaghetti_extractor/_contract_tools/map_generation.py
               ./src/spaghetti_extractor/errors.py
               ./src/spaghetti_extractor/isa_semantic_forms.py
+              ./src/spaghetti_extractor/machine_abi.py
               ./src/spaghetti_extractor/pe.py
               ./src/spaghetti_extractor/stage_binary.py
               ./src/spaghetti_extractor/util.py
@@ -1031,6 +1036,7 @@
               ./src/spaghetti_extractor/_contract_tools
               ./src/spaghetti_extractor/errors.py
               ./src/spaghetti_extractor/isa_semantic_forms.py
+              ./src/spaghetti_extractor/machine_abi.py
               ./src/spaghetti_extractor/pe.py
               ./src/spaghetti_extractor/stage_binary.py
               ./src/spaghetti_extractor/util.py
@@ -1523,6 +1529,7 @@
                 test -f "$preparation/relational/lean/affine_linked_control.py"
                 test -f "$preparation/relational/analyses/affine_linked_control.py"
                 test -f "$preparation/relational/analyses/linked_control.py"
+                test -f "$preparation/machine_abi.py"
                 test ! -e "$preparation/cli.py"
                 test ! -e "$preparation/stage_b.py"
                 test ! -e "$preparation/relational/executor.py"
@@ -3698,7 +3705,7 @@
                   (.machine_import_call_contracts | any(
                     .import.dll == "kernel32.dll" and
                     .import.symbol == "TlsGetValue" and
-                    .world_effect == "tlsState")) and
+                    .world_effect == "opaqueResources")) and
                   (.machine_import_call_contracts | any(
                     .import.dll == "msvcrt.dll" and
                     .import.symbol == "free" and
@@ -4207,10 +4214,50 @@
                 "$out/proof-binding.json"
               printf '%s\n' 7 > "$out/candidate-exit-status"
             '';
-          dxball = import ./nix/dxball.nix {
+          dxball = import ./targets/dxball/default.nix {
             inherit pkgs pythonEnv;
             sideTool = spaghetti-extractor-side;
           };
+          stageBGnuHelloTargetIntentBase =
+            import ./nix/stage-b-target-intent.nix {
+              inherit pkgs pythonEnv;
+              pythonSource = spaghettiExtractorCoreSource;
+              target = ./targets/gnu-hello;
+            };
+          stageBJqTargetIntentBase =
+            import ./nix/stage-b-target-intent.nix {
+              inherit pkgs pythonEnv;
+              pythonSource = spaghettiExtractorCoreSource;
+              target = ./targets/jq;
+            };
+          repositoryBoundarySource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./README.md
+              ./REPOSITORY_MAP.md
+              ./pyproject.toml
+              ./src
+              ./nix
+              ./profiles
+              ./isa-catalogs
+              ./targets
+              ./docs
+              ./tests/test_repository_boundaries.py
+            ];
+          };
+          repository-boundaries-check = pkgs.runCommand
+            "spaghetti-extractor-repository-boundaries-v1"
+            {
+              nativeBuildInputs = [ spaghetti-extractor pythonEnv ];
+              preferLocalBuild = true;
+            }
+            ''
+              export PYTHONPATH="${spaghetti-extractor}/${pkgs.python3.sitePackages}:${pythonEnv}/${pkgs.python3.sitePackages}:${repositoryBoundarySource}"
+              cd ${repositoryBoundarySource}
+              python -m unittest -v tests.test_repository_boundaries
+              mkdir -p "$out"
+              printf '%s\n' checked > "$out/status"
+            '';
           stage-a-dxball-source-archive = dxball.sourceArchive;
           stage-a-dxball-installer = dxball.installer;
           stage-a-dxball-original-runtime = dxball.originalRuntime;
@@ -4223,7 +4270,7 @@
           stage-a-dxball-directx-operation-profile = dxball.directxOperationProfile;
           stage-b-dxball-rooted-state-machine = dxball.rootedStateMachine;
           stage-a-dxball-machine-ir = dxball.machineIr;
-          gnuHelloRoundtrip = import ./nix/gnu-hello-roundtrip.nix {
+          gnuHelloRoundtrip = import ./targets/gnu-hello/default.nix {
             inherit pkgs pythonEnv mingw32;
             spaghettiExtractor = spaghetti-extractor;
             sideTool = spaghetti-extractor-side;
@@ -4242,6 +4289,8 @@
               "StageA.GeneratedRelational.GnuHelloNativeSourceEnvironmentFamily.pinnedCompilerLoweringCorrect";
           };
           stage-a-gnu-hello-roundtrip-smoke = gnuHelloRoundtrip.smoke;
+          stage-b-gnu-hello-target-intent =
+            stageBGnuHelloTargetIntentBase.validation;
           stage-a-gnu-hello-opaque-original-inventory =
             gnuHelloRoundtrip.opaqueOriginalInventory;
           stage-a-gnu-hello-opaque-static-export =
@@ -6437,7 +6486,8 @@
               pythonSource = stageBLinkedLibraryPythonSource;
               original = "${fixtureDir}/jq-original.exe";
               machineIr = stageBJqComponentAnalysis.machineIr;
-              review = ./fixtures/jq/linked-island-review.json;
+              review =
+                "${stageBJqTargetIntentBase.linkedIslandReview}/linked-island-review.json";
               artifactInputs = stageBMingwRuntimeArtifactInputs;
               artifactRoot = stageBMingwRuntimeArtifactCorpus;
               namePrefix = "stage-b-jq";
@@ -6448,7 +6498,8 @@
               pythonSource = stageBLinkedLibraryPythonSource;
               original = "${stage-a-gnu-hello-original}/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/original/hello.exe";
               machineIr = gnuHelloRoundtrip.machineIr;
-              review = ./fixtures/gnu-hello/linked-island-review.json;
+              review =
+                "${stageBGnuHelloTargetIntentBase.linkedIslandReview}/linked-island-review.json";
               artifactInputs = stageBGnuHelloArtifactInputs;
               artifactRoot = stageBGnuHelloArtifactCorpus;
               machineImportReport =
@@ -6481,14 +6532,14 @@
                   --target=i686-w64-windows-gnu \
                   -std=c11 -fsyntax-only \
                   -nostdinc \
-                  -I ${./fixtures/gnu-hello/idiomatic} \
+                  -I ${./targets/gnu-hello/source/idiomatic} \
                   -isystem "$clang_resource/include" \
                   -isystem "$gcc_include" \
                   -isystem "$gcc_include_fixed" \
                   -isystem "$mingw_headers" \
                   -Wno-everything \
                   -Xclang -ast-dump=json \
-                  ${./fixtures/gnu-hello/idiomatic}/hello.c \
+                  ${./targets/gnu-hello/source/idiomatic}/hello.c \
                   > "$out/clang-ast.json"
                 test -s "$out/clang-ast.json"
               '';
@@ -6588,7 +6639,7 @@
                   }
                 ' \
                   ${stageBGnuHelloToolchainRuntimeImports}/allowed-runtime-imports.json \
-                  ${./fixtures/gnu-hello/idiomatic/source-runtime-imports.json} \
+                  ${./targets/gnu-hello/intent/runtime-imports.json} \
                   > envelope.json
                 jq -e '.imports | length == 53' \
                   envelope.json >/dev/null
@@ -6621,7 +6672,7 @@
               dynamicRequirements =
                 "${stageBGnuHelloLinkedLibraryAnalysis.dynamicRequirements}/dynamic-library-requirements.json";
               clangAst = "${stageBGnuHelloSourceAst}/clang-ast.json";
-              sourceRoot = ./fixtures/gnu-hello/idiomatic;
+              sourceRoot = ./targets/gnu-hello/source/idiomatic;
               proposeSourceComponents = true;
               candidate = "${gnuHelloRoundtrip.idiomaticCandidate}/candidate.exe";
               allowedRuntimeImports =
@@ -6643,8 +6694,9 @@
                 "${gnuHelloRoundtrip.idiomaticFunctionalSuite}/functional-report.json";
               upstreamReport =
                 "${gnuHelloRoundtrip.idiomaticUpstreamSuite}/upstream-suite-report.json";
-              evidencePlan =
-                ./fixtures/gnu-hello/idiomatic/source-component-evidence.json;
+              evidencePlan = "${
+                builtins.elemAt stageBGnuHelloTargetIntentBase.sourceEvidence 0
+              }/source-component-evidence.json";
             };
           stageBGnuHelloCompleteAssurance = pkgs.runCommand
             "stage-b-gnu-hello-idiomatic-complete-assurance-v1"
@@ -6915,12 +6967,21 @@
             stageBJqComponentAnalysis.reconstructionPlan;
           stage-b-jq-component-proposals =
             stageBJqComponentAnalysis.componentProposals;
+          stageBJqTargetIntent = import ./nix/stage-b-target-intent.nix {
+            inherit pkgs pythonEnv;
+            pythonSource = spaghettiExtractorCoreSource;
+            target = ./targets/jq;
+            componentProposals = stageBJqComponentAnalysis.componentProposals;
+          };
+          stage-b-jq-target-intent = stageBJqTargetIntent.validation;
+          stage-b-jq-component-selection = stageBJqTargetIntent.componentSelection;
           stage-b-jq-selected-component-declarations =
             import ./nix/stage-b-component-selection.nix {
               inherit pkgs pythonEnv;
               pythonSource = stageBComponentSelectionPythonSource;
               componentProposals = stageBJqComponentAnalysis.componentProposals;
-              selection = ./fixtures/jq/component-selection.json;
+              selection =
+                "${stageBJqTargetIntent.componentSelection}/component-selection.json";
               namePrefix = "stage-b-jq";
             };
           stage-b-jq-selected-component-catalog =
@@ -6932,14 +6993,13 @@
               declarations = "${stage-b-jq-selected-component-declarations}/semantic-component-declarations.json";
               namePrefix = "stage-b-jq-selected";
             };
-          stageBJqSelection = builtins.fromJSON (builtins.readFile ./fixtures/jq/component-selection.json);
+          stageBJqSelection = builtins.fromJSON (
+            builtins.readFile ./targets/jq/intent/components.json
+          );
           stageBJqSelectedComponents = map
             (component: {
               name = component.id;
               componentId = component.id;
-            selection = component;
-            selectionProgramId = stageBJqSelection.program_id;
-            selectionProposalSetSha256 = stageBJqSelection.proposal_set_sha256;
           })
             stageBJqSelection.components;
           stageBJqComponentInterfaceDag =
@@ -7082,7 +7142,7 @@
                   proofProfile = "mutable_token_cursor_match_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/option-name-match.c;
+                    ./targets/jq/source/components/option-name-match.c;
                   staticImage =
                     "${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment/jq-original.exe";
                 }
@@ -7092,7 +7152,7 @@
                   proofProfile = "prefixed_unary_byte_predicate_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/option-token-classifier.c;
+                    ./targets/jq/source/components/option-token-classifier.c;
                 }
                 {
                   name = "stderr-value-kind-route";
@@ -7100,7 +7160,7 @@
                   proofProfile = "opaque_value_service_prefix_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/stderr-value-kind-route.c;
+                    ./targets/jq/source/components/stderr-value-kind-route.c;
                 }
                 {
                   name = "debug-value-prefix";
@@ -7108,7 +7168,7 @@
                   proofProfile = "opaque_value_label_prefix_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/debug-value-prefix.c;
+                    ./targets/jq/source/components/debug-value-prefix.c;
                   staticImage =
                     "${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment/jq-original.exe";
                 }
@@ -7118,7 +7178,7 @@
                   proofProfile = "status_normalize_terminal_service_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/usage-exit-route.c;
+                    ./targets/jq/source/components/usage-exit-route.c;
                 }
                 {
                   name = "usage-write-route";
@@ -7126,7 +7186,7 @@
                   proofProfile = "constant_buffer_write_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/usage-write-route.c;
+                    ./targets/jq/source/components/usage-write-route.c;
                   staticImage =
                     "${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment/jq-original.exe";
                 }
@@ -7136,7 +7196,7 @@
                   proofProfile = "constant_string_collection_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/option-value-collection.c;
+                    ./targets/jq/source/components/option-value-collection.c;
                   staticImage =
                     "${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment/jq-original.exe";
                 }
@@ -7146,7 +7206,7 @@
                   proofProfile = "opaque_value_consumer_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/output-value-release.c;
+                    ./targets/jq/source/components/output-value-release.c;
                 }
                 {
                   name = "output-value-dump";
@@ -7154,7 +7214,7 @@
                   proofProfile = "opaque_value_consumer_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/output-value-dump.c;
+                    ./targets/jq/source/components/output-value-dump.c;
                 }
                 {
                   name = "output-value-pipeline";
@@ -7162,7 +7222,7 @@
                   proofProfile = "opaque_output_pipeline_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/output-value-pipeline.c;
+                    ./targets/jq/source/components/output-value-pipeline.c;
                 }
                 {
                   name = "wide-argument-conversion-tail";
@@ -7170,7 +7230,7 @@
                   proofProfile = "stdcall_wide_conversion_iteration_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/wide-argument-conversion-tail.c;
+                    ./targets/jq/source/components/wide-argument-conversion-tail.c;
                 }
                 {
                   name = "math-error-callback-dispatch";
@@ -7178,7 +7238,7 @@
                   proofProfile = "optional_fp64_record_callback_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/math-error-callback-dispatch.c;
+                    ./targets/jq/source/components/math-error-callback-dispatch.c;
                   staticImage =
                     "${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment/jq-original.exe";
                 }
@@ -7188,7 +7248,7 @@
                   proofProfile = "pe32_header_query_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/pe32-section-count.c;
+                    ./targets/jq/source/components/pe32-section-count.c;
                 }
                 {
                   name = "pe32-image-base";
@@ -7196,7 +7256,7 @@
                   proofProfile = "pe32_header_query_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/pe32-image-base.c;
+                    ./targets/jq/source/components/pe32-image-base.c;
                 }
                 {
                   name = "pe32-section-for-address";
@@ -7204,7 +7264,7 @@
                   proofProfile = "pe32_header_query_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/pe32-section-for-address.c;
+                    ./targets/jq/source/components/pe32-section-for-address.c;
                 }
                 {
                   name = "windows-path-info-scan";
@@ -7212,7 +7272,7 @@
                   proofProfile = "windows_path_info_scan_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/windows-path-info-scan.c;
+                    ./targets/jq/source/components/windows-path-info-scan.c;
                 }
                 {
                   name = "invalid-parameter-handler-get";
@@ -7220,7 +7280,7 @@
                   proofProfile = "static_atomic_word_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/invalid-parameter-handler-get.c;
+                    ./targets/jq/source/components/invalid-parameter-handler-get.c;
                 }
                 {
                   name = "invalid-parameter-handler-exchange";
@@ -7228,7 +7288,7 @@
                   proofProfile = "static_atomic_word_v1";
                   expectedCases = 10;
                   portableSource =
-                    ./fixtures/jq/components/invalid-parameter-handler-exchange.c;
+                    ./targets/jq/source/components/invalid-parameter-handler-exchange.c;
                 }
                 {
                   name = "bounded-string-length";
@@ -7236,7 +7296,7 @@
                   proofProfile = "bounded_string_length_v1";
                   expectedCases = 153;
                   portableSource =
-                    ./fixtures/jq/components/bounded-string-length.c;
+                    ./targets/jq/source/components/bounded-string-length.c;
                 }
                 {
                   name = "bounded-wide-string-length";
@@ -7244,23 +7304,10 @@
                   proofProfile = "bounded_wide_string_length_v1";
                   expectedCases = 153;
                   portableSource =
-                    ./fixtures/jq/components/bounded-wide-string-length.c;
+                    ./targets/jq/source/components/bounded-wide-string-length.c;
                 }
               ];
-            stageBJqFrontendComponents = map (
-            componentConfig:
-            componentConfig
-            // {
-              selection =
-                (builtins.head (
-                  builtins.filter (
-                    selected: selected.componentId == componentConfig.componentId
-                  ) stageBJqSelectedComponents
-                )).selection;
-              selectionProgramId = stageBJqSelection.program_id;
-              selectionProposalSetSha256 = stageBJqSelection.proposal_set_sha256;
-            }
-          ) stageBJqFrontendComponentConfigurations;
+          stageBJqFrontendComponents = stageBJqFrontendComponentConfigurations;
           mkStageBJqFrontendWorkspaceDag =
             components:
             import ./nix/stage-b-semantic-component-workspaces.nix {
@@ -7375,12 +7422,12 @@
             stageBJqFrontendWorkspaceDag.qualifications.bounded-wide-string-length;
           stage-b-jq-component-registry =
             stageBJqFrontendWorkspaceDag.registry;
-          stageBJqIdiomatic = import ./nix/jq-idiomatic.nix {
+          stageBJqIdiomatic = import ./targets/jq/idiomatic.nix {
             inherit pkgs mingw32 pythonEnv;
             jqPackage = stage-a-jq-original;
             jqSource = stage-a-jq-original.src;
             oniguruma = mingw32Oniguruma;
-            sourceRoot = ./fixtures/jq/idiomatic;
+            sourceRoot = ./targets/jq/source/idiomatic;
             functionalPythonSource = stageBFunctionalPythonSource;
           };
           stage-b-jq-idiomatic-candidate = stageBJqIdiomatic.candidate;
@@ -7421,8 +7468,8 @@
               mkdir -p "$out"
               ${pythonEnv}/bin/python3 - \
                 ${stageBJqComponentAnalysis.machineIr} \
-                ${./fixtures/jq/idiomatic/source-project.json} \
-                ${./fixtures/jq/idiomatic} \
+                ${builtins.elemAt stageBJqTargetIntentBase.sourceProjects 0}/source-project.json \
+                ${./targets/jq/source/idiomatic} \
                 ${stageBJqLinkedLibraryAnalysis.linkedIslands}/linked-islands.json \
                 "$out/source-project-binding.json" <<'PY'
               import pathlib
@@ -7444,12 +7491,12 @@
                 (.executes_original_binary | not) and
                 .program_id == "jq-1.8.1-idiomatic-source-v1" and
                 (.islands | length) == 1 and
-                .coverage.source_bound_units == 1144 and
-                .coverage.reviewed_scope.required_machine_units == 1144 and
-                .coverage.reviewed_scope.source_bound_machine_units == 1144 and
+                .coverage.source_bound_units == 1234 and
+                .coverage.reviewed_scope.required_machine_units == 1234 and
+                .coverage.reviewed_scope.source_bound_machine_units == 1234 and
                 .coverage.reviewed_scope.remaining_machine_units == 0 and
                 .coverage.reviewed_scope.fully_source_bound and
-                .coverage.linked_islands.source_bound_application_units == 1144 and
+                .coverage.linked_islands.source_bound_application_units == 1234 and
                 .coverage.linked_islands.remaining_application_units == 0 and
                 .coverage.linked_islands.all_source_units_are_reviewed_application and
                 (.authority.proves_source_semantics | not) and
@@ -7481,7 +7528,7 @@
               "$clang" \
                 --target=i686-w64-windows-gnu \
                 -std=c11 -fsyntax-only -nostdinc \
-                -I ${./fixtures/jq/idiomatic} \
+                -I ${./targets/jq/source/idiomatic} \
                 -I ${stage-a-jq-original}/include \
                 -isystem "$clang_resource/include" \
                 -isystem "$gcc_include" \
@@ -7489,7 +7536,7 @@
                 -isystem "$mingw_headers" \
                 -Wno-everything \
                 -Xclang -ast-dump=json \
-                ${./fixtures/jq/idiomatic/jq_cli.c} \
+                ${./targets/jq/source/idiomatic/jq_cli.c} \
                 > "$out/clang-ast.json"
               test -s "$out/clang-ast.json"
             '';
@@ -7574,7 +7621,7 @@
               dynamicRequirements =
                 "${stageBJqLinkedLibraryAnalysis.dynamicRequirements}/dynamic-library-requirements.json";
               clangAst = "${stageBJqSourceAst}/clang-ast.json";
-              sourceRoot = ./fixtures/jq/idiomatic;
+              sourceRoot = ./targets/jq/source/idiomatic;
               proposeSourceComponents = true;
               candidate = "${stageBJqIdiomatic.candidate}/candidate.exe";
               allowedRuntimeImports =
@@ -7596,8 +7643,9 @@
                 "${stageBJqIdiomatic.functionalSuite}/functional-report.json";
               upstreamReport =
                 "${stageBJqIdiomatic.upstreamSuite}/upstream-suite-report.json";
-              evidencePlan =
-                ./fixtures/jq/idiomatic/source-component-evidence.json;
+              evidencePlan = "${
+                builtins.elemAt stageBJqTargetIntentBase.sourceEvidence 0
+              }/source-component-evidence.json";
             };
           stageBJqCompleteAssurance = pkgs.runCommand
             "stage-b-jq-idiomatic-complete-assurance-v1"
@@ -7648,7 +7696,7 @@
                 .status == "behavior_validated" and
                 .equivalence_status == "not_proven" and
                 (.executes_original_binary | not) and
-                .coverage.source_bound_units == 1144 and
+                .coverage.source_bound_units == 1234 and
                 .coverage.reviewed_scope.fully_source_bound and
                 .coverage.linked_islands.remaining_application_units == 0 and
                 .functional.status == "pass" and
@@ -7661,7 +7709,7 @@
                 .components.status == "behavior_validated" and
                 .components.counts.components == 1 and
                 .components.counts.behavior_validated == 1 and
-                .components.counts.machine_units == 1144 and
+                .components.counts.machine_units == 1234 and
                 .components.counts.incomplete_or_violated == 0 and
                 .authority.full_upstream_suite_required and
                 .authority.complete_source_component_evidence_required and
@@ -7737,6 +7785,7 @@
             spaghetti-extractor-semantic-products
             spaghetti-extractor-region-facts
             spaghetti-extractor-side
+            repository-boundaries-check
             stage-b-tiny-c0-source
             stage-a-tiny-c0-toolchain-profile
             stage-a-tiny-c0-original
@@ -7883,6 +7932,7 @@
             stage-a-roundtrip-lean-program-lookup-operation
             stage-a-gnu-hello-opaque-original-inventory
             stage-a-gnu-hello-opaque-static-export
+            stage-b-gnu-hello-target-intent
             stage-b-gnu-hello-opaque-state-machine
             stage-a-gnu-hello-machine-ir
             stage-b-gnu-hello-machine-ir-interpreter
@@ -8296,6 +8346,8 @@
             stage-b-component-analysis-smoke
             stage-b-linked-library-analysis-smoke
             stage-b-jq-machine-ir
+            stage-b-jq-target-intent
+            stage-b-jq-component-selection
             stage-b-jq-linked-islands
             stage-b-gnu-hello-linked-islands
             stage-b-gnu-hello-library-hypotheses
@@ -8439,6 +8491,7 @@
         {
           inherit (packages)
             spaghetti-extractor
+            repository-boundaries-check
             stage-a-isa-conformance-bochs-80386
             stage-a-isa-conformance-state-ops
             stage-a-isa-core-smoke-qualification

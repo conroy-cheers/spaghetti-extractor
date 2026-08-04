@@ -1,0 +1,69 @@
+{
+  "format": "stage-b-source-component-evidence-intent-v1",
+  "evidence_profile": "high-assurance-source-reconstruction-v1",
+  "program_id": "gnu-hello-2.12.3-idiomatic-source-v1",
+  "accepted_assumptions": [
+    "integration_coverage_is_not_exhaustive",
+    "machine_to_source_component_equivalence_not_proven"
+  ],
+  "components": [
+    {
+      "island_id": "main",
+      "source_symbol": "main",
+      "functional_case_ids": [
+        "atexit-1",
+        "default-greeting",
+        "greeting-1",
+        "greeting-2",
+        "help",
+        "invalid-option",
+        "last-1",
+        "operand-1",
+        "traditional-1",
+        "traditional-last",
+        "version"
+      ],
+      "upstream_case_ids": [
+        "atexit-1",
+        "greeting-1",
+        "greeting-2",
+        "hello-1",
+        "last-1",
+        "operand-1",
+        "traditional-1"
+      ]
+    },
+    {
+      "island_id": "parse-options",
+      "source_symbol": "hello_parse_options",
+      "functional_case_ids": [
+        "atexit-1",
+        "default-greeting",
+        "greeting-1",
+        "greeting-2",
+        "help",
+        "invalid-option",
+        "last-1",
+        "operand-1",
+        "traditional-1",
+        "traditional-last",
+        "version"
+      ],
+      "upstream_case_ids": [
+        "atexit-1",
+        "greeting-1",
+        "greeting-2",
+        "hello-1",
+        "last-1",
+        "operand-1",
+        "traditional-1"
+      ]
+    },
+    {
+      "island_id": "print-help",
+      "source_symbol": "hello_print_help",
+      "functional_case_ids": ["help"],
+      "upstream_case_ids": []
+    }
+  ]
+}

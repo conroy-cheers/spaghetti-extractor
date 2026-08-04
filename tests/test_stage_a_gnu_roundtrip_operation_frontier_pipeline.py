@@ -26,8 +26,8 @@ from tests import (
 class StageAGnuRoundtripOperationFrontierPipelineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = Path(__file__).resolve().parents[1]
-        self.driver = self.repo / "nix/gnu-hello-roundtrip-driver.py"
-        self.lane = self.repo / "nix/gnu-hello-roundtrip.nix"
+        self.driver = self.repo / "targets/gnu-hello/nix/gnu-hello-roundtrip-driver.py"
+        self.lane = self.repo / "targets/gnu-hello/default.nix"
 
     def _run_driver(self, arguments: list[str]) -> None:
         process = subprocess.run(
@@ -68,8 +68,6 @@ class StageAGnuRoundtripOperationFrontierPipelineTests(unittest.TestCase):
                     str(fixture.abi),
                     "--run-native-plan",
                     str(fixture.run_native),
-                    "--step-operation-plan",
-                    str(fixture.step_operation),
                     "--out",
                     str(out),
                 ]
@@ -127,6 +125,8 @@ class StageAGnuRoundtripOperationFrontierPipelineTests(unittest.TestCase):
                     str(fixture.callback),
                     "--invoke-native-plan",
                     str(fixture.invoke),
+                    "--run-operation-plan",
+                    str(fixture.run_operation),
                     "--out",
                     str(out),
                 ]

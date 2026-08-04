@@ -2193,6 +2193,8 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
 
     materialize = subcommands.add_parser("stage-b-materialize-upstream-suite", help="materialize public expected-output cases")
     materialize.add_argument("--target-name", required=True)
+    materialize.add_argument("--suite-id", required=True)
+    materialize.add_argument("--suite-name", required=True)
     materialize.add_argument("--suite-source", type=Path, required=True)
     materialize.add_argument("--source-revision", required=True)
     materialize.add_argument("--cases", type=Path, required=True)
@@ -2959,6 +2961,8 @@ def _cmd_stage_b_audit_contract(args: Any) -> dict[str, Any]:
         candidate_crash_report=args.candidate_crash_report,
         unit_contract_dir=args.unit_contract_dir,
         target_name=args.target_name,
+        suite_id=args.suite_id,
+        suite_name=args.suite_name,
         model=args.model,
     )
 

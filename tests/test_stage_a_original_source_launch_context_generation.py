@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.relational.lean.original_source_launch_context import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_original_source_launch_context import (
     CHECKED_PROTOCOL_RESPONSES_DECLARATIONS_FORMAT,
     ORIGINAL_SOURCE_LAUNCH_CONTEXT_FORMAT,
     OriginalSourceLaunchContextError,

@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from spaghetti_extractor.relational.lean.gnu_hello_launch_operation_ranked_route import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_launch_operation_ranked_route import (
     GNU_HELLO_CALLBACK_BOUNDARY_RVA,
     GNU_HELLO_INTERPRETER_STEP_RVA,
     GNU_HELLO_LAUNCH_OPERATION_RANKED_ROUTE_MANIFEST,
@@ -115,7 +115,7 @@ class StageAGnuHelloLaunchOperationRankedRouteTests(unittest.TestCase):
             candidate, launch, operation = _write_inputs(root)
             binary = _fake_binary()
             with mock.patch(
-                "spaghetti_extractor.relational.lean."
+                "spaghetti_extractor_target_gnu_hello."
                 "gnu_hello_launch_operation_ranked_route._parse_stage_a_pe",
                 return_value=binary,
             ):
@@ -168,7 +168,7 @@ class StageAGnuHelloLaunchOperationRankedRouteTests(unittest.TestCase):
             root = Path(temporary)
             candidate, launch, operation = _write_inputs(root)
             with mock.patch(
-                "spaghetti_extractor.relational.lean."
+                "spaghetti_extractor_target_gnu_hello."
                 "gnu_hello_launch_operation_ranked_route._parse_stage_a_pe",
                 return_value=_fake_binary(corrupted),
             ):
@@ -189,7 +189,7 @@ class StageAGnuHelloLaunchOperationRankedRouteTests(unittest.TestCase):
             root = Path(temporary)
             candidate, launch, operation = _write_inputs(root)
             with mock.patch(
-                "spaghetti_extractor.relational.lean."
+                "spaghetti_extractor_target_gnu_hello."
                 "gnu_hello_launch_operation_ranked_route._parse_stage_a_pe",
                 return_value=_fake_binary(corrupted),
             ):
@@ -225,7 +225,7 @@ class StageAGnuHelloLaunchOperationRankedRouteTests(unittest.TestCase):
             root = Path(temporary)
             candidate, launch, operation = _write_inputs(root)
             with mock.patch(
-                "spaghetti_extractor.relational.lean."
+                "spaghetti_extractor_target_gnu_hello."
                 "gnu_hello_launch_operation_ranked_route._parse_stage_a_pe",
                 return_value=_fake_binary(),
             ):
@@ -267,7 +267,7 @@ class StageAGnuHelloLaunchOperationRankedRouteTests(unittest.TestCase):
             candidate, launch, operation = _write_inputs(root)
             output = root / "out"
             with mock.patch(
-                "spaghetti_extractor.relational.lean."
+                "spaghetti_extractor_target_gnu_hello."
                 "gnu_hello_launch_operation_ranked_route._parse_stage_a_pe",
                 side_effect=(_fake_binary(), _fake_binary()),
             ):

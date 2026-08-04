@@ -1,4 +1,4 @@
-"""Bind GNU hello's checked Step call site to the world-indexed proof surface.
+"""Bind a checked Step call site to the world-indexed proof surface.
 
 The generated module does not reuse the standalone ProgramLookup ABI at the
 nested call.  It accepts one typed exact-caller witness whose fields are

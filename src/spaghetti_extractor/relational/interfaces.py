@@ -593,7 +593,7 @@ def stage_a_interface_manifest() -> dict[str, Any]:
         ],
         "integration_policy": {
             "generic_fixture_required": True,
-            "jq_specific_acceptance_rules_forbidden": True,
+            "target_specific_acceptance_rules_forbidden": True,
             "unknown_schema_versions_fail_closed": True,
             "acceptance_criteria_may_change_only_in_acceptance_integration": True,
         },

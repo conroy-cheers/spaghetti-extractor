@@ -732,8 +732,6 @@ def _target_library_aliases(target_name: str) -> set[str]:
     aliases = {normalized} if normalized else set()
     aliases.add(_library_alias_token(target_name.replace("-", "")))
     aliases.add(_library_alias_token(target_name.replace("_", "")))
-    if normalized == "jq":
-        aliases.update({"jq"})
     if normalized in {"ripgrep", "rg"}:
         aliases.update({"ripgrep", "rg"})
     return {alias for alias in aliases if alias}
@@ -845,12 +843,6 @@ def _undefined_symbol_families(symbols: list[str]) -> list[dict[str, Any]]:
 
 
 def _undefined_symbol_family(symbol: str) -> str:
-    if symbol.startswith("jq_util_"):
-        return "jq_util"
-    if symbol.startswith("jq_"):
-        return "jq"
-    if symbol.startswith("jv_"):
-        return "jv"
     if "_" in symbol:
         return symbol.split("_", 1)[0]
     return symbol

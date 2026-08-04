@@ -15,16 +15,6 @@ from typing import Any
 from .util import sha256_bytes, sha256_file, utc_now, write_json
 
 
-STAGE_B_REQUIRED_FUNCTIONAL_SUITES = {
-    "jq": {
-        "suite_id": "jq-upstream-integration-tests",
-        "suite_name": "jq upstream integration tests",
-    },
-    "ripgrep": {
-        "suite_id": "ripgrep-upstream-integration-tests",
-        "suite_name": "ripgrep upstream integration tests",
-    },
-}
 STAGE_B_UPSTREAM_SUITE_MATERIALIZER = "stage-b-materialize-upstream-suite"
 
 
@@ -35,15 +25,18 @@ class StageBFunctionalInputError(ValueError):
 def stage_b_materialize_upstream_suite(
     *,
     target_name: str,
+    suite_id: str,
+    suite_name: str,
     suite_source: Path,
     source_revision: str,
     cases: Path,
     out: Path,
     suite_scope: str = "full",
 ) -> dict[str, Any]:
-    required = STAGE_B_REQUIRED_FUNCTIONAL_SUITES.get(target_name)
-    if required is None:
-        raise StageBFunctionalInputError(f"no required Stage B upstream suite is registered for target {target_name!r}")
+    if not suite_id or not suite_name:
+        raise StageBFunctionalInputError(
+            "Stage B upstream suite identity must be declared by the target"
+        )
     if not source_revision:
         raise StageBFunctionalInputError("Stage B upstream suite source revision must be non-empty")
     if suite_scope not in {"full", "subset"}:
@@ -64,8 +57,8 @@ def stage_b_materialize_upstream_suite(
             "cases_sha256": sha256_file(Path(cases)),
         },
         "target_name": target_name,
-        "suite_id": required["suite_id"],
-        "suite_name": required["suite_name"],
+        "suite_id": suite_id,
+        "suite_name": suite_name,
         "suite_kind": "upstream_integration",
         "suite_scope": suite_scope,
         "upstream_suite": True,
@@ -75,7 +68,7 @@ def stage_b_materialize_upstream_suite(
             "source_sha256": source_hash,
             "source_revision": source_revision,
             "materialized_by": STAGE_B_UPSTREAM_SUITE_MATERIALIZER,
-            "required_suite_ids": [required["suite_id"]],
+            "required_suite_ids": [suite_id],
         },
         "cases": case_entries,
     }

@@ -25,7 +25,7 @@ class StageBUpstreamShellSuiteNixTests(unittest.TestCase):
         self.assertIn("environment_sha256", source)
 
     def test_gnu_hello_runs_all_upstream_scripts_under_headless_wine(self) -> None:
-        lane = (ROOT / "nix" / "gnu-hello-roundtrip.nix").read_text(
+        lane = (ROOT / "targets" / "gnu-hello" / "default.nix").read_text(
             encoding="utf-8"
         )
 

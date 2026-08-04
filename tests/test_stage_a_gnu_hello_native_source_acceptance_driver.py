@@ -12,7 +12,7 @@ from unittest import mock
 
 
 REPO = Path(__file__).parents[1]
-DRIVER_PATH = REPO / "nix/gnu-hello-roundtrip-driver.py"
+DRIVER_PATH = REPO / "targets/gnu-hello/nix/gnu-hello-roundtrip-driver.py"
 SPEC = importlib.util.spec_from_file_location(
     "gnu_hello_native_source_acceptance_driver", DRIVER_PATH
 )
@@ -293,13 +293,13 @@ class _Fixture:
 
     def patches(self):
         return (
-            mock.patch.object(
-                DRIVER,
+            mock.patch(
+                "spaghetti_extractor.native_source_equivalence."
                 "validate_native_source_bundle_manifest",
                 return_value=self.bundle,
             ),
-            mock.patch.object(
-                DRIVER,
+            mock.patch(
+                "spaghetti_extractor.native_source_equivalence."
                 "validate_native_source_compilation_attestation",
                 return_value=self.attestation,
             ),

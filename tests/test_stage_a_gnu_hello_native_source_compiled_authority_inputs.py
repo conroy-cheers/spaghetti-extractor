@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from spaghetti_extractor.relational.lean.compiler import _run_lean_relational
-from spaghetti_extractor.relational.lean.gnu_hello_native_source_compiled_authority_evidence import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_native_source_compiled_authority_evidence import (
     PROFILE_IDENTIFIER,
     PROJECT_DECLARATIONS_FORMAT,
     RUNTIME_DECLARATIONS_FORMAT,
@@ -17,7 +17,7 @@ from spaghetti_extractor.relational.lean.gnu_hello_native_source_compiled_author
     _load_project_declarations,
     _source_closure,
 )
-from spaghetti_extractor.relational.lean.gnu_hello_native_source_compiled_authority_inputs import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_native_source_compiled_authority_inputs import (
     GnuHelloCompiledAuthorityInputError,
     INPUTS_MANIFEST_FORMAT,
     RuntimeDeclarationSpec,

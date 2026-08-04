@@ -9,7 +9,7 @@ from unittest import mock
 
 
 REPO = Path(__file__).parents[1]
-DRIVER_PATH = REPO / "nix/gnu-hello-roundtrip-driver.py"
+DRIVER_PATH = REPO / "targets/gnu-hello/nix/gnu-hello-roundtrip-driver.py"
 SPEC = importlib.util.spec_from_file_location(
     "gnu_hello_roundtrip_new_driver_commands", DRIVER_PATH
 )
@@ -509,7 +509,10 @@ class StageAGnuHelloRoundTripNewDriverCommandTests(unittest.TestCase):
             environment_inputs="environment.json",
         )
 
-    @mock.patch.object(DRIVER, "write_source_equivalence_final_report")
+    @mock.patch(
+        "spaghetti_extractor.relational.lean.source_equivalence_final_report."
+        "write_source_equivalence_final_report"
+    )
     def test_final_report_routes_checked_evidence(self, write) -> None:
         self._run(
             [

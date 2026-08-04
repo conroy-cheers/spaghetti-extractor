@@ -4,8 +4,8 @@ Receipt proposals are untrusted scheduling data.  Checked receipts bind one
 exact binary occurrence to one Lean declaration from a trust-zero compiled
 module.  Neither artifact carries state-transition or relational authority.
 
-The GNU round-trip lane no longer uses those theorem-name receipts as proof
-evidence.  ``generate_typed_access_fault_qualification`` emits concrete
+The typed qualification path no longer uses those theorem-name receipts as
+proof evidence.  ``generate_typed_access_fault_qualification`` emits concrete
 ``TypedAccessFaultQualification`` terms whose types bind the exact decoded
 instruction anchor, checked semantic transfer, memory footprint, fault classes,
 canonical region lookup, and the remaining runtime-state admissibility premise.
@@ -1384,7 +1384,7 @@ def _lean_bytes(encoded: str) -> str:
 
 
 def _typed_term_prefix(region_id: int) -> str:
-    return f"generatedGnuHelloAccessFaultRegion{region_id:04d}"
+    return f"generatedAccessFaultRegion{region_id:04d}"
 
 
 def _typed_access_fault_shard_source(
@@ -1410,7 +1410,7 @@ def _typed_access_fault_shard_source(
         "",
         (
             "namespace "
-            "StageA.GeneratedRelational.GnuHelloAccessFaultQualification"
+            "StageA.GeneratedRelational.AccessFaultQualification"
             f".Shard{module_suffix}"
         ),
         "",
@@ -1609,7 +1609,7 @@ def _typed_access_fault_shard_source(
         [
             (
                 "end "
-                "StageA.GeneratedRelational.GnuHelloAccessFaultQualification"
+                "StageA.GeneratedRelational.AccessFaultQualification"
                 f".Shard{module_suffix}"
             ),
             "",
@@ -1627,7 +1627,7 @@ def generate_typed_access_fault_qualification(
     out: Path,
     certificate_pack_size: int = 8,
 ) -> dict[str, Any]:
-    """Emit deterministic GNU typed access/fault qualification shards.
+    """Emit deterministic typed access/fault qualification shards.
 
     Each emitted qualification is canonical at the static boundary and leaves
     one explicit dynamic premise: states admitted at that reachable region
@@ -1767,7 +1767,7 @@ def generate_typed_access_fault_qualification(
     targets: list[str] = []
     for authority_index, shard_rows in sorted(grouped.items()):
         module = (
-            "GeneratedGnuHelloAccessFaultQualificationShard"
+            "GeneratedAccessFaultQualificationShard"
             f"{authority_index:04d}"
         )
         source = _typed_access_fault_shard_source(

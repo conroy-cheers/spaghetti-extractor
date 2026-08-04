@@ -87,7 +87,7 @@ def _paths_present() -> bool:
 def gnu_register_case():
     specification = importlib.util.spec_from_file_location(
         "gnu_roundtrip_driver_register_test",
-        ROOT / "nix/gnu-hello-roundtrip-driver.py",
+        ROOT / "targets/gnu-hello/nix/gnu-hello-roundtrip-driver.py",
     )
     assert specification is not None and specification.loader is not None
     driver = importlib.util.module_from_spec(specification)

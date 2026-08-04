@@ -18,10 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from ...artifact_formats import SOURCE_TRANSITION_DECLARATIONS_FORMAT
 from ...errors import StageAInputError
-from .gnu_hello_source_transition_index import (
-    GNU_HELLO_SOURCE_TRANSITION_DECLARATIONS_FORMAT,
-)
 
 
 RUNTIME_MEMORY_ACCESS_PROPOSAL_FORMAT = (
@@ -131,7 +129,7 @@ def generate_runtime_memory_access_proposal(
     _require_format(mixed, _MIXED_ORIGINAL_FORMAT, "mixed-original plan")
     _require_format(
         declarations,
-        GNU_HELLO_SOURCE_TRANSITION_DECLARATIONS_FORMAT,
+        SOURCE_TRANSITION_DECLARATIONS_FORMAT,
         "source target-effect declarations",
     )
     state_hash = _digest(

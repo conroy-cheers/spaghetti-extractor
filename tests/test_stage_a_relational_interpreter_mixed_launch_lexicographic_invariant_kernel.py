@@ -57,8 +57,6 @@ class StageARelationalInterpreterMixedLaunchLexicographicInvariantKernelTests(
         for declaration in (
             "LexicographicLoopRankSpec.stateChecked_sound",
             "LexicographicLoopRankSpec.stepChecked_rank_decreases",
-            "gnuHelloTransferValidationRankSpec_exact",
-            "gnuHelloTransferValidationStep_rank_decreases",
         ):
             self.assertIn(declaration, output)
 
@@ -72,7 +70,7 @@ class StageARelationalInterpreterMixedLaunchLexicographicInvariantKernelTests(
         self.assertTrue(observed)
         self.assertLessEqual(observed, RELATIONAL_APPROVED_AXIOMS)
 
-    def test_checker_is_fail_closed_and_fixes_gnu_bound(self) -> None:
+    def test_checker_is_fail_closed_and_target_neutral(self) -> None:
         source = (
             Path(__file__).parents[1]
             / "src/spaghetti_extractor/lean/StageA/"
@@ -83,10 +81,9 @@ class StageARelationalInterpreterMixedLaunchLexicographicInvariantKernelTests(
             "state.lookupRank <= spec.lookupRankBound",
             "after.lookupRank < before.lookupRank",
             "after.recordIndex == before.recordIndex + 1",
-            "recordCount := 5697",
-            "lookupRankBound := 5697",
         ):
             self.assertIn(required, source)
+        self.assertNotIn("5697", source)
         for forbidden in (
             r"\bsorry\b",
             r"\badmit\b",

@@ -13,9 +13,9 @@ class StageAGnuRoundtripStepOperationPipelineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = Path(__file__).resolve().parents[1]
         self.driver = (
-            self.repo / "nix/gnu-hello-roundtrip-driver.py"
+            self.repo / "targets/gnu-hello/nix/gnu-hello-roundtrip-driver.py"
         ).read_text(encoding="utf-8")
-        self.lane = (self.repo / "nix/gnu-hello-roundtrip.nix").read_text(
+        self.lane = (self.repo / "targets/gnu-hello/default.nix").read_text(
             encoding="utf-8"
         )
         self.flake = (self.repo / "flake.nix").read_text(encoding="utf-8")

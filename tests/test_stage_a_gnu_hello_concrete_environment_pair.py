@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.relational.lean.gnu_hello_concrete_environment_pair import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_concrete_environment_pair import (
     GNU_HELLO_CONCRETE_ENVIRONMENT_PAIR_INPUT_FORMAT,
     GnuHelloConcreteEnvironmentPairError,
     write_gnu_hello_concrete_environment_pair,

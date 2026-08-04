@@ -8,10 +8,10 @@ class StageAGnuRoundtripWritableSlotPipelineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = Path(__file__).resolve().parents[1]
         self.driver = (
-            self.repo / "nix/gnu-hello-roundtrip-driver.py"
+            self.repo / "targets/gnu-hello/nix/gnu-hello-roundtrip-driver.py"
         ).read_text(encoding="utf-8")
         self.lane = (
-            self.repo / "nix/gnu-hello-roundtrip.nix"
+            self.repo / "targets/gnu-hello/default.nix"
         ).read_text(encoding="utf-8")
 
     def test_driver_uses_named_checked_authorities_and_consumed_plan(self) -> None:
@@ -59,14 +59,16 @@ class StageAGnuRoundtripWritableSlotPipelineTests(unittest.TestCase):
             "mixedOriginalCarrierBindingProofModules =", carrier_start
         )
         carrier = self.lane[carrier_start:carrier_end]
-        proof_start = self.lane.index("proofSources = mkPhase")
+        proof_start = self.lane.index(
+            '  proofSources = mkPhase "stage-a-gnu-hello-roundtrip-proof-sources"'
+        )
         proof_end = self.lane.index("proofModules =", proof_start)
         proof_sources = self.lane[proof_start:proof_end]
 
         for required in (
             "mixed-original-writable-slot-authority",
             "${originalPe}",
-            "${staticExport}/state-machine.jsonl",
+            "${proofStateMachinePath}",
             "${staticMachineImportContractsLean}/"
             "machine-import-contract-report.json",
             "${mixedOriginalBaseLean}/"

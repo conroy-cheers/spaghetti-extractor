@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.relational.lean.gnu_hello_acceptance_requirements import (
+from spaghetti_extractor_target_gnu_hello.gnu_hello_acceptance_requirements import (
     GNU_HELLO_ACCEPTANCE_REQUIREMENTS_MANIFEST,
     GNU_HELLO_DYNAMIC_REQUIREMENT_KEYS,
     GNU_HELLO_STATIC_REQUIREMENT_KEYS,

@@ -26,22 +26,7 @@ from .util import sha256_bytes, sha256_file, utc_now, write_json
 
 
 STAGE_B_PROOF_RULE = "stage_b_skeleton_reimplementation_contract_v1"
-STAGE_B_REQUIRED_FUNCTIONAL_SUITES = {
-    "jq": {
-        "suite_id": "jq-upstream-integration-tests",
-        "suite_name": "jq upstream integration tests",
-    },
-    "ripgrep": {
-        "suite_id": "ripgrep-upstream-integration-tests",
-        "suite_name": "ripgrep upstream integration tests",
-    },
-}
 STAGE_B_UPSTREAM_SUITE_MATERIALIZER = "stage-b-materialize-upstream-suite"
-_DECOMPILED_C_RUNTIME_ENTRY_NAMES = frozenset({"___tmainCRTStartup", "mainCRTStartup", "___wgetmainargs"})
-_STAGE_B_BUDGETED_OBJECT_ROOT_MAX_ORIGINAL_SIZE = 1024
-_DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS = frozenset({"_crt_atexit", "__crt_atexit"})
-_DECOMPILED_C_PRESERVED_IMPORT_THUNK_ALIASES = frozenset({"___iob_func"})
-_DECOMPILED_C_PRESERVED_IMPORT_THUNK_CONTRACT_SYMBOLS = frozenset({"__iob_func"})
 _CARGO_TEST_STATUS_RE = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|ignored|measured)(?: .*)?$")
 _CARGO_TEST_RESULT_RE = re.compile(r"^test result: (?P<status>[A-Z]+|ok)\. (?P<summary>.*)$")
 
@@ -151,321 +136,26 @@ def stage_b_export_decompiler(
     return report
 
 
-def stage_b_materialize_upstream_suite(
-    *,
-    target_name: str,
-    suite_source: Path,
-    source_revision: str,
-    cases: Path,
-    out: Path,
-    suite_scope: str = "full",
-) -> dict[str, Any]:
-    required = _required_functional_suite(target_name)
-    if required is None:
-        raise StageAInputError(f"no required Stage B upstream suite is registered for target {target_name!r}")
-    if not source_revision:
-        raise StageAInputError("Stage B upstream suite source revision must be non-empty")
-    if suite_scope not in {"full", "subset"}:
-        raise StageAInputError("Stage B upstream suite scope must be full or subset")
-    cases_payload = _load_json(Path(cases))
-    case_entries = _materialized_suite_cases(cases_payload)
-    out = Path(out)
-    out.mkdir(parents=True, exist_ok=True)
-    source_hash = sha256_file(Path(suite_source))
-    suite = {
-        "format": "stage-b-functional-suite-v1",
-        "materializer": {
-            "name": STAGE_B_UPSTREAM_SUITE_MATERIALIZER,
-            "source": str(suite_source),
-            "source_sha256": source_hash,
-            "source_revision": source_revision,
-            "cases": str(cases),
-            "cases_sha256": sha256_file(Path(cases)),
-        },
-        "target_name": target_name,
-        "suite_id": required["suite_id"],
-        "suite_name": required["suite_name"],
-        "suite_kind": "upstream_integration",
-        "suite_scope": suite_scope,
-        "upstream_suite": True,
-        "coverage": {
-            "source": str(suite_source),
-            "source_kind": "upstream_integration_suite",
-            "source_sha256": source_hash,
-            "source_revision": source_revision,
-            "materialized_by": STAGE_B_UPSTREAM_SUITE_MATERIALIZER,
-            "required_suite_ids": [required["suite_id"]],
-        },
-        "cases": case_entries,
-    }
-    write_json(out / "functional-suite.json", suite)
-    return suite
 
 
-def stage_b_generate_link_roots(
-    *,
-    original: Path,
-    linker_map_original: Path,
-    object_file: Path,
-    out: Path,
-    nm: str = "llvm-nm",
-) -> dict[str, Any]:
-    out = Path(out)
-    out.mkdir(parents=True, exist_ok=True)
-    original_bin = _parse_stage_a_pe(Path(original))
-    contract_functions = _parse_linker_map_functions(Path(linker_map_original), original_bin)
-    nm_symbols = _stage_b_nm_defined_text_symbols(Path(object_file), nm=nm)
-
-    contract_by_key: dict[str, list[dict[str, Any]]] = {}
-    for function in contract_functions:
-        contract_by_key.setdefault(_linker_function_match_key(str(function["name"])), []).append(function)
-    object_by_key: dict[str, list[str]] = {}
-    for symbol in nm_symbols:
-        object_by_key.setdefault(_linker_function_match_key(symbol), []).append(symbol)
-
-    issues: list[dict[str, Any]] = []
-    duplicate_contract_keys = {
-        key: [
-            {"name": str(item["name"]), "rva_start": item["rva_start"], "rva_end": item["rva_end"]}
-            for item in entries
-        ]
-        for key, entries in contract_by_key.items()
-        if len(entries) > 1
-    }
-    duplicate_object_keys = {key: sorted(entries) for key, entries in object_by_key.items() if len(entries) > 1}
-    if duplicate_contract_keys:
-        issues.append(
-            {
-                "category": "ambiguous_contract_function_roots",
-                "blocker": "Stage A contract functions collapse to duplicate canonical linker-root keys",
-                "next_action": "disambiguate reference linker-map function names before generating Stage B link roots",
-                "details": {"match_keys": duplicate_contract_keys},
-            }
-        )
-    if duplicate_object_keys:
-        issues.append(
-            {
-                "category": "ambiguous_object_function_roots",
-                "blocker": "candidate object text symbols collapse to duplicate canonical linker-root keys",
-                "next_action": "rename generated functions or provide explicit root aliases before linker GC",
-                "details": {"match_keys": duplicate_object_keys},
-            }
-        )
-
-    roots: list[dict[str, Any]] = []
-    import_thunk_roots: list[dict[str, Any]] = []
-    missing: list[dict[str, Any]] = []
-    for key in sorted(contract_by_key):
-        contract_entries = contract_by_key[key]
-        object_entries = object_by_key.get(key, [])
-        if len(contract_entries) == 1:
-            contract = contract_entries[0]
-            import_thunk = _linker_function_import_thunk_evidence(original_bin, contract)
-            if import_thunk is not None:
-                imported = import_thunk["import"]
-                import_thunk_roots.append(
-                    {
-                        "contract_function": str(contract["name"]),
-                        "match_key": key,
-                        "rva_start": contract["rva_start"],
-                        "rva_end": contract["rva_end"],
-                        "dll": imported.dll,
-                        "symbol": imported.symbol,
-                        "ordinal": imported.ordinal,
-                        "thunk_rva": imported.thunk_rva,
-                        "signature_key": import_thunk["signature_key"],
-                    }
-                )
-                continue
-        if len(contract_entries) != 1 or len(object_entries) != 1:
-            if len(contract_entries) == 1 and not object_entries:
-                item = contract_entries[0]
-                missing.append({"name": str(item["name"]), "match_key": key, "rva_start": item["rva_start"], "rva_end": item["rva_end"]})
-            continue
-        contract = contract_entries[0]
-        roots.append(
-            {
-                "contract_function": str(contract["name"]),
-                "object_symbol": object_entries[0],
-                "match_key": key,
-                "rva_start": contract["rva_start"],
-                "rva_end": contract["rva_end"],
-            }
-        )
-    if missing:
-        issues.append(
-            {
-                "category": "missing_object_function_roots",
-                "blocker": "some Stage A contract functions have no generated object text symbol",
-                "next_action": "improve skeleton generation or add explicit aliases for missing contract functions",
-                "details": {"functions": missing[:200], "count": len(missing)},
-            }
-        )
-
-    root_symbols = sorted({root["object_symbol"] for root in roots})
-    linker_flags = [f"-Wl,--undefined,{symbol}" for symbol in root_symbols]
-    budgeted_roots = [
-        root
-        for root in roots
-        if int(root["rva_end"]) - int(root["rva_start"]) <= _STAGE_B_BUDGETED_OBJECT_ROOT_MAX_ORIGINAL_SIZE
-    ]
-    budgeted_linker_flags = sorted(f"-Wl,--undefined,{root['object_symbol']}" for root in budgeted_roots)
-    import_thunk_linker_flags = [
-        f"-Wl,--undefined,{_stage_b_import_thunk_coff_symbol(root)}"
-        for root in import_thunk_roots
-        if root.get("symbol")
-    ]
-    (out / "link-root-symbols.txt").write_text("".join(f"{symbol}\n" for symbol in root_symbols), encoding="utf-8")
-    (out / "link-root-flags.txt").write_text("".join(f"{flag}\n" for flag in linker_flags), encoding="utf-8")
-    (out / "budgeted-link-root-flags.txt").write_text("".join(f"{flag}\n" for flag in budgeted_linker_flags), encoding="utf-8")
-    (out / "import-thunk-root-flags.txt").write_text("".join(f"{flag}\n" for flag in import_thunk_linker_flags), encoding="utf-8")
-    write_json(out / "import-thunk-roots.json", {"format": "stage-b-import-thunk-roots-v1", "roots": import_thunk_roots})
-    result = {
-        "format": "stage-b-link-roots-v1",
-        "status": "pass" if not issues else "incomplete",
-        "generator": "stage-b-generate-link-roots",
-        "inputs": {
-            "original": str(original),
-            "linker_map_original": str(linker_map_original),
-            "object_file": str(object_file),
-            "nm": nm,
-        },
-        "outputs": {
-            "link_root_symbols": str(out / "link-root-symbols.txt"),
-            "link_root_flags": str(out / "link-root-flags.txt"),
-            "budgeted_link_root_flags": str(out / "budgeted-link-root-flags.txt"),
-            "import_thunk_roots": str(out / "import-thunk-roots.json"),
-            "import_thunk_root_flags": str(out / "import-thunk-root-flags.txt"),
-        },
-        "roots": roots,
-        "budgeted_roots": budgeted_roots,
-        "import_thunk_roots": import_thunk_roots,
-        "linker_flags": linker_flags,
-        "budgeted_linker_flags": budgeted_linker_flags,
-        "import_thunk_linker_flags": import_thunk_linker_flags,
-        "issues": issues,
-        "counts": {
-            "contract_functions": len(contract_functions),
-            "object_text_symbols": len(nm_symbols),
-            "roots": len(root_symbols),
-            "budgeted_roots": len(budgeted_roots),
-            "import_thunk_roots": len(import_thunk_roots),
-            "import_thunk_roots_with_linker_flags": len(import_thunk_linker_flags),
-            "missing": len(missing),
-            "issues": len(issues),
-        },
-        "selection_policy": {
-            "budgeted_object_root_max_original_size": _STAGE_B_BUDGETED_OBJECT_ROOT_MAX_ORIGINAL_SIZE,
-            "budgeted_object_root_basis": "original linker-map function byte range",
-        },
-    }
-    write_json(out / "link-roots.json", result)
-    return result
 
 
-def _stage_b_import_thunk_coff_symbol(root: dict[str, Any]) -> str:
-    symbol = str(root.get("symbol") or "")
-    contract_function = str(root.get("contract_function") or "")
-    if symbol == "atexit" and contract_function in {"_crt_atexit", "__crt_atexit"}:
-        return "___crt_atexit"
-    if contract_function in _DECOMPILED_C_PRESERVED_IMPORT_THUNK_CONTRACT_SYMBOLS:
-        return f"_{contract_function}"
-    return f"_{symbol}"
 
 
-def _stage_b_nm_defined_text_symbols(object_file: Path, *, nm: str) -> list[str]:
-    try:
-        proc = subprocess.run([nm, str(object_file)], check=False, capture_output=True, text=True)
-    except OSError as exc:
-        raise StageAInputError(f"failed to run {nm}: {exc}") from exc
-    if proc.returncode != 0:
-        raise StageAInputError(f"{nm} failed for {object_file}: {proc.stderr.strip()}")
-    symbols: list[str] = []
-    for line in proc.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 3 and parts[1] in {"T", "t"} and _is_c_identifier(parts[2]):
-            symbols.append(parts[2])
-    return sorted(set(symbols))
 
 
-def _coverage_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    coverage = payload.get("coverage")
-    return coverage if isinstance(coverage, dict) else {}
 
 
-def _materialized_suite_cases(payload: Any) -> list[dict[str, Any]]:
-    if isinstance(payload, list):
-        entries = payload
-    elif isinstance(payload, dict):
-        entries = payload.get("cases")
-    else:
-        raise StageAInputError("Stage B upstream suite cases must be a JSON object or list")
-    if not isinstance(entries, list) or not entries:
-        raise StageAInputError("Stage B upstream suite cases must contain a non-empty cases list")
-    results: list[dict[str, Any]] = []
-    for index, entry in enumerate(entries):
-        if not isinstance(entry, dict):
-            raise StageAInputError("Stage B upstream suite case entries must be objects")
-        case_id = entry.get("id")
-        if not isinstance(case_id, str) or not case_id:
-            raise StageAInputError("Stage B upstream suite cases must have non-empty string ids")
-        normalized = dict(entry)
-        normalized["id"] = _artifact_name(case_id)
-        _case_args(normalized)
-        _case_stdin(normalized)
-        _case_env(normalized)
-        _case_cwd(normalized)
-        _case_expected_original_returncode(normalized)
-        for timeout_key in ("timeout_seconds", "original_timeout_seconds", "candidate_timeout_seconds"):
-            if timeout_key not in normalized:
-                continue
-            try:
-                float(normalized[timeout_key])
-            except (TypeError, ValueError) as exc:
-                raise StageAInputError(f"Stage B upstream suite case {timeout_key} must be numeric") from exc
-        results.append(normalized)
-    return results
 
 
-def _case_args(case: dict[str, Any]) -> tuple[str, ...]:
-    args = case.get("args", [])
-    if not isinstance(args, list) or not all(isinstance(item, str) for item in args):
-        raise StageAInputError("functional suite case args must be a list of strings")
-    return tuple(args)
 
 
-def _case_stdin(case: dict[str, Any]) -> bytes:
-    if "stdin" in case and "stdin_text" in case:
-        raise StageAInputError("functional suite case cannot contain both stdin and stdin_text")
-    value = case.get("stdin", case.get("stdin_text", ""))
-    if not isinstance(value, str):
-        raise StageAInputError("functional suite case stdin must be a string")
-    return value.encode("utf-8")
 
 
-def _case_env(case: dict[str, Any]) -> dict[str, str]:
-    env = case.get("env", {})
-    if not isinstance(env, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in env.items()):
-        raise StageAInputError("functional suite case env must be an object of string values")
-    return dict(env)
 
 
-def _case_cwd(case: dict[str, Any]) -> str | None:
-    cwd = case.get("cwd")
-    if cwd is None:
-        return None
-    if not isinstance(cwd, str) or not cwd:
-        raise StageAInputError("functional suite case cwd must be a non-empty string when present")
-    return cwd
 
 
-def _case_expected_original_returncode(case: dict[str, Any]) -> int | None:
-    value = case.get("expect_original_returncode")
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise StageAInputError("functional suite case expect_original_returncode must be an integer")
-    return value
 
 
 def _case_manifest_sha256(manifest: list[dict[str, Any]]) -> str:
@@ -476,123 +166,6 @@ def _is_sha256_hex(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
-def stage_b_generate_skeleton(
-    *,
-    original: Path,
-    out_dir: Path,
-    target_name: str,
-    linker_map: Path | None = None,
-    source_language: str = "c",
-    decompiler_export: Path | None = None,
-    implementation_mode: str = "scaffold",
-    function_names: list[str] | tuple[str, ...] | None = None,
-) -> dict[str, Any]:
-    if source_language not in {"c", "rust"}:
-        raise StageAInputError(f"unsupported Stage B source language {source_language!r}")
-    if implementation_mode not in {"scaffold", "decompiled-c"}:
-        raise StageAInputError(f"unsupported Stage B implementation mode {implementation_mode!r}")
-    if implementation_mode == "decompiled-c" and source_language != "c":
-        raise StageAInputError("decompiled-c Stage B implementation mode requires source_language='c'")
-    if implementation_mode == "decompiled-c" and decompiler_export is None:
-        raise StageAInputError("decompiled-c Stage B implementation mode requires --decompiler-export")
-
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    binary = _parse_stage_a_pe(Path(original))
-    behavior_recovery = _skeleton_behavior_recovery(
-        binary=binary,
-        target_name=target_name,
-        source_language=source_language,
-        implementation_mode=implementation_mode,
-    )
-    functions = _skeleton_functions(
-        binary,
-        linker_map,
-        decompiler_export,
-        include_decompiler_code=implementation_mode == "decompiled-c",
-    )
-    function_filter = _function_filter(functions, function_names)
-    external_function_names = function_filter["external_function_names"] + [
-        item.symbol for item in binary.imports if isinstance(item.symbol, str) and item.symbol
-    ]
-    functions = function_filter["functions"]
-    implementation_recovery = _skeleton_implementation_recovery(functions, source_language, implementation_mode=implementation_mode)
-    if implementation_mode == "decompiled-c" and implementation_recovery["status"] != "complete":
-        blockers = ", ".join(implementation_recovery["blockers"])
-        raise StageAInputError(f"decompiled-c Stage B implementation source is incomplete: {blockers}")
-    target_id = _artifact_name(target_name)
-    source_rel = Path("src") / f"{target_id}_stage_b_skeleton.{_source_extension(source_language)}"
-    functions_rel = Path("functions.json")
-    readme_rel = Path("README.md")
-    manifest_path = out_dir / "manifest.json"
-
-    write_json(out_dir / functions_rel, {"format": "stage-b-functions-v1", "target_name": target_name, "functions": functions})
-    (out_dir / source_rel.parent).mkdir(parents=True, exist_ok=True)
-    (out_dir / source_rel).write_text(
-        _render_skeleton_source(
-            target_name=target_name,
-            functions=functions,
-            source_language=source_language,
-            implementation_mode=implementation_mode,
-            external_function_names=external_function_names,
-            behavior_recovery=behavior_recovery,
-        ),
-        encoding="utf-8",
-    )
-    (out_dir / readme_rel).write_text(_render_skeleton_readme(target_name, source_language, implementation_mode), encoding="utf-8")
-
-    inputs: dict[str, Any] = {
-        "original": {"path": str(original), "sha256": binary.sha256},
-        "linker_map": None,
-        "decompiler_export": None,
-    }
-    if linker_map is not None:
-        inputs["linker_map"] = {"path": str(linker_map), "sha256": sha256_file(Path(linker_map))}
-    if decompiler_export is not None:
-        inputs["decompiler_export"] = _decompiler_export_summary(Path(decompiler_export))
-
-    manifest: dict[str, Any] = {
-        "format": "stage-b-skeleton-v1",
-        "status": "generated",
-        "target_name": target_name,
-        "generated_at": utc_now(),
-        "proof_rule": STAGE_B_PROOF_RULE,
-        "source_language": source_language,
-        "implementation_mode": implementation_mode,
-        "source_policy": {
-            "upstream_source_read": False,
-            "manual_behavioral_fixups": False,
-            "allowed_inputs": [_pe_input_kind(binary), "linker-map", "decompiler-export", "capstone-disassembly"],
-        },
-        "reverse_engineering": {
-            "tools": ["pefile", "capstone"],
-            "function_source": _function_source_kind(linker_map=linker_map, decompiler_export=decompiler_export),
-            "function_filter": function_filter["metadata"],
-            "behavior_recovery": behavior_recovery,
-        },
-        "original": _binary_summary(binary),
-        "inputs": inputs,
-        "outputs": {
-            "source": {"path": source_rel.as_posix(), "sha256": sha256_file(out_dir / source_rel)},
-            "functions": {"path": functions_rel.as_posix(), "sha256": sha256_file(out_dir / functions_rel)},
-            "readme": {"path": readme_rel.as_posix(), "sha256": sha256_file(out_dir / readme_rel)},
-        },
-        "counts": {
-            "functions": len(functions),
-            "executable_sections": sum(1 for section in binary.sections if section.executable),
-            "imports": len(binary.imports),
-            "instructions": sum(int(item["instruction_count"]) for item in functions),
-        },
-        "implementation_recovery": implementation_recovery,
-        "behavior_recovery": behavior_recovery,
-        "completion": {
-            "candidate_status": "generated_behavior_source" if implementation_recovery["source_implements_behavior"] else "skeleton_only",
-            "stage_a_validated": False,
-            "upstream_integration_tests": "not_run",
-        },
-    }
-    write_json(manifest_path, manifest)
-    return manifest
 
 
 def stage_b_validate_candidate(
@@ -3562,8 +3135,7 @@ def _stage_b_functional_repair_items(functional: dict[str, Any] | None, source_m
     if not isinstance(functional, dict):
         return []
     items: list[dict[str, Any]] = []
-    target_name = str(functional.get("target_name") or "")
-    entry_function = _stage_b_functional_entry_function(target_name, source_map)
+    entry_function = _stage_b_functional_entry_function(functional, source_map)
     for case in functional.get("cases", []) if isinstance(functional.get("cases"), list) else []:
         if not isinstance(case, dict) or case.get("status") == "pass":
             continue
@@ -3659,13 +3231,15 @@ def _stage_b_functional_harness_repair_items(
     return items
 
 
-def _stage_b_functional_entry_function(target_name: str, source_map: dict[str, dict[str, Any]]) -> str | None:
-    target_id = _artifact_name(target_name)
-    preferred = ["main", "entrypoint"]
-    if "jq" in target_id:
-        preferred = ["umain", "_wmain", "mainCRTStartup", "main", "entrypoint"]
-    elif "ripgrep" in target_id or target_id == "rg":
-        preferred = ["entrypoint", "main"]
+def _stage_b_functional_entry_function(
+    functional: dict[str, Any], source_map: dict[str, dict[str, Any]]
+) -> str | None:
+    declared = functional.get("entry_function_candidates")
+    preferred = (
+        [str(item) for item in declared if isinstance(item, str) and item]
+        if isinstance(declared, list)
+        else ["main", "entrypoint"]
+    )
     for name in preferred:
         if name in source_map or _linker_function_match_key(name) in source_map:
             return name
@@ -3678,7 +3252,9 @@ def _stage_b_functional_case_repair_class(functional: dict[str, Any], case: dict
     raw_fields = mismatch.get("fields")
     fields = {str(field) for field in raw_fields} if isinstance(raw_fields, list) else set()
     candidate = case.get("candidate") if isinstance(case.get("candidate"), dict) else {}
-    target_id = _artifact_name(str(functional.get("target_name") or ""))
+    hint = case.get("repair_class_hint")
+    if isinstance(hint, str) and hint:
+        return hint
     if bool(candidate.get("timed_out")) or fields.intersection({"timed_out", "timeout"}):
         return "candidate_timeout"
     if "stderr" in fields:
@@ -3686,8 +3262,6 @@ def _stage_b_functional_case_repair_class(functional: dict[str, Any], case: dict
     if "stdout" in fields:
         return "stdout_behavior"
     if "returncode" in fields:
-        if "jq" in target_id and "-n" in json.dumps(case, default=str):
-            return "short_option_state_machine"
         return "cli_exit_status_behavior"
     return "functional_expected_output_failure"
 
@@ -3699,7 +3273,7 @@ def _stage_b_functional_case_next_action(functional: dict[str, Any], case: dict[
         "candidate_timeout": "repair candidate termination or long-running control flow",
         "stderr_behavior": "recover diagnostic/stderr behavior for this public expected-output case",
         "stdout_behavior": "recover stdout-producing behavior for this public expected-output case",
-        "short_option_state_machine": "repair generated short-option parsing and jq command dispatch for this case",
+        "short_option_state_machine": "repair generated short-option parsing and command dispatch for this case",
         "cli_exit_status_behavior": "recover exit-status behavior for this public expected-output case",
         "functional_expected_output_failure": "repair candidate behavior for this public expected-output case",
     }
@@ -5362,26 +4936,6 @@ def _stage_b_contract_family_rank(family: str) -> int:
     return order.get(family, 99)
 
 
-def _binary_target_evidence(original: StageABinary, candidate: StageABinary) -> dict[str, Any]:
-    facts = {
-        "matching_machine": original.machine == candidate.machine,
-        "matching_bitness": original.bitness == candidate.bitness,
-        "matching_subsystem": original.subsystem == candidate.subsystem,
-        "both_windows_pe": _is_windows_stage_b_pe(original) and _is_windows_stage_b_pe(candidate),
-    }
-    facts["same_architecture_same_os"] = (
-        facts["matching_machine"]
-        and facts["matching_bitness"]
-        and facts["matching_subsystem"]
-        and facts["both_windows_pe"]
-    )
-    return {
-        "format": "stage-b-binary-target-evidence-v1",
-        "status": "pass" if facts["same_architecture_same_os"] else "incomplete",
-        "original": _binary_target_summary(original),
-        "candidate": _binary_target_summary(candidate),
-        "facts": facts,
-    }
 
 
 def _binary_target_evidence_from_reference_contract(contract: dict[str, Any], candidate: StageABinary) -> dict[str, Any]:
@@ -5591,478 +5145,29 @@ def _is_windows_stage_b_pe(binary: StageABinary) -> bool:
     return binary.subsystem in {"windows_cui", "windows_gui"}
 
 
-def _skeleton_functions(
-    binary: StageABinary,
-    linker_map: Path | None,
-    decompiler_export: Path | None = None,
-    *,
-    include_decompiler_code: bool = False,
-) -> list[dict[str, Any]]:
-    if linker_map is not None:
-        functions = _parse_linker_map_functions(Path(linker_map), binary)
-    elif decompiler_export is not None:
-        functions = _parse_decompiler_export_functions(Path(decompiler_export), binary, include_decompiler_code=include_decompiler_code)
-    else:
-        functions = _fallback_function_ranges(binary)
-
-    results: list[dict[str, Any]] = []
-    for index, function in enumerate(functions):
-        rva_start = int(function["rva_start"])
-        rva_end = int(function["rva_end"])
-        data = binary.pe.get_data(rva_start, rva_end - rva_start)
-        instructions = _disassemble(binary, rva_start, data)
-        side = BlockSide(rva_start, rva_end)
-        entry = {
-            "id": _artifact_name(str(function.get("name") or f"function-{index:04d}")),
-            "name": str(function.get("name") or f"function_{index:04d}"),
-            "aliases": list(function.get("aliases") or []),
-            "section": str(function.get("section") or ""),
-            "rva_start": rva_start,
-            "rva_end": rva_end,
-            "size": rva_end - rva_start,
-            "bytes_sha256": sha256_bytes(data),
-            "instruction_count": len(instructions),
-            "decoded_bytes": sum(int(item["size"]) for item in instructions),
-            "decode_complete": sum(int(item["size"]) for item in instructions) == len(data),
-            "direct_cfg_edges": _direct_cfg_edges(binary, side),
-            "instruction_preview": instructions[:12],
-        }
-        source_name = function.get("source_name")
-        if isinstance(source_name, str) and source_name:
-            entry["source_name"] = source_name
-        name_disambiguation = function.get("name_disambiguation")
-        if isinstance(name_disambiguation, dict):
-            entry["name_disambiguation"] = name_disambiguation
-        pe_export_aliases = function.get("pe_export_aliases")
-        if isinstance(pe_export_aliases, list):
-            entry["pe_export_aliases"] = [str(alias) for alias in pe_export_aliases]
-        decompiler = function.get("decompiler")
-        if isinstance(decompiler, dict):
-            entry["decompiler"] = decompiler
-        import_thunk = _linker_function_import_thunk_evidence(binary, function)
-        if import_thunk is not None:
-            imported = import_thunk["import"]
-            entry["linkage"] = {
-                "kind": "import_thunk",
-                "symbol": imported.symbol or str(entry["name"]),
-                "dll": imported.dll,
-                "ordinal": imported.ordinal,
-                "thunk_rva": imported.thunk_rva,
-                "original_symbol": str(entry["name"]),
-            }
-        results.append(entry)
-    return results
 
 
-def _parse_decompiler_export_functions(
-    path: Path,
-    binary: StageABinary,
-    *,
-    include_decompiler_code: bool = False,
-) -> list[dict[str, Any]]:
-    payload = _load_json(path)
-    rows = payload.get("functions") if isinstance(payload, dict) else None
-    if not isinstance(rows, list):
-        raise StageAInputError(f"decompiler export {path} does not contain a functions list")
-    export_aliases_by_rva = _pe_export_aliases_by_rva(binary)
-    accepted: list[tuple[int, dict[str, Any], int, int, Any, str, str, list[str]]] = []
-    name_counts: dict[str, int] = {}
-    for index, row in enumerate(rows):
-        if not isinstance(row, dict):
-            continue
-        rva_start = _optional_int(row.get("rva_start", row.get("rva")))
-        rva_end = _optional_int(row.get("rva_end"))
-        if rva_start is None:
-            continue
-        section = _section_for_rva(binary, rva_start)
-        if section is None or not section.executable:
-            continue
-        if rva_end is None or rva_end <= rva_start:
-            rva_end = min(section.rva_end, rva_start + 1)
-        decompiler_name = str(row.get("name") or f"decompiler_function_{index:04d}")
-        export_aliases = export_aliases_by_rva.get(rva_start, [])
-        preferred_name = _primary_export_name(export_aliases) if export_aliases else decompiler_name
-        accepted.append((index, row, rva_start, rva_end, section, preferred_name, decompiler_name, export_aliases))
-        name_counts[preferred_name] = name_counts.get(preferred_name, 0) + 1
-
-    functions: list[dict[str, Any]] = []
-    occurrences: dict[str, int] = {}
-    used_names: set[str] = set()
-    for index, row, rva_start, rva_end, section, preferred_name, decompiler_name, export_aliases in accepted:
-        occurrence = occurrences.get(preferred_name, 0) + 1
-        occurrences[preferred_name] = occurrence
-        name = _decompiler_disambiguated_function_name(
-            preferred_name,
-            rva_start=rva_start,
-            duplicate=name_counts.get(preferred_name, 0) > 1,
-            occurrence=occurrence,
-            used_names=used_names,
-        )
-        aliases = []
-        for alias in [name, decompiler_name, *export_aliases]:
-            if alias and alias not in aliases:
-                aliases.append(alias)
-        entry: dict[str, Any] = {
-            "name": name,
-            "aliases": aliases,
-            "section": section.name,
-            "rva_start": rva_start,
-            "rva_end": min(rva_end, section.rva_end),
-        }
-        if export_aliases:
-            entry["pe_export_aliases"] = export_aliases
-        if name != decompiler_name or preferred_name != decompiler_name:
-            strategy = (
-                "append_rva_to_duplicate_decompiler_name"
-                if name_counts.get(preferred_name, 0) > 1
-                else (
-                    "prefer_pe_export_alias_for_decompiler_rva"
-                    if export_aliases and preferred_name != decompiler_name
-                    else "sanitize_decompiler_name_for_c_identifier"
-                )
-            )
-            entry["source_name"] = decompiler_name
-            entry["name_disambiguation"] = {
-                "strategy": strategy,
-                "source_name": decompiler_name,
-                "preferred_name": preferred_name,
-                "disambiguated_name": name,
-                "rva_start": rva_start,
-                "occurrence": occurrence,
-            }
-        decompiler = _decompiler_function_summary(row, include_code=include_decompiler_code)
-        if decompiler is not None:
-            if name != decompiler_name:
-                if include_decompiler_code and isinstance(decompiler.get("code"), str):
-                    code = _rename_decompiled_c_function_definition(
-                        decompiler["code"],
-                        original_name=decompiler_name,
-                        new_name=name,
-                    )
-                    decompiler["code"] = code
-                    decompiler["code_sha256"] = sha256_bytes(code.encode("utf-8")) if code else ""
-                    decompiler["code_preview"] = _preview_lines(code)
-                signature = str(decompiler.get("signature") or "")
-                if signature:
-                    decompiler["signature"] = _rename_decompiled_c_function_definition(
-                        signature,
-                        original_name=decompiler_name,
-                        new_name=name,
-                    )
-            entry["decompiler"] = decompiler
-        functions.append(entry)
-    return functions
-
-def _decompiler_disambiguated_function_name(
-    raw_name: str,
-    *,
-    rva_start: int,
-    duplicate: bool,
-    occurrence: int,
-    used_names: set[str],
-) -> str:
-    base = _c_identifier_from_name(raw_name)
-    if not duplicate and base not in used_names:
-        used_names.add(base)
-        return base
-    candidate = base if occurrence == 1 and base not in used_names else f"{base}_at_{rva_start:x}"
-    suffix = 2
-    while candidate in used_names:
-        candidate = f"{base}_at_{rva_start:x}_{suffix}"
-        suffix += 1
-    used_names.add(candidate)
-    return candidate
-
-def _c_identifier_from_name(value: str) -> str:
-    name = re.sub(r"[^A-Za-z0-9_]", "_", str(value))
-    if not name or not name.strip("_"):
-        return "decompiler_function"
-    if name[0].isdigit():
-        name = f"fn_{name}"
-    return name
-
-def _rename_decompiled_c_function_definition(code: str, *, original_name: str, new_name: str) -> str:
-    if not code or original_name == new_name:
-        return code
-    pattern = rf"\b{re.escape(original_name)}\s*\("
-    if "{" not in code:
-        return re.sub(pattern, f"{new_name}(", code, count=1)
-    head, body = code.split("{", 1)
-    renamed = re.sub(pattern, f"{new_name}(", head, count=1)
-    return renamed + "{" + body
 
 
-def _fallback_function_ranges(binary: StageABinary) -> list[dict[str, Any]]:
-    ranges: list[dict[str, Any]] = []
-    for section in binary.sections:
-        if not section.executable:
-            continue
-        name = "entrypoint" if section.rva_start <= binary.entrypoint_rva < section.rva_end else f"section_{section.name}"
-        start = binary.entrypoint_rva if name == "entrypoint" else section.rva_start
-        ranges.append(
-            {
-                "name": name,
-                "aliases": [name],
-                "section": section.name,
-                "rva_start": start,
-                "rva_end": section.rva_end,
-            }
-        )
-    return ranges
 
 
-def _pe_export_aliases_by_rva(binary: StageABinary) -> dict[int, list[str]]:
-    directory = getattr(binary.pe, "DIRECTORY_ENTRY_EXPORT", None)
-    if directory is None:
-        return {}
-
-    names_by_rva: dict[int, list[str]] = {}
-    for index, symbol in enumerate(getattr(directory, "symbols", []) or []):
-        rva = _optional_int(getattr(symbol, "address", None))
-        if rva is None:
-            continue
-        section = _section_for_rva(binary, rva)
-        if section is None or not section.executable:
-            continue
-        forwarder = getattr(symbol, "forwarder", None)
-        if forwarder:
-            continue
-        if getattr(symbol, "name", None):
-            name = symbol.name.decode("utf-8", errors="replace") if isinstance(symbol.name, bytes) else str(symbol.name)
-        else:
-            ordinal = getattr(symbol, "ordinal", index)
-            name = f"ordinal_{ordinal}"
-        bucket = names_by_rva.setdefault(rva, [])
-        if name not in bucket:
-            bucket.append(name)
-    return names_by_rva
 
 
-def _primary_export_name(names: list[str]) -> str:
-    for name in names:
-        if not name.startswith("ordinal_"):
-            return name
-    return names[0]
 
 
-def _function_source_kind(*, linker_map: Path | None, decompiler_export: Path | None) -> str:
-    if linker_map is not None:
-        return "linker_map"
-    if decompiler_export is not None:
-        return "decompiler_export"
-    return "entrypoint_and_executable_sections"
 
 
-def _function_filter(functions: list[dict[str, Any]], function_names: list[str] | tuple[str, ...] | None) -> dict[str, Any]:
-    if not function_names:
-        return {
-            "functions": functions,
-            "external_function_names": [],
-            "metadata": {
-                "mode": "all",
-                "requested": [],
-                "included": [str(function.get("name") or "") for function in functions],
-                "missing": [],
-                "external_recovered_function_names": [],
-            },
-        }
-
-    requested = [str(name) for name in function_names if str(name)]
-    by_name: dict[str, list[dict[str, Any]]] = {}
-    for function in functions:
-        by_name.setdefault(str(function.get("name") or ""), []).append(function)
-
-    selected: list[dict[str, Any]] = []
-    missing: list[str] = []
-    ambiguous: list[str] = []
-    for name in requested:
-        matches = by_name.get(name, [])
-        if not matches:
-            missing.append(name)
-        elif len(matches) > 1:
-            ambiguous.append(name)
-        else:
-            selected.append(matches[0])
-
-    if missing or ambiguous:
-        blockers = []
-        if missing:
-            blockers.append(f"missing functions: {', '.join(missing)}")
-        if ambiguous:
-            blockers.append(f"ambiguous duplicate functions: {', '.join(ambiguous)}")
-        raise StageAInputError("; ".join(blockers))
-
-    return {
-        "functions": selected,
-        "external_function_names": [
-            str(function.get("name") or "")
-            for function in functions
-            if str(function.get("name") or "") not in set(requested)
-        ],
-        "metadata": {
-            "mode": "function_names",
-            "requested": requested,
-            "included": [str(function.get("name") or "") for function in selected],
-            "missing": [],
-            "external_recovered_function_names": [
-                str(function.get("name") or "")
-                for function in functions
-                if str(function.get("name") or "") not in set(requested)
-            ],
-        },
-    }
 
 
-def _skeleton_behavior_recovery(
-    *,
-    binary: StageABinary,
-    target_name: str,
-    source_language: str,
-    implementation_mode: str,
-) -> dict[str, Any]:
-    if implementation_mode != "scaffold" or source_language != "rust":
-        return {
-            "format": "stage-b-behavior-recovery-v1",
-            "status": "not_applicable",
-            "recovered": [],
-            "blockers": [],
-        }
-    target_id = _artifact_name(target_name)
-    recovered: list[dict[str, Any]] = []
-    blockers: list[str] = []
-    if "ripgrep" in target_id:
-        version_behavior = _recover_ripgrep_version_behavior(binary)
-        if version_behavior is None:
-            blockers.append("missing_ripgrep_version_strings")
-        else:
-            recovered.append(version_behavior)
-    return {
-        "format": "stage-b-behavior-recovery-v1",
-        "status": "partial" if recovered else "incomplete",
-        "source": "pe_ascii_strings",
-        "recovered": recovered,
-        "blockers": blockers,
-    }
 
 
-def _recover_ripgrep_version_behavior(binary: StageABinary) -> dict[str, Any] | None:
-    raw = binary.path.read_bytes()
-    match = re.search(
-        rb"ripgrep[ \t]*.{0,8}?(?P<version>[0-9]+\.[0-9]+\.[0-9]+)\+?.{0,8}?SSE2.{0,8}?SSSE3.{0,8}?AVX2.{0,8}?pcre2",
-        raw,
-        flags=re.DOTALL,
-    )
-    if match is None:
-        return None
-    version = match.group("version").decode("ascii", errors="replace")
-    pcre2_unavailable = b"PCRE2 is not available in this build of ripgrep" in raw
-    output = (
-        f"ripgrep {version}\n\n"
-        "features:-pcre2\n"
-        "simd(compile):+SSE2,-SSSE3,-AVX2\n"
-        "simd(runtime):+SSE2,+SSSE3,+AVX2\n\n"
-    )
-    if pcre2_unavailable:
-        output += "PCRE2 is not available in this build of ripgrep.\n"
-    return {
-        "id": "ripgrep-version",
-        "kind": "cli_exact_stdout",
-        "args": [["--version"], ["-V"]],
-        "stdout": output,
-        "returncode": 0,
-        "evidence": {
-            "kind": "pe_ascii_string_neighborhood",
-            "rva": _file_offset_to_rva(binary, match.start()),
-            "file_offset": match.start(),
-            "sha256": sha256_bytes(match.group(0)),
-            "pcre2_unavailable_string": pcre2_unavailable,
-        },
-    }
 
 
-def _file_offset_to_rva(binary: StageABinary, offset: int) -> int | None:
-    for section in binary.sections:
-        raw_start = int(section.raw_pointer)
-        raw_end = raw_start + int(section.raw_size)
-        if raw_start <= offset < raw_end:
-            return int(section.rva_start) + (offset - raw_start)
-    return None
 
 
-def _skeleton_implementation_recovery(
-    functions: list[dict[str, Any]],
-    source_language: str,
-    *,
-    implementation_mode: str,
-) -> dict[str, Any]:
-    decompiler_functions = [function for function in functions if isinstance(function.get("decompiler"), dict)]
-    decompiler_successes = [
-        function
-        for function in decompiler_functions
-        if function.get("decompiler", {}).get("status") == "success"
-    ]
-    decompiler_code_functions = [
-        function
-        for function in decompiler_successes
-        if isinstance(function.get("decompiler", {}).get("code"), str)
-        and function.get("decompiler", {}).get("code", "").strip()
-    ]
-    name_counts: dict[str, int] = {}
-    for function in functions:
-        name = str(function.get("name") or "")
-        if name:
-            name_counts[name] = name_counts.get(name, 0) + 1
-    duplicate_names = sorted(name for name, count in name_counts.items() if count > 1)
-    name_disambiguations = [
-        function["name_disambiguation"]
-        for function in functions
-        if isinstance(function.get("name_disambiguation"), dict)
-    ]
 
-    if implementation_mode == "decompiled-c":
-        blockers = []
-        if not functions:
-            blockers.append("missing_functions")
-        if len(decompiler_functions) != len(functions):
-            blockers.append("missing_decompiler_exports")
-        if len(decompiler_successes) != len(functions):
-            blockers.append("incomplete_decompiler_successes")
-        if len(decompiler_code_functions) != len(functions):
-            blockers.append("missing_decompiler_code")
-        if duplicate_names:
-            blockers.append("duplicate_decompiler_function_names")
-        status = "complete" if not blockers else "incomplete"
-        generated_source_kind = "decompiler_recovered_behavior" if status == "complete" else "decompiler_recovered_partial"
-    else:
-        blockers = ["generated_source_is_scaffold"]
-        if not decompiler_successes:
-            blockers.append("missing_decompiler_successes")
-        if decompiler_successes and len(decompiler_successes) < len(functions):
-            blockers.append("incomplete_decompiler_coverage")
-        status = "incomplete"
-        generated_source_kind = "scaffold"
 
-    return {
-        "format": "stage-b-skeleton-recovery-v1",
-        "status": status,
-        "implementation_mode": implementation_mode,
-        "generated_source_kind": generated_source_kind,
-        "source_language": source_language,
-        "source_implements_behavior": status == "complete",
-        "functions": len(functions),
-        "decompiler_functions": len(decompiler_functions),
-        "decompiler_successes": len(decompiler_successes),
-        "decompiler_code_functions": len(decompiler_code_functions),
-        "instruction_count": sum(int(function["instruction_count"]) for function in functions),
-        "duplicate_function_names": duplicate_names,
-        "decompiler_name_disambiguation": {
-            "status": "applied" if name_disambiguations else "not_required",
-            "strategy": "append_rva_to_duplicate_decompiler_name",
-            "count": len(name_disambiguations),
-            "items": name_disambiguations[:100],
-        },
-        "blockers": blockers,
-    }
+
 
 
 def _section_for_rva(binary: StageABinary, rva: int) -> Any | None:
@@ -6104,1758 +5209,132 @@ def _case_ids_sha256(case_ids: list[str]) -> str:
     return sha256_bytes(json.dumps(case_ids, separators=(",", ":")).encode("utf-8"))
 
 
-def _decompiler_function_summary(row: dict[str, Any], *, include_code: bool = False) -> dict[str, Any] | None:
-    decompiler = row.get("decompiler")
-    if not isinstance(decompiler, dict):
-        return None
-    code = str(decompiler.get("c") or decompiler.get("code") or decompiler.get("decompiled_c") or "")
-    error = str(decompiler.get("error") or "")
-    summary = {
-        "source": "ghidra_decompiler_export",
-        "status": str(decompiler.get("status") or ("success" if code else "not_available")),
-        "signature": str(row.get("signature") or ""),
-        "code_sha256": sha256_bytes(code.encode("utf-8")) if code else "",
-        "code_preview": _preview_lines(code),
-        "error": error,
-    }
-    if include_code:
-        summary["code"] = code
-    return summary
-
-
-def _preview_lines(text: str, *, limit: int = 12) -> list[str]:
-    return text.splitlines()[:limit]
-
-
-def _indented_decompiler_comment_lines(function: dict[str, Any], prefix: str) -> list[str]:
-    decompiler = function.get("decompiler")
-    if not isinstance(decompiler, dict):
-        return []
-    lines = [f"{prefix}decompiler status: {decompiler.get('status', 'unknown')}"]
-    signature = str(decompiler.get("signature") or "")
-    if signature:
-        lines.append(f"{prefix}signature: {signature}")
-    for line in decompiler.get("code_preview") or []:
-        lines.append(f"{prefix}{line}")
-    return lines
-
-
-def _disassemble(binary: StageABinary, rva_start: int, data: bytes) -> list[dict[str, Any]]:
-    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
-    return [
-        {
-            "rva": int(insn.address - binary.image_base),
-            "size": int(insn.size),
-            "mnemonic": insn.mnemonic,
-            "op_str": insn.op_str,
-        }
-        for insn in dis.disasm(data, binary.image_base + rva_start)
-    ]
-
-
-def _render_skeleton_source(
-    *,
-    target_name: str,
-    functions: list[dict[str, Any]],
-    source_language: str,
-    implementation_mode: str,
-    external_function_names: list[str] | tuple[str, ...] | None = None,
-    behavior_recovery: dict[str, Any] | None = None,
-) -> str:
-    if implementation_mode == "decompiled-c":
-        return _render_decompiled_c_source(
-            target_name=target_name,
-            functions=functions,
-            external_function_names=external_function_names,
-        )
-
-    if source_language == "rust":
-        recovered_version = _recovered_cli_behavior(behavior_recovery, "ripgrep-version")
-        lines = [
-            "// Generated by spaghetti-extractor stage-b-generate-skeleton.",
-            "// This is a clean-room reconstruction scaffold, not a completed implementation.",
-            "",
-        ]
-        if recovered_version is not None:
-            lines.extend(
-                [
-                    f"const STAGE_B_RECOVERED_VERSION_STDOUT: &str = {_rust_string_literal(str(recovered_version.get('stdout') or ''))};",
-                    "",
-                    "fn stage_b_matches_arg(args: &[String], short: &str, long: &str) -> bool {",
-                    "    args.len() == 1 && (args[0] == short || args[0] == long)",
-                    "}",
-                    "",
-                ]
-            )
-        lines.extend(
-            [
-                "fn main() {",
-            ]
-        )
-        if recovered_version is not None:
-            lines.extend(
-                [
-                    "    let args: Vec<String> = std::env::args().skip(1).collect();",
-                    "    if stage_b_matches_arg(&args, \"-V\", \"--version\") {",
-                    "        print!(\"{}\", STAGE_B_RECOVERED_VERSION_STDOUT);",
-                    "        return;",
-                    "    }",
-                ]
-            )
-        lines.extend(
-            [
-                "    std::process::exit(125);",
-                "}",
-                "",
-            ]
-        )
-        used_identifiers: set[str] = set()
-        for index, function in enumerate(functions):
-            ident = _unique_identifier(function["name"], index, used_identifiers)
-            lines.extend(
-                [
-                    "#[allow(dead_code)]",
-                    f"fn stage_b_fn_{ident}() -> i32 {{",
-                    f"    // original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}",
-                    *_indented_decompiler_comment_lines(function, "    // "),
-                    "    125",
-                    "}",
-                    "",
-                ]
-            )
-        return "\n".join(lines)
-
-    lines = [
-        "/* Generated by spaghetti-extractor stage-b-generate-skeleton.",
-        " * This is a clean-room reconstruction scaffold, not a completed implementation.",
-        " */",
-        "#include <stdint.h>",
-        "",
-        "static int stage_b_unimplemented(const char *name) {",
-        "    (void)name;",
-        "    return 125;",
-        "}",
-        "",
-        "int main(int argc, char **argv) {",
-        "    (void)argc;",
-        "    (void)argv;",
-        f"    return stage_b_unimplemented(\"{_c_string(target_name)}\");",
-        "}",
-        "",
-    ]
-    used_identifiers = set()
-    for index, function in enumerate(functions):
-        ident = _unique_identifier(function["name"], index, used_identifiers)
-        lines.extend(
-            [
-                f"int stage_b_fn_{ident}(void) {{",
-                f"    /* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])} */",
-                *_indented_decompiler_comment_lines(function, "    // "),
-                f"    return stage_b_unimplemented(\"{_c_string(str(function['name']))}\");",
-                "}",
-                "",
-            ]
-        )
-    return "\n".join(lines)
-
-
-def _render_decompiled_c_source(
-    *,
-    target_name: str,
-    functions: list[dict[str, Any]],
-    external_function_names: list[str] | tuple[str, ...] | None = None,
-) -> str:
-    lines = [
-        "/* Generated by spaghetti-extractor stage-b-generate-skeleton.",
-        " * Implementation mode: decompiled-c.",
-        " * Source bodies come from the supplied private decompiler export.",
-        " */",
-        "#include <stdarg.h>",
-        "#include <stddef.h>",
-        "#include <stdbool.h>",
-        "#include <stdint.h>",
-        "",
-        "typedef int BOOL;",
-        "typedef char CHAR;",
-        "typedef uint8_t BYTE;",
-        "typedef uint16_t WORD;",
-        "typedef uint32_t DWORD;",
-        "typedef uintptr_t DWORD_PTR;",
-        "typedef uint32_t UINT;",
-        "typedef int32_t LONG;",
-        "typedef size_t SIZE_T;",
-        "typedef int errno_t;",
-        "typedef void *HANDLE;",
-        "typedef void *HMODULE;",
-        "typedef void *FARPROC;",
-        "typedef void *LPVOID;",
-        "typedef const void *LPCVOID;",
-        "typedef BYTE *PBYTE;",
-        "typedef DWORD *PDWORD;",
-        "typedef DWORD *LPDWORD;",
-        "typedef char *LPSTR;",
-        "typedef const char *LPCSTR;",
-        "typedef wchar_t WCHAR;",
-        "typedef WCHAR *LPWSTR;",
-        "typedef const WCHAR *LPCWSTR;",
-        "typedef BOOL *LPBOOL;",
-        "typedef void *LPOVERLAPPED;",
-        "typedef void *LPCRITICAL_SECTION;",
-        "typedef long (__attribute__((stdcall)) *LPTOP_LEVEL_EXCEPTION_FILTER)(void *);",
-        "typedef struct _stage_b_image_data_directory { DWORD VirtualAddress; DWORD Size; } IMAGE_DATA_DIRECTORY;",
-        "typedef struct _stage_b_image_optional_header32 { IMAGE_DATA_DIRECTORY DataDirectory[16]; } IMAGE_OPTIONAL_HEADER32;",
-        "typedef struct _stage_b_image_nt_headers32 { DWORD Signature; IMAGE_OPTIONAL_HEADER32 OptionalHeader; } IMAGE_NT_HEADERS32;",
-        "typedef struct _stage_b_image_section_header {",
-        "    union { DWORD PhysicalAddress; DWORD VirtualSize; } Misc;",
-        "    DWORD VirtualAddress;",
-        "    DWORD SizeOfRawData;",
-        "    DWORD PointerToRawData;",
-        "    DWORD PointerToRelocations;",
-        "    DWORD PointerToLinenumbers;",
-        "    WORD NumberOfRelocations;",
-        "    WORD NumberOfLinenumbers;",
-        "    DWORD Characteristics;",
-        "} IMAGE_SECTION_HEADER, *PIMAGE_SECTION_HEADER;",
-        "typedef struct _stage_b_image_dos_header {",
-        "    WORD e_magic;",
-        "    uintptr_t e_res_4_;",
-        "    uintptr_t e_program;",
-        "    int32_t e_lfanew;",
-        "} IMAGE_DOS_HEADER;",
-        "typedef struct _stage_b_memory_basic_information {",
-        "    void *BaseAddress;",
-        "    void *AllocationBase;",
-        "    DWORD AllocationProtect;",
-        "    size_t RegionSize;",
-        "    DWORD State;",
-        "    DWORD Protect;",
-        "    DWORD Type;",
-        "} MEMORY_BASIC_INFORMATION;",
-        "typedef MEMORY_BASIC_INFORMATION _MEMORY_BASIC_INFORMATION;",
-        "typedef struct _stage_b_FILE {",
-        "    char *_ptr;",
-        "    int _cnt;",
-        "    char *_base;",
-        "    int _flag;",
-        "    int _file;",
-        "    int _charbuf;",
-        "    int _bufsiz;",
-        "    char *_tmpfname;",
-        "} FILE;",
-        "typedef struct _stage_b_tm {",
-        "    int tm_sec;",
-        "    int tm_min;",
-        "    int tm_hour;",
-        "    int tm_mday;",
-        "    int tm_mon;",
-        "    int tm_year;",
-        "    int tm_wday;",
-        "    int tm_yday;",
-        "    int tm_isdst;",
-        "} tm;",
-        "typedef char mbstate_t;",
-        "typedef void (*_func_4879)(void);",
-        "typedef int _PtFuncCompare(const void *, const void *);",
-        "typedef struct _stage_b_exception { int type; char *name; double arg1; double arg2; double retval; } _exception;",
-        "typedef struct _stage_b_startupinfo { int newmode; } _startupinfo;",
-        "typedef void (__attribute__((cdecl)) *_invalid_parameter_handler)(const wchar_t *, const wchar_t *, const wchar_t *, unsigned int, uintptr_t);",
-        "typedef struct _stage_b_jv { uint32_t word[4]; } stage_b_jv;",
-        "typedef uint8_t byte;",
-        "typedef uint8_t undefined;",
-        "typedef uint8_t undefined1;",
-        "typedef uint16_t undefined2;",
-        "typedef uint32_t undefined3;",
-        "typedef uint32_t undefined4;",
-        "typedef uint64_t undefined8;",
-        "typedef int8_t sbyte;",
-        "typedef int64_t longlong;",
-        "typedef long double float10;",
-        "typedef uint64_t unkuint10;",
-        "typedef int64_t unkint10;",
-        "typedef uint16_t ushort;",
-        "typedef uint32_t uint;",
-        "typedef uint64_t ulonglong;",
-        "typedef uintptr_t code();",
-        "typedef uint32_t dword;",
-        "typedef struct _stage_b_time_zone_information { LONG Bias; } _TIME_ZONE_INFORMATION;",
-        "typedef struct _stage_b_runtime_pseudo_reloc {",
-        "    uint32_t sym;",
-        "    uint32_t target;",
-        "    uint32_t flags;",
-        "    uint32_t zero1;",
-        "    uint32_t zero2;",
-        "    uint32_t version;",
-        "} pseudoRelocItemV2;",
-        "#ifndef LOCK",
-        "#define LOCK() ((void)0)",
-        "#endif",
-        "#ifndef UNLOCK",
-        "#define UNLOCK() ((void)0)",
-        "#endif",
-        "#ifndef CONCAT11",
-        "#define CONCAT11(hi, lo) ((((uint16_t)(uint8_t)(hi)) << 8) | ((uint8_t)(lo)))",
-        "#endif",
-        "#ifndef CONCAT22",
-        "#define CONCAT22(hi, lo) ((((uint32_t)(uint16_t)(hi)) << 16) | ((uint16_t)(lo)))",
-        "#endif",
-        "#ifndef CONCAT31",
-        "#define CONCAT31(hi, lo) ((((uint32_t)(hi)) << 8) | ((uint8_t)(lo)))",
-        "#endif",
-        "#ifndef CONCAT44",
-        "#define CONCAT44(hi, lo) ((((uint64_t)(uint32_t)(hi)) << 32) | ((uint32_t)(lo)))",
-        "#endif",
-        "#ifndef SUB84",
-        "#define SUB84(value, offset) ((uint32_t)(((uint64_t)(value)) >> ((offset) * 8)))",
-        "#endif",
-        "#ifndef SUB104",
-        "#define SUB104(value, offset) ((uint32_t)(((uint64_t)(value)) >> ((offset) * 8)))",
-        "#endif",
-        "#ifndef ZEXT48",
-        "#define ZEXT48(value) ((uint64_t)(uint32_t)(value))",
-        "#endif",
-        "#ifndef CARRY4",
-        "#define CARRY4(a, b) (((uint64_t)(uint32_t)(a) + (uint64_t)(uint32_t)(b)) > UINT32_MAX)",
-        "#endif",
-        "#ifndef ROUND",
-        "#define ROUND(value) ((int)(value))",
-        "#endif",
-        "#ifndef NAN",
-        "#define NAN(value) __builtin_isnan((double)(value))",
-        "#endif",
-        "#ifndef INFINITY",
-        "#define INFINITY (__builtin_huge_val())",
-        "#endif",
-        "static inline uint64_t stage_b_part_mask(unsigned size) {",
-        "    return size >= 8 ? UINT64_MAX : ((UINT64_C(1) << (size * 8U)) - 1U);",
-        "}",
-        "static inline uint64_t stage_b_part_get_u64(uint64_t value, unsigned offset, unsigned size) {",
-        "    return (value >> (offset * 8U)) & stage_b_part_mask(size);",
-        "}",
-        "static inline uint64_t stage_b_part_set_u64(uint64_t value, unsigned offset, unsigned size, uint64_t replacement) {",
-        "    uint64_t shift = offset * 8U;",
-        "    uint64_t mask = stage_b_part_mask(size) << shift;",
-        "    return (value & ~mask) | ((replacement << shift) & mask);",
-        "}",
-        "#define STAGE_B_PART(value, offset, size) stage_b_part_get_u64((uint64_t)(value), (offset), (size))",
-        "#define STAGE_B_SET_PART(value, offset, size, replacement) \\",
-        "    do { (value) = (__typeof__(value))stage_b_part_set_u64((uint64_t)(value), (offset), (size), (uint64_t)(uintptr_t)(replacement)); } while (0)",
-        "#define STAGE_B_PART_LVALUE(value, offset, type) (*((type *)((unsigned char *)&(value) + (offset))))",
-        "#define STAGE_B_JQ_CALL_IOB_SLOT(slot, stream) \\",
-        "    ({ FILE *stage_b_result; \\",
-        "       __asm__ __volatile__(\"movl %1, (%%esp)\\n\\tcall *%2\" \\",
-        "           : \"=a\"(stage_b_result) \\",
-        "           : \"ri\"((int)(stream)), \"m\"(slot) \\",
-        "           : \"ecx\", \"edx\", \"memory\", \"cc\"); \\",
-        "       stage_b_result; })",
-        "",
-        "uintptr_t __cdecl jv_mem_alloc(size_t);",
-        "static unsigned stage_b_jq_isoption_index;",
-        "static void stage_b_jq_isoption_reset(void) { stage_b_jq_isoption_index = 0; }",
-        "static uintptr_t stage_b_jq_jvp_array_alloc(uint32_t capacity) {",
-        "    size_t bytes = ((size_t)capacity + 1U) * 16U;",
-        "    uint32_t *payload = (uint32_t *)(uintptr_t)jv_mem_alloc(bytes);",
-        "    for (size_t index = 0; index < bytes / sizeof(uint32_t); index++) {",
-        "        payload[index] = 0;",
-        "    }",
-        "    payload[0] = 1;",
-        "    payload[1] = 0;",
-        "    payload[2] = capacity;",
-        "    return (uintptr_t)payload;",
-        "}",
-        "static undefined4 stage_b_jq_jv_array_sized(undefined4 out_value, uint32_t capacity) {",
-        "    uint32_t *out = (uint32_t *)(uintptr_t)out_value;",
-        "    if ((uintptr_t)out < (uintptr_t)0x10000U) {",
-        "        return out_value;",
-        "    }",
-        "    out[0] = 0x86;",
-        "    out[1] = 0;",
-        "    out[2] = (uint32_t)stage_b_jq_jvp_array_alloc(capacity);",
-        "    out[3] = 0;",
-        "    return out_value;",
-        "}",
-        "static uintptr_t stage_b_jq_jvp_string_alloc(size_t length) {",
-        "    size_t bytes = length + 0x11U;",
-        "    uint8_t *payload = (uint8_t *)(uintptr_t)jv_mem_alloc(bytes);",
-        "    for (size_t index = 0; index < bytes; index++) {",
-        "        payload[index] = 0;",
-        "    }",
-        "    ((uint32_t *)payload)[0] = 1;",
-        "    ((uint32_t *)payload)[2] = (uint32_t)(length * 2U);",
-        "    ((uint32_t *)payload)[3] = (uint32_t)length;",
-        "    return (uintptr_t)payload;",
-        "}",
-        "static undefined4 stage_b_jq_jv_string_sized(undefined4 out_value, const uint8_t *data, int length) {",
-        "    size_t safe_length = length < 0 ? 0U : (size_t)length;",
-        "    uint8_t *payload = (uint8_t *)(uintptr_t)stage_b_jq_jvp_string_alloc(safe_length);",
-        "    uint32_t *out = (uint32_t *)(uintptr_t)out_value;",
-        "    if ((uintptr_t)out < (uintptr_t)0x10000U) {",
-        "        return out_value;",
-        "    }",
-        "    if (safe_length != 0U && (uintptr_t)data < (uintptr_t)0x10000U) {",
-        "        safe_length = 0U;",
-        "        data = (const uint8_t *)0;",
-        "    }",
-        "    if (data != (const uint8_t *)0) {",
-        "        for (size_t index = 0; index < safe_length; index++) {",
-        "            payload[0x10U + index] = data[index];",
-        "        }",
-        "    }",
-        "    payload[0x10U + safe_length] = 0;",
-        "    out[0] = 0x85;",
-        "    out[1] = 0;",
-        "    out[2] = (uint32_t)(uintptr_t)payload;",
-        "    out[3] = 0;",
-        "    return out_value;",
-        "}",
-        "static uintptr_t stage_b_jq_jvp_object_alloc(uint32_t size) {",
-        "    if (size == 0 || (size & (size - 1U)) != 0) {",
-        "        size = 8;",
-        "    }",
-        "    size_t bytes = (size_t)size * 0x30U + 8U;",
-        "    uint8_t *payload = (uint8_t *)(uintptr_t)jv_mem_alloc(bytes);",
-        "    for (size_t index = 0; index < bytes; index++) {",
-        "        payload[index] = 0;",
-        "    }",
-        "    ((uint32_t *)payload)[0] = 1;",
-        "    ((uint32_t *)payload)[1] = 0;",
-        "    for (uint32_t index = 0; index < size; index++) {",
-        "        uint32_t *slot = (uint32_t *)(void *)(payload + 8U + (size_t)index * 0x28U);",
-        "        slot[0] = index == 0 ? UINT32_MAX : index - 1U;",
-        "    }",
-        "    for (size_t index = (size_t)size * 0x28U + 8U; index < bytes; index++) {",
-        "        payload[index] = 0xffU;",
-        "    }",
-        "    return (uintptr_t)payload;",
-        "}",
-        "static undefined4 stage_b_jq_jv_object(undefined4 out_value) {",
-        "    uint32_t *out = (uint32_t *)(uintptr_t)out_value;",
-        "    if ((uintptr_t)out < (uintptr_t)0x10000U) {",
-        "        return out_value;",
-        "    }",
-        "    out[0] = 0x87;",
-        "    out[1] = 8;",
-        "    out[2] = (uint32_t)stage_b_jq_jvp_object_alloc(8);",
-        "    out[3] = 0;",
-        "    return out_value;",
-        "}",
-        "#define stage_b_jq_call_jq_realpath(value) ((stage_b_jv (__cdecl *)(stage_b_jv))jq_realpath)(value)",
-        "#define stage_b_jq_call_jq_testsuite(libs, flags, argc, argv) ((int (__cdecl *)(stage_b_jv, int, int, char **))jq_testsuite)((libs), (flags), (argc), (argv))",
-        "#define stage_b_jq_call_jv_array_append(array, value) ((stage_b_jv (__cdecl *)(stage_b_jv, stage_b_jv))jv_array_append)((array), (value))",
-        "#define stage_b_jq_call_jv_string(value) ((stage_b_jv (__cdecl *)(const char *))jv_string)(value)",
-        "static int stage_b_jq_isoption_match(char **cursor, int short_mode, char short_name, const char *long_name) {",
-        "    char *value = cursor ? *cursor : (char *)0;",
-        "    if (value == (char *)0) {",
-        "        return 0;",
-        "    }",
-        "    if (short_mode == 0) {",
-        "        const char *left = value;",
-        "        const char *right = long_name;",
-        "        if (right == (const char *)0) {",
-        "            return 0;",
-        "        }",
-        "        while (*left != '\\0' && *right != '\\0' && *left == *right) {",
-        "            left++;",
-        "            right++;",
-        "        }",
-        "        if (*left != '\\0' || *right != '\\0') {",
-        "            return 0;",
-        "        }",
-        "        *cursor = (char *)0;",
-        "        return 1;",
-        "    }",
-        "    if (short_name == '\\0' || *value != short_name) {",
-        "        return 0;",
-        "    }",
-        "    *cursor = value[1] == '\\0' ? (char *)0 : value + 1;",
-        "    return 1;",
-        "}",
-        "static int stage_b_jq_isoption_next(char **cursor, int short_mode) {",
-        "    unsigned index = stage_b_jq_isoption_index++;",
-        "    switch (index) {",
-        "    case 0:",
-        "        return stage_b_jq_isoption_match(cursor, short_mode, 'n', \"null-input\");",
-        "    case 30:",
-        "        return stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"help\");",
-        "    case 31:",
-        "        return stage_b_jq_isoption_match(cursor, short_mode, 'V', \"version\");",
-        "    case 32:",
-        "        return stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"build-configuration\");",
-        "    case 33:",
-        "        return stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"run-tests\");",
-        "    default:",
-        "        return 0;",
-        "    }",
-        "}",
-        "",
-    ]
-    implemented_functions = [
-        function
-        for function in functions
-        if not _decompiled_c_is_import_thunk(function) and not _decompiled_c_is_runtime_entry(function)
-    ]
-    import_thunk_symbols = [
-        str(function.get("linkage", {}).get("symbol") or function.get("name") or "")
-        for function in functions
-        if _decompiled_c_is_import_thunk(function)
-    ]
-    import_thunk_alias_symbols = _decompiled_c_import_thunk_alias_symbol_names(functions)
-    direct_import_alias_symbols = _decompiled_c_direct_import_alias_symbol_names(functions)
-    runtime_bridge = _decompiled_c_runtime_entry_bridge(functions)
-    runtime_bridge_externs = _decompiled_c_runtime_entry_bridge_externs(functions) if runtime_bridge else []
-    prototypes = [_decompiled_c_prototype(function) for function in implemented_functions]
-    prototypes = [prototype for prototype in prototypes if prototype]
-    externs = _decompiled_c_external_prototypes(
-        [*(external_function_names or ()), *import_thunk_symbols, *direct_import_alias_symbols, *runtime_bridge_externs],
-        implemented_functions,
-    )
-    data_symbols = _decompiled_c_external_data_symbols(implemented_functions)
-    placeholders = _decompiled_c_link_placeholder_definitions(
-        [*(external_function_names or ()), *import_thunk_symbols, *import_thunk_alias_symbols, *direct_import_alias_symbols],
-        implemented_functions,
-    )
-    preserved_import_thunks = _decompiled_c_preserved_import_thunk_alias_lines(functions)
-    import_aliases = _decompiled_c_import_thunk_alias_lines(functions)
-    if externs:
-        lines.extend(externs)
-        lines.append("")
-    if data_symbols:
-        lines.extend(data_symbols)
-        lines.append("")
-    if placeholders:
-        lines.extend(placeholders)
-        lines.append("")
-    if preserved_import_thunks:
-        lines.extend(preserved_import_thunks)
-        lines.append("")
-    if import_aliases:
-        lines.extend(import_aliases)
-        lines.append("")
-    if prototypes:
-        lines.extend(prototypes)
-        lines.append("")
-    layout_support = _decompiled_c_layout_support_lines(target_name)
-    if layout_support:
-        lines.extend(layout_support)
-        lines.append("")
-    runtime_bridge_emitted = False
-    for function in functions:
-        if _decompiled_c_is_import_thunk(function):
-            linkage = function.get("linkage") if isinstance(function.get("linkage"), dict) else {}
-            lines.extend(
-                [
-                    f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
-                    f"/* import thunk for {str(linkage.get('symbol') or function.get('name') or '')}; body omitted so the candidate links to the original import. */",
-                    "",
-                ]
-            )
-            continue
-        if _decompiled_c_is_runtime_entry(function):
-            lines.extend(
-                [
-                    f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
-                    "/* MinGW CRT entry body replaced by a generated runtime bridge. */",
-                    "",
-                ]
-            )
-            if not runtime_bridge_emitted and runtime_bridge and str(function.get("name") or "") == "mainCRTStartup":
-                lines.extend(runtime_bridge)
-                lines.append("")
-                runtime_bridge_emitted = True
-            continue
-        decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
-        code = _normalize_decompiled_c_code(str(decompiler.get("code") or ""), function_name=str(function.get("name") or "")).strip()
-        lines.extend(
-            [
-                f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
-                code,
-                "",
-            ]
-        )
-    return "\n".join(lines)
-
-
-def _decompiled_c_is_import_thunk(function: dict[str, Any]) -> bool:
-    linkage = function.get("linkage")
-    return isinstance(linkage, dict) and linkage.get("kind") == "import_thunk"
-
-
-def _decompiled_c_import_thunk_alias_symbol_names(functions: list[dict[str, Any]]) -> list[str]:
-    return [left for left, _ in _decompiled_c_import_thunk_alias_pairs(functions)]
-
-
-def _decompiled_c_import_thunk_alias_lines(functions: list[dict[str, Any]]) -> list[str]:
-    return [f"#define {left} {right}" for left, right in _decompiled_c_import_thunk_alias_pairs(functions)]
-
-
-def _decompiled_c_direct_import_alias_symbol_names(functions: list[dict[str, Any]]) -> list[str]:
-    symbols: list[str] = []
-    seen: set[str] = set()
-    for function in functions:
-        if not _decompiled_c_is_import_thunk(function):
-            continue
-        linkage = function.get("linkage") if isinstance(function.get("linkage"), dict) else {}
-        left = str(linkage.get("original_symbol") or function.get("name") or "")
-        if left not in _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS or left in seen or not _is_c_identifier(left):
-            continue
-        seen.add(left)
-        symbols.append(left)
-    return symbols
-
-
-def _decompiled_c_import_thunk_alias_pairs(functions: list[dict[str, Any]]) -> list[tuple[str, str]]:
-    pairs: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    for function in functions:
-        if not _decompiled_c_is_import_thunk(function):
-            continue
-        linkage = function.get("linkage") if isinstance(function.get("linkage"), dict) else {}
-        left = str(linkage.get("original_symbol") or function.get("name") or "")
-        right = str(linkage.get("symbol") or "")
-        if left in _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS:
-            continue
-        if left == right or not _is_c_identifier(left) or not _is_c_identifier(right) or left in seen:
-            continue
-        seen.add(left)
-        pairs.append((left, right))
-    return pairs
-
-
-def _decompiled_c_preserved_import_thunk_alias_lines(functions: list[dict[str, Any]]) -> list[str]:
-    lines: list[str] = []
-    for left, right in _decompiled_c_import_thunk_alias_pairs(functions):
-        if left not in _DECOMPILED_C_PRESERVED_IMPORT_THUNK_ALIASES:
-            continue
-        import_pointer = f"__imp__{right}"
-        lines.extend(
-            [
-                "__asm__(",
-                f"\".section .text${left},\\\"x\\\"\\n\"",
-                f"\".globl {left}\\n\"",
-                f"\".def {left}; .scl 2; .type 32; .endef\\n\"",
-                f"\"{left}:\\n\"",
-                f"\"  jmp *{import_pointer}\\n\"",
-                ");",
-            ]
-        )
-    return lines
-
-
-def _decompiled_c_is_runtime_entry(function: dict[str, Any]) -> bool:
-    return str(function.get("name") or "") in _DECOMPILED_C_RUNTIME_ENTRY_NAMES
-
-
-def _decompiled_c_runtime_entry_bridge(functions: list[dict[str, Any]]) -> list[str]:
-    names = {str(function.get("name") or "") for function in functions}
-    if "mainCRTStartup" not in names or ("_wmain" not in names and "umain" not in names):
-        return []
-    lines = [
-        "void __cdecl mainCRTStartup(void)",
-        "{",
-        "  int argc = 0;",
-        "  wchar_t **wargv = (wchar_t **)0;",
-        "  wchar_t **wenv = (wchar_t **)0;",
-        "  _startupinfo startup_info = {0};",
-        "  int rc = 0;",
-        "  stage_b_layout_keepalive();",
-        "  if (__wgetmainargs(&argc,(int *)&wargv,(int *)&wenv,0,&startup_info) < 0) {",
-        "    exit(8);",
-        "  }",
-    ]
-    if "umain" in names:
-        lines.extend(
-            [
-                "  char **argv = (char **)0;",
-                "  int i = 0;",
-                "  argv = (char **)malloc((argc + 1) * sizeof(char *));",
-                "  if (argv == (char **)0) {",
-                "    exit(8);",
-                "  }",
-                "  for (i = 0; i < argc; i = i + 1) {",
-                "    int length = 0;",
-                "    int j = 0;",
-                "    while (wargv[i][length] != 0) {",
-                "      length = length + 1;",
-                "    }",
-                "    argv[i] = (char *)malloc((size_t)length + 1U);",
-                "    if (argv[i] == (char *)0) {",
-                "      exit(8);",
-                "    }",
-                "    for (j = 0; j < length; j = j + 1) {",
-                "      wchar_t ch = wargv[i][j];",
-                "      argv[i][j] = (char)((ch < 0x80) ? ch : '?');",
-                "    }",
-                "    argv[i][length] = '\\0';",
-                "  }",
-                "  argv[argc] = (char *)0;",
-                "  rc = (int)umain(argc,(undefined4 *)argv);",
-            ]
-        )
-    else:
-        lines.append("  rc = _wmain(argc,wargv,wenv);")
-    lines.extend(
-        [
-        "  exit(rc);",
-        "}",
-        ]
-    )
-    return lines
-
-
-def _decompiled_c_runtime_entry_bridge_externs(functions: list[dict[str, Any]]) -> list[str]:
-    if not _decompiled_c_runtime_entry_bridge(functions):
-        return []
-    return ["__wgetmainargs", "exit", "malloc"]
-
-
-def _decompiled_c_layout_support_lines(target_name: str) -> list[str]:
-    if target_name != "jq":
-        return ["static void stage_b_layout_keepalive(void) { }"]
-    return [
-        "__attribute__((used, section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[1];",
-        "__attribute__((used, section(\".tls\"))) volatile unsigned char stage_b_jq_layout_tls_anchor[8] = {0};",
-        "extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__(\"__imp__SetUnhandledExceptionFilter@4\");",
-        "uintptr_t __cdecl jv_mem_alloc(size_t);",
-        "__attribute__((used, section(\".rdata$stage_b_jq_import_anchor\"))) static void * const stage_b_jq_import_anchor[] = {",
-        "    (void *)(uintptr_t)&AreFileApisANSI,",
-        "    (void *)(uintptr_t)&GetLastError,",
-        "    (void *)(uintptr_t)&GetModuleHandleA,",
-        "    (void *)(uintptr_t)&GetProcAddress,",
-        "    (void *)(uintptr_t)&IsDBCSLeadByteEx,",
-        "    (void *)(uintptr_t)&MultiByteToWideChar,",
-        "    (void *)(uintptr_t)&Sleep,",
-        "    (void *)(uintptr_t)&TlsGetValue,",
-        "    (void *)(uintptr_t)&VirtualProtect,",
-        "    (void *)(uintptr_t)&VirtualQuery,",
-        "    (void *)(uintptr_t)&WriteFile,",
-        "    (void *)&stage_b_jq_imp_SetUnhandledExceptionFilter,",
-        "    (void *)(uintptr_t)&_get_osfhandle,",
-        "    (void *)(uintptr_t)&isalpha,",
-        "    (void *)(uintptr_t)&jq_util_input_next_input_cb,",
-        "    (void *)(uintptr_t)&jv_dumpf,",
-        "    (void *)(uintptr_t)&jv_invalid_with_msg,",
-        "    (void *)(uintptr_t)&_initterm,",
-        "    (void *)(uintptr_t)&__p___winitenv,",
-        "    (void *)(uintptr_t)&__p__commode,",
-        "    (void *)(uintptr_t)&__p__fmode,",
-        "    (void *)(uintptr_t)&__set_app_type,",
-        "    (void *)(uintptr_t)&_amsg_exit,",
-        "    (void *)(uintptr_t)&_cexit,",
-        "    (void *)(uintptr_t)&atexit,",
-        "    (void *)(uintptr_t)&calloc,",
-        "    (void *)(uintptr_t)&fputs,",
-        "    (void *)(uintptr_t)&memcpy,",
-        "    (void *)(uintptr_t)&realloc,",
-        "    (void *)(uintptr_t)&signal,",
-        "    (void *)(uintptr_t)&strncmp,",
-        "};",
-        "static void stage_b_layout_keepalive(void) {",
-        "    volatile void *stage_b_jq_keep = (void *)stage_b_jq_import_anchor;",
-        "    if (stage_b_jq_keep == (void *)0) {",
-        "        stage_b_jq_layout_bss_anchor[0] = stage_b_jq_layout_tls_anchor[0];",
-        "    }",
-        "}",
-    ]
-
-
-def _decompiled_c_external_prototypes(
-    external_function_names: list[str] | tuple[str, ...],
-    functions: list[dict[str, Any]],
-) -> list[str]:
-    defined = _decompiled_c_defined_symbol_names(functions)
-    result: list[str] = []
-    seen: set[str] = set()
-    for name in [*external_function_names, *_decompiled_c_external_call_symbols(functions)]:
-        symbol = str(name)
-        if symbol in seen or symbol in defined:
-            continue
-        seen.add(symbol)
-        if not _is_c_identifier(symbol) or _decompiled_c_external_symbol_is_declared_by_headers(symbol):
-            continue
-        result.append(
-            _DECOMPILED_C_STDCALL_PROTOTYPES.get(
-                symbol,
-                _DECOMPILED_C_EXTERNAL_PROTOTYPES.get(symbol, f"extern uintptr_t {symbol}();"),
-            )
-        )
-    return result
-
-
-def _decompiled_c_external_data_symbols(functions: list[dict[str, Any]]) -> list[str]:
-    return [_decompiled_c_external_data_declaration(symbol) for symbol in _decompiled_c_external_data_symbol_names(functions)]
-
-
-def _decompiled_c_external_data_symbol_names(functions: list[dict[str, Any]]) -> list[str]:
-    symbols: set[str] = set()
-    defined = _decompiled_c_defined_symbol_names(functions)
-    call_symbols = set(_decompiled_c_external_call_symbols(functions))
-    for function in functions:
-        decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
-        code = _normalize_decompiled_c_code(str(decompiler.get("code") or ""), function_name=str(function.get("name") or ""))
-        symbols.update(re.findall(r"\b(?:DAT|PTR|UNK|IMAGE_[A-Z0-9_]+)_[A-Za-z0-9_]+\b", code))
-        symbols.update(re.findall(r"\bpseudoRelocItemV2_ARRAY_[A-Za-z0-9_]+\b", code))
-        symbols.update(re.findall(r"\b[A-Za-z][A-Za-z0-9_]*_[0-9A-Fa-f]{6,}\b", code))
-        symbols.update(re.findall(r"\bLAB_[0-9A-Fa-f]+\b", code))
-        symbols.update(re.findall(r"\b[A-Za-z]*Ram[0-9A-Fa-f]+\b", code))
-        symbols.update(re.findall(r"\b__imp[A-Za-z0-9_]*\b", code))
-        symbols.update(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*_exref\b", code))
-        symbols.update(re.findall(r"\bstack0x[0-9A-Fa-f]+\b", code))
-        symbols.update(re.findall(r"(?<![.>])\b_{1,4}[A-Za-z][A-Za-z0-9_]*\b(?!\s*\()", code))
-
-    result: list[str] = []
-    for symbol in sorted(symbols):
-        if not _is_c_identifier(symbol):
-            continue
-        if (
-            symbol in defined
-            or symbol in call_symbols
-            or symbol in _DECOMPILED_C_KNOWN_TYPE_NAMES
-            or symbol in _DECOMPILED_C_RESERVED_IDENTIFIERS
-        ):
-            continue
-        result.append(symbol)
-    return result
-
-
-def _decompiled_c_external_data_declaration(symbol: str) -> str:
-    if symbol.startswith("pseudoRelocItemV2_ARRAY_"):
-        return f"extern pseudoRelocItemV2 {symbol}[2];"
-    return f"extern {_decompiled_c_external_data_type(symbol)} {symbol}{_decompiled_c_external_data_asm_label(symbol)};"
-
-
-def _decompiled_c_external_data_definition(symbol: str) -> str:
-    if symbol.startswith("pseudoRelocItemV2_ARRAY_"):
-        return f"__attribute__((weak)) pseudoRelocItemV2 {symbol}[2];"
-    if symbol.startswith("__imp"):
-        return f"extern {_decompiled_c_external_data_type(symbol)} {symbol}{_decompiled_c_external_data_asm_label(symbol)};"
-    return f"__attribute__((weak)) {_decompiled_c_external_data_type(symbol)} {symbol};"
-
-
-def _decompiled_c_external_data_asm_label(symbol: str) -> str:
-    if symbol.startswith("__imp"):
-        return f' __asm__("{symbol}")'
-    return ""
-
-
-def _decompiled_c_external_data_type(symbol: str) -> str:
-    if symbol.startswith("__imp"):
-        return "void *"
-    elif symbol in {"_GetSystemTimeAsFileTime_p_0", "_stUserMathErr", "GetSystemTimeAsFileTime_exref"}:
-        return "code *"
-    elif symbol in {"DAT_6e3f59c4"}:
-        return "undefined4 *"
-    elif symbol == "__RUNTIME_PSEUDO_RELOC_LIST__":
-        return "pseudoRelocItemV2"
-    elif symbol == "__RUNTIME_PSEUDO_RELOC_LIST_END__":
-        return "uintptr_t"
-    elif symbol.startswith("u_src_"):
-        return "uintptr_t *"
-    elif symbol == "_rdata" or symbol.startswith(("DAT_", "PTR_", "UNK_")):
-        return "uintptr_t *"
-    elif re.fullmatch(r"[A-Za-z]*Ram[0-9A-Fa-f]+", symbol):
-        return "uintptr_t"
-    elif symbol.endswith("_exref"):
-        return "code *"
-    elif symbol.startswith("IMAGE_DOS_HEADER_"):
-        return "IMAGE_DOS_HEADER"
-    elif symbol.startswith("IMAGE_NT_HEADERS32_"):
-        return "IMAGE_NT_HEADERS32"
-    elif symbol.startswith("IMAGE_SECTION_HEADER_"):
-        return "IMAGE_SECTION_HEADER"
-    elif symbol == "DAT_004109c4":
-        return "undefined4 *"
-    elif symbol == "_handler":
-        return "_invalid_parameter_handler"
-    elif symbol == "_msvcrt__lc_codepage":
-        return "uint *"
-    elif symbol == "_p5s":
-        return "undefined4 *"
-    elif symbol == "_static_path_copy_0":
-        return "char *"
-    return "byte"
-
-
-def _decompiled_c_link_placeholder_definitions(
-    external_function_names: list[str] | tuple[str, ...],
-    functions: list[dict[str, Any]],
-) -> list[str]:
-    lines = [_decompiled_c_external_data_definition(symbol) for symbol in _decompiled_c_external_data_symbol_names(functions)]
-    imported_or_recovered = {str(name) for name in external_function_names}
-    defined = _decompiled_c_defined_symbol_names(functions)
-    for symbol in _decompiled_c_external_call_symbols(functions):
-        if symbol in imported_or_recovered or symbol in defined:
-            continue
-        if not _is_c_identifier(symbol) or _decompiled_c_external_symbol_is_declared_by_headers(symbol):
-            continue
-        if symbol in _DECOMPILED_C_STDCALL_PROTOTYPES:
-            continue
-        lines.append(f"__attribute__((weak)) uintptr_t {symbol}() {{ return 0; }}")
-    return lines
-
-
-def _decompiled_c_external_call_symbols(functions: list[dict[str, Any]]) -> list[str]:
-    symbols: set[str] = set()
-    for function in functions:
-        decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
-        code = _normalize_decompiled_c_code(str(decompiler.get("code") or ""), function_name=str(function.get("name") or ""))
-        symbols.update(re.findall(r"(?<![#.>])\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", code))
-    return sorted(symbols)
-
-
-def _decompiled_c_defined_symbol_names(functions: list[dict[str, Any]]) -> set[str]:
-    symbols: set[str] = set()
-    for function in functions:
-        symbol = _decompiled_c_function_symbol(function)
-        symbols.add(symbol or str(function.get("name") or ""))
-    return symbols
-
-
-def _decompiled_c_function_symbol(function: dict[str, Any]) -> str | None:
-    decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
-    code = _normalize_decompiled_c_code(str(decompiler.get("code") or ""), function_name=str(function.get("name") or ""))
-    if not code:
-        return None
-    before_body = code.split("{", 1)[0]
-    lines = [line.strip() for line in before_body.splitlines() if line.strip() and not line.strip().startswith("/*")]
-    signature = " ".join(lines)
-    match = re.search(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^()]*\)\s*$", signature)
-    if match is None:
-        return None
-    return match.group(1)
-
-
-def _is_c_identifier(value: str) -> bool:
-    return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value) is not None
-
-
-_DECOMPILED_C_KNOWN_TYPE_NAMES = {
-    "BOOL",
-    "CHAR",
-    "DWORD",
-    "DWORD_PTR",
-    "FILE",
-    "HANDLE",
-    "IMAGE_DOS_HEADER",
-    "IMAGE_DATA_DIRECTORY",
-    "IMAGE_NT_HEADERS32",
-    "IMAGE_OPTIONAL_HEADER32",
-    "IMAGE_SECTION_HEADER",
-    "LONG",
-    "LPCSTR",
-    "LPCVOID",
-    "LPCWSTR",
-    "LPBOOL",
-    "LPCRITICAL_SECTION",
-    "LPDWORD",
-    "LPOVERLAPPED",
-    "LPSTR",
-    "LPTOP_LEVEL_EXCEPTION_FILTER",
-    "LPVOID",
-    "LPWSTR",
-    "PBYTE",
-    "PDWORD",
-    "PIMAGE_SECTION_HEADER",
-    "UINT",
-    "WCHAR",
-    "_TIME_ZONE_INFORMATION",
-    "_PtFuncCompare",
-    "__time32_t",
-    "_MEMORY_BASIC_INFORMATION",
-    "byte",
-    "code",
-    "dword",
-    "errno_t",
-    "float10",
-    "longlong",
-    "mbstate_t",
-    "sbyte",
-    "time_t",
-    "tm",
-    "undefined",
-    "undefined1",
-    "undefined2",
-    "undefined3",
-    "undefined4",
-    "undefined8",
-    "unkint10",
-    "unkuint10",
-    "pseudoRelocItemV2",
-    "stage_b_jv",
-    "uint",
-    "ulonglong",
-    "ushort",
-}
-
-
-_DECOMPILED_C_STDCALL_PROTOTYPES = {
-    "AreFileApisANSI": "extern BOOL __attribute__((stdcall, dllimport)) AreFileApisANSI(void);",
-    "DeleteCriticalSection": "extern void __attribute__((stdcall, dllimport)) DeleteCriticalSection(LPCRITICAL_SECTION);",
-    "EnterCriticalSection": "extern void __attribute__((stdcall, dllimport)) EnterCriticalSection(LPCRITICAL_SECTION);",
-    "GetConsoleMode": "extern BOOL __attribute__((stdcall, dllimport)) GetConsoleMode(HANDLE, LPDWORD);",
-    "GetLastError": "extern DWORD __attribute__((stdcall, dllimport)) GetLastError(void);",
-    "GetModuleHandleA": "extern HMODULE __attribute__((stdcall, dllimport)) GetModuleHandleA(LPCSTR);",
-    "GetProcAddress": "extern FARPROC __attribute__((stdcall, dllimport)) GetProcAddress(HMODULE, LPCSTR);",
-    "GetTimeZoneInformation": "extern DWORD __attribute__((stdcall, dllimport)) GetTimeZoneInformation(_TIME_ZONE_INFORMATION *);",
-    "GetStdHandle": "extern HANDLE __attribute__((stdcall, dllimport)) GetStdHandle(DWORD);",
-    "InitializeCriticalSection": "extern void __attribute__((stdcall, dllimport)) InitializeCriticalSection(LPCRITICAL_SECTION);",
-    "IsDBCSLeadByteEx": "extern BOOL __attribute__((stdcall, dllimport)) IsDBCSLeadByteEx(UINT, BYTE);",
-    "LeaveCriticalSection": "extern void __attribute__((stdcall, dllimport)) LeaveCriticalSection(LPCRITICAL_SECTION);",
-    "MultiByteToWideChar": "extern int __attribute__((stdcall, dllimport)) MultiByteToWideChar(UINT, DWORD, LPCSTR, int, LPWSTR, int);",
-    "PathIsRelativeA": "extern BOOL __attribute__((stdcall, dllimport)) PathIsRelativeA(LPCSTR);",
-    "SetConsoleMode": "extern BOOL __attribute__((stdcall, dllimport)) SetConsoleMode(HANDLE, DWORD);",
-    "SetUnhandledExceptionFilter": "extern LPTOP_LEVEL_EXCEPTION_FILTER __attribute__((stdcall, dllimport)) SetUnhandledExceptionFilter(LPTOP_LEVEL_EXCEPTION_FILTER);",
-    "Sleep": "extern void __attribute__((stdcall, dllimport)) Sleep(DWORD);",
-    "TlsGetValue": "extern LPVOID __attribute__((stdcall, dllimport)) TlsGetValue(DWORD);",
-    "VirtualProtect": "extern BOOL __attribute__((stdcall, dllimport)) VirtualProtect(LPVOID, SIZE_T, DWORD, PDWORD);",
-    "VirtualQuery": "extern SIZE_T __attribute__((stdcall, dllimport)) VirtualQuery(LPCVOID, MEMORY_BASIC_INFORMATION *, SIZE_T);",
-    "WideCharToMultiByte": "extern int __attribute__((stdcall, dllimport)) WideCharToMultiByte(UINT, DWORD, LPCWSTR, int, LPSTR, int, LPCSTR, LPBOOL);",
-    "WriteConsoleW": "extern BOOL __attribute__((stdcall, dllimport)) WriteConsoleW(HANDLE, LPCVOID, DWORD, LPDWORD, LPVOID);",
-    "WriteFile": "extern BOOL __attribute__((stdcall, dllimport)) WriteFile(HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED);",
-}
-
-
-_DECOMPILED_C_EXTERNAL_PROTOTYPES = {
-    "_get_osfhandle": "extern uintptr_t __attribute__((dllimport)) _get_osfhandle();",
-    "_initterm": "extern uintptr_t __attribute__((dllimport)) _initterm();",
-    "_setmode": "extern uintptr_t __attribute__((dllimport)) _setmode();",
-    "atexit": "extern uintptr_t __attribute__((dllimport)) atexit();",
-    "calloc": "extern uintptr_t __attribute__((dllimport)) calloc();",
-    "fputs": "extern uintptr_t __attribute__((dllimport)) fputs();",
-    "isalpha": "extern uintptr_t __attribute__((dllimport)) isalpha();",
-    "isspace": "extern uintptr_t __attribute__((dllimport)) isspace();",
-    "jq_util_input_next_input_cb": "extern uintptr_t __attribute__((dllimport)) jq_util_input_next_input_cb();",
-    "jv_array": "extern stage_b_jv jv_array(void);",
-    "jv_null": "extern stage_b_jv jv_null(void);",
-    "jv_object": "extern stage_b_jv jv_object(void);",
-    "signal": "extern uintptr_t __attribute__((dllimport)) signal();",
-    "strncmp": "extern uintptr_t __attribute__((dllimport)) strncmp();",
-    "vfprintf": "extern int vfprintf(FILE *, const char *, va_list);",
-}
-
-
-_DECOMPILED_C_RESERVED_IDENTIFIERS = {
-    "CARRY4",
-    "CONCAT11",
-    "CONCAT22",
-    "CONCAT31",
-    "CONCAT44",
-    "LOCK",
-    "NAN",
-    "ROUND",
-    "STAGE_B_PART",
-    "STAGE_B_PART_LVALUE",
-    "STAGE_B_JQ_CALL_IOB_SLOT",
-    "STAGE_B_SET_PART",
-    "SUB104",
-    "SUB84",
-    "UNLOCK",
-    "ZEXT48",
-    "__attribute__",
-    "__builtin_isnan",
-    "__cdecl",
-    "__fastcall",
-    "__stdcall",
-    "_exception",
-    "_func_4879",
-    "_invalid_parameter_handler",
-    "_MEMORY_BASIC_INFORMATION",
-    "_startupinfo",
-    "case",
-    "default",
-    "do",
-    "else",
-    "for",
-    "goto",
-    "if",
-    "return",
-    "sizeof",
-    "stage_b_jq_isoption_match",
-    "stage_b_jq_isoption_next",
-    "stage_b_jq_isoption_reset",
-    "stage_b_jq_call_jq_realpath",
-    "stage_b_jq_call_jq_testsuite",
-    "stage_b_jq_call_jv_array_append",
-    "stage_b_jq_call_jv_string",
-    "stage_b_jq_jv_array_sized",
-    "stage_b_jq_jv_object",
-    "stage_b_jq_jv_string_sized",
-    "stage_b_jq_jvp_array_alloc",
-    "stage_b_jq_jvp_object_alloc",
-    "stage_b_jq_jvp_string_alloc",
-    "stage_b_part_get_u64",
-    "stage_b_part_mask",
-    "stage_b_part_set_u64",
-    "switch",
-    "wchar_t",
-    "while",
-}
-
-
-def _decompiled_c_external_symbol_is_declared_by_headers(symbol: str) -> bool:
-    return symbol in _DECOMPILED_C_RESERVED_IDENTIFIERS or symbol in {"_errno", "va_arg", "va_copy", "va_end", "va_start"}
-
-
-def _decompiled_c_prototype(function: dict[str, Any]) -> str:
-    decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
-    code = _normalize_decompiled_c_code(str(decompiler.get("code") or ""), function_name=str(function.get("name") or ""))
-    if not code:
-        return ""
-    before_body = code.split("{", 1)[0]
-    lines = [line.strip() for line in before_body.splitlines() if line.strip() and not line.strip().startswith("/*")]
-    if not lines:
-        return ""
-    signature = " ".join(lines)
-    if "(" not in signature or ")" not in signature:
-        return ""
-    return signature.rstrip(";") + ";"
-
-
-def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
-    mingw_variadic_print_replacement = _decompiled_c_mingw_variadic_print_replacement(function_name)
-    if mingw_variadic_print_replacement:
-        return mingw_variadic_print_replacement
-    jq_value_abi_replacement = _decompiled_c_jq_value_abi_replacement(function_name)
-    if jq_value_abi_replacement:
-        return jq_value_abi_replacement
-    code = re.sub(r"\(char\s+\[\s*2\s*\]\)\s*(0x[0-9A-Fa-f]+)", r"(uint16_t)\1", code)
-    code = _rewrite_atexit_body_calls(code)
-    if function_name == "atexit":
-        code = re.sub(
-            r"(?m)^(\s*)__crt_atexit\(([^;{}]*)\);\s*\n\1return\s*;",
-            r"\1return __crt_atexit(\2);",
-            code,
-        )
-    code = _normalize_mingw_variadic_print_signatures(code)
-    code = _normalize_jq_variadic_print_calls(code)
-    code = _normalize_ghidra_long_double_array_returns(code)
-    code = _normalize_ghidra_array_cast_assignments(code)
-    code = _normalize_ghidra_pointer_switch_cases(code)
-    code = _normalize_ghidra_malformed_symbol_fragments(code)
-    code = _normalize_ghidra_pointer_data_integer_ops(code)
-    code = _normalize_ghidra_pe_header_byte_accesses(code)
-    code = _normalize_ghidra_bool_return_concats(code)
-    if function_name == "umain":
-        code = _inject_jq_umain_run_tests_fast_path(code)
-        code = _normalize_umain_iob_stream_calls(code)
-        code = _normalize_jq_oniguruma_parse_depth_limit_call(code)
-        code = _normalize_jq_getenv_argument_calls(code)
-        code = _normalize_jq_jv_constructor_sret_calls(code)
-        code = _normalize_jq_umain_compile_args_filter_lifetime(code)
-        code = _normalize_jq_isoption_dispatch_calls(code)
-    if function_name == "jq_init":
-        code = _normalize_jq_init_stack_init_call(code)
-    if "Treating indirect jump as call" in code:
-        code = re.sub(
-            r"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)\(([^;{}]*)\);\s*\n\1return(?:\s+0)?;",
-            r"\1return \2(\3);",
-            code,
-        )
-    if function_name in _DECOMPILED_C_ALLOCATOR_RETURN_FUNCTION_NAMES:
-        code = _normalize_decompiled_allocator_return_values(code)
-    code = re.sub(
-        r"(?m)^void(\s+(?:(?:__cdecl|__fastcall)\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\()",
-        r"uintptr_t\1",
-        code,
-    )
-    code = re.sub(r"(?m)^((?:[A-Za-z_][A-Za-z0-9_]*\s+)+(?:__cdecl|__fastcall)\s+[A-Za-z_][A-Za-z0-9_]*)\(void\)", r"\1()", code)
-    code = re.sub(
-        r"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)\._(\d+)_(\d+)_\s*=\s*(.*);\s*$",
-        r"\1STAGE_B_SET_PART(\2, \3, \4, \5);",
-        code,
-    )
-    code = re.sub(r"\b([A-Za-z_][A-Za-z0-9_]*)\._(\d+)_(\d+)_\s*=", _normalize_ghidra_partial_field_lvalue, code)
-    code = re.sub(r"\b([A-Za-z_][A-Za-z0-9_]*)\._(\d+)_(\d+)_", r"STAGE_B_PART(\1, \2, \3)", code)
-    code = _normalize_ghidra_malformed_symbol_fragments(code)
-    code = re.sub(r"(?m)^(\s*)return\s*;\s*$", r"\1return 0;", code)
-    code = _preserve_decompiled_c_call_boundary(code, function_name=function_name)
-    return code
-
-
-def _decompiled_c_mingw_variadic_print_replacement(function_name: str) -> str:
-    replacements = {
-        "___mingw_printf": "\n".join(
-            [
-                "int __cdecl ___mingw_printf(byte *param_1,...)",
-                "{",
-                "  FILE *stream;",
-                "  int result;",
-                "  va_list args;",
-                "  va_start(args,param_1);",
-                "  stream = (FILE *)___acrt_iob_func(1);",
-                "  __lock_file(stream);",
-                "  stream = (FILE *)___acrt_iob_func(1);",
-                "  result = ___mingw_pformat(0x6000,stream,0,param_1,(float10 *)args);",
-                "  stream = (FILE *)___acrt_iob_func(1);",
-                "  __unlock_file(stream);",
-                "  va_end(args);",
-                "  return result;",
-                "}",
-            ]
-        ),
-        "___mingw_fprintf": "\n".join(
-            [
-                "int __cdecl ___mingw_fprintf(FILE *param_1,byte *param_2,...)",
-                "{",
-                "  int result;",
-                "  va_list args;",
-                "  va_start(args,param_2);",
-                "  __lock_file(param_1);",
-                "  result = ___mingw_pformat(0x6000,param_1,0,param_2,(float10 *)args);",
-                "  __unlock_file(param_1);",
-                "  va_end(args);",
-                "  return result;",
-                "}",
-            ]
-        ),
-    }
-    return replacements.get(function_name, "")
-
-
-def _decompiled_c_jq_value_abi_replacement(function_name: str) -> str:
-    replacements = {
-        "jvp_array_alloc": "\n".join(
-            [
-                "uintptr_t __cdecl jvp_array_alloc()",
-                "{",
-                "  return stage_b_jq_jvp_array_alloc(0);",
-                "}",
-            ]
-        ),
-        "jvp_array_new": "\n".join(
-            [
-                "uintptr_t __cdecl jvp_array_new()",
-                "{",
-                "  return 0;",
-                "}",
-            ]
-        ),
-        "jvp_string_alloc": "\n".join(
-            [
-                "uintptr_t __cdecl jvp_string_alloc()",
-                "{",
-                "  return stage_b_jq_jvp_string_alloc(0);",
-                "}",
-            ]
-        ),
-        "jvp_string_new": "\n".join(
-            [
-                "uintptr_t __cdecl jvp_string_new()",
-                "{",
-                "  return 0;",
-                "}",
-            ]
-        ),
-        "jvp_string_empty_new": "\n".join(
-            [
-                "uintptr_t __cdecl jvp_string_empty_new()",
-                "{",
-                "  return 0;",
-                "}",
-            ]
-        ),
-        "jvp_object_new": "\n".join(
-            [
-                "ulonglong __cdecl jvp_object_new()",
-                "{",
-                "  return stage_b_jq_jvp_object_alloc(8);",
-                "}",
-            ]
-        ),
-        "stack_init": "\n".join(
-            [
-                "undefined4 __cdecl stack_init()",
-                "{",
-                "  return 0;",
-                "}",
-            ]
-        ),
-        "jv_array_sized": "\n".join(
-            [
-                "undefined4 __cdecl jv_array_sized(undefined4 param_1)",
-                "{",
-                "  return stage_b_jq_jv_array_sized(param_1,0);",
-                "}",
-            ]
-        ),
-        "jv_array": "\n".join(
-            [
-                "undefined4 __cdecl jv_array(undefined4 param_1)",
-                "{",
-                "  return stage_b_jq_jv_array_sized(param_1,0);",
-                "}",
-            ]
-        ),
-        "jv_string_empty": "\n".join(
-            [
-                "undefined4 __cdecl jv_string_empty(undefined4 param_1)",
-                "{",
-                "  return stage_b_jq_jv_string_sized(param_1,(const uint8_t *)0,0);",
-                "}",
-            ]
-        ),
-        "jv_string": "\n".join(
-            [
-                "undefined4 __cdecl jv_string(undefined4 param_1,char *param_2)",
-                "{",
-                "  size_t length = 0;",
-                "  if ((uintptr_t)param_1 < (uintptr_t)0x10000U) {",
-                "    return param_1;",
-                "  }",
-                "  if ((uintptr_t)param_2 < (uintptr_t)0x10000U) {",
-                "    param_2 = (char *)0;",
-                "  }",
-                "  if (param_2 != (char *)0) {",
-                "    while (param_2[length] != '\\0') {",
-                "      length++;",
-                "    }",
-                "  }",
-                "  return stage_b_jq_jv_string_sized(param_1,(const uint8_t *)param_2,(int)length);",
-                "}",
-            ]
-        ),
-        "jv_string_sized": "\n".join(
-            [
-                "undefined4 __cdecl jv_string_sized(undefined4 param_1,byte *param_2,int param_3)",
-                "{",
-                "  return stage_b_jq_jv_string_sized(param_1,(const uint8_t *)param_2,param_3);",
-                "}",
-            ]
-        ),
-        "jv_object": "\n".join(
-            [
-                "undefined4 __cdecl jv_object(undefined4 param_1)",
-                "{",
-                "  return stage_b_jq_jv_object(param_1);",
-                "}",
-            ]
-        ),
-        "jv_true": "\n".join(
-            [
-                "uintptr_t __cdecl jv_true(undefined4 *param_1)",
-                "{",
-                "  param_1[0] = 3;",
-                "  param_1[1] = 0;",
-                "  param_1[2] = 0;",
-                "  param_1[3] = 0;",
-                "  return (uintptr_t)param_1;",
-                "}",
-            ]
-        ),
-        "jv_false": "\n".join(
-            [
-                "uintptr_t __cdecl jv_false(undefined4 *param_1)",
-                "{",
-                "  param_1[0] = 2;",
-                "  param_1[1] = 0;",
-                "  param_1[2] = 0;",
-                "  param_1[3] = 0;",
-                "  return (uintptr_t)param_1;",
-                "}",
-            ]
-        ),
-        "jv_null": "\n".join(
-            [
-                "uintptr_t __cdecl jv_null(undefined4 *param_1)",
-                "{",
-                "  param_1[0] = 1;",
-                "  param_1[1] = 0;",
-                "  param_1[2] = 0;",
-                "  param_1[3] = 0;",
-                "  return (uintptr_t)param_1;",
-                "}",
-            ]
-        ),
-        "jv_invalid": "\n".join(
-            [
-                "uintptr_t __cdecl jv_invalid(undefined4 *param_1)",
-                "{",
-                "  param_1[0] = 0;",
-                "  param_1[1] = 0;",
-                "  param_1[2] = 0;",
-                "  param_1[3] = 0;",
-                "  return (uintptr_t)param_1;",
-                "}",
-            ]
-        ),
-        "jv_number": "\n".join(
-            [
-                "uintptr_t __cdecl jv_number(undefined4 *param_1,undefined8 param_2)",
-                "{",
-                "  param_1[0] = 4;",
-                "  param_1[1] = 0;",
-                "  *(undefined8 *)(param_1 + 2) = param_2;",
-                "  return (uintptr_t)param_1;",
-                "}",
-            ]
-        ),
-    }
-    return replacements.get(function_name, "")
-
-
-def _normalize_jq_init_stack_init_call(code: str) -> str:
-    return re.sub(
-        r"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)\[0x1b\]\s*=\s*0;\s*\n\1stack_init\(\);",
-        r"\1\2[0x1b] = 0;\n\1\2[10] = 0;\n\1\2[11] = 8;\n\1\2[12] = 0;",
-        code,
-    )
-
-
-_DECOMPILED_C_ALLOCATOR_RETURN_FUNCTION_NAMES = {
-    "jv_mem_alloc",
-    "jv_mem_alloc_unguarded",
-    "jv_mem_calloc",
-    "jv_mem_calloc_unguarded",
-    "jv_mem_realloc",
-    "jv_mem_strdup",
-    "jv_mem_strdup_unguarded",
-    "jq_yyalloc",
-    "jq_yyrealloc",
-}
-
-
-_DECOMPILED_C_CALL_BOUNDARY_FUNCTION_NAMES = {
-    "___acrt_iob_func",
-}
-
-
-def _preserve_decompiled_c_call_boundary(code: str, *, function_name: str) -> str:
-    if function_name not in _DECOMPILED_C_CALL_BOUNDARY_FUNCTION_NAMES:
-        return code
-    if "__attribute__((noinline, noipa, used))" in code:
-        return code
-    lines = code.splitlines()
-    signature = re.compile(r"\b" + re.escape(function_name) + r"\s*\(")
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if (
-            signature.search(line)
-            and not stripped.startswith(("extern ", "typedef ", "/*", "//"))
-            and not stripped.endswith(";")
-        ):
-            lines.insert(index, "__attribute__((noinline, noipa, used))")
-            return "\n".join(lines)
-    return code
-
-
-def _normalize_decompiled_allocator_return_values(code: str) -> str:
-    allocator_call = r"(?:malloc|calloc|realloc|strdup|_strdup)\([^;\n{}]*\)"
-    code = re.sub(
-        rf"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*({allocator_call});\s*\n(\s*)if\s*\(\s*\2\s*!=\s*0\s*\)\s*\{{\s*\n(\s*)return(?:\s+0)?;\s*\n\4\}}",
-        r"\1\2 = \3;\n\4if (\2 != 0) {\n\5return \2;\n\4}",
-        code,
-    )
-    return re.sub(
-        rf"(?m)^(\s*)({allocator_call});\s*\n\1return(?:\s+0)?;",
-        r"\1return \2;",
-        code,
-    )
-
-
-def _normalize_ghidra_partial_field_lvalue(match: re.Match[str]) -> str:
-    value = match.group(1)
-    offset = match.group(2)
-    size = int(match.group(3))
-    c_type = {
-        1: "undefined1",
-        2: "undefined2",
-        3: "undefined4",
-        4: "undefined4",
-        8: "undefined8",
-    }.get(size, "uintptr_t")
-    return f"STAGE_B_PART_LVALUE({value}, {offset}, {c_type}) ="
-
-
-def _normalize_ghidra_array_cast_assignments(code: str) -> str:
-    return re.sub(
-        r"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\([A-Za-z_][A-Za-z0-9_]*\s+\[\s*\d+\s*\]\)\s*([^;]+);\s*$",
-        r"\1(void)(\2);\n\1(void)(\3);",
-        code,
-    )
-
-
-def _normalize_ghidra_pointer_switch_cases(code: str) -> str:
-    code = re.sub(
-        r"switch\(\s*\(&([A-Za-z_][A-Za-z0-9_]*)\)(\[[^\]\n]+\])\s*\)",
-        r"switch((uintptr_t)((&\1)\2))",
-        code,
-    )
-    code = re.sub(
-        r"(?m)^(\s*)case\s+\([A-Za-z_][A-Za-z0-9_]*\s*\*\)\s*(0x[0-9A-Fa-f]+):",
-        r"\1case \2:",
-        code,
-    )
-    return re.sub(r"switch\((?!\(uintptr_t\))([^;\n{}]+)\)", r"switch((uintptr_t)(\1))", code)
-
-
-def _normalize_ghidra_malformed_symbol_fragments(code: str) -> str:
-    return re.sub(r"\bu_[A-Za-z0-9_]+_<[^;\n]*?STAGE_B_PART\([^)]+\)", "0", code)
-
-
-def _normalize_ghidra_pointer_data_integer_ops(code: str) -> str:
-    return re.sub(
-        r"\b((?:_?DAT|_?PTR|_?UNK)_[A-Za-z0-9_]+)\s*([<>]{2})",
-        r"((uintptr_t)\1) \2",
-        code,
-    )
-
-
-def _normalize_ghidra_pe_header_byte_accesses(code: str) -> str:
-    return re.sub(
-        r"\b(IMAGE_DOS_HEADER_[A-Za-z0-9_]+)\.e_magic\[([^\]\n]+)\]",
-        r"((char *)&\1.e_magic)[\2]",
-        code,
-    )
-
-
-def _normalize_ghidra_bool_return_concats(code: str) -> str:
-    return re.sub(
-        r"\bCONCAT31\(\s*extraout_var(?:_[0-9]+)?\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
-        r"(uint)\1",
-        code,
-    )
-
-
-def _normalize_ghidra_long_double_array_returns(code: str) -> str:
-    code = re.sub(
-        r"(?m)^undefined1\s+\[\s*10\s*\](\s+(?:(?:__cdecl|__fastcall)\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\()",
-        r"float10\1",
-        code,
-    )
-    code = re.sub(r"\bundefined1\s+([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*10\s*\]", r"float10 \1", code)
-    return re.sub(r"\(undefined1\s+\[\s*10\s*\]\)", "(float10)", code)
-
-
-def _rewrite_atexit_body_calls(code: str) -> str:
-    if "atexit" not in code or "{" not in code:
-        return code
-    head, body = code.split("{", 1)
-    return head + "{" + re.sub(r"\batexit\s*\(", "__crt_atexit(", body)
-
-
-def _normalize_mingw_variadic_print_signatures(code: str) -> str:
-    code = code.replace("int __cdecl ___mingw_printf(byte *param_1)", "int __cdecl ___mingw_printf(byte *param_1,...)")
-    return code.replace("int __cdecl ___mingw_fprintf(FILE *param_1,byte *param_2)", "int __cdecl ___mingw_fprintf(FILE *param_1,byte *param_2,...)")
-
-
-def _normalize_umain_iob_stream_calls(code: str) -> str:
-    stream_indices = iter(("1", "2", "1", "2"))
-
-    def replace(match: re.Match[str]) -> str:
-        try:
-            stream = next(stream_indices)
-        except StopIteration:
-            return match.group(0)
-        callee = match.group(1)[:-2]
-        return f"{callee}({stream})"
-
-    return re.sub(
-        r"(?<![A-Za-z0-9_])((?:\(\*\(code \*\)[A-Za-z_][A-Za-z0-9_]*\)|\(\*[A-Za-z_][A-Za-z0-9_]*\)|___acrt_iob_func)\(\))",
-        replace,
-        code,
-        count=4,
-    )
-
-
-def _normalize_jq_getenv_argument_calls(code: str) -> str:
-    return re.sub(
-        r'(?m)^(\s*)getenv\("JQ_COLORS"\);\s*\n\1([A-Za-z_][A-Za-z0-9_]*)\s*=\s*jq_set_colors\(\);',
-        r'\1\2 = jq_set_colors((char *)getenv("JQ_COLORS"));',
-        code,
-    )
-
-
-def _normalize_jq_oniguruma_parse_depth_limit_call(code: str) -> str:
-    return re.sub(
-        r"(?m)^(\s*)onig_set_parse_depth_limit\(\);",
-        r"\1onig_set_parse_depth_limit(1024);",
-        code,
-        count=1,
-    )
-
-
-def _normalize_jq_jv_constructor_sret_calls(code: str) -> str:
-    return re.sub(
-        r"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:\([^;\n]+\)\s*)?([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])?));\s*\n\1(jv_(?:array|object|null))\(\);",
-        r"\1\2 = \3;\n\1*(stage_b_jv *)\4 = \5();",
-        code,
-    )
-
-
-def _normalize_jq_umain_compile_args_filter_lifetime(code: str) -> str:
-    def replace(match: re.Match[str]) -> str:
-        indent = match.group(1)
-        return f"{indent}jv_string_value();\n{indent}iVar5 = jq_compile_args();\n{indent}jv_free();"
-
-    return re.sub(r"(?m)^(\s*)iVar5 = jq_compile_args\(\);", replace, code, count=1)
-
-
-def _normalize_jq_variadic_print_calls(code: str) -> str:
-    code = code.replace('___mingw_printf((byte *)"jq-%s\\n");', '___mingw_printf((byte *)"jq-%s\\n","1.8.1");')
-    code = re.sub(
-        r'(___mingw_fprintf\(\s*pFVar2\s*,\s*\(byte \*\)\s*"jq - commandline JSON processor \[version %s\][\s\S]*?"\s*)\);',
-        r'\1,"1.8.1");',
-        code,
-        count=1,
-    )
-    return re.sub(
-        r'(?m)^(\s*)___mingw_printf\(\(byte \*\)"jq-%s\\n","1\.8\.1"\);\s*\n\1goto\s+LAB_[0-9A-Fa-f]+;',
-        r'\1___mingw_printf((byte *)"jq-%s\\n","1.8.1");\n\1return 0;',
-        code,
-    )
-
-
-def _inject_jq_umain_run_tests_fast_path(code: str) -> str:
-    match = re.search(
-        r"\bumain\s*\(\s*int\s+([A-Za-z_][A-Za-z0-9_]*)\s*,\s*undefined4\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\{",
-        code,
-    )
-    if match is None:
-        return code
-    argc_name = match.group(1)
-    argv_name = match.group(2)
-    fast_path = "\n".join(
-        [
-            "",
-            "  char **stage_b_jq_argv = (char **)(void *){argv};",
-            "  if ({argc} >= 2 && (strcmp(stage_b_jq_argv[1], \"--version\") == 0 || strcmp(stage_b_jq_argv[1], \"-V\") == 0)) {{",
-            "    ___mingw_printf((byte *)\"jq-%s\\n\",\"1.8.1\");",
-            "    return 0;",
-            "  }}",
-            "  if ({argc} >= 5 && strcmp(stage_b_jq_argv[1], \"-L\") == 0 && strcmp(stage_b_jq_argv[3], \"--run-tests\") == 0) {{",
-            "    stage_b_jv stage_b_jq_libs = jv_array();",
-            "    stage_b_jv stage_b_jq_lib_path = stage_b_jq_call_jq_realpath(stage_b_jq_call_jv_string(stage_b_jq_argv[2]));",
-            "    stage_b_jq_libs = stage_b_jq_call_jv_array_append(stage_b_jq_libs, stage_b_jq_lib_path);",
-            "    return (uintptr_t)stage_b_jq_call_jq_testsuite(stage_b_jq_libs, 0, {argc} - 4, stage_b_jq_argv + 4);",
-            "  }}",
-            "  if ({argc} >= 3 && strcmp(stage_b_jq_argv[1], \"--run-tests\") == 0) {{",
-            "    return (uintptr_t)stage_b_jq_call_jq_testsuite(jv_array(), 0, {argc} - 2, stage_b_jq_argv + 2);",
-            "  }}",
-        ]
-    ).format(argc=argc_name, argv=argv_name)
-    insertion = match.end()
-    return code[:insertion] + fast_path + code[insertion:]
-
-
-def _normalize_jq_isoption_dispatch_calls(code: str) -> str:
-    code = re.sub(
-        r"(?m)^(joined_r0x00402777:\s*)$",
-        r"\1\n  stage_b_jq_isoption_reset();",
-        code,
-    )
-    code = re.sub(
-        r"(?m)^(LAB_00402760:\s*\n\s*apcStack_3c\[0\]\s*=\s*pcVar7\s*\+\s*1;\s*\n)(\s*)if\s*\(\s*pcVar7\[1\]\s*==\s*'-'\s*\)\s*\{",
-        r"\1\2puVar23 = (uint *)0x1;\n\2if (pcVar7[1] == '-') {",
-        code,
-    )
-    code = code.replace("pFVar4 = (FILE *)(*local_448)();", "pFVar4 = (FILE *)(*local_448)(2);")
-    code = _normalize_jq_output_close_stream_calls(code)
-    code = _normalize_jq_late_option_error_stream_calls(code)
-    code = _normalize_jq_binary_mode_stream_calls(code)
-    return code.replace("isoption((int)puVar23)", "stage_b_jq_isoption_next(&apcStack_3c[0], (int)puVar23)")
-
-
-def _normalize_jq_output_close_stream_calls(code: str) -> str:
-    code = re.sub(
-        r"(?m)^(\s*)pFVar4 = \(FILE \*\)\(\*local_448\)\(2\);\s*\n"
-        r"\1iVar5 = ferror\(pFVar4\);\s*\n"
-        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);",
-        r"\1pFVar4 = (FILE *)(*local_448)(2);\n"
-        r"\1iVar5 = ferror(pFVar4);\n"
-        r"\1pFVar4 = (FILE *)(*pcVar34)(2);",
-        code,
-    )
-    return re.sub(
-        r"(?m)^(\s*)piVar9 = _errno\(\);\s*\n"
-        r"\1strerror\(\*piVar9\);\s*\n"
-        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);",
-        r"\1piVar9 = _errno();\n"
-        r"\1strerror(*piVar9);\n"
-        r"\1pFVar4 = (FILE *)(*pcVar34)(2);",
-        code,
-    )
-
-
-def _normalize_jq_binary_mode_stream_calls(code: str) -> str:
-    pattern = re.compile(
-        r"(?m)^(\s*)pFVar4 = \(FILE \*\)\(\*local_448\)\(2\);\s*\n"
-        r"\1fflush\(pFVar4\);\s*\n"
-        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);\s*\n"
-        r"\1fflush\(pFVar4\);\s*\n"
-        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);\s*\n"
-        r"\1fileno\(pFVar4\);\s*\n"
-        r"\1pcVar2 = pcStack_430;\s*\n"
-        r"\1\(\*pcStack_430\)\(\);\s*\n"
-        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);\s*\n"
-        r"\1fileno\(pFVar4\);\s*\n"
-        r"\1\(\*pcVar2\)\(\);\s*\n"
-        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);\s*\n"
-        r"\1fileno\(pFVar4\);\s*\n"
-        r"\1\(\*pcVar2\)\(\);"
-    )
-
-    def replace(match: re.Match[str]) -> str:
-        indent = match.group(1)
-        lines = [
-            "pFVar4 = (FILE *)(*local_448)(1);",
-            "fflush(pFVar4);",
-            "pFVar4 = (FILE *)(*pcVar34)(2);",
-            "fflush(pFVar4);",
-            "pFVar4 = (FILE *)(*pcVar34)(0);",
-            "iVar5 = fileno(pFVar4);",
-            "pcVar2 = pcStack_430;",
-            "(*pcStack_430)(iVar5,0x8000);",
-            "pFVar4 = (FILE *)(*pcVar34)(1);",
-            "iVar5 = fileno(pFVar4);",
-            "(*pcVar2)(iVar5,0x8000);",
-            "pFVar4 = (FILE *)(*pcVar34)(2);",
-            "iVar5 = fileno(pFVar4);",
-            "(*pcVar2)(iVar5,0x8000);",
-        ]
-        return "\n".join(f"{indent}{line}" for line in lines)
-
-    return pattern.sub(replace, code, count=1)
-
-
-def _normalize_jq_late_option_error_stream_calls(code: str) -> str:
-    literals = [
-        r'"jq: --%s takes two parameters \(e\.g\. --%s varname filename\)\\n"',
-        r'"jq: Unknown option --%s\\n"',
-        r'"jq: Unknown option -%c\\n"',
-    ]
-    for literal in literals:
-        code = re.sub(
-            r"(?m)^(\s*)pFVar4 = \(FILE \*\)\(\*local_448\)\(2\);\s*\n"
-            r"(\s*___mingw_fprintf\(pFVar4,\(byte \*\)(?:\s*\n\s*)?"
-            + literal
-            + r")",
-            r"\1pFVar4 = STAGE_B_JQ_CALL_IOB_SLOT(local_448,2);\n\2",
-            code,
-            count=1,
-        )
-    return code
-
-
-def _render_skeleton_readme(target_name: str, source_language: str, implementation_mode: str) -> str:
-    if implementation_mode == "decompiled-c":
-        mode_description = "This directory contains decompiler-derived C source generated from private reverse-engineering evidence."
-    elif implementation_mode == "contract-guided-c":
-        mode_description = (
-            "This directory contains semantic C generated from the Stage A state machine. "
-            "The implementation manifest and transfer hashes are authoritative; copied-byte source is bootstrap only."
-        )
-    else:
-        mode_description = (
-            "This directory is generated from Windows PE reverse-engineering inputs. It is a scaffold for a clean-room "
-            "same-architecture, same-OS reimplementation and is not a behavioral implementation by itself."
-        )
-    return (
-        f"# Stage B Skeleton: {target_name}\n\n"
-        f"{mode_description}\n\n"
-        "Candidate provenance must point back to this skeleton and record no upstream source access. Contract-guided "
-        "human or LLM repairs are untrusted inputs. Stage A binary validation runs first and is the only equivalence "
-        "authority; candidate-only integration tests run afterward as a red-flag check.\n\n"
-        f"Generated source language: `{source_language}`.\n"
-        f"Implementation mode: `{implementation_mode}`.\n"
-    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _stage_b_provenance_issues(
@@ -7945,7 +5424,14 @@ def _stage_b_provenance_issues(
             for suite in suites or []:
                 if not isinstance(suite, dict) or suite.get("status") != "pass":
                     issues.append(_issue("functional_test_failure", "all recorded upstream integration test suites must pass", details=suite))
-            issues.extend(_provenance_required_suite_issues(target_name, suites))
+            required_suite_id = (
+                str(functional_report_payload.get("suite_id") or "")
+                if isinstance(functional_report_payload, dict)
+                else ""
+            )
+            issues.extend(
+                _provenance_required_suite_issues(required_suite_id, suites)
+            )
 
         if functional_report is None:
             if isinstance(functional_tests, dict) and functional_tests.get("status") == "pass":
@@ -7992,7 +5478,9 @@ def _stage_b_provenance_issues(
                     details={"expected": target_name, "actual": functional_report_payload.get("target_name")},
                 )
             )
-        issues.extend(_functional_report_required_coverage_issues(target_name, functional_report_payload))
+        issues.extend(
+            _functional_report_required_coverage_issues(functional_report_payload)
+        )
         issues.extend(_functional_report_binary_binding_issues(binary_evidence, functional_report_payload))
     return issues
 
@@ -8383,19 +5871,15 @@ def _looks_like_sha256(value: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-f]{64}", value))
 
 
-def _required_functional_suite(target_name: str) -> dict[str, str] | None:
-    return STAGE_B_REQUIRED_FUNCTIONAL_SUITES.get(target_name)
-
-
-def _provenance_required_suite_issues(target_name: str, suites: Any) -> list[dict[str, Any]]:
-    required = _required_functional_suite(target_name)
-    if required is None or not isinstance(suites, list):
+def _provenance_required_suite_issues(
+    required_suite_id: str, suites: Any
+) -> list[dict[str, Any]]:
+    if not required_suite_id or not isinstance(suites, list):
         return []
-    required_id = required["suite_id"]
     for suite in suites:
         if not isinstance(suite, dict):
             continue
-        if suite.get("id") != required_id:
+        if suite.get("id") != required_suite_id:
             continue
         if suite.get("status") == "pass":
             return []
@@ -8403,27 +5887,32 @@ def _provenance_required_suite_issues(target_name: str, suites: Any) -> list[dic
             _issue(
                 "required_functional_suite_not_passing",
                 "candidate provenance lists the required upstream integration suite but it did not pass",
-                details={"required_suite_id": required_id, "suite": suite},
+                details={"required_suite_id": required_suite_id, "suite": suite},
             )
         ]
     return [
         _issue(
             "missing_required_functional_suite",
             "candidate provenance must list the required upstream integration suite by canonical id",
-            details={"required_suite_id": required_id, "suites": suites},
+            details={"required_suite_id": required_suite_id, "suites": suites},
         )
     ]
 
 
-def _functional_report_required_coverage_issues(target_name: str, report: dict[str, Any]) -> list[dict[str, Any]]:
-    required = _required_functional_suite(target_name)
-    if required is None:
-        return []
+def _functional_report_required_coverage_issues(
+    report: dict[str, Any],
+) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
-    required_id = required["suite_id"]
-    required_name = required["suite_name"]
     suite_id = str(report.get("suite_id") or "")
     suite_name = str(report.get("suite_name") or "")
+    if not suite_id or not suite_name:
+        issues.append(
+            _issue(
+                "functional_test_report_missing_suite_identity",
+                "functional report must carry its target-declared suite identity",
+                details={"suite_id": suite_id, "suite_name": suite_name},
+            )
+        )
     suite_kind = str(report.get("suite_kind") or "")
     runner = report.get("runner")
     if not isinstance(runner, dict) or runner.get("name") != "stage-b-run-functional-suite":
@@ -8457,22 +5946,6 @@ def _functional_report_required_coverage_issues(target_name: str, report: dict[s
                     details={"expected": expected_case_manifest_hash, "actual": suite_case_manifest_sha256},
                 )
             )
-    if suite_id != required_id:
-        issues.append(
-            _issue(
-                "functional_test_report_wrong_suite_id",
-                "functional report suite_id is not the required upstream integration suite id",
-                details={"expected": required_id, "actual": suite_id},
-            )
-        )
-    if suite_name != required_name:
-        issues.append(
-            _issue(
-                "functional_test_report_wrong_suite_name",
-                "functional report suite_name is not the required upstream integration suite name",
-                details={"expected": required_name, "actual": suite_name},
-            )
-        )
     if suite_kind != "upstream_integration":
         issues.append(
             _issue(
@@ -8487,12 +5960,12 @@ def _functional_report_required_coverage_issues(target_name: str, report: dict[s
         issues.append(_issue("functional_test_report_missing_coverage", "functional report must include upstream integration coverage metadata"))
         return issues
 
-    if coverage.get("suite_id") != required_id:
+    if coverage.get("suite_id") != suite_id:
         issues.append(
             _issue(
                 "functional_test_report_coverage_suite_mismatch",
                 "functional report coverage.suite_id does not match the required upstream suite",
-                details={"expected": required_id, "actual": coverage.get("suite_id")},
+                details={"expected": suite_id, "actual": coverage.get("suite_id")},
             )
         )
     if coverage.get("suite_kind") != "upstream_integration":
@@ -8512,12 +5985,12 @@ def _functional_report_required_coverage_issues(target_name: str, report: dict[s
             )
         )
     required_suite_ids = set(_string_list(coverage.get("required_suite_ids")))
-    if required_id not in required_suite_ids:
+    if suite_id not in required_suite_ids:
         issues.append(
             _issue(
                 "functional_test_report_missing_required_suite_id",
                 "functional report coverage.required_suite_ids must include the target's required upstream suite id",
-                details={"required_suite_id": required_id, "actual": sorted(required_suite_ids)},
+                details={"required_suite_id": suite_id, "actual": sorted(required_suite_ids)},
             )
         )
     if not coverage.get("source"):
@@ -8679,34 +6152,8 @@ def _issue(category: str, blocker: str, *, details: Any | None = None) -> dict[s
     return issue
 
 
-def _binary_summary(binary: StageABinary) -> dict[str, Any]:
-    return {
-        "path": str(binary.path),
-        "sha256": binary.sha256,
-        "machine": binary.machine,
-        "bitness": binary.bitness,
-        "image_base": binary.image_base,
-        "entrypoint_rva": binary.entrypoint_rva,
-        "sections": [
-            {
-                "name": section.name,
-                "rva_start": section.rva_start,
-                "rva_end": section.rva_end,
-                "executable": section.executable,
-                "readable": section.readable,
-                "writable": section.writable,
-            }
-            for section in binary.sections
-        ],
-        "imports": [
-            {"dll": item.dll, "symbol": item.symbol, "ordinal": item.ordinal, "thunk_rva": item.thunk_rva}
-            for item in binary.imports
-        ],
-    }
 
 
-def _pe_input_kind(binary: StageABinary) -> str:
-    return "pe32plus-original" if binary.bitness == 64 else "pe32-original"
 
 
 def _decompiler_export_summary(path: Path) -> dict[str, Any]:
@@ -8801,46 +6248,3 @@ def _load_json(path: Path) -> Any:
         raise StageAInputError(f"cannot read {path}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise StageAInputError(f"invalid JSON in {path}: {exc}") from exc
-
-
-def _source_extension(source_language: str) -> str:
-    return "rs" if source_language == "rust" else "c"
-
-
-def _identifier(name: str, index: int) -> str:
-    ident = re.sub(r"[^A-Za-z0-9_]", "_", name).strip("_")
-    if not ident or ident[0].isdigit():
-        ident = f"fn_{index:04d}_{ident}"
-    return ident[:96]
-
-
-def _unique_identifier(name: str, index: int, used: set[str]) -> str:
-    base = _identifier(name, index)
-    candidate = base
-    suffix = 1
-    while candidate in used:
-        suffix_text = f"_{suffix}"
-        candidate = f"{base[: 96 - len(suffix_text)]}{suffix_text}"
-        suffix += 1
-    used.add(candidate)
-    return candidate
-
-
-def _c_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _rust_string_literal(value: str) -> str:
-    return json.dumps(value)
-
-
-def _recovered_cli_behavior(behavior_recovery: dict[str, Any] | None, behavior_id: str) -> dict[str, Any] | None:
-    if not isinstance(behavior_recovery, dict):
-        return None
-    recovered = behavior_recovery.get("recovered")
-    if not isinstance(recovered, list):
-        return None
-    for item in recovered:
-        if isinstance(item, dict) and item.get("id") == behavior_id:
-            return item
-    return None

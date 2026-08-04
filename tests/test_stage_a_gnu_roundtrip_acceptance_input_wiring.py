@@ -40,7 +40,7 @@ class StageAGnuRoundtripAcceptanceInputWiringTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.repo = Path(__file__).resolve().parents[1]
-        self.driver = self.repo / "nix/gnu-hello-roundtrip-driver.py"
+        self.driver = self.repo / "targets/gnu-hello/nix/gnu-hello-roundtrip-driver.py"
         self.payloads = self._payloads()
         self.paths = {
             role: self.root / f"{role}.json" for role in self.payloads

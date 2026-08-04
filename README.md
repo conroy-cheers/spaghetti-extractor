@@ -4,6 +4,14 @@ Spaghetti Extractor is a high-assurance binary reimplementation toolkit. Its
 immediate consolidation target is a generated GNU `hello.exe` reimplementation
 for 32-bit MinGW Windows, followed by the full `jq.exe` benchmark.
 
+The installable tool is target-neutral. GNU Hello, jq, and DX-Ball are in-tree
+validation consumers under `targets/`; their authored intent, source, tests,
+and target-only adapters are not part of the generic Python distribution.
+Machine-generated target artifacts exist only as Nix outputs. See
+[Validation Target Bundles](docs/target-bundles.md) for the enforced boundary.
+The [canonical repository map](REPOSITORY_MAP.md) inventories the complete
+subsystem, authority, build, target, validator, and test layout.
+
 The active direction is assurance-first rather than mandatory-whole-program-
 theorem-first:
 
@@ -40,7 +48,7 @@ See
 for the trust model, evidence classes, static qualification gate, progressive
 reconstruction pathway, and scalability criteria.
 The current GNU Hello result and its exact limitations are recorded in
-[the high-assurance vertical-slice report](docs/gnu-hello-high-assurance-vertical-slice.md).
+[the high-assurance vertical-slice report](targets/gnu-hello/docs/high-assurance-vertical-slice.md).
 
 For `contract-guided-c`, `state-machine.jsonl` is the canonical generation
 authority. It preserves each block pre-state, symbolic register and flag
@@ -77,6 +85,7 @@ Build the command suite:
 
 ```sh
 nix build .#spaghetti-extractor --no-link
+nix build .#repository-boundaries-check --no-link
 ```
 
 Build the GNU Hello static lifting benchmark. It emits

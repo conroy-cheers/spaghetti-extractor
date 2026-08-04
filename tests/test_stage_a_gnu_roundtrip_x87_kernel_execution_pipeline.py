@@ -15,8 +15,8 @@ from spaghetti_extractor.relational.lean.interpreter_x87_replay_bridge_runtime i
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DRIVER = REPO_ROOT / "nix/gnu-hello-roundtrip-driver.py"
-LANE = REPO_ROOT / "nix/gnu-hello-roundtrip.nix"
+DRIVER = REPO_ROOT / "targets/gnu-hello/nix/gnu-hello-roundtrip-driver.py"
+LANE = REPO_ROOT / "targets/gnu-hello/default.nix"
 FLAKE = REPO_ROOT / "flake.nix"
 
 REMAINING_PREMISES = list(X87_REPLAY_FIXED_TEMPLATE_REMAINING_PREMISES)

@@ -734,7 +734,7 @@ class SliceLoopTests(unittest.TestCase):
         ref = workspace / "contracts" / "reference_contract.json"
         write_json(ref, {"format": "stage-a-reference-contract-v1", "status": "pass", "families": []})
         candidate = self._candidate_dir(root)
-        current = slice_loop._candidate_artifacts(candidate, slice_loop.TARGET_DEFAULTS["jq"])
+        current = slice_loop._candidate_artifacts(candidate, {})
         write_json(workspace / "candidate" / "current-candidate.json", current)
         write_json(
             workspace / "workspace.json",
@@ -743,6 +743,7 @@ class SliceLoopTests(unittest.TestCase):
                 "target": "jq",
                 "cached": {"reference_contract": str(ref), "unit_contract_dir": None},
                 "build": {"target": "i686-w64-mingw32", "compiler": "i686-w64-mingw32-cc"},
+                "target_profile": {"path": None, "settings": {}},
                 "target_closure_manifest": None,
             },
         )
