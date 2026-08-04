@@ -282,6 +282,10 @@ inductive SemanticAction where
   | call (call : Nat)
   | repMovsd (source destination count directionFlag : Nat)
   | repStosd (destination value count directionFlag : Nat)
+  | repMovs (source destination count directionFlag : Nat)
+      (width : MemoryWidth)
+  | repStos (destination value count directionFlag : Nat)
+      (width : MemoryWidth)
   | setRegister (register : Register) (value : Nat)
   | setFlag (flag : Flag) (value : Nat)
   | syncEflags
@@ -310,6 +314,12 @@ def RawAction.decodeBody (action : RawAction) : Option SemanticAction :=
       if action.aux == 0 then some (.repMovsd source destination count direction) else none
   | 26, [destination, value, count, direction] =>
       if action.aux == 0 then some (.repStosd destination value count direction) else none
+  | 27, [source, destination, count, direction] => do
+      let width <- MemoryWidth.ofBytes? action.aux
+      some (.repMovs source destination count direction width)
+  | 28, [destination, value, count, direction] => do
+      let width <- MemoryWidth.ofBytes? action.aux
+      some (.repStos destination value count direction width)
   | 6, [value] => do
       let register <- Register.ofIndex? action.aux
       some (.setRegister register value)
@@ -421,6 +431,10 @@ def SemanticTransfer.checkAction (transfer : SemanticTransfer)
   | .repMovsd source destination count direction =>
       if state.referencesReady [source, destination, count, direction] then some state else none
   | .repStosd destination value count direction =>
+      if state.referencesReady [destination, value, count, direction] then some state else none
+  | .repMovs source destination count direction _ =>
+      if state.referencesReady [source, destination, count, direction] then some state else none
+  | .repStos destination value count direction _ =>
       if state.referencesReady [destination, value, count, direction] then some state else none
   | .divideIf condition | .setRegister _ condition | .setFlag _ condition =>
       if state.referencesReady [condition] then some state else none
@@ -655,6 +669,10 @@ inductive InterpreterEvent where
   | call (event : CallEvent)
   | repMovsd (source destination count : Word) (direction : Bool)
   | repStosd (destination value count : Word) (direction : Bool)
+  | repMovs (source destination count : Word) (direction : Bool)
+      (width : MemoryWidth)
+  | repStos (destination value count : Word) (direction : Bool)
+      (width : MemoryWidth)
 deriving Repr, DecidableEq
 
 inductive CallStatus where
@@ -746,25 +764,36 @@ def SemanticCall.event (call : SemanticCall) (runtime : RuntimeState) :
   }
   some (event, inputState)
 
-def repMovsd (state : InterpreterMachine) (source destination : Word)
-    (direction : Bool) : Nat -> InterpreterMachine
+def repMovs (state : InterpreterMachine) (source destination : Word)
+    (direction : Bool) (width : MemoryWidth) : Nat -> InterpreterMachine
   | 0 => state
   | count + 1 =>
-      let value := readMemory state.memory source .dword
-      let next := { state with memory := writeMemory state.memory destination value .dword }
-      let step := if direction then BitVec.ofNat 32 0xfffffffc else BitVec.ofNat 32 4
-      repMovsd next (source + step) (destination + step) direction count
+      let value := readMemory state.memory source width
+      let next := {
+        state with memory := writeMemory state.memory destination value width
+      }
+      let distance := BitVec.ofNat 32 width.bytes
+      let step := if direction then 0 - distance else distance
+      repMovs next (source + step) (destination + step) direction width count
 
-def repStosd (state : InterpreterMachine) (destination value : Word)
-    (direction : Bool) : Nat -> InterpreterMachine
+def repStos (state : InterpreterMachine) (destination value : Word)
+    (direction : Bool) (width : MemoryWidth) : Nat -> InterpreterMachine
   | 0 => state
   | count + 1 =>
       let next := {
-        state with memory := writeMemory state.memory destination value .dword
+        state with memory := writeMemory state.memory destination value width
       }
-      let step :=
-        if direction then BitVec.ofNat 32 0xfffffffc else BitVec.ofNat 32 4
-      repStosd next (destination + step) value direction count
+      let distance := BitVec.ofNat 32 width.bytes
+      let step := if direction then 0 - distance else distance
+      repStos next (destination + step) value direction width count
+
+def repMovsd (state : InterpreterMachine) (source destination : Word)
+    (direction : Bool) (count : Nat) : InterpreterMachine :=
+  repMovs state source destination direction .dword count
+
+def repStosd (state : InterpreterMachine) (destination value : Word)
+    (direction : Bool) (count : Nat) : InterpreterMachine :=
+  repStos state destination value direction .dword count
 
 def InterpreterMachine.syncEflags (state : InterpreterMachine) : InterpreterMachine :=
   let represented := BitVec.ofNat 32
@@ -844,6 +873,28 @@ def SemanticTransfer.executeAction (transfer : SemanticTransfer)
       some (.inr { runtime with
         current := current
         events := runtime.events ++ [.repStosd destination value count direction]
+      })
+  | .repMovs source destination count directionFlag width => do
+      let source <- runtime.words source
+      let destination <- runtime.words destination
+      let count <- runtime.words count
+      let directionFlag <- runtime.words directionFlag
+      let direction := wordTruth directionFlag
+      let current := repMovs runtime.current source destination direction width count.toNat
+      some (.inr { runtime with
+        current := current
+        events := runtime.events ++ [.repMovs source destination count direction width]
+      })
+  | .repStos destination value count directionFlag width => do
+      let destination <- runtime.words destination
+      let value <- runtime.words value
+      let count <- runtime.words count
+      let directionFlag <- runtime.words directionFlag
+      let direction := wordTruth directionFlag
+      let current := repStos runtime.current destination value direction width count.toNat
+      some (.inr { runtime with
+        current := current
+        events := runtime.events ++ [.repStos destination value count direction width]
       })
   | .setRegister register value => do
       let value <- runtime.words value

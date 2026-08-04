@@ -149,7 +149,11 @@ _X87_WORD_OPS = {
 }
 _SUPPORTED_OUTCOMES = {"fallthrough", "jump", "branch", "return", "indirect_jump", "external_jump"}
 _CALL_EVENT_KINDS = {"external_call", "internal_call", "indirect_call"}
-_SUPPORTED_EVENT_KINDS = _CALL_EVENT_KINDS | {"rep_movsd"}
+_SUPPORTED_EVENT_KINDS = _CALL_EVENT_KINDS | {
+    "rep_movsd",
+    "rep_movs",
+    "rep_stos",
+}
 
 
 def write_stage_b_semantic_c_backend(
@@ -2042,6 +2046,12 @@ def _render_ordered_external_event(
     if kind == "rep_movsd":
         _render_rep_movsd_event(renderer, event, event_index)
         return
+    if kind == "rep_movs":
+        _render_rep_movs_event(renderer, event, event_index)
+        return
+    if kind == "rep_stos":
+        _render_rep_stos_event(renderer, event, event_index)
+        return
     if kind not in _CALL_EVENT_KINDS:
         raise ValueError(f"unsupported external event {kind!r}")
 
@@ -2132,27 +2142,110 @@ def _render_rep_movsd_event(
     event: dict[str, Any],
     event_index: int,
 ) -> None:
+    _render_rep_movs_event(
+        renderer,
+        {
+            **event,
+            "kind": "rep_movs",
+            "element_width": 4,
+            "address_size": 32,
+            "effect_model": "symbolic_string_copy_v2",
+            "restart_semantics": "element_committed_v1",
+        },
+        event_index,
+    )
+
+
+def _render_rep_movs_event(
+    renderer: _ExpressionRenderer,
+    event: dict[str, Any],
+    event_index: int,
+) -> None:
+    if event.get("effect_model") != "symbolic_string_copy_v2":
+        raise ValueError("rep_movs requires symbolic_string_copy_v2")
+    _validate_restartable_string_event(event, event_index, "rep_movs")
+    width = _required_nonnegative_int(
+        event.get("element_width"), "string-copy element width"
+    )
+    if width not in {1, 2, 4}:
+        raise ValueError(f"unsupported string-copy element width {width}")
     source = renderer.render(event.get("source"))
     destination = renderer.render(event.get("destination"))
     count = renderer.render(event.get("count"))
     direction = renderer.render(event.get("direction_flag"))
+    backward_step = (-width) & 0xFFFFFFFF
     renderer.lines.extend(
         [
             f"  uint32_t copy_source_{event_index} = {source};",
             f"  uint32_t copy_destination_{event_index} = {destination};",
             f"  uint32_t copy_count_{event_index} = {count};",
-            f"  uint32_t copy_step_{event_index} = ({direction}) ? 0xfffffffcU : 4U;",
-            f"  uint32_t copy_index_{event_index};",
-            f"  for (copy_index_{event_index} = 0U; copy_index_{event_index} < copy_count_{event_index}; ++copy_index_{event_index}) {{",
-            f"    uint32_t copy_value_{event_index} = stage_b_read(rt, copy_source_{event_index}, 4U, &memory_fault);",
+            f"  uint32_t copy_step_{event_index} = ({direction}) ? 0x{backward_step:08x}U : {width}U;",
+            f"  state->esi = copy_source_{event_index};",
+            f"  state->edi = copy_destination_{event_index};",
+            f"  state->ecx = copy_count_{event_index};",
+            f"  while (copy_count_{event_index} != 0U) {{",
+            f"    uint32_t copy_value_{event_index} = stage_b_read(rt, copy_source_{event_index}, {width}U, &memory_fault);",
             "    if (memory_fault) return (stage_b_step_result){ STAGE_B_MEMORY_FAULT, 0U, 0U };",
-            f"    stage_b_write(rt, copy_destination_{event_index}, 4U, copy_value_{event_index}, &memory_fault);",
+            f"    stage_b_write(rt, copy_destination_{event_index}, {width}U, copy_value_{event_index}, &memory_fault);",
             "    if (memory_fault) return (stage_b_step_result){ STAGE_B_MEMORY_FAULT, 0U, 0U };",
             f"    copy_source_{event_index} += copy_step_{event_index};",
             f"    copy_destination_{event_index} += copy_step_{event_index};",
+            f"    --copy_count_{event_index};",
+            f"    state->esi = copy_source_{event_index};",
+            f"    state->edi = copy_destination_{event_index};",
+            f"    state->ecx = copy_count_{event_index};",
             "  }",
         ]
     )
+
+
+def _render_rep_stos_event(
+    renderer: _ExpressionRenderer,
+    event: dict[str, Any],
+    event_index: int,
+) -> None:
+    if event.get("effect_model") != "symbolic_string_fill_v2":
+        raise ValueError("rep_stos requires symbolic_string_fill_v2")
+    _validate_restartable_string_event(event, event_index, "rep_stos")
+    width = _required_nonnegative_int(
+        event.get("element_width"), "string-fill element width"
+    )
+    if width not in {1, 2, 4}:
+        raise ValueError(f"unsupported string-fill element width {width}")
+    destination = renderer.render(event.get("destination"))
+    value = renderer.render(event.get("value"))
+    count = renderer.render(event.get("count"))
+    direction = renderer.render(event.get("direction_flag"))
+    backward_step = (-width) & 0xFFFFFFFF
+    renderer.lines.extend(
+        [
+            f"  uint32_t fill_destination_{event_index} = {destination};",
+            f"  uint32_t fill_value_{event_index} = {value};",
+            f"  uint32_t fill_count_{event_index} = {count};",
+            f"  uint32_t fill_step_{event_index} = ({direction}) ? 0x{backward_step:08x}U : {width}U;",
+            f"  state->edi = fill_destination_{event_index};",
+            f"  state->ecx = fill_count_{event_index};",
+            f"  while (fill_count_{event_index} != 0U) {{",
+            f"    stage_b_write(rt, fill_destination_{event_index}, {width}U, fill_value_{event_index}, &memory_fault);",
+            "    if (memory_fault) return (stage_b_step_result){ STAGE_B_MEMORY_FAULT, 0U, 0U };",
+            f"    fill_destination_{event_index} += fill_step_{event_index};",
+            f"    --fill_count_{event_index};",
+            f"    state->edi = fill_destination_{event_index};",
+            f"    state->ecx = fill_count_{event_index};",
+            "  }",
+        ]
+    )
+
+
+def _validate_restartable_string_event(
+    event: dict[str, Any], event_index: int, kind: str
+) -> None:
+    if _required_nonnegative_int(event.get("index"), f"{kind} event index") != event_index:
+        raise ValueError(f"{kind} event index does not match ordered position")
+    if event.get("address_size") != 32:
+        raise ValueError(f"{kind} requires 32-bit address size")
+    if event.get("restart_semantics") != "element_committed_v1":
+        raise ValueError(f"{kind} requires element_committed_v1 restart semantics")
 
 
 def _render_outcome(renderer: _ExpressionRenderer, outcome: dict[str, Any]) -> str:

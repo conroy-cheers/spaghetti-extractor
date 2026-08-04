@@ -1262,6 +1262,59 @@ def _json_value(value: Any) -> Any:
     return json.loads(json.dumps(value, sort_keys=True, separators=(",", ":")))
 
 
+def _validate_restartable_string_events(
+    row: Mapping[str, Any], label: str
+) -> None:
+    def validate(raw: Any, expected_index: int, event_label: str) -> None:
+        event = _object(raw, event_label)
+        kind = event.get("kind")
+        if kind not in {"rep_movs", "rep_stos"}:
+            return
+        if event.get("index") != expected_index:
+            raise StageAInputError(
+                f"{event_label} has a noncanonical external-event index"
+            )
+        if event.get("element_width") not in {1, 2, 4}:
+            raise StageAInputError(f"{event_label} has an invalid element width")
+        if event.get("address_size") != 32:
+            raise StageAInputError(f"{event_label} has an unsupported address size")
+        expected_model = (
+            "symbolic_string_copy_v2"
+            if kind == "rep_movs"
+            else "symbolic_string_fill_v2"
+        )
+        if event.get("effect_model") != expected_model:
+            raise StageAInputError(f"{event_label} has an invalid effect model")
+        if event.get("restart_semantics") != "element_committed_v1":
+            raise StageAInputError(f"{event_label} lacks restart-state semantics")
+        required = {
+            "destination",
+            "count",
+            "direction_flag",
+            "source" if kind == "rep_movs" else "value",
+        }
+        forbidden = {"value" if kind == "rep_movs" else "source"}
+        for field in sorted(required):
+            if not isinstance(event.get(field), Mapping):
+                raise StageAInputError(f"{event_label}.{field} must be an expression")
+        if any(field in event for field in forbidden):
+            raise StageAInputError(f"{event_label} mixes copy and fill operands")
+
+    external_events = row.get("external_events")
+    ordered_events = row.get("ordered_events")
+    if not isinstance(external_events, list) or not isinstance(ordered_events, list):
+        return
+    for index, event in enumerate(external_events):
+        validate(event, index, f"{label}.external_events[{index}]")
+    external_index = 0
+    for index, raw in enumerate(ordered_events):
+        event = _object(raw, f"{label}.ordered_events[{index}]")
+        if event.get("family") != "external":
+            continue
+        validate(event, external_index, f"{label}.ordered_events[{index}]")
+        external_index += 1
+
+
 def _load_stage_a_semantic_transfer_rows(
     path: Path,
     reference: StageAReferenceContractBinding,
@@ -1315,6 +1368,10 @@ def _load_stage_a_semantic_transfer_rows(
                 raise StageAInputError(
                     f"Stage A semantic-transfer line {line_number}.{field} must be a list"
                 )
+        _validate_restartable_string_events(
+            row,
+            f"Stage A semantic-transfer line {line_number}",
+        )
         if "instruction_effect_schedule" in row and not isinstance(
             row["instruction_effect_schedule"], dict
         ):

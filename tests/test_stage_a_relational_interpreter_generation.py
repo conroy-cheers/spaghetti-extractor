@@ -186,6 +186,58 @@ class StageARelationalInterpreterGenerationTests(unittest.TestCase):
         self.assertEqual(_ACTIONS.index("replay_x87"), 25)
         self.assertEqual(_ACTIONS.index("rep_stosd"), 26)
 
+    def test_emits_width_generic_string_actions_without_renumbering(self) -> None:
+        cases = (
+            (
+                "rep_movs",
+                1,
+                27,
+                {
+                    "source": {"op": "reg", "name": "esi", "width": 32},
+                    "destination": {"op": "reg", "name": "edi", "width": 32},
+                },
+            ),
+            (
+                "rep_stos",
+                2,
+                28,
+                {
+                    "destination": {"op": "reg", "name": "edi", "width": 32},
+                    "value": {"op": "reg", "name": "eax", "width": 32},
+                },
+            ),
+        )
+        for kind, width, opcode, operands in cases:
+            with self.subTest(kind=kind):
+                row = _row()
+                row["ordered_events"][3] = {
+                    "family": "external",
+                    "kind": kind,
+                    "index": 0,
+                    "instruction_rva": 0x1000,
+                    "element_width": width,
+                    "address_size": 32,
+                    "count": {"op": "reg", "name": "ecx", "width": 32},
+                    "direction_flag": {"op": "flag", "name": "df"},
+                    "effect_model": (
+                        "symbolic_string_copy_v2"
+                        if kind == "rep_movs"
+                        else "symbolic_string_fill_v2"
+                    ),
+                    "restart_semantics": "element_committed_v1",
+                    **operands,
+                }
+                with tempfile.TemporaryDirectory() as temporary:
+                    machine = Path(temporary) / "state-machine.jsonl"
+                    _write_machine(machine, [row])
+                    transfer = compile_stage_b_interpreter_program(machine)[0]
+                    source = relational_interpreter_source(machine)
+
+                action = next(item for item in transfer.actions if item.op == kind)
+                self.assertEqual(action.aux, width)
+                self.assertIn(f"op := {opcode}", source)
+                self.assertEqual(_ACTIONS.index(kind), opcode)
+
     def test_generation_rejects_unsupported_or_malformed_programs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             machine = Path(temporary) / "state-machine.jsonl"

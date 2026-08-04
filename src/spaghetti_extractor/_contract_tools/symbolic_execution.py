@@ -54,6 +54,23 @@ from .abi import (
     _abi_mem_operand_report,
 )
 
+_STRING_INSTRUCTION_ENCODINGS: dict[bytes, tuple[str, int, bool]] = {
+    b"\xa4": ("move", 1, False),
+    b"\x66\xa5": ("move", 2, False),
+    b"\xa5": ("move", 4, False),
+    b"\xf3\xa4": ("move", 1, True),
+    b"\xf3\x66\xa5": ("move", 2, True),
+    b"\x66\xf3\xa5": ("move", 2, True),
+    b"\xf3\xa5": ("move", 4, True),
+    b"\xaa": ("store", 1, False),
+    b"\x66\xab": ("store", 2, False),
+    b"\xab": ("store", 4, False),
+    b"\xf3\xaa": ("store", 1, True),
+    b"\xf3\x66\xab": ("store", 2, True),
+    b"\x66\xf3\xab": ("store", 2, True),
+    b"\xf3\xab": ("store", 4, True),
+}
+
 class _InstructionTaggedEvents(list[tuple[Any, ...]]):
     def __init__(self, kind: str, ordered: list[tuple[str, int, tuple[Any, ...]]]) -> None:
         super().__init__()
@@ -675,84 +692,109 @@ def _symbolic_execute(
             if not _write_register_expr(dst, result, registers):
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported bit-scan destination register")
             continue
-        if mnemonic in {"movsd", "rep movsd"}:
-            count = 1
-            if mnemonic == "rep movsd":
-                ecx_value = _canonical_expr(registers["ecx"])
-                if not (isinstance(ecx_value, tuple) and len(ecx_value) == 2 and ecx_value[0] == "const"):
-                    event_index = external_call_index_base + len(external_events)
-                    df = flags.get("df", ("flag", "df"))
-                    external_events.append(("rep_movsd", event_index, registers["edi"], registers["esi"], registers["ecx"], df))
-                    delta = _expr_mul(registers["ecx"], ("const", 4))
-                    signed_delta = _expr_ite(df, _expr_neg(delta), delta)
-                    registers["edi"] = _expr_add(registers["edi"], signed_delta)
-                    registers["esi"] = _expr_add(registers["esi"], signed_delta)
-                    registers["ecx"] = ("const", 0)
-                    memory_writes.clear()
-                    memory_epoch = event_index
-                    continue
-                count = int(ecx_value[1])
-                if count < 0 or count > 64:
-                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "rep movsd count is outside the bounded static unroll limit")
-            step = _expr_ite(flags.get("df", ("flag", "df")), ("const", 0xFFFFFFFC), ("const", 4))
+        string_instruction = _STRING_INSTRUCTION_ENCODINGS.get(bytes(insn.bytes))
+        if string_instruction is not None and string_instruction[0] == "move":
+            _, width_bytes, repeated = string_instruction
+            if repeated:
+                event_index = external_call_index_base + len(external_events)
+                df = flags.get("df", ("flag", "df"))
+                external_events.append(
+                    (
+                        "rep_movs",
+                        event_index,
+                        width_bytes,
+                        32,
+                        registers["edi"],
+                        registers["esi"],
+                        registers["ecx"],
+                        df,
+                    )
+                )
+                delta = _expr_mul(registers["ecx"], ("const", width_bytes))
+                signed_delta = _expr_ite(df, _expr_neg(delta), delta)
+                registers["edi"] = _expr_add(registers["edi"], signed_delta)
+                registers["esi"] = _expr_add(registers["esi"], signed_delta)
+                registers["ecx"] = ("const", 0)
+                memory_writes.clear()
+                memory_epoch = event_index
+                continue
+            step = _expr_ite(
+                flags.get("df", ("flag", "df")),
+                ("const", (-width_bytes) & 0xFFFFFFFF),
+                ("const", width_bytes),
+            )
             src_address = registers["esi"]
             dst_address = registers["edi"]
-            for _ in range(count):
-                value = _memory_read_expr(src_address, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
-                _memory_write_expr(dst_address, 32, value, memory_events, memory_writes)
-                src_address = _expr_add(src_address, step)
-                dst_address = _expr_add(dst_address, step)
+            value = _memory_read_expr(
+                src_address,
+                memory_events,
+                memory_writes,
+                width_bits=width_bytes * 8,
+                memory_epoch=memory_epoch,
+            )
+            _memory_write_expr(
+                dst_address,
+                width_bytes * 8,
+                value,
+                memory_events,
+                memory_writes,
+            )
+            src_address = _expr_add(src_address, step)
+            dst_address = _expr_add(dst_address, step)
             registers["esi"] = src_address
             registers["edi"] = dst_address
-            if mnemonic == "rep movsd":
-                registers["ecx"] = ("const", 0)
             continue
-        if mnemonic == "rep stosd":
-            ecx_value = _canonical_expr(registers["ecx"])
-            if (
-                isinstance(ecx_value, tuple)
-                and len(ecx_value) == 2
-                and ecx_value[0] == "const"
-                and 0 <= int(ecx_value[1]) <= 64
-            ):
-                count = int(ecx_value[1])
-                step = _expr_ite(
-                    flags.get("df", ("flag", "df")),
-                    ("const", 0xFFFFFFFC),
-                    ("const", 4),
-                )
-                dst_address = registers["edi"]
-                for _ in range(count):
-                    _memory_write_expr(
-                        dst_address,
-                        32,
-                        registers["eax"],
-                        memory_events,
-                        memory_writes,
-                    )
-                    dst_address = _expr_add(dst_address, step)
-                registers["edi"] = dst_address
-                registers["ecx"] = ("const", 0)
-                continue
-
-            event_index = external_call_index_base + len(external_events)
-            df = flags.get("df", ("flag", "df"))
-            external_events.append(
-                (
-                    "rep_stosd",
-                    event_index,
-                    registers["edi"],
-                    registers["eax"],
-                    registers["ecx"],
-                    df,
-                )
+        if string_instruction is not None and string_instruction[0] == "store":
+            _, width_bytes, repeated = string_instruction
+            value = _read_register_expr(
+                {1: "al", 2: "ax", 4: "eax"}[width_bytes], registers
             )
-            delta = _expr_mul(registers["ecx"], ("const", 4))
-            signed_delta = _expr_ite(df, _expr_neg(delta), delta)
-            registers["edi"] = _expr_add(registers["edi"], signed_delta)
-            registers["ecx"] = ("const", 0)
-            memory_writes.clear()
-            memory_epoch = event_index
+            if value is None:
+                return _symbolic_incomplete(
+                    binary_name,
+                    "unsupported_semantics",
+                    rva,
+                    mnemonic,
+                    insn.op_str,
+                    "string-store accumulator value is not modeled",
+                )
+            if repeated:
+                event_index = external_call_index_base + len(external_events)
+                df = flags.get("df", ("flag", "df"))
+                external_events.append(
+                    (
+                        "rep_stos",
+                        event_index,
+                        width_bytes,
+                        32,
+                        registers["edi"],
+                        value,
+                        registers["ecx"],
+                        df,
+                    )
+                )
+                delta = _expr_mul(registers["ecx"], ("const", width_bytes))
+                signed_delta = _expr_ite(df, _expr_neg(delta), delta)
+                registers["edi"] = _expr_add(registers["edi"], signed_delta)
+                registers["ecx"] = ("const", 0)
+                memory_writes.clear()
+                memory_epoch = event_index
+                continue
+            step = _expr_ite(
+                flags.get("df", ("flag", "df")),
+                ("const", (-width_bytes) & 0xFFFFFFFF),
+                ("const", width_bytes),
+            )
+            dst_address = registers["edi"]
+            _memory_write_expr(
+                dst_address,
+                width_bytes * 8,
+                value,
+                memory_events,
+                memory_writes,
+            )
+            dst_address = _expr_add(dst_address, step)
+            registers["edi"] = dst_address
             continue
         if mnemonic in {"cmpxchg", "lock cmpxchg"}:
             if len(operands) != 2 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:

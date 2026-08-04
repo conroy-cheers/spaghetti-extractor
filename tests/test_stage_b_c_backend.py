@@ -237,6 +237,59 @@ class StageBSemanticCBackendTests(unittest.TestCase):
             self.assertIn("stage_b_read(rt, copy_source_0", source)
             self.assertIn("stage_b_write(rt, copy_destination_0", source)
 
+    def test_emits_width_generic_string_copy_and_fill_protocols(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            register = lambda name: {"op": "reg", "name": name, "width": 32}
+            flag = {"op": "flag", "name": "df"}
+            copy = {
+                "kind": "rep_movs",
+                "index": 0,
+                "element_width": 1,
+                "address_size": 32,
+                "destination": register("edi"),
+                "source": register("esi"),
+                "count": register("ecx"),
+                "direction_flag": flag,
+                "effect_model": "symbolic_string_copy_v2",
+                "restart_semantics": "element_committed_v1",
+            }
+            fill = {
+                "kind": "rep_stos",
+                "index": 1,
+                "element_width": 2,
+                "address_size": 32,
+                "destination": register("edi"),
+                "value": register("eax"),
+                "count": register("ecx"),
+                "direction_flag": flag,
+                "effect_model": "symbolic_string_fill_v2",
+                "restart_semantics": "element_committed_v1",
+            }
+            row = _transfer(
+                id="semantic-transfer:width-generic-strings",
+                external_events=[copy, fill],
+                ordered_events=[
+                    {"family": "external", "instruction_rva": 0x1000, **copy},
+                    {"family": "external", "instruction_rva": 0x1002, **fill},
+                ],
+            )
+
+            report = write_stage_b_semantic_c_backend(root, [row])
+
+            self.assertEqual(report["status"], "complete", report)
+            source = (root / "state-machine-transfers.c").read_text(encoding="utf-8")
+            self.assertIn(
+                "stage_b_read(rt, copy_source_0, 1U, &memory_fault)", source
+            )
+            self.assertIn(
+                "stage_b_write(rt, copy_destination_0, 1U", source
+            )
+            self.assertIn(
+                "stage_b_write(rt, fill_destination_1, 2U", source
+            )
+            self.assertIn("0xfffffffeU : 2U", source)
+
     def test_generates_exact_import_adapter_from_machine_call_catalog(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

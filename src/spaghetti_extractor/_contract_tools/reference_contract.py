@@ -1941,6 +1941,19 @@ def _semantic_external_event_json(event: Any) -> dict[str, Any]:
             "direction_flag": _semantic_expr_json(event[5]),
             "effect_model": "symbolic_string_copy_v1",
         }
+    if isinstance(event, tuple) and len(event) >= 8 and event[0] == "rep_movs":
+        return {
+            "kind": "rep_movs",
+            "index": int(event[1]),
+            "element_width": int(event[2]),
+            "address_size": int(event[3]),
+            "destination": _semantic_expr_json(event[4]),
+            "source": _semantic_expr_json(event[5]),
+            "count": _semantic_expr_json(event[6]),
+            "direction_flag": _semantic_expr_json(event[7]),
+            "effect_model": "symbolic_string_copy_v2",
+            "restart_semantics": "element_committed_v1",
+        }
     if isinstance(event, tuple) and len(event) >= 6 and event[0] == "rep_stosd":
         return {
             "kind": "rep_stosd",
@@ -1950,6 +1963,19 @@ def _semantic_external_event_json(event: Any) -> dict[str, Any]:
             "count": _semantic_expr_json(event[4]),
             "direction_flag": _semantic_expr_json(event[5]),
             "effect_model": "symbolic_string_fill_v1",
+        }
+    if isinstance(event, tuple) and len(event) >= 8 and event[0] == "rep_stos":
+        return {
+            "kind": "rep_stos",
+            "index": int(event[1]),
+            "element_width": int(event[2]),
+            "address_size": int(event[3]),
+            "destination": _semantic_expr_json(event[4]),
+            "value": _semantic_expr_json(event[5]),
+            "count": _semantic_expr_json(event[6]),
+            "direction_flag": _semantic_expr_json(event[7]),
+            "effect_model": "symbolic_string_fill_v2",
+            "restart_semantics": "element_committed_v1",
         }
     return {"kind": "unknown_external_event", "raw": _expr_json(event)}
 

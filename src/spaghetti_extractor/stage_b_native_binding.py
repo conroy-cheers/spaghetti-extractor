@@ -23,7 +23,9 @@ RUNTIME_CALL_OBLIGATIONS_FORMAT = "stage-b-runtime-call-obligations-v1"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _HEX_BYTES_RE = re.compile(r"(?:[0-9a-f]{2})+")
 _NATIVE_KINDS = frozenset({"external_call", "indirect_call"})
-_OUTSIDE_SCOPE_KINDS = frozenset({"internal_call", "rep_movsd"})
+_OUTSIDE_SCOPE_KINDS = frozenset(
+    {"internal_call", "rep_movsd", "rep_movs", "rep_stos"}
+)
 _BOUNDARY_KINDS = _NATIVE_KINDS | _OUTSIDE_SCOPE_KINDS
 _BOUNDARY_STATUSES = frozenset({"bound", "unbound"})
 _PLAN_STATUSES = frozenset({"ready", "incomplete"})

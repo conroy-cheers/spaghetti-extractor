@@ -400,6 +400,8 @@ def _compiled_feature_counts(transfer: _Transfer) -> tuple[Counter[str], Counter
             features["fault.divide_error"] += 1
         elif action.op == "rep_movsd":
             features["bulk.rep_movsd"] += 1
+        elif action.op in {"rep_movs", "rep_stos"}:
+            features[f"bulk.{action.op}.{action.aux}"] += 1
     for call in transfer.calls:
         features[f"call.{call.kind.removesuffix('_call')}"] += 1
         features["call.exact_machine_boundary"] += 1
@@ -434,6 +436,16 @@ def _raw_ordered_effect_signature(row: Mapping[str, Any]) -> list[tuple[object, 
             signature.append(("fault", kind))
         elif family == "external" and kind == "rep_movsd":
             signature.append(("rep_movsd",))
+        elif family == "external" and kind in {"rep_movs", "rep_stos"}:
+            signature.append(
+                (
+                    kind,
+                    raw.get("element_width"),
+                    raw.get("address_size"),
+                    raw.get("effect_model"),
+                    raw.get("restart_semantics"),
+                )
+            )
         elif family == "external":
             signature.append(
                 (
@@ -464,6 +476,20 @@ def _typed_ordered_effect_signature(transfer: _Transfer) -> list[tuple[object, .
             signature.append(("fault", "divide_error"))
         elif action.op == "rep_movsd":
             signature.append(("rep_movsd",))
+        elif action.op in {"rep_movs", "rep_stos"}:
+            signature.append(
+                (
+                    action.op,
+                    action.aux,
+                    32,
+                    (
+                        "symbolic_string_copy_v2"
+                        if action.op == "rep_movs"
+                        else "symbolic_string_fill_v2"
+                    ),
+                    "element_committed_v1",
+                )
+            )
         elif action.op == "call":
             call = transfer.calls[action.args[0]]
             signature.append(

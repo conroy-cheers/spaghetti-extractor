@@ -1182,6 +1182,154 @@ int main(void) {
                         raised.exception.code, "malformed_rep_stosd_event"
                     )
 
+    def test_width_generic_string_events_lower_with_explicit_width(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            machine = Path(temporary) / "state-machine.jsonl"
+            row = _row()
+            row["ordered_events"] = [
+                {
+                    "family": "external",
+                    "kind": "rep_movs",
+                    "index": 0,
+                    "instruction_rva": 0x1000,
+                    "element_width": 1,
+                    "address_size": 32,
+                    "destination": {"op": "reg", "name": "edi", "width": 32},
+                    "source": {"op": "reg", "name": "esi", "width": 32},
+                    "count": {"op": "reg", "name": "ecx", "width": 32},
+                    "direction_flag": {"op": "flag", "name": "df"},
+                    "effect_model": "symbolic_string_copy_v2",
+                    "restart_semantics": "element_committed_v1",
+                },
+                {
+                    "family": "external",
+                    "kind": "rep_stos",
+                    "index": 1,
+                    "instruction_rva": 0x1002,
+                    "element_width": 2,
+                    "address_size": 32,
+                    "destination": {"op": "reg", "name": "edi", "width": 32},
+                    "value": {"op": "reg", "name": "eax", "width": 32},
+                    "count": {"op": "reg", "name": "ecx", "width": 32},
+                    "direction_flag": {"op": "flag", "name": "df"},
+                    "effect_model": "symbolic_string_fill_v2",
+                    "restart_semantics": "element_committed_v1",
+                },
+            ]
+            row["register_writes"] = []
+            _write_machine(machine, [row])
+
+            transfer = compile_stage_b_interpreter_program(machine)[0]
+
+            copy = next(action for action in transfer.actions if action.op == "rep_movs")
+            fill = next(action for action in transfer.actions if action.op == "rep_stos")
+            self.assertEqual((copy.aux, fill.aux), (1, 2))
+            self.assertEqual((len(copy.args), len(fill.args)), (4, 4))
+
+    def test_rep_movs_preserves_completed_iteration_state_on_fault(self) -> None:
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("C compiler is unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine = root / "state-machine.jsonl"
+            row = _row()
+            row["ordered_events"] = [{
+                "family": "external",
+                "kind": "rep_movs",
+                "index": 0,
+                "instruction_rva": 0x1000,
+                "element_width": 1,
+                "address_size": 32,
+                "destination": {"op": "reg", "name": "edi", "width": 32},
+                "source": {"op": "reg", "name": "esi", "width": 32},
+                "count": {"op": "reg", "name": "ecx", "width": 32},
+                "direction_flag": {"op": "flag", "name": "df"},
+                "effect_model": "symbolic_string_copy_v2",
+                "restart_semantics": "element_committed_v1",
+            }]
+            row["register_writes"] = []
+            _write_machine(machine, [row])
+            package_dir = root / "package"
+            write_stage_b_interpreter_package(state_machine=machine, out=package_dir)
+
+            harness = root / "harness.c"
+            harness.write_text(
+                r'''
+#include "state-machine-interpreter.h"
+
+typedef struct copy_context { uint32_t writes; } copy_context;
+
+static uint32_t read_word(
+    void *raw, uint32_t address, uint32_t width, uint32_t *fault) {
+  (void)raw;
+  if (width != 1U || address < 0x2000U || address > 0x2002U) {
+    *fault = 1U;
+    return 0U;
+  }
+  return address & 0xffU;
+}
+
+static void write_word(
+    void *raw, uint32_t address, uint32_t width, uint32_t value,
+    uint32_t *fault) {
+  copy_context *context = (copy_context *)raw;
+  if (width != 1U || context->writes != 0U || address != 0x3000U ||
+      value != 0U) {
+    *fault = 1U;
+    return;
+  }
+  ++context->writes;
+}
+
+stage_b_call_status stage_b_dispatch_external_call(
+    stage_b_runtime *runtime, const stage_b_call_event *event,
+    const stage_b_machine_state *input, stage_b_machine_state *output) {
+  (void)runtime; (void)event; (void)input; (void)output;
+  return STAGE_B_CALL_UNIMPLEMENTED;
+}
+
+int main(void) {
+  copy_context context = {0U};
+  stage_b_runtime runtime = {0};
+  stage_b_machine_state state = {0};
+  stage_b_step_result result;
+  runtime.context = &context;
+  runtime.read = read_word;
+  runtime.write = write_word;
+  state.esi = 0x2000U;
+  state.edi = 0x3000U;
+  state.ecx = 3U;
+  result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
+  if (result.kind != STAGE_B_MEMORY_FAULT) return 1;
+  if (context.writes != 1U) return 2;
+  if (state.esi != 0x2001U || state.edi != 0x3001U || state.ecx != 2U)
+    return 3;
+  return 0;
+}
+''',
+                encoding="ascii",
+            )
+            executable = root / "rep-movs-fault"
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=c11",
+                    "-Werror",
+                    "-I",
+                    str(package_dir),
+                    str(package_dir / "state-machine-interpreter.c"),
+                    str(package_dir / "state-machine-program.c"),
+                    str(harness),
+                    "-o",
+                    str(executable),
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            subprocess.run([str(executable)], check=True)
+
     def test_deterministic_package_compiles_as_freestanding_pe32_objects(self) -> None:
         compiler = shutil.which("i686-w64-mingw32-gcc")
         if compiler is None:

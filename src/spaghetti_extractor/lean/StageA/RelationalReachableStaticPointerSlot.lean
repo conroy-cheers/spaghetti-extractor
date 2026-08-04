@@ -143,6 +143,10 @@ def orderedEffectsWriteInventory
         { inventory with repMovsdCount := inventory.repMovsdCount + 1 }
     | .repStosd =>
         { inventory with repStosdCount := inventory.repStosdCount + 1 }
+    | .repMovs _ =>
+        { inventory with repMovsdCount := inventory.repMovsdCount + 1 }
+    | .repStos _ =>
+        { inventory with repStosdCount := inventory.repStosdCount + 1 }
     | .read _ | .call _ | .divideGuard => inventory) {
       scalarWidths := []
       repMovsdCount := 0

@@ -130,6 +130,8 @@ _SUPPORTED_BODY_ACTIONS = frozenset(
         "call",
         "rep_movsd",
         "rep_stosd",
+        "rep_movs",
+        "rep_stos",
         "set_reg",
         "set_flag",
         "sync_eflags",
@@ -220,6 +222,8 @@ def _validate_action_shape(action: Any, context: str, index: int) -> None:
         "call": 1,
         "rep_movsd": 4,
         "rep_stosd": 4,
+        "rep_movs": 4,
+        "rep_stos": 4,
         "set_reg": 1,
         "set_flag": 1,
         "sync_eflags": 0,
@@ -240,7 +244,7 @@ def _validate_action_shape(action: Any, context: str, index: int) -> None:
         )
     aux_valid = (
         action.aux in _LEAN_WIDTHS
-        if action.op == "memory_write"
+        if action.op in {"memory_write", "rep_movs", "rep_stos"}
         else 0 <= action.aux < 8
         if action.op == "set_reg"
         else 0 <= action.aux < 6
@@ -274,6 +278,8 @@ def _check_backend_opcode_tables() -> None:
         23: "outcome_indirect",
         24: "outcome_external",
         26: "rep_stosd",
+        27: "rep_movs",
+        28: "rep_stos",
     }
     if any(
         index >= len(_ACTIONS) or _ACTIONS[index] != name
@@ -448,6 +454,8 @@ def _validate_transfer(transfer: Any) -> None:
                 "divide_if": args,
                 "rep_movsd": args,
                 "rep_stosd": args,
+                "rep_movs": args,
+                "rep_stos": args,
                 "set_reg": args,
                 "set_flag": args,
                 "sync_eflags": (),
@@ -597,6 +605,16 @@ def _semantic_action(action: Any) -> str:
         return f".repMovsd {args[0]} {args[1]} {args[2]} {args[3]}"
     if action.op == "rep_stosd":
         return f".repStosd {args[0]} {args[1]} {args[2]} {args[3]}"
+    if action.op == "rep_movs":
+        return (
+            f".repMovs {args[0]} {args[1]} {args[2]} {args[3]} "
+            f".{_LEAN_WIDTHS[action.aux]}"
+        )
+    if action.op == "rep_stos":
+        return (
+            f".repStos {args[0]} {args[1]} {args[2]} {args[3]} "
+            f".{_LEAN_WIDTHS[action.aux]}"
+        )
     if action.op == "set_reg":
         return f".setRegister .{_LEAN_REGISTERS[action.aux]} {args[0]}"
     if action.op == "set_flag":

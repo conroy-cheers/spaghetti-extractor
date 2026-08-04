@@ -385,7 +385,8 @@ def wordNodeSupported (node : SemanticWordNode) : Bool :=
 def actionSupported : SemanticAction -> Bool
   | .evalWord _ | .setRegister _ _ | .setFlag _ _ | .syncEflags => true
   | .memoryWrite _ _ _ | .divideIf _ | .call _ |
-      .repMovsd _ _ _ _ | .repStosd _ _ _ _ => false
+      .repMovsd _ _ _ _ | .repStosd _ _ _ _ |
+      .repMovs _ _ _ _ _ | .repStos _ _ _ _ _ => false
 
 def semanticOutcomeSupported : SemanticOutcome -> Bool
   | .fallthrough _ | .jump _ | .returned _ | .indirectJump _ => true
@@ -421,6 +422,8 @@ inductive FlatMemoryAccessKind where
   | write (width : MemoryWidth)
   | repMovsd
   | repStosd
+  | repMovs (width : MemoryWidth)
+  | repStos (width : MemoryWidth)
 deriving Repr, DecidableEq
 
 structure FlatMemoryAccessSite where
@@ -446,6 +449,10 @@ def memoryAccessSite (transfer : SemanticTransfer) (actionIndex : Nat) :
       [⟨actionIndex, some source, some destination, .repMovsd⟩]
   | .repStosd destination value _ _ =>
       [⟨actionIndex, some destination, some value, .repStosd⟩]
+  | .repMovs source destination _ _ width =>
+      [⟨actionIndex, some source, some destination, .repMovs width⟩]
+  | .repStos destination value _ _ width =>
+      [⟨actionIndex, some destination, some value, .repStos width⟩]
   | _ => []
 
 def orderedFlatMemoryFootprintFrom (transfer : SemanticTransfer) :
@@ -508,6 +515,10 @@ inductive ConcreteFlatMemoryEffect where
   | access (value : ConcreteFlatMemoryAccess)
   | repMovsd (source destination count : Word) (direction : Bool)
   | repStosd (destination value count : Word) (direction : Bool)
+  | repMovs (source destination count : Word) (direction : Bool)
+      (width : MemoryWidth)
+  | repStos (destination value count : Word) (direction : Bool)
+      (width : MemoryWidth)
 deriving Repr, DecidableEq
 
 def concreteFlatMemoryEffect : InterpreterEvent -> Option ConcreteFlatMemoryEffect
@@ -517,25 +528,30 @@ def concreteFlatMemoryEffect : InterpreterEvent -> Option ConcreteFlatMemoryEffe
       some (.repMovsd source destination count direction)
   | .repStosd destination value count direction =>
       some (.repStosd destination value count direction)
+  | .repMovs source destination count direction width =>
+      some (.repMovs source destination count direction width)
+  | .repStos destination value count direction width =>
+      some (.repStos destination value count direction width)
   | .call _ => none
 
 def concreteFlatMemoryEffects (events : List InterpreterEvent) :
     List ConcreteFlatMemoryEffect :=
   events.filterMap concreteFlatMemoryEffect
 
-/-! `repStosdSpan?` computes the exact half-open byte span touched by REP STOSD.
-The direction flag denotes decrementing traversal when true.  A zero count
-touches no memory and therefore has an empty span. -/
-def repStosdSpan? (destination count : Word) (direction : Bool) : Option Span :=
+/-! `repStringSpan?` computes the exact half-open byte span touched by a
+repeated string operation. The direction flag denotes decrementing traversal
+when true. A zero count touches no memory and therefore has an empty span. -/
+def repStringSpan? (destination count : Word) (direction : Bool)
+    (width : MemoryWidth) : Option Span :=
   let destination := destination.toNat
   let count := count.toNat
   if count = 0 then
     some { start := destination, size := 0 }
   else
-    let size := count * 4
+    let size := count * width.bytes
     if size > pe32AddressSpaceSize then none
     else if direction then
-      let backwards := (count - 1) * 4
+      let backwards := (count - 1) * width.bytes
       if destination < backwards then none
       else
         let start := destination - backwards
@@ -544,6 +560,9 @@ def repStosdSpan? (destination count : Word) (direction : Bool) : Option Span :=
       some { start := destination, size }
     else none
 
+def repStosdSpan? (destination count : Word) (direction : Bool) : Option Span :=
+  repStringSpan? destination count direction .dword
+
 /-- REP MOVSD traverses equal-sized source and destination spans in the same
 direction. The two spans are checked independently because either side can
 cross the flat PE32 address-space boundary. -/
@@ -551,6 +570,12 @@ def repMovsdSpans? (source destination count : Word)
     (direction : Bool) : Option (Span × Span) := do
   let sourceSpan <- repStosdSpan? source count direction
   let destinationSpan <- repStosdSpan? destination count direction
+  pure (sourceSpan, destinationSpan)
+
+def repMovsSpans? (source destination count : Word) (direction : Bool)
+    (width : MemoryWidth) : Option (Span × Span) := do
+  let sourceSpan <- repStringSpan? source count direction width
+  let destinationSpan <- repStringSpan? destination count direction width
   pure (sourceSpan, destinationSpan)
 
 def interpreterEventAccessDomainChecked (side : RelationalSide)
@@ -568,6 +593,22 @@ def interpreterEventAccessDomainChecked (side : RelationalSide)
       | none => false
   | .repMovsd source destination count direction =>
       match repMovsdSpans? source destination count direction with
+      | some (sourceSpan, destinationSpan) =>
+          (sourceSpan.size == 0 ||
+            relationalAccessSpanChecked side context world .read
+              sourceSpan.start sourceSpan.size) &&
+          (destinationSpan.size == 0 ||
+            relationalAccessSpanChecked side context world .write
+              destinationSpan.start destinationSpan.size)
+      | none => false
+  | .repStos destination _ count direction width =>
+      match repStringSpan? destination count direction width with
+      | some span =>
+          span.size == 0 ||
+            relationalAccessSpanChecked side context world .write span.start span.size
+      | none => false
+  | .repMovs source destination count direction width =>
+      match repMovsSpans? source destination count direction width with
       | some (sourceSpan, destinationSpan) =>
           (sourceSpan.size == 0 ||
             relationalAccessSpanChecked side context world .read

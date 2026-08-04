@@ -736,7 +736,7 @@ class ContractToolTests(unittest.TestCase):
                 {"op": "fs_base", "width": 32}, eax["address"]["args"]
             )
 
-    def test_semantic_transfer_exports_large_rep_stosd_as_symbolic_fill(self):
+    def test_semantic_transfer_exports_large_rep_stosd_as_width_aware_fill(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             encoded = bytes.fromhex("b9b9000000f3ab")
@@ -770,13 +770,20 @@ class ContractToolTests(unittest.TestCase):
             self.assertEqual(symbolic["status"], "ok", symbolic)
             event = transfer["external_events"][0]
             self.assertEqual(
-                (event["kind"], event["index"], event["effect_model"]),
-                ("rep_stosd", 0, "symbolic_string_fill_v1"),
+                (
+                    event["kind"],
+                    event["index"],
+                    event["element_width"],
+                    event["effect_model"],
+                ),
+                ("rep_stos", 0, 4, "symbolic_string_fill_v2"),
             )
             self.assertEqual(event["destination"]["name"], "edi")
             self.assertEqual(event["value"]["name"], "eax")
             self.assertEqual(event["count"]["value"], 185)
             self.assertEqual(event["direction_flag"]["name"], "df")
+            self.assertEqual(event["address_size"], 32)
+            self.assertEqual(event["restart_semantics"], "element_committed_v1")
             writes = {
                 item["register"]: item["value"]
                 for item in transfer["register_writes"]
@@ -812,7 +819,7 @@ class ContractToolTests(unittest.TestCase):
             self.assertEqual(transfer["status"], "reimplementable", transfer)
             self.assertLess(len(json.dumps(transfer)), 200_000)
 
-    def test_rep_stosd_supports_symbolic_count_and_retains_small_unroll(self):
+    def test_rep_stosd_always_uses_restartable_macro_event(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             symbolic_path = self._write_pe(
@@ -847,18 +854,165 @@ class ContractToolTests(unittest.TestCase):
 
             self.assertEqual(results["symbolic"]["status"], "ok")
             symbolic_event = results["symbolic"]["observables"]["external_events"][0]
-            self.assertEqual(symbolic_event[0], "rep_stosd")
-            self.assertEqual(symbolic_event[4], ("reg", "ecx"))
+            self.assertEqual(symbolic_event[0], "rep_stos")
+            self.assertEqual(symbolic_event[2], 4)
+            self.assertEqual(symbolic_event[3], 32)
+            self.assertEqual(symbolic_event[6], ("reg", "ecx"))
             self.assertEqual(
                 results["symbolic"]["observables"]["reg:ecx"], ("const", 0)
             )
             self.assertEqual(results["bounded"]["status"], "ok")
             self.assertEqual(
-                results["bounded"]["observables"]["external_events"], ()
+                len(results["bounded"]["observables"]["external_events"]), 1
             )
             self.assertEqual(
-                len(results["bounded"]["observables"]["memory_events"]), 2
+                results["bounded"]["observables"]["memory_events"], ()
             )
+
+    def test_string_copy_and_fill_semantics_are_width_generic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = {
+                "movsb": ("a4", 1, "read", "write"),
+                "movsw": ("66a5", 2, "read", "write"),
+                "movsd": ("a5", 4, "read", "write"),
+                "stosb": ("aa", 1, "write", None),
+                "stosw": ("66ab", 2, "write", None),
+                "stosd": ("ab", 4, "write", None),
+            }
+            for name, (encoded_hex, width, first_kind, second_kind) in cases.items():
+                with self.subTest(name=name):
+                    encoded = bytes.fromhex(encoded_hex)
+                    original = self._write_pe(root / f"{name}.exe", encoded)
+                    binary = _parse_stage_a_pe(original)
+                    side = BlockSide(0x1000, 0x1000 + len(encoded))
+                    mapping = BlockMapping(
+                        id=name,
+                        original=side,
+                        candidate=side,
+                        kind="code",
+                        reachable=True,
+                        invariant_checked=True,
+                        source={"function": name},
+                    )
+
+                    result = _symbolic_execute(
+                        binary,
+                        side,
+                        binary.pe.get_data(side.rva_start, side.size),
+                        "original",
+                        mapping,
+                    )
+
+                    self.assertEqual(result["status"], "ok", result)
+                    memory_events = result["observables"]["memory_events"]
+                    self.assertEqual(memory_events[0][0], first_kind)
+                    first_memory = memory_events[0][1]
+                    self.assertEqual(
+                        32 if first_memory[0] == "mem32" else first_memory[1],
+                        width * 8,
+                    )
+                    if second_kind is not None:
+                        self.assertEqual(memory_events[1][0], second_kind)
+                        second_memory = memory_events[1][1]
+                        self.assertEqual(
+                            32 if second_memory[0] == "mem32" else second_memory[1],
+                            width * 8,
+                        )
+                    self.assertEqual(
+                        result["observables"]["reg:edi"],
+                        (
+                            "add",
+                            (
+                                "ite",
+                                ("flag", "df"),
+                                ("const", (-width) & 0xFFFFFFFF),
+                                ("const", width),
+                            ),
+                            ("reg", "edi"),
+                        ),
+                    )
+                    if name.startswith("movs"):
+                        self.assertEqual(
+                            result["observables"]["reg:esi"],
+                            (
+                                "add",
+                                (
+                                    "ite",
+                                    ("flag", "df"),
+                                    ("const", (-width) & 0xFFFFFFFF),
+                                    ("const", width),
+                                ),
+                                ("reg", "esi"),
+                            ),
+                        )
+
+    def test_rep_movsb_exports_width_aware_symbolic_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            encoded = bytes.fromhex("f3a4")
+            original = self._write_pe(root / "rep-movsb.exe", encoded)
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1002)
+            mapping = BlockMapping(
+                id="rep-movsb",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "rep_movsb"},
+            )
+
+            transfer = _semantic_transfer_contract(
+                binary,
+                mapping,
+                "rep_movsb",
+                {"model": REFERENCE_CONTRACT_MODEL_ID},
+            )
+
+            self.assertEqual(transfer["status"], "reimplementable", transfer)
+            event = transfer["external_events"][0]
+            self.assertEqual(event["kind"], "rep_movs")
+            self.assertEqual(event["element_width"], 1)
+            self.assertEqual(event["effect_model"], "symbolic_string_copy_v2")
+            self.assertEqual(event["address_size"], 32)
+            self.assertEqual(event["restart_semantics"], "element_committed_v1")
+            self.assertEqual(event["source"]["name"], "esi")
+            self.assertEqual(event["destination"]["name"], "edi")
+
+    def test_string_semantics_reject_sse_movsd_and_address_size_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = {
+                "sse-movsd": bytes.fromhex("f20f10c1"),
+                "address-size-movsb": bytes.fromhex("67a4"),
+            }
+            for name, encoded in cases.items():
+                with self.subTest(name=name):
+                    original = self._write_pe(root / f"{name}.exe", encoded)
+                    binary = _parse_stage_a_pe(original)
+                    side = BlockSide(0x1000, 0x1000 + len(encoded))
+                    mapping = BlockMapping(
+                        id=name,
+                        original=side,
+                        candidate=side,
+                        kind="code",
+                        reachable=True,
+                        invariant_checked=True,
+                        source={"function": name},
+                    )
+
+                    result = _symbolic_execute(
+                        binary,
+                        side,
+                        binary.pe.get_data(side.rva_start, side.size),
+                        "original",
+                        mapping,
+                    )
+
+                    self.assertEqual(result["status"], "incomplete", result)
+                    self.assertEqual(result["category"], "unsupported_semantics")
 
     def test_semantic_transfer_exports_complete_import_call_boundary(self):
         with tempfile.TemporaryDirectory() as tmp:

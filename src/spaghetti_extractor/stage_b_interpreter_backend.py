@@ -1326,6 +1326,23 @@ class _TransferCompiler:
                 self.word(event.get("count")), self.word(event.get("direction_flag")),
             )))
             return
+        if kind == "rep_movs":
+            width = self._checked_string_event(
+                event,
+                event_index,
+                kind="rep_movs",
+                effect_model="symbolic_string_copy_v2",
+            )
+            if "value" in event:
+                raise StageBInterpreterError(
+                    f"{self.identity}: rep_movs must not carry a fill value",
+                    code="malformed_rep_movs_event",
+                )
+            self.actions.append(_Action("rep_movs", (
+                self.word(event.get("source")), self.word(event.get("destination")),
+                self.word(event.get("count")), self.word(event.get("direction_flag")),
+            ), width))
+            return
         if kind == "rep_stosd":
             _u32(event.get("instruction_rva"), "rep_stosd instruction_rva")
             if event.get("effect_model") != "symbolic_string_fill_v1":
@@ -1360,6 +1377,25 @@ class _TransferCompiler:
                 self.word(event.get("count")),
                 self.word(event.get("direction_flag")),
             )))
+            return
+        if kind == "rep_stos":
+            width = self._checked_string_event(
+                event,
+                event_index,
+                kind="rep_stos",
+                effect_model="symbolic_string_fill_v2",
+            )
+            if "source" in event:
+                raise StageBInterpreterError(
+                    f"{self.identity}: rep_stos must not carry a source address",
+                    code="malformed_rep_stos_event",
+                )
+            self.actions.append(_Action("rep_stos", (
+                self.word(event.get("destination")),
+                self.word(event.get("value")),
+                self.word(event.get("count")),
+                self.word(event.get("direction_flag")),
+            ), width))
             return
         if kind not in {"external_call", "internal_call", "indirect_call"}:
             raise StageBInterpreterError(f"{self.identity}: unsupported external event {kind!r}")
@@ -1404,6 +1440,45 @@ class _TransferCompiler:
         self.calls.append(call)
         self.actions.append(_Action("call", (call_index,)))
         self.available_calls.add(event_index)
+
+    def _checked_string_event(
+        self,
+        event: Mapping[str, Any],
+        event_index: int,
+        *,
+        kind: str,
+        effect_model: str,
+    ) -> int:
+        code = f"malformed_{kind}_event"
+        _u32(event.get("instruction_rva"), f"{kind} instruction_rva")
+        if event.get("effect_model") != effect_model:
+            raise StageBInterpreterError(
+                f"{self.identity}: {kind} requires {effect_model}",
+                code=code,
+            )
+        if event.get("address_size") != 32:
+            raise StageBInterpreterError(
+                f"{self.identity}: {kind} requires 32-bit address size",
+                code=code,
+            )
+        if event.get("restart_semantics") != "element_committed_v1":
+            raise StageBInterpreterError(
+                f"{self.identity}: {kind} requires element_committed_v1 restart semantics",
+                code=code,
+            )
+        if _nonnegative(event.get("index"), f"{kind} event index") != event_index:
+            raise StageBInterpreterError(
+                f"{self.identity}: {kind} event index does not match its "
+                "ordered external-event position",
+                code=code,
+            )
+        try:
+            return _width(event.get("element_width"))
+        except StageBInterpreterError as error:
+            raise StageBInterpreterError(
+                f"{self.identity}: {kind} has invalid element width",
+                code=code,
+            ) from error
 
     def _outcome(self, outcome: Mapping[str, Any]) -> _Action:
         kind = _string(outcome.get("kind"), "outcome kind")
@@ -2095,7 +2170,7 @@ _ACTIONS = (
     "outcome_jump", "outcome_branch", "outcome_return", "outcome_indirect",
     # Opcode 25 retains its historical ABI label. Its payload is now a typed,
     # byte-free operation and all newly generated capability metadata says so.
-    "outcome_external", "replay_x87", "rep_stosd",
+    "outcome_external", "replay_x87", "rep_stosd", "rep_movs", "rep_stos",
 )
 
 
@@ -2509,7 +2584,10 @@ stage_b_step_result stage_b_interpreter_step(
       e.target_rva=c->kind==2U?words[c->target_node]:c->target_rva;e.return_rva=c->return_rva;e.dll=c->dll;e.symbol=c->symbol;
       e.ordinal=c->ordinal;e.has_ordinal=c->has_ordinal;e.arguments=av;e.argument_count=c->argument_count;e.stack_inputs=si;e.stack_input_count=c->stack_input_count;
       call_output=ci;{stage_b_call_status s=stage_b_invoke_call(rt,&e,&ci,&call_output);if(s!=STAGE_B_CALL_OK){*state=call_output;return(stage_b_step_result){s==STAGE_B_CALL_DIVIDE_ERROR?STAGE_B_DIVIDE_ERROR:s==STAGE_B_CALL_MEMORY_FAULT?STAGE_B_MEMORY_FAULT:s==STAGE_B_CALL_EXTERNAL_FAULT?STAGE_B_EXTERNAL_FAULT:STAGE_B_UNIMPLEMENTED,call_output.original_rva,0U};}}*state=call_output;
-    } else if(a->op==5U){uint32_t s=words[a->args[0]],d=words[a->args[1]],n=words[a->args[2]],step=words[a->args[3]]?0xfffffffcU:4U,j;for(j=0U;j<n;++j){uint32_t v=stage_b_read(rt,s,4U,&memory_fault);if(memory_fault)break;stage_b_write(rt,d,4U,v,&memory_fault);s+=step;d+=step;}}
+    } else if(a->op==5U){
+      uint32_t s=words[a->args[0]],d=words[a->args[1]],n=words[a->args[2]],step=words[a->args[3]]?0xfffffffcU:4U;
+      stage_b_set_reg(state,4U,s);stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
+      while(n!=0U){uint32_t v=stage_b_read(rt,s,4U,&memory_fault);if(memory_fault)break;stage_b_write(rt,d,4U,v,&memory_fault);if(memory_fault)break;s+=step;d+=step;--n;stage_b_set_reg(state,4U,s);stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);}}
     else if(a->op==6U)stage_b_set_reg(state,a->aux,words[a->args[0]]);
     else if(a->op==7U)stage_b_set_flag(state,a->aux,words[a->args[0]]);
     else if(a->op>=8U&&a->op<=17U)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
@@ -2535,14 +2613,38 @@ stage_b_step_result stage_b_interpreter_step(
     } else if(a->op==26U){
       uint32_t d=words[a->args[0]],v=words[a->args[1]];
       uint32_t n=words[a->args[2]],step=words[a->args[3]]?0xfffffffcU:4U;
+      stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
       while(n!=0U){
         stage_b_write(rt,d,4U,v,&memory_fault);
         if(memory_fault)break;
         d+=step;
         --n;
+        stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
       }
-      stage_b_set_reg(state,5U,d);
-      stage_b_set_reg(state,2U,n);
+    } else if(a->op==27U){
+      uint32_t s=words[a->args[0]],d=words[a->args[1]],n=words[a->args[2]],w=a->aux;
+      uint32_t step=words[a->args[3]]?0U-w:w;
+      if(w!=1U&&w!=2U&&w!=4U)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
+      stage_b_set_reg(state,4U,s);stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
+      while(n!=0U){
+        uint32_t v=stage_b_read(rt,s,w,&memory_fault);
+        if(memory_fault)break;
+        stage_b_write(rt,d,w,v,&memory_fault);
+        if(memory_fault)break;
+        s+=step;d+=step;--n;
+        stage_b_set_reg(state,4U,s);stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
+      }
+    } else if(a->op==28U){
+      uint32_t d=words[a->args[0]],v=words[a->args[1]],n=words[a->args[2]],w=a->aux;
+      uint32_t step=words[a->args[3]]?0U-w:w;
+      if(w!=1U&&w!=2U&&w!=4U)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
+      stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
+      while(n!=0U){
+        stage_b_write(rt,d,w,v,&memory_fault);
+        if(memory_fault)break;
+        d+=step;--n;
+        stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
+      }
     } else return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
     if(memory_fault)return(stage_b_step_result){STAGE_B_MEMORY_FAULT,0U,0U};
     if(semantic_fault)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};

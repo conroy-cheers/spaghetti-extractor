@@ -95,6 +95,8 @@ inductive OrderedEffectKind where
   | divideGuard
   | repMovsd
   | repStosd
+  | repMovs (width : MemoryWidth)
+  | repStos (width : MemoryWidth)
 deriving Repr, DecidableEq
 
 private def operand32ReadEffect : Operand32 -> List OrderedEffectKind
@@ -280,6 +282,8 @@ def semanticTransferOrderedEffectKinds
     | .divideIf _ => [.divideGuard]
     | .repMovsd .. => [.repMovsd]
     | .repStosd .. => [.repStosd]
+    | .repMovs _ _ _ _ width => [.repMovs width]
+    | .repStos _ _ _ _ width => [.repStos width]
     | .setRegister .. | .setFlag .. | .syncEflags => []
 
 def semanticTransferCallActionIndices

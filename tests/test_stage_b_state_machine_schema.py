@@ -11,11 +11,48 @@ from spaghetti_extractor.stage_b_state_machine import (
     STAGE_A_SEMANTIC_TRANSFER_FORMAT,
     StageAReferenceContractBinding,
     _load_stage_a_semantic_transfer_rows,
+    _validate_restartable_string_events,
     normalize_stage_a_semantic_transfer,
 )
+from spaghetti_extractor.stage_binary import StageAInputError
 
 
 class StageBStateMachineSchemaTests(unittest.TestCase):
+    def test_restartable_string_event_schema_fails_closed(self) -> None:
+        event = {
+            "family": "external",
+            "kind": "rep_movs",
+            "index": 0,
+            "element_width": 1,
+            "address_size": 32,
+            "destination": {"op": "reg", "name": "edi", "width": 32},
+            "source": {"op": "reg", "name": "esi", "width": 32},
+            "count": {"op": "reg", "name": "ecx", "width": 32},
+            "direction_flag": {"op": "flag", "name": "df"},
+            "effect_model": "symbolic_string_copy_v2",
+            "restart_semantics": "element_committed_v1",
+        }
+        row = {"external_events": [event], "ordered_events": [event]}
+        _validate_restartable_string_events(row, "fixture")
+
+        for mutation in (
+            {"element_width": 3},
+            {"address_size": 16},
+            {"restart_semantics": "none"},
+            {"index": 1},
+            {"value": {"op": "const", "value": 0, "width": 32}},
+        ):
+            with self.subTest(mutation=mutation):
+                malformed = {**event, **mutation}
+                with self.assertRaises(StageAInputError):
+                    _validate_restartable_string_events(
+                        {
+                            "external_events": [malformed],
+                            "ordered_events": [malformed],
+                        },
+                        "fixture",
+                    )
+
     def test_blocking_instruction_is_preserved_as_hash_bound_diagnostic(self) -> None:
         row = _blocked_transfer()
 
