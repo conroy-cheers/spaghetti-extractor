@@ -64,6 +64,10 @@ def recover_static_pe32_jump_table_inventory(
         )
     table_address, index_expression, expression_form = shape
 
+    remap_shape = _immutable_byte_remap_shape(index_expression)
+    bound_expression = (
+        remap_shape[1] if remap_shape is not None else index_expression
+    )
     evidence_rows: list[dict[str, Any]] = []
     bounds: set[int] = set()
     if not predecessor_evidence:
@@ -83,11 +87,11 @@ def recover_static_pe32_jump_table_inventory(
             )
         guard = _predecessor_path_guard(row)
         guard_bound = (
-            _guard_upper_exclusive(guard, index_expression)
+            _guard_upper_exclusive(guard, bound_expression)
             if guard is not None
             else None
         )
-        instruction_bound = _instruction_upper_exclusive(row, index_expression)
+        instruction_bound = _instruction_upper_exclusive(row, bound_expression)
         row_bounds = {
             value
             for value in (guard_bound, instruction_bound)
@@ -127,13 +131,88 @@ def recover_static_pe32_jump_table_inventory(
             "ambiguous_index_bound",
             "incoming predecessors establish different index bounds",
         )
-    upper_exclusive = next(iter(bounds))
-    if upper_exclusive <= 0 or upper_exclusive > max_entries:
+    source_upper_exclusive = next(iter(bounds))
+    if source_upper_exclusive <= 0 or source_upper_exclusive > max_entries:
         return _table_failure(
             kind,
             "invalid_index_bound",
             "recovered index bound is empty or exceeds the resolver cap",
         )
+
+    remap: dict[str, Any] | None = None
+    upper_exclusive = source_upper_exclusive
+    if remap_shape is not None:
+        remap_address, remap_index, remap_form = remap_shape
+        remap_resolution = _resolve_section_address(
+            remap_address,
+            image_base=image_base,
+            sections=sections,
+            size=source_upper_exclusive,
+            require_executable=False,
+        )
+        if remap_resolution is None:
+            return _table_failure(
+                kind,
+                "invalid_index_remap_address",
+                "byte-remap address does not identify one readable PE section range",
+            )
+        remap_rva, remap_section, remap_address_model = remap_resolution
+        if not _section_flag(remap_section, "readable"):
+            return _table_failure(
+                kind,
+                "unreadable_index_remap",
+                "byte-remap table is not in a readable PE section",
+            )
+        if _section_flag(remap_section, "writable"):
+            return _table_failure(
+                kind,
+                "writable_index_remap",
+                "byte-remap table is writable and cannot bound static control",
+            )
+        try:
+            remap_bytes = read_rva(remap_rva, source_upper_exclusive)
+        except Exception:
+            return _table_failure(
+                kind,
+                "unreadable_index_remap",
+                "byte-remap bytes could not be read",
+            )
+        if (
+            not isinstance(remap_bytes, bytes)
+            or len(remap_bytes) != source_upper_exclusive
+        ):
+            return _table_failure(
+                kind,
+                "unreadable_index_remap",
+                "byte-remap reader did not return the exact requested bytes",
+            )
+        values = sorted(set(remap_bytes))
+        if not values:
+            return _table_failure(
+                kind,
+                "empty_index_remap",
+                "byte-remap table has no values",
+            )
+        upper_exclusive = values[-1] + 1
+        if upper_exclusive > max_entries:
+            return _table_failure(
+                kind,
+                "invalid_index_bound",
+                "byte-remap output exceeds the resolver cap",
+            )
+        remap = {
+            "kind": "immutable_u8_lookup",
+            "expression_form": remap_form,
+            "source_expression": copy.deepcopy(dict(remap_index)),
+            "source_upper_exclusive": source_upper_exclusive,
+            "address": remap_address,
+            "address_model": remap_address_model,
+            "rva_start": remap_rva,
+            "rva_end": remap_rva + source_upper_exclusive,
+            "section": _section_name(remap_section),
+            "bytes_sha256": sha256(remap_bytes).hexdigest(),
+            "possible_values": values,
+        }
 
     table_resolution = _resolve_section_address(
         table_address,
@@ -233,6 +312,7 @@ def recover_static_pe32_jump_table_inventory(
             "expression": copy.deepcopy(dict(index_expression)),
             "lower_inclusive": 0,
             "upper_exclusive": upper_exclusive,
+            "remap": remap,
             "bound_evidence": sorted(
                 evidence_rows,
                 key=lambda row: (row["source_unit_id"], row["upper_exclusive"]),
@@ -674,6 +754,94 @@ def _scaled_index(expression: Any) -> tuple[Mapping[str, Any], str] | None:
             for constant, index in (operands, reversed(operands)):
                 if _constant_value(constant) == 4 and isinstance(index, Mapping):
                     return index, "multiply_4"
+    return None
+
+
+def _immutable_byte_remap_shape(
+    expression: Mapping[str, Any],
+) -> tuple[int, Mapping[str, Any], str] | None:
+    byte_load = _strip_u8_preserving_operations(expression)
+    if byte_load is None:
+        return None
+    address = byte_load.get("address")
+    operands = _binary_operands(address, "add")
+    if operands is None:
+        return None
+    candidates: list[tuple[int, Mapping[str, Any], str]] = []
+    for base_expression, index_expression in (operands, reversed(operands)):
+        base = _constant_value(base_expression)
+        if base is not None and isinstance(index_expression, Mapping):
+            candidates.append((base, index_expression, "base_plus_index"))
+    unique = {
+        (base, _canonical_json(index), form): (base, index, form)
+        for base, index, form in candidates
+    }
+    return next(iter(unique.values())) if len(unique) == 1 else None
+
+
+def _strip_u8_preserving_operations(
+    expression: Any,
+) -> Mapping[str, Any] | None:
+    if not isinstance(expression, Mapping):
+        return None
+    op = str(expression.get("op", "")).lower()
+    if op in {"load", "read8", "mem8"}:
+        width = expression.get("width")
+        width_bits = expression.get("width_bits")
+        if op == "load" and width not in {1, None}:
+            return None
+        if op == "load" and width is None and width_bits != 8:
+            return None
+        if op != "load" and width_bits not in {8, None}:
+            return None
+        return expression
+    if op in {"and", "and32", "bit_and"}:
+        operands = _binary_operands(expression, op)
+        if operands is None:
+            return None
+        for mask_expression, value_expression in (operands, reversed(operands)):
+            mask = _constant_expression_value(mask_expression)
+            if mask is not None and mask & 0xFF == 0xFF:
+                stripped = _strip_u8_preserving_operations(value_expression)
+                if stripped is not None:
+                    return stripped
+        return None
+    if op in {"or", "or32", "bit_or"}:
+        operands = _binary_operands(expression, op)
+        if operands is None:
+            return None
+        for zero_expression, value_expression in (operands, reversed(operands)):
+            if _constant_expression_value(zero_expression) == 0:
+                stripped = _strip_u8_preserving_operations(value_expression)
+                if stripped is not None:
+                    return stripped
+    return None
+
+
+def _constant_expression_value(expression: Any) -> int | None:
+    direct = _constant_value(expression)
+    if direct is not None:
+        return direct & 0xFFFFFFFF
+    if not isinstance(expression, Mapping):
+        return None
+    op = str(expression.get("op", "")).lower()
+    operands = _binary_operands(expression, op)
+    if operands is None:
+        return None
+    left = _constant_expression_value(operands[0])
+    right = _constant_expression_value(operands[1])
+    if left is None or right is None:
+        return None
+    if op in {"and", "and32", "bit_and"}:
+        return left & right
+    if op in {"or", "or32", "bit_or"}:
+        return left | right
+    if op in {"add", "add32"}:
+        return (left + right) & 0xFFFFFFFF
+    if op in {"sub", "sub32"}:
+        return (left - right) & 0xFFFFFFFF
+    if op in {"mul", "multiply", "mul32"}:
+        return (left * right) & 0xFFFFFFFF
     return None
 
 

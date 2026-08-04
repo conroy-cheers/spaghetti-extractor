@@ -14,6 +14,7 @@ from spaghetti_extractor.reconstruction_ir import (
     MachineIRExportError,
     RvaSpan,
     _Instruction,
+    _bounded_predecessor_instruction_history,
     _callback_registration_roots,
     _newly_eligible_callback_roots,
     _prefer_indirect_recoveries,
@@ -273,6 +274,40 @@ def _raw_instruction_keys(value: object) -> set[str]:
 
 
 class ReconstructionIRTests(unittest.TestCase):
+    def test_predecessor_history_crosses_one_instruction_cutpoint(self) -> None:
+        compare = {
+            "id": "compare",
+            "source": {"original": {"rva_start": 0x1000, "rva_end": 0x1003}},
+            "instructions": [{"mnemonic": "cmp"}],
+            "semantics": {
+                "external_events": [],
+                "outcome": {"kind": "fallthrough", "target_rva": 0x1003},
+            },
+        }
+        branch = {
+            "id": "branch",
+            "source": {"original": {"rva_start": 0x1003, "rva_end": 0x1005}},
+            "instructions": [{"mnemonic": "ja"}],
+            "semantics": {
+                "external_events": [],
+                "outcome": {
+                    "kind": "branch",
+                    "true_target_rva": 0x1100,
+                    "false_target_rva": 0x1005,
+                },
+            },
+        }
+
+        history = _bounded_predecessor_instruction_history(
+            branch,
+            predecessors_by_target={0x1003: [compare]},
+        )
+
+        self.assertEqual(
+            [instruction["mnemonic"] for instruction in history],
+            ["cmp", "ja"],
+        )
+
     def test_conflicting_indirect_recovery_mechanisms_fail_closed(self) -> None:
         static = [{
             "id": "exit",

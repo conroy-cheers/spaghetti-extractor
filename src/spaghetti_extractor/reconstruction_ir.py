@@ -1814,13 +1814,16 @@ def _indirect_predecessor_evidence(
     source_unit: Mapping[str, Any], units: Sequence[Mapping[str, Any]]
 ) -> list[dict[str, Any]]:
     source_rva = int(source_unit["source"]["original"]["rva_start"])
-    result: list[dict[str, Any]] = []
-    for predecessor in units:
-        control = predecessor.get("control")
-        if not isinstance(control, Mapping) or source_rva not in control.get(
-            "direct_targets", []
-        ):
+    predecessors_by_target: dict[int, list[Mapping[str, Any]]] = {}
+    for candidate in units:
+        control = candidate.get("control")
+        if not isinstance(control, Mapping):
             continue
+        for target in control.get("direct_targets", []):
+            if isinstance(target, int) and not isinstance(target, bool):
+                predecessors_by_target.setdefault(target, []).append(candidate)
+    result: list[dict[str, Any]] = []
+    for predecessor in predecessors_by_target.get(source_rva, []):
         outcome = predecessor.get("semantics", {}).get("outcome", {})
         edge_kind = "fallthrough"
         if isinstance(outcome, Mapping) and outcome.get("kind") == "branch":
@@ -1834,15 +1837,74 @@ def _indirect_predecessor_evidence(
             if isinstance(edge, Mapping) and edge.get("target_rva") == source_rva:
                 guard = copy.deepcopy(edge.get("condition"))
                 break
+        instructions = _bounded_predecessor_instruction_history(
+            predecessor,
+            predecessors_by_target=predecessors_by_target,
+        )
         result.append(
             {
                 "source_unit_id": predecessor["id"],
                 "edge_kind": edge_kind,
                 "guard": guard,
-                "instructions": copy.deepcopy(predecessor.get("instructions", [])),
+                "instructions": instructions,
             }
         )
     return sorted(result, key=lambda item: str(item["source_unit_id"]))
+
+
+def _bounded_predecessor_instruction_history(
+    predecessor: Mapping[str, Any],
+    *,
+    predecessors_by_target: Mapping[int, Sequence[Mapping[str, Any]]],
+    max_units: int = 8,
+) -> list[dict[str, Any]]:
+    history = [
+        copy.deepcopy(dict(instruction))
+        for instruction in predecessor.get("instructions", [])
+        if isinstance(instruction, Mapping)
+    ]
+    cursor = predecessor
+    visited = {str(predecessor.get("id"))}
+    for _ in range(max_units - 1):
+        if any(
+            str(instruction.get("mnemonic", "")).lower() == "cmp"
+            for instruction in history
+        ):
+            break
+        source = cursor.get("source", {}).get("original", {})
+        start = source.get("rva_start") if isinstance(source, Mapping) else None
+        if not isinstance(start, int) or isinstance(start, bool):
+            break
+        candidates = []
+        for candidate in predecessors_by_target.get(start, []):
+            candidate_id = str(candidate.get("id"))
+            candidate_source = candidate.get("source", {}).get("original", {})
+            candidate_outcome = candidate.get("semantics", {}).get("outcome", {})
+            candidate_events = candidate.get("semantics", {}).get(
+                "external_events", []
+            )
+            if (
+                candidate_id in visited
+                or not isinstance(candidate_source, Mapping)
+                or candidate_source.get("rva_end") != start
+                or not isinstance(candidate_outcome, Mapping)
+                or candidate_outcome.get("kind") != "fallthrough"
+                or candidate_outcome.get("target_rva") != start
+                or (isinstance(candidate_events, list) and candidate_events)
+            ):
+                continue
+            candidates.append(candidate)
+        if len(candidates) != 1:
+            break
+        cursor = candidates[0]
+        visited.add(str(cursor.get("id")))
+        prefix = [
+            copy.deepcopy(dict(instruction))
+            for instruction in cursor.get("instructions", [])
+            if isinstance(instruction, Mapping)
+        ]
+        history = prefix + history
+    return history
 
 
 def _indirect_exit_id(value: Mapping[str, Any]) -> str:

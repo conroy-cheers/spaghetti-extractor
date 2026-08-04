@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from hashlib import sha256
 from typing import Any
 
 from spaghetti_extractor.reconstruction_control import (
@@ -195,6 +196,109 @@ class StaticPE32JumpTableTests(unittest.TestCase):
         self.assertEqual(result["status"], "recovered")
         self.assertEqual(result["index"]["upper_exclusive"], 36)
         self.assertEqual(result["table"]["expression_form"], "multiply_4")
+
+    def test_recovers_immutable_byte_remapped_index(self) -> None:
+        target_rvas = [0x1100, 0x1110, 0x1120]
+        remap_rva = TABLE_RVA + len(target_rvas) * 4
+        remap_values = bytes([2, 0, 1, 2, 1])
+        image = _table_bytes(target_rvas) + remap_values
+        index = {
+            "op": "or32",
+            "args": [
+                {
+                    "op": "and32",
+                    "args": [
+                        {"op": "const", "value": 0, "width": 32},
+                        {"op": "const", "value": 0xFFFFFF00, "width": 32},
+                    ],
+                },
+                {
+                    "op": "and32",
+                    "args": [
+                        {
+                            "op": "and32",
+                            "args": [
+                                {"op": "const", "value": 255, "width": 32},
+                                {
+                                    "op": "load",
+                                    "width": 1,
+                                    "address": {
+                                        "op": "add32",
+                                        "args": [
+                                            {
+                                                "op": "const",
+                                                "value": IMAGE_BASE + remap_rva,
+                                                "width": 32,
+                                            },
+                                            {"op": "reg", "name": "ecx", "width": 32},
+                                        ],
+                                    },
+                                },
+                            ],
+                        },
+                        {"op": "const", "value": 255, "width": 32},
+                    ],
+                },
+            ],
+        }
+        expression = {
+            "op": "load",
+            "width": 4,
+            "address": {
+                "op": "add32",
+                "args": [
+                    {"op": "const", "value": IMAGE_BASE + TABLE_RVA, "width": 32},
+                    {
+                        "op": "mul32",
+                        "args": [index, {"op": "const", "value": 4, "width": 32}],
+                    },
+                ],
+            },
+        }
+        predecessor = {
+            "source_unit_id": "guard",
+            "edge_kind": "fallthrough",
+            "instructions": [
+                {
+                    "mnemonic": "cmp",
+                    "operands": [
+                        {"kind": "register", "name": "ecx", "width_bits": 32},
+                        {"kind": "immediate", "value": 4, "width_bits": 32},
+                    ],
+                },
+                {"mnemonic": "ja", "operands": []},
+            ],
+        }
+
+        result = recover_static_pe32_jump_table_inventory(
+            target_expression=expression,
+            predecessor_evidence=[predecessor],
+            image_base=IMAGE_BASE,
+            sections=_sections(),
+            read_rva=_reader(image),
+            valid_target_rvas=set(target_rvas),
+        )
+
+        self.assertEqual(result["status"], "recovered")
+        self.assertEqual(result["index"]["upper_exclusive"], 3)
+        self.assertEqual(result["index"]["remap"]["source_upper_exclusive"], 5)
+        self.assertEqual(result["index"]["remap"]["possible_values"], [0, 1, 2])
+        self.assertEqual(
+            result["index"]["remap"]["bytes_sha256"],
+            sha256(remap_values).hexdigest(),
+        )
+        self.assertEqual(result["table"]["entry_count"], 3)
+
+        writable = recover_static_pe32_jump_table_inventory(
+            target_expression=expression,
+            predecessor_evidence=[predecessor],
+            image_base=IMAGE_BASE,
+            sections=_sections(writable_table=True),
+            read_rva=_reader(image),
+            valid_target_rvas=set(target_rvas),
+        )
+        self.assertEqual(writable["status"], "incomplete")
+        self.assertEqual(writable["failure"]["code"], "writable_index_remap")
 
     def test_unresolved_or_ambiguous_bounds_do_not_read_a_table(self) -> None:
         reads = []
