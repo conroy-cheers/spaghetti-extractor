@@ -17,6 +17,9 @@
     "66B8"
   ],
   opcodeHashes ? {
+    "6640" = "sha256-vSs2WrfdEWboqtkKPTx0XntyHtMbIZHLSe1o8GdrqbE=";
+    "6646" = "sha256-VMIc+dAW+BoEXgWWo69pegedazTffVajrhWSfY0HKX0=";
+    "6648" = "sha256-ZhWtekjRX8KPyt2dnyI/uPDxgVGfSDuDl+YwataqvWA=";
     "6601" = "sha256-JRUro0fHoK0nK7SPmQNaLA/K2evHFYbmCCTNruR+KEg=";
     "6605" = "sha256-81bxHlKFQiLcAL3fv2Sho995+SqZj3GfogwsMpeKgSM=";
     "6629" = "sha256-DpTZuNfcD44WPQTqDM86KmprBmFE9Mivf3NOpsSg48A=";

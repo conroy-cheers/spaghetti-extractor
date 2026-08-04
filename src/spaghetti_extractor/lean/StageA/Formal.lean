@@ -2453,6 +2453,8 @@ deriving Repr, DecidableEq
 inductive UnaryOperation where
   | bitNot
   | negate
+  | increment
+  | decrement
 deriving Repr, DecidableEq
 
 inductive Instruction where
@@ -2938,6 +2940,20 @@ def decodeGenericInstruction : Bytes -> Option DecodedInstruction
         let destination <- registerOfCode (opcode - 0xb8)
         let value <- readU32 tail 0
         pure { instruction := .movRegImm destination value, size := 5, trailing := tail.drop 4 }
+      else if 0x40 <= opcode && opcode <= 0x47 then do
+        let destination <- registerOfCode (opcode - 0x40)
+        pure {
+          instruction := .unary .increment (.register destination)
+          size := 1
+          trailing := tail
+        }
+      else if 0x48 <= opcode && opcode <= 0x4f then do
+        let destination <- registerOfCode (opcode - 0x48)
+        pure {
+          instruction := .unary .decrement (.register destination)
+          size := 1
+          trailing := tail
+        }
       else if 0x50 <= opcode && opcode <= 0x57 then do
         let source <- registerOfCode (opcode - 0x50)
         pure { instruction := .pushReg source, size := 1, trailing := tail }
@@ -3139,6 +3155,8 @@ def decodeGenericInstruction : Bytes -> Option DecodedInstruction
             | _ => none
         | 0xff => decodedModRM (fun parsed =>
             match parsed.reg with
+            | .eax => some (.unary .increment parsed.operand)
+            | .ecx => some (.unary .decrement parsed.operand)
             | .edx => some (.callIndirect parsed.operand)
             | .esp => some (.jumpIndirect parsed.operand)
             | .esi => some (.pushOperand parsed.operand)
@@ -4063,12 +4081,36 @@ def executeInstructionWithContext (context : SymbolicImageContext)
         match operation with
         | .bitNot => .bitNot value
         | .negate => Expr.subNormalized (.constant 0) value
+        | .increment => Expr.addNormalized value (.constant 1)
+        | .decrement => Expr.subNormalized value (.constant 1)
       let next <- writeOperand32 state destination result
-      let flags :=
-        match operation with
-        | .bitNot => state.flags
-        | .negate => some (subtractionFlags (.constant 0) value result)
-      some (.next { next with flags })
+      match operation with
+      | .bitNot => some (.next { next with flags := state.flags })
+      | .negate =>
+          some (.next {
+            next with
+            flags := some (subtractionFlags (.constant 0) value result)
+          })
+      | .increment =>
+          let currentEflags := state.eflagsExpression
+          some (.next {
+            next with
+            flagsBase := some currentEflags
+            flags := some {
+              additionFlags value (.constant 1) result with carry := none
+            }
+            comparison := none
+          })
+      | .decrement =>
+          let currentEflags := state.eflagsExpression
+          some (.next {
+            next with
+            flagsBase := some currentEflags
+            flags := some {
+              subtractionFlags value (.constant 1) result with carry := none
+            }
+            comparison := none
+          })
   | .branchCondition condition displacement size => do
       let flags <- state.flags
       let condition <- conditionExpression flags condition

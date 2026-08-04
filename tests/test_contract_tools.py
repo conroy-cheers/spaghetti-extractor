@@ -517,6 +517,84 @@ class ContractToolTests(unittest.TestCase):
             self.assertEqual(carry["op"], "eq_bool")
             self.assertIn("lshr32", json.dumps(carry))
 
+    def test_symbolic_execution_models_32_bit_inc_dec_and_preserves_carry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = {
+                "inc-register": bytes.fromhex("40"),
+                "dec-register": bytes.fromhex("48"),
+                "inc-memory": bytes.fromhex("ff00"),
+                "dec-memory": bytes.fromhex("ff08"),
+            }
+            for name, encoded in cases.items():
+                with self.subTest(name=name):
+                    original = self._write_pe(root / f"{name}.exe", encoded)
+                    binary = _parse_stage_a_pe(original)
+                    side = BlockSide(0x1000, 0x1000 + len(encoded))
+                    mapping = BlockMapping(
+                        id=name,
+                        original=side,
+                        candidate=side,
+                        kind="code",
+                        reachable=True,
+                        invariant_checked=True,
+                        source={"function": name},
+                    )
+
+                    symbolic = _symbolic_execute(
+                        binary,
+                        side,
+                        binary.pe.get_data(side.rva_start, side.size),
+                        "original",
+                        mapping,
+                    )
+
+                    self.assertEqual(symbolic["status"], "ok", symbolic)
+                    observables = symbolic["observables"]
+                    self.assertEqual(observables["flag:cf"], ("flag", "cf"))
+                    for flag in ("zf", "sf", "of", "pf"):
+                        self.assertNotEqual(
+                            observables[f"flag:{flag}"],
+                            ("flag", flag),
+                        )
+                    if name.endswith("register"):
+                        operation = "add" if name.startswith("inc") else "sub"
+                        self.assertEqual(observables["reg:eax"][0], operation)
+                    else:
+                        memory_events = observables["memory_events"]
+                        self.assertEqual(
+                            [event[0] for event in memory_events],
+                            ["read", "write"],
+                        )
+
+    def test_symbolic_execution_rejects_unqualified_16_bit_inc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            encoded = bytes.fromhex("6640")
+            original = self._write_pe(root / "inc16.exe", encoded)
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1000 + len(encoded))
+            mapping = BlockMapping(
+                id="inc16",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "inc16"},
+            )
+
+            symbolic = _symbolic_execute(
+                binary,
+                side,
+                binary.pe.get_data(side.rva_start, side.size),
+                "original",
+                mapping,
+            )
+
+            self.assertEqual(symbolic["status"], "incomplete")
+            self.assertIn("only 32-bit inc/dec", symbolic["blocker"])
+
     def test_semantic_transfer_adds_fs_base_to_segmented_memory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

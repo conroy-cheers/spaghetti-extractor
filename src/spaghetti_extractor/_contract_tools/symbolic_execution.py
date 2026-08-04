@@ -332,6 +332,35 @@ def _symbolic_execute(
             if not _write_operand_expr(insn, operands[0], result, registers, memory_events, memory_writes, width_bits=width_bits):
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported arithmetic destination operand")
             continue
+        if mnemonic in {"inc", "dec"}:
+            if len(operands) != 1 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only register/memory-destination unary arithmetic is modeled")
+            width_bits = _operand_width_bits(insn, operands[0])
+            if width_bits != 32:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit inc/dec is modeled")
+            value = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
+            if value is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported inc/dec destination operand")
+            operation = "add" if mnemonic == "inc" else "sub"
+            one = ("const", 1)
+            result = (
+                _expr_add(value, one)
+                if mnemonic == "inc"
+                else _expr_sub(value, one)
+            )
+            result = _expr_mask(result, 32)
+            updated_flags = _arithmetic_flags(
+                operation,
+                value,
+                one,
+                result,
+                width_bits=32,
+            )
+            updated_flags.pop("cf")
+            flags.update(updated_flags)
+            if not _write_operand_expr(insn, operands[0], result, registers, memory_events, memory_writes, width_bits=32):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported inc/dec destination operand")
+            continue
         if mnemonic in {"adc", "sbb"}:
             if len(operands) != 2 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only register/memory-destination carry arithmetic is modeled")
