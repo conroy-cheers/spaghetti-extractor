@@ -4123,6 +4123,7 @@
           stage-a-dxball-original-inventory = dxball.originalInventory;
           stage-a-dxball-opaque-static-export = dxball.opaqueStaticExport;
           stage-a-dxball-import-abi-profile = dxball.importAbiProfile;
+          stage-a-dxball-win32-function-profile = dxball.win32FunctionProfile;
           stage-a-dxball-directx-interface-profile = dxball.directxInterfaceProfile;
           stage-b-dxball-rooted-state-machine = dxball.rootedStateMachine;
           stage-a-dxball-machine-ir = dxball.machineIr;
@@ -7659,6 +7660,7 @@
             stage-a-dxball-original-inventory
             stage-a-dxball-opaque-static-export
             stage-a-dxball-import-abi-profile
+            stage-a-dxball-win32-function-profile
             stage-a-dxball-directx-interface-profile
             stage-b-dxball-rooted-state-machine
             stage-a-dxball-machine-ir

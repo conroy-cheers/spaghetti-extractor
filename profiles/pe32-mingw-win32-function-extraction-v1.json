@@ -1,0 +1,21 @@
+{
+  "format": "stage-a-external-function-extraction-spec-v1",
+  "id": "pe32-mingw-win32-function-signatures-v1",
+  "model": "x86-pe32",
+  "headers": [
+    {
+      "include": "mmsystem.h",
+      "sha256": "2f017af96ea4ef394ae151c1076a827575d29a54a2d97cf43e88da6215628d0d"
+    },
+    {
+      "include": "windows.h",
+      "sha256": "e931bc163a9980e71982a522879073f41f934c3d94b423d489ee9f387093899f"
+    }
+  ],
+  "dlls": [
+    "gdi32.dll",
+    "kernel32.dll",
+    "user32.dll",
+    "winmm.dll"
+  ]
+}

@@ -1190,6 +1190,16 @@ def _control_provenance_fixed_point(
             and isinstance(row.get("target_rva"), int)
             and isinstance(row.get("preserved_registers"), list)
         }
+        stack_cleanup_by_address = {
+            (binary.image_base + int(row["target_rva"]))
+            & 0xFFFFFFFF: int(row["stack_cleanup"]["stack_delta"])
+            for row in internal_summaries["summaries"]
+            if row.get("status") == "complete"
+            and isinstance(row.get("target_rva"), int)
+            and isinstance(row.get("stack_cleanup"), Mapping)
+            and row["stack_cleanup"].get("status") == "complete"
+            and isinstance(row["stack_cleanup"].get("stack_delta"), int)
+        }
         provenance = recover_indirect_targets_from_value_provenance(
             units=units,
             roots=root_unit_ids,
@@ -1213,6 +1223,7 @@ def _control_provenance_fixed_point(
             import_abis=import_abis,
             internal_call_preserved_registers=preserved_by_address,
             image_base=binary.image_base,
+            internal_call_stack_cleanup=stack_cleanup_by_address,
         )
         selected_recoveries = _prefer_indirect_recoveries(
             static_recoveries,

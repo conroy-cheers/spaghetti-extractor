@@ -28,11 +28,12 @@ class SelectedImportABI:
     profile_sha256: str
     entry_key: str
     entry_index: int
+    argument_words: int | None = None
 
     def as_json(self) -> dict[str, Any]:
         imported: dict[str, Any] = {"dll": self.identity.dll}
         imported[self.identity.kind] = self.identity.value
-        return {
+        result = {
             "import": imported,
             "abi": self.abi.as_json(),
             "profile_binding": {
@@ -42,6 +43,9 @@ class SelectedImportABI:
                 "entry_index": self.entry_index,
             },
         }
+        if self.argument_words is not None:
+            result["argument_words"] = self.argument_words
+        return result
 
 
 def expand_import_abi_policy(
@@ -163,6 +167,7 @@ def load_selected_import_abis(
             profile_sha256=selected.profile_sha256,
             entry_key=selected.entry_key,
             entry_index=selected.entry_index,
+            argument_words=selected.argument_words,
         )
     return result
 

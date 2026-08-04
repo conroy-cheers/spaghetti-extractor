@@ -186,6 +186,11 @@ def derive_internal_call_preservation_summaries(
             }
         )
     complete = [row for row in rows if row["status"] == "complete"]
+    stack_complete = [
+        row
+        for row in complete
+        if _mapping(row.get("stack_cleanup")).get("status") == "complete"
+    ]
     return {
         "format": INTERNAL_CALL_SUMMARY_FORMAT,
         "status": (
@@ -212,6 +217,7 @@ def derive_internal_call_preservation_summaries(
             "preserved_register_claims": sum(
                 len(row["preserved_registers"]) for row in complete
             ),
+            "complete_stack_cleanup_claims": len(stack_complete),
         },
     }
 
@@ -328,9 +334,33 @@ def _analyze_callee(
         "unterminated_control_path",
         "return_inventory_empty",
     } & blockers
+    return_esp_values = {state.registers.get("esp") for state in return_states}
+    exact_return_esp = (
+        next(iter(return_esp_values)) if len(return_esp_values) == 1 else None
+    )
+    return_stack_offsets = sorted(
+        value.offset
+        for value in return_esp_values
+        if isinstance(value, _StackAddress)
+    )
+    stack_cleanup = (
+        {
+            "status": "complete",
+            "stack_delta": exact_return_esp.offset - 4,
+            "return_stack_offset": exact_return_esp.offset,
+        }
+        if isinstance(exact_return_esp, _StackAddress)
+        and exact_return_esp.offset >= 4
+        else {
+            "status": "incomplete",
+            "stack_delta": None,
+            "return_stack_offsets": return_stack_offsets,
+        }
+    )
     return {
         "status": "complete" if control_complete else "incomplete",
         "preserved_registers": preserved if control_complete else [],
+        "stack_cleanup": stack_cleanup,
         "reached_units": len(states),
         "transfer_evaluations": evaluations,
         "return_nodes": len(return_states),
@@ -369,16 +399,29 @@ def _transfer(
             summaries=summaries,
             import_abis=import_abis,
         )
+        stack_cleanup = _call_stack_cleanup(
+            unit_id=unit_id,
+            event_index=event_index,
+            event=event,
+            direct_calls=direct_calls,
+            recovered_calls=recovered_calls,
+            summaries=summaries,
+            import_abis=import_abis,
+        )
+        output_registers = {
+            register: (
+                pre_call.registers.get(register)
+                if register in preserved
+                else None
+            )
+            for register in _REGISTERS
+        }
+        output_registers["esp"] = _add_stack_cleanup(
+            pre_call.registers.get("esp"), stack_cleanup
+        )
         return (
             _State(
-                registers={
-                    register: (
-                        pre_call.registers.get(register)
-                        if register in preserved
-                        else None
-                    )
-                    for register in _REGISTERS
-                },
+                registers=output_registers,
                 stack_words={},
             ),
             set(),
@@ -505,6 +548,82 @@ def _summary_preserved(summary: Mapping[str, Any] | None) -> frozenset[str]:
     if not isinstance(raw, list):
         return frozenset()
     return frozenset(str(register) for register in raw if register in _SUMMARY_REGISTERS)
+
+
+def _call_stack_cleanup(
+    *,
+    unit_id: str,
+    event_index: int,
+    event: Mapping[str, Any],
+    direct_calls: Mapping[tuple[str, int], str],
+    recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    summaries: Mapping[str, Mapping[str, Any]],
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+) -> int | None:
+    kind = event.get("kind")
+    if kind == "external_call":
+        identity = _event_import_identity(event)
+        selected = import_abis.get(identity) if identity is not None else None
+        return _selected_import_stack_cleanup(selected)
+    if kind == "internal_call":
+        target = direct_calls.get((unit_id, event_index))
+        return _summary_stack_cleanup(summaries.get(target))
+    if kind != "indirect_call":
+        return None
+    recovery = recovered_calls.get((unit_id, event_index))
+    if recovery is None:
+        return None
+    alternatives: list[int] = []
+    for external in recovery.get("external_targets", []):
+        protocol = _mapping(external.get("external_protocol"))
+        if protocol:
+            raw_abi = _mapping(external.get("abi"))
+            abi = resolve_machine_call_abi(raw_abi.get("template"))
+            words = _integer(external.get("argument_words"))
+            if abi is None or raw_abi != abi.as_json() or words is None:
+                return None
+            alternatives.append(words * 4 if abi.callee_cleanup else 0)
+            continue
+        identity = _event_import_identity(_mapping(external.get("import")))
+        selected = import_abis.get(identity) if identity is not None else None
+        cleanup = _selected_import_stack_cleanup(selected)
+        if cleanup is None:
+            return None
+        alternatives.append(cleanup)
+    for target in recovery.get("target_unit_ids", []):
+        cleanup = _summary_stack_cleanup(summaries.get(str(target)))
+        if cleanup is None:
+            return None
+        alternatives.append(cleanup)
+    return (
+        alternatives[0]
+        if alternatives and len(set(alternatives)) == 1
+        else None
+    )
+
+
+def _selected_import_stack_cleanup(selected: SelectedImportABI | None) -> int | None:
+    if selected is None:
+        return None
+    if not selected.abi.callee_cleanup:
+        return 0
+    if selected.argument_words is None:
+        return None
+    return selected.argument_words * 4
+
+
+def _summary_stack_cleanup(summary: Mapping[str, Any] | None) -> int | None:
+    if summary is None or summary.get("status") != "complete":
+        return None
+    cleanup = _mapping(summary.get("stack_cleanup"))
+    value = _integer(cleanup.get("stack_delta"))
+    return value if cleanup.get("status") == "complete" and value is not None else None
+
+
+def _add_stack_cleanup(value: _Value, cleanup: int | None) -> _Value:
+    if not isinstance(value, _StackAddress) or cleanup is None:
+        return None
+    return _StackAddress(value.offset + cleanup)
 
 
 def _event_state(event: Mapping[str, Any], state: _State) -> _State:

@@ -80,6 +80,57 @@ class InternalCallSummaryTests(unittest.TestCase):
         self.assertEqual(summary["status"], "complete")
         self.assertEqual(summary["preserved_registers"], ["ebp", "ebx", "edi", "esi"])
 
+    def test_return_stack_effect_produces_exact_cleanup_summary(self) -> None:
+        result = self._derive(
+            units=[
+                unit("root", 0x1000, outcome="fallthrough", events=[internal_call(0x2000)]),
+                unit(
+                    "callee",
+                    0x2000,
+                    outcome="return",
+                    writes=[{
+                        "register": "esp",
+                        "value": add(reg("esp"), const(4)),
+                    }],
+                ),
+            ],
+            direct=[self._edge("root", "done")],
+            calls=[self._call_edge("root", "callee", 0)],
+            extra_units=[unit("done", 0x1001, outcome="return")],
+        )
+
+        self.assertEqual(
+            self._summary(result, "callee")["stack_cleanup"],
+            {
+                "status": "complete",
+                "stack_delta": 0,
+                "return_stack_offset": 4,
+            },
+        )
+
+    def test_ret_immediate_produces_callee_cleanup_bytes(self) -> None:
+        result = self._derive(
+            units=[
+                unit("root", 0x1000, outcome="fallthrough", events=[internal_call(0x2000)]),
+                unit(
+                    "callee",
+                    0x2000,
+                    outcome="return",
+                    writes=[{
+                        "register": "esp",
+                        "value": add(reg("esp"), const(12)),
+                    }],
+                ),
+            ],
+            direct=[self._edge("root", "done")],
+            calls=[self._call_edge("root", "callee", 0)],
+            extra_units=[unit("done", 0x1001, outcome="return")],
+        )
+
+        self.assertEqual(
+            self._summary(result, "callee")["stack_cleanup"]["stack_delta"], 8
+        )
+
     def test_explicit_write_removes_only_that_preservation_claim(self) -> None:
         result = self._derive(
             units=[
@@ -233,6 +284,63 @@ class InternalCallSummaryTests(unittest.TestCase):
 
         self.assertIn("esi", self._summary(result, "callee")["preserved_registers"])
 
+    def test_recovered_fixed_arity_import_composes_stack_cleanup(self) -> None:
+        identity = MachineImportIdentity("user32.dll", "symbol", "ShowWindow")
+        event = {
+            "kind": "indirect_call",
+            "register_inputs": {
+                **{register: reg(register) for register in REGISTERS},
+                "esp": sub(reg("esp"), const(8)),
+            },
+        }
+        units = [
+            unit("root", 0x1000, outcome="fallthrough", events=[internal_call(0x2000)]),
+            unit("callee", 0x2000, outcome="fallthrough", events=[event]),
+            unit(
+                "callee_return",
+                0x2001,
+                outcome="return",
+                writes=[{
+                    "register": "esp",
+                    "value": add(reg("esp"), const(4)),
+                }],
+            ),
+            unit("done", 0x1001, outcome="return"),
+        ]
+        result = derive_internal_call_preservation_summaries(
+            units=units,
+            roots=["root"],
+            direct_edges=[
+                self._edge("root", "done"),
+                self._edge("callee", "callee_return"),
+            ],
+            internal_call_edges=[self._call_edge("root", "callee", 0)],
+            recovered_indirect_targets=[{
+                "id": "exit:callee",
+                "status": "recovered",
+                "target_unit_ids": [],
+                "external_targets": [{
+                    "import": {"dll": identity.dll, "symbol": identity.value},
+                }],
+            }],
+            indirect_exits=[{
+                "id": "exit:callee",
+                "source_unit_id": "callee",
+                "source_event_index": 0,
+                "kind": "indirect_call",
+            }],
+            import_abis={identity: self._selected_abi(identity, argument_words=2)},
+        )
+
+        self.assertEqual(
+            self._summary(result, "callee")["stack_cleanup"],
+            {
+                "status": "complete",
+                "stack_delta": 0,
+                "return_stack_offset": 4,
+            },
+        )
+
     def test_unresolved_indirect_jump_fails_closed(self) -> None:
         units = [
             unit("root", 0x1000, outcome="fallthrough", events=[internal_call(0x2000)]),
@@ -304,7 +412,11 @@ class InternalCallSummaryTests(unittest.TestCase):
         return next(row for row in summaries if row["target_unit_id"] == target)
 
     @staticmethod
-    def _selected_abi(identity: MachineImportIdentity) -> SelectedImportABI:
+    def _selected_abi(
+        identity: MachineImportIdentity,
+        *,
+        argument_words: int | None = None,
+    ) -> SelectedImportABI:
         abi = resolve_machine_call_abi("pe32-stdcall-v1")
         assert abi is not None
         return SelectedImportABI(
@@ -314,6 +426,7 @@ class InternalCallSummaryTests(unittest.TestCase):
             profile_sha256="0" * 64,
             entry_key="test",
             entry_index=0,
+            argument_words=argument_words,
         )
 
 
