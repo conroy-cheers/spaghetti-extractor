@@ -3,6 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..artifact_formats import (
+    EXTERNAL_OPERATION_CONTRACT_FORMAT,
+    EXTERNAL_OPERATION_PROFILE_FORMAT,
+    OPERATION_PROVENANCE_FORMAT,
+)
 from ..util import sha256_file, write_json
 from .analysis_artifact import (
     RELATIONAL_ANALYSIS_FORMAT,
@@ -97,6 +102,27 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "id": "external-environment-profile",
                 "format": EXTERNAL_ENVIRONMENT_PROFILE_FORMAT,
                 "python_boundary": "relational.contract._normalize_contract",
+            },
+            {
+                "id": "external-operation-profile",
+                "format": EXTERNAL_OPERATION_PROFILE_FORMAT,
+                "python_boundary": (
+                    "external_operation_profiles.load_external_operation_profile"
+                ),
+            },
+            {
+                "id": "external-operation-contract",
+                "format": EXTERNAL_OPERATION_CONTRACT_FORMAT,
+                "python_boundary": (
+                    "external_operation_profiles.ExternalOperationContract"
+                ),
+            },
+            {
+                "id": "operation-provenance",
+                "format": OPERATION_PROVENANCE_FORMAT,
+                "python_boundary": "operation_provenance.operation_provenance_view",
+                "proof_authority": False,
+                "lean_replay_required": True,
             },
             {
                 "id": "proof-ir",
@@ -268,6 +294,21 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "cache_boundary": True,
             },
             {
+                "id": "operation-provenance",
+                "embedded_in": (
+                    "machine-ir-manifest.json.control.operation_provenance"
+                ),
+                "producer": "external-protocol",
+                "consumers": [
+                    "control-composition",
+                    "contract-diagnostics",
+                    "stage-b-repair",
+                ],
+                "cache_boundary": True,
+                "proof_authority": False,
+                "lean_replay_required": True,
+            },
+            {
                 "id": "whole-program-acceptance",
                 "path": "whole-program-acceptance.json",
                 "producer": "acceptance-integration",
@@ -336,6 +377,18 @@ def stage_a_interface_manifest() -> dict[str, Any]:
             {
                 "module": "StageA.RelationalSegment",
                 "declarations": ["RelationalSegmentRefinement"],
+            },
+            {
+                "module": "StageA.RelationalExternalOperation",
+                "declarations": [
+                    "ExternalOperation.Profile",
+                    "ExternalOperation.Declaration",
+                    "ExternalOperation.PairedTargetResolution",
+                    "ExternalOperation.PairedTargetResolution.operationValid",
+                    "ExternalOperation.Event",
+                    "ExternalOperation.EnvironmentRefines",
+                    "ExternalOperation.PairedCallBoundary",
+                ],
             },
             {
                 "module": "StageA.RelationalCallbacks",
@@ -479,8 +532,13 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                     "src/spaghetti_extractor/relational/analyses/external.py",
                     "src/spaghetti_extractor/relational/analyses/callbacks.py",
                     "src/spaghetti_extractor/relational/lean/callbacks.py",
+                    "src/spaghetti_extractor/external_operation_profiles.py",
+                    "src/spaghetti_extractor/interface_provenance.py",
+                    "src/spaghetti_extractor/operation_provenance.py",
+                    "src/spaghetti_extractor/provenance_domain.py",
                     "src/spaghetti_extractor/lean/StageA/RelationalCallbacks.lean",
                     "src/spaghetti_extractor/lean/StageA/RelationalEnvironment.lean",
+                    "src/spaghetti_extractor/lean/StageA/RelationalExternalOperation.lean",
                 ],
                 "integration_fixtures": [
                     "tests/test_stage_a_relational_acceptance.py::test_protocol_call_and_callback_return_close_whole_program_theorem"

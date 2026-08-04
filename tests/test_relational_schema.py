@@ -169,6 +169,18 @@ class RelationalSchemaTests(unittest.TestCase):
         )
         self.assertIn("external-protocol", parsed.workstream_ids)
         self.assertIn("acceptance-integration", parsed.workstream_ids)
+        self.assertIn("external-operation-profile", parsed.schema_ids)
+        self.assertIn("external-operation-contract", parsed.schema_ids)
+        self.assertIn("operation-provenance", parsed.schema_ids)
+        external_operation = next(
+            row
+            for row in manifest["lean_interfaces"]
+            if row["module"] == "StageA.RelationalExternalOperation"
+        )
+        self.assertIn(
+            "ExternalOperation.PairedTargetResolution.operationValid",
+            external_operation["declarations"],
+        )
         state_products = next(
             artifact
             for artifact in manifest["artifacts"]

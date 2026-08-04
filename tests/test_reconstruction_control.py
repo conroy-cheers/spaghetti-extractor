@@ -775,6 +775,194 @@ class RootedReachabilityTests(unittest.TestCase):
         self.assertEqual(result["status"], "incomplete")
         self.assertEqual(len(result["frontiers"]), 1)
 
+    def test_profile_bound_operation_closes_external_exit(self) -> None:
+        target = {
+            "external_protocol": {
+                "kind": "pe32-operation",
+                "profile_id": "fixture",
+                "profile_sha256": "b" * 64,
+                "operation_id": "surface.blt",
+                "transfer_kind": "call",
+                "selectors": [{
+                    "kind": "table_slot",
+                    "operation_id": "surface.blt",
+                    "view_id": "ISurface",
+                    "slot": 7,
+                }],
+                "environment_contract_id": "surface.blt.environment",
+            },
+            "abi": {
+                "template": "pe32-stdcall-v1",
+                "preserved_registers": ["ebp", "ebx", "edi", "esi"],
+                "clobbered_registers": ["eax", "ecx", "edx"],
+                "callee_cleanup": True,
+            },
+            "argument_words": 6,
+            "output_rules": [],
+            "environment_contract": {
+                "format": "stage-a-external-operation-contract-v1",
+                "id": "surface.blt.environment",
+                "status": "complete",
+                "memory_footprints": [],
+                "world_effects": [],
+            },
+        }
+        result = derive_rooted_reachable_units(
+            units=["root"],
+            roots=["root"],
+            recovered_indirect_targets=[{
+                "id": "exit:operation",
+                "source_unit_id": "root",
+                "status": "recovered",
+                "target_unit_ids": [],
+                "external_targets": [target],
+            }],
+            indirect_exits=[{
+                "id": "exit:operation",
+                "source_unit_id": "root",
+                "kind": "indirect_call",
+            }],
+        )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["frontiers"], [])
+
+    def test_malformed_operation_abi_remains_frontier(self) -> None:
+        target = {
+            "external_protocol": {
+                "kind": "pe32-operation",
+                "profile_id": "fixture",
+                "profile_sha256": "b" * 64,
+                "operation_id": "surface.blt",
+                "transfer_kind": "call",
+                "selectors": [{
+                    "kind": "table_slot",
+                    "operation_id": "surface.blt",
+                    "view_id": "ISurface",
+                    "slot": 7,
+                }],
+                "environment_contract_id": "surface.blt.environment",
+            },
+            "abi": {
+                "template": "pe32-stdcall-v1",
+                "preserved_registers": [],
+                "clobbered_registers": ["eax", "ecx", "edx"],
+                "callee_cleanup": True,
+            },
+            "argument_words": 6,
+            "output_rules": [],
+            "environment_contract": {
+                "format": "stage-a-external-operation-contract-v1",
+                "id": "surface.blt.environment",
+                "status": "complete",
+                "memory_footprints": [],
+                "world_effects": [],
+            },
+        }
+        result = derive_rooted_reachable_units(
+            units=["root"],
+            roots=["root"],
+            recovered_indirect_targets=[{
+                "id": "exit:operation",
+                "source_unit_id": "root",
+                "status": "recovered",
+                "target_unit_ids": [],
+                "external_targets": [target],
+            }],
+            indirect_exits=[{
+                "id": "exit:operation",
+                "source_unit_id": "root",
+                "kind": "indirect_call",
+            }],
+        )
+
+        self.assertEqual(result["status"], "incomplete")
+
+    def test_malformed_operation_environment_contract_remains_frontier(self) -> None:
+        target = {
+            "external_protocol": {
+                "kind": "pe32-operation",
+                "profile_id": "fixture",
+                "profile_sha256": "b" * 64,
+                "operation_id": "surface.lock",
+                "transfer_kind": "call",
+                "selectors": [{
+                    "kind": "table_slot",
+                    "operation_id": "surface.lock",
+                    "view_id": "ISurface",
+                    "slot": 25,
+                }],
+                "environment_contract_id": "surface.lock.environment",
+            },
+            "abi": {
+                "template": "pe32-stdcall-v1",
+                "preserved_registers": ["ebp", "ebx", "edi", "esi"],
+                "clobbered_registers": ["eax", "ecx", "edx"],
+                "callee_cleanup": True,
+            },
+            "argument_words": 2,
+            "output_rules": [],
+            "environment_contract": {
+                "format": "stage-a-external-operation-contract-v1",
+                "id": "surface.lock.environment",
+                "status": "complete",
+                "memory_footprints": [{
+                    "access": "write",
+                    "base_argument": 2,
+                    "offset": 0,
+                    "size": {"kind": "fixed", "bytes": 4},
+                    "nullable": False,
+                }],
+                "world_effects": [],
+            },
+        }
+        result = derive_rooted_reachable_units(
+            units=["root"],
+            roots=["root"],
+            recovered_indirect_targets=[{
+                "id": "exit:operation",
+                "source_unit_id": "root",
+                "status": "recovered",
+                "target_unit_ids": [],
+                "external_targets": [target],
+            }],
+            indirect_exits=[{
+                "id": "exit:operation",
+                "source_unit_id": "root",
+                "kind": "indirect_call",
+            }],
+        )
+
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(len(result["frontiers"]), 1)
+
+        target["environment_contract"] = {
+            "format": "stage-a-external-operation-contract-v1",
+            "id": "surface.lock.environment",
+            "status": "incomplete",
+            "blockers": ["external_memory_footprint_not_authored"],
+            "memory_footprints": [],
+            "world_effects": [],
+        }
+        incomplete_contract = derive_rooted_reachable_units(
+            units=["root"],
+            roots=["root"],
+            recovered_indirect_targets=[{
+                "id": "exit:operation",
+                "source_unit_id": "root",
+                "status": "recovered",
+                "target_unit_ids": [],
+                "external_targets": [target],
+            }],
+            indirect_exits=[{
+                "id": "exit:operation",
+                "source_unit_id": "root",
+                "kind": "indirect_call",
+            }],
+        )
+        self.assertEqual(incomplete_contract["status"], "incomplete")
+        self.assertEqual(len(incomplete_contract["frontiers"]), 1)
+
 
 class SemanticClusterTests(unittest.TestCase):
     def test_loop_scc_and_maximal_chains_stop_at_cutpoints(self) -> None:

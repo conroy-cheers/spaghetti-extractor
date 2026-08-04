@@ -40,9 +40,11 @@ let
     root = ../.;
     fileset = lib.fileset.unions [
       ../src/spaghetti_extractor/__init__.py
+      ../src/spaghetti_extractor/artifact_formats.py
       ../src/spaghetti_extractor/errors.py
       ../src/spaghetti_extractor/external_interface_ast.py
       ../src/spaghetti_extractor/external_interface_profiles.py
+      ../src/spaghetti_extractor/external_operation_profiles.py
       ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/machine_import_profiles.py
       ../src/spaghetti_extractor/pe.py
@@ -114,12 +116,15 @@ let
       ../src/spaghetti_extractor/call_arguments.py
       ../src/spaghetti_extractor/errors.py
       ../src/spaghetti_extractor/external_interface_profiles.py
+      ../src/spaghetti_extractor/external_operation_profiles.py
       ../src/spaghetti_extractor/finite_value_domain.py
       ../src/spaghetti_extractor/import_abi.py
       ../src/spaghetti_extractor/interface_provenance.py
       ../src/spaghetti_extractor/internal_call_summaries.py
       ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/machine_import_profiles.py
+      ../src/spaghetti_extractor/operation_provenance.py
+      ../src/spaghetti_extractor/provenance_domain.py
       ../src/spaghetti_extractor/util.py
       ../src/spaghetti_extractor/pe.py
       ../src/spaghetti_extractor/stage_binary.py
@@ -138,12 +143,15 @@ let
       ../src/spaghetti_extractor/call_arguments.py
       ../src/spaghetti_extractor/errors.py
       ../src/spaghetti_extractor/external_interface_profiles.py
+      ../src/spaghetti_extractor/external_operation_profiles.py
       ../src/spaghetti_extractor/finite_value_domain.py
       ../src/spaghetti_extractor/import_abi.py
       ../src/spaghetti_extractor/interface_provenance.py
       ../src/spaghetti_extractor/internal_call_summaries.py
       ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/machine_import_profiles.py
+      ../src/spaghetti_extractor/operation_provenance.py
+      ../src/spaghetti_extractor/provenance_domain.py
       ../src/spaghetti_extractor/util.py
       ../src/spaghetti_extractor/pe.py
       ../src/spaghetti_extractor/stage_binary.py
@@ -487,6 +495,55 @@ rec {
       test ! -e "$out/directx-ast.json"
     '';
 
+  directxOperationProfile = pkgs.runCommand
+    "stage-a-pe32-mingw-directx-operation-profile"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${directxInterfacePythonSource}/src
+      mkdir -p "$out"
+      ${python} - \
+        ${lib.escapeShellArg "${directxInterfaceProfile}/interface-profile.json"} \
+        "$out/operation-profile.json" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.external_interface_profiles import (
+          load_external_interface_profile,
+      )
+      from spaghetti_extractor.external_operation_profiles import (
+          convert_external_interface_profile,
+      )
+      from spaghetti_extractor.util import write_json
+
+      source, output = map(pathlib.Path, sys.argv[1:])
+      converted = convert_external_interface_profile(
+          load_external_interface_profile(source)
+      )
+      write_json(output, converted.as_json())
+      PY
+      jq -e '
+        .format == "stage-a-external-operation-profile-v2" and
+        .status == "complete" and
+        .model == "x86-pe32" and
+        (.table_views | length) > 10 and
+        (.operations | length) > 100 and
+        ([.table_views[].access] | unique) == ["object_table"] and
+        ([.selectors[].kind] | unique) == ["direct_import", "table_slot"] and
+        ([.environment_contracts[].status] | unique) == ["incomplete"] and
+        ([.environment_contracts[].blockers[]] | unique) ==
+          ["legacy_interface_profile_has_no_complete_external_effect_contract"]
+      ' "$out/operation-profile.json" >/dev/null
+    '';
+
   win32FunctionProfile = pkgs.runCommand
     "stage-a-pe32-mingw-win32-function-profile"
     {
@@ -571,12 +628,13 @@ rec {
         ${lib.escapeShellArg "${importAbiProfile}/import-abi-profile.json"} \
         ${lib.escapeShellArg "${win32FunctionProfile}/function-profile.json"} \
         ${lib.escapeShellArg "${directxInterfaceProfile}/interface-profile.json"} \
+        ${lib.escapeShellArg "${directxOperationProfile}/operation-profile.json"} \
         "$out" <<'PY'
       import pathlib
       import sys
       from spaghetti_extractor.reconstruction_ir import export_machine_ir_package
 
-      state_machine, original, reference, target_profile, import_profile, function_profile, interface_profile, output = map(
+      state_machine, original, reference, target_profile, import_profile, function_profile, interface_profile, operation_profile, output = map(
           pathlib.Path, sys.argv[1:]
       )
       export_machine_ir_package(
@@ -589,7 +647,7 @@ rec {
               function_profile,
               interface_profile,
           ],
-          external_interface_profiles=[interface_profile],
+          external_operation_profiles=[operation_profile],
           out=output,
       )
       PY
@@ -638,6 +696,7 @@ rec {
         ${lib.escapeShellArg "${importAbiProfile}/import-abi-profile.json"} \
         ${lib.escapeShellArg "${win32FunctionProfile}/function-profile.json"} \
         ${lib.escapeShellArg "${directxInterfaceProfile}/interface-profile.json"} \
+        ${lib.escapeShellArg "${directxOperationProfile}/operation-profile.json"} \
         "$out/state-machine.jsonl" \
         "$out/rooted-view-augmentation.json" <<'PY'
       import pathlib
@@ -646,7 +705,7 @@ rec {
           augment_state_machine_with_rooted_instruction_views,
       )
 
-      state_machine, manifest, original, reference, target_profile, import_profile, function_profile, interface_profile, output, report = map(
+      state_machine, manifest, original, reference, target_profile, import_profile, function_profile, interface_profile, operation_profile, output, report = map(
           pathlib.Path, sys.argv[1:]
       )
       augment_state_machine_with_rooted_instruction_views(
@@ -660,7 +719,7 @@ rec {
               function_profile,
               interface_profile,
           ],
-          external_interface_profiles=[interface_profile],
+          external_operation_profiles=[operation_profile],
           out=output,
           report=report,
       )
@@ -704,12 +763,13 @@ rec {
         ${lib.escapeShellArg "${importAbiProfile}/import-abi-profile.json"} \
         ${lib.escapeShellArg "${win32FunctionProfile}/function-profile.json"} \
         ${lib.escapeShellArg "${directxInterfaceProfile}/interface-profile.json"} \
+        ${lib.escapeShellArg "${directxOperationProfile}/operation-profile.json"} \
         "$out" <<'PY'
       import pathlib
       import sys
       from spaghetti_extractor.reconstruction_ir import export_machine_ir_package
 
-      state_machine, original, reference, target_profile, import_profile, function_profile, interface_profile, output = map(
+      state_machine, original, reference, target_profile, import_profile, function_profile, interface_profile, operation_profile, output = map(
           pathlib.Path, sys.argv[1:]
       )
       export_machine_ir_package(
@@ -722,7 +782,7 @@ rec {
               function_profile,
               interface_profile,
           ],
-          external_interface_profiles=[interface_profile],
+          external_operation_profiles=[operation_profile],
           out=output,
       )
       PY

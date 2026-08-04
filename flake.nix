@@ -4220,6 +4220,7 @@
           stage-a-dxball-import-abi-profile = dxball.importAbiProfile;
           stage-a-dxball-win32-function-profile = dxball.win32FunctionProfile;
           stage-a-dxball-directx-interface-profile = dxball.directxInterfaceProfile;
+          stage-a-dxball-directx-operation-profile = dxball.directxOperationProfile;
           stage-b-dxball-rooted-state-machine = dxball.rootedStateMachine;
           stage-a-dxball-machine-ir = dxball.machineIr;
           gnuHelloRoundtrip = import ./nix/gnu-hello-roundtrip.nix {
@@ -5296,6 +5297,16 @@
             mkStageARelationalTest "lean-external-stateful-memory"
               "tests.test_stage_a_external_stateful_memory_kernel"
               [ ./tests/test_stage_a_external_stateful_memory_kernel.py ];
+          stage-a-relational-tests-external-operation-framework =
+            mkStageARelationalTest "external-operation-framework"
+              "tests.test_external_operation_profiles tests.test_operation_provenance tests.test_source_operation_catalog tests.test_stage_a_external_operation_kernel"
+              [
+                ./src/spaghetti_extractor/lean/StageA
+                ./tests/test_external_operation_profiles.py
+                ./tests/test_operation_provenance.py
+                ./tests/test_source_operation_catalog.py
+                ./tests/test_stage_a_external_operation_kernel.py
+              ];
           stage-a-relational-tests-reachable-acceptance =
             mkStageARelationalTest "reachable-acceptance" "tests.test_stage_a_reachable_acceptance"
               [ ./tests/test_stage_a_reachable_acceptance.py ];
@@ -5589,6 +5600,7 @@
               stage-a-relational-tests-external-contract-selection
               stage-a-relational-tests-external-stateful-memory
               stage-a-relational-tests-external-stateful-memory-kernel
+              stage-a-relational-tests-external-operation-framework
               stage-a-relational-tests-reachable-acceptance
               stage-a-relational-tests-pe-entry-surface
               stage-a-relational-tests-formal-pe-entry-surface
@@ -7761,6 +7773,7 @@
             stage-a-dxball-import-abi-profile
             stage-a-dxball-win32-function-profile
             stage-a-dxball-directx-interface-profile
+            stage-a-dxball-directx-operation-profile
             stage-b-dxball-rooted-state-machine
             stage-a-dxball-machine-ir
             stage-a-gnu-hello-fixtures
@@ -8189,6 +8202,7 @@
             stage-a-relational-tests-external-contract-selection
             stage-a-relational-tests-external-stateful-memory
             stage-a-relational-tests-external-stateful-memory-kernel
+            stage-a-relational-tests-external-operation-framework
             stage-a-relational-tests-reachable-acceptance
             stage-a-relational-tests-pe-entry-surface
             stage-a-relational-tests-formal-pe-entry-surface

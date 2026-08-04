@@ -210,12 +210,18 @@ class FiniteU32Dataflow:
                 {"op": "reg", "name": register, "width": 32},
             )
             copied_register = _register_name(expression)
-            if copied_register is not None:
-                result.append(refined_state[_REGISTER_INDEX[copied_register]])
-            else:
-                result.append(
-                    (self._evaluate(expression, refined_state, guard), ())
-                )
+            inherited_residues = (
+                refined_state[_REGISTER_INDEX[copied_register]][1]
+                if copied_register is not None
+                else ()
+            )
+            value = (
+                self._evaluate(expression, refined_state, guard),
+                inherited_residues,
+            )
+            result.append(
+                _refine_value_with_guard(expression, value, guard, self.max_values)
+            )
         return tuple(result)
 
     def _evaluate(
@@ -299,8 +305,6 @@ class FiniteU32Dataflow:
     ) -> _Domain:
         left = self._evaluate(operands[0], state, guard)
         right = self._evaluate(operands[1], state, guard)
-        if left is None or right is None or len(left) * len(right) > self.max_values:
-            return None
         canonical = {
             "and32": "and", "bit_and": "and",
             "or32": "or", "bit_or": "or",
@@ -309,6 +313,11 @@ class FiniteU32Dataflow:
             "mul32": "mul", "multiply": "mul",
             "lshr32": "lshr", "shl32": "shl",
         }.get(op, op)
+        if canonical == "and" and (left is None or right is None):
+            finite = right if left is None else left
+            return _and_with_unknown_domain(finite, self.max_values)
+        if left is None or right is None or len(left) * len(right) > self.max_values:
+            return None
         operations = {
             "and": lambda a, b: a & b,
             "or": lambda a, b: a | b,
@@ -411,26 +420,63 @@ def _refine_state_with_guard(
     return tuple(result)
 
 
+def _refine_value_with_guard(
+    expression: Mapping[str, Any],
+    value: _Value,
+    guard: Mapping[str, Any],
+    limit: int,
+) -> _Value:
+    domain, raw_residues = value
+    residues = dict(raw_residues)
+    for guarded_expression, mask, allowed in _masked_expression_constraints(
+        guard, limit
+    ):
+        if not _same_expression(expression, guarded_expression):
+            continue
+        current = _value_mask_domain((domain, tuple(residues.items())), mask)
+        if current is None:
+            current = _submask_domain(mask, limit)
+        if current is None:
+            continue
+        narrowed = current & allowed
+        if domain is not None:
+            domain = frozenset(item for item in domain if item & mask in narrowed)
+        residues[mask] = narrowed
+    return domain, tuple(sorted(residues.items()))
+
+
 def _masked_guard_constraints(
+    guard: Mapping[str, Any],
+    limit: int,
+) -> list[tuple[str, int, frozenset[int]]]:
+    result = []
+    for expression, mask, allowed in _masked_expression_constraints(guard, limit):
+        register = _register_name(expression)
+        if register is not None:
+            result.append((register, mask, allowed))
+    return result
+
+
+def _masked_expression_constraints(
     guard: Mapping[str, Any],
     limit: int,
     *,
     polarity: bool = True,
-) -> list[tuple[str, int, frozenset[int]]]:
+) -> list[tuple[Mapping[str, Any], int, frozenset[int]]]:
     op = str(guard.get("op", "")).lower()
     arguments = guard.get("args")
     if op in {"not", "logical_not"} and _sequence(arguments) and len(arguments) == 1:
         child = arguments[0]
         return (
-            _masked_guard_constraints(child, limit, polarity=not polarity)
+            _masked_expression_constraints(child, limit, polarity=not polarity)
             if isinstance(child, Mapping)
             else []
         )
     if op in {"and_bool", "logical_and"} and polarity and _sequence(arguments):
-        result: list[tuple[str, int, frozenset[int]]] = []
+        result: list[tuple[Mapping[str, Any], int, frozenset[int]]] = []
         for child in arguments:
             if isinstance(child, Mapping):
-                result.extend(_masked_guard_constraints(child, limit))
+                result.extend(_masked_expression_constraints(child, limit))
         return result
     if op not in {"eq", "eq32", "equal"}:
         return []
@@ -439,10 +485,10 @@ def _masked_guard_constraints(
         return []
     for masked, constant in (operands, reversed(operands)):
         value = _constant_value(constant)
-        shape = _masked_register_shape(masked)
+        shape = _masked_expression_shape(masked)
         if value is None or shape is None:
             continue
-        register, mask = shape
+        expression, mask = shape
         possible = _submask_domain(mask, limit)
         if possible is None:
             return []
@@ -452,7 +498,7 @@ def _masked_guard_constraints(
             if polarity
             else frozenset(possible - {selected})
         )
-        return [(register, mask, allowed)]
+        return [(expression, mask, allowed)]
     return []
 
 
@@ -470,7 +516,9 @@ def _masked_register_domain(
     return None
 
 
-def _masked_register_shape(expression: Any) -> tuple[str, int] | None:
+def _masked_expression_shape(
+    expression: Any,
+) -> tuple[Mapping[str, Any], int] | None:
     if (
         not isinstance(expression, Mapping)
         or str(expression.get("op", "")).lower()
@@ -480,13 +528,10 @@ def _masked_register_shape(expression: Any) -> tuple[str, int] | None:
     operands = _operands(expression)
     if operands is None:
         return None
-    mask = _constant_operand(operands)
-    if mask is None:
-        return None
-    for operand in operands:
-        register = _register_name(operand)
-        if register is not None:
-            return register, mask & 0xFFFFFFFF
+    for value_expression, constant_expression in (operands, reversed(operands)):
+        mask = _constant_value(constant_expression)
+        if isinstance(value_expression, Mapping) and mask is not None:
+            return value_expression, mask & 0xFFFFFFFF
     return None
 
 
@@ -561,6 +606,20 @@ def _submask_domain(mask: int, limit: int) -> _Domain:
         )
         for subset in range(1 << len(bits))
     )
+
+
+def _and_with_unknown_domain(finite: _Domain, limit: int) -> _Domain:
+    if finite is None:
+        return None
+    result: set[int] = set()
+    for value in finite:
+        possible = _submask_domain(value, limit)
+        if possible is None:
+            return None
+        result.update(possible)
+        if len(result) > limit:
+            return None
+    return frozenset(result)
 
 
 def _constant_operand(operands: tuple[Any, Any]) -> int | None:

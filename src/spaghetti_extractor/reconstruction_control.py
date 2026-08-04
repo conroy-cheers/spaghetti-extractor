@@ -14,6 +14,12 @@ from collections import deque
 from hashlib import sha256
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from .external_operation_profiles import (
+    ExternalOperationProfileError,
+    parse_external_operation_contract,
+)
+from .machine_abi import resolve_machine_call_abi
+
 
 RvaReader = Callable[[int, int], bytes]
 
@@ -1309,6 +1315,59 @@ def _indirect_external_targets(
             kind = protocol.get("kind")
             profile_id = protocol.get("profile_id")
             profile_sha256 = protocol.get("profile_sha256")
+            if kind == "pe32-operation":
+                operation_id = protocol.get("operation_id")
+                transfer_kind = protocol.get("transfer_kind")
+                selectors = protocol.get("selectors")
+                contract_id = protocol.get("environment_contract_id")
+                abi = raw.get("abi")
+                argument_words = raw.get("argument_words")
+                output_rules = raw.get("output_rules")
+                environment_contract = raw.get("environment_contract")
+                expected_abi = (
+                    resolve_machine_call_abi(abi.get("template"))
+                    if isinstance(abi, Mapping)
+                    else None
+                )
+                if (
+                    not _profile_identity(profile_id, profile_sha256)
+                    or not isinstance(operation_id, str)
+                    or not operation_id
+                    or transfer_kind != "call"
+                    or not _operation_selectors(selectors, operation_id)
+                    or not isinstance(contract_id, str)
+                    or not contract_id
+                    or expected_abi is None
+                    or dict(abi) != expected_abi.as_json()
+                    or not isinstance(argument_words, int)
+                    or isinstance(argument_words, bool)
+                    or not 0 <= argument_words <= 64
+                    or not isinstance(output_rules, list)
+                    or any(not isinstance(rule, Mapping) for rule in output_rules)
+                    or not _operation_environment_contract(
+                        environment_contract,
+                        contract_id=contract_id,
+                        argument_words=argument_words,
+                    )
+                ):
+                    return None
+                result.add((
+                    "operation",
+                    str(profile_id),
+                    str(profile_sha256),
+                    operation_id,
+                    json.dumps(selectors, sort_keys=True, separators=(",", ":")),
+                    contract_id,
+                    json.dumps(abi, sort_keys=True, separators=(",", ":")),
+                    argument_words,
+                    json.dumps(output_rules, sort_keys=True, separators=(",", ":")),
+                    json.dumps(
+                        environment_contract,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                ))
+                continue
             interface_id = protocol.get("interface_id")
             method = protocol.get("method")
             slot = protocol.get("slot")
@@ -1364,6 +1423,103 @@ def _indirect_external_targets(
             str(symbol) if has_symbol else int(ordinal),
         ))
     return tuple(sorted(result))
+
+
+def canonical_indirect_external_targets(
+    record: Mapping[str, Any],
+) -> tuple[tuple[Any, ...], ...] | None:
+    """Validate and canonicalize every external alternative fail closed."""
+
+    return _indirect_external_targets(record)
+
+
+def _profile_identity(profile_id: Any, profile_sha256: Any) -> bool:
+    return (
+        isinstance(profile_id, str)
+        and bool(profile_id)
+        and isinstance(profile_sha256, str)
+        and len(profile_sha256) == 64
+        and all(character in "0123456789abcdef" for character in profile_sha256)
+    )
+
+
+def _operation_environment_contract(
+    value: Any,
+    *,
+    contract_id: Any,
+    argument_words: Any,
+) -> bool:
+    if not isinstance(value, Mapping) or not isinstance(argument_words, int):
+        return False
+    try:
+        contract = parse_external_operation_contract(value)
+    except ExternalOperationProfileError:
+        return False
+    if contract.contract_id != contract_id:
+        return False
+    if contract.status != "complete":
+        return False
+    for footprint in contract.memory_footprints:
+        if footprint.base_argument >= argument_words:
+            return False
+        size_argument = getattr(footprint.size, "argument_index", None)
+        if size_argument is not None and size_argument >= argument_words:
+            return False
+    return all(
+        effect.argument_index is None
+        or effect.argument_index < argument_words
+        for effect in contract.world_effects
+    )
+
+
+def _operation_selectors(value: Any, operation_id: str) -> bool:
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes))
+        or not value
+    ):
+        return False
+    keys: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, Mapping) or raw.get("operation_id") != operation_id:
+            return False
+        kind = raw.get("kind")
+        if kind == "direct_import":
+            imported = raw.get("import")
+            if not isinstance(imported, Mapping):
+                return False
+            dll = imported.get("dll")
+            symbol = imported.get("symbol")
+            ordinal = imported.get("ordinal")
+            if (
+                not isinstance(dll, str)
+                or not dll
+                or (isinstance(symbol, str) and bool(symbol)) == _is_u32(ordinal)
+            ):
+                return False
+        elif kind == "table_slot":
+            if (
+                not isinstance(raw.get("view_id"), str)
+                or not raw.get("view_id")
+                or not _is_u32(raw.get("slot"))
+            ):
+                return False
+        elif kind == "resolver_result":
+            if any(
+                not isinstance(raw.get(field), str) or not raw.get(field)
+                for field in ("resolver_operation_id", "result_id")
+            ):
+                return False
+        elif kind == "callback":
+            if not isinstance(raw.get("callback_id"), str) or not raw.get("callback_id"):
+                return False
+        else:
+            return False
+        canonical = json.dumps(raw, sort_keys=True, separators=(",", ":"))
+        if canonical in keys:
+            return False
+        keys.add(canonical)
+    return True
 
 
 def _frontier(

@@ -22,12 +22,18 @@ from .external_interface_profiles import (
     ExternalInterfaceProfile,
     load_external_interface_profile,
 )
+from .external_operation_profiles import (
+    ExternalOperationProfile,
+    load_external_operation_profile,
+)
 from .finite_value_domain import FiniteU32Dataflow
 from .import_abi import SelectedImportABI, load_selected_import_abis
 from .interface_provenance import recover_external_interface_targets
 from .internal_call_summaries import derive_internal_call_preservation_summaries
 from .machine_import_profiles import MachineImportIdentity
+from .operation_provenance import operation_provenance_view
 from .reconstruction_control import (
+    canonical_indirect_external_targets,
     derive_rooted_reachable_units,
     pe32_jump_table_index_expression,
     recover_static_pe32_jump_table_inventory,
@@ -40,7 +46,7 @@ from .stage_b_state_machine import (
 )
 from .stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
 from .util import sha256_bytes, sha256_file, write_json
-from .value_provenance import recover_indirect_targets_from_value_provenance
+from .value_provenance import legacy_value_provenance_view
 
 
 MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
@@ -223,6 +229,7 @@ def export_machine_ir_package(
     indirect_target_profile: Path | None = None,
     machine_import_profiles: Sequence[Path] = (),
     external_interface_profiles: Sequence[Path] = (),
+    external_operation_profiles: Sequence[Path] = (),
 ) -> MachineIRPackage:
     """Validate and export a deterministic, byte-free PE32 machine IR package."""
 
@@ -264,6 +271,13 @@ def export_machine_ir_package(
     interface_profiles = tuple(
         load_external_interface_profile(path) for path in interface_profile_paths
     )
+    operation_profile_paths = tuple(
+        _regular_file(path, "external operation profile")
+        for path in external_operation_profiles
+    )
+    operation_profiles = tuple(
+        load_external_operation_profile(path) for path in operation_profile_paths
+    )
     rows = _read_canonical_rows(state_path)
     _validate_unique_units(rows)
     prepared = [
@@ -294,6 +308,7 @@ def export_machine_ir_package(
         target_profile=target_profile,
         import_abis=import_abis,
         interface_profiles=interface_profiles,
+        operation_profiles=operation_profiles,
     )
     issues.extend(control_issues)
     external = _external_inventory(prepared)
@@ -376,6 +391,16 @@ def export_machine_ir_package(
                 }
                 for path, profile in zip(
                     interface_profile_paths, interface_profiles, strict=True
+                )
+            ],
+            "external_operation_profiles": [
+                {
+                    "path": path.name,
+                    "sha256": profile.sha256,
+                    "id": profile.profile_id,
+                }
+                for path, profile in zip(
+                    operation_profile_paths, operation_profiles, strict=True
                 )
             ],
         },
@@ -1138,6 +1163,7 @@ def _control_provenance_fixed_point(
     static_recoveries: Sequence[Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     interface_profiles: Sequence[ExternalInterfaceProfile],
+    operation_profiles: Sequence[ExternalOperationProfile],
     max_rounds: int = 16,
 ) -> tuple[
     dict[str, Any],
@@ -1168,9 +1194,17 @@ def _control_provenance_fixed_point(
     provenance: dict[str, Any] = {}
     interface_provenance: dict[str, Any] = {
         "format": "stage-a-external-interface-provenance-v1",
-        "status": "complete" if not interface_profiles else "incomplete",
+        "status": (
+            "complete"
+            if not interface_profiles and not operation_profiles
+            else "incomplete"
+        ),
         "resolutions": [],
-        "counts": {"recovered_method_exits": 0},
+        "counts": {
+            "recovered_method_exits": 0,
+            "recovered_operation_exits": 0,
+            "recovered_indirect_exits": 0,
+        },
     }
     converged = False
     rounds = 0
@@ -1202,18 +1236,6 @@ def _control_provenance_fixed_point(
             and row["stack_cleanup"].get("status") == "complete"
             and isinstance(row["stack_cleanup"].get("stack_delta"), int)
         }
-        provenance = recover_indirect_targets_from_value_provenance(
-            units=units,
-            roots=root_unit_ids,
-            direct_edges=direct_edges,
-            internal_call_edges=internal_call_edges,
-            recovered_indirect_edges=selected_recoveries,
-            indirect_exits=indirect_exits,
-            image_base=binary.image_base,
-            imports=imports,
-            import_abis=import_abis,
-            internal_call_preserved_registers=preserved_by_address,
-        )
         interface_provenance = recover_external_interface_targets(
             units=units,
             roots=root_unit_ids,
@@ -1222,10 +1244,19 @@ def _control_provenance_fixed_point(
             recovered_indirect_edges=selected_recoveries,
             indirect_exits=indirect_exits,
             profiles=interface_profiles,
+            operation_profiles=operation_profiles,
+            imports=imports,
             import_abis=import_abis,
             internal_call_preserved_registers=preserved_by_address,
             image_base=binary.image_base,
             internal_call_stack_cleanup=stack_cleanup_by_address,
+            static_data_reader=_immutable_static_data_reader(binary),
+        )
+        provenance = legacy_value_provenance_view(
+            interface_provenance,
+            finite_target_budget=int(
+                interface_provenance["budgets"]["finite_values"]
+            ),
         )
         selected_recoveries = _prefer_indirect_recoveries(
             static_recoveries,
@@ -1333,6 +1364,31 @@ def _control_fixed_point_signature(
     )
 
 
+def _immutable_static_data_reader(
+    binary: StageABinary,
+):
+    def read(address: int, size: int) -> bytes | None:
+        if size <= 0:
+            return None
+        rva = address - binary.image_base
+        for section in binary.sections:
+            initialized_end = min(
+                section.rva_end,
+                section.rva_start + section.raw_size,
+            )
+            if (
+                section.readable
+                and not section.writable
+                and section.rva_start <= rva
+                and rva + size <= initialized_end
+            ):
+                data = bytes(binary.pe.get_data(rva, size))
+                return data if len(data) == size else None
+        return None
+
+    return read
+
+
 def _control_inventory(
     binary: StageABinary,
     units: Sequence[Mapping[str, Any]],
@@ -1341,6 +1397,7 @@ def _control_inventory(
     target_profile: Mapping[str, Any] | None,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     interface_profiles: Sequence[ExternalInterfaceProfile],
+    operation_profiles: Sequence[ExternalOperationProfile],
 ) -> tuple[dict[str, Any], list[ExportIssue]]:
     starts = {int(unit["source"]["original"]["rva_start"]): unit for unit in units}
     block_starts = {
@@ -1384,6 +1441,12 @@ def _control_inventory(
     for unit in units:
         location = _location_from_unit(unit, "semantics.outcome")
         control = unit["control"]
+        edge_guards = {
+            int(edge["target_rva"]): copy.deepcopy(edge.get("condition"))
+            for edge in unit.get("semantics", {}).get("edge_conditions", [])
+            if isinstance(edge, Mapping)
+            and isinstance(edge.get("target_rva"), int)
+        }
         for target in control["direct_targets"]:
             resolved = target in starts
             item = {
@@ -1393,6 +1456,7 @@ def _control_inventory(
                 "target_rva": target,
                 "resolved_unit_id": starts[target]["id"] if resolved else None,
                 "status": "resolved" if resolved else "incomplete",
+                "guard": edge_guards.get(target),
             }
             direct.append(item)
             if not resolved:
@@ -1524,6 +1588,7 @@ def _control_inventory(
             static_recoveries=static_recoveries,
             import_abis=import_abis,
             interface_profiles=interface_profiles,
+            operation_profiles=operation_profiles,
         )
         control_fixed_point_rounds += fixed_point_rounds
         control_fixed_point_converged &= fixed_point_converged
@@ -1608,6 +1673,9 @@ def _control_inventory(
                         "bounded_external_interface_provenance"
                         if selected_recovery.get("closure")
                         == "checked_profile_interface_method_inventory"
+                        else "bounded_external_operation_provenance"
+                        if selected_recovery.get("closure")
+                        == "checked_external_operation_inventory"
                         else "bounded_value_provenance"
                     ),
                     "closure": selected_recovery["closure"],
@@ -1697,6 +1765,9 @@ def _control_inventory(
             ),
             "value_provenance": value_provenance,
             "external_interface_provenance": external_interface_provenance,
+            "operation_provenance": operation_provenance_view(
+                external_interface_provenance
+            ),
             "internal_call_preservation": internal_call_preservation,
             "analysis_fixed_point": {
                 "status": (
@@ -1767,7 +1838,10 @@ def _indirect_recovery_unit_binding_complete(
     if any(rva not in starts for rva in target_rvas):
         return False
     expected_ids = {str(starts[rva]["id"]) for rva in target_rvas}
-    return {str(value) for value in raw_ids} == expected_ids
+    if {str(value) for value in raw_ids} != expected_ids:
+        return False
+    external = canonical_indirect_external_targets(recovery)
+    return external is not None and bool(target_rvas or external)
 
 
 def _static_jump_table_recovery_fixed_point(
@@ -2538,7 +2612,13 @@ def _aggregate_status(issues: Sequence[Mapping[str, Any]]) -> str:
 def _assert_byte_free(value: Any, path: str = "$") -> None:
     if isinstance(value, Mapping):
         for key, item in value.items():
-            if key in _RAW_INSTRUCTION_FIELDS:
+            numeric_byte_count = (
+                key == "bytes"
+                and isinstance(item, int)
+                and not isinstance(item, bool)
+                and item >= 0
+            )
+            if key in _RAW_INSTRUCTION_FIELDS and not numeric_byte_count:
                 raise AssertionError(f"raw instruction field {path}.{key} crossed the machine IR boundary")
             _assert_byte_free(item, f"{path}.{key}")
     elif isinstance(value, list):

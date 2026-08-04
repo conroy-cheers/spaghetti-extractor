@@ -44,6 +44,7 @@ def augment_state_machine_with_rooted_instruction_views(
     indirect_target_profile: Path | None = None,
     machine_import_profiles: Sequence[Path] = (),
     external_interface_profiles: Sequence[Path] = (),
+    external_operation_profiles: Sequence[Path] = (),
 ) -> dict[str, Any]:
     """Add exact one-instruction views for rooted unmaterialized control targets.
 
@@ -174,6 +175,7 @@ def augment_state_machine_with_rooted_instruction_views(
                     indirect_target_profile=indirect_target_profile,
                     machine_import_profiles=machine_import_profiles,
                     external_interface_profiles=external_interface_profiles,
+                    external_operation_profiles=external_operation_profiles,
                     out=temporary_ir,
                 )
                 current_manifest = _json_object(

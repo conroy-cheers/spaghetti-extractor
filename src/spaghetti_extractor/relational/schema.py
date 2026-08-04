@@ -95,6 +95,7 @@ RELATIONAL_KERNEL_MODULES = (
     "RelationalExactExpr",
     "RelationalSegment",
     "RelationalValueProvenance",
+    "RelationalExternalOperation",
     "RelationalComposition",
     "RelationalStackFixedCodePointer",
     "RelationalIndirectExitAdapters",

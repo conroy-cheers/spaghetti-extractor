@@ -118,6 +118,8 @@ from .source_call_substitution import (
     propose_source_component_artifacts,
     propose_source_component_bindings,
 )
+from .external_operation_profiles import load_external_operation_profile
+from .source_operation_catalog import render_source_operation_rows
 from .roundtrip_fuzz.generator import SPIKE_CASES, generate_spike_corpus
 from .roundtrip_fuzz.discovery import (
     compare_discovery_proposals,
@@ -856,6 +858,20 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         default=[],
         help="exact machine-import ABI profile; may be repeated",
     )
+    machine_ir.add_argument(
+        "--external-interface-profile",
+        type=Path,
+        action="append",
+        default=[],
+        help="legacy v1 interface profile; may be repeated",
+    )
+    machine_ir.add_argument(
+        "--external-operation-profile",
+        type=Path,
+        action="append",
+        default=[],
+        help="generic external-operation profile; may be repeated",
+    )
     machine_ir.add_argument("--out", type=Path, required=True)
     machine_ir.set_defaults(func=_cmd_stage_a_export_machine_ir)
 
@@ -899,6 +915,26 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     )
     reconstruction_plan.add_argument("--out", type=Path, required=True)
     reconstruction_plan.set_defaults(func=_cmd_stage_b_plan_reconstruction)
+
+    render_operations = subcommands.add_parser(
+        "stage-b-render-source-operations",
+        help=(
+            "render recovered operation evidence as non-authoritative C call "
+            "expressions"
+        ),
+    )
+    render_operations.add_argument("--catalog", type=Path, required=True)
+    render_operations.add_argument(
+        "--operation-profile", type=Path, required=True
+    )
+    render_operations.add_argument(
+        "--operations",
+        type=Path,
+        required=True,
+        help="JSON array, or artifact containing an operations array",
+    )
+    render_operations.add_argument("--out", type=Path, required=True)
+    render_operations.set_defaults(func=_cmd_stage_b_render_source_operations)
 
     semantic_components = subcommands.add_parser(
         "stage-b-validate-components",
@@ -1834,6 +1870,18 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         action="append",
         default=[],
     )
+    rooted_views.add_argument(
+        "--external-interface-profile",
+        type=Path,
+        action="append",
+        default=[],
+    )
+    rooted_views.add_argument(
+        "--external-operation-profile",
+        type=Path,
+        action="append",
+        default=[],
+    )
     rooted_views.add_argument("--instruction-budget", type=int, default=65536)
     rooted_views.add_argument("--iteration-budget", type=int, default=32)
     rooted_views.add_argument("--out", type=Path, required=True)
@@ -2638,6 +2686,8 @@ def _cmd_stage_a_export_machine_ir(args: Any) -> dict[str, Any]:
         reference_contract=args.reference_contract,
         indirect_target_profile=args.indirect_target_profile,
         machine_import_profiles=args.machine_import_profile,
+        external_interface_profiles=args.external_interface_profile,
+        external_operation_profiles=args.external_operation_profile,
         out=args.out,
     )
     return {
@@ -2697,6 +2747,23 @@ def _cmd_stage_b_plan_reconstruction(args: Any) -> dict[str, Any]:
             ),
         },
     }
+
+
+def _cmd_stage_b_render_source_operations(args: Any) -> dict[str, Any]:
+    profile = load_external_operation_profile(args.operation_profile)
+    payload = _json_file(args.operations, "source-operation evidence")
+    rows = payload.get("operations") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        raise StageAInputError(
+            "source-operation evidence must be an array or contain an operations array"
+        )
+    report = render_source_operation_rows(
+        catalog=args.catalog,
+        operation_profile_sha256=profile.sha256,
+        operation_evidence_rows=rows,
+    )
+    write_json(args.out, report)
+    return report
 
 
 def _cmd_stage_b_validate_components(args: Any) -> dict[str, Any]:
@@ -3032,6 +3099,8 @@ def _cmd_stage_b_augment_rooted_views(args: Any) -> dict[str, Any]:
         reference_contract=args.reference_contract,
         indirect_target_profile=args.indirect_target_profile,
         machine_import_profiles=args.machine_import_profile,
+        external_interface_profiles=args.external_interface_profile,
+        external_operation_profiles=args.external_operation_profile,
         instruction_budget=args.instruction_budget,
         iteration_budget=args.iteration_budget,
         out=args.out,

@@ -197,6 +197,90 @@ class FiniteU32DataflowTests(unittest.TestCase):
 
         self.assertEqual(result["values"], [1, 2, 3])
 
+    def test_unsigned_guard_bounds_preserved_register(self) -> None:
+        units = [
+            _unit(
+                "guard",
+                0x1000,
+                targets=(0x1010,),
+                guards=((
+                    0x1010,
+                    {"op": "ult32", "args": [_reg("ecx"), _const(8)]},
+                ),),
+            ),
+            _unit("dispatch", 0x1010),
+        ]
+        analysis = FiniteU32Dataflow(units=units, roots=["guard"])
+
+        result = analysis.expression_domain("dispatch", _reg("ecx"))
+
+        self.assertEqual(result["values"], list(range(8)))
+
+    def test_masked_guard_constrains_register_written_from_expression(self) -> None:
+        adjusted_pointer = {
+            "op": "add32",
+            "args": [_const(0xFFFFFFFC), _reg("ecx"), _reg("edi")],
+        }
+        nonzero_low_bits = {
+            "op": "not",
+            "args": [{
+                "op": "eq",
+                "args": [
+                    {"op": "and32", "args": [adjusted_pointer, _const(3)]},
+                    _const(0),
+                ],
+            }],
+        }
+        units = [
+            _unit(
+                "adjust",
+                0x1000,
+                targets=(0x1010,),
+                writes=(("edi", adjusted_pointer),),
+                guards=((0x1010, nonzero_low_bits),),
+            ),
+            _unit(
+                "copy",
+                0x1010,
+                targets=(0x1020,),
+                writes=(("eax", _reg("edi")),),
+            ),
+            _unit("dispatch", 0x1020),
+        ]
+        analysis = FiniteU32Dataflow(units=units, roots=["adjust"])
+
+        result = analysis.expression_domain(
+            "dispatch",
+            {"op": "and32", "args": [_reg("eax"), _const(3)]},
+        )
+
+        self.assertEqual(result["values"], [1, 2, 3])
+
+    def test_bitwise_and_with_unknown_preserves_finite_submask_invariant(self) -> None:
+        units = [
+            _unit(
+                "root",
+                0x1000,
+                targets=(0x1010,),
+                writes=(("edx", _const(3)),),
+            ),
+            _unit(
+                "loop",
+                0x1010,
+                targets=(0x1010, 0x1020),
+                writes=((
+                    "edx",
+                    {"op": "and32", "args": [_reg("ecx"), _reg("edx")]},
+                ),),
+            ),
+            _unit("dispatch", 0x1020),
+        ]
+        analysis = FiniteU32Dataflow(units=units, roots=["root"])
+
+        result = analysis.expression_domain("dispatch", _reg("edx"))
+
+        self.assertEqual(result["values"], [0, 1, 2, 3])
+
 
 if __name__ == "__main__":
     unittest.main()

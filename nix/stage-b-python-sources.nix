@@ -26,11 +26,14 @@ let
     ../src/spaghetti_extractor/errors.py
     ../src/spaghetti_extractor/callable_external_runtime.py
     ../src/spaghetti_extractor/external_interface_profiles.py
+    ../src/spaghetti_extractor/external_operation_profiles.py
     ../src/spaghetti_extractor/import_abi.py
     ../src/spaghetti_extractor/interface_provenance.py
     ../src/spaghetti_extractor/internal_call_summaries.py
     ../src/spaghetti_extractor/machine_abi.py
     ../src/spaghetti_extractor/machine_import_profiles.py
+    ../src/spaghetti_extractor/operation_provenance.py
+    ../src/spaghetti_extractor/provenance_domain.py
     ../src/spaghetti_extractor/util.py
     ../src/spaghetti_extractor/pe.py
     ../src/spaghetti_extractor/stage_binary.py
@@ -86,6 +89,7 @@ let
     ../src/spaghetti_extractor/source_graph.py
     ../src/spaghetti_extractor/source_project.py
     ../src/spaghetti_extractor/source_call_substitution.py
+    ../src/spaghetti_extractor/source_operation_catalog.py
   ];
 in
 {

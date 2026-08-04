@@ -14,6 +14,7 @@ from spaghetti_extractor.reconstruction_ir import (
     MachineIRExportError,
     RvaSpan,
     _Instruction,
+    _assert_byte_free,
     _bounded_predecessor_instruction_history,
     _callback_registration_roots,
     _newly_eligible_callback_roots,
@@ -274,6 +275,13 @@ def _raw_instruction_keys(value: object) -> set[str]:
 
 
 class ReconstructionIRTests(unittest.TestCase):
+    def test_byte_free_boundary_allows_numeric_byte_counts_only(self) -> None:
+        _assert_byte_free({"size": {"kind": "fixed", "bytes": 16}})
+        for raw in ("90", [0x90], True, -1):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(AssertionError, "raw instruction field"):
+                    _assert_byte_free({"bytes": raw})
+
     def test_predecessor_history_crosses_one_instruction_cutpoint(self) -> None:
         compare = {
             "id": "compare",
