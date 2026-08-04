@@ -400,7 +400,7 @@ def _compiled_feature_counts(transfer: _Transfer) -> tuple[Counter[str], Counter
             features["fault.divide_error"] += 1
         elif action.op == "rep_movsd":
             features["bulk.rep_movsd"] += 1
-        elif action.op in {"rep_movs", "rep_stos"}:
+        elif action.op in {"rep_movs", "rep_stos", "rep_scas"}:
             features[f"bulk.{action.op}.{action.aux}"] += 1
     for call in transfer.calls:
         features[f"call.{call.kind.removesuffix('_call')}"] += 1
@@ -446,6 +446,20 @@ def _raw_ordered_effect_signature(row: Mapping[str, Any]) -> list[tuple[object, 
                     raw.get("restart_semantics"),
                 )
             )
+        elif family == "external" and kind == "rep_scas":
+            signature.append(
+                (
+                    kind,
+                    raw.get("element_width"),
+                    raw.get("address_size"),
+                    raw.get("effect_model"),
+                    raw.get("restart_semantics"),
+                    raw.get("repeat_condition"),
+                    raw.get("comparison_model"),
+                    raw.get("segment_model"),
+                    raw.get("fault_model"),
+                )
+            )
         elif family == "external":
             signature.append(
                 (
@@ -488,6 +502,20 @@ def _typed_ordered_effect_signature(transfer: _Transfer) -> list[tuple[object, .
                         else "symbolic_string_fill_v2"
                     ),
                     "element_committed_v1",
+                )
+            )
+        elif action.op == "rep_scas":
+            signature.append(
+                (
+                    "rep_scas",
+                    action.aux,
+                    32,
+                    "symbolic_string_scan_v1",
+                    "element_committed_v1",
+                    "while_not_equal_v1",
+                    "subtraction_flags_v1",
+                    "flat_es_zero_v1",
+                    "read_before_commit_v1",
                 )
             )
         elif action.op == "call":

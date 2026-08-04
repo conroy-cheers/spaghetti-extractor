@@ -97,6 +97,7 @@ inductive OrderedEffectKind where
   | repStosd
   | repMovs (width : MemoryWidth)
   | repStos (width : MemoryWidth)
+  | repScas (width : MemoryWidth)
 deriving Repr, DecidableEq
 
 private def operand32ReadEffect : Operand32 -> List OrderedEffectKind
@@ -213,6 +214,7 @@ def decodedOrderedEffects? (pe : PE32) (imports : List PEImport)
   | .bitScan _ _ source => some (operand32ReadEffect source)
   | .moveDwords _ => some [.repMovsd]
   | .storeDwords _ => some [.repStosd]
+  | .scanByteNotEqual => some [.repScas .byte]
   | .callIndirect target =>
       some (operand32ReadEffect target ++ [.write .dword, .call .indirect])
   | .jumpIndirect target => some (operand32ReadEffect target)
@@ -235,6 +237,7 @@ private def pureTerminal : OutcomeExpr -> TransferTerminal
   | .branch _ taken fallthrough => .branch taken fallthrough
   | .call _ continuation _ | .externalCall _ _ continuation |
       .bulkCopy _ continuation | .bulkFill _ continuation |
+      .bulkScan _ continuation |
       .indirectCall _ continuation _ |
       .checkedContinue _ continuation |
       .atomicCompareExchange _ _ _ continuation => .fallthrough continuation
@@ -284,6 +287,7 @@ def semanticTransferOrderedEffectKinds
     | .repStosd .. => [.repStosd]
     | .repMovs _ _ _ _ width => [.repMovs width]
     | .repStos _ _ _ _ width => [.repStos width]
+    | .repScas _ _ _ _ width => [.repScas width]
     | .setRegister .. | .setFlag .. | .syncEflags => []
 
 def semanticTransferCallActionIndices
@@ -462,7 +466,7 @@ def exactInstructionMemoryEvents? (pe : PE32) (imports : List PEImport)
       .lea .. | .zeroReg .. | .leaAddress .. | .branchCondition .. |
       .convertWordToDword | .convertDwordToQuad | .bitTestRegister .. |
       .clearCarry | .clearDirection | .setDirection |
-      .moveDwords _ | .storeDwords _ => some []
+      .moveDwords _ | .storeDwords _ | .scanByteNotEqual => some []
   | .ret | .retPop _ =>
       some [readEvent before before.registers.esp .dword]
   | .popReg _ => some [readEvent before before.registers.esp .dword]
@@ -799,6 +803,23 @@ def runExactDecodedInstructions (pe : PE32) (imports : List PEImport)
                   if next.rva != continuation then none else
                   runExactDecodedInstructions pe imports path environment 0 tail
                     (formalFromInterpreter nextState filled) events
+          | .bulkScan accumulator destination count direction continuation =>
+              let input :=
+                StageA.Relational.InterpreterTransfer.machineFromFormal nextState
+              let scanned := repScas input accumulator destination count direction
+              let events :=
+                events ++ [.repScas accumulator destination count direction .byte]
+              match tail with
+              | [] =>
+                  some {
+                    state := scanned
+                    events
+                    completion := .fallthrough continuation
+                  }
+              | next :: _ =>
+                  if next.rva != continuation then none else
+                  runExactDecodedInstructions pe imports path environment 0 tail
+                    (formalFromInterpreter nextState scanned) events
           | .checkedContinue valid continuation =>
               if !valid then some (exactResult nextState events .divideError) else
               match tail with

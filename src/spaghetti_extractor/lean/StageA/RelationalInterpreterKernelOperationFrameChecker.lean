@@ -108,7 +108,7 @@ theorem nativeOperationSuccessorCallFrames?_context
                 expectedNativeOperationCallFrame]⟩
           next _ =>
             contradiction
-  | jump | branchTrue | branchFalse | call | bulkCopy | bulkFill
+  | jump | branchTrue | branchFalse | call | bulkCopy | bulkFill | bulkScan
   | checkedContinue | atomicCompareExchange =>
       simp [NativeOperationLocalSuccessor.callContextHolds]
 

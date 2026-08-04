@@ -335,6 +335,9 @@ def mapScheduleOutcome? (program : Program) : PureOutcome -> Option PureOutcome
   | .bulkFill destination value count direction continuation => do
       let continuation <- targetIdForRva? program continuation
       pure (.bulkFill destination value count direction continuation)
+  | .bulkScan accumulator destination count direction continuation => do
+      let continuation <- targetIdForRva? program continuation
+      pure (.bulkScan accumulator destination count direction continuation)
   | .indirectCall target continuation => do
       let continuation <- targetIdForRva? program continuation
       pure (.indirectCall target continuation)
@@ -363,6 +366,7 @@ def scheduleMacroResult? (result : ScheduleResult) : Option MacroResult := do
         .stop (.externalCall _ _ continuation) |
         .stop (.bulkCopy _ _ _ _ continuation) |
         .stop (.bulkFill _ _ _ _ continuation) |
+        .stop (.bulkScan _ _ _ _ continuation) |
         .stop (.indirectCall _ continuation) |
         .stop (.checkedContinue _ continuation) |
         .stop (.atomicCompareExchange _ _ _ continuation) =>

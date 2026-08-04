@@ -71,6 +71,7 @@ def _relational_product_graph(
         "call_return": "callReturn",
         "bulk_copy": "bulkCopy",
         "bulk_fill": "bulkFill",
+        "bulk_scan": "bulkScan",
         "external_call": "externalCall",
         "checked_continue": "checkedContinue",
         "atomic_compare_exchange": "atomicCompareExchange",
@@ -860,6 +861,7 @@ def _relational_product_graph(
             "external_call",
             "bulk_copy",
             "bulk_fill",
+            "bulk_scan",
             "checked_continue",
             "atomic_compare_exchange",
         }:

@@ -453,6 +453,13 @@ def transitionFromNativeWorldOutcome (pe : PE32)
       { next := .running continuation 0 { state with memory } calls eventIndex
           events world,
         observation := none }
+  | .bulkScan accumulator destination count direction continuation =>
+      let scan := repneScasByte state.memory accumulator destination count state.eflags
+        direction count.toNat
+      let registers := (state.registers.set .edi scan.destination).set .ecx scan.count
+      { next := .running continuation 0 { state with registers, eflags := scan.eflags }
+          calls eventIndex events world,
+        observation := none }
   | .checkedContinue valid continuation =>
       if valid then
         { next := .running continuation 0 state calls eventIndex events world,
@@ -894,6 +901,13 @@ def transitionFromNestedNativeWorldOutcome
         count.toNat
       { next := .running continuation 0 { state with memory } calls eventIndex
           events world externalFrames,
+        observation := none }
+  | .bulkScan accumulator destination count direction continuation =>
+      let scan := repneScasByte state.memory accumulator destination count state.eflags
+        direction count.toNat
+      let registers := (state.registers.set .edi scan.destination).set .ecx scan.count
+      { next := .running continuation 0 { state with registers, eflags := scan.eflags }
+          calls eventIndex events world externalFrames,
         observation := none }
   | .checkedContinue valid continuation =>
       if valid then

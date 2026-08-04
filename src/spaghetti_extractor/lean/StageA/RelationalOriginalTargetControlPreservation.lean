@@ -503,6 +503,15 @@ def CheckedOriginalStaticTargetEvidence.bulkFillControl
       (.bulkFill destination value count direction continuation) :=
   .bulkFill destination value count direction continuation evidence.reachable
 
+def CheckedOriginalStaticTargetEvidence.bulkScanControl
+    {context : OriginalDecodedStaticContext} {targetIds : List Nat}
+    {sourceTargetId continuation : Nat} {state : MachineState}
+    (evidence : CheckedOriginalStaticTargetEvidence targetIds continuation)
+    (accumulator destination count : Word) (direction : Bool) :
+    CheckedOriginalOutcomeEvidence context targetIds sourceTargetId state
+      (.bulkScan accumulator destination count direction continuation) :=
+  .bulkScan accumulator destination count direction continuation evidence.reachable
+
 def CheckedOriginalStaticTargetEvidence.checkedContinueControl
     {context : OriginalDecodedStaticContext} {targetIds : List Nat}
     {sourceTargetId continuation : Nat} {state : MachineState}

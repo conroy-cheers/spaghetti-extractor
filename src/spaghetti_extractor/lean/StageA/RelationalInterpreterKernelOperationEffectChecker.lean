@@ -19,10 +19,10 @@ open StageA.Relational.InterpreterNativeWorld
 # Checked effectful native-operation successors
 
 Local control transitions normally preserve the state produced by the terminal
-instruction. `rep movsd`, `rep stosd`, and atomic compare-exchange instead
-apply a memory effect while transferring control. This module computes that
-effect from the exact symbolic outcome and exposes the resulting state to
-operation-specific invariant proofs.
+instruction. Restartable string operations and atomic compare-exchange instead
+apply checked machine effects while transferring control. This module computes
+those effects from the exact symbolic outcome and exposes the resulting state
+to operation-specific invariant proofs.
 
 The target state is a definition, not certificate data. Generated proofs may
 establish a relation over it, but cannot submit an endpoint.
@@ -40,6 +40,16 @@ def nativeOperationLocalSuccessorState
         memory := Memory.bulkFillDwords transitionState.memory
           (fill.destination.eval input) (fill.value.eval input)
           (fill.direction.eval input) (fill.count.eval input).toNat }
+  | .bulkScan scan _ =>
+      let result := repneScasByte transitionState.memory
+        (scan.accumulator.eval input) (scan.destination.eval input)
+        (scan.count.eval input) transitionState.eflags
+        (scan.direction.eval input) (scan.count.eval input).toNat
+      { transitionState with
+        registers :=
+          (transitionState.registers.set .edi result.destination).set .ecx
+            result.count
+        eflags := result.eflags }
   | .atomicCompareExchange address expected replacement _ =>
       { transitionState with
         memory := Memory.atomicCompareExchange transitionState.memory
@@ -144,6 +154,12 @@ theorem nativeOperationLocalSuccessorCallFrames
     subst nextFrames
     rfl
   case bulkFill.bulkFill fill continuation target =>
+    simp only [beq_iff_eq] at controlChecked
+    subst target
+    simp [nativeOperationSuccessorCallFrames?] at framesChecked
+    subst nextFrames
+    rfl
+  case bulkScan.bulkScan scan continuation target =>
     simp only [beq_iff_eq] at controlChecked
     subst target
     simp [nativeOperationSuccessorCallFrames?] at framesChecked

@@ -727,6 +727,7 @@ def outcomeStaticSuccessors : OutcomeExpr -> Option (List Nat)
   | .externalJump _ _ => some []
   | .bulkCopy _ continuation => some [continuation]
   | .bulkFill _ continuation => some [continuation]
+  | .bulkScan _ continuation => some [continuation]
   | .checkedContinue _ continuation => some [continuation]
   | .atomicCompareExchange _ _ _ continuation => some [continuation]
   /- The dynamic callee is checked by the callback-target inventory, but a
@@ -1299,6 +1300,12 @@ def nextNativeExecution (environment : NativeEnvironment)
       let memory := Memory.bulkFillDwords state.memory destination value direction
         count.toNat
       .running continuation 0 { state with memory } calls eventIndex events
+  | .bulkScan accumulator destination count direction continuation =>
+      let scan := repneScasByte state.memory accumulator destination count state.eflags
+        direction count.toNat
+      let registers := (state.registers.set .edi scan.destination).set .ecx scan.count
+      .running continuation 0 { state with registers, eflags := scan.eflags }
+        calls eventIndex events
   | .checkedContinue valid continuation =>
       if valid then .running continuation 0 state calls eventIndex events else .fault
   | .atomicCompareExchange address expected replacement continuation =>

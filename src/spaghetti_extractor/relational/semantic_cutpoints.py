@@ -15,6 +15,46 @@ from ..stage_binary import StageABinary, StageAInputError
 from .x87_profile import instruction_is_x87
 
 
+_RESTARTABLE_STRING_PREFIXES = frozenset(
+    {
+        b"\xf3\xa4",  # REP MOVSB
+        b"\xf3\xa5",  # REP MOVSD
+        b"\xf3\x66\xa5",  # REP MOVSW
+        b"\x66\xf3\xa5",
+        b"\xf3\xaa",  # REP STOSB
+        b"\xf3\xab",  # REP STOSD
+        b"\xf3\x66\xab",  # REP STOSW
+        b"\x66\xf3\xab",
+        b"\xf2\xae",  # REPNE SCASB
+        b"\xf3\xae",  # REPE SCASB
+        b"\xf2\xaf",  # REPNE SCASD
+        b"\xf3\xaf",  # REPE SCASD
+        b"\xf2\x66\xaf",  # REPNE SCASW
+        b"\x66\xf2\xaf",
+        b"\xf3\x66\xaf",  # REPE SCASW
+        b"\x66\xf3\xaf",
+    }
+)
+
+
+def _instruction_is_restartable_string(instruction: Any) -> bool:
+    return bytes(instruction.bytes) in _RESTARTABLE_STRING_PREFIXES
+
+
+def _instruction_is_semantic_stop(instruction: Any) -> bool:
+    return (
+        _instruction_is_restartable_string(instruction)
+        or instruction.mnemonic
+        in {
+            "movsd",
+            "stosd",
+            "div",
+            "idiv",
+            "lock cmpxchg",
+        }
+    )
+
+
 def decode_semantic_cutpoint_span(
     binary: StageABinary,
     span: dict[str, int],
@@ -56,13 +96,12 @@ def semantic_cutpoint_spans_for_side(
             if instruction_stop < span["size"]:
                 boundaries.append(instruction_stop)
             continue
-        semantic_stop = instruction.mnemonic in {
-            "rep movsd",
-            "movsd",
-            "div",
-            "idiv",
-            "lock cmpxchg",
-        }
+        semantic_stop = _instruction_is_semantic_stop(instruction)
+        if (
+            _instruction_is_restartable_string(instruction)
+            and instruction_start > boundaries[-1]
+        ):
+            boundaries.append(instruction_start)
         if semantic_stop or (periodic and instruction_index % 4 == 0):
             if instruction_stop < span["size"] and instruction_stop != boundaries[-1]:
                 boundaries.append(instruction_stop)

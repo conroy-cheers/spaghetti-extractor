@@ -56,6 +56,8 @@ inductive ISAConformanceControl where
       (continuationRva : Nat)
   | bulkFill (destination value count : Nat) (direction : Bool)
       (continuationRva : Nat)
+  | bulkScan (accumulator destination count : Nat) (direction : Bool)
+      (continuationRva : Nat)
   | indirectCall (target : Nat) (continuationRva returnAddress : Nat)
   | indirectJump (target : Nat)
   | checkedContinue (valid : Bool) (continuationRva : Nat)
@@ -288,6 +290,9 @@ def concreteOutcomeToISAConformanceControl :
   | .bulkFill destination value count direction continuationRva =>
       .bulkFill destination.toNat value.toNat count.toNat direction
         continuationRva
+  | .bulkScan accumulator destination count direction continuationRva =>
+      .bulkScan accumulator.toNat destination.toNat count.toNat direction
+        continuationRva
   | .indirectCall target continuationRva returnAddress =>
       .indirectCall target.toNat continuationRva returnAddress
   | .indirectJump target => .indirectJump target.toNat
@@ -338,6 +343,23 @@ def ConcreteBehavior.materializedMemory
         count.toNat
   | _ => behavior.memory
 
+def ConcreteBehavior.materializedRegisters
+    (behavior : ConcreteBehavior) : Registers Word :=
+  match behavior.outcome with
+  | some (.bulkScan accumulator destination count direction _) =>
+      let scan := repneScasByte behavior.memory accumulator destination count
+        behavior.eflags direction count.toNat
+      (behavior.registers.set .edi scan.destination).set .ecx scan.count
+  | _ => behavior.registers
+
+def ConcreteBehavior.materializedEflags
+    (behavior : ConcreteBehavior) : Word :=
+  match behavior.outcome with
+  | some (.bulkScan accumulator destination count direction _) =>
+      (repneScasByte behavior.memory accumulator destination count behavior.eflags
+        direction count.toNat).eflags
+  | _ => behavior.eflags
+
 def ISAConformanceInput.run
     (input : ISAConformanceInput) : ISAConformanceRunResult :=
   if !input.checked then
@@ -366,34 +388,37 @@ def ISAConformanceInput.run
       else match control with
       | none =>
           .internalError "stopped symbolic behavior produced no concrete outcome"
-      | some control => .observed {
-        registers := {
-          eax := concrete.registers.eax.toNat
-          ebx := concrete.registers.ebx.toNat
-          ecx := concrete.registers.ecx.toNat
-          edx := concrete.registers.edx.toNat
-          esi := concrete.registers.esi.toNat
-          edi := concrete.registers.edi.toNat
-          ebp := concrete.registers.ebp.toNat
-          esp := concrete.registers.esp.toNat
+      | some control =>
+        let materializedRegisters := concrete.materializedRegisters
+        let materializedEflags := concrete.materializedEflags
+        .observed {
+          registers := {
+            eax := materializedRegisters.eax.toNat
+            ebx := materializedRegisters.ebx.toNat
+            ecx := materializedRegisters.ecx.toNat
+            edx := materializedRegisters.edx.toNat
+            esi := materializedRegisters.esi.toNat
+            edi := materializedRegisters.edi.toNat
+            ebp := materializedRegisters.ebp.toNat
+            esp := materializedRegisters.esp.toNat
+          }
+          eflags := materializedEflags.toNat
+          fsBase := input.fsBase
+          x87Stack := concrete.x87.stack.map BitVec.toNat
+          x87Control := concrete.x87.control.toNat
+          x87Status := concrete.x87.status.toNat
+          memory := input.observeMemory.map fun address => {
+            address
+            value := (concrete.materializedMemory
+              (BitVec.ofNat 32 address)).toNat
+          }
+          writes := behavior.writes.map fun write => {
+            address := (write.1.eval input.machineState).toNat
+            value := (write.2.eval input.machineState).toNat
+          }
+          control
+          fault
         }
-        eflags := concrete.eflags.toNat
-        fsBase := input.fsBase
-        x87Stack := concrete.x87.stack.map BitVec.toNat
-        x87Control := concrete.x87.control.toNat
-        x87Status := concrete.x87.status.toNat
-        memory := input.observeMemory.map fun address => {
-          address
-          value := (concrete.materializedMemory
-            (BitVec.ofNat 32 address)).toNat
-        }
-        writes := behavior.writes.map fun write => {
-          address := (write.1.eval input.machineState).toNat
-          value := (write.2.eval input.machineState).toNat
-        }
-        control
-        fault
-      }
 
 def ISAConformanceInput.matches
     (input : ISAConformanceInput)

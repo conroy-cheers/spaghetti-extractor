@@ -60,6 +60,27 @@ def _transfer(**updates):
     return row
 
 
+def _rep_scas_event():
+    return {
+        "kind": "rep_scas",
+        "index": 0,
+        "element_width": 1,
+        "address_size": 32,
+        "destination": {"op": "reg", "name": "edi", "width": 32},
+        "accumulator": {"op": "reg", "name": "eax", "width": 32},
+        "count": {"op": "reg", "name": "ecx", "width": 32},
+        "direction_flag": {"op": "flag", "name": "df"},
+        "repeat_condition": "while_not_equal_v1",
+        "comparison_model": "subtraction_flags_v1",
+        "segment_model": "flat_es_zero_v1",
+        "effect_model": "symbolic_string_scan_v1",
+        "restart_semantics": "element_committed_v1",
+        "fault_model": "read_before_commit_v1",
+        "owned_register_outputs": ["edi", "ecx"],
+        "owned_flag_outputs": ["cf", "pf", "af", "zf", "sf", "of"],
+    }
+
+
 class StageBSemanticCBackendTests(unittest.TestCase):
     def test_emits_compiler_consumable_c_from_semantic_ir_without_original_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -289,6 +310,199 @@ class StageBSemanticCBackendTests(unittest.TestCase):
                 "stage_b_write(rt, fill_destination_1, 2U", source
             )
             self.assertIn("0xfffffffeU : 2U", source)
+
+    def test_rep_scas_runtime_covers_repeat_flags_restart_and_owned_outputs(self):
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("C compiler is unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            event = _rep_scas_event()
+            row = _transfer(
+                id="semantic-transfer:rep-scas",
+                external_events=[event],
+                ordered_events=[{
+                    "family": "external",
+                    "instruction_rva": 0x1000,
+                    **event,
+                }],
+                register_writes=[
+                    {"register": "edi", "value": {"op": "const", "value": 0xBAD0, "width": 32}},
+                    {"register": "ecx", "value": {"op": "const", "value": 0xBAD1, "width": 32}},
+                    {"register": "eax", "value": {"op": "const", "value": 0xDEADBEEF, "width": 32}},
+                ],
+                flag_writes=[
+                    {"flag": name, "value": {"op": "false"}}
+                    for name in ("cf", "pf", "af", "zf", "sf", "of")
+                ] + [{"flag": "df", "value": {"op": "false"}}],
+                outcome={"kind": "fallthrough", "target_rva": 0x1002},
+            )
+
+            report = write_stage_b_semantic_c_backend(root, [row])
+
+            self.assertEqual(report["status"], "complete", report)
+            source = (root / "state-machine-transfers.c").read_text(encoding="ascii")
+            self.assertIn("scan_accumulator_0", source)
+            self.assertIn("stage_b_read(rt, scan_destination_0, 1U", source)
+            self.assertNotIn("state->edi = 47824U", source)
+            self.assertNotIn("state->ecx = 47825U", source)
+            self.assertIn("state->eax = 3735928559U", source)
+
+            harness = root / "harness.c"
+            harness.write_text(
+                r'''
+#include "state-machine-transfers.h"
+
+typedef struct scan_context {
+  uint32_t base, fault_address, reads;
+  uint8_t bytes[4];
+} scan_context;
+
+static uint32_t read_byte(
+    void *raw, uint32_t address, uint32_t width, uint32_t *fault) {
+  scan_context *context = (scan_context *)raw;
+  ++context->reads;
+  if (width != 1U || address == context->fault_address ||
+      address < context->base || address >= context->base + 4U) {
+    *fault = 1U;
+    return 0U;
+  }
+  return context->bytes[address - context->base];
+}
+
+static void write_unused(
+    void *raw, uint32_t address, uint32_t width, uint32_t value,
+    uint32_t *fault) {
+  (void)raw; (void)address; (void)width; (void)value; *fault = 1U;
+}
+
+stage_b_call_status stage_b_dispatch_external_call(
+    stage_b_runtime *runtime, const stage_b_call_event *event,
+    const stage_b_machine_state *input, stage_b_machine_state *output) {
+  (void)runtime; (void)event; (void)input; (void)output;
+  return STAGE_B_CALL_UNIMPLEMENTED;
+}
+
+static void initial_flags(stage_b_machine_state *state) {
+  state->cf = 1U; state->zf = 0U; state->sf = 1U;
+  state->of = 1U; state->pf = 0U; state->eflags = 1U << 4;
+}
+
+static int flags_are(
+    const stage_b_machine_state *state, uint32_t cf, uint32_t zf,
+    uint32_t sf, uint32_t of, uint32_t pf, uint32_t af) {
+  return state->cf == cf && state->zf == zf && state->sf == sf &&
+      state->of == of && state->pf == pf &&
+      ((state->eflags >> 4) & 1U) == af;
+}
+
+static stage_b_step_result run(
+    scan_context *context, stage_b_machine_state *state) {
+  stage_b_runtime runtime = {0};
+  runtime.context = context; runtime.read = read_byte; runtime.write = write_unused;
+  return stage_b_transfer_semantic_transfer_rep_scas(&runtime, state);
+}
+
+int main(void) {
+  const uint32_t base = 0x2000U;
+  scan_context context = {base, 0xffffffffU, 0U, {0U,0U,0U,0U}};
+  stage_b_machine_state state = {0};
+  stage_b_step_result result;
+
+  state.eax = 0x41U; state.edi = base; state.ecx = 0U; initial_flags(&state);
+  result = run(&context, &state);
+  if (result.kind != STAGE_B_FALLTHROUGH || context.reads != 0U) return 1;
+  if (state.edi != base || state.ecx != 0U ||
+      !flags_are(&state, 1U,0U,1U,1U,0U,1U)) return 2;
+  if (state.eax != 0xdeadbeefU || state.df != 0U) return 3;
+
+  context = (scan_context){base, 0xffffffffU, 0U, {0x20U,0x41U,0U,0U}};
+  state = (stage_b_machine_state){0};
+  state.eax = 0x41U; state.edi = base; state.ecx = 3U;
+  result = run(&context, &state);
+  if (result.kind != STAGE_B_FALLTHROUGH || context.reads != 2U) return 4;
+  if (state.edi != base + 2U || state.ecx != 1U ||
+      !flags_are(&state, 0U,1U,0U,0U,1U,0U)) return 5;
+
+  context = (scan_context){base, 0xffffffffU, 0U, {1U,2U,0U,0U}};
+  state = (stage_b_machine_state){0};
+  state.eax = 0U; state.edi = base; state.ecx = 2U;
+  result = run(&context, &state);
+  if (result.kind != STAGE_B_FALLTHROUGH || state.edi != base + 2U ||
+      state.ecx != 0U || !flags_are(&state, 1U,0U,1U,0U,0U,1U)) return 6;
+
+  context = (scan_context){base, 0xffffffffU, 0U, {0U,0x41U,0x10U,0U}};
+  state = (stage_b_machine_state){0};
+  state.eax = 0x41U; state.edi = base + 2U; state.ecx = 2U; state.df = 1U;
+  result = run(&context, &state);
+  if (result.kind != STAGE_B_FALLTHROUGH || state.edi != base ||
+      state.ecx != 0U || !flags_are(&state, 0U,1U,0U,0U,1U,0U)) return 7;
+  if (state.df != 0U) return 8;
+
+  context = (scan_context){base, base + 1U, 0U, {0x42U,0U,0U,0U}};
+  state = (stage_b_machine_state){0};
+  state.eax = 0x41U; state.edi = base; state.ecx = 3U;
+  result = run(&context, &state);
+  if (result.kind != STAGE_B_MEMORY_FAULT || result.target_rva != 0x1000U ||
+      context.reads != 2U) return 9;
+  if (state.edi != base + 1U || state.ecx != 2U ||
+      !flags_are(&state, 1U,0U,1U,0U,1U,1U)) return 10;
+  if (state.eax != 0x41U) return 11;
+  return 0;
+}
+''',
+                encoding="ascii",
+            )
+            executable = root / "rep-scas-c"
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=c11",
+                    "-Werror",
+                    "-I",
+                    str(root),
+                    str(root / "state-machine-transfers.c"),
+                    str(harness),
+                    "-o",
+                    str(executable),
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            subprocess.run([str(executable)], check=True)
+
+    def test_rep_scas_contract_validation_fails_closed(self):
+        cases = (
+            {"element_width": 2},
+            {"address_size": 16},
+            {"repeat_condition": "unchecked"},
+            {"comparison_model": "unchecked"},
+            {"segment_model": "unchecked"},
+            {"effect_model": "unchecked"},
+            {"restart_semantics": "unchecked"},
+            {"fault_model": "unchecked"},
+            {"owned_flag_outputs": ["cf", "zf"]},
+        )
+        for mutation in cases:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                event = {**_rep_scas_event(), **mutation}
+                report = write_stage_b_semantic_c_backend(
+                    root,
+                    [_transfer(
+                        external_events=[event],
+                        ordered_events=[{
+                            "family": "external",
+                            "instruction_rva": 0x1000,
+                            **event,
+                        }],
+                    )],
+                )
+                self.assertEqual(report["status"], "incomplete", report)
+                self.assertEqual(
+                    report["reason_counts"]["malformed_rep_scas_event"], 1
+                )
 
     def test_generates_exact_import_adapter_from_machine_call_catalog(self):
         with tempfile.TemporaryDirectory() as tmp:

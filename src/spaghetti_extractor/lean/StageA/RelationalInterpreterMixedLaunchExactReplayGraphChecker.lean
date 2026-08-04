@@ -31,6 +31,7 @@ def exactNativeLaunchOutcomeTargets? :
       some [targetRva, continuationRva]
   | .bulkCopy _ continuationRva
   | .bulkFill _ continuationRva
+  | .bulkScan _ continuationRva
   | .checkedContinue _ continuationRva
   | .atomicCompareExchange _ _ _ continuationRva =>
       some [continuationRva]

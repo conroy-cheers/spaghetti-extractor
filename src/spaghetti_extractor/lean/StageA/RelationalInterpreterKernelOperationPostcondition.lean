@@ -148,6 +148,7 @@ inductive NativeOperationOutcomePostcondition where
   | externalJump (imported : PEImport) (arguments : List Expr)
   | bulkCopy (copy : BulkCopyExpr) (continuationRva : Nat)
   | bulkFill (fill : BulkFillExpr) (continuationRva : Nat)
+  | bulkScan (scan : BulkScanExpr) (continuationRva : Nat)
   | checkedContinue (valid : BoolExpr) (continuationRva : Nat)
   | atomicCompareExchange (address expected replacement : Expr)
       (continuationRva : Nat)
@@ -173,6 +174,8 @@ def NativeOperationOutcomePostcondition.expected :
       some (.bulkCopy copy continuationRva)
   | .bulkFill fill continuationRva =>
       some (.bulkFill fill continuationRva)
+  | .bulkScan scan continuationRva =>
+      some (.bulkScan scan continuationRva)
   | .checkedContinue valid continuationRva =>
       some (.checkedContinue valid continuationRva)
   | .atomicCompareExchange address expected replacement continuationRva =>
@@ -196,6 +199,7 @@ def NativeOperationOutcomePostcondition.ofExpr :
       .externalJump imported arguments
   | .bulkCopy copy continuationRva => .bulkCopy copy continuationRva
   | .bulkFill fill continuationRva => .bulkFill fill continuationRva
+  | .bulkScan scan continuationRva => .bulkScan scan continuationRva
   | .checkedContinue valid continuationRva =>
       .checkedContinue valid continuationRva
   | .atomicCompareExchange address expected replacement continuationRva =>
@@ -225,6 +229,9 @@ def evalNativeOperationOutcomeExpr
   | .bulkFill fill continuationRva =>
       .bulkFill (fill.destination.eval state) (fill.value.eval state)
         (fill.count.eval state) (fill.direction.eval state) continuationRva
+  | .bulkScan scan continuationRva =>
+      .bulkScan (scan.accumulator.eval state) (scan.destination.eval state)
+        (scan.count.eval state) (scan.direction.eval state) continuationRva
   | .indirectCall target continuationRva returnAddress =>
       .indirectCall (target.eval state) continuationRva returnAddress
   | .indirectJump target => .indirectJump (target.eval state)

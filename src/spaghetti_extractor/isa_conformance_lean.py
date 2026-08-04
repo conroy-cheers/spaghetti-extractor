@@ -303,6 +303,7 @@ def _control_outcome(control: dict[str, Any], image_base: int) -> tuple[ControlC
     if kind in {
         "bulk_copy",
         "bulk_fill",
+        "bulk_scan",
         "checked_continue",
         "atomic_compare_exchange",
     }:

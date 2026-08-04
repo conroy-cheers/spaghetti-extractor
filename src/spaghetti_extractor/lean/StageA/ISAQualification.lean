@@ -139,6 +139,7 @@ inductive InstructionSemanticForm where
   | x87Examine
   | moveDwords (repeated : Bool)
   | storeDwords (repeated : Bool)
+  | scanByteNotEqual
   | callIndirect (target : Operand32SemanticForm)
   | jumpIndirect (target : Operand32SemanticForm)
   | pushOperand (source : Operand32SemanticForm)
@@ -247,6 +248,7 @@ def Instruction.semanticForm : Instruction -> InstructionSemanticForm
   | .x87Examine => .x87Examine
   | .moveDwords repeated => .moveDwords repeated
   | .storeDwords repeated => .storeDwords repeated
+  | .scanByteNotEqual => .scanByteNotEqual
   | .callIndirect target => .callIndirect target.semanticForm
   | .jumpIndirect target => .jumpIndirect target.semanticForm
   | .pushOperand source => .pushOperand source.semanticForm

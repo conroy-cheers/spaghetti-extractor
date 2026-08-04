@@ -147,7 +147,7 @@ def orderedEffectsWriteInventory
         { inventory with repMovsdCount := inventory.repMovsdCount + 1 }
     | .repStos _ =>
         { inventory with repStosdCount := inventory.repStosdCount + 1 }
-    | .read _ | .call _ | .divideGuard => inventory) {
+    | .read _ | .repScas _ | .call _ | .divideGuard => inventory) {
       scalarWidths := []
       repMovsdCount := 0
       repStosdCount := 0
@@ -247,6 +247,7 @@ def normalizedDirectTargets : NormalizedOutcomeExpr -> List Nat
   | .externalJump _ _ => []
   | .bulkCopy _ _ _ _ continuation => [continuation]
   | .bulkFill _ _ _ _ continuation => [continuation]
+  | .bulkScan _ _ _ _ continuation => [continuation]
   | .indirectCall _ continuation => [continuation]
   | .indirectJump _ => []
   | .checkedContinue _ continuation => [continuation]
@@ -1338,6 +1339,8 @@ theorem IndirectSlotSite.target_is_finite
       | externalJump imported arguments => simp [outcome] at shape
       | bulkCopy destination source count direction continuation => simp [outcome] at shape
       | bulkFill destination value count direction continuation =>
+          simp [outcome] at shape
+      | bulkScan accumulator destination count direction continuation =>
           simp [outcome] at shape
       | checkedContinue valid continuation => simp [outcome] at shape
       | atomicCompareExchange address expected replacement continuation =>

@@ -48,7 +48,9 @@ def _semantic_edges(behavior: dict[str, Any]) -> list[dict[str, Any]]:
                 "kind": "branch_fallthrough",
             },
         ]
-    if operation in {"bulk_copy", "bulk_fill", "atomic_compare_exchange"}:
+    if operation in {
+        "bulk_copy", "bulk_fill", "bulk_scan", "atomic_compare_exchange",
+    }:
         return [{
             "target": int(outcome["continuation"]),
             "guard": truth,

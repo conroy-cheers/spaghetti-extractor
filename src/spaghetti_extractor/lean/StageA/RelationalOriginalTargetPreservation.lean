@@ -233,6 +233,11 @@ inductive CheckedOriginalOutcomeEvidence
       (continuationReachable : continuation ∈ reachableTargetIds) :
       CheckedOriginalOutcomeEvidence context reachableTargetIds sourceTargetId
         state (.bulkFill destination value count direction continuation)
+  | bulkScan (accumulator destination count : Word) (direction : Bool)
+      (continuation : Nat)
+      (continuationReachable : continuation ∈ reachableTargetIds) :
+      CheckedOriginalOutcomeEvidence context reachableTargetIds sourceTargetId
+        state (.bulkScan accumulator destination count direction continuation)
   | indirectCall (target : Word) (continuation : Nat)
       (resolved : CheckedOriginalIndirectTargetResolution context
         reachableTargetIds sourceTargetId state target)

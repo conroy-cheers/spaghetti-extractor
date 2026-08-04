@@ -27,6 +27,7 @@ inductive NativeOperationLocalSuccessor where
   | returned (continuationRva returnAddress : Nat)
   | bulkCopy (continuationRva : Nat)
   | bulkFill (continuationRva : Nat)
+  | bulkScan (continuationRva : Nat)
   | checkedContinue (continuationRva : Nat)
   | atomicCompareExchange (continuationRva : Nat)
 deriving Repr, DecidableEq
@@ -40,6 +41,7 @@ def NativeOperationLocalSuccessor.targetRva :
   | .returned targetRva _
   | .bulkCopy targetRva
   | .bulkFill targetRva
+  | .bulkScan targetRva
   | .checkedContinue targetRva
   | .atomicCompareExchange targetRva => targetRva
 
@@ -53,6 +55,7 @@ def NativeOperationLocalSuccessor.statePreserving :
   | .checkedContinue _ => true
   | .bulkCopy _
   | .bulkFill _
+  | .bulkScan _
   | .atomicCompareExchange _ => false
 
 def NativeOperationLocalSuccessor.callContextHolds
@@ -90,6 +93,8 @@ def checkedNativeOperationLocalSuccessor
   | some (.bulkCopy _ continuation), .bulkCopy expected =>
       continuation == expected
   | some (.bulkFill _ continuation), .bulkFill expected =>
+      continuation == expected
+  | some (.bulkScan _ continuation), .bulkScan expected =>
       continuation == expected
   | some (.checkedContinue valid continuation),
       .checkedContinue expected =>
@@ -185,6 +190,10 @@ private theorem localSuccessorAfterRva
     subst_vars
     rfl
   case bulkFill.bulkFill =>
+    simp only [beq_iff_eq] at checked
+    subst_vars
+    rfl
+  case bulkScan.bulkScan =>
     simp only [beq_iff_eq] at checked
     subst_vars
     rfl

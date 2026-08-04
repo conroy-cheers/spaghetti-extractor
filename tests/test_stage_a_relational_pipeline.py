@@ -576,13 +576,17 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
             )
             payload = json.loads(contract.read_text(encoding="utf-8"))
             self.assertEqual(generated["status"], "generated")
-            self.assertEqual(len(payload["regions"]), 2)
+            self.assertEqual(len(payload["regions"]), 3)
             self.assertEqual(
                 (payload["regions"][0]["original"]["rva_start"], payload["regions"][0]["original"]["size"]),
-                (0x1000, 7),
+                (0x1000, 5),
             )
             self.assertEqual(
                 (payload["regions"][1]["original"]["rva_start"], payload["regions"][1]["original"]["size"]),
+                (0x1005, 2),
+            )
+            self.assertEqual(
+                (payload["regions"][2]["original"]["rva_start"], payload["regions"][2]["original"]["size"]),
                 (0x1007, 2),
             )
 

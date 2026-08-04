@@ -1020,6 +1020,8 @@ def pureOutcomeOfConcrete : ConcreteOutcome -> PureOutcome
       .bulkCopy destination source count direction continuation
   | .bulkFill destination value count direction continuation =>
       .bulkFill destination value count direction continuation
+  | .bulkScan accumulator destination count direction continuation =>
+      .bulkScan accumulator destination count direction continuation
   | .indirectCall target continuation _ => .indirectCall target continuation
   | .indirectJump target => .indirectJump target
   | .checkedContinue valid continuation => .checkedContinue valid continuation

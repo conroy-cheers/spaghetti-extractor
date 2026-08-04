@@ -133,6 +133,7 @@ def PureOutcome.segmentExit : PureOutcome -> Option RelationalSegmentExit
   | .externalCall imported _ _ | .externalJump imported _ =>
       some (.external imported)
   | .bulkCopy _ _ _ _ continuation | .bulkFill _ _ _ _ continuation |
+      .bulkScan _ _ _ _ continuation |
       .checkedContinue true continuation |
       .atomicCompareExchange _ _ _ continuation => some (.internal continuation)
   | .returned _ => some .returned

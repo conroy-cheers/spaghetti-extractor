@@ -97,6 +97,7 @@ def nativeOperationOutcomeLocalTargets :
   | .called targetRva _ _ => [targetRva]
   | .bulkCopy _ continuationRva
   | .bulkFill _ continuationRva
+  | .bulkScan _ continuationRva
   | .checkedContinue _ continuationRva
   | .atomicCompareExchange _ _ _ continuationRva => [continuationRva]
   | .running | .returned _ | .indirectCall .. | .indirectJump _

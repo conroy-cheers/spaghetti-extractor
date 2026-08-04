@@ -320,6 +320,7 @@ def instructionMemoryEffectFree : Instruction -> Bool
       .x87LoadControl _ | .x87StoreControl _ | .x87SaveState _ |
       .x87RestoreState _ | .x87Wait | .x87Initialize |
       .x87StoreStatusAx | .x87Examine | .moveDwords _ | .storeDwords _ |
+      .scanByteNotEqual |
       .callIndirect _ |
       .pushOperand _ | .movFs32 _ _ | .divideUnsigned _ | .divideSigned _ |
       .atomicCompareExchange _ _ => false
@@ -386,7 +387,8 @@ def actionSupported : SemanticAction -> Bool
   | .evalWord _ | .setRegister _ _ | .setFlag _ _ | .syncEflags => true
   | .memoryWrite _ _ _ | .divideIf _ | .call _ |
       .repMovsd _ _ _ _ | .repStosd _ _ _ _ |
-      .repMovs _ _ _ _ _ | .repStos _ _ _ _ _ => false
+      .repMovs _ _ _ _ _ | .repStos _ _ _ _ _ |
+      .repScas _ _ _ _ _ => false
 
 def semanticOutcomeSupported : SemanticOutcome -> Bool
   | .fallthrough _ | .jump _ | .returned _ | .indirectJump _ => true
@@ -424,6 +426,7 @@ inductive FlatMemoryAccessKind where
   | repStosd
   | repMovs (width : MemoryWidth)
   | repStos (width : MemoryWidth)
+  | repScas (width : MemoryWidth)
 deriving Repr, DecidableEq
 
 structure FlatMemoryAccessSite where
@@ -453,6 +456,8 @@ def memoryAccessSite (transfer : SemanticTransfer) (actionIndex : Nat) :
       [⟨actionIndex, some source, some destination, .repMovs width⟩]
   | .repStos destination value _ _ width =>
       [⟨actionIndex, some destination, some value, .repStos width⟩]
+  | .repScas accumulator destination _ _ width =>
+      [⟨actionIndex, some destination, some accumulator, .repScas width⟩]
   | _ => []
 
 def orderedFlatMemoryFootprintFrom (transfer : SemanticTransfer) :
@@ -519,6 +524,8 @@ inductive ConcreteFlatMemoryEffect where
       (width : MemoryWidth)
   | repStos (destination value count : Word) (direction : Bool)
       (width : MemoryWidth)
+  | repScas (accumulator destination count : Word) (direction : Bool)
+      (width : MemoryWidth)
 deriving Repr, DecidableEq
 
 def concreteFlatMemoryEffect : InterpreterEvent -> Option ConcreteFlatMemoryEffect
@@ -532,6 +539,8 @@ def concreteFlatMemoryEffect : InterpreterEvent -> Option ConcreteFlatMemoryEffe
       some (.repMovs source destination count direction width)
   | .repStos destination value count direction width =>
       some (.repStos destination value count direction width)
+  | .repScas accumulator destination count direction width =>
+      some (.repScas accumulator destination count direction width)
   | .call _ => none
 
 def concreteFlatMemoryEffects (events : List InterpreterEvent) :
@@ -590,6 +599,12 @@ def interpreterEventAccessDomainChecked (side : RelationalSide)
       | some span =>
           span.size == 0 ||
             relationalAccessSpanChecked side context world .write span.start span.size
+      | none => false
+  | .repScas _ destination count direction width =>
+      match repStringSpan? destination count direction width with
+      | some span =>
+          span.size == 0 ||
+            relationalAccessSpanChecked side context world .read span.start span.size
       | none => false
   | .repMovsd source destination count direction =>
       match repMovsdSpans? source destination count direction with
@@ -864,6 +879,7 @@ def normalizedCompletion (targets : List CodeTargetPair) (state : MachineState) 
         (if condition.eval state then taken else fallthrough)).map Completion.branch
   | .call _ continuation | .externalCall _ _ continuation |
       .bulkCopy _ _ _ _ continuation | .bulkFill _ _ _ _ continuation |
+      .bulkScan _ _ _ _ continuation |
       .indirectCall _ continuation |
       .atomicCompareExchange _ _ _ continuation =>
       (originalTargetRva targets continuation).map Completion.fallthrough
@@ -878,7 +894,8 @@ def normalizedCompletion (targets : List CodeTargetPair) (state : MachineState) 
 def normalizedOutcomeDefersFinalState : NormalizedOutcomeExpr -> Bool
   | .call _ _ | .callUnmappedReturn _ | .externalCall _ _ _ |
       .externalJump _ _ |
-      .bulkCopy _ _ _ _ _ | .bulkFill _ _ _ _ _ | .indirectCall _ _ |
+      .bulkCopy _ _ _ _ _ | .bulkFill _ _ _ _ _ | .bulkScan _ _ _ _ _ |
+      .indirectCall _ _ |
       .atomicCompareExchange _ _ _ _ => true
   | _ => false
 

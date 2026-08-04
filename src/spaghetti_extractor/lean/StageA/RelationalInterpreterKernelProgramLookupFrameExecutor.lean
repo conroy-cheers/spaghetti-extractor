@@ -93,6 +93,9 @@ theorem stepNativeExecution_running_appendCaller
       | bulkFill destination value count direction continuation =>
           simp [nextNativeExecution] at exact ⊢
           simp_all
+      | bulkScan accumulator destination count direction continuation =>
+          simp [nextNativeExecution] at exact ⊢
+          simp_all
       | checkedContinue valid continuation =>
           cases valid <;> simp [nextNativeExecution] at exact ⊢
           simp_all

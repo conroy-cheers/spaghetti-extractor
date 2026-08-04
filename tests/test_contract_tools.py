@@ -107,6 +107,43 @@ class ContractToolTests(unittest.TestCase):
             self.assertEqual(regions[1]["candidate"]["rva_start"], 0x1001)
             self.assertEqual(regions[1]["candidate"]["size"], 2)
 
+    def test_relation_contract_isolates_restartable_string_instruction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytes.fromhex("90f2ae90")
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            mapping = root / "mapping.json"
+            mapping.write_text(
+                json.dumps({
+                    "blocks": [{
+                        "id": "scan",
+                        "kind": "code",
+                        "original": {"rva": 0x1000, "size": len(code)},
+                        "candidate": {"rva": 0x1000, "size": len(code)},
+                    }]
+                }),
+                encoding="utf-8",
+            )
+            contract = root / "relation.json"
+
+            result = stage_a_generate_relation_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                out=contract,
+            )
+
+            self.assertEqual(result["status"], "generated", result)
+            regions = json.loads(contract.read_text(encoding="utf-8"))["regions"]
+            self.assertEqual(
+                [
+                    (row["original"]["rva_start"], row["original"]["size"])
+                    for row in regions
+                ],
+                [(0x1000, 1), (0x1001, 2), (0x1003, 1)],
+            )
+
     def test_obligation_lookup_indexes_relational_location_prefixes(self):
         lookup = _unit_contract_obligation_lookup(
             [{"id": "block:source", "block_id": "source"}],
@@ -980,6 +1017,53 @@ class ContractToolTests(unittest.TestCase):
             self.assertEqual(event["restart_semantics"], "element_committed_v1")
             self.assertEqual(event["source"]["name"], "esi")
             self.assertEqual(event["destination"]["name"], "edi")
+
+    def test_repne_scasb_exports_restartable_event_owned_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            encoded = bytes.fromhex("f2ae")
+            original = self._write_pe(root / "repne-scasb.exe", encoded)
+            binary = _parse_stage_a_pe(original)
+            side = BlockSide(0x1000, 0x1002)
+            mapping = BlockMapping(
+                id="repne-scasb",
+                original=side,
+                candidate=side,
+                kind="code",
+                reachable=True,
+                invariant_checked=True,
+                source={"function": "repne_scasb"},
+            )
+
+            transfer = _semantic_transfer_contract(
+                binary,
+                mapping,
+                "repne_scasb",
+                {"model": REFERENCE_CONTRACT_MODEL_ID},
+            )
+
+            self.assertEqual(transfer["status"], "reimplementable", transfer)
+            self.assertEqual(transfer["register_writes"], [])
+            self.assertEqual(transfer["flag_writes"], [])
+            event = transfer["external_events"][0]
+            self.assertEqual(event["kind"], "rep_scas")
+            self.assertEqual(event["element_width"], 1)
+            self.assertEqual(event["address_size"], 32)
+            self.assertEqual(event["effect_model"], "symbolic_string_scan_v1")
+            self.assertEqual(event["repeat_condition"], "while_not_equal_v1")
+            self.assertEqual(event["comparison_model"], "subtraction_flags_v1")
+            self.assertEqual(event["segment_model"], "flat_es_zero_v1")
+            self.assertEqual(event["restart_semantics"], "element_committed_v1")
+            self.assertEqual(event["fault_model"], "read_before_commit_v1")
+            self.assertEqual(event["owned_register_outputs"], ["edi", "ecx"])
+            self.assertEqual(
+                event["owned_flag_outputs"],
+                ["cf", "pf", "af", "zf", "sf", "of"],
+            )
+            self.assertEqual(event["destination"]["name"], "edi")
+            self.assertEqual(event["count"]["name"], "ecx")
+            self.assertEqual(event["direction_flag"]["name"], "df")
+            self.assertEqual(event["accumulator"]["op"], "and32")
 
     def test_string_semantics_reject_sse_movsd_and_address_size_override(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -68,6 +68,7 @@ def strictHelperTargets? : OutcomeExpr -> Option (List Nat)
   | .call target continuation _ => some [target, continuation].eraseDups
   | .bulkCopy _ continuation => some [continuation]
   | .bulkFill _ continuation => some [continuation]
+  | .bulkScan _ continuation => some [continuation]
   | .checkedContinue _ continuation => some [continuation]
   | .atomicCompareExchange _ _ _ continuation => some [continuation]
   | .returned _ | .externalCall .. | .externalJump ..

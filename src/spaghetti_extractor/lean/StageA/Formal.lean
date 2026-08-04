@@ -1504,6 +1504,52 @@ def FlagsExpr.eval (state : MachineState) (flags : FlagsExpr) : Word :=
   let sign := updateFlag zero 7 (flags.sign.map (BoolExpr.eval state))
   updateFlag sign 11 (flags.overflow.map (BoolExpr.eval state))
 
+structure RepneScasResult where
+  destination : Word
+  count : Word
+  eflags : Word
+deriving Repr, DecidableEq
+
+def evenByteParityWord (value : Word) : Bool :=
+  ((List.range 8).countP fun index => Nat.testBit value.toNat index) % 2 == 0
+
+def subtractionByteEflags (initial left right : Word) : Word :=
+  let mask := BitVec.ofNat 32 0xff
+  let left := left &&& mask
+  let right := right &&& mask
+  let result := (left - right) &&& mask
+  let leftSign := Nat.testBit left.toNat 7
+  let rightSign := Nat.testBit right.toNat 7
+  let resultSign := Nat.testBit result.toNat 7
+  let auxiliary := Nat.testBit (left ^^^ right ^^^ result).toNat 4
+  let carry := updateFlag initial 0 (some (left < right))
+  let parity := updateFlag carry 2 (some (evenByteParityWord result))
+  let auxiliary := updateFlag parity 4 (some auxiliary)
+  let zero := updateFlag auxiliary 6 (some (result = BitVec.ofNat 32 0))
+  let sign := updateFlag zero 7 (some resultSign)
+  updateFlag sign 11 (some ((leftSign != rightSign) && (leftSign != resultSign)))
+
+/-- Concrete flat-memory REPNE SCASB semantics.  The total memory argument is
+the no-fault machine profile; fault-capable execution refines this kernel only
+after each successful read has committed its iteration. -/
+def repneScasByte (memory : Memory) (accumulator destination count eflags : Word)
+    (direction : Bool) : Nat -> RepneScasResult
+  | 0 => { destination, count, eflags }
+  | fuel + 1 =>
+      if count = BitVec.ofNat 32 0 then
+        { destination, count, eflags }
+      else
+        let right := BitVec.zeroExtend 32 (memory destination)
+        let nextEflags := subtractionByteEflags eflags accumulator right
+        let step := if direction then BitVec.ofNat 32 0xffffffff else BitVec.ofNat 32 1
+        let nextDestination := destination + step
+        let nextCount := count - BitVec.ofNat 32 1
+        if (accumulator &&& BitVec.ofNat 32 0xff) = right then
+          { destination := nextDestination, count := nextCount, eflags := nextEflags }
+        else
+          repneScasByte memory accumulator nextDestination nextCount nextEflags
+            direction fuel
+
 theorem updateFlag_extract_preserved (word : Word) (updated observed : Nat)
     (value : Option Bool)
     (setMask : (BitVec.ofNat 32 (2 ^ updated)).extractLsb' observed 1 = 0#1)
@@ -1893,6 +1939,13 @@ structure BulkFillExpr where
   direction : BoolExpr
 deriving Repr, DecidableEq
 
+structure BulkScanExpr where
+  destination : Expr
+  accumulator : Expr
+  count : Expr
+  direction : BoolExpr
+deriving Repr, DecidableEq
+
 inductive OutcomeExpr where
   | returned (target : Expr)
   | jump (targetRva : Nat)
@@ -1902,6 +1955,7 @@ inductive OutcomeExpr where
   | externalJump (imported : PEImport) (arguments : List Expr)
   | bulkCopy (copy : BulkCopyExpr) (continuationRva : Nat)
   | bulkFill (fill : BulkFillExpr) (continuationRva : Nat)
+  | bulkScan (scan : BulkScanExpr) (continuationRva : Nat)
   | indirectCall (target : Expr) (continuationRva returnAddress : Nat)
   | indirectJump (target : Expr)
   | checkedContinue (valid : BoolExpr) (continuationRva : Nat)
@@ -1933,6 +1987,8 @@ inductive ConcreteOutcome where
   | externalJump (imported : PEImport) (arguments : List Word)
   | bulkCopy (destination source count : Word) (direction : Bool) (continuationRva : Nat)
   | bulkFill (destination value count : Word) (direction : Bool) (continuationRva : Nat)
+  | bulkScan (accumulator destination count : Word) (direction : Bool)
+      (continuationRva : Nat)
   | indirectCall (target : Word) (continuationRva returnAddress : Nat)
   | indirectJump (target : Word)
   | checkedContinue (valid : Bool) (continuationRva : Nat)
@@ -2318,6 +2374,9 @@ def SymbolicBehavior.eval (behavior : SymbolicBehavior)
     | .bulkFill fill continuationRva =>
         .bulkFill (fill.destination.eval state) (fill.value.eval state)
           (fill.count.eval state) (fill.direction.eval state) continuationRva
+    | .bulkScan scan continuationRva =>
+        .bulkScan (scan.accumulator.eval state) (scan.destination.eval state)
+          (scan.count.eval state) (scan.direction.eval state) continuationRva
     | .indirectCall target continuationRva returnAddress =>
         .indirectCall (target.eval state) continuationRva returnAddress
     | .indirectJump target => .indirectJump (target.eval state)
@@ -2541,6 +2600,7 @@ inductive Instruction where
   | x87Examine
   | moveDwords (repeated : Bool)
   | storeDwords (repeated : Bool)
+  | scanByteNotEqual
   | callIndirect (target : Operand32)
   | jumpIndirect (target : Operand32)
   | pushOperand (source : Operand32)
@@ -3242,6 +3302,7 @@ def decodeInstructionForProfile
   | 0x9b :: tail => some { instruction := .x87Wait, size := 1, trailing := tail }
   | 0xf3 :: 0xa5 :: tail => some { instruction := .moveDwords true, size := 2, trailing := tail }
   | 0xf3 :: 0xab :: tail => some { instruction := .storeDwords true, size := 2, trailing := tail }
+  | 0xf2 :: 0xae :: tail => some { instruction := .scanByteNotEqual, size := 2, trailing := tail }
   | 0xa5 :: tail => some { instruction := .moveDwords false, size := 1, trailing := tail }
   | 0xab :: tail => some { instruction := .storeDwords false, size := 1, trailing := tail }
   | 0x64 :: 0x8b :: tail => do
@@ -4522,6 +4583,19 @@ def executeInstructionWithContext (context : SymbolicImageContext)
           direction
         } nextRva)
       })
+  | .scanByteNotEqual =>
+      let destination := state.registers.edi
+      let accumulator := Expr.bitAnd state.registers.eax (.constant 0xff)
+      let count := state.registers.ecx
+      let direction := BoolExpr.bit state.eflagsExpression 10
+      some (.stop {
+        state with outcome := some (.bulkScan {
+          destination
+          accumulator
+          count
+          direction
+        } nextRva)
+      })
   | .callIndirect target =>
       let target := readOperand32 state target
       let stack := state.registers.esp.offset (2 ^ 32 - 4)
@@ -4876,7 +4950,7 @@ def normalizeOutcome (regions : List RegionPair) (candidate : Bool) : OutcomeExp
       pure (.externalCall imported arguments continuation)
   | .externalJump imported arguments =>
       pure (.externalJump imported arguments)
-  | .bulkCopy _ _ | .bulkFill _ _ => none
+  | .bulkCopy _ _ | .bulkFill _ _ | .bulkScan _ _ => none
   | .indirectCall _ _ _ => none
   | .indirectJump _ => none
   | .checkedContinue _ _ => none

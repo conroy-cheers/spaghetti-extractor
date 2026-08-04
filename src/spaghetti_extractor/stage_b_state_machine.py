@@ -1268,37 +1268,52 @@ def _validate_restartable_string_events(
     def validate(raw: Any, expected_index: int, event_label: str) -> None:
         event = _object(raw, event_label)
         kind = event.get("kind")
-        if kind not in {"rep_movs", "rep_stos"}:
+        if kind not in {"rep_movs", "rep_stos", "rep_scas"}:
             return
         if event.get("index") != expected_index:
             raise StageAInputError(
                 f"{event_label} has a noncanonical external-event index"
             )
-        if event.get("element_width") not in {1, 2, 4}:
+        allowed_widths = {1} if kind == "rep_scas" else {1, 2, 4}
+        if event.get("element_width") not in allowed_widths:
             raise StageAInputError(f"{event_label} has an invalid element width")
         if event.get("address_size") != 32:
             raise StageAInputError(f"{event_label} has an unsupported address size")
-        expected_model = (
-            "symbolic_string_copy_v2"
-            if kind == "rep_movs"
-            else "symbolic_string_fill_v2"
-        )
+        expected_model = {
+            "rep_movs": "symbolic_string_copy_v2",
+            "rep_stos": "symbolic_string_fill_v2",
+            "rep_scas": "symbolic_string_scan_v1",
+        }[kind]
         if event.get("effect_model") != expected_model:
             raise StageAInputError(f"{event_label} has an invalid effect model")
         if event.get("restart_semantics") != "element_committed_v1":
             raise StageAInputError(f"{event_label} lacks restart-state semantics")
-        required = {
-            "destination",
-            "count",
-            "direction_flag",
-            "source" if kind == "rep_movs" else "value",
-        }
-        forbidden = {"value" if kind == "rep_movs" else "source"}
+        operand = {
+            "rep_movs": "source",
+            "rep_stos": "value",
+            "rep_scas": "accumulator",
+        }[kind]
+        required = {"destination", "count", "direction_flag", operand}
+        forbidden = {"source", "value", "accumulator"} - {operand}
         for field in sorted(required):
             if not isinstance(event.get(field), Mapping):
                 raise StageAInputError(f"{event_label}.{field} must be an expression")
         if any(field in event for field in forbidden):
-            raise StageAInputError(f"{event_label} mixes copy and fill operands")
+            raise StageAInputError(f"{event_label} mixes string-operation operands")
+        if kind == "rep_scas":
+            expected_fields = {
+                "repeat_condition": "while_not_equal_v1",
+                "comparison_model": "subtraction_flags_v1",
+                "segment_model": "flat_es_zero_v1",
+                "fault_model": "read_before_commit_v1",
+                "owned_register_outputs": ["edi", "ecx"],
+                "owned_flag_outputs": ["cf", "pf", "af", "zf", "sf", "of"],
+            }
+            for field, expected in expected_fields.items():
+                if event.get(field) != expected:
+                    raise StageAInputError(
+                        f"{event_label} has an invalid {field.replace('_', ' ')}"
+                    )
 
     external_events = row.get("external_events")
     ordered_events = row.get("ordered_events")

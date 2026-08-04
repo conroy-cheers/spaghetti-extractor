@@ -43,7 +43,7 @@ _STRICT_INPUT_MODE = "strict_exact_state_machine_v1"
 _MACHINE_IR_INPUT_MODE = "sanitized_machine_ir_v2"
 _CALL_KINDS = frozenset({"external_call", "indirect_call"})
 _SEMANTIC_RUNTIME_EVENT_KINDS = frozenset(
-    {"rep_movsd", "rep_movs", "rep_stos"}
+    {"rep_movsd", "rep_movs", "rep_stos", "rep_scas"}
 )
 _HEX_BYTES = re.compile(r"(?:[0-9a-fA-F]{2})+")
 _SHA256 = re.compile(r"[0-9a-f]{64}")

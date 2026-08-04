@@ -190,6 +190,8 @@ def nativeOperationLocalSuccessorForTarget? :
       if continuation == expected then some (.bulkCopy continuation) else none
   | .bulkFill _ continuation, expected =>
       if continuation == expected then some (.bulkFill continuation) else none
+  | .bulkScan _ continuation, expected =>
+      if continuation == expected then some (.bulkScan continuation) else none
   | .checkedContinue _ continuation, expected =>
       if continuation == expected then
         some (.checkedContinue continuation)
@@ -221,6 +223,11 @@ def nativeOperationLocalSuccessorSelectorInvariant? :
       else
         none
   | .bulkFill _ continuation, .bulkFill expected =>
+      if continuation == expected then
+        some trivialNativeOperationInvariant
+      else
+        none
+  | .bulkScan _ continuation, .bulkScan expected =>
       if continuation == expected then
         some trivialNativeOperationInvariant
       else

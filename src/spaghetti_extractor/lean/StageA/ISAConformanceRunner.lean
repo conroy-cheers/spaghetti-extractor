@@ -102,6 +102,14 @@ private def controlJson : ISAConformanceControl -> Json
       ("direction", toJson direction),
       ("continuation_rva", toJson continuationRva)
     ]
+  | .bulkScan accumulator destination count direction continuationRva => Json.mkObj [
+      ("kind", toJson "bulk_scan"),
+      ("accumulator", toJson accumulator),
+      ("destination", toJson destination),
+      ("count", toJson count),
+      ("direction", toJson direction),
+      ("continuation_rva", toJson continuationRva)
+    ]
   | .indirectCall target continuationRva returnAddress => Json.mkObj [
       ("kind", toJson "indirect_call"),
       ("target", toJson target),

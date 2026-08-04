@@ -1182,6 +1182,7 @@ def regionControlChecked (pe : PE32) (imports : List PEImport) (candidate : Bool
     correspond before using the returning summary. -/
     | some (.bulkCopy _ continuation)
     | some (.bulkFill _ continuation)
+    | some (.bulkScan _ continuation)
     | some (.checkedContinue _ continuation)
     | some (.atomicCompareExchange _ _ _ continuation) =>
         returns.isEmpty &&

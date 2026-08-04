@@ -184,6 +184,22 @@ theorem silentNestedStepFromLift_projects
                   stepPE32NativeWorldExecution, decoded,
                   transitionFromNestedNativeWorldOutcome,
                   transitionFromNativeWorldOutcome]
+          | bulkScan accumulator destination count direction continuationRva =>
+              let scan := repneScasByte nextState.memory accumulator destination count
+                nextState.eflags direction count.toNat
+              let registers :=
+                (nextState.registers.set .edi scan.destination).set .ecx scan.count
+              refine ⟨.running continuationRva 0
+                { nextState with registers, eflags := scan.eflags }
+                calls eventIndex events world, ?_, ?_⟩ <;>
+                simp [ExactNestedNativeWorldProgram.transitionSystem,
+                  ExactNativeWorldProgram.transitionSystem,
+                  ExactNestedNativeWorldProgram.base,
+                  liftNativeWorldExecution,
+                  stepPE32NestedNativeWorldExecution,
+                  stepPE32NativeWorldExecution, decoded,
+                  transitionFromNestedNativeWorldOutcome,
+                  transitionFromNativeWorldOutcome, scan, registers]
           | checkedContinue valid continuationRva =>
               cases valid with
               | false =>

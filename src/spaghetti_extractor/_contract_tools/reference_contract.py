@@ -1977,6 +1977,25 @@ def _semantic_external_event_json(event: Any) -> dict[str, Any]:
             "effect_model": "symbolic_string_fill_v2",
             "restart_semantics": "element_committed_v1",
         }
+    if isinstance(event, tuple) and len(event) >= 8 and event[0] == "rep_scas":
+        return {
+            "kind": "rep_scas",
+            "index": int(event[1]),
+            "element_width": int(event[2]),
+            "address_size": int(event[3]),
+            "destination": _semantic_expr_json(event[4]),
+            "accumulator": _semantic_expr_json(event[5]),
+            "count": _semantic_expr_json(event[6]),
+            "direction_flag": _semantic_expr_json(event[7]),
+            "repeat_condition": "while_not_equal_v1",
+            "comparison_model": "subtraction_flags_v1",
+            "segment_model": "flat_es_zero_v1",
+            "effect_model": "symbolic_string_scan_v1",
+            "restart_semantics": "element_committed_v1",
+            "fault_model": "read_before_commit_v1",
+            "owned_register_outputs": ["edi", "ecx"],
+            "owned_flag_outputs": ["cf", "pf", "af", "zf", "sf", "of"],
+        }
     return {"kind": "unknown_external_event", "raw": _expr_json(event)}
 
 def _semantic_fault_json(fault: Any) -> dict[str, Any]:

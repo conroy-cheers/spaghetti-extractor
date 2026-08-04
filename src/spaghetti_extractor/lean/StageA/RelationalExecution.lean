@@ -461,6 +461,13 @@ def transitionFromOutcome (program : RelationalProgramSemantics)
       let memory := Memory.bulkFillDwords state.memory destination value direction count.toNat
       { next := .running continuation { state with memory } calls eventIndex,
         observation := none }
+  | .bulkScan accumulator destination count direction continuation =>
+      let scan := repneScasByte state.memory accumulator destination count state.eflags
+        direction count.toNat
+      let registers := (state.registers.set .edi scan.destination).set .ecx scan.count
+      { next := .running continuation { state with registers, eflags := scan.eflags }
+          calls eventIndex,
+        observation := none }
   | .indirectCall target continuation =>
       match program.resolveTarget target with
       | some resolved =>

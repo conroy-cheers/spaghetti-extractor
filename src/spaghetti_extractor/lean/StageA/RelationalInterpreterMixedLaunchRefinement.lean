@@ -58,6 +58,7 @@ def nativeLaunchImmediateSuccessors : OutcomeExpr -> Option (List Nat)
   | .externalCall .. | .externalJump .. => some []
   | .bulkCopy _ continuation => some [continuation]
   | .bulkFill _ continuation => some [continuation]
+  | .bulkScan _ continuation => some [continuation]
   | .atomicCompareExchange _ _ _ continuation => some [continuation]
   | .checkedContinue .. | .indirectCall .. | .indirectJump .. => none
 

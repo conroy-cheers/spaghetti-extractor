@@ -21,6 +21,8 @@ STAGE_B_C_BACKEND_FORMAT = "stage-b-semantic-c-backend-v1"
 
 _REGISTER_NAMES = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
 _FLAG_NAMES = ("cf", "zf", "sf", "of", "pf", "df")
+_REP_SCAS_OWNED_REGISTERS = ("edi", "ecx")
+_REP_SCAS_OWNED_FLAGS = ("cf", "pf", "af", "zf", "sf", "of")
 _LEAF_OPS = {
     "const",
     "reg",
@@ -152,6 +154,7 @@ _CALL_EVENT_KINDS = {"external_call", "internal_call", "indirect_call"}
 _SUPPORTED_EVENT_KINDS = _CALL_EVENT_KINDS | {
     "rep_movsd",
     "rep_movs",
+    "rep_scas",
     "rep_stos",
 }
 
@@ -524,10 +527,16 @@ def _row_blockers(row: dict[str, Any]) -> list[str]:
         external_events=external_events,
     ):
         blockers.append("ordered_event_projection_mismatch")
-    for event in external_events:
+    for event_index, event in enumerate(external_events):
         if not isinstance(event, dict) or event.get("kind") not in _SUPPORTED_EVENT_KINDS:
             blockers.append(f"unsupported_external_event:{event.get('kind') if isinstance(event, dict) else 'invalid'}")
             continue
+        if event.get("kind") == "rep_scas" and not _valid_rep_scas_event(
+            event,
+            event_index,
+            require_instruction_rva=False,
+        ):
+            blockers.append("malformed_rep_scas_event")
         if event.get("kind") in _CALL_EVENT_KINDS:
             register_inputs = event.get("register_inputs")
             flag_inputs = event.get("flag_inputs")
@@ -552,6 +561,13 @@ def _row_blockers(row: dict[str, Any]) -> list[str]:
                 blockers.append("internal_call_target_rva")
             if event.get("kind") == "indirect_call" and not isinstance(event.get("target"), dict):
                 blockers.append("indirect_call_target_expression")
+    for event_index, event in enumerate(ordered_external):
+        if event.get("kind") == "rep_scas" and not _valid_rep_scas_event(
+            event,
+            event_index,
+            require_instruction_rva=True,
+        ):
+            blockers.append("malformed_rep_scas_event")
     outcome = row.get("outcome") if isinstance(row.get("outcome"), dict) else {}
     if outcome.get("kind") not in _SUPPORTED_OUTCOMES:
         blockers.append("unsupported_outcome")
@@ -561,6 +577,47 @@ def _row_blockers(row: dict[str, Any]) -> list[str]:
     unsupported_ops = sorted(expression_ops - _SUPPORTED_OPS)
     blockers.extend(f"unsupported_expression:{op}" for op in unsupported_ops)
     return sorted(set(blockers))
+
+
+def _valid_rep_scas_event(
+    event: dict[str, Any],
+    event_index: int,
+    *,
+    require_instruction_rva: bool,
+) -> bool:
+    def is_u32(value: Any) -> bool:
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value < 2**32
+        )
+
+    return (
+        event.get("index") == event_index
+        and not isinstance(event.get("index"), bool)
+        and event.get("element_width") == 1
+        and not isinstance(event.get("element_width"), bool)
+        and event.get("address_size") == 32
+        and not isinstance(event.get("address_size"), bool)
+        and event.get("repeat_condition") == "while_not_equal_v1"
+        and event.get("comparison_model") == "subtraction_flags_v1"
+        and event.get("segment_model") == "flat_es_zero_v1"
+        and event.get("effect_model") == "symbolic_string_scan_v1"
+        and event.get("restart_semantics") == "element_committed_v1"
+        and event.get("fault_model") == "read_before_commit_v1"
+        and event.get("owned_register_outputs") == list(_REP_SCAS_OWNED_REGISTERS)
+        and event.get("owned_flag_outputs") == list(_REP_SCAS_OWNED_FLAGS)
+        and all(
+            isinstance(event.get(field), dict)
+            for field in ("destination", "accumulator", "count", "direction_flag")
+        )
+        and "source" not in event
+        and "value" not in event
+        and (
+            not require_instruction_rva
+            or is_u32(event.get("instruction_rva"))
+        )
+    )
 
 
 def _ordered_event_projection_matches(
@@ -1685,6 +1742,8 @@ class _ExpressionRenderer:
             return f"input.{name}"
         if op == "flag":
             name = str(expr.get("name") or "")
+            if name == "af":
+                return "((input.eflags >> 4) & 1U)"
             if name not in _FLAG_NAMES:
                 raise ValueError(f"unsupported flag {name!r}")
             return f"input.{name}"
@@ -1708,10 +1767,12 @@ class _ExpressionRenderer:
         if op == "call_flag":
             call_index = _required_nonnegative_int(expr.get("call_index"), "call_flag call_index")
             flag = str(expr.get("flag") or "")
-            if flag not in _FLAG_NAMES:
+            if flag not in _FLAG_NAMES and flag != "af":
                 raise ValueError(f"unsupported call-response flag {flag!r}")
             if call_index not in self.call_outputs:
                 raise ValueError(f"call_flag references unavailable call index {call_index}")
+            if flag == "af":
+                return f"((call_output_{call_index}.eflags >> 4) & 1U)"
             return f"call_output_{call_index}.{flag}"
         if op in _X87_WORD_OPS:
             raise ValueError("x87 expressions require the checked replay interpreter")
@@ -1962,6 +2023,18 @@ def _render_transfer(row: dict[str, Any], symbol: str) -> str:
     updates: list[str] = []
     external_index = 0
     ordered_events = row.get("ordered_events") if isinstance(row.get("ordered_events"), list) else []
+    owned_register_outputs = {
+        output
+        for event in ordered_events
+        if isinstance(event, dict) and event.get("kind") == "rep_scas"
+        for output in event.get("owned_register_outputs", [])
+    }
+    owned_flag_outputs = {
+        output
+        for event in ordered_events
+        if isinstance(event, dict) and event.get("kind") == "rep_scas"
+        for output in event.get("owned_flag_outputs", [])
+    }
     if ordered_events:
         for event in ordered_events:
             if not isinstance(event, dict):
@@ -1986,13 +2059,13 @@ def _render_transfer(row: dict[str, Any], symbol: str) -> str:
         if not isinstance(write, dict):
             continue
         register = str(write.get("register") or "")
-        if register in _REGISTER_NAMES:
+        if register in _REGISTER_NAMES and register not in owned_register_outputs:
             updates.append(f"  state->{register} = {renderer.render(write.get('value'))};")
     for write in row.get("flag_writes", []):
         if not isinstance(write, dict):
             continue
         flag = str(write.get("flag") or "")
-        if flag in _FLAG_NAMES:
+        if flag in _FLAG_NAMES and flag not in owned_flag_outputs:
             updates.append(f"  state->{flag} = ({renderer.render(write.get('value'))}) & 1U;")
 
     fpu_state = row.get("fpu_state")
@@ -2048,6 +2121,9 @@ def _render_ordered_external_event(
         return
     if kind == "rep_movs":
         _render_rep_movs_event(renderer, event, event_index)
+        return
+    if kind == "rep_scas":
+        _render_rep_scas_event(renderer, event, event_index)
         return
     if kind == "rep_stos":
         _render_rep_stos_event(renderer, event, event_index)
@@ -2173,6 +2249,7 @@ def _render_rep_movs_event(
     destination = renderer.render(event.get("destination"))
     count = renderer.render(event.get("count"))
     direction = renderer.render(event.get("direction_flag"))
+    instruction_rva = int(event["instruction_rva"])
     backward_step = (-width) & 0xFFFFFFFF
     renderer.lines.extend(
         [
@@ -2185,7 +2262,7 @@ def _render_rep_movs_event(
             f"  state->ecx = copy_count_{event_index};",
             f"  while (copy_count_{event_index} != 0U) {{",
             f"    uint32_t copy_value_{event_index} = stage_b_read(rt, copy_source_{event_index}, {width}U, &memory_fault);",
-            "    if (memory_fault) return (stage_b_step_result){ STAGE_B_MEMORY_FAULT, 0U, 0U };",
+            f"    if (memory_fault) return (stage_b_step_result){{ STAGE_B_MEMORY_FAULT, {instruction_rva}U, 0U }};",
             f"    stage_b_write(rt, copy_destination_{event_index}, {width}U, copy_value_{event_index}, &memory_fault);",
             "    if (memory_fault) return (stage_b_step_result){ STAGE_B_MEMORY_FAULT, 0U, 0U };",
             f"    copy_source_{event_index} += copy_step_{event_index};",
@@ -2216,6 +2293,7 @@ def _render_rep_stos_event(
     value = renderer.render(event.get("value"))
     count = renderer.render(event.get("count"))
     direction = renderer.render(event.get("direction_flag"))
+    instruction_rva = int(event["instruction_rva"])
     backward_step = (-width) & 0xFFFFFFFF
     renderer.lines.extend(
         [
@@ -2227,11 +2305,56 @@ def _render_rep_stos_event(
             f"  state->ecx = fill_count_{event_index};",
             f"  while (fill_count_{event_index} != 0U) {{",
             f"    stage_b_write(rt, fill_destination_{event_index}, {width}U, fill_value_{event_index}, &memory_fault);",
-            "    if (memory_fault) return (stage_b_step_result){ STAGE_B_MEMORY_FAULT, 0U, 0U };",
+            f"    if (memory_fault) return (stage_b_step_result){{ STAGE_B_MEMORY_FAULT, {instruction_rva}U, 0U }};",
             f"    fill_destination_{event_index} += fill_step_{event_index};",
             f"    --fill_count_{event_index};",
             f"    state->edi = fill_destination_{event_index};",
             f"    state->ecx = fill_count_{event_index};",
+            "  }",
+        ]
+    )
+
+
+def _render_rep_scas_event(
+    renderer: _ExpressionRenderer,
+    event: dict[str, Any],
+    event_index: int,
+) -> None:
+    if not _valid_rep_scas_event(
+        event,
+        event_index,
+        require_instruction_rva=True,
+    ):
+        raise ValueError("malformed rep_scas event")
+    destination = renderer.render(event.get("destination"))
+    accumulator = renderer.render(event.get("accumulator"))
+    count = renderer.render(event.get("count"))
+    direction = renderer.render(event.get("direction_flag"))
+    instruction_rva = int(event["instruction_rva"])
+    renderer.lines.extend(
+        [
+            f"  uint32_t scan_destination_{event_index} = {destination};",
+            f"  uint32_t scan_accumulator_{event_index} = ({accumulator}) & 0xffU;",
+            f"  uint32_t scan_count_{event_index} = {count};",
+            f"  uint32_t scan_step_{event_index} = ({direction}) ? 0xffffffffU : 1U;",
+            f"  state->edi = scan_destination_{event_index};",
+            f"  state->ecx = scan_count_{event_index};",
+            f"  while (scan_count_{event_index} != 0U) {{",
+            f"    uint32_t scan_memory_{event_index} = stage_b_read(rt, scan_destination_{event_index}, 1U, &memory_fault) & 0xffU;",
+            f"    if (memory_fault) return (stage_b_step_result){{ STAGE_B_MEMORY_FAULT, {instruction_rva}U, 0U }};",
+            f"    uint32_t scan_result_{event_index} = (scan_accumulator_{event_index} - scan_memory_{event_index}) & 0xffU;",
+            f"    scan_destination_{event_index} += scan_step_{event_index};",
+            f"    --scan_count_{event_index};",
+            f"    state->edi = scan_destination_{event_index};",
+            f"    state->ecx = scan_count_{event_index};",
+            f"    state->cf = scan_accumulator_{event_index} < scan_memory_{event_index};",
+            f"    state->zf = scan_result_{event_index} == 0U;",
+            f"    state->sf = (scan_result_{event_index} >> 7) & 1U;",
+            f"    state->of = (((scan_accumulator_{event_index} ^ scan_memory_{event_index}) & (scan_accumulator_{event_index} ^ scan_result_{event_index}) & 0x80U) != 0U);",
+            f"    state->pf = stage_b_parity(scan_result_{event_index});",
+            f"    state->eflags = (state->eflags & ~(1U << 4)) | ((((scan_accumulator_{event_index} ^ scan_memory_{event_index} ^ scan_result_{event_index}) >> 4) & 1U) << 4);",
+            "    stage_b_sync_eflags(state);",
+            "    if (state->zf != 0U) break;",
             "  }",
         ]
     )

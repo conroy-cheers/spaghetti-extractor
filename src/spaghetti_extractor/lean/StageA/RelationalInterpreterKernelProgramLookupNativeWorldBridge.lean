@@ -142,6 +142,12 @@ theorem stepNativeExecution_recordedEvents_length_mono
               simp [nativeExecutionRecordedEvents?] at afterExact
               subst afterEvents
               exact Nat.le_refl _
+          | bulkScan accumulator destination count direction continuation =>
+              simp only [nextNativeExecution] at stepExact
+              subst after
+              simp [nativeExecutionRecordedEvents?] at afterExact
+              subst afterEvents
+              exact Nat.le_refl _
           | checkedContinue valid continuation =>
               simp only [nextNativeExecution] at stepExact
               cases valid with
@@ -258,6 +264,9 @@ theorem stepNativeExecution_running_empty_to_nativeWorld
       | bulkFill destination value count direction continuation =>
           simp [nextNativeExecution] at exact
           simp [transitionFromNativeWorldOutcome, exact]
+      | bulkScan accumulator destination count direction continuation =>
+          simp [nextNativeExecution] at exact
+          simp [transitionFromNativeWorldOutcome, exact]
       | atomicCompareExchange address expected replacement continuation =>
           simp [nextNativeExecution] at exact
           simp [transitionFromNativeWorldOutcome, exact]
@@ -318,6 +327,8 @@ theorem stepNativeExecution_returned_empty_to_nativeWorld
       | bulkCopy destination source count direction continuation =>
           simp [nextNativeExecution] at exact
       | bulkFill destination value count direction continuation =>
+          simp [nextNativeExecution] at exact
+      | bulkScan accumulator destination count direction continuation =>
           simp [nextNativeExecution] at exact
       | atomicCompareExchange address expected replacement continuation =>
           simp [nextNativeExecution] at exact

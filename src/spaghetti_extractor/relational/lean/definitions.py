@@ -1031,7 +1031,7 @@ def _normalized_behavior_structure_matches(
             return None
 
         continuation_form = re.fullmatch(
-            r"some \(StageA\.Formal\.OutcomeExpr\.(externalCall|bulkCopy|bulkFill|checkedContinue|atomicCompareExchange) "
+            r"some \(StageA\.Formal\.OutcomeExpr\.(externalCall|bulkCopy|bulkFill|bulkScan|checkedContinue|atomicCompareExchange) "
             r"(.*) (\d+)\) \}",
             outcome,
         )

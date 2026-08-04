@@ -69,6 +69,7 @@ _STRING_INSTRUCTION_ENCODINGS: dict[bytes, tuple[str, int, bool]] = {
     b"\xf3\x66\xab": ("store", 2, True),
     b"\x66\xf3\xab": ("store", 2, True),
     b"\xf3\xab": ("store", 4, True),
+    b"\xf2\xae": ("scan_not_equal", 1, True),
 }
 
 class _InstructionTaggedEvents(list[tuple[Any, ...]]):
@@ -795,6 +796,34 @@ def _symbolic_execute(
             )
             dst_address = _expr_add(dst_address, step)
             registers["edi"] = dst_address
+            continue
+        if string_instruction == ("scan_not_equal", 1, True):
+            accumulator = _read_register_expr("al", registers)
+            if accumulator is None:
+                return _symbolic_incomplete(
+                    binary_name,
+                    "unsupported_semantics",
+                    rva,
+                    mnemonic,
+                    insn.op_str,
+                    "string-scan accumulator value is not modeled",
+                )
+            event_index = external_call_index_base + len(external_events)
+            external_events.append(
+                (
+                    "rep_scas",
+                    event_index,
+                    1,
+                    32,
+                    registers["edi"],
+                    accumulator,
+                    registers["ecx"],
+                    flags.get("df", ("flag", "df")),
+                )
+            )
+            # The restartable scan action owns EDI, ECX, and all comparison
+            # flags.  Its result depends on the first matching memory byte, so
+            # no ordinary expression-tree write may replace those outputs.
             continue
         if mnemonic in {"cmpxchg", "lock cmpxchg"}:
             if len(operands) != 2 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:

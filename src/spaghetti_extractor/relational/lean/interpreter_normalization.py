@@ -281,6 +281,8 @@ def _ordered_effects(transfer: Any) -> list[str]:
             effects.append(f".repMovs .{_WIDTH[action.aux]}")
         elif action.op == "rep_stos":
             effects.append(f".repStos .{_WIDTH[action.aux]}")
+        elif action.op == "rep_scas":
+            effects.append(f".repScas .{_WIDTH[action.aux]}")
     return effects
 
 

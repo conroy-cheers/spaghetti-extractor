@@ -33,6 +33,7 @@ def nativeOperationOutcomeLocallyComposable :
   | .called ..
   | .bulkCopy ..
   | .bulkFill ..
+  | .bulkScan ..
   | .checkedContinue ..
   | .atomicCompareExchange .. => true
   | .running
@@ -50,6 +51,7 @@ def nativeOperationOutcomeAlwaysRunningLocal :
   | .called ..
   | .bulkCopy ..
   | .bulkFill ..
+  | .bulkScan ..
   | .indirectCall ..
   | .indirectJump _
   | .externalCall ..

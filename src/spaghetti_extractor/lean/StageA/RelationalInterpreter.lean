@@ -286,6 +286,8 @@ inductive SemanticAction where
       (width : MemoryWidth)
   | repStos (destination value count directionFlag : Nat)
       (width : MemoryWidth)
+  | repScas (accumulator destination count directionFlag : Nat)
+      (width : MemoryWidth)
   | setRegister (register : Register) (value : Nat)
   | setFlag (flag : Flag) (value : Nat)
   | syncEflags
@@ -320,6 +322,12 @@ def RawAction.decodeBody (action : RawAction) : Option SemanticAction :=
   | 28, [destination, value, count, direction] => do
       let width <- MemoryWidth.ofBytes? action.aux
       some (.repStos destination value count direction width)
+  | 29, [accumulator, destination, count, direction] => do
+      let width <- MemoryWidth.ofBytes? action.aux
+      if width == .byte then
+        some (.repScas accumulator destination count direction width)
+      else
+        none
   | 6, [value] => do
       let register <- Register.ofIndex? action.aux
       some (.setRegister register value)
@@ -436,6 +444,11 @@ def SemanticTransfer.checkAction (transfer : SemanticTransfer)
       if state.referencesReady [source, destination, count, direction] then some state else none
   | .repStos destination value count direction _ =>
       if state.referencesReady [destination, value, count, direction] then some state else none
+  | .repScas accumulator destination count direction _ =>
+      if state.referencesReady [accumulator, destination, count, direction] then
+        some state
+      else
+        none
   | .divideIf condition | .setRegister _ condition | .setFlag _ condition =>
       if state.referencesReady [condition] then some state else none
   | .call callIndex => do
@@ -673,6 +686,8 @@ inductive InterpreterEvent where
       (width : MemoryWidth)
   | repStos (destination value count : Word) (direction : Bool)
       (width : MemoryWidth)
+  | repScas (accumulator destination count : Word) (direction : Bool)
+      (width : MemoryWidth)
 deriving Repr, DecidableEq
 
 inductive CallStatus where
@@ -795,6 +810,26 @@ def repStosd (state : InterpreterMachine) (destination value : Word)
     (direction : Bool) (count : Nat) : InterpreterMachine :=
   repStos state destination value direction .dword count
 
+def flagsFromPackedEflags (eflags : Word) : Flag -> Word :=
+  fun flag => BitVec.zeroExtend 32 (eflags.extractLsb' flag.eflagsBit 1)
+
+def repScas (state : InterpreterMachine) (accumulator destination count : Word)
+    (direction : Bool) : InterpreterMachine :=
+  if count = BitVec.ofNat 32 0 then
+    state
+  else
+    let result := repneScasByte state.memory accumulator destination count state.eflags
+      direction count.toNat
+    {
+      state with
+      registers := fun register =>
+        if register = .edi then result.destination
+        else if register = .ecx then result.count
+        else state.registers register
+      flags := flagsFromPackedEflags result.eflags
+      eflags := result.eflags
+    }
+
 def InterpreterMachine.syncEflags (state : InterpreterMachine) : InterpreterMachine :=
   let represented := BitVec.ofNat 32
     ((1 <<< 0) + (1 <<< 2) + (1 <<< 6) + (1 <<< 7) + (1 <<< 10) + (1 <<< 11))
@@ -895,6 +930,18 @@ def SemanticTransfer.executeAction (transfer : SemanticTransfer)
       some (.inr { runtime with
         current := current
         events := runtime.events ++ [.repStos destination value count direction width]
+      })
+  | .repScas accumulator destination count directionFlag width => do
+      let accumulator <- runtime.words accumulator
+      let destination <- runtime.words destination
+      let count <- runtime.words count
+      let directionFlag <- runtime.words directionFlag
+      let direction := wordTruth directionFlag
+      let current := repScas runtime.current accumulator destination count direction
+      some (.inr { runtime with
+        current := current
+        events := runtime.events ++
+          [.repScas accumulator destination count direction width]
       })
   | .setRegister register value => do
       let value <- runtime.words value

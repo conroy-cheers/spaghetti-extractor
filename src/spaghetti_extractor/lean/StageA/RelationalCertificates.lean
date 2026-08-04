@@ -752,6 +752,13 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
       { next := resumeWorldExecution callbacks continuation { state with memory } calls
           eventIndex world,
         observation := none }
+  | .bulkScan accumulator destination count direction continuation =>
+      let scan := repneScasByte state.memory accumulator destination count state.eflags
+        direction count.toNat
+      let registers := (state.registers.set .edi scan.destination).set .ecx scan.count
+      { next := resumeWorldExecution callbacks continuation
+          { state with registers, eflags := scan.eflags } calls eventIndex world,
+        observation := none }
   | .indirectCall target continuation =>
       match program.callableProgram, program.callableEnvironment with
       | some callableProgram, some callableEnvironment =>

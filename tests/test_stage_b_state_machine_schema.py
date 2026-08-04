@@ -53,6 +53,56 @@ class StageBStateMachineSchemaTests(unittest.TestCase):
                         "fixture",
                     )
 
+    def test_restartable_scan_event_schema_fails_closed(self) -> None:
+        event = {
+            "family": "external",
+            "kind": "rep_scas",
+            "index": 0,
+            "element_width": 1,
+            "address_size": 32,
+            "destination": {"op": "reg", "name": "edi", "width": 32},
+            "accumulator": {
+                "op": "and32",
+                "args": [
+                    {"op": "reg", "name": "eax", "width": 32},
+                    {"op": "const", "value": 255, "width": 32},
+                ],
+            },
+            "count": {"op": "reg", "name": "ecx", "width": 32},
+            "direction_flag": {"op": "flag", "name": "df"},
+            "repeat_condition": "while_not_equal_v1",
+            "comparison_model": "subtraction_flags_v1",
+            "segment_model": "flat_es_zero_v1",
+            "effect_model": "symbolic_string_scan_v1",
+            "restart_semantics": "element_committed_v1",
+            "fault_model": "read_before_commit_v1",
+            "owned_register_outputs": ["edi", "ecx"],
+            "owned_flag_outputs": ["cf", "pf", "af", "zf", "sf", "of"],
+        }
+        row = {"external_events": [event], "ordered_events": [event]}
+        _validate_restartable_string_events(row, "fixture")
+
+        for mutation in (
+            {"element_width": 2},
+            {"repeat_condition": "while_equal_v1"},
+            {"comparison_model": "missing"},
+            {"segment_model": "implicit"},
+            {"fault_model": "atomic_v1"},
+            {"owned_register_outputs": ["edi"]},
+            {"owned_flag_outputs": ["zf"]},
+            {"source": {"op": "reg", "name": "esi", "width": 32}},
+        ):
+            with self.subTest(mutation=mutation):
+                malformed = {**event, **mutation}
+                with self.assertRaises(StageAInputError):
+                    _validate_restartable_string_events(
+                        {
+                            "external_events": [malformed],
+                            "ordered_events": [malformed],
+                        },
+                        "fixture",
+                    )
+
     def test_blocking_instruction_is_preserved_as_hash_bound_diagnostic(self) -> None:
         row = _blocked_transfer()
 

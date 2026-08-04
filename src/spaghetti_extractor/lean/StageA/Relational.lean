@@ -41,6 +41,9 @@ def NormalizedOutcomeExpr.eval (state : MachineState) : NormalizedOutcomeExpr ->
   | .bulkFill destination value count direction continuation =>
       .bulkFill (destination.eval state) (value.eval state) (count.eval state)
         (direction.eval state) continuation
+  | .bulkScan accumulator destination count direction continuation =>
+      .bulkScan (accumulator.eval state) (destination.eval state) (count.eval state)
+        (direction.eval state) continuation
   | .indirectCall target continuation => .indirectCall (target.eval state) continuation
   | .indirectJump target => .indirectJump (target.eval state)
   | .checkedContinue valid continuation => .checkedContinue (valid.eval state) continuation
@@ -4709,6 +4712,14 @@ def outcomesRelated (originalImageBase candidateImageBase : Nat)
           originalValue candidateValue &&
         originalCount == candidateCount && originalDirection == candidateDirection &&
         originalContinuation == candidateContinuation
+  | .bulkScan originalAccumulator originalDestination originalCount originalDirection originalContinuation,
+      .bulkScan candidateAccumulator candidateDestination candidateCount candidateDirection candidateContinuation =>
+      wordRelated originalImageBase candidateImageBase targets values
+          originalAccumulator candidateAccumulator &&
+        wordRelated originalImageBase candidateImageBase targets values
+          originalDestination candidateDestination &&
+        originalCount == candidateCount && originalDirection == candidateDirection &&
+        originalContinuation == candidateContinuation
   | .indirectCall originalTarget originalContinuation,
       .indirectCall candidateTarget candidateContinuation =>
       wordRelated originalImageBase candidateImageBase targets values originalTarget candidateTarget &&
@@ -4802,6 +4813,11 @@ def evalOutcomePure (candidate : Bool) (targets : List CodeTargetPair)
         (← evalExprPure state fill.value) (← evalExprPure state fill.count)
         (← evalBoolExprPure state fill.direction)
         (← normalizeCodeTarget candidate targets continuationRva)
+  | .bulkScan scan continuationRva =>
+      return .bulkScan (← evalExprPure state scan.accumulator)
+        (← evalExprPure state scan.destination) (← evalExprPure state scan.count)
+        (← evalBoolExprPure state scan.direction)
+        (← normalizeCodeTarget candidate targets continuationRva)
   | .indirectCall target continuationRva _ =>
       return .indirectCall (← evalExprPure state target)
         (← normalizeCodeTarget candidate targets continuationRva)
@@ -4856,6 +4872,10 @@ def evalOutcome (candidate : Bool) (targets : List CodeTargetPair)
   | .bulkFill fill continuationRva =>
       return .bulkFill (fill.destination.eval state) (fill.value.eval state)
         (fill.count.eval state) (fill.direction.eval state)
+        (← normalizeCodeTarget candidate targets continuationRva)
+  | .bulkScan scan continuationRva =>
+      return .bulkScan (scan.accumulator.eval state) (scan.destination.eval state)
+        (scan.count.eval state) (scan.direction.eval state)
         (← normalizeCodeTarget candidate targets continuationRva)
   | .indirectCall target continuationRva _ =>
       return .indirectCall (target.eval state) (← normalizeCodeTarget candidate targets continuationRva)

@@ -1171,7 +1171,7 @@ def _semantic_successors(outcome: dict[str, Any]) -> dict[str, Any]:
     elif operation == "call":
         direct = [outcome.get("target")]
     elif operation in {
-        "external_call", "bulk_copy", "bulk_fill", "checked_continue",
+        "external_call", "bulk_copy", "bulk_fill", "bulk_scan", "checked_continue",
         "atomic_compare_exchange",
     }:
         direct = [outcome.get("continuation")]

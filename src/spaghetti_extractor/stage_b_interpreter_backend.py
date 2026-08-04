@@ -39,6 +39,9 @@ _REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
 _FLAGS = ("cf", "zf", "sf", "of", "pf", "df")
 _REGISTER_INDEX = {name: index for index, name in enumerate(_REGISTERS)}
 _FLAG_INDEX = {name: index for index, name in enumerate(_FLAGS)}
+_AF_FLAG_INDEX = len(_FLAGS)
+_REP_SCAS_OWNED_REGISTERS = ("edi", "ecx")
+_REP_SCAS_OWNED_FLAGS = ("cf", "pf", "af", "zf", "sf", "of")
 _X87_REPLAY_MODEL = "native_exact_x87_command_replay_obligation_v1"
 _X87_REPLAY_FORMAT = "stage-a-native-exact-x87-command-replay-obligation-v1"
 _X87_REPLAY_PROGRAM_FORMAT = "stage-b-native-exact-x87-command-replay-program-v1"
@@ -466,6 +469,9 @@ class _TransferCompiler:
         ordered = self.row.get("ordered_events")
         if not isinstance(ordered, list):
             raise StageBInterpreterError(f"{self.identity}: ordered_events must be a list")
+        owned_register_outputs, owned_flag_outputs = self._rep_scas_owned_outputs(
+            ordered
+        )
         external_index = 0
         for raw in ordered:
             event = _object(raw, f"{self.identity} ordered event")
@@ -489,6 +495,8 @@ class _TransferCompiler:
         for raw in _list(self.row.get("register_writes"), "register_writes"):
             write = _object(raw, f"{self.identity} register write")
             name = _string(write.get("register"), "register write name")
+            if name in owned_register_outputs:
+                continue
             if name not in _REGISTER_INDEX:
                 raise StageBInterpreterError(f"{self.identity}: unsupported register {name!r}")
             updates.append(
@@ -497,6 +505,8 @@ class _TransferCompiler:
         for raw in _list(self.row.get("flag_writes"), "flag_writes"):
             write = _object(raw, f"{self.identity} flag write")
             name = _string(write.get("flag"), "flag write name")
+            if name in owned_flag_outputs:
+                continue
             if name not in _FLAG_INDEX:
                 raise StageBInterpreterError(f"{self.identity}: unsupported flag {name!r}")
             updates.append(
@@ -1033,6 +1043,9 @@ class _TransferCompiler:
 
     def _compile_instruction_effects(self, effects: Mapping[str, Any]) -> None:
         ordered = _optional_list(effects.get("ordered_events"))
+        owned_register_outputs, owned_flag_outputs = self._rep_scas_owned_outputs(
+            ordered
+        )
         call_event = any(
             isinstance(raw, Mapping)
             and raw.get("family") == "external"
@@ -1053,6 +1066,8 @@ class _TransferCompiler:
             for raw in writes:
                 write = _object(raw, f"{self.identity} instruction register write")
                 name = _string(write.get("register"), "register write name")
+                if name in owned_register_outputs:
+                    continue
                 if name not in _REGISTER_INDEX:
                     raise StageBInterpreterError(
                         f"{self.identity}: unsupported instruction register {name!r}"
@@ -1063,6 +1078,8 @@ class _TransferCompiler:
             for raw in flag_writes:
                 write = _object(raw, f"{self.identity} instruction flag write")
                 name = _string(write.get("flag"), "flag write name")
+                if name in owned_flag_outputs:
+                    continue
                 if name not in _FLAG_INDEX:
                     raise StageBInterpreterError(
                         f"{self.identity}: unsupported instruction flag {name!r}"
@@ -1095,6 +1112,27 @@ class _TransferCompiler:
             compile_updates()
         self.actions.extend(updates)
         self.actions.append(_Action("sync_eflags"))
+
+    def _rep_scas_owned_outputs(
+        self, ordered_events: list[Any]
+    ) -> tuple[set[str], set[str]]:
+        registers: set[str] = set()
+        flags: set[str] = set()
+        for raw in ordered_events:
+            if not isinstance(raw, Mapping) or raw.get("kind") != "rep_scas":
+                continue
+            if (
+                raw.get("owned_register_outputs")
+                != list(_REP_SCAS_OWNED_REGISTERS)
+                or raw.get("owned_flag_outputs") != list(_REP_SCAS_OWNED_FLAGS)
+            ):
+                raise StageBInterpreterError(
+                    f"{self.identity}: rep_scas has an invalid owned-output inventory",
+                    code="malformed_rep_scas_event",
+                )
+            registers.update(_REP_SCAS_OWNED_REGISTERS)
+            flags.update(_REP_SCAS_OWNED_FLAGS)
+        return registers, flags
 
     def _check_x87_replay_outcome(self, outcome: Mapping[str, Any]) -> None:
         continuation = self.x87_operations[-1].rva_end
@@ -1183,11 +1221,11 @@ class _TransferCompiler:
             )
         if op == "flag":
             name = _string(expr.get("name"), "flag expression name")
-            if name not in _FLAG_INDEX:
+            if name not in _FLAG_INDEX and name != "af":
                 raise StageBInterpreterError(f"{self.identity}: unsupported flag {name!r}")
             return _Node(
                 op,
-                aux=_FLAG_INDEX[name],
+                aux=_AF_FLAG_INDEX if name == "af" else _FLAG_INDEX[name],
                 immediate=int(self.instruction_local),
             )
         if op == "fs_base":
@@ -1210,9 +1248,10 @@ class _TransferCompiler:
                 f"{op} field",
             )
             index_map = _REGISTER_INDEX if op == "call_response" else _FLAG_INDEX
-            if field not in index_map:
+            if field not in index_map and not (op == "call_flag" and field == "af"):
                 raise StageBInterpreterError(f"{self.identity}: unsupported {op} field {field!r}")
-            return _Node(op, aux=index_map[field], immediate=call_index)
+            index = _AF_FLAG_INDEX if field == "af" else index_map[field]
+            return _Node(op, aux=index, immediate=call_index)
         if op == "load":
             width = _width(expr.get("width"))
             return _Node(op, (self.word(expr.get("address")),), aux=width)
@@ -1342,6 +1381,16 @@ class _TransferCompiler:
                 self.word(event.get("source")), self.word(event.get("destination")),
                 self.word(event.get("count")), self.word(event.get("direction_flag")),
             ), width))
+            return
+        if kind == "rep_scas":
+            self._checked_rep_scas_event(event, event_index)
+            arguments = (
+                self.word(event.get("accumulator")),
+                self.word(event.get("destination")),
+                self.word(event.get("count")),
+                self.word(event.get("direction_flag")),
+            )
+            self.actions.append(_Action("rep_scas", arguments, 1))
             return
         if kind == "rep_stosd":
             _u32(event.get("instruction_rva"), "rep_stosd instruction_rva")
@@ -1479,6 +1528,56 @@ class _TransferCompiler:
                 f"{self.identity}: {kind} has invalid element width",
                 code=code,
             ) from error
+
+    def _checked_rep_scas_event(
+        self,
+        event: Mapping[str, Any],
+        event_index: int,
+    ) -> None:
+        code = "malformed_rep_scas_event"
+        try:
+            width = self._checked_string_event(
+                event,
+                event_index,
+                kind="rep_scas",
+                effect_model="symbolic_string_scan_v1",
+            )
+        except StageBInterpreterError as error:
+            raise StageBInterpreterError(
+                f"{self.identity}: malformed rep_scas event: {error}",
+                code=code,
+            ) from error
+        if width != 1:
+            raise StageBInterpreterError(
+                f"{self.identity}: rep_scas requires byte element width",
+                code=code,
+            )
+        required_models = {
+            "repeat_condition": "while_not_equal_v1",
+            "comparison_model": "subtraction_flags_v1",
+            "segment_model": "flat_es_zero_v1",
+            "fault_model": "read_before_commit_v1",
+        }
+        for field, expected in required_models.items():
+            if event.get(field) != expected:
+                raise StageBInterpreterError(
+                    f"{self.identity}: rep_scas requires {expected}",
+                    code=code,
+                )
+        if (
+            event.get("owned_register_outputs")
+            != list(_REP_SCAS_OWNED_REGISTERS)
+            or event.get("owned_flag_outputs") != list(_REP_SCAS_OWNED_FLAGS)
+        ):
+            raise StageBInterpreterError(
+                f"{self.identity}: rep_scas has an invalid owned-output inventory",
+                code=code,
+            )
+        if "source" in event or "value" in event:
+            raise StageBInterpreterError(
+                f"{self.identity}: rep_scas must not carry copy/fill operands",
+                code=code,
+            )
 
     def _outcome(self, outcome: Mapping[str, Any]) -> _Action:
         kind = _string(outcome.get("kind"), "outcome kind")
@@ -2171,6 +2270,7 @@ _ACTIONS = (
     # Opcode 25 retains its historical ABI label. Its payload is now a typed,
     # byte-free operation and all newly generated capability metadata says so.
     "outcome_external", "replay_x87", "rep_stosd", "rep_movs", "rep_stos",
+    "rep_scas",
 )
 
 
@@ -2398,10 +2498,17 @@ static void stage_b_set_reg(stage_b_machine_state *state, uint32_t index, uint32
 static uint32_t stage_b_state_flag(const stage_b_machine_state *state, uint32_t index) {
   static const uint32_t offsets[6] = { 0U,1U,2U,3U,4U,5U };
   const uint32_t *flags = &state->cf;
+  if (index == 6U) return (state->eflags >> 4) & 1U;
+  if (index >= 6U) return 0U;
   return flags[offsets[index]] & 1U;
 }
 static void stage_b_set_flag(stage_b_machine_state *state, uint32_t index, uint32_t value) {
   uint32_t *flags = &state->cf;
+  if (index == 6U) {
+    state->eflags = (state->eflags & ~(1U << 4)) | ((value & 1U) << 4);
+    return;
+  }
+  if (index >= 6U) return;
   flags[index] = value & 1U;
 }
 static uint32_t stage_b_eval_word(
@@ -2645,8 +2752,29 @@ stage_b_step_result stage_b_interpreter_step(
         d+=step;--n;
         stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
       }
+    } else if(a->op==29U){
+      uint32_t d,al,n,step;
+      if(a->arity!=4U||a->aux!=1U)
+        return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
+      al=words[a->args[0]]&0xffU;d=words[a->args[1]];
+      n=words[a->args[2]];step=words[a->args[3]]?0xffffffffU:1U;
+      stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
+      while(n!=0U){
+        uint32_t m=stage_b_read(rt,d,1U,&memory_fault)&0xffU,result;
+        if(memory_fault)break;
+        result=(al-m)&0xffU;d+=step;--n;
+        stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
+        stage_b_set_flag(state,0U,al<m);
+        stage_b_set_flag(state,1U,result==0U);
+        stage_b_set_flag(state,2U,(result>>7)&1U);
+        stage_b_set_flag(state,3U,((al^m)&(al^result)&0x80U)!=0U);
+        stage_b_set_flag(state,4U,stage_b_parity(result));
+        stage_b_set_flag(state,6U,((al^m^result)>>4)&1U);
+        stage_b_sync_eflags(state);
+        if(result==0U)break;
+      }
     } else return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
-    if(memory_fault)return(stage_b_step_result){STAGE_B_MEMORY_FAULT,0U,0U};
+    if(memory_fault)return(stage_b_step_result){STAGE_B_MEMORY_FAULT,source_rva,0U};
     if(semantic_fault)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
   }
   return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
