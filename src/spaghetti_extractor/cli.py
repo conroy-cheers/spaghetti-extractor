@@ -48,6 +48,7 @@ from .relational.interfaces import stage_a_export_interface_manifest
 from .roundtrip_fuzz.phase0 import generate_phase0_corpus
 from .roundtrip_fuzz.image_contract import load_stage_a_load_image_contract
 from .opaque_reconstruction import stage_a_export_opaque_reconstruction
+from .import_abi import expand_import_abi_policy
 from .reconstruction_ir import export_machine_ir_package
 from .rooted_state_machine import (
     augment_state_machine_with_rooted_instruction_views,
@@ -825,6 +826,21 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         )
     )
 
+    import_abi = subcommands.add_parser(
+        "stage-a-expand-import-abi-policy",
+        help="expand reviewed DLL ABI rules into exact imports from one PE",
+    )
+    import_abi.add_argument("--original", type=Path, required=True)
+    import_abi.add_argument("--policy", type=Path, required=True)
+    import_abi.add_argument("--out", type=Path, required=True)
+    import_abi.set_defaults(
+        func=lambda args: expand_import_abi_policy(
+            original_pe=args.original,
+            policy=args.policy,
+            out=args.out,
+        )
+    )
+
     machine_ir = subcommands.add_parser(
         "stage-a-export-machine-ir",
         help="sanitize a statically bound semantic state machine into byte-free IR",
@@ -833,6 +849,13 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     machine_ir.add_argument("--original", type=Path, required=True)
     machine_ir.add_argument("--reference-contract", type=Path)
     machine_ir.add_argument("--indirect-target-profile", type=Path)
+    machine_ir.add_argument(
+        "--machine-import-profile",
+        type=Path,
+        action="append",
+        default=[],
+        help="exact machine-import ABI profile; may be repeated",
+    )
     machine_ir.add_argument("--out", type=Path, required=True)
     machine_ir.set_defaults(func=_cmd_stage_a_export_machine_ir)
 
@@ -1805,6 +1828,12 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     rooted_views.add_argument("--original", type=Path, required=True)
     rooted_views.add_argument("--reference-contract", type=Path, required=True)
     rooted_views.add_argument("--indirect-target-profile", type=Path)
+    rooted_views.add_argument(
+        "--machine-import-profile",
+        type=Path,
+        action="append",
+        default=[],
+    )
     rooted_views.add_argument("--instruction-budget", type=int, default=65536)
     rooted_views.add_argument("--iteration-budget", type=int, default=32)
     rooted_views.add_argument("--out", type=Path, required=True)
@@ -2608,6 +2637,7 @@ def _cmd_stage_a_export_machine_ir(args: Any) -> dict[str, Any]:
         original_pe=args.original,
         reference_contract=args.reference_contract,
         indirect_target_profile=args.indirect_target_profile,
+        machine_import_profiles=args.machine_import_profile,
         out=args.out,
     )
     return {
@@ -3001,6 +3031,7 @@ def _cmd_stage_b_augment_rooted_views(args: Any) -> dict[str, Any]:
         original_pe=args.original,
         reference_contract=args.reference_contract,
         indirect_target_profile=args.indirect_target_profile,
+        machine_import_profiles=args.machine_import_profile,
         instruction_budget=args.instruction_budget,
         iteration_budget=args.iteration_budget,
         out=args.out,

@@ -44,6 +44,7 @@ let
       ../src/spaghetti_extractor/artifact_formats.py
       ../src/spaghetti_extractor/contract_tools.py
       ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/machine_import_profiles.py
       ../src/spaghetti_extractor/opaque_reconstruction.py
       ../src/spaghetti_extractor/pe.py
@@ -70,6 +71,8 @@ let
       ../src/spaghetti_extractor/__init__.py
       ../src/spaghetti_extractor/artifact_formats.py
       ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/import_abi.py
+      ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/machine_import_profiles.py
       ../src/spaghetti_extractor/util.py
       ../src/spaghetti_extractor/pe.py
@@ -77,6 +80,7 @@ let
       ../src/spaghetti_extractor/stage_b_state_machine.py
       ../src/spaghetti_extractor/reconstruction_ir.py
       ../src/spaghetti_extractor/reconstruction_control.py
+      ../src/spaghetti_extractor/value_provenance.py
     ];
   };
   rootedStateMachinePythonSource = lib.fileset.toSource {
@@ -86,6 +90,8 @@ let
       ../src/spaghetti_extractor/_contract_tools
       ../src/spaghetti_extractor/artifact_formats.py
       ../src/spaghetti_extractor/errors.py
+      ../src/spaghetti_extractor/import_abi.py
+      ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/machine_import_profiles.py
       ../src/spaghetti_extractor/util.py
       ../src/spaghetti_extractor/pe.py
@@ -95,6 +101,7 @@ let
       ../src/spaghetti_extractor/reconstruction_ir.py
       ../src/spaghetti_extractor/reconstruction_control.py
       ../src/spaghetti_extractor/rooted_state_machine.py
+      ../src/spaghetti_extractor/value_provenance.py
       ../src/spaghetti_extractor/relational/__init__.py
       ../src/spaghetti_extractor/relational/semantic_cutpoints.py
       ../src/spaghetti_extractor/relational/x87_profile.py
@@ -327,6 +334,46 @@ rec {
       ' "$out/opaque-static-export.json" >/dev/null
     '';
 
+  importAbiProfile = pkgs.runCommand "stage-a-dxball-1.09-import-abi-profile"
+    {
+      nativeBuildInputs = [ pythonEnv pkgs.jq ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export LC_ALL=C.UTF-8
+      export SOURCE_DATE_EPOCH=1
+      export PYTHONPATH=${machineIrPythonSource}/src
+      mkdir -p "$out"
+      ${python} - \
+        ${lib.escapeShellArg "${originalRuntime}/runtime/DXBall.exe"} \
+        ${lib.escapeShellArg "${../profiles/pe32-win32-system-dll-abi-policy-v1.json}"} \
+        "$out/import-abi-profile.json" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.import_abi import expand_import_abi_policy
+
+      original, policy, output = map(pathlib.Path, sys.argv[1:])
+      expand_import_abi_policy(
+          original_pe=original,
+          policy=policy,
+          out=output,
+      )
+      PY
+      jq -e '
+        .format == "stage-a-static-machine-import-profile-v1" and
+        .status == "complete" and
+        .source_binary.sha256 == "${executableSha256}" and
+        .counts.imports > 90 and
+        .counts.dlls == 6 and
+        ([.machine_import_signatures[].abi_template] | unique) ==
+          ["pe32-stdcall-v1"]
+      ' "$out/import-abi-profile.json" >/dev/null
+    '';
+
   baseMachineIr = pkgs.runCommand "stage-a-dxball-1.09-base-machine-ir"
     {
       nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
@@ -346,12 +393,13 @@ rec {
         ${lib.escapeShellArg "${originalRuntime}/runtime/DXBall.exe"} \
         ${lib.escapeShellArg "${opaqueStaticExport}/reference-contract.json"} \
         ${lib.escapeShellArg "${../profiles/pe32-static-cutpoints-and-paired-callables-v1.json}"} \
+        ${lib.escapeShellArg "${importAbiProfile}/import-abi-profile.json"} \
         "$out" <<'PY'
       import pathlib
       import sys
       from spaghetti_extractor.reconstruction_ir import export_machine_ir_package
 
-      state_machine, original, reference, target_profile, output = map(
+      state_machine, original, reference, target_profile, import_profile, output = map(
           pathlib.Path, sys.argv[1:]
       )
       export_machine_ir_package(
@@ -359,6 +407,7 @@ rec {
           original_pe=original,
           reference_contract=reference,
           indirect_target_profile=target_profile,
+          machine_import_profiles=[import_profile],
           out=output,
       )
       PY
@@ -402,6 +451,7 @@ rec {
         ${lib.escapeShellArg "${originalRuntime}/runtime/DXBall.exe"} \
         ${lib.escapeShellArg "${opaqueStaticExport}/reference-contract.json"} \
         ${lib.escapeShellArg "${../profiles/pe32-static-cutpoints-and-paired-callables-v1.json}"} \
+        ${lib.escapeShellArg "${importAbiProfile}/import-abi-profile.json"} \
         "$out/state-machine.jsonl" \
         "$out/rooted-view-augmentation.json" <<'PY'
       import pathlib
@@ -410,7 +460,7 @@ rec {
           augment_state_machine_with_rooted_instruction_views,
       )
 
-      state_machine, manifest, original, reference, target_profile, output, report = map(
+      state_machine, manifest, original, reference, target_profile, import_profile, output, report = map(
           pathlib.Path, sys.argv[1:]
       )
       augment_state_machine_with_rooted_instruction_views(
@@ -419,6 +469,7 @@ rec {
           original_pe=original,
           reference_contract=reference,
           indirect_target_profile=target_profile,
+          machine_import_profiles=[import_profile],
           out=output,
           report=report,
       )
@@ -457,12 +508,13 @@ rec {
         ${lib.escapeShellArg "${originalRuntime}/runtime/DXBall.exe"} \
         ${lib.escapeShellArg "${opaqueStaticExport}/reference-contract.json"} \
         ${lib.escapeShellArg "${../profiles/pe32-static-cutpoints-and-paired-callables-v1.json}"} \
+        ${lib.escapeShellArg "${importAbiProfile}/import-abi-profile.json"} \
         "$out" <<'PY'
       import pathlib
       import sys
       from spaghetti_extractor.reconstruction_ir import export_machine_ir_package
 
-      state_machine, original, reference, target_profile, output = map(
+      state_machine, original, reference, target_profile, import_profile, output = map(
           pathlib.Path, sys.argv[1:]
       )
       export_machine_ir_package(
@@ -470,6 +522,7 @@ rec {
           original_pe=original,
           reference_contract=reference,
           indirect_target_profile=target_profile,
+          machine_import_profiles=[import_profile],
           out=output,
       )
       PY

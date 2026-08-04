@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
 
+from ..machine_abi import MACHINE_CALL_ABI_TEMPLATES
+
 
 STAGE_A_RELATIONAL_MODEL_ID = "x86-pe32-relational-v3"
 STAGE_A_RELATIONAL_PROFILE_ID = "x86-pe32-lean-relational-v3"
@@ -37,18 +39,6 @@ MACHINE_CALL_RESULT_WORD_RELATIONS = {
 MACHINE_CALL_WORLD_EFFECTS = {
     "none", "opaqueResources", "dynamicRanges", "dynamicRangeRelease",
     "callbackRegistration", "tlsState",
-}
-MACHINE_CALL_ABI_TEMPLATES = {
-    "pe32-cdecl-v1": {
-        "callee_cleanup": False,
-        "preserved_registers": ["ebp", "ebx", "edi", "esi"],
-        "clobbered_registers": ["eax", "ecx", "edx"],
-    },
-    "pe32-stdcall-v1": {
-        "callee_cleanup": True,
-        "preserved_registers": ["ebp", "ebx", "edi", "esi"],
-        "clobbered_registers": ["eax", "ecx", "edx"],
-    },
 }
 MACHINE_CALL_MAX_ARGUMENT_WORDS = 1024
 FLAG_BITS = {

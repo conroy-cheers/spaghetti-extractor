@@ -1257,7 +1257,11 @@ class StageABuildGraphTests(unittest.TestCase):
                     flake=self.repo,
                 )
 
-    @unittest.skipUnless(shutil.which("nix"), "Nix is required for graph identity check")
+    @unittest.skipUnless(
+        shutil.which("nix")
+        and Path("/nix/var/nix/daemon-socket/socket").exists(),
+        "A usable Nix store is required for graph identity check",
+    )
     def test_standalone_graph_invalidates_only_import_dependency_closure(self):
         with tempfile.TemporaryDirectory() as temporary:
             source_root = Path(temporary) / "source-v1"

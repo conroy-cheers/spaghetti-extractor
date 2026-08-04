@@ -18,6 +18,8 @@ from typing import Any, Iterable, Mapping, Sequence
 import capstone
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
+from .import_abi import SelectedImportABI, load_selected_import_abis
+from .machine_import_profiles import MachineImportIdentity
 from .reconstruction_control import (
     derive_rooted_reachable_units,
     recover_static_pe32_jump_table_inventory,
@@ -30,6 +32,7 @@ from .stage_b_state_machine import (
 )
 from .stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
 from .util import sha256_bytes, sha256_file, write_json
+from .value_provenance import recover_indirect_targets_from_value_provenance
 
 
 MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
@@ -185,6 +188,7 @@ def export_machine_ir_package(
     out: Path,
     reference_contract: Path | None = None,
     indirect_target_profile: Path | None = None,
+    machine_import_profiles: Sequence[Path] = (),
 ) -> MachineIRPackage:
     """Validate and export a deterministic, byte-free PE32 machine IR package."""
 
@@ -214,6 +218,11 @@ def export_machine_ir_package(
 
     reference = _reference_inventory(reference_payload)
     target_profile = _load_indirect_target_profile(indirect_target_profile)
+    import_profile_paths = tuple(
+        _regular_file(path, "machine import profile")
+        for path in machine_import_profiles
+    )
+    import_abis = load_selected_import_abis(import_profile_paths)
     rows = _read_canonical_rows(state_path)
     _validate_unique_units(rows)
     prepared = [
@@ -238,7 +247,11 @@ def export_machine_ir_package(
     )
     issues.extend(coverage_issues)
     control, control_issues = _control_inventory(
-        binary, prepared, reference, target_profile=target_profile
+        binary,
+        prepared,
+        reference,
+        target_profile=target_profile,
+        import_abis=import_abis,
     )
     issues.extend(control_issues)
     external = _external_inventory(prepared)
@@ -309,6 +322,10 @@ def export_machine_ir_package(
                     "id": target_profile["id"],
                 }
             ),
+            "machine_import_profiles": [
+                {"path": path.name, "sha256": sha256_file(path)}
+                for path in import_profile_paths
+            ],
         },
         "binary": _binary_inventory(binary),
         "artifacts": {
@@ -1027,6 +1044,7 @@ def _control_inventory(
     reference: Mapping[str, Any],
     *,
     target_profile: Mapping[str, Any] | None,
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
 ) -> tuple[dict[str, Any], list[ExportIssue]]:
     starts = {int(unit["source"]["original"]["rva_start"]): unit for unit in units}
     block_starts = {
@@ -1158,7 +1176,12 @@ def _control_inventory(
                 )
             )
     checked_targets = reference.get("jump_table_targets", [])
-    recovered_targets: list[dict[str, Any]] = []
+    root_unit_ids = [
+        starts[int(root["rva"])]["id"]
+        for root in roots
+        if isinstance(root.get("rva"), int) and int(root["rva"]) in starts
+    ]
+    static_recoveries: list[dict[str, Any]] = []
     for exit_record in indirect:
         source_unit = next(
             unit for unit in units if unit["id"] == exit_record["source_unit_id"]
@@ -1177,6 +1200,7 @@ def _control_inventory(
                 "id": exit_record["id"],
                 "source_unit_id": exit_record["source_unit_id"],
                 "source_rva": exit_record["source_rva"],
+                "source_event_index": exit_record.get("source_event_index"),
                 "kind": exit_record["kind"],
                 "target_unit_ids": [
                     starts[rva]["id"] for rva in recovery.get("target_rvas", [])
@@ -1184,17 +1208,69 @@ def _control_inventory(
                 ],
             }
         )
-        recovered_targets.append(recovery)
-        if recovery["status"] == "recovered":
-            exit_record["closure"] = "checked_finite_target_inventory"
-            exit_record["target_rvas"] = list(recovery["target_rvas"])
-            exit_record["target_unit_ids"] = list(recovery["target_unit_ids"])
-            exit_record["recovery"] = {
-                "kind": recovery["kind"],
-                "index": recovery["index"],
-                "table": recovery["table"],
-                "entries": recovery["entries"],
+        static_recoveries.append(recovery)
+
+    value_provenance = recover_indirect_targets_from_value_provenance(
+        units=units,
+        roots=root_unit_ids,
+        direct_edges=[item for item in direct if item["kind"] == "direct_control"],
+        internal_call_edges=[item for item in direct if item["kind"] == "internal_call"],
+        recovered_indirect_edges=static_recoveries,
+        indirect_exits=indirect,
+        image_base=binary.image_base,
+        imports=[
+            {
+                "dll": imported.dll,
+                "symbol": imported.symbol,
+                "ordinal": imported.ordinal,
+                "thunk_rva": imported.thunk_rva,
             }
+            for imported in binary.imports
+        ],
+        import_abis=import_abis,
+    )
+    provenance_by_id = {
+        str(row["id"]): row for row in value_provenance["resolutions"]
+    }
+    recovered_targets: list[dict[str, Any]] = []
+    for exit_record, recovery in zip(indirect, static_recoveries, strict=True):
+        source_unit = next(
+            unit for unit in units if unit["id"] == exit_record["source_unit_id"]
+        )
+        provenance = provenance_by_id.get(str(exit_record["id"]))
+        selected_recovery = (
+            recovery
+            if recovery["status"] == "recovered"
+            else provenance
+            if isinstance(provenance, Mapping)
+            and provenance.get("status") == "recovered"
+            else recovery
+        )
+        recovered_targets.append(copy.deepcopy(dict(selected_recovery)))
+        if selected_recovery["status"] == "recovered":
+            exit_record["closure"] = "checked_finite_target_inventory"
+            exit_record["target_rvas"] = list(
+                selected_recovery.get("target_rvas", [])
+            )
+            exit_record["target_unit_ids"] = list(
+                selected_recovery.get("target_unit_ids", [])
+            )
+            exit_record["external_targets"] = copy.deepcopy(
+                selected_recovery.get("external_targets", [])
+            )
+            if selected_recovery is recovery:
+                exit_record["recovery"] = {
+                    "kind": recovery["kind"],
+                    "index": recovery["index"],
+                    "table": recovery["table"],
+                    "entries": recovery["entries"],
+                }
+            else:
+                exit_record["recovery"] = {
+                    "kind": "bounded_value_provenance",
+                    "closure": selected_recovery["closure"],
+                    "origin_count": selected_recovery.get("origin_count"),
+                }
             continue
 
         checked = _indirect_exit_has_checked_targets(
@@ -1288,6 +1364,7 @@ def _control_inventory(
                 recovered_targets,
                 key=lambda item: (item["source_rva"], item["source_unit_id"]),
             ),
+            "value_provenance": value_provenance,
             "reachability": reachability,
             "checked_jump_table_targets": checked_targets,
             "indirect_target_profile": (

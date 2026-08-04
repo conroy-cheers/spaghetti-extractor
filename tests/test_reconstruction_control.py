@@ -462,6 +462,46 @@ class RootedReachabilityTests(unittest.TestCase):
         self.assertEqual(len(result["frontiers"]), 1)
         self.assertEqual(result["frontiers"][0]["id"], "exit:partial")
 
+    def test_finite_external_target_closes_exit_without_internal_edge(self) -> None:
+        result = derive_rooted_reachable_units(
+            units=["root", "continuation", "unreachable"],
+            roots=["root"],
+            direct_edges=[{
+                "source_unit_id": "root",
+                "target_unit_id": "continuation",
+            }],
+            recovered_indirect_targets=[{
+                "id": "exit:external",
+                "source_unit_id": "root",
+                "status": "recovered",
+                "target_unit_ids": [],
+                "external_targets": [{
+                    "import": {
+                        "dll": "user32.dll",
+                        "symbol": "ShowWindow",
+                    },
+                }],
+            }],
+            indirect_exits=[{
+                "id": "exit:external",
+                "source_unit_id": "root",
+                "kind": "indirect_call",
+            }],
+        )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["frontiers"], [])
+        self.assertEqual(result["reachable_units"], ["continuation", "root"])
+        self.assertEqual(result["unreachable_units"], ["unreachable"])
+        self.assertEqual(
+            result["edges"],
+            [{
+                "kind": "direct",
+                "source_unit_id": "root",
+                "target_unit_id": "continuation",
+            }],
+        )
+
 
 class SemanticClusterTests(unittest.TestCase):
     def test_loop_scc_and_maximal_chains_stop_at_cutpoints(self) -> None:

@@ -231,6 +231,7 @@ let
       ../src/spaghetti_extractor/relational/contract.py
       ../src/spaghetti_extractor/relational/model.py
       ../src/spaghetti_extractor/relational/reference_contract.py
+      ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/relational/schema.py
       ../src/spaghetti_extractor/relational/semantic_cutpoints.py
       ../src/spaghetti_extractor/relational/side_extraction_artifact.py
@@ -307,6 +308,7 @@ let
       ../src/spaghetti_extractor/relational/__init__.py
       ../src/spaghetti_extractor/relational/original_cutpoint_graph_ir.py
       ../src/spaghetti_extractor/relational/runtime_value_carry_ir.py
+      ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/relational/schema.py
       ../src/spaghetti_extractor/relational/stack_dynamic_control_ir.py
       ../src/spaghetti_extractor/relational/lean/__init__.py
@@ -370,6 +372,7 @@ let
       ../src/spaghetti_extractor/relational/__init__.py
       ../src/spaghetti_extractor/relational/isa_requirements.py
       ../src/spaghetti_extractor/relational/preflight.py
+      ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/relational/schema.py
       ../src/spaghetti_extractor/relational/side_extraction_artifact.py
       ../src/spaghetti_extractor/relational/side_isa_artifact.py
@@ -398,6 +401,7 @@ let
       ../src/spaghetti_extractor/relational/__init__.py
       ../src/spaghetti_extractor/relational/isa_requirements.py
       ../src/spaghetti_extractor/relational/preflight.py
+      ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/relational/schema.py
       ../src/spaghetti_extractor/relational/side_extraction_artifact.py
       ../src/spaghetti_extractor/relational/side_isa_artifact.py
@@ -415,6 +419,7 @@ let
       ../src/spaghetti_extractor/stage_binary.py
       ../src/spaghetti_extractor/util.py
       ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/relational/schema.py
       (lib.fileset.maybeMissing
         ../src/spaghetti_extractor/relational/access_domain_receipts.py)
@@ -446,6 +451,7 @@ let
       ../src/spaghetti_extractor/errors.py
       ../src/spaghetti_extractor/util.py
       ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/relational/schema.py
       ../src/spaghetti_extractor/relational/lean/__init__.py
       ../src/spaghetti_extractor/relational/lean/interpreter_mixed_kernel_binding.py
@@ -461,6 +467,7 @@ let
       ../src/spaghetti_extractor/errors.py
       ../src/spaghetti_extractor/util.py
       ../src/spaghetti_extractor/relational/__init__.py
+      ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/relational/schema.py
       ../src/spaghetti_extractor/relational/lean/__init__.py
       ../src/spaghetti_extractor/relational/lean/interpreter_mixed_chunked_acceptance.py
@@ -753,6 +760,7 @@ let
       ../src/spaghetti_extractor/relational/contract.py
       ../src/spaghetti_extractor/relational/definedness.py
       ../src/spaghetti_extractor/relational/model.py
+      ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/relational/schema.py
       ../src/spaghetti_extractor/relational/semantic_cutpoints.py
       ../src/spaghetti_extractor/relational/x86_instruction_profile.py
@@ -833,6 +841,7 @@ let
       ../src/spaghetti_extractor/relational/contract.py
       ../src/spaghetti_extractor/relational/definedness.py
       ../src/spaghetti_extractor/relational/model.py
+      ../src/spaghetti_extractor/machine_abi.py
       ../src/spaghetti_extractor/relational/schema.py
       ../src/spaghetti_extractor/relational/semantic_cutpoints.py
       ../src/spaghetti_extractor/relational/x86_instruction_profile.py

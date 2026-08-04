@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from ._contract_tools.common import BlockMapping
 from ._contract_tools.reference_contract import _semantic_transfer_contract
@@ -42,6 +42,7 @@ def augment_state_machine_with_rooted_instruction_views(
     instruction_budget: int = 65536,
     iteration_budget: int = 32,
     indirect_target_profile: Path | None = None,
+    machine_import_profiles: Sequence[Path] = (),
 ) -> dict[str, Any]:
     """Add exact one-instruction views for rooted unresolved direct targets.
 
@@ -161,6 +162,7 @@ def augment_state_machine_with_rooted_instruction_views(
                     original_pe=original_pe,
                     reference_contract=reference_contract,
                     indirect_target_profile=indirect_target_profile,
+                    machine_import_profiles=machine_import_profiles,
                     out=temporary_ir,
                 )
                 current_manifest = _json_object(

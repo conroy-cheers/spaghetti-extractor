@@ -6,6 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.pe_fixtures import pe32_import_image
+from spaghetti_extractor.import_abi import (
+    expand_import_abi_policy,
+    load_selected_import_abis,
+)
 from spaghetti_extractor.machine_import_profiles import (
     MachineImportProfileError,
     load_machine_import_profile_set,
@@ -83,6 +88,60 @@ def _scheduled_call_row() -> dict[str, object]:
 
 
 class MachineImportProfileTests(unittest.TestCase):
+    def test_reviewed_dll_policy_expands_to_exact_pe_import_abi(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "fixture.exe"
+            original.write_bytes(
+                pe32_import_image(b"\xc3", symbol="ShowWindow", dll="USER32.dll")
+            )
+            policy = _write(root / "policy.json", {
+                "format": "stage-a-import-abi-policy-v1",
+                "id": "fixture-policy",
+                "rules": [{
+                    "dll": "user32.dll",
+                    "abi_template": "pe32-stdcall-v1",
+                }],
+            })
+            output = root / "expanded.json"
+
+            expanded = expand_import_abi_policy(
+                original_pe=original, policy=policy, out=output
+            )
+            selected = list(load_selected_import_abis([output]).values())
+
+            self.assertEqual(expanded["status"], "complete")
+            self.assertEqual(expanded["counts"], {"imports": 1, "dlls": 1})
+            self.assertEqual(selected[0].identity.dll, "user32.dll")
+            self.assertEqual(selected[0].identity.value, "ShowWindow")
+            self.assertEqual(
+                selected[0].abi.preserved_registers,
+                ("ebp", "ebx", "edi", "esi"),
+            )
+
+    def test_reviewed_dll_policy_fails_closed_on_uncovered_import(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "fixture.exe"
+            original.write_bytes(
+                pe32_import_image(b"\xc3", symbol="ShowWindow", dll="USER32.dll")
+            )
+            policy = _write(root / "policy.json", {
+                "format": "stage-a-import-abi-policy-v1",
+                "id": "fixture-policy",
+                "rules": [{
+                    "dll": "kernel32.dll",
+                    "abi_template": "pe32-stdcall-v1",
+                }],
+            })
+
+            with self.assertRaisesRegex(Exception, "does not cover DLLs"):
+                expand_import_abi_policy(
+                    original_pe=original,
+                    policy=policy,
+                    out=root / "expanded.json",
+                )
+
     def test_includes_are_loaded_first_and_explicit_override_wins(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

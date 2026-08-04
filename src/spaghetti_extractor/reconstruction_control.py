@@ -309,7 +309,13 @@ def derive_rooted_reachable_units(
             )
             continue
         targets = _indirect_target_ids(record, unit_ids, rva_index)
-        if record.get("status") != "recovered" or targets is None or not targets:
+        external_targets = _indirect_external_targets(record)
+        if (
+            record.get("status") != "recovered"
+            or targets is None
+            or external_targets is None
+            or (not targets and not external_targets)
+        ):
             pending_frontiers.append(
                 _frontier(record, source, "unresolved_indirect_exit", exit_id=exit_id)
             )
@@ -988,7 +994,7 @@ def _indirect_target_ids(
     raw_ids = record.get("target_unit_ids", record.get("target_ids"))
     if isinstance(raw_ids, Sequence) and not isinstance(raw_ids, (str, bytes)):
         targets = {str(value) for value in raw_ids}
-        return tuple(sorted(targets)) if targets and targets <= unit_ids else None
+        return tuple(sorted(targets)) if targets <= unit_ids else None
     raw_rvas = record.get("target_rvas")
     if isinstance(raw_rvas, Sequence) and not isinstance(raw_rvas, (str, bytes)):
         result = set()
@@ -999,8 +1005,36 @@ def _indirect_target_ids(
             if len(matches) != 1:
                 return None
             result.update(matches)
-        return tuple(sorted(result)) if result else None
-    return None
+        return tuple(sorted(result))
+    return ()
+
+
+def _indirect_external_targets(
+    record: Mapping[str, Any],
+) -> tuple[tuple[str, str, str | int], ...] | None:
+    raw_targets = record.get("external_targets", [])
+    if not isinstance(raw_targets, Sequence) or isinstance(raw_targets, (str, bytes)):
+        return None
+    result: set[tuple[str, str, str | int]] = set()
+    for raw in raw_targets:
+        if not isinstance(raw, Mapping):
+            return None
+        imported = raw.get("import", raw)
+        if not isinstance(imported, Mapping):
+            return None
+        dll = imported.get("dll")
+        symbol = imported.get("symbol")
+        ordinal = imported.get("ordinal")
+        has_symbol = isinstance(symbol, str) and bool(symbol)
+        has_ordinal = _is_u32(ordinal)
+        if not isinstance(dll, str) or not dll or has_symbol == has_ordinal:
+            return None
+        result.add((
+            dll.lower(),
+            "symbol" if has_symbol else "ordinal",
+            str(symbol) if has_symbol else int(ordinal),
+        ))
+    return tuple(sorted(result))
 
 
 def _frontier(

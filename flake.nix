@@ -219,6 +219,7 @@
               ./src/spaghetti_extractor/relational/contract.py
               ./src/spaghetti_extractor/relational/model.py
               ./src/spaghetti_extractor/relational/reference_contract.py
+              ./src/spaghetti_extractor/machine_abi.py
               ./src/spaghetti_extractor/relational/schema.py
               ./src/spaghetti_extractor/relational/semantic_cutpoints.py
               ./src/spaghetti_extractor/relational/side_extraction_artifact.py
@@ -623,6 +624,7 @@
             ./src/spaghetti_extractor/relational/register_replay_format.py
             ./src/spaghetti_extractor/relational/register_transfer_core.py
             ./src/spaghetti_extractor/relational/register_transfer_ir.py
+            ./src/spaghetti_extractor/machine_abi.py
             ./src/spaghetti_extractor/relational/schema.py
             ./src/spaghetti_extractor/relational/semantic_products.py
             ./src/spaghetti_extractor/relational/semantic_products_artifact.py
@@ -718,6 +720,7 @@
               ./src/spaghetti_extractor/relational/register_replay_artifact.py
               ./src/spaghetti_extractor/relational/register_replay_format.py
               ./src/spaghetti_extractor/relational/runtime_frame_artifact.py
+              ./src/spaghetti_extractor/machine_abi.py
               ./src/spaghetti_extractor/relational/schema.py
               ./src/spaghetti_extractor/relational/semantic_products_artifact.py
               ./src/spaghetti_extractor/relational/semantic_products_format.py
@@ -761,6 +764,7 @@
               ./src/spaghetti_extractor/relational/register_replay_format.py
               ./src/spaghetti_extractor/relational/register_transfer_core.py
               ./src/spaghetti_extractor/relational/register_transfer_ir.py
+              ./src/spaghetti_extractor/machine_abi.py
               ./src/spaghetti_extractor/relational/schema.py
               ./src/spaghetti_extractor/relational/side_extraction_artifact.py
               ./src/spaghetti_extractor/relational/analyses/__init__.py
@@ -804,6 +808,7 @@
               ./src/spaghetti_extractor/relational/preflight.py
               ./src/spaghetti_extractor/relational/x87_profile.py
               ./src/spaghetti_extractor/relational/proposal_artifact.py
+              ./src/spaghetti_extractor/machine_abi.py
               ./src/spaghetti_extractor/relational/schema.py
               ./src/spaghetti_extractor/relational/semantic_products.py
               ./src/spaghetti_extractor/relational/semantic_products_artifact.py
@@ -844,6 +849,7 @@
               ./src/spaghetti_extractor/relational/proposal_artifact.py
               ./src/spaghetti_extractor/relational/register_replay_artifact.py
               ./src/spaghetti_extractor/relational/register_replay_format.py
+              ./src/spaghetti_extractor/machine_abi.py
               ./src/spaghetti_extractor/relational/schema.py
               ./src/spaghetti_extractor/relational/analyses/external.py
               ./src/spaghetti_extractor/relational/lean/__init__.py
@@ -889,6 +895,7 @@
               ./src/spaghetti_extractor/relational/register_replay_artifact.py
               ./src/spaghetti_extractor/relational/register_replay_format.py
               ./src/spaghetti_extractor/relational/runtime_frame_artifact.py
+              ./src/spaghetti_extractor/machine_abi.py
               ./src/spaghetti_extractor/relational/schema.py
               ./src/spaghetti_extractor/relational/semantic_products_artifact.py
               ./src/spaghetti_extractor/relational/semantic_products_format.py
@@ -944,6 +951,7 @@
               ./src/spaghetti_extractor/relational/register_dataflow_seed.py
               ./src/spaghetti_extractor/relational/register_transfer_core.py
               ./src/spaghetti_extractor/relational/register_transfer_ir.py
+              ./src/spaghetti_extractor/machine_abi.py
               ./src/spaghetti_extractor/relational/schema.py
               ./src/spaghetti_extractor/relational/analyses/__init__.py
               ./src/spaghetti_extractor/relational/analyses/callsite.py
@@ -1054,6 +1062,7 @@
             ./src/spaghetti_extractor/relational/region_facts.py
             ./src/spaghetti_extractor/relational/region_facts_artifact.py
             ./src/spaghetti_extractor/relational/region_facts_cli.py
+            ./src/spaghetti_extractor/machine_abi.py
             ./src/spaghetti_extractor/relational/schema.py
             ./src/spaghetti_extractor/relational/side_extraction_artifact.py
             ./src/spaghetti_extractor/relational/analyses/__init__.py
@@ -1107,6 +1116,7 @@
             ./src/spaghetti_extractor/relational/mapping.py
             ./src/spaghetti_extractor/relational/mapping_cli.py
             ./src/spaghetti_extractor/relational/model.py
+            ./src/spaghetti_extractor/machine_abi.py
             ./src/spaghetti_extractor/relational/schema.py
             ./src/spaghetti_extractor/relational/x87_profile.py
           ];
@@ -1140,6 +1150,7 @@
             ./src/spaghetti_extractor/relational/model.py
             ./src/spaghetti_extractor/relational/preflight.py
             ./src/spaghetti_extractor/relational/x87_profile.py
+            ./src/spaghetti_extractor/machine_abi.py
             ./src/spaghetti_extractor/relational/schema.py
             ./src/spaghetti_extractor/relational/side_cli.py
             ./src/spaghetti_extractor/relational/side_extraction.py
@@ -1188,6 +1199,7 @@
             ./src/spaghetti_extractor/relational/pair_normalization_cli.py
             ./src/spaghetti_extractor/relational/preflight.py
             ./src/spaghetti_extractor/relational/x87_profile.py
+            ./src/spaghetti_extractor/machine_abi.py
             ./src/spaghetti_extractor/relational/schema.py
             ./src/spaghetti_extractor/relational/side_extraction_artifact.py
             ./src/spaghetti_extractor/relational/analyses/__init__.py
@@ -1220,6 +1232,7 @@
             ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/util.py
             ./src/spaghetti_extractor/relational/__init__.py
+            ./src/spaghetti_extractor/machine_abi.py
             ./src/spaghetti_extractor/relational/schema.py
             ./src/spaghetti_extractor/relational/register_dataflow_aggregate.py
             ./src/spaghetti_extractor/relational/register_dataflow_artifact.py
@@ -1253,6 +1266,7 @@
             ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/util.py
             ./src/spaghetti_extractor/relational/__init__.py
+            ./src/spaghetti_extractor/machine_abi.py
             ./src/spaghetti_extractor/relational/schema.py
             ./src/spaghetti_extractor/relational/register_dataflow_artifact.py
             ./src/spaghetti_extractor/relational/register_dataflow_formats.py
@@ -1298,6 +1312,7 @@
             ./src/spaghetti_extractor/errors.py
             ./src/spaghetti_extractor/util.py
             ./src/spaghetti_extractor/relational/__init__.py
+            ./src/spaghetti_extractor/machine_abi.py
             ./src/spaghetti_extractor/relational/schema.py
             ./src/spaghetti_extractor/relational/register_dataflow_artifact.py
             ./src/spaghetti_extractor/relational/register_dataflow_formats.py
@@ -4101,6 +4116,7 @@
           stage-a-dxball-original-smoke = dxball.originalSmoke;
           stage-a-dxball-original-inventory = dxball.originalInventory;
           stage-a-dxball-opaque-static-export = dxball.opaqueStaticExport;
+          stage-a-dxball-import-abi-profile = dxball.importAbiProfile;
           stage-b-dxball-rooted-state-machine = dxball.rootedStateMachine;
           stage-a-dxball-machine-ir = dxball.machineIr;
           gnuHelloRoundtrip = import ./nix/gnu-hello-roundtrip.nix {
@@ -5080,6 +5096,8 @@
                   spaghetti-extractor
                   pythonEnv
                   pkgs.lean4
+                ] ++ pkgs.lib.optionals (name == "build-graph") [
+                  (pkgs.writeShellScriptBin "nix" "exit 1")
                 ];
               }
               ''
@@ -5145,6 +5163,11 @@
               [
                 ./tests/test_stage_a_build_graph.py
                 ./flake.lock
+                ./nix/stage-a-lean-graph.nix
+                ./nix/stage-a-register-dataflow-graph.nix
+                ./nix/stage-a-relational-analysis-graph.nix
+                ./src/spaghetti_extractor/relational/lean/acceptance.py
+                ./src/spaghetti_extractor/relational/lean/segments.py
               ];
           stage-a-relational-tests-static-word-relations =
             mkStageARelationalTest "acceptance-static-word-relations" "tests.test_stage_a_static_word_relations"
@@ -7628,6 +7651,7 @@
             stage-a-dxball-original-smoke
             stage-a-dxball-original-inventory
             stage-a-dxball-opaque-static-export
+            stage-a-dxball-import-abi-profile
             stage-b-dxball-rooted-state-machine
             stage-a-dxball-machine-ir
             stage-a-gnu-hello-fixtures

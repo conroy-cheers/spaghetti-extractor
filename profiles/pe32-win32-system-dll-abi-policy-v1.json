@@ -1,0 +1,12 @@
+{
+  "format": "stage-a-import-abi-policy-v1",
+  "id": "pe32-win32-system-dll-abi-policy-v1",
+  "rules": [
+    {"dll": "ddraw.dll", "abi_template": "pe32-stdcall-v1"},
+    {"dll": "dsound.dll", "abi_template": "pe32-stdcall-v1"},
+    {"dll": "gdi32.dll", "abi_template": "pe32-stdcall-v1"},
+    {"dll": "kernel32.dll", "abi_template": "pe32-stdcall-v1"},
+    {"dll": "user32.dll", "abi_template": "pe32-stdcall-v1"},
+    {"dll": "winmm.dll", "abi_template": "pe32-stdcall-v1"}
+  ]
+}
