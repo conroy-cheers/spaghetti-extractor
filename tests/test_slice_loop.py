@@ -119,7 +119,7 @@ class SliceLoopTests(unittest.TestCase):
             write_json(
                 work_items,
                 {
-                    "format": "stage-a-work-items-v1",
+                    "format": "stage-b-work-items-v2",
                     "status": "pass",
                     "work_items": [
                         {"id": "selected", "family": "semantic", "function": "selected"},
@@ -169,7 +169,7 @@ class SliceLoopTests(unittest.TestCase):
             write_json(
                 work_items,
                 {
-                    "format": "stage-a-work-items-v1",
+                    "format": "stage-b-work-items-v2",
                     "status": "pass",
                     "work_items": [
                         {
@@ -360,7 +360,7 @@ class SliceLoopTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(focused["status"], "pass")
+            self.assertEqual(focused["status"], "qualified")
             self.assertEqual(focused["counts"]["repair_items"], 0)
             report = json.loads(
                 (root / "work" / "jq" / "checks" / "selected" / "fast" / "spaghetti-extractor-slice-check.json").read_text(
@@ -757,13 +757,13 @@ class SliceLoopTests(unittest.TestCase):
         )
 
     def _smoke_pass(self, *, reference_contract, out):
-        payload = {"format": "stage-a-contract-smoke-v1", "status": "pass", "counts": {"issues": 0}}
+        payload = {"format": "stage-a-contract-smoke-v1", "status": "qualified", "counts": {"issues": 0}}
         write_json(out, payload)
         return payload
 
     def _semantic_incomplete(self, *, reference_contract, unit_contract_dir=None, out):
         payload = {
-            "format": "stage-a-semantic-coverage-v1",
+            "format": "stage-b-semantic-coverage-v2",
             "status": "incomplete",
             "next_work": [{"id": "semantic-region:selected", "family": "semantic"}],
             "counts": {},
@@ -773,8 +773,8 @@ class SliceLoopTests(unittest.TestCase):
 
     def _work_items(self, *, reference_contract, unit_contract_dir=None, out):
         payload = {
-            "format": "stage-a-work-items-v1",
-            "status": "pass",
+            "format": "stage-b-work-items-v2",
+            "status": "qualified",
             "work_items": [
                 {
                     "id": "semantic-region:selected",
@@ -792,7 +792,7 @@ class SliceLoopTests(unittest.TestCase):
     def _contract_candidate_validation(self, **kwargs):
         out = Path(kwargs["out"])
         payload = {
-            "format": "stage-a-contract-candidate-validation-v1",
+            "format": "stage-b-candidate-contract-check-v2",
             "status": "incomplete",
             "verdict": "incomplete",
             "families": [],
@@ -808,9 +808,9 @@ class SliceLoopTests(unittest.TestCase):
         if isinstance(validation, (str, Path)):
             self.assertTrue(Path(validation).is_file())
         else:
-            self.assertEqual(validation["format"], "stage-a-contract-candidate-validation-v1")
+            self.assertEqual(validation["format"], "stage-b-candidate-contract-check-v2")
         out = Path(kwargs["out"])
-        payload = {"format": "stage-a-unit-validation-v1", "status": "incomplete", "counts": {"unit_contracts": 1}}
+        payload = {"format": "stage-b-unit-contract-check-v2", "status": "incomplete", "counts": {"unit_contracts": 1}}
         write_json(out / "unit-validation.json", payload)
         return payload
 
@@ -819,10 +819,10 @@ class SliceLoopTests(unittest.TestCase):
         if isinstance(validation, (str, Path)):
             self.assertTrue(Path(validation).is_file())
         else:
-            self.assertEqual(validation["format"], "stage-a-contract-candidate-validation-v1")
+            self.assertEqual(validation["format"], "stage-b-candidate-contract-check-v2")
         out = Path(kwargs["out"])
         payload = {
-            "format": "stage-b-delta-explanation-v1",
+            "format": "stage-b-delta-explanation-v2",
             "status": "incomplete",
             "scope": "focused" if kwargs.get("focused_only") else "full",
             "repair_items": [

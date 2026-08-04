@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .relational.schema import STAGE_A_RELATIONAL_MODEL_ID
+from .analysis.schema import STATIC_ANALYSIS_MODEL_ID
 from .stage_binary import StageAInputError
 from .util import sha256_bytes
 
@@ -55,7 +55,7 @@ def lean_semantic_form_core(
     semantic_form: str,
     *,
     classifier_sha256: str,
-    model: str = STAGE_A_RELATIONAL_MODEL_ID,
+    model: str = STATIC_ANALYSIS_MODEL_ID,
 ) -> dict[str, str]:
     """Build the sole canonical payload from which a form ID is derived."""
 
@@ -88,7 +88,7 @@ def lean_semantic_form_id(
     semantic_form: str,
     *,
     classifier_sha256: str,
-    model: str = STAGE_A_RELATIONAL_MODEL_ID,
+    model: str = STATIC_ANALYSIS_MODEL_ID,
 ) -> str:
     """Return the canonical stable ID for one Lean semantic form."""
 

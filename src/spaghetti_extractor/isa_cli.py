@@ -54,7 +54,7 @@ from .isa_kernel_qualification import (
     serialize_kernel_selection,
 )
 from .isa_semantic_forms import lean_semantic_form_id
-from .relational.isa_requirements import (
+from .analysis.isa_requirements import (
     ISARequirementInventory,
 )
 from .isa_side_adapter import SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT

@@ -2,7 +2,7 @@
 
 This module deliberately has no execution-backend dependencies.  A report can
 record conformance evidence or veto a backend, but it is never proof authority
-for Stage A and can never claim to close a Stage A proof.
+for static analysis and can never claim to qualify a reconstructed candidate.
 """
 
 from __future__ import annotations
@@ -1085,8 +1085,8 @@ def _parse_trust(value: Any, context: str, backend_kind: BackendKind) -> ReportT
         raise ISAConformanceError("ISA conformance report cannot claim proof authority")
     if payload.get("closes_stage_a_proof") is not False:
         if backend_kind is BackendKind.ORACLE:
-            raise ISAConformanceError("oracle report cannot close a Stage A proof")
-        raise ISAConformanceError("ISA conformance report cannot close a Stage A proof")
+            raise ISAConformanceError("oracle report cannot qualify a reconstructed candidate")
+        raise ISAConformanceError("ISA conformance report cannot qualify a reconstructed candidate")
     return ReportTrust()
 
 

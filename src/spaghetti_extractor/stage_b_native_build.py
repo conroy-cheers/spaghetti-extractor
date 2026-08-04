@@ -1,7 +1,7 @@
 """Deterministic freestanding PE32 construction for Stage B semantic engines.
 
-This module only constructs candidate binaries.  Its manifests are build and
-provenance evidence; none of them can authorize Stage A acceptance.
+This module only constructs candidate binaries. Its manifests are build and
+provenance evidence; none of them can qualify a candidate.
 """
 
 from __future__ import annotations
@@ -588,7 +588,7 @@ def compose_stage_b_native_candidate(
         "format": NATIVE_BUILD_MANIFEST_FORMAT,
         "status": "candidate-generated",
         "acceptance_authority": "none",
-        "acceptance": "candidate generation only; Stage A whole-program theorem required",
+        "assurance": "candidate generation only; static and behavioral validation required",
         "phases": {
             "prepare": {
                 "manifest_sha256": sha256_file(prepared_path),

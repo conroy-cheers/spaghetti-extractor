@@ -33,7 +33,7 @@ from ..stage_binary import (
     _parse_stage_a_pe,
     _section_for_rva,
 )
-from ..relational.semantic_cutpoints import semantic_cutpoint_spans_for_side
+from ..analysis.cutpoints import semantic_cutpoint_spans_for_side
 from ..util import sha256_bytes, sha256_file, utc_now, write_json
 
 from .common import (
@@ -57,6 +57,7 @@ from .map_generation import (
     _section_compatibility_signature,
     _section_permission_signature,
     _section_rva_start_signature,
+    _verify_waiver_side,
     _waiver_obligations,
 )
 
@@ -90,7 +91,6 @@ def stage_a_export_reference_contract(
     out: Path,
     candidate: Path | None = None,
     mapping: Path | None = None,
-    validation_report: Path | None = None,
     layout_contract: Path | None = None,
     sidecar_dir: Path | None = None,
     unit_contract_dir: Path | None = None,
@@ -99,7 +99,6 @@ def stage_a_export_reference_contract(
     original = Path(original)
     candidate = Path(candidate) if candidate is not None else None
     mapping = Path(mapping) if mapping is not None else None
-    validation_report = Path(validation_report) if validation_report is not None else None
     layout_contract = Path(layout_contract) if layout_contract is not None else None
     out = Path(out)
     sidecar_dir = Path(sidecar_dir) if sidecar_dir is not None else out.parent
@@ -114,15 +113,6 @@ def stage_a_export_reference_contract(
     layout_contract_payload = _load_optional_json(layout_contract)
     if layout_contract_payload is None:
         layout_contract_payload = _layout_contract_from_mapping_payload(mapping_payload, mapping)
-    validation_payload = _load_stage_a_validation_report(validation_report)
-    validation_binding = _reference_validation_report_binding_constraint(
-        payload=validation_payload,
-        original=original_bin,
-        candidate=candidate_bin,
-        mapping_payload=mapping_payload,
-        model=model,
-    )
-
     map_contract = _reference_map_constraints(
         original=original_bin,
         candidate=candidate_bin,
@@ -137,11 +127,6 @@ def stage_a_export_reference_contract(
         original_bin,
         map_contract["mappings"],
         abi_callsites_constraint,
-    )
-    proof_obligation_inventory = _reference_proof_obligation_inventory(validation_payload)
-    proof_obligation_inventory = _reference_proof_obligation_inventory_with_semantic_regions(
-        proof_obligation_inventory,
-        semantic_region_contracts,
     )
     constraints = {
         "pe_sections_imports_relocations_image_base": _reference_pe_layout_constraint(
@@ -158,12 +143,9 @@ def stage_a_export_reference_contract(
         "semantic_region_contracts": semantic_region_contracts,
         "padding_alignment": map_contract["padding_alignment"],
         "layout_normalization_assumptions": _reference_layout_normalization_constraint(layout_contract_payload),
-        "validation_report_artifact_binding": validation_binding,
-        "proof_obligation_inventory": proof_obligation_inventory,
     }
     issues = [
         *_reference_constraint_issues(constraints),
-        *validation_binding.get("issues", []),
         *map_contract["issues"],
     ]
     contract = {
@@ -177,7 +159,6 @@ def stage_a_export_reference_contract(
             original=original,
             candidate=candidate,
             mapping=mapping,
-            validation_report=validation_report,
             layout_contract=layout_contract,
             contract_dir=out.parent,
         ),
@@ -207,7 +188,7 @@ def stage_a_export_reference_contract(
             "basic_blocks": len(constraints["basic_blocks_and_cfg"].get("basic_blocks", [])),
             "cfg_edge_sources": len(constraints["basic_blocks_and_cfg"].get("cfg_edges", [])),
             "abi_callsites": constraints["abi_callsites"].get("counts", {}).get("callsites", 0),
-            "proof_obligations": constraints["proof_obligation_inventory"].get("counts", {}).get("obligations", 0),
+            "reconstruction_gaps": len(issues),
         },
         "sidecars": _reference_contract_sidecar_paths(sidecar_dir, out.parent, unit_contract_dir=unit_contract_dir),
     }
@@ -235,7 +216,7 @@ def stage_a_smoke_contract(*, reference_contract: Path, out: Path | None = None)
     issues = _stage_a_smoke_contract_issues(contract, reference_contract)
     result = {
         "format": "stage-a-contract-smoke-v1",
-        "status": "pass" if not issues else "incomplete",
+        "status": "qualified" if not issues else "incomplete",
         "reference_contract": _reference_input_artifact(reference_contract),
         "issues": issues,
         "counts": {"issues": len(issues)},
@@ -268,8 +249,8 @@ def _load_contract_candidate_validation(value: dict[str, Any] | Path | None) -> 
         payload = value
     else:
         payload = _load_json(Path(value))
-    if not isinstance(payload, dict) or payload.get("format") != "stage-a-contract-candidate-validation-v1":
-        raise StageAInputError("contract candidate validation must have format stage-a-contract-candidate-validation-v1")
+    if not isinstance(payload, dict) or payload.get("format") != "stage-b-candidate-contract-check-v2":
+        raise StageAInputError("candidate contract check must have format stage-b-candidate-contract-check-v2")
     return payload
 
 def stage_a_explain_obligations(*, reference_contract: Path, focus: str, out: Path | None = None) -> dict[str, Any]:
@@ -282,25 +263,19 @@ def stage_a_explain_obligations(*, reference_contract: Path, focus: str, out: Pa
         for item in sidecars.get("coverage_gaps", {}).get("gaps", [])
         if _matches_focus(item, focus_lower)
     ]
-    obligations = [
-        item
-        for item in sidecars.get("obligation_index", {}).get("obligations", [])
-        if _matches_focus(item, focus_lower)
-    ]
     families = [
         item
         for item in contract.get("families", [])
         if isinstance(item, dict) and _matches_focus(item, focus_lower)
     ]
     result = {
-        "format": "stage-a-obligation-explanation-v1",
-        "status": "pass" if gaps or obligations or families else "incomplete",
+        "format": "stage-a-contract-explanation-v1",
+        "status": "qualified" if gaps or families else "incomplete",
         "focus": focus,
         "reference_contract": _reference_input_artifact(reference_contract),
         "families": families,
         "gaps": gaps,
-        "obligations": obligations,
-        "counts": {"families": len(families), "gaps": len(gaps), "obligations": len(obligations)},
+        "counts": {"families": len(families), "gaps": len(gaps)},
     }
     if out is not None:
         write_json(Path(out), result)
@@ -332,8 +307,8 @@ def stage_a_diff_obligations(*, before: Path, after: Path, out: Path | None = No
         if _gap_severity_rank(after_gaps[gap_id].get("severity")) > _gap_severity_rank(before_gaps[gap_id].get("severity"))
     ]
     result = {
-        "format": "stage-a-obligation-diff-v1",
-        "status": "pass",
+        "format": "stage-a-contract-diff-v1",
+        "status": "qualified",
         "before": _reference_input_artifact(before),
         "after": _reference_input_artifact(after),
         "resolved": [before_gaps[gap_id] for gap_id in sorted(before_ids - after_ids)],
@@ -456,7 +431,6 @@ def _reference_contract_inputs(
     original: Path,
     candidate: Path | None,
     mapping: Path | None,
-    validation_report: Path | None,
     layout_contract: Path | None,
     contract_dir: Path,
 ) -> dict[str, Any]:
@@ -470,14 +444,6 @@ def _reference_contract_inputs(
         "mapping": (
             _reference_input_artifact(mapping, relative_to=contract_dir)
             if mapping is not None
-            else None
-        ),
-        "validation_report": (
-            _reference_validation_report_artifact(
-                validation_report,
-                relative_to=contract_dir,
-            )
-            if validation_report is not None
             else None
         ),
         "layout_contract": (
@@ -500,39 +466,6 @@ def _reference_input_artifact(
         "sha256": sha256_file(path) if path.is_file() else None,
         "exists": path.exists(),
     }
-
-def _reference_validation_report_artifact(
-    path: Path,
-    *,
-    relative_to: Path | None = None,
-) -> dict[str, Any]:
-    if path.is_dir():
-        files = {}
-        for name in (
-            "verdict.json",
-            "prepared-proof.json",
-            "relational-proof-ir.json",
-            "relation-contract.json",
-            "relational-semantic-ir.json",
-            "relational-product-graph.json",
-            "whole-program-acceptance.json",
-            "composition-progress.json",
-        ):
-            item = path / name
-            if item.is_file():
-                files[name] = _reference_input_artifact(
-                    item,
-                    relative_to=relative_to,
-                )
-        return {
-            "path": _reference_artifact_display_path(
-                path,
-                relative_to=relative_to,
-            ),
-            "exists": True,
-            "files": files,
-        }
-    return _reference_input_artifact(path, relative_to=relative_to)
 
 def _reference_artifact_display_path(
     path: Path,
@@ -559,8 +492,6 @@ _REFERENCE_CONTRACT_FAMILY_KEYS = (
     ("semantic_regions", "semantic_region_contracts"),
     ("padding_alignment", "padding_alignment"),
     ("normalization_assumptions", "layout_normalization_assumptions"),
-    ("validation_report_artifact_binding", "validation_report_artifact_binding"),
-    ("proof_inventory", "proof_obligation_inventory"),
 )
 
 def _reference_contract_sidecar_paths(sidecar_dir: Path, contract_dir: Path, *, unit_contract_dir: Path | None = None) -> dict[str, Any]:
@@ -698,9 +629,6 @@ def _reference_family_counts(family: str, constraint: dict[str, Any]) -> dict[st
         }
     if family == "padding_alignment":
         return {"waivers": len(constraint.get("waivers", [])) if isinstance(constraint.get("waivers"), list) else 0}
-    if family == "proof_inventory":
-        counts = constraint.get("counts") if isinstance(constraint.get("counts"), dict) else {}
-        return {"obligations": int(counts.get("obligations") or 0)}
     return {}
 
 def _reference_coverage_gaps_sidecar(contract: dict[str, Any], contract_ref: dict[str, Any]) -> dict[str, Any]:
@@ -709,7 +637,7 @@ def _reference_coverage_gaps_sidecar(contract: dict[str, Any], contract_ref: dic
         "format": "stage-a-coverage-gaps-v1",
         "reference_contract": contract_ref,
         "contract_status": contract.get("status"),
-        "status": "pass" if not gaps else "incomplete",
+        "status": "qualified" if not gaps else "incomplete",
         "gaps": gaps,
         "next_work": _ranked_gap_next_work(gaps),
         "counts": {
@@ -721,34 +649,15 @@ def _reference_coverage_gaps_sidecar(contract: dict[str, Any], contract_ref: dic
     }
 
 def _reference_obligation_index_sidecar(contract: dict[str, Any], contract_ref: dict[str, Any]) -> dict[str, Any]:
-    proof = _contract_constraint(contract, "proof_obligation_inventory")
-    obligations = proof.get("obligations") if isinstance(proof.get("obligations"), list) else []
-    indexed = []
-    for item in obligations:
-        if not isinstance(item, dict):
-            continue
-        obligation_id = str(item.get("id") or "")
-        indexed.append(
-            {
-                "id": obligation_id,
-                "stable_id": f"obligation:{_safe_gap_part(obligation_id)}",
-                "kind": str(item.get("kind") or ""),
-                "status": str(item.get("status") or ""),
-                "proof_rule": item.get("proof_rule"),
-                "family": _obligation_family(obligation_id),
-                "related_gap_id": f"obligation:{_safe_gap_part(obligation_id)}",
-            }
-        )
+    indexed = _reference_contract_gap_items(contract)
     return {
-        "format": "stage-a-obligation-index-v1",
+        "format": "stage-a-reconstruction-gap-index-v1",
         "reference_contract": contract_ref,
         "contract_status": contract.get("status"),
-        "lean": proof.get("lean") if isinstance(proof.get("lean"), dict) else {},
-        "obligations": indexed,
+        "gaps": indexed,
         "counts": {
-            "obligations": len(indexed),
-            "by_status": _count_by(indexed, "status"),
-            "by_kind": _count_by(indexed, "kind"),
+            "gaps": len(indexed),
+            "by_severity": _count_by(indexed, "severity"),
             "by_family": _count_by(indexed, "family"),
         },
     }
@@ -785,7 +694,6 @@ def _reference_unit_contract_paths(unit_contract_dir: Path) -> dict[str, Path]:
         "function_contracts": unit_contract_dir / "function-contracts.jsonl",
         "cluster_contracts": unit_contract_dir / "cluster-contracts.jsonl",
         "repair_units": unit_contract_dir / "repair-units.json",
-        "source_obligations": unit_contract_dir / "source-obligations.json",
         "semantic_transfer_contracts": unit_contract_dir / "semantic-transfer-contracts.jsonl",
         "semantic_region_contracts": unit_contract_dir / "semantic-region-contracts.jsonl",
         "memory_frame_contracts": unit_contract_dir / "memory-frame-contracts.json",
@@ -807,7 +715,6 @@ def _write_reference_unit_contract_sidecars(
     _write_jsonl(paths["function_contracts"], payload["function_contracts"])
     _write_jsonl(paths["cluster_contracts"], payload["cluster_contracts"])
     write_json(paths["repair_units"], payload["repair_units"])
-    write_json(paths["source_obligations"], payload["source_obligations"])
     _write_jsonl(paths["semantic_transfer_contracts"], payload["semantic_transfer_contracts"])
     _write_jsonl(paths["semantic_region_contracts"], payload["semantic_region_contracts"])
     write_json(paths["memory_frame_contracts"], payload["memory_frame_contracts"])
@@ -853,7 +760,7 @@ def _reference_semantic_region_contracts_constraint(
     return {
         "format": "stage-a-semantic-region-contracts-v1",
         "status": "not_applicable",
-        "evidence_kind": "relational-v3-proof-ir",
+        "evidence_kind": "not-yet-derived",
         "regions": [],
         "counts": {"regions": 0, "checked": 0, "incomplete": 0},
     }
@@ -868,33 +775,6 @@ def _reference_semantic_region_unit_contracts(contract: dict[str, Any], contract
         row["reference_contract"] = contract_ref
         rows.append(row)
     return sorted(rows, key=lambda item: str(item.get("id") or ""))
-
-def _reference_proof_obligation_inventory_with_semantic_regions(
-    proof: dict[str, Any],
-    semantic_regions: dict[str, Any],
-) -> dict[str, Any]:
-    obligations = [item for item in proof.get("obligations", []) if isinstance(item, dict)]
-    region_obligations = [
-        item
-        for region in semantic_regions.get("regions", []) if isinstance(region, dict)
-        for item in region.get("proof_obligations", []) if isinstance(item, dict)
-    ]
-    if not region_obligations:
-        return proof
-    updated = dict(proof)
-    updated["obligations"] = [*obligations, *region_obligations]
-    counts = dict(updated.get("counts") if isinstance(updated.get("counts"), dict) else {})
-    counts["obligations"] = len(updated["obligations"])
-    counts["by_status"] = _count_by(updated["obligations"], "status")
-    updated["counts"] = counts
-    statuses = {str(item.get("status") or "") for item in updated["obligations"]}
-    if proof.get("status") == "satisfied" and statuses <= {"proved", "waived_noncode"}:
-        updated["status"] = "satisfied"
-    elif "failed" in statuses:
-        updated["status"] = "failed"
-    else:
-        updated["status"] = "incomplete"
-    return updated
 
 def _semantic_transfer_contracts(
     binary: StageABinary,
@@ -990,7 +870,7 @@ def _semantic_transfer_contract(
             "ordered_events": 0,
             "edge_conditions": 0,
         },
-        "acceptance": "guidance contract only; final acceptance requires Stage A binary proof",
+        "acceptance": "guidance contract only; candidate static and behavioral validation remain required",
     }
     if len(data) != side.size:
         return {
@@ -1170,9 +1050,9 @@ _X87_PHYSICAL_OBSERVABLE_FIELDS = (
 
 _X87_REPLAY_OBLIGATION_MODEL = "native_exact_x87_command_replay_obligation_v1"
 
-_X87_SINGLETON_CHECKED_DECODER = "StageA.Relational.X87.decodeSingletonCommand"
+_X87_SINGLETON_CHECKED_DECODER = "StageA.Formal.decodeInstructionExact"
 
-_X87_SINGLETON_CHECKED_EXECUTOR = "StageA.Relational.X87.executeSingletonCommand"
+_X87_SINGLETON_CHECKED_EXECUTOR = "StageA.Formal.executeInstruction"
 
 _ORDINARY_CHECKED_DECODER = "StageA.Formal.decodeInstructionExact"
 
@@ -2314,7 +2194,7 @@ def _semantic_cluster_contracts(contract: dict[str, Any], contract_ref: dict[str
                 "blocker": blocker,
                 "next_action": next_action,
                 "source_cluster": cluster,
-                "acceptance": "guidance cluster only; final acceptance requires Stage A binary proof",
+                "acceptance": "guidance cluster only; candidate static and behavioral validation remain required",
             }
         )
     return sorted(rows, key=lambda item: str(item.get("id") or ""))
@@ -2364,7 +2244,6 @@ def _reference_unit_contract_payloads(
     block_contracts = _reference_block_contracts(contract, contract_ref)
     function_contracts = _reference_function_contracts(contract, contract_ref, block_contracts)
     cluster_contracts = _reference_cluster_contracts(contract, contract_ref)
-    source_obligations = _reference_source_obligations_sidecar(contract, contract_ref, block_contracts, function_contracts, cluster_contracts)
     repair_units = _reference_repair_units_sidecar(
         contract,
         contract_ref,
@@ -2378,7 +2257,6 @@ def _reference_unit_contract_payloads(
         "function_contracts": function_contracts,
         "cluster_contracts": cluster_contracts,
         "repair_units": repair_units,
-        "source_obligations": source_obligations,
         "semantic_transfer_contracts": semantic_payload["semantic_transfer_contracts"],
         "semantic_region_contracts": semantic_payload.get("semantic_region_contracts", []),
         "memory_frame_contracts": semantic_payload["memory_frame_contracts"],
@@ -2443,7 +2321,7 @@ def _reference_block_contracts(contract: dict[str, Any], contract_ref: dict[str,
                 "composition": {
                     "pre_state": "caller-provided machine state constrained by function and predecessor contracts",
                     "post_state": "successor-visible machine state and environment events in state_contract",
-                    "acceptance": "informational unit contract only; final acceptance requires Stage A pass",
+                    "acceptance": "informational unit contract only; candidate validation remains required",
                 },
             }
         )
@@ -2584,44 +2462,6 @@ def _tls_cluster_contracts(contract: dict[str, Any], contract_ref: dict[str, Any
             )
         )
     return result
-
-def _reference_source_obligations_sidecar(
-    contract: dict[str, Any],
-    contract_ref: dict[str, Any],
-    block_contracts: list[dict[str, Any]],
-    function_contracts: list[dict[str, Any]],
-    cluster_contracts: list[dict[str, Any]],
-) -> dict[str, Any]:
-    proof = _contract_constraint(contract, "proof_obligation_inventory")
-    obligations = proof.get("obligations") if isinstance(proof.get("obligations"), list) else []
-    unit_lookup = _unit_contract_obligation_lookup(block_contracts, function_contracts, cluster_contracts)
-    rows = []
-    for obligation in obligations:
-        if not isinstance(obligation, dict):
-            continue
-        obligation_id = str(obligation.get("id") or "")
-        rows.append(
-            {
-                "id": f"source-obligation:{_safe_gap_part(obligation_id)}",
-                "obligation_id": obligation_id,
-                "kind": obligation.get("kind"),
-                "status": obligation.get("status"),
-                "proof_rule": obligation.get("proof_rule"),
-                "family": _obligation_family(obligation_id),
-                "unit_contract_ids": _unit_contract_ids_for_obligation(obligation_id, unit_lookup),
-            }
-        )
-    return {
-        "format": "stage-a-source-obligations-v1",
-        "reference_contract": contract_ref,
-        "contract_status": contract.get("status"),
-        "obligations": rows,
-        "counts": {
-            "obligations": len(rows),
-            "by_status": _count_by(rows, "status"),
-            "by_family": _count_by(rows, "family"),
-        },
-    }
 
 def _reference_repair_units_sidecar(
     contract: dict[str, Any],
@@ -2877,102 +2717,6 @@ def _function_names_by_block(contract: dict[str, Any]) -> dict[str, str]:
         for block_id in function.get("block_ids", []) if isinstance(function.get("block_ids"), list) else []:
             result[str(block_id)] = name
     return result
-
-def _unit_contract_obligation_lookup(
-    block_contracts: list[dict[str, Any]],
-    function_contracts: list[dict[str, Any]],
-    cluster_contracts: list[dict[str, Any]],
-) -> dict[str, Any]:
-    by_key: dict[str, set[str]] = {}
-    fallback_rows: list[tuple[str, str]] = []
-
-    def add_key(key: Any, unit_id: str) -> None:
-        if key is None:
-            return
-        text = str(key).strip().lower()
-        if not text:
-            return
-        by_key.setdefault(text, set()).add(unit_id)
-
-    for rows in (block_contracts, function_contracts, cluster_contracts):
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            unit_id = str(row.get("id") or "")
-            if not unit_id:
-                continue
-            add_key(unit_id, unit_id)
-            for key_name in ("block_id", "function", "cluster_kind", "category"):
-                add_key(row.get(key_name), unit_id)
-            block_id = row.get("block_id")
-            if isinstance(block_id, str) and block_id:
-                add_key(f"block:{block_id}", unit_id)
-                add_key(f"reachability:{block_id}", unit_id)
-            function = row.get("function")
-            if isinstance(function, str) and function:
-                add_key(f"function:{function}", unit_id)
-            fallback_rows.append((
-                unit_id,
-                json.dumps(row, sort_keys=True, default=str).lower(),
-            ))
-    return {"by_key": by_key, "fallback_rows": fallback_rows}
-
-def _unit_contract_ids_for_obligation(obligation_id: str, lookup: dict[str, Any]) -> list[str]:
-    text = obligation_id.lower()
-    if not text:
-        return []
-    by_key = lookup.get("by_key") if isinstance(lookup.get("by_key"), dict) else {}
-    ids: set[str] = set()
-
-    def add_lookup(key: str) -> None:
-        ids.update(by_key.get(key.lower(), set()))
-
-    add_lookup(text)
-    parts = obligation_id.split(":")
-    known_prefix = parts[0] if parts else ""
-    location_prefixes = {
-        "address-separation",
-        "block",
-        "direct-call-push",
-        "edge",
-        "external-call-edge",
-        "function",
-        "import-register-invariant",
-        "import-register-seed",
-        "indirect-edge",
-        "indirect-import-call",
-        "machine-import-call",
-        "memory",
-        "memory-transition",
-        "reachability",
-        "relational",
-        "return-pop",
-        "return-slot-call-summary",
-        "return-slot-frame",
-        "return-slot-transfer",
-        "segment",
-        "stack-separation-inventory",
-        "stack-window-frontier",
-        "waiver",
-    }
-    if len(parts) >= 2 and known_prefix in location_prefixes:
-        for location in parts[1:]:
-            add_lookup(location)
-            add_lookup(f"block:{location}")
-            add_lookup(f"reachability:{location}")
-            add_lookup(f"function:{location}")
-
-    if ids:
-        return sorted(ids)
-    if known_prefix in location_prefixes:
-        return []
-
-    fallback_rows = lookup.get("fallback_rows") if isinstance(lookup.get("fallback_rows"), list) else []
-    return sorted(
-        {
-            unit_id for unit_id, serialized in fallback_rows if text in serialized
-        }
-    )
 
 def _function_for_gap(
     gap: dict[str, Any],
@@ -3254,7 +2998,6 @@ def _load_reference_unit_contract_sidecars(
         "function_contracts": _load_jsonl_or(paths["function_contracts"], fallback["function_contracts"]),
         "cluster_contracts": _load_jsonl_or(paths["cluster_contracts"], fallback["cluster_contracts"]),
         "repair_units": _load_json_or(paths["repair_units"], fallback["repair_units"]),
-        "source_obligations": _load_json_or(paths["source_obligations"], fallback["source_obligations"]),
         "semantic_transfer_contracts": _load_jsonl_or(paths["semantic_transfer_contracts"], fallback["semantic_transfer_contracts"]),
         "semantic_region_contracts": _load_jsonl_or(paths["semantic_region_contracts"], fallback["semantic_region_contracts"]),
         "memory_frame_contracts": _load_json_or(paths["memory_frame_contracts"], fallback["memory_frame_contracts"]),
@@ -3327,7 +3070,6 @@ def _reference_contract_gap_items(contract: dict[str, Any]) -> list[dict[str, An
         if isinstance(issue, dict):
             gaps.append(_gap_from_issue(issue))
     gaps.extend(_byte_coverage_gap_items(contract))
-    gaps.extend(_proof_inventory_gap_items(contract))
     return sorted(_dedupe_gaps(gaps), key=lambda item: str(item.get("gap_id") or ""))
 
 def _gap_from_issue(issue: dict[str, Any]) -> dict[str, Any]:
@@ -3379,33 +3121,6 @@ def _byte_coverage_gap_items(contract: dict[str, Any]) -> list[dict[str, Any]]:
             )
     return items
 
-def _proof_inventory_gap_items(contract: dict[str, Any]) -> list[dict[str, Any]]:
-    proof = _contract_constraint(contract, "proof_obligation_inventory")
-    obligations = proof.get("obligations") if isinstance(proof.get("obligations"), list) else []
-    items = []
-    for obligation in obligations:
-        if not isinstance(obligation, dict):
-            continue
-        status = str(obligation.get("status") or "")
-        if status in {"proved", "waived_noncode"}:
-            continue
-        obligation_id = str(obligation.get("id") or "unknown")
-        items.append(
-            {
-                "gap_id": f"obligation:{_safe_gap_part(obligation_id)}",
-                "family": "proof_inventory",
-                "category": f"obligation_{status or 'unknown'}",
-                "severity": "violated" if status == "failed" else "incomplete",
-                "location": {"obligation_id": obligation_id, "kind": obligation.get("kind")},
-                "expected": "proved or explicitly waived non-code obligation",
-                "observed": status or "missing status",
-                "example": obligation,
-                "cause_hint": "Stage A final pass is blocked by this proof obligation",
-                "next_action": "repair the candidate, mapping, waiver, or proof rule until this obligation closes",
-            }
-        )
-    return items
-
 def _dedupe_gaps(gaps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_id: dict[str, dict[str, Any]] = {}
     for gap in gaps:
@@ -3437,7 +3152,6 @@ def _ranked_gap_next_work(gaps: list[dict[str, Any]], *, limit: int = 10) -> lis
 
 def _gap_family_rank(family: str) -> int:
     order = {
-        "validation_report_artifact_binding": 0,
         "binary_faithfulness": 1,
         "normalization_assumptions": 1,
         "executable_span_coverage": 2,
@@ -3450,7 +3164,7 @@ def _gap_family_rank(family: str) -> int:
         "semantic_region": 6,
         "semantic_regions": 6,
         "semantic_cluster": 6,
-        "proof_inventory": 7,
+        "reconstruction_gap": 7,
     }
     return order.get(family, 99)
 
@@ -3459,27 +3173,13 @@ def _issue_family(obligation_id: str, category: str) -> str:
     for family, constraint in _REFERENCE_CONTRACT_FAMILY_KEYS:
         if family in text or constraint in text:
             return family
-    if "validation-report" in text or "validation_report" in text:
-        return "validation_report_artifact_binding"
     if "layout" in text or "section" in text or "import" in text or "image_base" in text:
         return "binary_faithfulness"
     if "waiver" in text or "padding" in text:
         return "padding_alignment"
     if "mapping" in text or "map" in text:
         return "cfg_blocks"
-    return "proof_inventory"
-
-def _obligation_family(obligation_id: str) -> str:
-    text = obligation_id.lower()
-    if text.startswith("block:") or text.startswith("cfg:"):
-        return "cfg_blocks"
-    if text.startswith("reachability:") or "jump" in text:
-        return "roots_and_jump_targets"
-    if text.startswith("layout:"):
-        return "binary_faithfulness"
-    if "waiver" in text or "noncode" in text:
-        return "padding_alignment"
-    return "proof_inventory"
+    return "reconstruction_gap"
 
 def _load_reference_contract_sidecars(contract: dict[str, Any], contract_path: Path) -> dict[str, Any]:
     sidecars = contract.get("sidecars") if isinstance(contract.get("sidecars"), dict) else {}
@@ -3527,15 +3227,6 @@ def _stage_a_smoke_contract_issues(contract: Any, contract_path: Path) -> list[d
             )
     issues.extend(_stage_a_smoke_artifact_issues(contract, contract_path))
     issues.extend(_stage_a_smoke_sidecar_issues(contract, contract_path))
-    for marker in _unchecked_marker_paths(contract):
-        issues.append(
-            _incomplete_record(
-                category="unchecked_lean_marker",
-                obligation_id=f"stage-a-smoke-contract:lean:{marker}",
-                blocker="reference contract contains an unchecked Lean marker",
-                next_action="rerun Stage A validation until Lean final-pass evidence is checked",
-            )
-        )
     return issues
 
 def _stage_a_smoke_artifact_issues(
@@ -3555,27 +3246,6 @@ def _stage_a_smoke_artifact_issues(
                 relative_to=contract_path.parent,
             )
         )
-    validation_report = inputs.get("validation_report")
-    if isinstance(validation_report, dict):
-        files = validation_report.get("files")
-        if isinstance(files, dict):
-            for name, artifact in files.items():
-                if isinstance(artifact, dict):
-                    issues.extend(
-                        _stage_a_smoke_artifact_hash_issues(
-                            f"validation_report:{name}",
-                            artifact,
-                            relative_to=contract_path.parent,
-                        )
-                    )
-        else:
-            issues.extend(
-                _stage_a_smoke_artifact_hash_issues(
-                    "validation_report",
-                    validation_report,
-                    relative_to=contract_path.parent,
-                )
-            )
     return issues
 
 def _stage_a_smoke_artifact_hash_issues(
@@ -3675,25 +3345,6 @@ def _resolve_contract_sidecar_path(contract_path: Path, path_text: Any, name: st
         return path if path.is_absolute() else contract_path.parent / path
     return contract_path.parent / f"{name}.json"
 
-def _unchecked_marker_paths(contract: dict[str, Any]) -> list[str]:
-    proof = _contract_constraint(contract, "proof_obligation_inventory")
-    lean = proof.get("lean") if isinstance(proof.get("lean"), dict) else {}
-    markers: list[str] = []
-
-    def visit(value: Any, path: str) -> None:
-        if isinstance(value, dict):
-            for key, child in value.items():
-                child_path = f"{path}.{key}" if path else str(key)
-                if "unchecked" in str(key).lower() and child not in (None, False, 0, "", [], {}):
-                    markers.append(child_path)
-                visit(child, child_path)
-        elif isinstance(value, list):
-            for index, child in enumerate(value):
-                visit(child, f"{path}[{index}]")
-
-    visit(lean, "lean")
-    return sorted(set(markers))
-
 def _matches_focus(item: Any, focus_lower: str) -> bool:
     return focus_lower in json.dumps(item, sort_keys=True, default=str).lower()
 
@@ -3715,258 +3366,6 @@ def _layout_contract_from_mapping_payload(payload: Any, mapping: Path | None) ->
         return _load_json(path)
     except StageAInputError:
         return None
-
-def _load_stage_a_validation_report(path: Path | None) -> dict[str, Any] | None:
-    if path is None:
-        return None
-    report = path if path.is_dir() else path.parent
-    explicit_prepared = path.is_file() and path.name == "prepared-proof.json"
-    if explicit_prepared:
-        verdict_path = report / "verdict.json"
-        prepared_path = path
-    else:
-        verdict_path = report / "verdict.json" if path.is_dir() else path
-        prepared_path = report / "prepared-proof.json"
-    proof_ir_path = report / "relational-proof-ir.json"
-    if not proof_ir_path.is_file():
-        raise StageAInputError(
-            "relational v3 Stage A report must contain relational-proof-ir.json"
-        )
-    proof_ir = _load_json(proof_ir_path)
-    report_kind = "relational_v3"
-    if verdict_path.is_file() and not explicit_prepared:
-        verdict = _load_json(verdict_path)
-        report_manifest_sha256 = sha256_file(verdict_path)
-    elif prepared_path.is_file():
-        prepared = _load_json(prepared_path)
-        prepared_format = prepared.get("format")
-        if (
-            prepared_format not in {
-                "stage-a-prepared-relational-v1",
-                "stage-a-prepared-relational-v2",
-            }
-            or prepared.get("status") != "prepared"
-            or prepared.get("profile") != "x86-pe32-lean-relational-v3"
-            or prepared.get("model") != REFERENCE_CONTRACT_MODEL_ID
-            or (
-                prepared_format == "stage-a-prepared-relational-v2"
-                and not isinstance(prepared.get("artifact_manifest_sha256"), str)
-            )
-        ):
-            raise StageAInputError(
-                "reference contracts require a relational v3 prepared proof"
-            )
-        report_kind = "relational_v3_prepared"
-        report_manifest_sha256 = sha256_file(prepared_path)
-        verdict = {
-            "format": "stage-a-relational-prepared-verdict-v1",
-            "verdict": "incomplete",
-            "profile": prepared["profile"],
-            "model": prepared["model"],
-            "acceptance_authority": False,
-            "claim_scope": {
-                "kind": "whole_program_observational_equivalence",
-                "whole_program_observational_equivalence": False,
-                "acceptance_eligible": False,
-            },
-            "original": {"sha256": prepared.get("original_sha256")},
-            "candidate": {"sha256": prepared.get("candidate_sha256")},
-            "proof_ir_sha256": prepared.get("proof_ir_sha256"),
-            "interface_manifest_sha256": prepared.get(
-                "interface_manifest_sha256"
-            ),
-            "relation_contract_sha256": prepared.get("relation_contract_sha256"),
-            "semantic_ir_sha256": prepared.get("semantic_ir_sha256"),
-            "product_graph_sha256": prepared.get("product_graph_sha256"),
-            "whole_program_acceptance_sha256": prepared.get(
-                "whole_program_acceptance_sha256"
-            ),
-            "composition_progress_sha256": prepared.get(
-                "composition_progress_sha256"
-            ),
-            "artifact_manifest_sha256": prepared.get(
-                "artifact_manifest_sha256"
-            ),
-            "proof": {"theorem": None, "lean": {"status": "not_built"}},
-        }
-    else:
-        raise StageAInputError(
-            "Stage A report must contain verdict.json or prepared-proof.json"
-        )
-    if verdict.get("profile") != "x86-pe32-lean-relational-v3":
-        raise StageAInputError("reference contracts require a relational v3 Stage A report")
-    payload: dict[str, Any] = {
-        "kind": report_kind,
-        "path": str(report),
-        "verdict": verdict,
-        "proof_ir": proof_ir,
-        "report_manifest_sha256": report_manifest_sha256,
-        "proof_ir_file_sha256": sha256_file(proof_ir_path),
-        "artifacts": {},
-    }
-    for name in (
-        "stage-a-interface-manifest.json",
-        "relation-contract.json",
-        "relational-semantic-ir.json",
-        "relational-product-graph.json",
-        "whole-program-acceptance.json",
-        "composition-progress.json",
-        "artifact-manifest.json",
-    ):
-        artifact_path = report / name
-        if artifact_path.is_file():
-            payload["artifacts"][name] = {
-                "payload": _load_json(artifact_path),
-                "sha256": sha256_file(artifact_path),
-            }
-    return payload
-
-def _reference_validation_report_binding_constraint(
-    *,
-    payload: dict[str, Any] | None,
-    original: StageABinary,
-    candidate: StageABinary | None,
-    mapping_payload: Any,
-    model: str,
-) -> dict[str, Any]:
-    if payload is None:
-        return {
-            "status": "not_provided",
-            "evidence_kind": "none",
-            "blocker": "no relational v3 Stage A report was provided",
-            "next_action": "run stage-a-prove and export the contract with --validation-report",
-            "issues": [],
-        }
-
-    verdict = payload.get("verdict") if isinstance(payload.get("verdict"), dict) else {}
-    proof_ir = payload.get("proof_ir") if isinstance(payload.get("proof_ir"), dict) else {}
-    artifacts = payload.get("artifacts") if isinstance(payload.get("artifacts"), dict) else {}
-    issues: list[dict[str, Any]] = []
-    checks: dict[str, bool] = {}
-
-    def check(name: str, condition: bool, blocker: str, details: dict[str, Any]) -> None:
-        checks[name] = condition
-        if condition:
-            return
-        issues.append(
-            _incomplete_record(
-                category="validation_report_binding_mismatch",
-                obligation_id=f"reference-contract:validation-report-binding:{name}",
-                blocker=blocker,
-                next_action="regenerate the relational v3 report from the exact binaries and relation contract",
-                details=details,
-            )
-        )
-
-    check(
-        "profile",
-        verdict.get("profile") == "x86-pe32-lean-relational-v3",
-        "Stage A report is not relational v3",
-        {"actual": verdict.get("profile")},
-    )
-    check(
-        "model",
-        verdict.get("model") == model == REFERENCE_CONTRACT_MODEL_ID,
-        "Stage A report and reference contract use different relational models",
-        {"expected": REFERENCE_CONTRACT_MODEL_ID, "report": verdict.get("model"), "requested": model},
-    )
-    verdict_original = verdict.get("original") if isinstance(verdict.get("original"), dict) else {}
-    verdict_candidate = verdict.get("candidate") if isinstance(verdict.get("candidate"), dict) else {}
-    check(
-        "original",
-        verdict_original.get("sha256") == original.sha256
-        and proof_ir.get("original", {}).get("sha256") == original.sha256,
-        "Stage A report is bound to a different original binary",
-        {
-            "expected": original.sha256,
-            "verdict": verdict_original.get("sha256"),
-            "proof_ir": proof_ir.get("original", {}).get("sha256"),
-        },
-    )
-    expected_candidate = candidate.sha256 if candidate is not None else None
-    check(
-        "candidate",
-        candidate is None
-        or (
-            verdict_candidate.get("sha256") == expected_candidate
-            and proof_ir.get("candidate", {}).get("sha256") == expected_candidate
-        ),
-        "Stage A report is bound to a different candidate binary",
-        {
-            "expected": expected_candidate,
-            "verdict": verdict_candidate.get("sha256"),
-            "proof_ir": proof_ir.get("candidate", {}).get("sha256"),
-        },
-    )
-    check(
-        "proof_ir",
-        payload.get("proof_ir_file_sha256") == verdict.get("proof_ir_sha256"),
-        "relational-proof-ir.json does not match the verdict hash",
-        {
-            "expected": verdict.get("proof_ir_sha256"),
-            "actual": payload.get("proof_ir_file_sha256"),
-        },
-    )
-
-    artifact_hash_fields = {
-        "stage-a-interface-manifest.json": "interface_manifest_sha256",
-        "relation-contract.json": "relation_contract_sha256",
-        "relational-semantic-ir.json": "semantic_ir_sha256",
-        "relational-product-graph.json": "product_graph_sha256",
-        "whole-program-acceptance.json": "whole_program_acceptance_sha256",
-        "composition-progress.json": "composition_progress_sha256",
-        "artifact-manifest.json": "artifact_manifest_sha256",
-    }
-    for artifact_name, verdict_field in artifact_hash_fields.items():
-        expected = verdict.get(verdict_field)
-        artifact = artifacts.get(artifact_name) if isinstance(artifacts.get(artifact_name), dict) else {}
-        actual = artifact.get("sha256")
-        check(
-            artifact_name.removesuffix(".json").replace("-", "_"),
-            expected is None or actual == expected,
-            f"{artifact_name} does not match the hash recorded by verdict.json",
-            {"expected": expected, "actual": actual},
-        )
-
-    map_original = (
-        mapping_payload.get("original")
-        if isinstance(mapping_payload, dict) and isinstance(mapping_payload.get("original"), dict)
-        else {}
-    )
-    map_candidate = (
-        mapping_payload.get("candidate")
-        if isinstance(mapping_payload, dict) and isinstance(mapping_payload.get("candidate"), dict)
-        else {}
-    )
-    check(
-        "mapping",
-        not isinstance(mapping_payload, dict)
-        or (not map_original and not map_candidate)
-        or (
-            map_original.get("sha256") == original.sha256
-            and (candidate is None or map_candidate.get("sha256") == expected_candidate)
-        ),
-        "block map is bound to different binaries than the relational v3 report",
-        {
-            "original": map_original.get("sha256"),
-            "candidate": map_candidate.get("sha256"),
-        },
-    )
-
-    return {
-        "status": "satisfied" if not issues else "incomplete",
-        "evidence_kind": "relational-v3-artifact-binding",
-        "report": payload.get("path"),
-        "report_kind": payload.get("kind"),
-        "profile": verdict.get("profile"),
-        "model": verdict.get("model"),
-        "verdict": verdict.get("verdict"),
-        "acceptance_authority": verdict.get("acceptance_authority"),
-        "checks": checks,
-        "issues": issues,
-        "blocker": None if not issues else "relational v3 report artifact binding is incomplete",
-        "next_action": None if not issues else "regenerate the relational v3 report and reference contract",
-    }
 
 def _reference_pe_layout_constraint(
     *,
@@ -4038,14 +3437,44 @@ def _reference_map_constraints(
     if candidate is not None:
         verified_waivers, waiver_obligations = _waiver_obligations(original, candidate, waivers)
     elif waivers:
-        map_issues.append(
-            _incomplete_record(
-                category="unverified_noncode_waiver",
-                obligation_id="reference-contract:waivers",
-                blocker="non-code waivers require a candidate binary before Stage A can verify pairwise padding",
-                next_action="export the reference contract with --candidate when mapping waivers are present",
+        for waiver in waivers:
+            check = _verify_waiver_side("original", original, waiver)
+            obligation_id = (
+                f"waiver:{waiver.id}:original:"
+                f"{waiver.rva_start:x}-{waiver.rva_end:x}"
             )
-        )
+            if check["status"] == "verified":
+                verified_waivers.append(waiver)
+                waiver_obligations.append({
+                    "id": obligation_id,
+                    "kind": "executable_byte_class",
+                    "status": "classified_padding",
+                    "classification_rule": "verified_original_padding_bytes_v1",
+                    "binary": "original",
+                    "rva_start": waiver.rva_start,
+                    "rva_end": waiver.rva_end,
+                    "reason": waiver.reason,
+                    "checks": [check],
+                })
+            else:
+                incomplete = _incomplete_record(
+                    category="unverified_noncode_waiver",
+                    obligation_id=obligation_id,
+                    blocker="non-code bytes are not verified as executable-section padding",
+                    next_action="narrow the range to verified padding or classify it as code",
+                    details={"check": check},
+                )
+                map_issues.append(incomplete)
+                waiver_obligations.append({
+                    "id": obligation_id,
+                    "kind": "executable_byte_class",
+                    "status": "incomplete",
+                    "binary": "original",
+                    "rva_start": waiver.rva_start,
+                    "rva_end": waiver.rva_end,
+                    "reason": waiver.reason,
+                    "incomplete": incomplete,
+                })
     for obligation in waiver_obligations:
         if obligation.get("status") == "incomplete" and isinstance(obligation.get("incomplete"), dict):
             map_issues.append(obligation["incomplete"])
@@ -4427,59 +3856,6 @@ def _reference_layout_normalization_constraint(payload: dict[str, Any] | None) -
         "unsatisfied_required_facts": unsatisfied,
     }
 
-def _reference_proof_obligation_inventory(payload: dict[str, Any] | None) -> dict[str, Any]:
-    if payload is None:
-        return {
-            "status": "not_provided",
-            "evidence_kind": "none",
-            "counts": {"obligations": 0},
-            "obligations": [],
-            "verdict": None,
-        }
-    verdict = payload.get("verdict") if isinstance(payload.get("verdict"), dict) else {}
-    proof_ir = payload.get("proof_ir") if isinstance(payload.get("proof_ir"), dict) else {}
-    obligations = proof_ir.get("obligations") if isinstance(proof_ir.get("obligations"), list) else []
-    inventory = [
-        {
-            "id": str(item.get("id") or ""),
-            "kind": str(item.get("kind") or ""),
-            "status": str(item.get("status") or ""),
-            "evidence": item.get("evidence"),
-            "blocker": item.get("blocker"),
-            "next_action": item.get("next_action"),
-        }
-        for item in obligations
-        if isinstance(item, dict)
-    ]
-    lean = verdict.get("lean_audit")
-    final_pass_allowed = (
-        isinstance(lean, dict)
-        and lean.get("status") == "checked"
-        and verdict.get("acceptance_authority") == "whole_program_lean"
-        and verdict.get("claim_scope", {}).get("acceptance_eligible") is True
-    )
-    status = (
-        "satisfied"
-        if verdict.get("verdict") == "pass"
-        and proof_ir.get("status") == "satisfied"
-        and final_pass_allowed
-        else "incomplete"
-    )
-    by_status: dict[str, int] = {}
-    for obligation in inventory:
-        obligation_status = str(obligation.get("status") or "unknown")
-        by_status[obligation_status] = by_status.get(obligation_status, 0) + 1
-    return {
-        "status": status,
-        "evidence_kind": "relational-v3-proof-ir",
-        "report": payload.get("path"),
-        "verdict": verdict.get("verdict"),
-        "final_pass_allowed": final_pass_allowed,
-        "lean": lean if isinstance(lean, dict) else {},
-        "counts": {"obligations": len(inventory), "by_status": by_status},
-        "obligations": inventory,
-    }
-
 def _reference_constraint_issues(constraints: dict[str, Any]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     for name, constraint in constraints.items():
@@ -4500,11 +3876,10 @@ def _reference_constraint_issues(constraints: dict[str, Any]) -> list[dict[str, 
 
 def _reference_contract_status(constraints: dict[str, Any], issues: list[dict[str, Any]]) -> str:
     if any(issue.get("status") == "failed" or issue.get("severity") == "fail" for issue in issues):
-        return "fail"
+        return "violated"
     if issues:
         return "incomplete"
-    proof = constraints.get("proof_obligation_inventory")
-    return "pass" if isinstance(proof, dict) and proof.get("status") == "satisfied" else "incomplete"
+    return "qualified"
 
 def _tool_versions() -> dict[str, Any]:
     z3 = _import_z3()
@@ -4556,13 +3931,10 @@ __all__ = [
     '_load_optional_json',
     '_load_reference_contract_sidecars',
     '_load_reference_unit_contract_sidecars',
-    '_load_stage_a_validation_report',
     '_matches_focus',
     '_matching_unit_contracts',
     '_merged_ranges',
-    '_obligation_family',
     '_proof_family_status',
-    '_proof_inventory_gap_items',
     '_ranked_gap_next_work',
     '_reference_abi_callsites_constraint',
     '_reference_abi_callsites_sidecar',
@@ -4591,8 +3963,6 @@ __all__ = [
     '_reference_obligation_index_sidecar',
     '_reference_padding_alignment',
     '_reference_pe_layout_constraint',
-    '_reference_proof_obligation_inventory',
-    '_reference_proof_obligation_inventory_with_semantic_regions',
     '_reference_repair_units_sidecar',
     '_reference_roots_and_jump_tables',
     '_reference_roots_and_jump_tables_with_abi_targets',
@@ -4600,13 +3970,10 @@ __all__ = [
     '_reference_semantic_region_contracts_constraint',
     '_reference_semantic_region_unit_contracts',
     '_reference_sidecar_contract_ref',
-    '_reference_source_obligations_sidecar',
     '_reference_unit_contract_artifact',
     '_reference_unit_contract_dir',
     '_reference_unit_contract_paths',
     '_reference_unit_contract_payloads',
-    '_reference_validation_report_artifact',
-    '_reference_validation_report_binding_constraint',
     '_repair_class_for_gap',
     '_repair_unit_from_cluster',
     '_repair_unit_from_gap',
@@ -4663,9 +4030,6 @@ __all__ = [
     '_symbol_aliases_for_range',
     '_tls_cluster_contracts',
     '_tool_versions',
-    '_unchecked_marker_paths',
-    '_unit_contract_ids_for_obligation',
-    '_unit_contract_obligation_lookup',
     '_write_jsonl',
     '_write_reference_contract_sidecars',
     '_write_reference_unit_contract_sidecars',

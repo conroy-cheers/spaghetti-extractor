@@ -11,7 +11,7 @@ from spaghetti_extractor.external_function_ast import (
 )
 from spaghetti_extractor.stage_binary import StageAInputError
 from spaghetti_extractor.util import sha256_file
-from stage_a_relational_support import _pe32_import_image
+from tests.pe_fixtures import pe32_import_image
 
 
 def function(
@@ -81,7 +81,7 @@ class ExternalFunctionAstTests(unittest.TestCase):
             ast.write_text(json.dumps(function("WriteValue", [])), encoding="utf-8")
             original = root / "original.exe"
             original.write_bytes(
-                _pe32_import_image(b"\xc3", symbol="WriteValue")
+                pe32_import_image(b"\xc3", symbol="WriteValue")
             )
 
             with self.assertRaises(StageAInputError):
@@ -103,7 +103,7 @@ class ExternalFunctionAstTests(unittest.TestCase):
             ast.write_text(json.dumps({"inner": declarations}), encoding="utf-8")
             original = root / "original.exe"
             original.write_bytes(
-                _pe32_import_image(b"\xc3", symbol="WriteValue")
+                pe32_import_image(b"\xc3", symbol="WriteValue")
             )
             return extract_external_function_profile(
                 ast_json=ast,

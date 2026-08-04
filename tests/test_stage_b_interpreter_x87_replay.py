@@ -93,8 +93,8 @@ def _replay_row(
             },
             "replay": {
                 "format": "stage-a-native-exact-x87-command-replay-obligation-v1",
-                "checked_decoder": "StageA.Relational.X87.decodeSingletonCommand",
-                "checked_executor": "StageA.Relational.X87.executeSingletonCommand",
+                "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                "checked_executor": "StageA.Formal.executeInstruction",
                 "architecture": "x86",
                 "bitness": 32,
                 "image_base": 0x400000,
@@ -144,8 +144,8 @@ def _machine_ir_x87_unit(*, mnemonic: str = "fld1", operands: list[object] | Non
             "operands": [] if operands is None else operands,
             "implicit_registers_read": [],
             "implicit_registers_written": [],
-            "checked_decoder": "StageA.Relational.X87.decodeSingletonCommand",
-            "checked_executor": "StageA.Relational.X87.executeSingletonCommand",
+            "checked_decoder": "StageA.Formal.decodeInstructionExact",
+            "checked_executor": "StageA.Formal.executeInstruction",
             "physical_state_effect": "defined_by_checked_typed_x87_executor",
         }],
         "semantics": {
@@ -163,8 +163,8 @@ def _machine_ir_x87_unit(*, mnemonic: str = "fld1", operands: list[object] | Non
             "fpu_state": {
                 "typed_replay": {
                     "image_base": 0x400000,
-                    "checked_decoder": "StageA.Relational.X87.decodeSingletonCommand",
-                    "checked_executor": "StageA.Relational.X87.executeSingletonCommand",
+                    "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                    "checked_executor": "StageA.Formal.executeInstruction",
                 }
             },
             "instruction_effect_schedule": None,
@@ -226,8 +226,8 @@ def _machine_ir_mixed_unit() -> dict[str, object]:
                 "classification": {
                     "status": "proposal_requires_lean_exact_byte_replay",
                     "proof_authority": False,
-                    "checked_decoder": "StageA.Relational.X87.decodeSingletonCommand",
-                    "checked_executor": "StageA.Relational.X87.executeSingletonCommand",
+                    "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                    "checked_executor": "StageA.Formal.executeInstruction",
                 },
                 "effects": x87_effects,
             },
@@ -387,12 +387,12 @@ def _scheduled_mixed_row() -> dict[str, object]:
     ):
         stop = start + len(encoded)
         decoder = (
-            "StageA.Relational.X87.decodeSingletonCommand"
+            "StageA.Formal.decodeInstructionExact"
             if is_x87
             else "StageA.Formal.decodeInstructionExact"
         )
         executor = (
-            "StageA.Relational.X87.executeSingletonCommand"
+            "StageA.Formal.executeInstruction"
             if is_x87
             else "StageA.Formal.executeInstruction"
         )

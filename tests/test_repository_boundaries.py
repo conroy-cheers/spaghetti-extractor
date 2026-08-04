@@ -32,13 +32,8 @@ class RepositoryBoundaryTests(unittest.TestCase):
             r"gnu[_ -]?hello|dx[_ -]?ball|"
             r"(?:^|[^a-z0-9])jq(?:[^a-z0-9]|$)"
         )
-        allowed = {
-            package / "roundtrip_fuzz/genericity.py",
-        }
         offenders = []
         for path in sorted(package.rglob("*.py")):
-            if path in allowed:
-                continue
             for line_number, line in enumerate(
                 path.read_text(encoding="utf-8").splitlines(), start=1
             ):
@@ -93,16 +88,15 @@ class RepositoryBoundaryTests(unittest.TestCase):
         self.assertIn("../REPOSITORY_MAP.md", docs_index)
 
         for heading in (
-            "## 2. End-To-End Data Flow",
-            "## 3. Authority And Evidence",
-            "## 5. Generic Python Package",
-            "## 6. Strict Relational Stage A Python",
-            "## 7. Reviewed Lean Kernel",
-            "## 8. Nix Build System",
-            "## 12. Validation Targets",
-            "## 14. Validators And Failure Modes",
-            "## 15. Test Suites",
-            "## 17. Current Concentrations And Cleanup Frontiers",
+            "## Runtime Data Flow",
+            "## Static Analysis",
+            "## Reference Contracts",
+            "## Components And Portable Source",
+            "## ISA Model And Oracles",
+            "## Nix Constructors",
+            "## Validation Targets",
+            "## Tests",
+            "## Adding A Target",
         ):
             self.assertIn(heading, repository_map)
 
@@ -117,6 +111,15 @@ class RepositoryBoundaryTests(unittest.TestCase):
             path.relative_to(self.root).as_posix()
             for path in public_files
             if path.is_file() and path.name not in repository_map
+        )
+        self.assertEqual(missing, [])
+
+    def test_installed_nix_data_covers_every_generic_nix_surface(self) -> None:
+        manifest = (self.root / "pyproject.toml").read_text(encoding="utf-8")
+        missing = sorted(
+            path.name
+            for path in (self.root / "nix").iterdir()
+            if path.is_file() and f'"nix/{path.name}"' not in manifest
         )
         self.assertEqual(missing, [])
 

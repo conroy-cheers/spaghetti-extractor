@@ -645,10 +645,7 @@ def write_stage_b_native_runtime_package(
                 else "record-status-and-unsupported-native-halt"
             ),
         },
-        "authority": (
-            "candidate generation only; final acceptance requires the Stage A "
-            "whole-program proof"
-        ),
+        "authority": "candidate generation only; candidate assurance remains required",
     }
     write_json(out_path / NATIVE_RUNTIME_MANIFEST_FILENAME, result)
     return result

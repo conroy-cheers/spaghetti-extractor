@@ -4,8 +4,8 @@ Components are operator-authored validation and source-organization units.  A
 component may contain one block, a non-contiguous procedure, a subsystem, or
 other components.  This module validates those declarations and derives their
 machine boundaries from the canonical static IR.  It does not infer logical
-interfaces, generate implementations, execute the original binary, or confer
-Stage A proof authority.
+interfaces, generate implementations, execute the original binary, or qualify
+a candidate implementation.
 """
 
 from __future__ import annotations

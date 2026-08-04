@@ -44,7 +44,7 @@ class StageAISAConformanceNixTests(unittest.TestCase):
                 flake_root=root,
                 content_addressed=False,
             )
-            self.assertIn('packages."stage-a-isa-kernel-cache"', lean)
+            self.assertIn('packages."isa-kernel"', lean)
             self.assertIn("withForms = true;", lean)
 
     def test_rejects_non_lean_forms_before_nix(self):
@@ -114,17 +114,12 @@ class StageAISAConformanceNixTests(unittest.TestCase):
                 ),
                 patch(
                     "spaghetti_extractor.isa_conformance_nix."
-                    "_find_relational_flake_root",
+                    "find_flake_root",
                     return_value=root,
                 ),
                 patch(
                     "spaghetti_extractor.isa_conformance_nix."
-                    "_content_addressed_derivations_requested",
-                    return_value=False,
-                ),
-                patch(
-                    "spaghetti_extractor.isa_conformance_nix."
-                    "_relational_nix_build_command",
+                    "nix_build_expression",
                     return_value=["nix", "build"],
                 ),
                 patch(
@@ -146,6 +141,7 @@ class StageAISAConformanceNixTests(unittest.TestCase):
             self.assertEqual(
                 actual["nix"]["drv_path"], "/nix/store/test.drv"
             )
+            self.assertTrue(actual["nix"]["content_addressed"])
 
 
 if __name__ == "__main__":

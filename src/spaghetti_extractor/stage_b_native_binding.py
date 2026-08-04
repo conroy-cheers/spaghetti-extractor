@@ -179,10 +179,7 @@ def build_stage_b_native_runtime_binding(
         "sites": bound_sites,
         "outside_scope": outside_scope,
         "blockers": blockers,
-        "authority": (
-            "candidate runtime binding inventory only; final acceptance requires "
-            "the Stage A whole-program proof"
-        ),
+        "authority": "candidate runtime binding inventory only; candidate assurance remains required",
     }
     return result
 

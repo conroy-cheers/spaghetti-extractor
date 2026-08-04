@@ -5,17 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spaghetti-extractor"
 version = "0.1.0"
-description = "Binary reimplementation and equivalence-proof tooling"
+description = "Static Windows binary reconstruction and progressive source-lifting toolkit"
 requires-python = ">=3.11"
 dependencies = [
   "capstone",
   "pefile",
+  "z3-solver",
 ]
 
 [project.optional-dependencies]
-proof = [
-  "z3-solver",
-]
 conformance = [
   "unicorn",
 ]
@@ -35,23 +33,28 @@ spaghetti_extractor = [ "lean/**/*.lean" ]
 
 [tool.setuptools.data-files]
 "share/spaghetti-extractor/nix" = [
-  "nix/stage-a-lean-compact.nix",
-  "nix/stage-a-lean-graph.nix",
+  "nix/bochs-conformance.nix",
+  "nix/callable-external-runtime-contract.py",
+  "nix/singlestep-80386-conformance.nix",
+  "nix/stage-a-builder-public-keys",
+  "nix/stage-a-builders",
   "nix/stage-a-isa-conformance.nix",
   "nix/stage-a-isa-qualification-graph.nix",
-  "nix/stage-a-register-dataflow-graph.nix",
-  "nix/stage-a-relational-analysis-graph.nix",
-  "nix/stage-b-reconstruction-workspace.nix",
+  "nix/stage-a-lightweight-ca-builders",
+  "nix/stage-a-roundtrip-corpus.nix",
+  "nix/stage-b-component-analysis.nix",
   "nix/stage-b-component-discovery.nix",
+  "nix/stage-b-component-interfaces.nix",
   "nix/stage-b-component-selection.nix",
+  "nix/stage-b-interpreter-package.nix",
   "nix/stage-b-linked-libraries.nix",
+  "nix/stage-b-native-object-graph.nix",
+  "nix/stage-b-semantic-component-workspaces.nix",
+  "nix/stage-b-semantic-components.nix",
   "nix/stage-b-source-call-substitutions.nix",
   "nix/stage-b-source-component-assurance.nix",
   "nix/stage-b-functional-suite.nix",
   "nix/stage-b-target-intent.nix",
   "nix/stage-b-upstream-shell-suite.nix",
-  "nix/stage-b-native-object-graph.nix",
-  "nix/stage-b-semantic-component-workspaces.nix",
-  "nix/stage-b-semantic-components.nix",
 ]
 "share/spaghetti-extractor/profiles" = [ "profiles/*.json" ]

@@ -50,8 +50,8 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 _X87_REPLAY_MODEL = "native_exact_x87_command_replay_obligation_v1"
 _X87_REPLAY_FORMAT = "stage-a-native-exact-x87-command-replay-obligation-v1"
 _X87_REPLAY_PROGRAM_FORMAT = "stage-b-native-exact-x87-command-replay-program-v1"
-_X87_CHECKED_DECODER = "StageA.Relational.X87.decodeSingletonCommand"
-_X87_CHECKED_EXECUTOR = "StageA.Relational.X87.executeSingletonCommand"
+_X87_CHECKED_DECODER = "StageA.Formal.decodeInstructionExact"
+_X87_CHECKED_EXECUTOR = "StageA.Formal.executeInstruction"
 PE32_BASE_RELOCATION_EVIDENCE_FORMAT = "stage-b-pe32-base-relocation-evidence-v1"
 _X87_PHYSICAL_FIELDS = (
     "stack", "tags", "control", "status", "pending_exception", "last_opcode",
@@ -446,10 +446,7 @@ class NativeEnginePlan:
                 "x87_instruction_payloads": "forbidden-after-typed-extraction",
             },
             "blockers": list(self.blockers),
-            "authority": (
-                "candidate generation only; final acceptance requires the "
-                "Lean-checked whole-program theorem"
-            ),
+            "authority": "candidate generation only; candidate assurance remains required",
         }
 
 
@@ -1747,7 +1744,7 @@ def write_stage_b_native_engine_package(
                 else "unsupported-native-halt"
             ),
         },
-        "authority": "candidate generation only; Stage A proof required",
+        "authority": "candidate generation only; static and behavioral qualification required",
     }
     write_json(out / "native-engine-package.json", result)
     return result

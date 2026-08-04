@@ -33,7 +33,7 @@ from ..stage_binary import (
     _parse_stage_a_pe,
     _section_for_rva,
 )
-from ..relational.semantic_cutpoints import semantic_cutpoint_spans_for_side
+from ..analysis.cutpoints import semantic_cutpoint_spans_for_side
 from ..util import sha256_bytes, sha256_file, utc_now, write_json
 
 
@@ -42,7 +42,7 @@ CHECKED_GENERATED_MAPPING_PROOF_RULES = {
     "stage_b_skeleton_reimplementation_contract_v1",
 }
 
-REFERENCE_CONTRACT_MODEL_ID = "x86-pe32-relational-v3"
+REFERENCE_CONTRACT_MODEL_ID = "x86-pe32-static-reconstruction-v1"
 
 NORETURN_IMPORT_SYMBOLS = {
     "abort",

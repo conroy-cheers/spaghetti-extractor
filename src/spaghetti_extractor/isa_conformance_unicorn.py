@@ -1,7 +1,7 @@
 """Bounded Unicorn evidence backend for PE32 ISA conformance cases.
 
 Unicorn is an untrusted concrete oracle.  Results from this module can veto or
-qualify an ISA model, but they cannot close any Stage A proof obligation.
+qualify an ISA model, but they cannot qualify a reconstructed candidate.
 """
 
 from __future__ import annotations

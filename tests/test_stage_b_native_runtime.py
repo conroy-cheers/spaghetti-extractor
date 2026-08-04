@@ -381,8 +381,8 @@ def _qualified_x87_transfer() -> dict[str, object]:
             "logical_state_guidance": {},
             "replay": {
                 "format": "stage-a-native-exact-x87-command-replay-obligation-v1",
-                "checked_decoder": "StageA.Relational.X87.decodeSingletonCommand",
-                "checked_executor": "StageA.Relational.X87.executeSingletonCommand",
+                "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                "checked_executor": "StageA.Formal.executeInstruction",
                 "architecture": "x86",
                 "bitness": 32,
                 "image_base": 0x400000,

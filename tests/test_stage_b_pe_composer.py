@@ -9,10 +9,11 @@ from pathlib import Path
 
 import pefile
 
-from tests.pe_fixtures import pe32_image, pe32_import_image
-from tests.stage_a_relational_support import (
-    _pe32_image_with_writable_data,
-    _pe32_tls_image,
+from tests.pe_fixtures import (
+    pe32_image,
+    pe32_image_with_writable_data,
+    pe32_import_image,
+    pe32_tls_image,
 )
 
 from spaghetti_extractor.roundtrip_fuzz.image_contract import (
@@ -388,7 +389,7 @@ class StageBPEComposerTests(unittest.TestCase):
             original_headers.close()
 
     def test_entry_tls_and_other_callback_roots_are_explicit_and_ordered(self) -> None:
-        original_bytes = _pe32_tls_image((0x1020, 0x1010))
+        original_bytes = pe32_tls_image((0x1020, 0x1010))
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             original = root / "tls.exe"
@@ -532,7 +533,7 @@ class StageBPEComposerTests(unittest.TestCase):
 
     def test_merges_original_and_payload_highlow_relocations_canonically(self) -> None:
         original_bytes = _with_larger_headers(
-            _pe32_image_with_writable_data(
+            pe32_image_with_writable_data(
                 b"\x90" * 8 + struct.pack("<I", 0x402000) + b"\xc3",
                 relocation_offsets=[8],
             )
@@ -601,7 +602,7 @@ class StageBPEComposerTests(unittest.TestCase):
 
     def test_highlow_relocation_may_cross_its_block_page(self) -> None:
         original_bytes = _with_larger_headers(
-            _pe32_image_with_writable_data(b"\xc3", relocation_offsets=[])
+            pe32_image_with_writable_data(b"\xc3", relocation_offsets=[])
         )
         payload_bytes = _high_rva_payload_with_cross_page_highlow()
         anchors = _anchor_manifest(

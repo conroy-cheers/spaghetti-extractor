@@ -1,8 +1,8 @@
 """Typed bounded value provenance shared by Stage A analyses.
 
-The values in this module are untrusted abstract-analysis proposals.  They are
-deliberately small and serializable so Lean can replay each origin derivation
-against exact machine semantics before it contributes to acceptance.
+The values in this module are untrusted abstract-analysis proposals. They are
+deliberately small and serializable so checked analyses can replay each origin
+derivation against exact machine semantics before candidate qualification.
 """
 
 from __future__ import annotations

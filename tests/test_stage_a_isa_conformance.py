@@ -438,7 +438,7 @@ class StageAISAConformanceTests(unittest.TestCase):
                 with self.assertRaises(ISAConformanceError):
                     parse_isa_conformance_report(malformed, corpus=corpus)
 
-    def test_mismatch_vetoes_but_oracle_can_never_claim_proof_authority(self):
+    def test_mismatch_vetoes_but_oracle_can_never_qualify_candidate(self):
         corpus = parse_isa_conformance_corpus(_corpus())
         veto = _report()
         veto["observations"][0]["status"] = "mismatch"
@@ -474,7 +474,8 @@ class StageAISAConformanceTests(unittest.TestCase):
         ):
             parse_isa_conformance_report(authority, corpus=corpus)
         with self.assertRaisesRegex(
-            ISAConformanceError, "oracle report cannot close a Stage A proof"
+                ISAConformanceError,
+                "oracle report cannot qualify a reconstructed candidate",
         ):
             parse_isa_conformance_report(closes_proof, corpus=corpus)
 

@@ -152,7 +152,7 @@ class SourceOperationCatalogTests(unittest.TestCase):
             bind_source_operation_catalog(payload)
 
         payload = _catalog()
-        payload["rendering_metadata"]["authorizes_source_equivalence"] = True
+        payload["rendering_metadata"]["authorizes_candidate_qualification"] = True
         with self.assertRaisesRegex(SourceOperationCatalogError, "non-authoritative"):
             bind_source_operation_catalog(payload)
 

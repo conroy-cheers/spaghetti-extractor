@@ -209,7 +209,7 @@ def write_stage_b_semantic_c_backend(
                 "unbound_by_kind": dict(sorted(runtime_obligation_counts.items())),
             },
             "call_boundaries": runtime_call_boundaries,
-            "acceptance": "every obligation must be bound by candidate runtime source and the compiled PE must pass Stage A",
+            "acceptance": "every obligation must be bound by candidate runtime source before candidate assurance can qualify",
         },
     )
     api_adapters_header.write_text(_api_adapters_header(), encoding="utf-8")
@@ -344,7 +344,7 @@ def write_stage_b_semantic_c_backend(
                 "blockers": strict_candidate_blockers,
                 "policy": "no repair stubs, unbound runtime call adapters, missing transfers, or ambiguous dispatch entries",
             },
-            "acceptance": "compile this implementation, then prove the resulting PE with Stage A",
+            "assurance": "compile this implementation, then run candidate static and behavioral validation",
         },
     )
     report = {
@@ -354,7 +354,7 @@ def write_stage_b_semantic_c_backend(
         "authority": "stage-a-semantic-transfer-contracts",
         "state_machine": state_machine_binding,
         "machine_call_catalog": machine_call_catalog.binding if machine_call_catalog is not None else None,
-        "role": "compiler-consumable repair substrate; Stage A whole-program proof remains authoritative",
+        "role": "compiler-consumable repair substrate; candidate assurance remains separate",
         "counts": {
             "transfers": len(rows),
             "generated": len(supported),

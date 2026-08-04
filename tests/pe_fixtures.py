@@ -100,5 +100,115 @@ def pe32_import_image(
     return headers + code.ljust(text_raw_size, b"\0") + bytes(idata)
 
 
+def pe32_tls_image(callback_rvas: tuple[int, ...]) -> bytes:
+    file_alignment = 0x200
+    section_alignment = 0x1000
+    headers_size = 0x200
+    image_base = 0x400000
+    text_rva = 0x1000
+    rdata_rva = 0x2000
+    text_raw_size = 0x200
+    rdata_raw_size = 0x1000
+    code = bytearray(text_raw_size)
+    code[0] = 0xC3
+    for callback_rva in callback_rvas:
+        offset = callback_rva - text_rva
+        if 0 <= offset <= text_raw_size - 3:
+            code[offset : offset + 3] = b"\xc2\x0c\x00"
+    text_virtual_size = max(
+        [1, *(rva - text_rva + 3 for rva in callback_rvas)]
+    )
+    rdata = bytearray(rdata_raw_size)
+    callback_array_offset = 0x40
+    struct.pack_into(
+        "<IIIIII",
+        rdata,
+        0,
+        image_base + rdata_rva + 0x80,
+        image_base + rdata_rva + 0x84,
+        image_base + rdata_rva + 0x84,
+        image_base + rdata_rva + callback_array_offset,
+        0,
+        0,
+    )
+    for index, callback_rva in enumerate(callback_rvas):
+        struct.pack_into(
+            "<I", rdata, callback_array_offset + index * 4, image_base + callback_rva
+        )
+    struct.pack_into("<I", rdata, callback_array_offset + len(callback_rvas) * 4, 0)
+
+    dos = bytearray(0x80)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x80)
+    coff = struct.pack("<HHIIIHH", 0x014C, 2, 0, 0, 0, 224, 0x010F)
+    optional_prefix = struct.pack(
+        "<HBB" + "I" * 9 + "H" * 6 + "I" * 4 + "H" * 2 + "I" * 6,
+        0x10B, 0, 0, text_raw_size, rdata_raw_size, 0, text_rva, text_rva,
+        rdata_rva, image_base, section_alignment, file_alignment, 4, 0, 0, 0,
+        4, 0, 0, 0x3000, headers_size, 0, 3, 0, 0x100000, 0x1000,
+        0x100000, 0x1000, 0, 16,
+    )
+    directories = bytearray(16 * 8)
+    struct.pack_into("<II", directories, 9 * 8, rdata_rva, 24)
+    sections = b"".join((
+        struct.pack(
+            "<8sIIIIIIHHI", b".text\0\0\0", text_virtual_size, text_rva,
+            text_raw_size, headers_size, 0, 0, 0, 0, 0x60000020,
+        ),
+        struct.pack(
+            "<8sIIIIIIHHI", b".rdata\0\0", rdata_raw_size, rdata_rva,
+            rdata_raw_size, headers_size + text_raw_size, 0, 0, 0, 0, 0x40000040,
+        ),
+    ))
+    headers = (
+        bytes(dos) + b"PE\0\0" + coff + optional_prefix + bytes(directories) + sections
+    ).ljust(headers_size, b"\0")
+    return headers + bytes(code) + bytes(rdata)
+
+
+def pe32_image_with_writable_data(
+    code: bytes, *, relocation_offsets: list[int], data_size: int = 4
+) -> bytes:
+    file_alignment = 0x200
+    section_alignment = 0x1000
+    headers_size = 0x200
+    text_rva = 0x1000
+    data_rva = 0x2000
+    reloc_rva = 0x3000
+    image_base = 0x400000
+    entries = [0x3000 | offset for offset in relocation_offsets]
+    if len(entries) % 2:
+        entries.append(0)
+    relocations = (
+        struct.pack("<II", text_rva, 8 + 2 * len(entries))
+        + struct.pack("<" + "H" * len(entries), *entries)
+    )
+    dos = bytearray(0x80)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x80)
+    coff = struct.pack("<HHIIIHH", 0x014C, 3, 0, 0, 0, 224, 0x010F)
+    optional_prefix = struct.pack(
+        "<HBB" + "I" * 9 + "H" * 6 + "I" * 4 + "H" * 2 + "I" * 6,
+        0x10B, 0, 0, 0x200, 0x400, 0, text_rva, text_rva, data_rva,
+        image_base, section_alignment, file_alignment, 4, 0, 0, 0, 4, 0, 0,
+        0x4000, headers_size, 0, 3, 0, 0x100000, 0x1000, 0x100000,
+        0x1000, 0, 16,
+    )
+    directories = bytearray(16 * 8)
+    struct.pack_into("<II", directories, 5 * 8, reloc_rva, len(relocations))
+    sections = b"".join((
+        struct.pack("<8sIIIIIIHHI", b".text\0\0\0", len(code), text_rva, 0x200, 0x200, 0, 0, 0, 0, 0x60000020),
+        struct.pack("<8sIIIIIIHHI", b".data\0\0\0", data_size, data_rva, 0x200, 0x400, 0, 0, 0, 0, 0xC0000040),
+        struct.pack("<8sIIIIIIHHI", b".reloc\0\0", len(relocations), reloc_rva, 0x200, 0x600, 0, 0, 0, 0, 0x42000040),
+    ))
+    headers = (
+        bytes(dos) + b"PE\0\0" + coff + optional_prefix + bytes(directories) + sections
+    ).ljust(headers_size, b"\0")
+    return (
+        headers + code.ljust(0x200, b"\0") + bytes(data_size).ljust(0x200, b"\0")
+        + relocations.ljust(0x200, b"\0")
+    )
+
+
 def align(value: int, alignment: int) -> int:
     return ((value + alignment - 1) // alignment) * alignment

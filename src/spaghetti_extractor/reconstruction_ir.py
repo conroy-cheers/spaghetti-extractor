@@ -2251,9 +2251,6 @@ def _reference_inventory(payload: Mapping[str, Any] | None) -> dict[str, Any]:
         "basic_blocks_and_cfg": _constraint_projection(constraints.get("basic_blocks_and_cfg")),
         "roots_and_jump_tables": _constraint_projection(roots_constraint),
         "import_thunks": _constraint_projection(constraints.get("import_thunks")),
-        "proof_obligation_inventory": _constraint_projection(
-            constraints.get("proof_obligation_inventory")
-        ),
     }
     return {
         "roots": roots,
@@ -2273,10 +2270,9 @@ def _reference_issues(payload: Mapping[str, Any] | None) -> list[ExportIssue]:
     result: list[ExportIssue] = []
     constraints = payload.get("constraints")
     if isinstance(constraints, Mapping):
-        # Whole-program theorem, layout normalization, and symbol-derived
-        # function families belong to stricter optional profiles.  The
-        # reconstruction frontend consumes only static binary facts needed to
-        # prevent omitted code or malformed external boundaries.
+        # The reconstruction frontend consumes only static binary facts needed
+        # to prevent omitted code or malformed external boundaries. Optional
+        # layout and symbol-derived families remain advisory.
         for family in (
             "pe_sections_imports_relocations_image_base",
             "executable_byte_coverage",

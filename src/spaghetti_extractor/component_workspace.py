@@ -41,11 +41,11 @@ from .component_profile import (
     PreparedComponentProfile,
     load_component_profile,
 )
-from .reconstruction_workspace import (
+from .component_backend import (
     _load_machine_ir,
-    create_reconstruction_workspace,
-    promote_reconstruction_workspaces,
-    rebind_reconstruction_workspace,
+    create_component_backend_workspace,
+    promote_component_backend_workspaces,
+    rebind_component_backend_workspace,
 )
 from .finite_component_contract import (
     derive_finite_scalar_contract,
@@ -517,7 +517,7 @@ def create_component_workspace(
             machine_ir_sha256=machine_ir_sha256,
             max_bytes=_BOUNDED_STRING_LENGTH_BYTES,
         )
-    create_reconstruction_workspace(
+    create_component_backend_workspace(
         plan=(
             Path(plan)
             if slice_payload is None
@@ -610,7 +610,7 @@ def create_component_workspace(
             else None
         ),
     )
-    rebind_reconstruction_workspace(workspace=out_dir)
+    rebind_component_backend_workspace(workspace=out_dir)
     backend_workspace = _read_object(out_dir / "workspace.json", "backend workspace")
     adapter_path = out_dir / backend_workspace["files"]["machine_adapter_source"]
     portable_path = out_dir / backend_workspace["files"]["portable_source"]
@@ -886,7 +886,7 @@ def rebind_component_workspace(*, workspace: Path) -> dict[str, Any]:
     refinement = _read_object(refinement_path, "component refinement")
     portable = root / component_workspace["files"]["portable_source"]
     _enforce_portable_symbol(portable, str(refinement["portable_symbol"]))
-    backend = rebind_reconstruction_workspace(workspace=root)
+    backend = rebind_component_backend_workspace(workspace=root)
     header = root / component_workspace["files"]["portable_header"]
     adapter = root / component_workspace["files"]["machine_adapter_source"]
     backend_workspace = _read_object(root / "workspace.json", "backend workspace")
@@ -1314,7 +1314,7 @@ def promote_qualified_components(
         if qualification.get("activation", {}).get("domain", {}).get("kind")
         == "guarded_partial"
     ]
-    backend = promote_reconstruction_workspaces(
+    backend = promote_component_backend_workspaces(
         workspaces=[item[0] for item in qualified],
         out_dir=out_dir,
         fallback_on_unimplemented_workspaces=partial_roots,

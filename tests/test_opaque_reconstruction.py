@@ -20,8 +20,8 @@ def _inventory() -> dict[str, object]:
     }
     return {
         "format": "stage-a-binary-cutpoint-inventory-v1",
-        "profile": "x86-pe32-lean-relational-v3",
-        "model": "x86-pe32-relational-v3",
+        "profile": "x86-pe32-static-reconstruction-v1",
+        "model": "x86-pe32-machine-ir-v1",
         "status": "pass",
         "side": "original",
         "binary_sha256": "1" * 64,
@@ -64,7 +64,7 @@ class OpaqueReconstructionTests(unittest.TestCase):
         })
         self.assertTrue(payload["blocks"][0]["reachable"])
         self.assertEqual(payload["blocks"][0]["root"]["kind"], "pe_entrypoint")
-        self.assertEqual(payload["waivers"][0]["binary"], "both")
+        self.assertEqual(payload["waivers"][0]["binary"], "original")
         self.assertIsNone(payload["linker_maps"]["original"])
 
     def test_linker_map_provenance_is_rejected(self) -> None:

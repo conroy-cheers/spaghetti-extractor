@@ -8,13 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .relational.build import (
-    _check_remote_ca_build_trace_compatibility,
-    _content_addressed_derivations_requested,
-    _find_relational_flake_root,
-    _relational_nix_build_command,
-    _trusted_builder_public_keys,
-)
+from .nix_support import find_flake_root, nix_build_expression
 from .stage_binary import StageAInputError
 from .util import sha256_file
 
@@ -72,7 +66,7 @@ def _isa_conformance_nix_expression(
     return "\n".join(
         [
             "let",
-            f"  flake = builtins.getFlake {json.dumps(f'git+file://{flake_root}')};",
+            f"  flake = builtins.getFlake {json.dumps(f'path:{flake_root}')};",
             "  system = builtins.currentSystem;",
             "  pkgs = import flake.inputs.nixpkgs { inherit system; config = {}; };",
             "  packages = flake.packages.${system};",
@@ -82,7 +76,7 @@ def _isa_conformance_nix_expression(
             f"  name = {json.dumps(f'stage-a-isa-{backend}-{identity}')};",
             '  spaghettiExtractor = packages."spaghetti-extractor";',
             (
-                '  kernelCache = packages."stage-a-isa-kernel-cache";'
+                '  kernelCache = packages."isa-kernel";'
                 if backend == "lean"
                 else "  kernelCache = null;"
             ),
@@ -131,7 +125,7 @@ def stage_a_check_isa_conformance_nix(
         raise StageAInputError(f"Bochs runner does not exist: {runner}")
 
     evaluator = _isa_conformance_nix_evaluator()
-    flake_root = _find_relational_flake_root(flake)
+    flake_root = find_flake_root(flake)
     builders = (
         Path(builders_file).resolve() if builders_file is not None else None
     )
@@ -142,10 +136,7 @@ def stage_a_check_isa_conformance_nix(
         if builder_trusted_public_keys_file is not None
         else None
     )
-    _trusted_builder_public_keys(trusted_keys)
-    content_addressed = _content_addressed_derivations_requested()
-    if content_addressed:
-        _check_remote_ca_build_trace_compatibility(builders)
+    content_addressed = True
 
     expression = _isa_conformance_nix_expression(
         corpus=corpus,
@@ -156,7 +147,11 @@ def stage_a_check_isa_conformance_nix(
         flake_root=flake_root,
         content_addressed=content_addressed,
     )
-    command = _relational_nix_build_command(expression, builders, trusted_keys)
+    command = nix_build_expression(
+        expression,
+        builders_file=builders,
+        trusted_public_keys_file=trusted_keys,
+    )
     environment = os.environ.copy()
     environment.pop("NIXPKGS_CONFIG", None)
     started = time.monotonic()

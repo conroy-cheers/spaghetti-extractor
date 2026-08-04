@@ -33,8 +33,8 @@ from .isa_semantic_forms import (
     lean_semantic_form_id,
 )
 from .isa_side_adapter import SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT
-from .relational.lean.compiler import _run_lean_relational
-from .relational.schema import STAGE_A_RELATIONAL_MODEL_ID
+from .lean_runner import run_lean_module_graph
+from .analysis.schema import STATIC_ANALYSIS_MODEL_ID
 from .stage_binary import StageAInputError
 from .util import sha256_bytes, sha256_file, write_json
 
@@ -183,7 +183,7 @@ def _parse_proposal(value: Any) -> dict[str, Any]:
         raise StageAInputError("side-ISA catalog proposal status is invalid")
     if payload.get("profile") != ISA_PROFILE_ID:
         raise StageAInputError("side-ISA catalog proposal profile is invalid")
-    if payload.get("model") != STAGE_A_RELATIONAL_MODEL_ID:
+    if payload.get("model") != STATIC_ANALYSIS_MODEL_ID:
         raise StageAInputError("side-ISA catalog proposal model is invalid")
     classifier_sha256 = _sha256(
         payload.get("classifier_sha256"),
@@ -1041,7 +1041,7 @@ def extract_lean_decoded_metadata(
             )
         generated = stage_a / "GeneratedISACatalogEnrichment.lean"
         generated.write_text(module_source, encoding="utf-8")
-        compiled = _run_lean_relational(
+        compiled = run_lean_module_graph(
             lean_dir,
             bundle="GeneratedISACatalogEnrichment",
         )
@@ -3517,7 +3517,7 @@ def _parse_enrichment(value: Any) -> Mapping[str, Any]:
         raise StageAInputError("side-ISA catalog enrichment status is invalid")
     if payload.get("profile") != ISA_PROFILE_ID:
         raise StageAInputError("side-ISA catalog enrichment profile is invalid")
-    if payload.get("model") != STAGE_A_RELATIONAL_MODEL_ID:
+    if payload.get("model") != STATIC_ANALYSIS_MODEL_ID:
         raise StageAInputError("side-ISA catalog enrichment model is invalid")
     classifier_sha256 = _sha256(
         payload.get("classifier_sha256"),

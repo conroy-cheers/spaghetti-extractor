@@ -291,7 +291,7 @@ let
           longDescription = ''
             Hardware-generated SingleStepTests/80386 vectors converted from pinned
             per-opcode MOO files and imported into evidence-only PE32 conformance
-            corpora. The package has no Stage A proof authority.
+            corpora. The package has no candidate qualification authority.
           '';
           platforms = spaghetti-extractor.meta.platforms or lib.platforms.all;
         };

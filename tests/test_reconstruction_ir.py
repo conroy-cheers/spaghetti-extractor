@@ -28,8 +28,7 @@ from spaghetti_extractor.stage_b_state_machine import (
 from spaghetti_extractor.util import sha256_bytes
 from spaghetti_extractor.util import sha256_file
 
-from pe_fixtures import pe32_image
-from tests.stage_a_relational_support import _pe32_tls_image
+from tests.pe_fixtures import pe32_image, pe32_tls_image
 
 
 _REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
@@ -161,8 +160,8 @@ def _x87_state(rva: int, encoded: bytes) -> dict[str, object]:
         },
         "replay": {
             "format": "stage-a-native-exact-x87-command-replay-obligation-v1",
-            "checked_decoder": "StageA.Relational.X87.decodeSingletonCommand",
-            "checked_executor": "StageA.Relational.X87.executeSingletonCommand",
+            "checked_decoder": "StageA.Formal.decodeInstructionExact",
+            "checked_executor": "StageA.Formal.executeInstruction",
             "architecture": "x86",
             "bitness": 32,
             "image_base": 0x400000,
@@ -228,7 +227,6 @@ def _write_reference_contract(path: Path, original: Path) -> None:
                 "jump_table_targets": [],
             },
             "import_thunks": {"status": "not_applicable", "mapped_import_thunks": []},
-            "proof_obligation_inventory": {"status": "satisfied", "obligations": []},
         },
         "families": {},
         "coverage": {},
@@ -859,7 +857,7 @@ class ReconstructionIRTests(unittest.TestCase):
             original = root / "original.exe"
             reference = root / "reference-contract.json"
             machine = root / "state-machine.jsonl"
-            original.write_bytes(_pe32_tls_image((0x1010,)))
+            original.write_bytes(pe32_tls_image((0x1010,)))
             _write_reference_contract(reference, original)
             for row in rows:
                 row["stage_a_export"] = {

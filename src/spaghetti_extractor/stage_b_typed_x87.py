@@ -16,8 +16,8 @@ from .util import sha256_bytes
 
 TYPED_NATIVE_X87_OPERATION_FORMAT = "stage-b-typed-native-x87-operation-v1"
 TYPED_NATIVE_X87_PROGRAM_FORMAT = "stage-b-typed-native-x87-program-v1"
-X87_CHECKED_DECODER = "StageA.Relational.X87.decodeSingletonCommand"
-X87_CHECKED_EXECUTOR = "StageA.Relational.X87.executeSingletonCommand"
+X87_CHECKED_DECODER = "StageA.Formal.decodeInstructionExact"
+X87_CHECKED_EXECUTOR = "StageA.Formal.executeInstruction"
 
 X87_MEMORY_NO_SIZE_MNEMONICS = frozenset({
     "fldenv", "fnstenv", "fstenv", "frstor", "fnsave", "fsave",

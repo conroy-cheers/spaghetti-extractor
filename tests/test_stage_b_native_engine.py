@@ -146,8 +146,8 @@ def _machine_ir_x87_transfer(
         "operands": unit["instructions"][0]["operands"],
         "implicit_registers_read": ["st(0)", "st(1)"],
         "implicit_registers_written": ["eflags"],
-        "checked_decoder": "StageA.Relational.X87.decodeSingletonCommand",
-        "checked_executor": "StageA.Relational.X87.executeSingletonCommand",
+        "checked_decoder": "StageA.Formal.decodeInstructionExact",
+        "checked_executor": "StageA.Formal.executeInstruction",
         "physical_state_effect": "defined_by_checked_typed_x87_executor",
     }]
     unit["semantics"]["fpu_state"] = {
@@ -159,8 +159,8 @@ def _machine_ir_x87_transfer(
             "rva_start": rva,
             "rva_end": rva + len(encoded),
             "instruction_bytes_sha256": transfer_digest,
-            "checked_decoder": "StageA.Relational.X87.decodeSingletonCommand",
-            "checked_executor": "StageA.Relational.X87.executeSingletonCommand",
+            "checked_decoder": "StageA.Formal.decodeInstructionExact",
+            "checked_executor": "StageA.Formal.executeInstruction",
             "micro_op_ids": [micro_id],
         }
     }
@@ -200,8 +200,8 @@ def _x87_replay_transfer() -> dict:
             "logical_state_guidance": {},
             "replay": {
                 "format": "stage-a-native-exact-x87-command-replay-obligation-v1",
-                "checked_decoder": "StageA.Relational.X87.decodeSingletonCommand",
-                "checked_executor": "StageA.Relational.X87.executeSingletonCommand",
+                "checked_decoder": "StageA.Formal.decodeInstructionExact",
+                "checked_executor": "StageA.Formal.executeInstruction",
                 "architecture": "x86",
                 "bitness": 32,
                 "image_base": 0x400000,
@@ -1622,7 +1622,10 @@ class StageBNativeEngineTests(unittest.TestCase):
                 state_machine=machine, entry_rva=0x1420, out=root / "second"
             )
             self.assertEqual(first["status"], "ready")
-            self.assertIn("Stage A proof required", first["authority"])
+            self.assertIn(
+                "static and behavioral qualification required",
+                first["authority"],
+            )
             self.assertEqual(
                 [item["sha256"] for item in first["sources"]],
                 [item["sha256"] for item in second["sources"]],

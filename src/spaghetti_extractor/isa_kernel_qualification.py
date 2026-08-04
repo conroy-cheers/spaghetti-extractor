@@ -1,13 +1,13 @@
 """Deterministic, evidence-only qualification for the Stage A ISA kernel.
 
-The artifacts in this module deliberately sit outside the Stage A proof
+The artifacts in this module deliberately sit outside candidate qualification
 boundary.  Structural coverage records that a declared semantic form has an
 exact generated corpus case; concrete-oracle qualification records whether
 Bochs, Unicorn, and Lean could execute and agree on those cases.  Unsupported
 oracle execution therefore leaves structural coverage intact but makes oracle
 qualification incomplete.  Concrete disagreement blocks qualification, and
 agreement remains evidence rather than proof authority.  No artifact emitted
-here can close a Stage A proof obligation.
+here can qualify a reconstructed candidate.
 """
 
 from __future__ import annotations

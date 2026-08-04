@@ -200,7 +200,7 @@ let
         "$out/reconstruction-plan.json" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.reconstruction_workspace import (
+      from spaghetti_extractor.component_backend import (
           write_reconstruction_plan,
       )
 

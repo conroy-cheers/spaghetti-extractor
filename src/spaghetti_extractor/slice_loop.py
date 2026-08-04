@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .relational.reference_contract import (
+from .contract_tools import (
     REFERENCE_CONTRACT_MODEL_ID,
     stage_a_smoke_contract,
 )
@@ -257,7 +257,7 @@ def _cmd_check(args: Any) -> int:
         _print_json(result)
     else:
         _print_check_summary(result)
-    return 0 if result["status"] == "pass" else 1
+    return 0 if result["status"] == "qualified" else 1
 
 
 def prepare_workspace(
@@ -386,7 +386,7 @@ def prepare_workspace(
             "stage_a_contract_first": True,
             "original_runtime_tracing": False,
             "candidate_runtime_tracing": "candidate_only_after_stage_a_pass",
-            "acceptance": "canonical Stage A/B Nix gates still decide final compliance",
+            "acceptance": "canonical Nix static and behavioral gates still decide final compliance",
         },
         "nix": {
             "flake": nix_flake,
@@ -445,7 +445,7 @@ def prepare_workspace(
 
     result = {
         "format": PREPARE_FORMAT,
-        "status": "pass" if smoke.get("status") == "pass" else "incomplete",
+        "status": "pass" if smoke.get("status") == "qualified" else "incomplete",
         "target": target,
         "workspace": str(workspace),
         "manifest": str(_manifest_path(workspace)),
@@ -772,7 +772,7 @@ def slice_check(
         out=check_dir / "contract-smoke.json",
     )
     timings["contract_smoke"] = round(time.monotonic() - smoke_started, 3)
-    if smoke.get("status") != "pass":
+    if smoke.get("status") != "qualified":
         result = _check_result(
             target=target,
             workspace=workspace,
@@ -932,7 +932,7 @@ def slice_check(
             validation = None
             issues.append(_exception_issue("stage_b_validation_error", exc, "inspect validate inputs and rerun full check"))
         timings["stage_b_validate_candidate"] = round(time.monotonic() - validation_started, 3)
-        artifacts["stage_b_validation"] = str(check_dir / "validate" / "stage-b.json")
+        artifacts["stage_b_validation"] = str(check_dir / "validate" / "candidate-assurance.json")
 
     delta: dict[str, Any] | None = None
     focused_delta: dict[str, Any] | None = None
@@ -992,18 +992,18 @@ def slice_check(
         focus_repair_items = int(focused_delta.get("counts", {}).get("repair_items", 0))
     if issues:
         status = "incomplete"
-    elif mode == "full" and validation is not None and validation.get("status") != "pass":
+    elif mode == "full" and validation is not None and validation.get("status") != "qualified":
         status = "incomplete"
     elif nix_gates and any(gate.get("status") != "pass" for gate in nix_gates):
         status = "incomplete"
     elif focus and focus_repair_items == 0:
-        status = "pass"
+        status = "qualified"
     elif focus:
         status = "incomplete"
-    elif delta is not None and delta.get("status") == "pass":
-        status = "pass"
-    elif mode == "full" and validation is not None and validation.get("status") == "pass":
-        status = "pass"
+    elif delta is not None and delta.get("status") == "qualified":
+        status = "qualified"
+    elif mode == "full" and validation is not None and validation.get("status") == "qualified":
+        status = "qualified"
     else:
         status = "incomplete"
 
@@ -1062,10 +1062,10 @@ def _check_result(
         "check_dir": str(check_dir),
         "generated_at": utc_now(),
         "policy": {
-            "stage_a_contract_first": True,
+            "reference_contract_first": True,
             "original_runtime_tracing": False,
             "runtime_tests": "not_run_by_spaghetti_extractor_slice_check",
-            "acceptance": "full compliance still requires canonical Stage A pass",
+            "assurance": "release qualification requires canonical Nix checks plus candidate-only behavioral evidence",
         },
         "early_exit": early_exit,
         "timings_seconds": timings,
@@ -1088,7 +1088,7 @@ def _check_result(
         if validation is None
         else {
             "status": validation.get("status"),
-            "stage_a_gate": validation.get("stage_a_gate"),
+            "static_contract": validation.get("static_contract"),
         },
         "stage_b_delta": None
         if delta is None
@@ -1109,17 +1109,17 @@ def _check_result(
 
 
 def _check_next_action(*, status: str, focus: str | None, focused_delta: dict[str, Any] | None) -> str:
-    if status == "pass" and focus:
-        return "pick the next Stage A work item or run --mode full before final acceptance"
-    if status == "pass":
-        return "run canonical Nix gates before claiming final compliance"
+    if status == "qualified" and focus:
+        return "pick the next reconstruction item or run --mode full before release qualification"
+    if status == "qualified":
+        return "run canonical Nix gates and candidate-only behavioral tests before release qualification"
     if focused_delta is not None and focused_delta.get("items"):
         first = focused_delta["items"][0]
         if isinstance(first, dict) and first.get("concrete_next_action"):
             return str(first["concrete_next_action"])
         if isinstance(first, dict) and first.get("next_action"):
             return str(first["next_action"])
-    return "inspect the generated check artifacts and repair the highest-ranked Stage A contract item"
+    return "inspect the generated check artifacts and repair the highest-ranked reference-contract item"
 
 
 def _exception_issue(category: str, exc: Exception, next_action: str) -> dict[str, str]:
@@ -1138,7 +1138,7 @@ def _focused_delta(delta: dict[str, Any], focus: str | None) -> dict[str, Any]:
         items = [item for item in items if _matches_focus(item, focus_lower)]
     result = {
         "format": FOCUSED_DELTA_FORMAT,
-        "status": "incomplete" if items else "pass",
+        "status": "incomplete" if items else "qualified",
         "focus": focus,
         "source_delta_status": delta.get("status"),
         "items": items,
@@ -1335,7 +1335,7 @@ def _write_slice_packets(
             "pattern_family": pattern_family,
             "function": _slice_packet_function_evidence(function, source_anchor=source_anchor),
             "stage_a_contract": {
-                "acceptance": "guidance artifact only; final acceptance requires Stage A pass",
+                "acceptance": "guidance artifact only; candidate validation remains required",
                 "status": "evidence" if function is not None else "incomplete",
             },
             "implementation_hint": _slice_packet_implementation_hint(item, source_anchor, pattern_family),
@@ -1870,7 +1870,7 @@ def _load_cached_contract_candidate_validation(
         or cache.get("fingerprint_sha256") != fingerprint.get("fingerprint_sha256")
     ):
         return None
-    if not isinstance(validation, dict) or validation.get("format") != "stage-a-contract-candidate-validation-v1":
+    if not isinstance(validation, dict) or validation.get("format") != "stage-b-candidate-contract-check-v2":
         return None
     return validation
 

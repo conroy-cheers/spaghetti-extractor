@@ -31,7 +31,7 @@ def _inputs() -> tuple[dict, dict, dict, dict]:
         "blockers": [],
     }
     capability = {
-        "format": "stage-a-relational-callable-external-capability-v3",
+        "format": "stage-a-callable-external-capability-v3",
         "resolver_contracts": [{
             "id": 0,
             "machine_contract_id": 7,

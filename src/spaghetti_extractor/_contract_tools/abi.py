@@ -33,7 +33,7 @@ from ..stage_binary import (
     _parse_stage_a_pe,
     _section_for_rva,
 )
-from ..relational.semantic_cutpoints import semantic_cutpoint_spans_for_side
+from ..analysis.cutpoints import semantic_cutpoint_spans_for_side
 from ..util import sha256_bytes, sha256_file, utc_now, write_json
 
 from .common import (
@@ -222,7 +222,7 @@ def _cluster_contract(
         "repair_class": repair_class,
         "next_action": next_action,
         "evidence": evidence,
-        "acceptance": "informational unit contract only; final acceptance requires Stage A pass",
+        "acceptance": "informational unit contract only; candidate validation remains required",
     }
 
 def _abi_functions(contract: dict[str, Any]) -> list[dict[str, Any]]:

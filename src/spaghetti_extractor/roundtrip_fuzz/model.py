@@ -11,8 +11,8 @@ from ..stage_binary import StageAInputError
 from ..util import json_dumps, sha256_file, write_json
 
 
-ROUNDTRIP_CORPUS_FORMAT = "stage-a-roundtrip-corpus-v1"
-ROUNDTRIP_CASE_FORMAT = "stage-a-roundtrip-case-v1"
+ROUNDTRIP_CORPUS_FORMAT = "stage-a-roundtrip-corpus-v2"
+ROUNDTRIP_CASE_FORMAT = "stage-a-roundtrip-case-v2"
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ID_RE = re.compile(r"[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?")
@@ -27,24 +27,22 @@ _ARTIFACT_ROLES = frozenset({
     "candidate_pe",
     "original_linker_map",
     "candidate_linker_map",
-    "relation_proposal",
-    "relation_contract",
-    "reference_contract",
-    "stage_b_state_machine",
-    "stage_b_source_map",
-    "stage_b_implementation_manifest",
+    "original_inventory",
+    "candidate_inventory",
     "violation_witness",
 })
 _REQUIRED_CASE_ARTIFACT_ROLES = frozenset({
     "semantic_program",
     "original_pe",
     "candidate_pe",
-    "relation_contract",
+    "candidate_semantic_program",
+    "original_inventory",
+    "candidate_inventory",
 })
 
 
 class ExpectedDisposition(str, Enum):
-    PASS = "pass"
+    QUALIFIED = "qualified"
     VIOLATED = "violated"
     INCOMPLETE = "incomplete"
 
@@ -236,10 +234,10 @@ class CaseExpectation:
         reason_family = (
             None if reason is None else _identifier(reason, f"{context}.reason_family")
         )
-        if disposition is ExpectedDisposition.PASS:
+        if disposition is ExpectedDisposition.QUALIFIED:
             if witness_family is not None or reason_family is not None:
                 raise StageAInputError(
-                    f"{context} pass expectation cannot name a witness or reason family"
+                    f"{context} qualified expectation cannot name a witness or reason family"
                 )
         elif disposition is ExpectedDisposition.VIOLATED:
             if witness_family is None or reason_family is not None:
@@ -275,7 +273,7 @@ class CaseManifest:
     mutation: NegativeMutation | None
     capability_profile: str
     capabilities: tuple[str, ...]
-    proof_families: tuple[str, ...]
+    validation_families: tuple[str, ...]
     artifacts: tuple[ArtifactRef, ...]
     replay: tuple[str, ...]
     shard: int
@@ -295,7 +293,7 @@ class CaseManifest:
             "mutation",
             "capability_profile",
             "capabilities",
-            "proof_families",
+            "validation_families",
             "artifacts",
             "replay",
             "shard",
@@ -315,7 +313,7 @@ class CaseManifest:
                 context=f"{context}.mutation",
             )
         )
-        if (expectation.disposition is ExpectedDisposition.PASS) != (mutation is None):
+        if (expectation.disposition is ExpectedDisposition.QUALIFIED) != (mutation is None):
             raise StageAInputError(
                 "positive cases must omit mutation and negative cases must declare one"
             )
@@ -382,8 +380,8 @@ class CaseManifest:
             capabilities=_string_tuple(
                 payload["capabilities"], f"{context}.capabilities", identifiers=True
             ),
-            proof_families=_string_tuple(
-                payload["proof_families"], f"{context}.proof_families", identifiers=True
+            validation_families=_string_tuple(
+                payload["validation_families"], f"{context}.validation_families", identifiers=True
             ),
             artifacts=artifacts,
             replay=replay,
@@ -402,7 +400,7 @@ class CaseManifest:
             "mutation": None if self.mutation is None else self.mutation.to_payload(),
             "capability_profile": self.capability_profile,
             "capabilities": list(self.capabilities),
-            "proof_families": list(self.proof_families),
+            "validation_families": list(self.validation_families),
             "artifacts": [artifact.to_payload() for artifact in self.artifacts],
             "replay": list(self.replay),
             "shard": self.shard,
@@ -489,7 +487,7 @@ class CorpusCaseRef:
 
 @dataclass(frozen=True)
 class ExpectedCounts:
-    pass_cases: int
+    qualified_cases: int
     violated_cases: int
     incomplete_cases: int
 
@@ -498,17 +496,17 @@ class ExpectedCounts:
         cls, payload: Mapping[str, Any], *, context: str,
     ) -> "ExpectedCounts":
         _exact_fields(
-            payload, {"pass", "violated", "incomplete"}, context,
+            payload, {"qualified", "violated", "incomplete"}, context,
         )
         return cls(
-            pass_cases=_integer(payload["pass"], f"{context}.pass"),
+            qualified_cases=_integer(payload["qualified"], f"{context}.qualified"),
             violated_cases=_integer(payload["violated"], f"{context}.violated"),
             incomplete_cases=_integer(payload["incomplete"], f"{context}.incomplete"),
         )
 
     def to_payload(self) -> dict[str, Any]:
         return {
-            "pass": self.pass_cases,
+            "qualified": self.qualified_cases,
             "violated": self.violated_cases,
             "incomplete": self.incomplete_cases,
         }
@@ -614,7 +612,7 @@ class CorpusManifest:
             loaded.append((case, case_root))
         expected = self.expected_counts
         observed = {
-            ExpectedDisposition.PASS: expected.pass_cases,
+            ExpectedDisposition.QUALIFIED: expected.qualified_cases,
             ExpectedDisposition.VIOLATED: expected.violated_cases,
             ExpectedDisposition.INCOMPLETE: expected.incomplete_cases,
         }

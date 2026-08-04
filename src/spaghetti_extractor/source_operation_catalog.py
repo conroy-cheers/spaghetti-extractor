@@ -2,8 +2,8 @@
 
 This module deliberately has no dependency on source-call substitution.  An
 operation catalog describes how an already identified operation may be written
-as C; it does not establish the operation's semantics or contribute proof
-authority.  Rendering fails closed when catalog or recovery evidence is not
+as C; it does not establish the operation's semantics or qualify a candidate.
+Rendering fails closed when catalog or recovery evidence is not
 exact enough to select one spelling.
 """
 
@@ -25,8 +25,8 @@ def _non_authoritative_rendering_metadata() -> dict[str, Any]:
     return {
         "authority": "non-authoritative",
         "authorizes_operation_semantics": False,
-        "authorizes_source_equivalence": False,
-        "final_equivalence_validation_required": True,
+        "authorizes_candidate_qualification": False,
+        "candidate_validation_required": True,
     }
 
 
@@ -289,8 +289,8 @@ def _validate_non_authoritative_metadata(value: Any) -> None:
     if (
         metadata.get("authority") != "non-authoritative"
         or metadata.get("authorizes_operation_semantics") is not False
-        or metadata.get("authorizes_source_equivalence") is not False
-        or metadata.get("final_equivalence_validation_required") is not True
+        or metadata.get("authorizes_candidate_qualification") is not False
+        or metadata.get("candidate_validation_required") is not True
     ):
         raise SourceOperationCatalogError(
             "source-operation rendering metadata must remain non-authoritative"

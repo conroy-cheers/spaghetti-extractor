@@ -36,9 +36,6 @@ pkgs.runCommand name
   )
   ''
     mkdir -p "$out"
-    ${pkgs.lib.optionalString (backend == "lean") ''
-      export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL=${kernelCache}
-    ''}
     set +e
     spaghetti-extractor stage-a-check-isa-conformance-worker \
       --corpus ${corpus} \

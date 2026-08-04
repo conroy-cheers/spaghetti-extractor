@@ -455,7 +455,7 @@ let
         ${python} - ${interpreterPackage} "$out" ${pkgs.stdenv.cc}/bin/cc <<'PY'
         import pathlib
         import sys
-        from spaghetti_extractor.reconstruction_workspace import build_reconstruction_regional_kernel
+        from spaghetti_extractor.component_backend import build_reconstruction_regional_kernel
 
         build_reconstruction_regional_kernel(
             interpreter_package=pathlib.Path(sys.argv[1]),
@@ -496,9 +496,9 @@ let
         import pathlib
         import sys
         import json
-        from spaghetti_extractor.reconstruction_workspace import run_reconstruction_workspace_check
+        from spaghetti_extractor.component_backend import run_component_backend_check
 
-        report = run_reconstruction_workspace_check(
+        report = run_component_backend_check(
             workspace=pathlib.Path(sys.argv[1]),
             interpreter_package=pathlib.Path(sys.argv[2]),
             compiler=sys.argv[3],

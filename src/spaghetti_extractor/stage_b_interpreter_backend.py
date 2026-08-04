@@ -1,8 +1,8 @@
 """Generate a stable semantic-IR interpreter and immutable program data.
 
-The generated C is candidate source, not proof evidence.  Stage A must bind the
-program records to exact decoded original transfers and prove the compiled
-interpreter kernel before a candidate can contribute to final acceptance.
+The generated C is candidate source, not qualification evidence. Static
+assurance must bind its program records to the extracted machine IR, and the
+compiled candidate must pass candidate-only behavior suites.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .artifact_formats import INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
-from .relational.definedness import analyze_definedness_jsonl
+from .analysis.definedness import analyze_definedness_jsonl
 from .stage_b_c_backend import _runtime_header, _runtime_helpers
 from .stage_b_typed_x87 import (
     TYPED_NATIVE_X87_OPERATION_FORMAT,
@@ -1866,7 +1866,7 @@ def write_stage_b_interpreter_package(
         ],
         "counts": program_payload["counts"],
         "blockers": blockers,
-        "authority": "candidate generation only; final acceptance requires Lean replay",
+        "authority": "candidate generation only; static and behavioral qualification remain required",
     }
     if machine_ir is not None:
         package["adapted_semantics"] = {

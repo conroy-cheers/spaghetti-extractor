@@ -1,8 +1,4 @@
-"""Compatibility exports for Stage A contract and Stage B feedback tooling.
-
-Implementation ownership lives under :mod:`spaghetti_extractor._contract_tools`.
-Only relational v3 Lean acceptance can establish whole-program equivalence.
-"""
+"""Public static-contract and candidate-feedback API."""
 
 from ._contract_tools import (
     abi as _abi,

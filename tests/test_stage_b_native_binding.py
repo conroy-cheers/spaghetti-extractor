@@ -78,7 +78,7 @@ def _plan() -> dict:
         "external_sites": sites,
         "callback_targets": [],
         "blockers": [],
-        "authority": "candidate generation only; final acceptance requires proof",
+        "authority": "candidate generation only; candidate validation remains required",
     }
 
 
@@ -161,7 +161,7 @@ def _obligations() -> dict:
         "machine_call_catalog": None,
         "counts": _obligation_counts(boundaries),
         "call_boundaries": boundaries,
-        "acceptance": "all runtime obligations must be bound and Stage A must pass",
+        "acceptance": "all runtime obligations must be bound and candidate assurance must qualify",
     }
 
 

@@ -245,7 +245,7 @@ stdenv.mkDerivation (finalAttrs: {
     longDescription = ''
       A pinned, single-CPU, headless Bochs 3.0 build with the Spaghetti
       Extractor instrumentation library compiled in. It is an untrusted ISA
-      conformance oracle and has no Stage A proof authority.
+      conformance oracle and has no candidate qualification authority.
     '';
     mainProgram = runnerName;
   };

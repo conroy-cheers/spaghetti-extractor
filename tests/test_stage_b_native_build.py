@@ -221,7 +221,7 @@ class _Packages:
                     "blockers": [],
                     "policy": "strict",
                 },
-                "acceptance": "Stage A proof required",
+                "acceptance": "candidate static and behavioral checks required",
             },
         )
 
@@ -293,7 +293,7 @@ class _Packages:
                 ],
                 "counts": plan["counts"],
                 "blockers": [],
-                "authority": "candidate generation only; Stage A proof required",
+                "authority": "candidate generation only; static and behavioral qualification required",
             },
         )
 

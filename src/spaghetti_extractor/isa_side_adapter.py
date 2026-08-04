@@ -3,7 +3,7 @@
 The adapter is deliberately untrusted. It preserves every exact occurrence and
 proposes one executable encoding row per observed ``(semantic form, bytes)``
 pair, but it cannot supply effects or defined-output masks. Lean replay and
-whole-program acceptance remain separate requirements.
+candidate qualification remain separate requirements.
 """
 
 from __future__ import annotations
@@ -22,12 +22,12 @@ from .isa_semantic_forms import (
     lean_semantic_form_core,
     lean_semantic_form_id,
 )
-from .relational.isa_requirements import (
+from .analysis.isa_requirements import (
     ISA_REQUIREMENT_INVENTORY_FORMAT,
     ISARequirementInventory,
 )
-from .relational.schema import STAGE_A_RELATIONAL_MODEL_ID
-from .relational.side_isa_artifact import parse_side_isa_unbound
+from .analysis.schema import STATIC_ANALYSIS_MODEL_ID
+from .analysis.isa_inventory import parse_side_isa_unbound
 from .stage_binary import StageAInputError
 from .util import sha256_bytes, sha256_file, write_json
 
@@ -347,7 +347,7 @@ def adapt_side_isa_qualification_inputs(
     requirements = {
         "format": ISA_REQUIREMENT_INVENTORY_FORMAT,
         "status": "complete",
-        "model": STAGE_A_RELATIONAL_MODEL_ID,
+        "model": STATIC_ANALYSIS_MODEL_ID,
         "inputs": inputs_payload,
         "scope": {
             "canonical_node_ids": canonical_nodes,
@@ -360,7 +360,7 @@ def adapt_side_isa_qualification_inputs(
         "formal_binding": {
             "status": "lean_side_decode_extracted_replay_pending",
             "classifier_module": "StageA.ISAQualification",
-            "span_decoder_module": "StageA.RelationalISAQualification",
+            "span_decoder_module": "StageA.ISAInventory",
             "classifier_sha256": classifier_sha256,
             "extractor_sha256": extractor_sha256,
             "instruction_spans_and_bytes_match_capstone": False,
@@ -394,7 +394,7 @@ def adapt_side_isa_qualification_inputs(
             ],
             "conformance_rule": (
                 "oracle agreement may qualify a reviewed semantic kernel revision; "
-                "it never proves whole-program equivalence"
+                "it never qualifies a reconstructed candidate"
             ),
         },
     }
@@ -408,7 +408,7 @@ def adapt_side_isa_qualification_inputs(
         "format": SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT,
         "status": "incomplete_missing_effect_enrichment",
         "profile": ISA_PROFILE_ID,
-        "model": STAGE_A_RELATIONAL_MODEL_ID,
+        "model": STATIC_ANALYSIS_MODEL_ID,
         "classifier_sha256": classifier_sha256,
         "requirements_sha256": _canonical_sha256(requirements),
         "source": {

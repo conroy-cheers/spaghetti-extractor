@@ -1,8 +1,8 @@
 """Concrete evaluator for the authoritative Lean IA-32 semantics.
 
 This module generates Lean source and executes the same decoder and machine
-semantics used by Stage A. Its reports are assurance evidence only and never
-participate in the whole-program acceptance theorem.
+semantics used by Stage A. Its reports qualify the ISA model but do not by
+themselves qualify a reconstructed candidate.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from .isa_conformance import (
     parse_isa_conformance_report,
     serialize_isa_conformance_report,
 )
-from .relational.lean.compiler import _run_lean_relational
+from .lean_runner import run_lean_module_graph
 from .isa_semantic_forms import lean_semantic_form_classifier_sha256
 
 
@@ -474,7 +474,7 @@ def _run_lean_isa_conformance(
                     ),
                     encoding="utf-8",
                 )
-                compiled = _run_lean_relational(
+                compiled = run_lean_module_graph(
                     lean_dir,
                     bundle="GeneratedISAConformance",
                     command_timeout_seconds=900,

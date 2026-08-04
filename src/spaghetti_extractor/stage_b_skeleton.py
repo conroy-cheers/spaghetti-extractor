@@ -2192,7 +2192,7 @@ def _skeleton_implementation_recovery_with_state_machine(
         "primary_implementation": "outputs.implementation",
         "bootstrap_source": "outputs.bootstrap_source",
         "semantic_c_backend": "outputs.semantic_c_backend",
-        "completion_rule": "Stage A whole-program validation is required after compilation",
+        "completion_rule": "candidate static and behavioral validation is required after compilation",
     }
     return updated
 
@@ -2229,7 +2229,7 @@ def _semantic_c_implementation_output(
             "path": (directory / str(backend["report"]["path"])).as_posix(),
             "sha256": str(backend["report"]["sha256"]),
         },
-        "completion_rule": "all repair stubs replaced and resulting PE accepted by Stage A",
+        "completion_rule": "all repair stubs replaced and candidate assurance qualified",
     }
 
 
@@ -9326,12 +9326,12 @@ def _skeleton_build_profile(
 ) -> dict[str, Any]:
     if source_language != "c" or implementation_mode not in {"decompiled-c", "contract-guided-c"}:
         return {
-            "format": "stage-b-proof-build-profile-v1",
+            "format": "stage-b-candidate-build-profile-v1",
             "status": "not_applicable",
             "source_language": source_language,
         }
     return {
-        "format": "stage-b-proof-build-profile-v1",
+        "format": "stage-b-candidate-build-profile-v1",
         "status": "required",
         "target": "i686-w64-mingw32" if binary.bitness == 32 else "unsupported",
         "language": "c",
@@ -9340,7 +9340,7 @@ def _skeleton_build_profile(
         "link_flags": ["-Wl,-Map,<candidate.map>"],
         "runtime_entry_policy": runtime_entry_policy,
         "compiler_provenance": "pin compiler, binutils, CRT, headers, and libraries through Nix",
-        "acceptance": "this profile only builds a candidate; Stage A pe32ProgramsEquivalent decides acceptance",
+        "acceptance": "this profile builds a candidate; static assurance and candidate-only behavior suites decide qualification",
     }
 
 def _pe_input_kind(binary: StageABinary) -> str:

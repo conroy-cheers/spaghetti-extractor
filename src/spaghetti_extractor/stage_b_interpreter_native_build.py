@@ -3,7 +3,7 @@
 This module is candidate-generation infrastructure only.  It validates and
 content-binds the semantic interpreter, native engine, and native runtime,
 then uses the shared native-build qualification and PE-composition machinery.
-Nothing emitted here has Stage A acceptance authority.
+Nothing emitted here qualifies the resulting candidate.
 """
 
 from __future__ import annotations
@@ -692,7 +692,7 @@ def build_stage_b_interpreter_native_candidate(
         "format": INTERPRETER_NATIVE_BUILD_FORMAT,
         "status": "candidate-generated",
         "acceptance_authority": "none",
-        "acceptance": "Stage A whole-program theorem required",
+        "assurance": "candidate static and behavioral validation required",
         "inputs": {
             "interpreter_package": interpreter.binding(),
             "native_engine_package": engine.binding(),

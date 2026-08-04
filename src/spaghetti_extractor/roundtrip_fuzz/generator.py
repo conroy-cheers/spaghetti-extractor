@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import json
 import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from ..relational.contract import stage_a_generate_relation_contract
-from ..relational.mapping import stage_a_generate_map
+from ..analysis.binary_inventory import stage_a_inventory_binary
 from ..stage_binary import StageAInputError
 from ..util import sha256_file, write_json
-from .inventory import write_roundtrip_interface_inventory
 from .lowering import (
     AssemblyLoweringVariant,
     LinkedPE32,
@@ -50,8 +47,8 @@ from .semantic import (
 )
 
 
-SPIKE_GENERATOR_VERSION = "structured-semantic-spike-v1"
-SPIKE_CAPABILITY_PROFILE = "x86-pe32-relational-v3"
+SPIKE_GENERATOR_VERSION = "static-machine-ir-roundtrip-v2"
+SPIKE_CAPABILITY_PROFILE = "x86-pe32-static-reconstruction-v1"
 SPIKE_POSITIVE_CASES = 24
 SPIKE_NEGATIVE_CASES = 12
 SPIKE_CASES = SPIKE_POSITIVE_CASES + SPIKE_NEGATIVE_CASES
@@ -365,7 +362,7 @@ def generate_spike_corpus(
         toolchain=toolchain_identity,
         cases=tuple(references),
         expected_counts=ExpectedCounts(
-            observed[ExpectedDisposition.PASS],
+            observed[ExpectedDisposition.QUALIFIED],
             observed[ExpectedDisposition.VIOLATED],
             observed[ExpectedDisposition.INCOMPLETE],
         ),
@@ -373,10 +370,9 @@ def generate_spike_corpus(
     )
     corpus_path = out / "corpus.json"
     write_corpus_manifest(corpus_path, corpus)
-    write_roundtrip_interface_inventory(out=out / "interface-inventory.json")
     corpus.load_cases(out)
     return {
-        "format": "stage-a-roundtrip-generation-v1",
+        "format": "stage-a-roundtrip-generation-v2",
         "status": "generated",
         "corpus": str(corpus_path),
         "corpus_sha256": sha256_file(corpus_path),
@@ -416,44 +412,24 @@ def _generate_spike_case(
     build = _build_function(toolchain=toolchain, compiler=compiler, linker=linker)
     original = build(original_source, case_root / "original.exe", case_root / "original.map")
     candidate = build(candidate_source, case_root / "candidate.exe", case_root / "candidate.map")
-    mapping_path = case_root / "relation-proposal.json"
-    layout_path = case_root / "layout-contract.json"
-    mapping = stage_a_generate_map(
-        original=original.binary,
-        candidate=candidate.binary,
-        linker_map_original=original.linker_map,
-        linker_map_candidate=candidate.linker_map,
-        out=mapping_path,
-        layout_contract_out=layout_path,
-        original_flags="semantic-original-v1",
-        candidate_flags=f"semantic-candidate-v1 {spec.transformation}",
+    original_inventory = case_root / "original-inventory.json"
+    candidate_inventory = case_root / "candidate-inventory.json"
+    original_inventory_result = stage_a_inventory_binary(
+        binary=original.binary,
+        linker_map=original.linker_map,
+        side="original",
+        out=original_inventory,
     )
-    if mapping.get("status") != "pass":
-        raise StageAInputError(
-            f"case {spec.case_id} mapping proposal is incomplete: "
-            + json.dumps(mapping.get("issues", [])[:3], sort_keys=True)
-        )
-    mapping_payload = json.loads(mapping_path.read_text(encoding="utf-8"))
-    mapping_payload["original"]["path"] = "original.exe"
-    mapping_payload["candidate"]["path"] = "candidate.exe"
-    mapping_payload["linker_maps"] = {
-        "original": "original.map", "candidate": "candidate.map",
-    }
-    write_json(mapping_path, mapping_payload)
-    relation_path = case_root / "relation-contract.json"
-    relation = stage_a_generate_relation_contract(
-        original=original.binary,
-        candidate=candidate.binary,
-        mapping=mapping_path,
-        out=relation_path,
+    candidate_inventory_result = stage_a_inventory_binary(
+        binary=candidate.binary,
+        linker_map=candidate.linker_map,
+        side="candidate",
+        out=candidate_inventory,
     )
-    if relation.get("status") != "generated":
-        raise StageAInputError(
-            f"case {spec.case_id} relation contract is incomplete: "
-            + json.dumps(relation.get("issues", [])[:3], sort_keys=True)
-        )
+    if original_inventory_result.get("status") != "pass" or candidate_inventory_result.get("status") != "pass":
+        raise StageAInputError(f"case {spec.case_id} could not be classified statically")
     disposition = (
-        ExpectedDisposition.PASS if mutation is None else ExpectedDisposition.VIOLATED
+        ExpectedDisposition.QUALIFIED if mutation is None else ExpectedDisposition.VIOLATED
     )
     artifacts = artifact_refs(root=case_root, artifacts=(
         ("semantic_program", original_semantic),
@@ -466,8 +442,8 @@ def _generate_spike_case(
         ("candidate_pe", candidate.binary),
         ("original_linker_map", original.linker_map),
         ("candidate_linker_map", candidate.linker_map),
-        ("relation_proposal", mapping_path),
-        ("relation_contract", relation_path),
+        ("original_inventory", original_inventory),
+        ("candidate_inventory", candidate_inventory),
     ))
     case = CaseManifest(
         id=spec.case_id,
@@ -477,20 +453,20 @@ def _generate_spike_case(
         transformations=(spec.transformation,),
         expectation=CaseExpectation(
             disposition,
-            "relational-behavior-mismatch-v1" if mutation is not None else None,
+            "static-semantic-mismatch-v1" if mutation is not None else None,
             None,
         ),
         mutation=mutation,
         capability_profile=SPIKE_CAPABILITY_PROFILE,
         capabilities=original_program.capabilities,
-        proof_families=(
-            "static-context", "segment-refinement", "product-composition",
-            "launch-realizability", "whole-program-acceptance",
+        validation_families=(
+            "pe32-static-inventory", "instruction-decoding", "semantic-model",
+            "mutation-localization",
         ),
         artifacts=artifacts,
         replay=(
-            "spaghetti-extractor", "stage-a-fuzz-run", "--corpus", "corpus.json",
-            "--mode", "proof-core", "--case", spec.case_id, "--out", "run",
+            "spaghetti-extractor", "roundtrip-run", "--corpus", "corpus.json",
+            "--case", spec.case_id, "--out", "run",
         ),
         shard=spec.index % shard_count,
     )

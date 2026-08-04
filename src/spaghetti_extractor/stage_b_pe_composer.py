@@ -2029,8 +2029,8 @@ def _composition_manifest(
         "status": "composed",
         "acceptance_authority": "none",
         "acceptance": (
-            "structural composition only; behavioral equivalence requires an independent "
-            "Stage A proof"
+            "structural composition only; candidate static assurance and "
+            "candidate-only behavior suites remain required"
         ),
         "inputs": {
             "load_image_contract": {

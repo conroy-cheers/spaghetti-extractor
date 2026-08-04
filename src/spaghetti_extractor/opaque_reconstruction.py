@@ -11,8 +11,8 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from .relational.binary_inventory import parse_binary_cutpoint_inventory
-from .relational.reference_contract import stage_a_export_reference_contract
+from .analysis.binary_inventory import parse_binary_cutpoint_inventory
+from .contract_tools import stage_a_export_reference_contract
 from .roundtrip_fuzz.image_contract import write_stage_a_load_image_contract
 from .stage_b_state_machine import write_stage_b_state_machine_from_stage_a_export
 from .stage_binary import StageAInputError, _parse_stage_a_pe
@@ -87,7 +87,7 @@ def opaque_self_map_from_inventory(
     waivers = [
         {
             "id": str(row["id"]),
-            "binary": "both",
+            "binary": "original",
             "rva": int(row["rva"]),
             "size": int(row["size"]),
             "reason": str(row["reason"]),
@@ -163,7 +163,6 @@ def stage_a_export_opaque_reconstruction(
     reference_path = out / "reference-contract.json"
     stage_a_export_reference_contract(
         original=original,
-        candidate=original,
         mapping=self_map_path,
         out=reference_path,
         sidecar_dir=out,

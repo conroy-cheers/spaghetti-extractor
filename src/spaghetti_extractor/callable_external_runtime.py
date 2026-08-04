@@ -1,10 +1,9 @@
 """Project checked callable-external evidence into a candidate runtime contract.
 
-The projection has no proof authority.  It gives Stage B one compact,
-hash-bound description of resolver-issued callables after Stage A has proposed
-the corresponding resolver, value-provenance, and ABI evidence.  Unknown or
-ambiguous targets remain unavailable at runtime and final qualification still
-requires Lean to check the source artifacts.
+The projection has no proof authority. It gives Stage B one compact,
+hash-bound description of resolver-issued callables after static analysis has
+proposed corresponding resolver, value-provenance, and ABI evidence. Unknown
+or ambiguous targets remain unavailable at runtime.
 """
 
 from __future__ import annotations
@@ -14,12 +13,12 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import StageAInputError
-from .relational.lean.callable_external_capability import (
+from .external_capabilities import (
     CallableArgumentSourceSpec,
     MemoryFootprintSpec,
     parse_callable_external_capability_artifact,
 )
-from .relational.lean.callable_external_execution import (
+from .external_sites import (
     parse_callable_external_execution_artifact,
 )
 from .util import sha256_bytes, sha256_file, write_json
@@ -224,7 +223,7 @@ class CallableExternalRuntimeContract:
             "trust": {
                 "acceptance_authority": False,
                 "candidate_generation_only": True,
-                "lean_source_artifacts_required": True,
+                "static_contract_artifacts_required": True,
                 "unknown_runtime_targets_rejected": True,
             },
         }

@@ -1062,8 +1062,8 @@ def _padding_bridge_transfer(
             "edge_conditions": 1,
         },
         "acceptance": (
-            "untrusted exact padding bridge proposal; Lean decode and semantic "
-            "normalization are required"
+            "untrusted exact padding bridge proposal; qualified ISA decoding "
+            "and semantic normalization are required"
         ),
         "blocker_category": None,
         "blocker": None,

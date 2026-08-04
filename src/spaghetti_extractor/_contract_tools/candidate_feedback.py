@@ -33,7 +33,7 @@ from ..stage_binary import (
     _parse_stage_a_pe,
     _section_for_rva,
 )
-from ..relational.semantic_cutpoints import semantic_cutpoint_spans_for_side
+from ..analysis.cutpoints import semantic_cutpoint_spans_for_side
 from ..util import sha256_bytes, sha256_file, utc_now, write_json
 
 from .common import (
@@ -148,7 +148,7 @@ def stage_b_check_contract(
         skeleton_payload=skeleton_payload,
         linker_map_candidate=linker_map_candidate,
     )
-    if shortfall_audit["status"] != "pass":
+    if shortfall_audit["status"] != "qualified":
         families.append(_contract_candidate_shortfall_family(shortfall_audit))
     for family in families:
         if family["status"] in {"incomplete", "violated"}:
@@ -161,11 +161,15 @@ def stage_b_check_contract(
                     details=family.get("evidence", {}),
                 )
             )
-    verdict = "pass" if not issues and all(item["status"] in {"satisfied", "not_applicable"} for item in families) else "incomplete"
+    if any(item["status"] == "violated" for item in families):
+        status = "violated"
+    elif issues or not all(item["status"] in {"satisfied", "not_applicable"} for item in families):
+        status = "incomplete"
+    else:
+        status = "qualified"
     result = {
-        "format": "stage-a-contract-candidate-validation-v1",
-        "verdict": verdict,
-        "status": verdict,
+        "format": "stage-b-candidate-contract-check-v2",
+        "status": status,
         "model": model,
         "reference_contract": _reference_input_artifact(reference_contract),
         "candidate": _reference_input_artifact(candidate),
@@ -266,8 +270,8 @@ def stage_b_extract_work_items(
     repair_units = unit_contracts.get("repair_units") if isinstance(unit_contracts.get("repair_units"), dict) else {}
     work_items = repair_units.get("work_items") if isinstance(repair_units.get("work_items"), list) else []
     result = {
-        "format": "stage-a-work-items-v1",
-        "status": "pass",
+        "format": "stage-b-work-items-v2",
+        "status": "qualified",
         "reference_contract": _reference_input_artifact(reference_contract),
         "unit_contracts": _reference_unit_contract_artifact(unit_contracts),
         "work_items": work_items,
@@ -296,9 +300,9 @@ def stage_b_contract_coverage(
         contract_ref=contract_ref,
     )
     blockers = _semantic_coverage_blockers(unit_contracts)
-    status = "pass" if not blockers else "incomplete"
+    status = "qualified" if not blockers else "incomplete"
     result = {
-        "format": "stage-a-semantic-coverage-v1",
+        "format": "stage-b-semantic-coverage-v2",
         "status": status,
         "reference_contract": _reference_input_artifact(reference_contract),
         "unit_contracts": _reference_unit_contract_artifact(unit_contracts),
@@ -306,10 +310,10 @@ def stage_b_contract_coverage(
         "counts": _semantic_coverage_counts(unit_contracts, blockers),
         "blockers": blockers[:250],
         "next_work": _semantic_coverage_next_work(blockers),
-        "acceptance": {
-            "full_reimplementation_ready": status == "pass",
+        "qualification": {
+            "full_reimplementation_ready": status == "qualified",
             "requirement": "all executable regions must have implementable transfer/cluster contracts or explicit external-boundary contracts",
-            "final_acceptance": "compiled candidates still require full Stage A validation; this ledger only gates analysis coverage",
+            "final_assurance": "compiled candidates still require candidate-only static and behavioral assurance; this ledger only gates analysis coverage",
         },
     }
     write_json(Path(out), result)
@@ -363,10 +367,14 @@ def stage_b_check_unit(
     ]
     focused_units = _matching_unit_contracts(unit_contracts, focus_lower)
     matched = bool(focused_families or focused_issues or focused_units)
-    focused_status = "incomplete" if not matched or focused_families or focused_issues else "pass"
-    status = "pass" if validation.get("verdict") == "pass" and matched else "incomplete"
+    blocking_families = [
+        item for item in focused_families
+        if item.get("status") not in {"satisfied", "not_applicable", "qualified"}
+    ]
+    focused_status = "qualified" if matched and not blocking_families and not focused_issues else "incomplete"
+    status = "qualified" if validation.get("status") == "qualified" and focused_status == "qualified" else "incomplete"
     result = {
-        "format": "stage-a-unit-validation-v1",
+        "format": "stage-b-unit-contract-check-v2",
         "status": status,
         "focused_status": focused_status,
         "scope": "focused_unit_filter",
@@ -426,7 +434,7 @@ def _stage_a_contract_shortfall_audit(
     if contract.get("model") != model:
         findings.append(
             _audit_finding(
-                family="candidate_semantics_not_proven",
+                family="candidate_semantics_unresolved",
                 category="contract_model_mismatch",
                 severity="incomplete",
                 location={"reference_contract": str(contract_path)},
@@ -452,8 +460,8 @@ def _stage_a_contract_shortfall_audit(
     findings = _rank_audit_findings(_dedupe_audit_findings(findings))
     families = _audit_families(findings)
     return {
-        "format": "stage-a-contract-shortfall-audit-v1",
-        "status": "pass" if not findings else "incomplete",
+        "format": "stage-b-candidate-shortfall-audit-v2",
+        "status": "qualified" if not findings else "incomplete",
         "model": model,
         "reference_contract": _reference_input_artifact(contract_path),
         "candidate": _reference_input_artifact(candidate_bin.path) if candidate_bin is not None else None,
@@ -535,7 +543,7 @@ def _audit_alias_shortfall_findings(alias_evidence: dict[str, Any]) -> list[dict
     if unmatched_count:
         findings.append(
             _audit_finding(
-                family="candidate_semantics_not_proven",
+                family="candidate_semantics_unresolved",
                 category="unmatched_skeleton_aliases",
                 severity="incomplete",
                 location={"alias_evidence": "skeleton_manifest", "unmatched_aliases": unmatched_count},
@@ -550,7 +558,7 @@ def _audit_alias_shortfall_findings(alias_evidence: dict[str, Any]) -> list[dict
     if ambiguity_count:
         findings.append(
             _audit_finding(
-                family="candidate_semantics_not_proven",
+                family="candidate_semantics_unresolved",
                 category="ambiguous_skeleton_aliases",
                 severity="incomplete",
                 location={"alias_evidence": "skeleton_manifest", "ambiguities": ambiguity_count},
@@ -630,7 +638,7 @@ def _audit_raw_section_gap_findings(
             category="raw_section_gap_source_without_checked_semantics",
             severity="incomplete",
             location={"source_map": "stage-b-skeleton", "raw_section_gap_entries": len(raw_entries)},
-            expected="section-gap generated code is represented by checked semantic contracts before final generated-candidate acceptance",
+            expected="section-gap generated code is represented by checked semantic contracts before candidate qualification",
             observed=f"{len(raw_entries)} raw section-gap source-map entries",
             cause_hint="layout/byte coverage does not prove generated source faithfully implements section-gap control flow",
             next_action="replace raw section-gap helpers with checked semantic-region/source contracts or keep the candidate incomplete",
@@ -644,7 +652,7 @@ def _audit_raw_section_gap_findings(
                 category="effectful_raw_section_gap_code",
                 severity="incomplete",
                 location={"source_map": "stage-b-skeleton", "effectful_raw_section_gap_entries": len(risky)},
-                expected="raw section-gap code with calls, returns, or indirect control flow has a checked compositional proof",
+                expected="raw section-gap code with calls, returns, or indirect control flow has a checked compositional contract",
                 observed=f"{len(risky)} raw section-gap entries contain effectful control-flow instructions",
                 cause_hint="effectful raw-flow helpers can crash or diverge even when layout validation passes",
                 next_action="emit checked per-block/cluster contracts for these helpers before accepting the candidate",
@@ -667,13 +675,13 @@ def _audit_unit_contract_shortfall_findings(
     if unresolved and source_entries:
         findings.append(
             _audit_finding(
-                family="candidate_semantics_not_proven",
+                family="candidate_semantics_unresolved",
                 category="unresolved_repair_units",
                 severity="incomplete",
                 location={"repair_units": "stage-a-unit-contract-sidecar", "work_items": len(unresolved)},
                 expected="all Stage A repair units are represented by checked generated-candidate contracts",
-                observed=f"{len(unresolved)} repair units still require representation/proof",
-                cause_hint="the reference contract contains actionable work items that are not acceptance proofs",
+                observed=f"{len(unresolved)} repair units still require a checked representation",
+                cause_hint="the reference contract contains actionable work items that are not yet tied to candidate evidence",
                 next_action="close or explicitly bind repair units to checked generated-candidate contracts",
                 evidence={"counts": repair_units.get("counts"), "samples": unresolved[:20]},
             )
@@ -692,9 +700,9 @@ def _audit_unit_contract_shortfall_findings(
                 category="abi_repair_units_not_blocking_verified",
                 severity="incomplete",
                 location={"repair_units": "stage-a-unit-contract-sidecar", "abi_items": len(abi_items)},
-                expected="ABI/callsite evidence used for acceptance is blocking-verified, not only derived guidance",
+                expected="ABI/callsite evidence used for qualification is blocking-verified, not only derived guidance",
                 observed=f"{len(abi_items)} ABI-related repair units remain",
-                cause_hint="static ABI hints do not prove source-level prototypes, sret/out-param handling, varargs, or preserved state",
+                cause_hint="static ABI hints do not establish source-level prototypes, sret/out-param handling, varargs, or preserved state",
                 next_action="promote ABI repair units to checked obligations or keep generated-candidate validation incomplete",
                 evidence={"samples": abi_items[:20], "contract_abi_counts": _contract_constraint(contract, "abi_callsites").get("counts", {})},
             )
@@ -709,7 +717,7 @@ def _audit_unit_contract_shortfall_findings(
                 location={"repair_units": "stage-a-unit-contract-sidecar", "external_boundary_items": len(external_items)},
                 expected="external/import/function-pointer boundaries have checked prototypes, argument roles, and environment effects",
                 observed=f"{len(external_items)} external-boundary repair units remain",
-                cause_hint="uninterpreted external calls are sound for local binary-pair proof, but insufficient for generated source behavior claims",
+                cause_hint="uninterpreted external calls are insufficient for generated source behavior claims",
                 next_action="add checked import/function-pointer boundary contracts before accepting generated behavior",
                 evidence={"samples": external_items[:20]},
             )
@@ -739,12 +747,12 @@ def _audit_coverage_gap_mask_findings(
     return [
         _audit_finding(
             family="coverage_gap_masked",
-            category="coverage_gaps_omit_acceptance_shortfalls",
+            category="coverage_gaps_omit_assurance_shortfalls",
             severity="incomplete",
             location={"coverage_gaps": "coverage_gaps.json"},
-            expected="coverage_gaps reflects generated-candidate acceptance blockers as well as Stage A reference-pair proof gaps",
-            observed="coverage_gaps reports zero gaps while other acceptance shortfalls exist",
-            cause_hint="the current sidecar can suggest there is no work even when generated-candidate proof obligations are only guidance",
+            expected="coverage_gaps reflects generated-candidate assurance blockers as well as static reconstruction gaps",
+            observed="coverage_gaps reports zero gaps while other assurance shortfalls exist",
+            cause_hint="the current sidecar can suggest there is no work even when generated-candidate coverage remains incomplete",
             next_action="include repair units, unmatched aliases, raw section-gap helpers, and closure/import blockers in generated-candidate audit output",
             evidence={
                 "coverage_counts": coverage.get("counts"),
@@ -761,7 +769,7 @@ def _audit_explicit_unit_sidecar_exists(unit_contracts: dict[str, Any], name: st
     return isinstance(path_text, str) and Path(path_text).is_file()
 
 def _audit_validation_shortfall_findings(validation: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if not isinstance(validation, dict) or validation.get("status") != "pass":
+    if not isinstance(validation, dict) or validation.get("status") != "qualified":
         return []
     counts = validation.get("counts") if isinstance(validation.get("counts"), dict) else {}
     unmatched = int(counts.get("unmatched_aliases") or 0)
@@ -769,14 +777,14 @@ def _audit_validation_shortfall_findings(validation: dict[str, Any] | None) -> l
         return []
     return [
         _audit_finding(
-            family="candidate_semantics_not_proven",
-            category="passing_validation_with_unmatched_aliases",
+            family="candidate_semantics_unresolved",
+            category="qualified_validation_with_unmatched_aliases",
             severity="incomplete",
             location={"contract_candidate_validation": validation.get("format")},
-            expected="candidate validation cannot pass with unmatched source-map aliases",
-            observed=f"validation passed with {unmatched} unmatched aliases",
+            expected="candidate validation cannot qualify with unmatched source-map aliases",
+            observed=f"validation qualified with {unmatched} unmatched aliases",
             cause_hint="candidate validation treated unbound source coverage as non-blocking",
-            next_action="make unmatched aliases blocking for generated-candidate acceptance",
+            next_action="make unmatched aliases blocking for generated-candidate qualification",
             evidence={"counts": counts},
         )
     ]
@@ -810,7 +818,7 @@ def _audit_candidate_crash_finding(
         location=location,
         expected="a candidate accepted by Stage A does not crash on public candidate-only behavior tests",
         observed=crash.get("crash_kind") or "candidate crash",
-        cause_hint="runtime crash falsifies the current generated-candidate acceptance story",
+        cause_hint="runtime crash falsifies the current generated-candidate assurance result",
         next_action="use the mapped source/function location to add a blocking Stage A contract or reject this candidate statically",
         evidence={
             "crash": crash,
@@ -1026,7 +1034,7 @@ def _audit_family_rank(family: str) -> int:
         "target_owned_import_borrowed": 2,
         "abi_underconstrained": 3,
         "coverage_gap_masked": 4,
-        "candidate_semantics_not_proven": 5,
+        "candidate_semantics_unresolved": 5,
         "external_environment_underspecified": 6,
     }
     return order.get(family, 99)
@@ -1074,9 +1082,6 @@ def _contract_candidate_families(
         candidate_imports=candidate_imports,
         alias_evidence=alias_evidence,
     )
-    contract_status = str(contract.get("status") or "")
-    proof_family = contract_families.get("proof_inventory") or contract_families.get("proof_obligation_inventory_and_statuses")
-    proof_status = proof_family.get("status") if isinstance(proof_family, dict) else None
     alias_ambiguity_count = len(ambiguous_functions)
     function_ranges_status = "satisfied" if not missing_functions and not ambiguous_functions and expected_functions else "incomplete"
     abi_status = _contract_candidate_abi_status(abi_contract, candidate_abi)
@@ -1129,7 +1134,7 @@ def _contract_candidate_families(
             "abi_callsites",
             abi_status,
             "candidate ABI/callsite evidence does not yet cover the reference contract",
-            "repair prototypes, sret/out-params, varargs bridges, stack deltas, or register preservation before final proof",
+            "repair prototypes, sret/out-params, varargs bridges, stack deltas, or register preservation",
             contract_families.get("abi_callsites"),
             evidence={
                 "reference_counts": abi_contract.get("counts") if isinstance(abi_contract.get("counts"), dict) else {},
@@ -1146,14 +1151,6 @@ def _contract_candidate_families(
             "rebuild/link the candidate with matching import thunk/prototype surface",
             contract_families.get("import_thunks"),
             evidence={"expected_imports": original_imports, "candidate_imports": candidate_imports},
-        ),
-        _contract_candidate_family(
-            "proof_inventory",
-            "satisfied" if contract_status == "pass" and proof_status == "satisfied" else "incomplete",
-            "reference contract proof inventory is not fully satisfied",
-            "regenerate the Stage A reference contract from a final-pass validation package before using it as a Stage B repair contract",
-            proof_family,
-            evidence={"contract_status": contract.get("status"), "proof_family_status": proof_status},
         ),
     ]
     return families
