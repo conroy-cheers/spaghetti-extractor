@@ -951,6 +951,14 @@ typedef struct stage_b_call_event {
   uint32_t stack_input_count;
 } stage_b_call_event;
 
+#define STAGE_B_MAX_EXTERNAL_ARGUMENTS 256U
+typedef struct stage_b_external_call_snapshot {
+  uint32_t instruction_rva;
+  uint32_t argument_base_offset;
+  uint32_t argument_count;
+  uint32_t arguments[STAGE_B_MAX_EXTERNAL_ARGUMENTS];
+} stage_b_external_call_snapshot;
+
 typedef struct stage_b_runtime stage_b_runtime;
 
 typedef enum stage_b_call_status {

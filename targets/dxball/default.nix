@@ -1,4 +1,4 @@
-{ pkgs, pythonEnv, pythonSource }:
+{ pkgs, pythonEnv, pythonSource, profileSource, candidatePythonSource }:
 
 let
   archive = pkgs.fetchurl {
@@ -6,7 +6,7 @@ let
     url = "https://archive.org/download/dxball-19/DXBall19.zip";
     hash = "sha256-ARvV4Ge3rNrGxdbEeqIAmpcb07FSayOGbUsz/ZfdUQ0=";
   };
-  wine = pkgs.wineWow64Packages.stableFull;
+  wine = pkgs.wineWowPackages.stableFull;
   installer = pkgs.runCommand "dxball-1.09-installer" {
     nativeBuildInputs = [ pkgs.unzip ];
     __contentAddressed = true;
@@ -44,7 +44,7 @@ let
   analysis = import ../../nix/stage-b-component-analysis.nix {
     inherit pkgs pythonEnv pythonSource;
     original = "${original}/DXBall.exe";
-    externalProfile = "${pythonSource}/profiles/pe32-msvcrt-machine-runtime-v1.json";
+    externalProfile = "${profileSource}/profiles/pe32-msvcrt-machine-runtime-v1.json";
     externalInterfaceProfiles = [
       "${interfaceProfile}/interface-profile.json"
     ];
@@ -52,10 +52,33 @@ let
     maxUnits = 512;
     maxCandidatesPerSeed = 12;
   };
+  hybrid = import ../../nix/stage-b-hybrid-candidate.nix {
+    inherit pkgs pythonEnv;
+    pythonSource = candidatePythonSource;
+    machineIr = analysis.machineIr;
+    staticExport = analysis.staticExport;
+    machineImportProfiles = [
+      "${profileSource}/profiles/pe32-msvcrt-machine-runtime-v1.json"
+    ];
+    namePrefix = "spaghetti-extractor-dxball-1.09";
+    allowDeferredPotentialTransfers = true;
+  };
+  hybridDiagnostic = import ../../nix/stage-b-hybrid-candidate.nix {
+    inherit pkgs pythonEnv;
+    pythonSource = candidatePythonSource;
+    machineIr = analysis.machineIr;
+    staticExport = analysis.staticExport;
+    machineImportProfiles = [
+      "${profileSource}/profiles/pe32-msvcrt-machine-runtime-v1.json"
+    ];
+    namePrefix = "spaghetti-extractor-dxball-1.09-diagnostic";
+    allowDeferredPotentialTransfers = true;
+    diagnosticFailureTrap = true;
+  };
   inventory = analysis.originalInventory;
 in
 {
-  inherit archive installer original interfaceProfile inventory analysis;
+  inherit archive installer original interfaceProfile inventory analysis hybrid hybridDiagnostic;
   intent = import ../../nix/stage-b-target-intent.nix {
     inherit pkgs pythonEnv pythonSource;
     target = ./.;

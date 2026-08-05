@@ -4,6 +4,7 @@
   pythonSource,
   machineIr,
   namePrefix,
+  allowDeferredPotentialTransfers ? false,
 }:
 
 pkgs.runCommand
@@ -29,14 +30,25 @@ pkgs.runCommand
     )
 
     machine_ir, output = map(pathlib.Path, sys.argv[1:])
-    write_stage_b_interpreter_package(machine_ir=machine_ir, out=output)
+    write_stage_b_interpreter_package(
+        machine_ir=machine_ir,
+        out=output,
+        allow_deferred_potential_transfers=${if allowDeferredPotentialTransfers then "True" else "False"},
+    )
     PY
     jq -e '
       .format == "stage-b-semantic-interpreter-package-v1" and
       .status == "ready" and
       .input_mode == "sanitized_machine_ir_v2" and
       .counts.input_transfers > 0 and
-      .counts.transfers == .counts.input_transfers and
-      .counts.blocked_transfers == 0
+      .counts.transfers + .counts.deferred_transfers == .counts.input_transfers and
+      .counts.blocked_transfers == 0 and
+      (if ${if allowDeferredPotentialTransfers then "true" else "false"}
+       then .execution_policy == "fail_closed_on_deferred_potential_transfer_v1"
+            and .semantic_coverage.status == "incomplete"
+       else .execution_policy == "complete_transfer_inventory_v1"
+            and .semantic_coverage.status == "complete"
+            and .counts.deferred_transfers == 0
+       end)
     ' "$out/state-machine-interpreter-package.json" >/dev/null
   ''

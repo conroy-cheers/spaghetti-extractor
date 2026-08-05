@@ -330,13 +330,25 @@ def _machine_ir_indirect_external_result_rows() -> list[dict[str, object]]:
 
 
 def _write_external_profile(path: Path, *, size_kind: str = "fixed") -> None:
-    size: dict[str, object] = {"kind": size_kind, "bytes": 4}
+    size: dict[str, object] = (
+        {"kind": "argument", "argument": 1, "scale": 1}
+        if size_kind == "argument"
+        else {
+            "kind": "bounded_zero_run",
+            "unit_bytes": 2,
+            "zero_units": 2,
+            "max_units": 4096,
+        }
+        if size_kind == "bounded_zero_run"
+        else {"kind": size_kind, "bytes": 4}
+    )
     path.write_text(json.dumps({
         "format": "stage-a-external-environment-profile-v1",
         "id": "fixture-external-range-profile-v1",
         "machine_import_call_contracts": [{
             "id": "fixture-commode-range",
             "import": {"dll": "msvcrt.dll", "symbol": "__p__commode"},
+            "argument_words": 2 if size_kind == "argument" else 0,
             "result_register_relations": [{
                 "register": "eax",
                 "relation": "dynamic_range_base",
@@ -476,6 +488,8 @@ def _attach_definedness_metadata(
                 ensure_ascii=True,
             ).encode("ascii")
         ),
+        "evidence_slot_count": 1,
+        "unused_evidence_slot_count": 0,
         "undefined_node_count": 1,
         "slots": [{
             "slot": slot,
@@ -541,10 +555,24 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             self.assertEqual(rules[0]["instruction_rva"], 0x1000)
             self.assertEqual(rules[0]["action"], "add_result_range")
             self.assertEqual(rules[0]["register"], "eax")
+            self.assertEqual(rules[0]["argument_base_offset"], 0)
+            self.assertEqual(rules[0]["argument_count"], 0)
             source = (root / "runtime/native-runtime.c").read_text(encoding="ascii")
             self.assertIn("STAGE_B_NATIVE_MAX_EXTERNAL_RANGES 8192U", source)
             self.assertIn("stage_b_native_inside_external_range", source)
             self.assertIn("stage_b_native_runtime_record_external_result", source)
+            self.assertIn("stage_b_native_diagnostic_value", source)
+            self.assertIn("stage_b_native_diagnostic_aux", source)
+            self.assertIn("stage_b_native_diagnostic_detail", source)
+            self.assertIn(
+                "stage_b_native_context_value.external_range_count", source
+            )
+            self.assertIn(
+                "stage_b_native_diagnostic_reason = 0x3001U", source
+            )
+            self.assertIn(
+                "stage_b_native_diagnostic_reason = 0x3002U", source
+            )
             self.assertNotIn("__p__commode", source)
 
     def test_iat_loaded_dynamic_call_uses_the_same_result_range_contract(self) -> None:
@@ -581,6 +609,40 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             self.assertEqual(rules[0]["action"], "add_result_range")
             self.assertEqual(rules[0]["instruction_rva"], 0x1000)
 
+    def test_external_range_size_can_be_read_from_checked_call_stack(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            interpreter, engine = _packages(
+                root,
+                rows=_machine_ir_indirect_external_result_rows(),
+                import_iat_vas={("msvcrt.dll", "__p__commode"): 0x43219C},
+                machine_ir=True,
+            )
+            profile = root / "external-profile.json"
+            _write_external_profile(profile, size_kind="argument")
+
+            package = write_stage_b_native_runtime_package(
+                interpreter_package=interpreter,
+                native_engine_package=engine,
+                external_profile=profile,
+                out=root / "runtime",
+            )
+
+            rule = package["inputs"]["external_range_contracts"]["rules"][0]
+            self.assertEqual(rule["argument_count"], 2)
+            self.assertEqual(rule["size_argument"], 1)
+            source = (root / "runtime/native-runtime.c").read_text(encoding="ascii")
+            self.assertIn("stage_b_native_external_argument(", source)
+            self.assertIn(
+                "stage_b_native_runtime_capture_external_call(", source
+            )
+            self.assertIn(
+                "input->esp + snapshot->argument_base_offset", source
+            )
+            self.assertIn(
+                "event->arguments[i] != value", source
+            )
+
     def test_external_result_range_rejects_unknown_size_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -595,6 +657,28 @@ class StageBNativeRuntimeTests(unittest.TestCase):
                     native_engine_package=engine,
                     external_profile=profile,
                 )
+
+    def test_external_result_range_supports_bounded_zero_run_extent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            interpreter, engine = _packages(root, rows=_external_result_rows())
+            profile = root / "external-profile.json"
+            _write_external_profile(profile, size_kind="bounded_zero_run")
+
+            package = write_stage_b_native_runtime_package(
+                interpreter_package=interpreter,
+                native_engine_package=engine,
+                external_profile=profile,
+                out=root / "runtime",
+            )
+
+            rule = package["inputs"]["external_range_contracts"]["rules"][0]
+            self.assertEqual(rule["termination_unit_bytes"], 2)
+            self.assertEqual(rule["termination_zero_units"], 2)
+            self.assertEqual(rule["termination_max_units"], 4096)
+            source = (root / "runtime/native-runtime.c").read_text(encoding="ascii")
+            self.assertIn("stage_b_native_zero_run_extent(", source)
+            self.assertIn("run == zero_units", source)
 
     def test_package_binds_both_manifests_and_is_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -957,8 +1041,20 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             self.assertIn("stage_b_native_runtime_run_at_rva(", engine_source)
             self.assertIn("stage_b_native_read_allowed", runtime_source)
             self.assertIn("context->headers_size = headers_size;", runtime_source)
-            self.assertIn("STAGE_B_NATIVE_TEB_READ_BYTES 0x1000U", runtime_source)
-            self.assertIn("address >= context->owner_fs_base", runtime_source)
+            self.assertIn(
+                "STAGE_B_NATIVE_THREAD_ENVIRONMENT_BYTES 0x1000U",
+                runtime_source,
+            )
+            self.assertIn(
+                "stage_b_native_inside_thread_environment(context, address, end)",
+                runtime_source,
+            )
+            write_policy = runtime_source.split(
+                "static uint32_t stage_b_native_write_allowed", 1
+            )[1].split("static uint32_t stage_b_native_read_allowed", 1)[0]
+            self.assertIn(
+                "stage_b_native_inside_thread_environment", write_policy
+            )
             self.assertNotIn("static stage_b_runtime", engine_source)
             self.assertNotIn(".resolve_code_target = 0", engine_source)
 

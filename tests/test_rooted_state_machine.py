@@ -144,6 +144,29 @@ class RootedDirectControlTests(unittest.TestCase):
                 "provenance_recovered_indirect_target",
             ],
         )
+        self.assertTrue(all(root["behavioral_root"] is False for root in roots))
+
+    def test_manifest_materializes_potential_callback_without_making_it_a_root(self) -> None:
+        manifest = _manifest()
+        manifest["control"]["callback_cutpoint_proposals"] = [{
+            "kind": "registered_callback",
+            "rva": 0x2203,
+            "source_unit_id": "unreachable",
+        }]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "manifest.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            seeds = _manifest_seed_roots(
+                path,
+                state_machine_sha256="1" * 64,
+                original_sha256="2" * 64,
+                reference_sha256="3" * 64,
+                materialized_rvas={0x1000, 0x1100},
+            )
+
+        callback = next(seed for seed in seeds if seed["rva"] == 0x2203)
+        self.assertEqual(callback["kind"], "provenance_recovered_callback_cutpoint")
+        self.assertFalse(callback["behavioral_root"])
 
     def test_manifest_binding_tampering_fails_closed(self) -> None:
         manifest = _manifest()

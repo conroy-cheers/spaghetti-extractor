@@ -460,6 +460,8 @@ class PECompositionPlan:
     relocation_data: bytes
     relocation_section: _Section | None
     relocation_directory: tuple[int, int]
+    dynamic_base: bool
+    runtime_relocations: bool
     section_table_offset: int
     file_alignment: int
     section_alignment: int
@@ -1530,6 +1532,13 @@ def plan_stage_b_pe_composition(
         section_alignment,
         original_directories,
     ) = _validate_original_layout(contract)
+    dynamic_base = bool(
+        int(original_pe.OPTIONAL_HEADER.DllCharacteristics)
+        & _IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE
+    )
+    runtime_relocations = (
+        original_directories[_DIRECTORY_BASE_RELOCATION] != (0, 0)
+    )
     payload_header, payload_sections, payload_directories = _validate_payload(
         payload,
         contract=contract,
@@ -1599,7 +1608,11 @@ def plan_stage_b_pe_composition(
         payload_sections=payload_sections,
         output_payload_sections=provisional_payload_sections,
     )
-    relocation_data = _encode_relocation_directory(merged_relocations)
+    relocation_data = (
+        _encode_relocation_directory(merged_relocations)
+        if runtime_relocations
+        else b""
+    )
 
     total_sections = (
         len(contract_original_sections)
@@ -1708,6 +1721,8 @@ def plan_stage_b_pe_composition(
         relocation_data=relocation_data,
         relocation_section=relocation_section,
         relocation_directory=relocation_directory,
+        dynamic_base=dynamic_base,
+        runtime_relocations=runtime_relocations,
         section_table_offset=section_table_offset,
         file_alignment=file_alignment,
         section_alignment=section_alignment,
@@ -1801,7 +1816,7 @@ def _append_payload_sections(image: bytearray, plan: PECompositionPlan) -> None:
 def _write_relocation_section(image: bytearray, plan: PECompositionPlan) -> None:
     section = plan.relocation_section
     if section is None:
-        if plan.relocation_data or plan.merged_relocations:
+        if plan.relocation_data:
             raise StageBPECompositionError(
                 "merged relocations have no output section"
             )
@@ -1849,12 +1864,12 @@ def _update_headers(image: bytearray, plan: PECompositionPlan) -> int:
     struct.pack_into("<H", image, file_header_offset + 2, len(all_sections))
     struct.pack_into("<II", image, file_header_offset + 8, 0, 0)
     characteristics = struct.unpack_from("<H", image, file_header_offset + 18)[0]
-    struct.pack_into(
-        "<H",
-        image,
-        file_header_offset + 18,
-        characteristics & ~_IMAGE_FILE_RELOCS_STRIPPED,
+    characteristics = (
+        characteristics & ~_IMAGE_FILE_RELOCS_STRIPPED
+        if plan.runtime_relocations
+        else characteristics | _IMAGE_FILE_RELOCS_STRIPPED
     )
+    struct.pack_into("<H", image, file_header_offset + 18, characteristics)
     size_of_code = sum(
         section.raw_size
         for section in all_sections
@@ -1886,12 +1901,12 @@ def _update_headers(image: bytearray, plan: PECompositionPlan) -> int:
         *plan.relocation_directory,
     )
     dll_characteristics = struct.unpack_from("<H", image, optional_offset + 70)[0]
-    struct.pack_into(
-        "<H",
-        image,
-        optional_offset + 70,
-        dll_characteristics | _IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE,
+    dll_characteristics = (
+        dll_characteristics | _IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE
+        if plan.dynamic_base
+        else dll_characteristics & ~_IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE
     )
+    struct.pack_into("<H", image, optional_offset + 70, dll_characteristics)
     checksum_pe = _pe_from_bytes(bytes(image), context="checksum candidate")
     checksum = int(checksum_pe.generate_checksum())
     checksum_pe.close()
@@ -1924,10 +1939,21 @@ def _validate_candidate(image: bytes, plan: PECompositionPlan, checksum: int) ->
         raise StageBPECompositionError("composed candidate entry point did not update")
     if int(pe.OPTIONAL_HEADER.CheckSum) != checksum or not pe.verify_checksum():
         raise StageBPECompositionError("composed candidate checksum is invalid")
-    if int(pe.FILE_HEADER.Characteristics) & _IMAGE_FILE_RELOCS_STRIPPED:
-        raise StageBPECompositionError("composed candidate strips base relocations")
-    if not int(pe.OPTIONAL_HEADER.DllCharacteristics) & _IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE:
-        raise StageBPECompositionError("composed candidate does not enable dynamic base")
+    relocations_stripped = bool(
+        int(pe.FILE_HEADER.Characteristics) & _IMAGE_FILE_RELOCS_STRIPPED
+    )
+    if relocations_stripped == plan.runtime_relocations:
+        raise StageBPECompositionError(
+            "composed candidate relocation availability changed"
+        )
+    dynamic_base = bool(
+        int(pe.OPTIONAL_HEADER.DllCharacteristics)
+        & _IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE
+    )
+    if dynamic_base != plan.dynamic_base:
+        raise StageBPECompositionError(
+            "composed candidate dynamic-base policy changed"
+        )
     expected_directories = list(plan.original_directories)
     expected_directories[_DIRECTORY_BASE_RELOCATION] = plan.relocation_directory
     if _directories(pe, context="composed candidate") != tuple(expected_directories):
@@ -1989,18 +2015,19 @@ def _validate_candidate(image: bytes, plan: PECompositionPlan, checksum: int) ->
             raise StageBPECompositionError(
                 f"composed payload section {source.index} bytes changed"
             )
-    parsed_relocations = _parse_payload_relocation_directory(
-        image,
-        sections,
-        plan.relocation_directory,
-        image_base=plan.contract.identity.preferred_base,
-    )
-    if tuple(item.rva for item in parsed_relocations.relocations) != tuple(
-        item.target_rva for item in plan.merged_relocations
-    ):
-        raise StageBPECompositionError(
-            "composed candidate relocation targets differ from the merge plan"
+    if plan.runtime_relocations:
+        parsed_relocations = _parse_payload_relocation_directory(
+            image,
+            sections,
+            plan.relocation_directory,
+            image_base=plan.contract.identity.preferred_base,
         )
+        if tuple(item.rva for item in parsed_relocations.relocations) != tuple(
+            item.target_rva for item in plan.merged_relocations
+        ):
+            raise StageBPECompositionError(
+                "composed candidate relocation targets differ from the merge plan"
+            )
     pe.close()
 
 
@@ -2056,9 +2083,14 @@ def _composition_manifest(
             "executable_default_trap_byte_hex": bytes([_TRAP_BYTE]).hex(),
             "executable_raw_padding_byte_hex": bytes([_PADDING_BYTE]).hex(),
             "payload_layout": "append-raw-preserve-linked-rva",
-            "fixed_base": False,
-            "dynamic_base": True,
-            "relocation_merge": "canonical-pe32-highlow",
+            "fixed_base": not plan.dynamic_base,
+            "dynamic_base": plan.dynamic_base,
+            "runtime_relocations": plan.runtime_relocations,
+            "relocation_merge": (
+                "canonical-pe32-highlow"
+                if plan.runtime_relocations
+                else "preferred-address-materialization-only"
+            ),
             "header_growth": "file-aligned-shift-original-raw-data",
             "coff_symbol_table": "stripped-not-present-in-load-image-contract",
             "non_relocation_data_directories_preserved": True,

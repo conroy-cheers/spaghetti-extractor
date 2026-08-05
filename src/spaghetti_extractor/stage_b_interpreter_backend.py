@@ -15,6 +15,7 @@ from typing import Any, Iterable, Mapping
 from .artifact_formats import INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
 from .analysis.definedness import analyze_definedness_jsonl
 from .stage_b_c_backend import _runtime_header, _runtime_helpers
+from .stage_b_machine_ir_scope import partition_candidate_machine_ir_units
 from .stage_b_typed_x87 import (
     TYPED_NATIVE_X87_OPERATION_FORMAT,
     TYPED_NATIVE_X87_PROGRAM_FORMAT,
@@ -33,6 +34,19 @@ STAGE_B_INTERPRETER_PACKAGE_FORMAT = "stage-b-semantic-interpreter-package-v1"
 STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT = (
     "stage-b-interpreter-definedness-use-v2"
 )
+STAGE_B_INTERPRETER_DEFINEDNESS_USE_FIELDS = frozenset({
+    "format",
+    "status",
+    "proof_authority",
+    "state_machine_sha256",
+    "definedness_evidence_sha256",
+    "transfer_inventory_sha256",
+    "evidence_slot_count",
+    "unused_evidence_slot_count",
+    "undefined_node_count",
+    "slots",
+    "metadata_sha256",
+})
 _MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
 
 _REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
@@ -233,14 +247,14 @@ class _TransferCompiler:
                 if start != cursor or end <= start:
                     raise StageBInterpreterError(
                         f"{self.identity}: typed x87 micro-ops do not cover the unit",
-                        code="malformed_machine_ir_x87_schedule",
+                        code="malformed_machine_ir_instruction_schedule",
                     )
                 self._append_machine_ir_x87_operation(micro)
                 cursor = end
             if cursor != original_end:
                 raise StageBInterpreterError(
                     f"{self.identity}: typed x87 micro-ops do not cover the unit",
-                    code="malformed_machine_ir_x87_schedule",
+                    code="malformed_machine_ir_instruction_schedule",
                 )
             return
         schedule_object = _object(
@@ -257,7 +271,7 @@ class _TransferCompiler:
         ):
             raise StageBInterpreterError(
                 f"{self.identity}: machine-IR instruction schedule is incomplete",
-                code="malformed_machine_ir_x87_schedule",
+                code="malformed_machine_ir_instruction_schedule",
             )
         records = _list(
             schedule_object.get("records"),
@@ -270,7 +284,7 @@ class _TransferCompiler:
         if counts.get("instructions") != len(records) or counts.get("blockers") != 0:
             raise StageBInterpreterError(
                 f"{self.identity}: machine-IR schedule counts are inconsistent",
-                code="malformed_machine_ir_x87_schedule",
+                code="malformed_machine_ir_instruction_schedule",
             )
         micro_by_rva: dict[int, Mapping[str, Any]] = {}
         for raw in micro_ops:
@@ -279,7 +293,7 @@ class _TransferCompiler:
             if rva in micro_by_rva:
                 raise StageBInterpreterError(
                     f"{self.identity}: duplicate x87 micro-op RVA 0x{rva:x}",
-                    code="malformed_machine_ir_x87_schedule",
+                    code="malformed_machine_ir_instruction_schedule",
                 )
             micro_by_rva[rva] = micro
         used: set[int] = set()
@@ -293,7 +307,7 @@ class _TransferCompiler:
             if rva != cursor or rva_end <= rva:
                 raise StageBInterpreterError(
                     f"{self.identity}: machine-IR schedule is not contiguous",
-                    code="malformed_machine_ir_x87_schedule",
+                    code="malformed_machine_ir_instruction_schedule",
                 )
             cursor = rva_end
             instruction_class = record.get("instruction_class")
@@ -308,7 +322,7 @@ class _TransferCompiler:
             ):
                 raise StageBInterpreterError(
                     f"{self.identity}: machine-IR schedule classification is invalid",
-                    code="malformed_machine_ir_x87_schedule",
+                    code="malformed_machine_ir_instruction_schedule",
                 )
             effects = _object(
                 record.get("effects") or {}, f"machine-IR schedule effects {index}"
@@ -329,7 +343,7 @@ class _TransferCompiler:
                 ):
                     raise StageBInterpreterError(
                         f"{self.identity}: machine-IR schedule is not contiguous",
-                        code="malformed_machine_ir_x87_schedule",
+                        code="malformed_machine_ir_instruction_schedule",
                     )
             else:
                 self._validate_scheduled_outcome(control_object)
@@ -338,7 +352,7 @@ class _TransferCompiler:
                 if micro is None:
                     raise StageBInterpreterError(
                         f"{self.identity}: x87 schedule record has no typed micro-op",
-                        code="malformed_machine_ir_x87_schedule",
+                        code="malformed_machine_ir_instruction_schedule",
                     )
                 if (
                     micro.get("rva_end") != rva_end
@@ -347,7 +361,7 @@ class _TransferCompiler:
                 ):
                     raise StageBInterpreterError(
                         f"{self.identity}: typed x87 schedule binding is invalid",
-                        code="malformed_machine_ir_x87_schedule",
+                        code="malformed_machine_ir_instruction_schedule",
                     )
                 self._append_machine_ir_x87_operation(micro)
                 used.add(rva)
@@ -361,7 +375,7 @@ class _TransferCompiler:
                 ):
                     raise StageBInterpreterError(
                         f"{self.identity}: ordinary schedule binding is invalid",
-                        code="malformed_machine_ir_x87_schedule",
+                        code="malformed_machine_ir_instruction_schedule",
                     )
                 self._reset_instruction_expression_cache()
                 self.instruction_local = True
@@ -375,7 +389,7 @@ class _TransferCompiler:
             else:
                 raise StageBInterpreterError(
                     f"{self.identity}: unsupported machine-IR instruction class",
-                    code="malformed_machine_ir_x87_schedule",
+                    code="malformed_machine_ir_instruction_schedule",
                 )
             if index + 1 == len(records) and self.scheduled_outcome is None:
                 # Checked x87 replay updates the current machine state. A
@@ -390,7 +404,7 @@ class _TransferCompiler:
         if used != set(micro_by_rva):
             raise StageBInterpreterError(
                 f"{self.identity}: machine-IR x87 micro-op coverage differs from schedule",
-                code="malformed_machine_ir_x87_schedule",
+                code="malformed_machine_ir_instruction_schedule",
             )
         if (
             cursor != original_end
@@ -399,7 +413,7 @@ class _TransferCompiler:
         ):
             raise StageBInterpreterError(
                 f"{self.identity}: machine-IR schedule coverage is inconsistent",
-                code="malformed_machine_ir_x87_schedule",
+                code="malformed_machine_ir_instruction_schedule",
             )
 
     def _append_machine_ir_x87_operation(self, micro: Mapping[str, Any]) -> None:
@@ -1698,12 +1712,30 @@ def _compile_interpreter_rows(
     seen_ids: set[str] = set()
     seen_rvas: set[int] = set()
     for index, row in enumerate(rows):
+        if row.get("status") == "incomplete":
+            error = StageBInterpreterError(
+                f"{row.get('id')}: semantic transfer is not qualified",
+                code="machine_ir_semantics_incomplete",
+                next_action=(
+                    "classify the bytes as non-code or implement and qualify their semantics"
+                ),
+            )
+            if not collect_blockers:
+                raise error
+            blockers.append(
+                _package_blocker(
+                    row, index, error, failure_phase="semantic_qualification"
+                )
+            )
+            continue
         try:
             transfer = _TransferCompiler(row).compile()
         except StageBInterpreterError as exc:
             if not collect_blockers:
                 raise
-            blockers.append(_package_blocker(row, index, exc))
+            blockers.append(
+                _package_blocker(row, index, exc, failure_phase="semantic_lowering")
+            )
             continue
         if transfer.identity in seen_ids:
             error = StageBInterpreterError(
@@ -1713,7 +1745,9 @@ def _compile_interpreter_rows(
             )
             if not collect_blockers:
                 raise error
-            blockers.append(_package_blocker(row, index, error))
+            blockers.append(
+                _package_blocker(row, index, error, failure_phase="identity_validation")
+            )
             continue
         if transfer.rva_start in seen_rvas:
             error = StageBInterpreterError(
@@ -1723,7 +1757,9 @@ def _compile_interpreter_rows(
             )
             if not collect_blockers:
                 raise error
-            blockers.append(_package_blocker(row, index, error))
+            blockers.append(
+                _package_blocker(row, index, error, failure_phase="identity_validation")
+            )
             continue
         seen_ids.add(transfer.identity)
         seen_rvas.add(transfer.rva_start)
@@ -1733,7 +1769,11 @@ def _compile_interpreter_rows(
 
 
 def _package_blocker(
-    row: Mapping[str, Any], index: int, error: StageBInterpreterError
+    row: Mapping[str, Any],
+    index: int,
+    error: StageBInterpreterError,
+    *,
+    failure_phase: str = "semantic_lowering",
 ) -> dict[str, Any]:
     original = row.get("original")
     rva_start = original.get("rva_start") if isinstance(original, dict) else None
@@ -1746,6 +1786,7 @@ def _package_blocker(
             else None
         ),
         "code": error.code,
+        "failure_phase": failure_phase,
         "message": str(error),
         "next_action": error.next_action,
     }
@@ -1767,6 +1808,7 @@ def write_stage_b_interpreter_package(
     state_machine: Path | None = None,
     machine_ir: Path | None = None,
     out: Path,
+    allow_deferred_potential_transfers: bool = False,
 ) -> dict[str, Any]:
     """Write stable interpreter source, program data, and a strict manifest."""
 
@@ -1780,11 +1822,15 @@ def write_stage_b_interpreter_package(
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     input_rows = _read_jsonl(input_path)
-    rows = (
-        input_rows
-        if state_machine is not None
-        else _adapt_machine_ir_rows(input_rows)
-    )
+    deferred_transfers: list[dict[str, Any]] = []
+    if state_machine is not None:
+        rows = input_rows
+    else:
+        scoped_units, deferred_transfers = partition_candidate_machine_ir_units(
+            input_rows,
+            allow_deferred_potential_transfers=allow_deferred_potential_transfers,
+        )
+        rows = _adapt_machine_ir_rows(scoped_units)
     definedness_input = input_path
     if machine_ir is not None:
         definedness_input = out / "machine-ir-adapted-semantics.jsonl"
@@ -1809,6 +1855,7 @@ def write_stage_b_interpreter_package(
             "transfer_id": None,
             "rva_start": None,
             "code": "word_node_capacity_exceeded",
+            "failure_phase": "package_capacity",
             "message": (
                 f"interpreter requires {max_word_nodes} word nodes; "
                 "the supported maximum is 1024"
@@ -1843,6 +1890,7 @@ def write_stage_b_interpreter_package(
         definedness_input=definedness_input,
         input_transfer_count=len(input_rows),
         blockers=blockers,
+        deferred_transfers=deferred_transfers,
         sanitized_source_bindings=machine_ir is not None,
     )
     write_json(files["program_manifest"], program_payload)
@@ -1866,6 +1914,9 @@ def write_stage_b_interpreter_package(
         ],
         "counts": program_payload["counts"],
         "blockers": blockers,
+        "semantic_coverage": program_payload["semantic_coverage"],
+        "execution_policy": program_payload["execution_policy"],
+        "deferred_transfers": deferred_transfers,
         "authority": "candidate generation only; static and behavioral qualification remain required",
     }
     if machine_ir is not None:
@@ -1897,10 +1948,12 @@ def _program_payload(
     definedness_input: Path,
     input_transfer_count: int | None = None,
     blockers: Iterable[Mapping[str, Any]] = (),
+    deferred_transfers: Iterable[Mapping[str, Any]] = (),
     sanitized_source_bindings: bool = False,
 ) -> dict[str, Any]:
     rows = list(transfers)
     blocker_rows = [dict(item) for item in blockers]
+    deferred_rows = [dict(item) for item in deferred_transfers]
     input_count = len(rows) if input_transfer_count is None else input_transfer_count
     word_ops = sorted({node.op for row in rows for node in row.nodes})
     x87_ops = sorted({node.op for row in rows for node in row.x87_nodes})
@@ -1944,6 +1997,7 @@ def _program_payload(
             "input_transfers": input_count,
             "transfers": len(rows),
             "blocked_transfers": len(blocker_rows),
+            "deferred_transfers": len(deferred_rows),
             "word_nodes": sum(len(row.nodes) for row in rows),
             "x87_nodes": sum(len(row.x87_nodes) for row in rows),
             "x87_operations": sum(len(row.x87_operations) for row in rows),
@@ -1968,6 +2022,17 @@ def _program_payload(
             },
         },
         "blockers": blocker_rows,
+        "semantic_coverage": {
+            "status": "complete" if not deferred_rows else "incomplete",
+            "deferred_transfers": len(deferred_rows),
+            "acceptance_authority": False,
+        },
+        "execution_policy": (
+            "complete_transfer_inventory_v1"
+            if not deferred_rows
+            else "fail_closed_on_deferred_potential_transfer_v1"
+        ),
+        "deferred_transfers": deferred_rows,
         "transfers": transfer_payloads,
         "authority": "untrusted generated program; Stage A checks every binding",
     }
@@ -2100,6 +2165,7 @@ def _definedness_use_payload(
             ensure_ascii=True,
         ).encode("ascii")
     )
+    assert set(metadata) == STAGE_B_INTERPRETER_DEFINEDNESS_USE_FIELDS
     return metadata
 
 
@@ -3053,6 +3119,7 @@ def _c_string(value: str | None) -> str:
 
 __all__ = [
     "STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT",
+    "STAGE_B_INTERPRETER_DEFINEDNESS_USE_FIELDS",
     "STAGE_B_INTERPRETER_PACKAGE_FORMAT",
     "STAGE_B_INTERPRETER_PROGRAM_FORMAT",
     "StageBInterpreterError",

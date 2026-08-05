@@ -357,8 +357,10 @@ class StageBPEComposerTests(unittest.TestCase):
             self.assertEqual(int(candidate.OPTIONAL_HEADER.AddressOfEntryPoint), 0x1000)
             self.assertEqual(int(candidate.OPTIONAL_HEADER.SizeOfImage), 0x5000)
             self.assertTrue(candidate.verify_checksum())
-            self.assertFalse(int(candidate.FILE_HEADER.Characteristics) & 0x0001)
-            self.assertTrue(int(candidate.OPTIONAL_HEADER.DllCharacteristics) & 0x0040)
+            self.assertTrue(int(candidate.FILE_HEADER.Characteristics) & 0x0001)
+            self.assertFalse(int(candidate.OPTIONAL_HEADER.DllCharacteristics) & 0x0040)
+            self.assertTrue(first["policy"]["fixed_base"])
+            self.assertFalse(first["policy"]["runtime_relocations"])
             self.assertEqual(_directories(candidate), _directories(original_headers))
             self.assertEqual(candidate.DIRECTORY_ENTRY_IMPORT[0].dll, b"KERNEL32.dll")
             self.assertEqual(
@@ -580,9 +582,10 @@ class StageBPEComposerTests(unittest.TestCase):
             )
             self.assertEqual(candidate.sections[-1].Name.rstrip(b"\0"), b".sreloc")
             self.assertFalse(int(candidate.FILE_HEADER.Characteristics) & 1)
-            self.assertTrue(
+            self.assertFalse(
                 int(candidate.OPTIONAL_HEADER.DllCharacteristics) & 0x40
             )
+            self.assertTrue(manifest["policy"]["runtime_relocations"])
             self.assertTrue(candidate.verify_checksum())
             self.assertEqual(
                 [(row["source"], row["target_rva"]) for row in manifest["merged_relocations"]],

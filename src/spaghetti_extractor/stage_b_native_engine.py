@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -35,6 +36,7 @@ from .stage_b_typed_x87 import (
     extract_typed_x87_operation,
     typed_x87_operation_from_micro_op,
 )
+from .stage_b_machine_ir_scope import partition_candidate_machine_ir_units
 from .util import sha256_bytes, sha256_file, write_json
 
 
@@ -61,6 +63,7 @@ _FNSAVE_IMAGE_SIZE = 108
 _MACHINE_STATE_SIZE = 252
 _MACHINE_REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
 _MACHINE_FLAGS = ("cf", "zf", "sf", "of", "pf", "df")
+_PE32_CALLEE_PRESERVED_REGISTERS = frozenset({"ebx", "esi", "edi", "ebp"})
 _RAW_INSTRUCTION_FIELDS = frozenset({
     "bytes", "instruction_bytes", "opcode_bytes", "raw_bytes",
     "encoded_instruction",
@@ -289,6 +292,24 @@ class NativeCallbackAdapter:
 
 
 @dataclass(frozen=True)
+class NativeCallbackPassthrough:
+    instruction_rva: int
+    argument_index: int
+    storage_va: int
+    storage_invariant: str
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "instruction_rva": self.instruction_rva,
+            "argument_index": self.argument_index,
+            "storage_va": self.storage_va,
+            "origin": "previous_registered_callback",
+            "storage_invariant": self.storage_invariant,
+            "runtime_action": "pass_through_environment_pointer",
+        }
+
+
+@dataclass(frozen=True)
 class NativeX87Operation:
     id: int
     transfer_id: str
@@ -304,6 +325,7 @@ class NativeX87Operation:
     relocation_width: int | None = None
     relocation_pe_sha256: str | None = None
     relocation_reference_contract_sha256: str | None = None
+    fixed_image_base: int | None = None
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -332,6 +354,21 @@ class NativeX87Operation:
                 }
                 if self.relocation_source_rva is not None
                 else None
+            ),
+            "address_binding": (
+                {
+                    "kind": "pe32_highlow_relocation",
+                    "image_base": self.image_base,
+                    "target_rva": self.target_rva,
+                }
+                if self.relocation_source_rva is not None
+                else {
+                    "kind": "fixed_image_base",
+                    "image_base": self.fixed_image_base,
+                    "target_rva": self.target_rva,
+                }
+                if self.fixed_image_base is not None
+                else {"kind": "position_independent"}
             ),
         }
 
@@ -366,9 +403,12 @@ class NativeEnginePlan:
     indirect_call_count: int
     callback_targets: tuple[NativeCallbackTarget, ...]
     callback_adapters: tuple[NativeCallbackAdapter, ...]
+    callback_passthroughs: tuple[NativeCallbackPassthrough, ...]
     callable_external_contract: CallableExternalRuntimeContract | None
     x87_operations: tuple[NativeX87Operation, ...]
     termination_import: NativeTerminationImport | None
+    deferred_transfers: tuple[dict[str, Any], ...]
+    fixed_image_base: int | None
     blockers: tuple[dict[str, Any], ...]
 
     @property
@@ -389,11 +429,14 @@ class NativeEnginePlan:
             "input_mode": self.input_mode,
             "entry_rva": self.entry_rva,
             "counts": {
+                "input_transfers": self.transfer_count + len(self.deferred_transfers),
                 "transfers": self.transfer_count,
+                "deferred_transfers": len(self.deferred_transfers),
                 "external_sites": len(self.external_sites),
                 "indirect_calls": self.indirect_call_count,
                 "callback_targets": len(self.callback_targets),
                 "callback_adapters": len(self.callback_adapters),
+                "callback_passthroughs": len(self.callback_passthroughs),
                 "callable_external_routes": (
                     0
                     if self.callable_external_contract is None
@@ -407,6 +450,9 @@ class NativeEnginePlan:
             "callback_abis": [target.payload() for target in self.callback_targets],
             "callback_adapters": [
                 adapter.payload() for adapter in self.callback_adapters
+            ],
+            "callback_passthroughs": [
+                passthrough.payload() for passthrough in self.callback_passthroughs
             ],
             "callable_external": (
                 None
@@ -429,6 +475,22 @@ class NativeEnginePlan:
                 self.termination_import.payload()
                 if self.termination_import is not None
                 else None
+            ),
+            "semantic_coverage": {
+                "status": "complete" if not self.deferred_transfers else "incomplete",
+                "deferred_transfers": len(self.deferred_transfers),
+                "acceptance_authority": False,
+            },
+            "execution_policy": (
+                "complete_transfer_inventory_v1"
+                if not self.deferred_transfers
+                else "fail_closed_on_deferred_potential_transfer_v1"
+            ),
+            "deferred_transfers": list(self.deferred_transfers),
+            "image_base_policy": (
+                {"kind": "fixed", "image_base": self.fixed_image_base}
+                if self.fixed_image_base is not None
+                else {"kind": "relocatable"}
             ),
             "launch_wrapper_symbols": {
                 "entry_dispatch_return": "stage_b_native_entry_dispatch_return",
@@ -567,6 +629,7 @@ def _adapt_native_machine_ir_unit(
         "original": {"rva_start": rva_start, "rva_end": rva_end, "size": size},
         "instructions": instructions,
         "ordered_events": ordered_events,
+        "register_writes": semantics.get("register_writes"),
         "outcome": semantics.get("outcome"),
         "fpu_state": semantics.get("fpu_state"),
         "instruction_effect_schedule": semantics.get("instruction_effect_schedule"),
@@ -862,6 +925,375 @@ def _stack_expression_at_offset(event: Mapping[str, Any], offset: int) -> Any:
     return matches[0] if len(matches) == 1 else None
 
 
+def _forward_expression_from_prior_writes(
+    expression: Any,
+    *,
+    row: Mapping[str, Any],
+    before_instruction_rva: int,
+    budget: int = 8,
+) -> Any:
+    """Forward exact same-address writes within one ordered semantic transfer."""
+
+    if budget <= 0 or not isinstance(expression, Mapping):
+        return expression
+    if expression.get("op") != "load" or expression.get("width") != 4:
+        return expression
+    address = expression.get("address")
+    events = row.get("ordered_events")
+    if not isinstance(events, list):
+        return expression
+    candidates = [
+        event
+        for event in events
+        if isinstance(event, Mapping)
+        and event.get("family") == "memory"
+        and event.get("kind") == "write"
+        and event.get("width") == 4
+        and event.get("address") == address
+        and isinstance(event.get("instruction_rva"), int)
+        and event.get("instruction_rva") < before_instruction_rva
+    ]
+    if not candidates:
+        return expression
+    latest_rva = max(int(event["instruction_rva"]) for event in candidates)
+    latest = [event for event in candidates if event.get("instruction_rva") == latest_rva]
+    if len(latest) != 1:
+        return expression
+    return _forward_expression_from_prior_writes(
+        latest[0].get("value"),
+        row=row,
+        before_instruction_rva=latest_rva,
+        budget=budget - 1,
+    )
+
+
+def _direct_outcome_targets(row: Mapping[str, Any]) -> tuple[int, ...]:
+    outcome = row.get("outcome")
+    if not isinstance(outcome, Mapping):
+        return ()
+    kind = outcome.get("kind")
+    if kind in {"fallthrough", "jump"}:
+        target = outcome.get("target_rva")
+        return (target,) if isinstance(target, int) and not isinstance(target, bool) else ()
+    if kind == "branch":
+        targets = (outcome.get("true_target_rva"), outcome.get("false_target_rva"))
+        return tuple(
+            target
+            for target in targets
+            if isinstance(target, int) and not isinstance(target, bool)
+        )
+    return ()
+
+
+_IMPORT_ORIGIN_BOTTOM = object()
+_IMPORT_ORIGIN_UNKNOWN = object()
+
+
+def _machine_ir_register_import_sites(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    import_iat_vas: Mapping[tuple[str, str | int], int],
+) -> dict[tuple[int, int], tuple[str, str | None, int | None, int]]:
+    """Propagate exact IAT origins through registers and checked direct CFG edges.
+
+    The analysis is deliberately finite and conservative.  A join retains an
+    origin only when every known incoming path agrees, and imported calls carry
+    origins only in PE32 nonvolatile registers.  Generated code independently
+    checks both properties at runtime before relying on the result.
+    """
+
+    row_by_rva: dict[int, Mapping[str, Any]] = {}
+    predecessors: dict[int, set[int]] = {}
+    successors: dict[int, set[int]] = {}
+    for row_index, row in enumerate(rows):
+        original = row.get("original")
+        if not isinstance(original, Mapping):
+            raise StageAInputError(f"machine-IR row {row_index} has no source span")
+        source = _required_u32(
+            original.get("rva_start"), f"machine-IR row {row_index} source RVA"
+        )
+        if source in row_by_rva:
+            raise StageAInputError(f"duplicate machine-IR source RVA {source:#x}")
+        row_by_rva[source] = row
+        for target in _direct_outcome_targets(row):
+            predecessors.setdefault(target, set()).add(source)
+            successors.setdefault(source, set()).add(target)
+
+    def join(values: Iterable[Any]) -> Any:
+        concrete: list[Any] = []
+        for value in values:
+            if value is _IMPORT_ORIGIN_UNKNOWN:
+                return _IMPORT_ORIGIN_UNKNOWN
+            if value is not _IMPORT_ORIGIN_BOTTOM:
+                concrete.append(value)
+        if not concrete:
+            return _IMPORT_ORIGIN_BOTTOM
+        first = concrete[0]
+        return first if all(value == first for value in concrete[1:]) else _IMPORT_ORIGIN_UNKNOWN
+
+    def expression_origin(expression: Any, inputs: Mapping[str, Any]) -> Any:
+        direct = _static_iat_import_identity(
+            expression, import_iat_vas=import_iat_vas
+        )
+        if direct is not None:
+            return direct
+        if (
+            isinstance(expression, Mapping)
+            and expression.get("op") == "reg"
+            and expression.get("width", 32) == 32
+            and isinstance(expression.get("name"), str)
+        ):
+            return inputs.get(str(expression["name"]).lower(), _IMPORT_ORIGIN_UNKNOWN)
+        return _IMPORT_ORIGIN_UNKNOWN
+
+    def direct_event_origin(event: Mapping[str, Any]) -> Any:
+        dll = event.get("dll")
+        symbol = event.get("symbol")
+        ordinal = event.get("ordinal")
+        if not isinstance(dll, str) or not dll:
+            return _IMPORT_ORIGIN_UNKNOWN
+        if isinstance(symbol, str) and symbol and ordinal is None:
+            identity: str | int = symbol
+        elif (
+            isinstance(ordinal, int)
+            and not isinstance(ordinal, bool)
+            and ordinal >= 0
+            and symbol is None
+        ):
+            identity = ordinal
+        else:
+            return _IMPORT_ORIGIN_UNKNOWN
+        iat_va = import_iat_vas.get((dll.lower(), identity))
+        if iat_va is None:
+            return _IMPORT_ORIGIN_UNKNOWN
+        checked_iat = _required_u32(iat_va, "import IAT VA")
+        return (
+            dll.lower(),
+            identity if isinstance(identity, str) else None,
+            identity if isinstance(identity, int) else None,
+            checked_iat,
+        )
+
+    def transfer(
+        row: Mapping[str, Any], inputs: Mapping[str, Any]
+    ) -> tuple[dict[str, Any], dict[int, Any]]:
+        events = row.get("ordered_events")
+        if not isinstance(events, list):
+            return ({name: _IMPORT_ORIGIN_UNKNOWN for name in _MACHINE_REGISTERS}, {})
+        call_origins: dict[int, Any] = {}
+        site_origins: dict[int, Any] = {}
+        call_index = 0
+        for raw_event in events:
+            if not isinstance(raw_event, Mapping) or raw_event.get("family") != "external":
+                continue
+            kind = raw_event.get("kind")
+            if kind not in _CALL_KINDS:
+                continue
+            if kind == "external_call":
+                origin = direct_event_origin(raw_event)
+            else:
+                origin = expression_origin(raw_event.get("target"), inputs)
+            call_origins[call_index] = origin
+            instruction_rva = raw_event.get("instruction_rva")
+            if isinstance(instruction_rva, int) and not isinstance(instruction_rva, bool):
+                site_origins[instruction_rva] = origin
+            call_index += 1
+
+        outputs = dict(inputs)
+        raw_writes = row.get("register_writes")
+        if not isinstance(raw_writes, list):
+            return ({name: _IMPORT_ORIGIN_UNKNOWN for name in _MACHINE_REGISTERS}, site_origins)
+        for raw_write in raw_writes:
+            if not isinstance(raw_write, Mapping):
+                continue
+            register = raw_write.get("register")
+            value = raw_write.get("value")
+            if not isinstance(register, str) or register.lower() not in _MACHINE_REGISTERS:
+                continue
+            register = register.lower()
+            if (
+                isinstance(value, Mapping)
+                and value.get("op") == "call_response"
+                and value.get("register") == register
+                and isinstance(value.get("call_index"), int)
+                and call_origins.get(value["call_index"], _IMPORT_ORIGIN_UNKNOWN)
+                    not in {_IMPORT_ORIGIN_BOTTOM, _IMPORT_ORIGIN_UNKNOWN}
+                and register in _PE32_CALLEE_PRESERVED_REGISTERS
+            ):
+                outputs[register] = inputs.get(register, _IMPORT_ORIGIN_UNKNOWN)
+            else:
+                outputs[register] = expression_origin(value, inputs)
+        return outputs, site_origins
+
+    outputs = {
+        rva: {name: _IMPORT_ORIGIN_BOTTOM for name in _MACHINE_REGISTERS}
+        for rva in row_by_rva
+    }
+    worklist = deque(sorted(row_by_rva))
+    queued = set(row_by_rva)
+    steps = 0
+    maximum_steps = max(
+        1,
+        (len(row_by_rva) + sum(len(value) for value in successors.values()))
+        * (len(_MACHINE_REGISTERS) + 2),
+    )
+    while worklist:
+        rva = worklist.popleft()
+        queued.remove(rva)
+        incoming = predecessors.get(rva, set())
+        if not incoming:
+            inputs = {name: _IMPORT_ORIGIN_UNKNOWN for name in _MACHINE_REGISTERS}
+        else:
+            inputs = {
+                name: join(
+                    outputs[source][name]
+                    for source in incoming
+                    if source in outputs
+                )
+                for name in _MACHINE_REGISTERS
+            }
+        updated, _ = transfer(row_by_rva[rva], inputs)
+        steps += 1
+        if steps > maximum_steps:
+            raise StageAInputError("register import-origin analysis did not converge")
+        if updated == outputs[rva]:
+            continue
+        outputs[rva] = updated
+        for target in sorted(successors.get(rva, set())):
+            if target in row_by_rva and target not in queued:
+                queued.add(target)
+                worklist.append(target)
+
+    result: dict[tuple[int, int], tuple[str, str | None, int | None, int]] = {}
+    for rva, row in row_by_rva.items():
+        incoming = predecessors.get(rva, set())
+        if not incoming:
+            inputs = {name: _IMPORT_ORIGIN_UNKNOWN for name in _MACHINE_REGISTERS}
+        else:
+            inputs = {
+                name: join(
+                    outputs[source][name]
+                    for source in incoming
+                    if source in outputs
+                )
+                for name in _MACHINE_REGISTERS
+            }
+        _, sites = transfer(row, inputs)
+        for instruction_rva, origin in sites.items():
+            if origin not in {_IMPORT_ORIGIN_BOTTOM, _IMPORT_ORIGIN_UNKNOWN}:
+                result[(rva, instruction_rva)] = origin
+    return result
+
+
+def _previous_callback_storage_writes(
+    rows: Iterable[Mapping[str, Any]],
+) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
+    """Return slot writes carrying prior callback tokens and all static writes."""
+
+    callback_results: set[tuple[int, str]] = set()
+    row_list = list(rows)
+    for row in row_list:
+        events = row.get("ordered_events")
+        if not isinstance(events, list):
+            continue
+        for event in events:
+            if not isinstance(event, Mapping) or event.get("family") != "external":
+                continue
+            abi = event.get("abi_contract")
+            result = abi.get("callback_result") if isinstance(abi, Mapping) else None
+            return_rva = event.get("return_rva")
+            if (
+                isinstance(result, Mapping)
+                and result.get("origin") == "previous_registered_callback"
+                and isinstance(result.get("register"), str)
+                and isinstance(return_rva, int)
+                and not isinstance(return_rva, bool)
+            ):
+                callback_results.add((return_rva, str(result["register"]).lower()))
+
+    callback_writes: dict[int, set[int]] = {}
+    all_writes: dict[int, set[int]] = {}
+    for row in row_list:
+        original = row.get("original")
+        row_rva = original.get("rva_start") if isinstance(original, Mapping) else None
+        if not isinstance(row_rva, int) or isinstance(row_rva, bool):
+            continue
+        events = row.get("ordered_events")
+        if not isinstance(events, list):
+            continue
+        for event in events:
+            if (
+                not isinstance(event, Mapping)
+                or event.get("family") != "memory"
+                or event.get("kind") != "write"
+                or event.get("width") != 4
+            ):
+                continue
+            slot = _exact_u32_expression(event.get("address"))
+            if slot is None:
+                continue
+            all_writes.setdefault(slot, set()).add(row_rva)
+            value = event.get("value")
+            if (
+                isinstance(value, Mapping)
+                and value.get("op") == "reg"
+                and isinstance(value.get("name"), str)
+                and (row_rva, str(value["name"]).lower()) in callback_results
+            ):
+                callback_writes.setdefault(slot, set()).add(row_rva)
+    return callback_writes, all_writes
+
+
+def _callback_storage_origin_is_safe(
+    *,
+    rows: Iterable[Mapping[str, Any]],
+    use_rva: int,
+    storage_va: int,
+    callback_writes: Mapping[int, set[int]],
+    all_writes: Mapping[int, set[int]],
+    initial_zero_ranges: tuple[tuple[int, int], ...],
+    nullable: bool,
+) -> str | None:
+    callback_rows = callback_writes.get(storage_va, set())
+    if not callback_rows or all_writes.get(storage_va, set()) != callback_rows:
+        return None
+    if nullable and any(
+        start <= storage_va and storage_va + 4 <= end
+        for start, end in initial_zero_ranges
+    ):
+        return "initial_zero_or_previous_registered_callback"
+    predecessors: dict[int, set[int]] = {}
+    for row in rows:
+        original = row.get("original")
+        source = original.get("rva_start") if isinstance(original, Mapping) else None
+        if not isinstance(source, int) or isinstance(source, bool):
+            continue
+        for target in _direct_outcome_targets(row):
+            predecessors.setdefault(target, set()).add(source)
+
+    visiting: set[int] = set()
+    memo: dict[int, bool] = {}
+
+    def covered(node: int) -> bool:
+        if node in callback_rows:
+            return True
+        if node in memo:
+            return memo[node]
+        if node in visiting:
+            return False
+        incoming = predecessors.get(node, set())
+        if not incoming:
+            memo[node] = False
+            return False
+        visiting.add(node)
+        result = all(covered(predecessor) for predecessor in incoming)
+        visiting.remove(node)
+        memo[node] = result
+        return result
+
+    return "dominating_previous_registered_callback" if covered(use_rva) else None
+
+
 def _add_callable_external_sites(
     *,
     contract: CallableExternalRuntimeContract,
@@ -989,12 +1421,27 @@ def plan_stage_b_native_engine(
     termination_import: Mapping[str, Any] | None = None,
     base_relocation_evidence: Mapping[str, Any] | None = None,
     callable_external_contract: Path | str | None = None,
+    allow_deferred_potential_transfers: bool = False,
+    fixed_image_base: int | None = None,
+    initial_zero_ranges: Iterable[tuple[int, int]] = (),
 ) -> NativeEnginePlan:
     """Plan machine-level external bridges from one strict or byte-free input."""
 
     if (state_machine is None) == (machine_ir is None):
         raise StageAInputError("provide exactly one of state_machine or machine_ir")
     input_path = Path(state_machine if state_machine is not None else machine_ir)
+    if fixed_image_base is not None:
+        fixed_image_base = _required_u32(fixed_image_base, "fixed image base")
+    checked_zero_ranges: list[tuple[int, int]] = []
+    for index, value in enumerate(initial_zero_ranges):
+        if not isinstance(value, tuple) or len(value) != 2:
+            raise StageAInputError(f"initial zero range {index} must be a pair")
+        start = _required_u32(value[0], f"initial zero range {index} start")
+        end = _required_u32(value[1], f"initial zero range {index} end")
+        if end <= start:
+            raise StageAInputError(f"initial zero range {index} must be nonempty")
+        checked_zero_ranges.append((start, end))
+    normalized_zero_ranges = tuple(sorted(checked_zero_ranges))
     raw_rows = _read_jsonl_objects(
         input_path, "state machine" if state_machine is not None else "machine IR"
     )
@@ -1005,13 +1452,25 @@ def plan_stage_b_native_engine(
         else load_callable_external_runtime_contract(callable_external_contract)
     )
     machine_ir_mode = machine_ir is not None
-    rows = (
-        [_adapt_native_machine_ir_unit(row, index) for index, row in enumerate(raw_rows)]
-        if machine_ir_mode
-        else raw_rows
-    )
+    deferred_transfers: list[dict[str, Any]] = []
+    if machine_ir_mode:
+        scoped_rows, deferred_transfers = partition_candidate_machine_ir_units(
+            raw_rows,
+            allow_deferred_potential_transfers=allow_deferred_potential_transfers,
+        )
+        rows = [
+            _adapt_native_machine_ir_unit(row, index)
+            for index, row in enumerate(scoped_rows)
+        ]
+    else:
+        rows = raw_rows
     sites: list[NativeExternalSite] = []
     import_iat_vas = import_iat_vas or {}
+    propagated_import_sites = (
+        _machine_ir_register_import_sites(rows, import_iat_vas=import_iat_vas)
+        if machine_ir_mode
+        else {}
+    )
     blockers: list[dict[str, Any]] = []
     checked_termination_import = _parse_native_termination_import(
         termination_import, import_iat_vas
@@ -1082,6 +1541,7 @@ def plan_stage_b_native_engine(
                         transfer_id=transfer_id,
                         first_id=len(x87_operations),
                         relocation_evidence=relocation_evidence,
+                        fixed_image_base=fixed_image_base,
                     )
                     if machine_ir_mode
                     else _qualified_x87_operations(
@@ -1089,6 +1549,7 @@ def plan_stage_b_native_engine(
                         transfer_id=transfer_id,
                         first_id=len(x87_operations),
                         relocation_evidence=relocation_evidence,
+                        fixed_image_base=fixed_image_base,
                     )
                 )
             except StageAInputError as exc:
@@ -1243,6 +1704,10 @@ def plan_stage_b_native_engine(
                 resolved_import = _static_iat_import_identity(
                     target_expression, import_iat_vas=import_iat_vas
                 )
+                if resolved_import is None:
+                    resolved_import = propagated_import_sites.get(
+                        (transfer_rva, instruction_rva)
+                    )
                 if resolved_import is not None:
                     dll, symbol, ordinal, iat_va = resolved_import
                 if not machine_ir_mode and (raw is None or not _indirect_call_encoding(raw)):
@@ -1453,6 +1918,8 @@ def plan_stage_b_native_engine(
         )
 
     callback_adapter_specs: set[tuple[int, int, int, int]] = set()
+    callback_passthrough_specs: set[tuple[int, int, int, str]] = set()
+    callback_storage_writes, all_static_writes = _previous_callback_storage_writes(rows)
     for site in sorted(sites, key=lambda item: item.instruction_rva):
         registration = callback_site_abis.get(site.instruction_rva)
         if registration is None:
@@ -1519,16 +1986,46 @@ def plan_stage_b_native_engine(
                 continue
             candidate_expressions.append((
                 f"{site.transfer_id} external event {site.event_index}",
-                (
+                _forward_expression_from_prior_writes(
                     argument_expression
                     if exact_argument is not None
-                    else stack_expression
+                    else stack_expression,
+                    row=transfer_details[transfer_rva][0],
+                    before_instruction_rva=site.instruction_rva,
                 ),
             ))
 
         for source, expression in candidate_expressions:
             preferred_value = _exact_u32_expression(expression)
             if preferred_value is None:
+                storage_va = (
+                    _exact_u32_expression(expression.get("address"))
+                    if isinstance(expression, Mapping)
+                    and expression.get("op") == "load"
+                    and expression.get("width") == 4
+                    else None
+                )
+                storage_invariant = (
+                    None
+                    if storage_va is None
+                    else _callback_storage_origin_is_safe(
+                        rows=rows,
+                        use_rva=transfer_rva,
+                        storage_va=storage_va,
+                        callback_writes=callback_storage_writes,
+                        all_writes=all_static_writes,
+                        initial_zero_ranges=normalized_zero_ranges,
+                        nullable=nullable,
+                    )
+                )
+                if storage_va is not None and storage_invariant is not None:
+                    callback_passthrough_specs.add((
+                        site.instruction_rva,
+                        argument_index,
+                        storage_va,
+                        storage_invariant,
+                    ))
+                    continue
                 blockers.append(_blocker(
                     "callback_target_provenance_incomplete",
                     transfer_id=site.transfer_id,
@@ -1551,7 +2048,12 @@ def plan_stage_b_native_engine(
                     next_action="supply a non-null callback target required by the API contract",
                 ))
                 continue
-            if relocation_evidence is None:
+            callback_image_base = (
+                relocation_evidence.image_base
+                if relocation_evidence is not None
+                else fixed_image_base
+            )
+            if callback_image_base is None:
                 blockers.append(_blocker(
                     "callback_image_binding_missing",
                     transfer_id=site.transfer_id,
@@ -1562,7 +2064,7 @@ def plan_stage_b_native_engine(
                     ),
                 ))
                 continue
-            callback_rva = preferred_value - relocation_evidence.image_base
+            callback_rva = preferred_value - callback_image_base
             if not 0 <= callback_rva <= 0xFFFFFFFF:
                 blockers.append(_blocker(
                     "callback_target_outside_static_image",
@@ -1639,6 +2141,17 @@ def plan_stage_b_native_engine(
             instruction_rva, argument_index, original_rva, callback_rva
         ) in enumerate(sorted(callback_adapter_specs))
     )
+    callback_passthroughs = tuple(
+        NativeCallbackPassthrough(
+            instruction_rva=instruction_rva,
+            argument_index=argument_index,
+            storage_va=storage_va,
+            storage_invariant=storage_invariant,
+        )
+        for instruction_rva, argument_index, storage_va, storage_invariant in sorted(
+            callback_passthrough_specs
+        )
+    )
     if entry_rva not in transfer_rvas:
         blockers.append(_blocker(
             "entry_transfer_missing",
@@ -1655,9 +2168,12 @@ def plan_stage_b_native_engine(
         indirect_call_count=indirect_calls,
         callback_targets=callbacks,
         callback_adapters=callback_adapters,
+        callback_passthroughs=callback_passthroughs,
         callable_external_contract=callable_contract,
         x87_operations=tuple(x87_operations),
         termination_import=checked_termination_import,
+        deferred_transfers=tuple(deferred_transfers),
+        fixed_image_base=fixed_image_base,
         blockers=tuple(blockers),
     )
 
@@ -1673,6 +2189,9 @@ def write_stage_b_native_engine_package(
     termination_import: Mapping[str, Any] | None = None,
     base_relocation_evidence: Mapping[str, Any] | None = None,
     callable_external_contract: Path | str | None = None,
+    allow_deferred_potential_transfers: bool = False,
+    fixed_image_base: int | None = None,
+    initial_zero_ranges: Iterable[tuple[int, int]] = (),
 ) -> dict[str, Any]:
     """Write deterministic wrapper sources and a fail-closed build plan."""
 
@@ -1691,6 +2210,9 @@ def write_stage_b_native_engine_package(
         termination_import=termination_import,
         base_relocation_evidence=base_relocation_evidence,
         callable_external_contract=callable_external_contract,
+        allow_deferred_potential_transfers=allow_deferred_potential_transfers,
+        fixed_image_base=fixed_image_base,
+        initial_zero_ranges=initial_zero_ranges,
     )
     plan_path = out / "native-engine-plan.json"
     write_json(plan_path, plan.payload(state_machine_sha256=sha256_file(input_path)))
@@ -1730,9 +2252,13 @@ def write_stage_b_native_engine_package(
         ],
         "counts": plan.payload(state_machine_sha256="")["counts"],
         "callback_abis": [target.payload() for target in plan.callback_targets],
+        "semantic_coverage": plan.payload(state_machine_sha256="")["semantic_coverage"],
+        "execution_policy": plan.payload(state_machine_sha256="")["execution_policy"],
+        "deferred_transfers": list(plan.deferred_transfers),
+        "image_base_policy": plan.payload(state_machine_sha256="")["image_base_policy"],
         "blockers": list(plan.blockers),
         "policy": {
-            "dynamic_base": True,
+            "dynamic_base": plan.fixed_image_base is None,
             "base_relocations": "complete-pe32-highlow-inventory-required",
             "raw_x87_instruction_payloads": "forbidden",
             "typed_x87_operations": TYPED_NATIVE_X87_OPERATION_FORMAT,
@@ -1816,6 +2342,10 @@ extern stage_b_x87_fnsave_image stage_b_native_launch_output_x87;
 extern uint8_t stage_b_native_callback_stack[65536];
 extern volatile stage_b_call_status stage_b_native_root_callback_fault;
 extern volatile uint32_t stage_b_native_root_callback_fault_rva;
+extern volatile uint32_t stage_b_native_diagnostic_reason;
+extern volatile uint32_t stage_b_native_diagnostic_value;
+extern volatile uint32_t stage_b_native_diagnostic_aux;
+extern volatile uint32_t stage_b_native_diagnostic_detail;
 extern stage_b_machine_state stage_b_native_root_callback_fault_state;
 extern stage_b_runtime stage_b_native_runtime_instance;
 
@@ -1825,8 +2355,13 @@ stage_b_call_status stage_b_native_runtime_run_at_rva(
 stage_b_call_status stage_b_native_runtime_run_nested_callback(
     uint32_t callback_rva, uint32_t stack_cleanup_bytes,
     const stage_b_machine_state *input, stage_b_machine_state *output);
+stage_b_call_status stage_b_native_runtime_capture_external_call(
+    const stage_b_call_event *event, const stage_b_machine_state *input,
+    stage_b_external_call_snapshot *snapshot);
 stage_b_call_status stage_b_native_runtime_record_external_result(
-    const stage_b_call_event *event, const stage_b_machine_state *output);
+    const stage_b_call_event *event,
+    const stage_b_external_call_snapshot *snapshot,
+    const stage_b_machine_state *output);
 stage_b_call_status stage_b_native_run_entry(
     stage_b_machine_state *input, stage_b_machine_state *output);
 stage_b_call_status stage_b_native_run_callback(
@@ -2178,10 +2713,14 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "static __attribute__((noinline)) void stage_b_native_diagnostic_trap(",
         "    stage_b_call_status status, const stage_b_machine_state *state) {",
         "  const uint32_t rva = state != 0 ? state->original_rva : 0U;",
-        "  const uint32_t modeled_eax = state != 0 ? state->eax : 0U;",
-        "  const uint32_t modeled_esp = state != 0 ? state->esp : 0U;",
-        "  const uint32_t expected_return = state != 0 ? state->esi : 0U;",
-        "  const uint32_t observed_return = state != 0 ? state->edi : 0U;",
+        "  const uint32_t modeled_eax = stage_b_native_diagnostic_reason != 0U",
+        "      ? stage_b_native_diagnostic_value : state != 0 ? state->eax : 0U;",
+        "  const uint32_t modeled_esp = stage_b_native_diagnostic_reason != 0U",
+        "      ? stage_b_native_diagnostic_aux : state != 0 ? state->esp : 0U;",
+        "  const uint32_t expected_return = stage_b_native_diagnostic_reason != 0U",
+        "      ? stage_b_native_diagnostic_detail : state != 0 ? state->esi : 0U;",
+        "  const uint32_t observed_return = stage_b_native_diagnostic_reason != 0U",
+        "      ? stage_b_native_diagnostic_reason : state != 0 ? state->edi : 0U;",
         "  __asm__ volatile (\"int3\" : : \"a\" (rva),",
         "      \"d\" ((uint32_t)status), \"c\" (modeled_eax),",
         "      \"b\" (modeled_esp), \"S\" (expected_return),",
@@ -2309,18 +2848,36 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "    const stage_b_machine_state *input,",
         "    stage_b_machine_state *output) {",
         "  stage_b_native_bridge_frame frame;",
+        "  stage_b_external_call_snapshot external_snapshot;",
         "  const stage_b_native_bridge_entry *entry;",
         "  const stage_b_native_callback_adapter *callback_adapter = 0;",
         "  uint32_t callback_argument_address = 0U;",
         "  uint32_t callback_argument_original = 0U;",
         "  uint32_t callback_argument_patched = 0U;",
+        "  uint32_t preserved_ebx, preserved_esi, preserved_edi, preserved_ebp;",
         "  if (runtime != &stage_b_native_runtime_instance ||",
         "      event == 0 || input == 0 || output == 0)",
         "    return STAGE_B_CALL_UNIMPLEMENTED;",
+        "  stage_b_native_diagnostic_reason = 0U;",
+        "  stage_b_native_diagnostic_value = 0U;",
+        "  stage_b_native_diagnostic_aux = 0U;",
+        "  stage_b_native_diagnostic_detail = 0U;",
         "  entry = stage_b_native_bridge_entry_for(event->instruction_rva);",
         "  if (entry == 0) return STAGE_B_CALL_UNIMPLEMENTED;",
         "  if ((entry->dynamic_target && event->kind != STAGE_B_CALL_INDIRECT) ||",
         "      (!entry->dynamic_target && event->kind != STAGE_B_CALL_EXTERNAL_IMPORT))",
+        "    return STAGE_B_CALL_UNIMPLEMENTED;",
+        "  if (entry->dynamic_target != 0U && entry->iat_va != 0U &&",
+        "      event->target_rva != stage_b_native_original_iat_target(entry->iat_va)) {",
+        "    stage_b_native_diagnostic_reason = 0x1003U;",
+        "    return STAGE_B_CALL_UNIMPLEMENTED;",
+        "  }",
+        "  preserved_ebx = input->ebx;",
+        "  preserved_esi = input->esi;",
+        "  preserved_edi = input->edi;",
+        "  preserved_ebp = input->ebp;",
+        "  if (stage_b_native_runtime_capture_external_call(",
+        "          event, input, &external_snapshot) != STAGE_B_CALL_OK)",
         "    return STAGE_B_CALL_UNIMPLEMENTED;",
         "  frame.parent = stage_b_native_active_bridge;",
         "  frame.output = output;",
@@ -2385,6 +2942,12 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "  stage_b_native_active_bridge = frame.parent;",
         "  if (entry->tail_jump != 0U && frame.continuation_replaced != 0U)",
         "    frame.status = STAGE_B_CALL_UNIMPLEMENTED;",
+        "  if (frame.status == STAGE_B_CALL_OK && entry->iat_va != 0U &&",
+        "      (output->ebx != preserved_ebx || output->esi != preserved_esi ||",
+        "       output->edi != preserved_edi || output->ebp != preserved_ebp)) {",
+        "    stage_b_native_diagnostic_reason = 0x1005U;",
+        "    frame.status = STAGE_B_CALL_UNIMPLEMENTED;",
+        "  }",
         *(
             [
                 "  if (frame.status == STAGE_B_CALL_OK &&",
@@ -2395,7 +2958,8 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
             else []
         ),
         "  if (frame.status == STAGE_B_CALL_OK)",
-        "    frame.status = stage_b_native_runtime_record_external_result(event, output);",
+        "    frame.status = stage_b_native_runtime_record_external_result(",
+        "        event, &external_snapshot, output);",
         "  return frame.status;",
         "}",
         "",
@@ -2824,15 +3388,6 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             "/* Typed x87 operations use reviewed mnemonic and operand rendering. */",
         ])
     for replay in plan.x87_operations:
-        replay_padding = (
-            _X87_REPLAY_INLINE_CAPTURE_OFFSET
-            - _X87_REPLAY_INLINE_INSTRUCTION_OFFSET
-            - replay.operation.source_size
-        )
-        if replay_padding < 0:
-            raise StageAInputError(
-                f"x87 replay {replay.id} does not fit the fixed bridge slot"
-            )
         lines.extend([
             "",
             f"    .globl _stage_b_native_x87_bridge_{replay.id:04d}",
@@ -2856,9 +3411,12 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             f"    mov edx, DWORD PTR [eax + {_STATE_OFFSETS['edx']}]",
             "    pop eax",
             "    popfd",
-            "    nop",
-            "    nop",
-            "    nop",
+            f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
+            f"> {_X87_REPLAY_INLINE_INSTRUCTION_OFFSET}",
+            '    .error "x87 replay prologue exceeds its fixed bridge slot"',
+            "    .endif",
+            f"    .fill {_X87_REPLAY_INLINE_INSTRUCTION_OFFSET} - "
+            f"(. - _stage_b_native_x87_bridge_{replay.id:04d}), 1, 0x90",
             f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
             f"!= {_X87_REPLAY_INLINE_INSTRUCTION_OFFSET}",
             '    .error "x87 replay instruction offset changed"',
@@ -2866,7 +3424,12 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             f"    .globl _stage_b_native_x87_instruction_{replay.id:04d}",
             f"_stage_b_native_x87_instruction_{replay.id:04d}:",
             f"    {_render_typed_x87_instruction(replay)}",
-            *(["    nop"] * replay_padding),
+            f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
+            f"> {_X87_REPLAY_INLINE_CAPTURE_OFFSET}",
+            '    .error "x87 replay instruction exceeds its fixed bridge slot"',
+            "    .endif",
+            f"    .fill {_X87_REPLAY_INLINE_CAPTURE_OFFSET} - "
+            f"(. - _stage_b_native_x87_bridge_{replay.id:04d}), 1, 0x90",
             f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
             f"!= {_X87_REPLAY_INLINE_CAPTURE_OFFSET}",
             '    .error "x87 replay capture offset changed"',
@@ -2891,7 +3454,6 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             "    and ebx, 0x00000cd5",
             "    or ecx, ebx",
             f"    mov DWORD PTR [edx + {_STATE_OFFSETS['eflags']}], ecx",
-            *(["    nop"] * 10),
             f"    mov DWORD PTR [eax + {_X87_FRAME_OFFSETS['status']}], 0",
             f"    mov esp, DWORD PTR [eax + {_X87_FRAME_OFFSETS['private_esp']}]",
             "    cld",
@@ -2900,15 +3462,19 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             "    pop ebx",
             "    pop ebp",
             f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
+            f"> {_X87_REPLAY_INLINE_RETURN_OFFSET}",
+            '    .error "x87 replay capture exceeds its fixed bridge slot"',
+            "    .endif",
+            f"    .fill {_X87_REPLAY_INLINE_RETURN_OFFSET} - "
+            f"(. - _stage_b_native_x87_bridge_{replay.id:04d}), 1, 0x90",
+            f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
             f"!= {_X87_REPLAY_INLINE_RETURN_OFFSET}",
             '    .error "x87 replay return offset changed"',
             "    .endif",
             f"_stage_b_native_x87_return_{replay.id:04d}:",
             "    ret",
-            "    nop",
-            "    nop",
-            "    nop",
-            "    nop",
+            f"    .fill {_X87_REPLAY_INLINE_BODY_SIZE} - "
+            f"(. - _stage_b_native_x87_bridge_{replay.id:04d}), 1, 0x90",
             f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
             f"!= {_X87_REPLAY_INLINE_BODY_SIZE}",
             '    .error "x87 replay bridge size changed"',
@@ -2941,11 +3507,16 @@ def _render_typed_x87_instruction(operation: NativeX87Operation) -> str:
     if operand.image_rva is not None:
         if (
             operation.target_rva != operand.image_rva
-            or operation.relocation_type != 3
-            or operation.relocation_width != 4
+            or not (
+                (
+                    operation.relocation_type == 3
+                    and operation.relocation_width == 4
+                )
+                or operation.fixed_image_base == operation.image_base
+            )
         ):
             raise StageAInputError(
-                "absolute typed x87 operand lacks its checked HIGHLOW target"
+                "absolute typed x87 operand lacks a checked image-address binding"
             )
         terms.append(f"___ImageBase + 0x{operand.image_rva:08x}")
     if operand.base is not None:
@@ -3076,6 +3647,7 @@ def _qualified_machine_ir_x87_operations(
     transfer_id: str,
     first_id: int,
     relocation_evidence: _PEBaseRelocationEvidence | None,
+    fixed_image_base: int | None,
 ) -> tuple[NativeX87Operation, ...]:
     fpu = row.get("fpu_state")
     micro_ops = row.get("_machine_ir_x87_micro_ops")
@@ -3162,6 +3734,7 @@ def _qualified_machine_ir_x87_operations(
         seen_spans.add((start, end))
         typed = typed_x87_operation_from_micro_op(raw, image_base=image_base)
         relocation: _PEBaseRelocation | None = None
+        fixed_binding: int | None = None
         if typed.operand.image_rva is not None:
             preferred_value = image_base + typed.operand.image_rva
             matches = (
@@ -3175,20 +3748,23 @@ def _qualified_machine_ir_x87_operations(
                 if relocation_evidence is not None
                 else []
             )
-            if len(matches) != 1:
+            if len(matches) == 0 and fixed_image_base == image_base:
+                fixed_binding = image_base
+            elif len(matches) != 1:
                 raise _X87ReplayASLRUnsafe(
                     "absolute typed x87 operand lacks one span-bound PE relocation"
                 )
-            relocation = matches[0]
-            if (
-                relocation_evidence is None
-                or relocation_evidence.image_base != image_base
-                or relocation.type != 3
-                or relocation.width != 4
-            ):
-                raise _X87ReplayASLRUnsafe(
-                    "typed x87 absolute operand is not bound by PE32 HIGHLOW evidence"
-                )
+            else:
+                relocation = matches[0]
+                if (
+                    relocation_evidence is None
+                    or relocation_evidence.image_base != image_base
+                    or relocation.type != 3
+                    or relocation.width != 4
+                ):
+                    raise _X87ReplayASLRUnsafe(
+                        "typed x87 absolute operand is not bound by PE32 HIGHLOW evidence"
+                    )
         elif relocation_evidence is not None and any(
             item.source_rva < end and item.source_rva + item.width > start
             for item in relocation_evidence.relocations
@@ -3213,7 +3789,7 @@ def _qualified_machine_ir_x87_operations(
             target_rva=(
                 relocation.preferred_value - image_base
                 if relocation is not None else None
-            ),
+            ) if fixed_binding is None else typed.operand.image_rva,
             relocation_type=relocation.type if relocation is not None else None,
             relocation_width=relocation.width if relocation is not None else None,
             relocation_pe_sha256=(
@@ -3224,6 +3800,7 @@ def _qualified_machine_ir_x87_operations(
                 relocation_evidence.reference_contract_sha256
                 if relocation is not None and relocation_evidence is not None else None
             ),
+            fixed_image_base=fixed_binding,
         ))
     return tuple(result)
 
@@ -3234,6 +3811,7 @@ def _qualified_x87_operations(
     transfer_id: str,
     first_id: int,
     relocation_evidence: _PEBaseRelocationEvidence | None,
+    fixed_image_base: int | None,
 ) -> tuple[NativeX87Operation, ...]:
     fpu = row.get("fpu_state")
     if not isinstance(fpu, Mapping) or fpu.get("model") != _X87_REPLAY_MODEL:
@@ -3410,6 +3988,7 @@ def _qualified_x87_operations(
             )
             operand_offset = _x87_absolute_operand_offset(encoded)
             relocation: _PEBaseRelocation | None = None
+            fixed_binding: int | None = None
             if operand_offset is not None:
                 source_rva = instruction_rva + operand_offset
                 matches = (
@@ -3421,34 +4000,37 @@ def _qualified_x87_operations(
                     if relocation_evidence is not None
                     else []
                 )
-                if len(matches) != 1:
+                if len(matches) == 0 and fixed_image_base == image_base:
+                    fixed_binding = image_base
+                elif len(matches) != 1:
                     raise _X87ReplayASLRUnsafe(
                         "absolute x87 disp32 does not have exactly one bound PE relocation"
-                    )
-                relocation = matches[0]
-                if relocation_evidence is None or relocation_evidence.image_base != image_base:
-                    raise _X87ReplayASLRUnsafe(
-                        "x87 relocation evidence preferred image base differs from replay"
-                    )
-                if relocation.type != 3 or relocation.width != 4:
-                    raise _X87ReplayASLRUnsafe(
-                        "x87 absolute operand relocation is not PE32 HIGHLOW width 4"
-                    )
-                if source_rva < instruction_rva or source_rva + 4 > instruction_rva + size:
-                    raise _X87ReplayASLRUnsafe(
-                        "x87 relocation target span is outside its exact instruction"
                     )
                 raw_preferred = int.from_bytes(
                     encoded[operand_offset : operand_offset + 4], "little"
                 )
-                if relocation.preferred_value != raw_preferred:
-                    raise _X87ReplayASLRUnsafe(
-                        "x87 relocation preferred value differs from exact operand bytes"
-                    )
                 if raw_preferred < image_base:
                     raise _X87ReplayASLRUnsafe(
-                        "x87 relocation preferred value is below the preferred image base"
+                        "x87 absolute preferred value is below the preferred image base"
                     )
+                if fixed_binding is None:
+                    relocation = matches[0]
+                    if relocation_evidence is None or relocation_evidence.image_base != image_base:
+                        raise _X87ReplayASLRUnsafe(
+                            "x87 relocation evidence preferred image base differs from replay"
+                        )
+                    if relocation.type != 3 or relocation.width != 4:
+                        raise _X87ReplayASLRUnsafe(
+                            "x87 absolute operand relocation is not PE32 HIGHLOW width 4"
+                        )
+                    if source_rva < instruction_rva or source_rva + 4 > instruction_rva + size:
+                        raise _X87ReplayASLRUnsafe(
+                            "x87 relocation target span is outside its exact instruction"
+                        )
+                    if relocation.preferred_value != raw_preferred:
+                        raise _X87ReplayASLRUnsafe(
+                            "x87 relocation preferred value differs from exact operand bytes"
+                        )
             elif not _x87_replay_relocation_safe(encoded):
                 raise _X87ReplayASLRUnsafe(
                     "x87 singleton uses an absolute or unqualified addressing form "
@@ -3462,7 +4044,9 @@ def _qualified_x87_operations(
                 raise _X87ReplayASLRUnsafe(
                     "position-independent x87 instruction overlaps unexpected relocation evidence"
                 )
-            if (typed.operand.image_rva is None) != (relocation is None):
+            if (
+                typed.operand.image_rva is None
+            ) != (relocation is None and fixed_binding is None):
                 raise _X87ReplayASLRUnsafe(
                     "typed x87 absolute-address classification differs from relocation evidence"
                 )
@@ -3484,7 +4068,7 @@ def _qualified_x87_operations(
                     relocation.preferred_value - image_base
                     if relocation is not None
                     else None
-                ),
+                ) if fixed_binding is None else typed.operand.image_rva,
                 relocation_type=relocation.type if relocation is not None else None,
                 relocation_width=relocation.width if relocation is not None else None,
                 relocation_pe_sha256=(
@@ -3497,6 +4081,7 @@ def _qualified_x87_operations(
                     if relocation is not None and relocation_evidence is not None
                     else None
                 ),
+                fixed_image_base=fixed_binding,
             ))
         reconstructed.extend(encoded)
         cursor += size

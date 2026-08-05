@@ -21,6 +21,7 @@
         mkSourceComponentAssurance = import ./nix/stage-b-source-component-assurance.nix;
         mkFunctionalSuite = import ./nix/stage-b-functional-suite.nix;
         mkUpstreamShellSuite = import ./nix/stage-b-upstream-shell-suite.nix;
+        mkHybridCandidate = import ./nix/stage-b-hybrid-candidate.nix;
       };
 
       packages = forAllSystems (system:
@@ -36,12 +37,28 @@
               ./profiles
             ];
           };
+          candidateOnlySourceFiles = pkgs.lib.fileset.unions [
+            ./src/spaghetti_extractor/stage_b_interpreter_backend.py
+            ./src/spaghetti_extractor/stage_b_interpreter_native_build.py
+            ./src/spaghetti_extractor/stage_b_machine_ir_scope.py
+            ./src/spaghetti_extractor/stage_b_native_binding.py
+            ./src/spaghetti_extractor/stage_b_native_build.py
+            ./src/spaghetti_extractor/stage_b_native_engine.py
+            ./src/spaghetti_extractor/stage_b_native_image.py
+            ./src/spaghetti_extractor/stage_b_native_runtime.py
+            ./src/spaghetti_extractor/stage_b_pe_composer.py
+          ];
           analysisSource = pkgs.lib.fileset.toSource {
             root = ./.;
-            fileset = pkgs.lib.fileset.unions [
-              ./src
-              ./profiles
-            ];
+            fileset = pkgs.lib.fileset.difference ./src candidateOnlySourceFiles;
+          };
+          profileSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = ./profiles;
+          };
+          candidateSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = ./src;
           };
           pythonEnv = pkgs.python3.withPackages (ps: with ps; [
             capstone
@@ -94,6 +111,8 @@
           dxball = import ./targets/dxball {
             inherit pkgs pythonEnv;
             pythonSource = analysisSource;
+            inherit profileSource;
+            candidatePythonSource = candidateSource;
           };
         in {
           default = package;
@@ -112,6 +131,12 @@
           dxball-machine-ir = dxball.analysis.machineIr;
           dxball-reconstruction-plan = dxball.analysis.reconstructionPlan;
           dxball-component-proposals = dxball.analysis.componentProposals;
+          dxball-interpreter = dxball.hybrid.interpreter;
+          dxball-native-engine = dxball.hybrid.nativeEngine;
+          dxball-native-runtime = dxball.hybrid.nativeRuntime;
+          dxball-native-objects = dxball.hybrid.nativeObjects.package;
+          dxball-hybrid-candidate = dxball.hybrid.candidate;
+          dxball-hybrid-diagnostic-candidate = dxball.hybridDiagnostic.candidate;
         });
 
       checks = forAllSystems (system:
@@ -188,6 +213,10 @@
               pkgs.pkg-config
               pkgs.pkgsCross.mingw32.stdenv.cc
               pkgs.pkgsCross.mingw32.buildPackages.binutils
+              pkgs.wineWowPackages.stableFull
+              pkgs.xvfb-run
+              pkgs.xwd
+              pkgs.imagemagick
             ];
             shellHook = ''export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"'';
           };

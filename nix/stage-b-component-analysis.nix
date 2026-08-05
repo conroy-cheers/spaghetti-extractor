@@ -48,10 +48,22 @@ let
       set -euo pipefail
       ${commonEnvironment staticPythonSource}
       mkdir -p "$out"
-      ${python} -m spaghetti_extractor.cli stage-a-inventory-binary \
-        --binary ${lib.escapeShellArg (toString original)} \
-        --out "$out/inventory.json" \
-        > "$out/inventory.stdout"
+      ${python} - \
+        ${lib.escapeShellArg (toString original)} \
+        "$out/inventory.json" <<'PY' > "$out/inventory.stdout"
+      import pathlib
+      import sys
+      from spaghetti_extractor.analysis.binary_inventory import (
+          stage_a_inventory_binary,
+      )
+
+      print(stage_a_inventory_binary(
+          binary=pathlib.Path(sys.argv[1]),
+          linker_map=None,
+          side="original",
+          out=pathlib.Path(sys.argv[2]),
+      ))
+      PY
       expected_sha256="$(sha256sum ${lib.escapeShellArg (toString original)} | cut -d ' ' -f 1)"
       jq -e --arg expected_sha256 "$expected_sha256" '
         .format == "stage-a-binary-cutpoint-inventory-v1" and

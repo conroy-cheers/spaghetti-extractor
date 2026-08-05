@@ -1740,6 +1740,7 @@ def _control_inventory(
                 external_interface_provenance
             ),
             "internal_call_preservation": internal_call_preservation,
+            "callback_cutpoint_proposals": callback_root_proposals,
             "analysis_fixed_point": {
                 "status": (
                     "complete"
@@ -1778,6 +1779,7 @@ def _control_inventory(
                 ),
                 "rooted_frontiers": len(reachability["frontiers"]),
                 "checked_jump_table_targets": len(checked_targets),
+                "callback_cutpoint_proposals": len(callback_root_proposals),
             },
         },
         issues,
@@ -1924,6 +1926,11 @@ def _callback_registration_roots(
     starts = {
         int(unit["source"]["original"]["rva_start"]): unit for unit in units
     }
+    executable_sections = tuple(
+        section
+        for section in getattr(binary, "sections", ())
+        if getattr(section, "executable", False)
+    )
     result: dict[int, dict[str, Any]] = {}
     for unit in units:
         events = unit.get("semantics", {}).get("external_events", [])
@@ -1943,7 +1950,11 @@ def _callback_registration_roots(
                 or not 0 <= argument_index < len(arguments)
             ):
                 continue
-            expression = arguments[argument_index]
+            expression = _forward_callback_argument_expression(
+                arguments[argument_index],
+                unit=unit,
+                event=event,
+            )
             value = (
                 expression.get("value")
                 if isinstance(expression, Mapping)
@@ -1955,7 +1966,21 @@ def _callback_registration_roots(
             candidates = [value]
             if value >= binary.image_base:
                 candidates.insert(0, value - binary.image_base)
-            rva = next((candidate for candidate in candidates if candidate in starts), None)
+            rva = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if (
+                        any(
+                            section.rva_start <= candidate < section.rva_end
+                            for section in executable_sections
+                        )
+                        if executable_sections
+                        else candidate in starts
+                    )
+                ),
+                None,
+            )
             if rva is None:
                 continue
             result.setdefault(
@@ -1971,6 +1996,57 @@ def _callback_registration_roots(
                 },
             )
     return [result[rva] for rva in sorted(result)]
+
+
+def _forward_callback_argument_expression(
+    expression: Any,
+    *,
+    unit: Mapping[str, Any],
+    event: Mapping[str, Any],
+) -> Any:
+    if (
+        not isinstance(expression, Mapping)
+        or expression.get("op") != "load"
+        or expression.get("width") != 4
+    ):
+        return expression
+    address = expression.get("address")
+    instruction_rva = event.get("instruction_rva")
+    ordered = unit.get("semantics", {}).get("ordered_events", [])
+    if not isinstance(ordered, list):
+        return expression
+    if not isinstance(instruction_rva, int):
+        matching_calls = [
+            item
+            for item in ordered
+            if isinstance(item, Mapping)
+            and item.get("family") == "external"
+            and item.get("kind") == event.get("kind")
+            and item.get("dll") == event.get("dll")
+            and item.get("symbol") == event.get("symbol")
+            and item.get("ordinal") == event.get("ordinal")
+            and item.get("return_rva") == event.get("return_rva")
+            and isinstance(item.get("instruction_rva"), int)
+        ]
+        if len(matching_calls) != 1:
+            return expression
+        instruction_rva = int(matching_calls[0]["instruction_rva"])
+    writes = [
+        item
+        for item in ordered
+        if isinstance(item, Mapping)
+        and item.get("family") == "memory"
+        and item.get("kind") == "write"
+        and item.get("width") == 4
+        and item.get("address") == address
+        and isinstance(item.get("instruction_rva"), int)
+        and item.get("instruction_rva") < instruction_rva
+    ]
+    if not writes:
+        return expression
+    latest_rva = max(int(item["instruction_rva"]) for item in writes)
+    latest = [item for item in writes if item.get("instruction_rva") == latest_rva]
+    return latest[0].get("value") if len(latest) == 1 else expression
 
 
 def _checked_external_argument_values(event: Mapping[str, Any]) -> list[Any]:

@@ -85,7 +85,7 @@ def close_state_machine_rooted_direct_control(
     binary = _parse_stage_a_pe(original_pe)
     try:
         binary_roots = _binary_roots(binary)
-        manifest_roots = (
+        manifest_seeds = (
             _manifest_seed_roots(
                 control_manifest,
                 state_machine_sha256=sha256_file(state_machine),
@@ -96,11 +96,21 @@ def close_state_machine_rooted_direct_control(
             if control_manifest is not None
             else []
         )
+        manifest_roots = [
+            seed for seed in manifest_seeds if seed.get("behavioral_root") is True
+        ]
+        pending_decode_seeds = {
+            int(seed["rva"])
+            for seed in manifest_seeds
+            if int(seed["rva"]) not in {_transfer_start(row) for row in merged}
+        }
         roots = _merge_roots(binary_roots, manifest_roots)
         initial = _rooted_direct_reachability(merged, roots)
         final = initial
         for round_index in range(iteration_budget):
-            seeds = final["missing_target_rvas"]
+            seeds = sorted(
+                set(final["missing_target_rvas"]) | pending_decode_seeds
+            )
             if not seeds:
                 break
             remaining_budget = instruction_budget - len(discovered_views)
@@ -152,6 +162,9 @@ def close_state_machine_rooted_direct_control(
                 break
             merged.extend(new_rows)
             supplemental.extend(new_rows)
+            pending_decode_seeds.difference_update(
+                _transfer_start(row) for row in new_rows
+            )
             terminating.update(round_terminating)
             final = _rooted_direct_reachability(merged, roots)
         else:
@@ -200,6 +213,7 @@ def close_state_machine_rooted_direct_control(
         },
         "output": {"path": out.name, "sha256": sha256_file(out)},
         "roots": roots,
+        "decode_seeds": manifest_seeds,
         "initial_reachability": initial,
         "final_reachability": final,
         "discovery": {
@@ -463,6 +477,7 @@ def _manifest_seed_roots(
                     "kind": "provenance_recovered_behavioral_root",
                     "rva": rva,
                     "source": "control_manifest",
+                    "behavioral_root": True,
                 },
             )
 
@@ -501,6 +516,7 @@ def _manifest_seed_roots(
                     "rva": rva,
                     "source": "control_manifest",
                     "source_unit_id": source_id,
+                    "behavioral_root": False,
                 },
             )
 
@@ -549,8 +565,38 @@ def _manifest_seed_roots(
                         "rva": rva,
                         "source": "control_manifest",
                         "source_unit_id": source_id,
+                        "behavioral_root": False,
                     },
                 )
+    raw_callbacks = control.get("callback_cutpoint_proposals", [])
+    if not isinstance(raw_callbacks, list):
+        raise StageAInputError(
+            "control manifest callback-cutpoint proposal inventory must be a list"
+        )
+    for index, raw_callback in enumerate(raw_callbacks):
+        callback = _mapping(
+            raw_callback, f"control manifest callback_cutpoint_proposals[{index}]"
+        )
+        source_id = callback.get("source_unit_id")
+        if not isinstance(source_id, str) or source_id not in units_by_id:
+            raise StageAInputError(
+                "control manifest callback-cutpoint proposal has an unknown source"
+            )
+        rva = _u32(
+            callback.get("rva"),
+            f"control manifest callback_cutpoint_proposals[{index}] rva",
+        )
+        if rva not in materialized_rvas:
+            proposals.setdefault(
+                rva,
+                {
+                    "kind": "provenance_recovered_callback_cutpoint",
+                    "rva": rva,
+                    "source": "control_manifest",
+                    "source_unit_id": source_id,
+                    "behavioral_root": False,
+                },
+            )
     return [proposals[rva] for rva in sorted(proposals)]
 
 

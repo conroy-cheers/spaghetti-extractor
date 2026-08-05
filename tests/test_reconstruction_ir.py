@@ -939,6 +939,75 @@ class ReconstructionIRTests(unittest.TestCase):
         self.assertEqual(roots[0]["rva"], callback_rva)
         self.assertEqual(roots[0]["source_unit_id"], "unit:register")
 
+    def test_callback_registration_proposes_an_interior_executable_cutpoint(self) -> None:
+        callback_rva = 0x2203
+        callback_va = 0x400000 + callback_rva
+        stack_address = {
+            "op": "sub32",
+            "args": [
+                _expr_register("esp"),
+                {"op": "const", "value": 4, "width": 32},
+            ],
+        }
+        units = [{
+            "id": "unit:register",
+            "source": {"original": {"rva_start": 0x1100}},
+            "semantics": {
+                "external_events": [{
+                    "kind": "external_call",
+                    "dll": "kernel32.dll",
+                    "symbol": "SetUnhandledExceptionFilter",
+                    "ordinal": None,
+                    "return_rva": 0x110B,
+                    "stack_inputs": [{
+                        "offset": 0,
+                        "width": 4,
+                        "value": {"op": "load", "address": stack_address, "width": 4},
+                    }],
+                    "abi_contract": {
+                        "world_effect": "callbackRegistration",
+                        "world_effect_argument": 0,
+                        "callback_abi": {"kind": "generic_callback"},
+                    },
+                }],
+                "ordered_events": [
+                    {
+                        "family": "memory",
+                        "kind": "write",
+                        "instruction_rva": 0x1100,
+                        "address": stack_address,
+                        "width": 4,
+                        "value": {
+                            "op": "const",
+                            "value": callback_va,
+                            "width": 32,
+                        },
+                    },
+                    {
+                        "family": "external",
+                        "kind": "external_call",
+                        "instruction_rva": 0x1105,
+                        "dll": "kernel32.dll",
+                        "symbol": "SetUnhandledExceptionFilter",
+                        "ordinal": None,
+                        "return_rva": 0x110B,
+                    },
+                ],
+            },
+        }]
+        binary = SimpleNamespace(
+            image_base=0x400000,
+            sections=(SimpleNamespace(
+                executable=True,
+                rva_start=0x2000,
+                rva_end=0x2300,
+            ),),
+        )
+
+        roots = _callback_registration_roots(binary, units)
+
+        self.assertEqual([root["rva"] for root in roots], [callback_rva])
+
     def test_callback_root_requires_a_reachable_registration_source(self) -> None:
         proposals = [
             {

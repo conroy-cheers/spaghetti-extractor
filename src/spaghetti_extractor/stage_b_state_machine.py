@@ -481,6 +481,18 @@ def _machine_import_contracts(
                 raise StageAInputError(
                     f"external profile contract {contract['id']!r} has no exact callback lifetime"
                 )
+            callback_result = contract.get("callback_result")
+            if callback_result is not None and (
+                not isinstance(callback_result, Mapping)
+                or set(callback_result) != {"register", "origin", "nullable"}
+                or callback_result.get("register")
+                not in {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}
+                or callback_result.get("origin") != "previous_registered_callback"
+                or not isinstance(callback_result.get("nullable"), bool)
+            ):
+                raise StageAInputError(
+                    f"external profile contract {contract['id']!r} has an invalid callback result"
+                )
         elif callback_abi is not None:
             raise StageAInputError(
                 f"external profile contract {contract['id']!r} attaches a callback ABI to a non-callback effect"
@@ -570,6 +582,8 @@ def _annotate_machine_import_arguments(
                     contract.get("callback_lifetime")
                 ),
             })
+            if contract.get("callback_result") is not None:
+                abi_contract["callback_result"] = dict(contract["callback_result"])
         event["abi_contract"] = abi_contract
         return event
 

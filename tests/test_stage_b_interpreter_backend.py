@@ -783,6 +783,78 @@ int main(void) {
             )
             subprocess.run([str(executable)], check=True)
 
+    def test_machine_ir_can_explicitly_defer_only_potential_incomplete_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine = root / "machine-ir.jsonl"
+            valid = _machine_ir_pre_call_tail_unit()
+            valid["reachability"] = "reachable"
+            potential = json.loads(json.dumps(valid))
+            potential["id"] = "semantic-transfer:potential-data"
+            potential["status"] = "incomplete"
+            potential["reachable"] = False
+            potential["reachability"] = "potential"
+            potential["source"]["original"] = {
+                "rva_start": 0x2000,
+                "rva_end": 0x2002,
+                "size": 2,
+            }
+            schedule = potential["semantics"]["instruction_effect_schedule"]
+            schedule["rva_start"] = 0x2000
+            schedule["rva_end"] = 0x2002
+            schedule["records"][0]["rva_start"] = 0x2000
+            schedule["records"][0]["rva_end"] = 0x2001
+            schedule["records"][0]["instruction_class"] = "unsupported_instruction"
+            schedule["records"][1]["rva_start"] = 0x2001
+            schedule["records"][1]["rva_end"] = 0x2002
+            _write_machine(machine, [valid, potential])
+
+            strict = write_stage_b_interpreter_package(
+                machine_ir=machine,
+                out=root / "strict",
+            )
+            self.assertEqual(strict["status"], "incomplete")
+            self.assertEqual(strict["counts"]["blocked_transfers"], 1)
+            self.assertEqual(strict["counts"]["deferred_transfers"], 0)
+
+            package = write_stage_b_interpreter_package(
+                machine_ir=machine,
+                out=root / "deferred",
+                allow_deferred_potential_transfers=True,
+            )
+            self.assertEqual(package["status"], "ready")
+            self.assertEqual(package["semantic_coverage"]["status"], "incomplete")
+            self.assertEqual(
+                package["execution_policy"],
+                "fail_closed_on_deferred_potential_transfer_v1",
+            )
+            self.assertEqual(package["counts"]["input_transfers"], 2)
+            self.assertEqual(package["counts"]["transfers"], 1)
+            self.assertEqual(package["counts"]["blocked_transfers"], 0)
+            self.assertEqual(package["counts"]["deferred_transfers"], 1)
+            self.assertEqual(
+                package["deferred_transfers"][0]["runtime_disposition"],
+                "fail_closed_as_unimplemented_if_reached",
+            )
+
+    def test_machine_ir_never_defers_reachable_incomplete_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine = root / "machine-ir.jsonl"
+            reachable = _machine_ir_pre_call_tail_unit()
+            reachable["status"] = "incomplete"
+            reachable["reachability"] = "reachable"
+            _write_machine(machine, [reachable])
+
+            package = write_stage_b_interpreter_package(
+                machine_ir=machine,
+                out=root / "package",
+                allow_deferred_potential_transfers=True,
+            )
+            self.assertEqual(package["status"], "incomplete")
+            self.assertEqual(package["counts"]["blocked_transfers"], 1)
+            self.assertEqual(package["counts"]["deferred_transfers"], 0)
+
     def test_interpreter_stack_capacity_matches_checked_program_maximum(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

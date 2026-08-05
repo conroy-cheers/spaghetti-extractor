@@ -317,6 +317,13 @@ typedef struct stage_b_call_event {
   const stage_b_stack_input *stack_inputs;
   uint32_t stack_input_count;
 } stage_b_call_event;
+#define STAGE_B_MAX_EXTERNAL_ARGUMENTS 256U
+typedef struct stage_b_external_call_snapshot {
+  uint32_t instruction_rva;
+  uint32_t argument_base_offset;
+  uint32_t argument_count;
+  uint32_t arguments[STAGE_B_MAX_EXTERNAL_ARGUMENTS];
+} stage_b_external_call_snapshot;
 typedef struct stage_b_runtime stage_b_runtime;
 typedef enum stage_b_call_status {
   STAGE_B_CALL_OK = 0,
@@ -437,6 +444,213 @@ class StageBNativeEngineTests(unittest.TestCase):
                 self.assertNotIn("instruction_bytes", generated)
                 self.assertNotIn(".byte", generated)
 
+    def test_machine_ir_engine_defers_only_incomplete_potential_units(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            entry = _machine_ir_transfer(rva=0x1420, size=1, mnemonic="nop")
+            potential = _machine_ir_transfer(rva=0x2000, size=1, mnemonic="in")
+            potential["status"] = "incomplete"
+            potential["reachable"] = False
+            potential["reachability"] = "potential"
+            machine_ir = self._write(root, [entry, potential])
+
+            with self.assertRaisesRegex(StageAInputError, "not a qualified"):
+                plan_stage_b_native_engine(
+                    machine_ir=machine_ir,
+                    entry_rva=0x1420,
+                )
+
+            plan = plan_stage_b_native_engine(
+                machine_ir=machine_ir,
+                entry_rva=0x1420,
+                allow_deferred_potential_transfers=True,
+            )
+            self.assertEqual(plan.status, "ready", plan.blockers)
+            self.assertEqual(plan.transfer_count, 1)
+            self.assertEqual(len(plan.deferred_transfers), 1)
+            payload = plan.payload(state_machine_sha256="f" * 64)
+            self.assertEqual(payload["semantic_coverage"]["status"], "incomplete")
+            self.assertEqual(
+                payload["execution_policy"],
+                "fail_closed_on_deferred_potential_transfer_v1",
+            )
+
+    def test_callback_result_saved_to_a_dominating_slot_is_passed_through(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            abi = {
+                "world_effect": "callbackRegistration",
+                "world_effect_argument": 0,
+                "argument_words": 1,
+                "argument_base_offset": 0,
+                "callback_abi": {
+                    "kind": "generic_callback",
+                    "argument_words": 1,
+                    "stack_cleanup_bytes": 4,
+                    "nullable": True,
+                },
+                "callback_result": {
+                    "register": "eax",
+                    "origin": "previous_registered_callback",
+                    "nullable": True,
+                },
+            }
+            first = _machine_ir_transfer(event={
+                "kind": "external_call",
+                "instruction_rva": 0x1000,
+                "return_rva": 0x1001,
+                "dll": "kernel32.dll",
+                "symbol": "SetHandler",
+                "ordinal": None,
+                "arguments": [{"op": "const", "value": 0, "width": 32}],
+                "stack_inputs": [{
+                    "offset": 0,
+                    "width": 4,
+                    "value": {"op": "const", "value": 0, "width": 32},
+                }],
+                "abi_contract": abi,
+            }, rva=0x1000, size=1)
+            write = _machine_ir_transfer(rva=0x1001, size=1, mnemonic="mov")
+            write["semantics"]["ordered_events"] = [{
+                "family": "memory",
+                "kind": "write",
+                "instruction_rva": 0x1001,
+                "address": {"op": "const", "value": 0x430000, "width": 32},
+                "width": 4,
+                "value": {"op": "reg", "name": "eax", "width": 32},
+            }]
+            write["semantics"]["outcome"] = {
+                "kind": "fallthrough",
+                "target_rva": 0x1002,
+            }
+            second = _machine_ir_transfer(event={
+                "kind": "external_call",
+                "instruction_rva": 0x1002,
+                "return_rva": 0x1003,
+                "dll": "kernel32.dll",
+                "symbol": "SetHandler",
+                "ordinal": None,
+                "arguments": [{
+                    "op": "load",
+                    "address": {"op": "const", "value": 0x430000, "width": 32},
+                    "width": 4,
+                }],
+                "stack_inputs": [{
+                    "offset": 0,
+                    "width": 4,
+                    "value": {
+                        "op": "load",
+                        "address": {"op": "const", "value": 0x430000, "width": 32},
+                        "width": 4,
+                    },
+                }],
+                "abi_contract": abi,
+            }, rva=0x1002, size=1)
+            machine = self._write(root, [first, write, second])
+
+            plan = plan_stage_b_native_engine(
+                machine_ir=machine,
+                entry_rva=0x1000,
+                import_iat_vas={("kernel32.dll", "SetHandler"): 0x432000},
+            )
+
+            self.assertEqual(plan.status, "ready", plan.blockers)
+            self.assertEqual(len(plan.callback_passthroughs), 1)
+            self.assertEqual(plan.callback_passthroughs[0].storage_va, 0x430000)
+            self.assertEqual(
+                plan.callback_passthroughs[0].storage_invariant,
+                "dominating_previous_registered_callback",
+            )
+
+    def test_nullable_callback_result_slot_accepts_checked_initial_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            abi = {
+                "world_effect": "callbackRegistration",
+                "world_effect_argument": 0,
+                "argument_words": 1,
+                "argument_base_offset": 0,
+                "callback_abi": {
+                    "kind": "generic_callback",
+                    "argument_words": 1,
+                    "stack_cleanup_bytes": 4,
+                    "nullable": True,
+                },
+                "callback_result": {
+                    "register": "eax",
+                    "origin": "previous_registered_callback",
+                    "nullable": True,
+                },
+            }
+            first = _machine_ir_transfer(event={
+                "kind": "external_call",
+                "instruction_rva": 0x1000,
+                "return_rva": 0x1001,
+                "dll": "kernel32.dll",
+                "symbol": "SetHandler",
+                "ordinal": None,
+                "arguments": [{"op": "const", "value": 0, "width": 32}],
+                "stack_inputs": [{
+                    "offset": 0,
+                    "width": 4,
+                    "value": {"op": "const", "value": 0, "width": 32},
+                }],
+                "abi_contract": abi,
+            }, rva=0x1000, size=1)
+            write = _machine_ir_transfer(rva=0x1001, size=1, mnemonic="mov")
+            write["semantics"]["ordered_events"] = [{
+                "family": "memory",
+                "kind": "write",
+                "instruction_rva": 0x1001,
+                "address": {"op": "const", "value": 0x430000, "width": 32},
+                "width": 4,
+                "value": {"op": "reg", "name": "eax", "width": 32},
+            }]
+            write["semantics"]["outcome"] = {"kind": "return"}
+            second = _machine_ir_transfer(event={
+                "kind": "external_call",
+                "instruction_rva": 0x2000,
+                "return_rva": 0x2001,
+                "dll": "kernel32.dll",
+                "symbol": "SetHandler",
+                "ordinal": None,
+                "arguments": [{
+                    "op": "load",
+                    "address": {"op": "const", "value": 0x430000, "width": 32},
+                    "width": 4,
+                }],
+                "stack_inputs": [{
+                    "offset": 0,
+                    "width": 4,
+                    "value": {
+                        "op": "load",
+                        "address": {"op": "const", "value": 0x430000, "width": 32},
+                        "width": 4,
+                    },
+                }],
+                "abi_contract": abi,
+            }, rva=0x2000, size=1)
+            machine = self._write(root, [first, write, second])
+
+            without_zero = plan_stage_b_native_engine(
+                machine_ir=machine,
+                entry_rva=0x1000,
+                import_iat_vas={("kernel32.dll", "SetHandler"): 0x432000},
+            )
+            self.assertEqual(without_zero.status, "incomplete")
+
+            plan = plan_stage_b_native_engine(
+                machine_ir=machine,
+                entry_rva=0x1000,
+                import_iat_vas={("kernel32.dll", "SetHandler"): 0x432000},
+                initial_zero_ranges=((0x430000, 0x431000),),
+            )
+            self.assertEqual(plan.status, "ready", plan.blockers)
+            self.assertEqual(
+                plan.callback_passthroughs[0].storage_invariant,
+                "initial_zero_or_previous_registered_callback",
+            )
+
     def test_byte_free_indirect_bridge_binds_target_expression(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -493,6 +707,168 @@ class StageBNativeEngineTests(unittest.TestCase):
                 "symbol": "__p___argv",
                 "ordinal": None,
             })
+
+    def test_register_held_iat_origin_binds_indirect_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            load = _machine_ir_transfer(rva=0x1000, size=6, mnemonic="mov")
+            load["semantics"]["register_writes"] = [{
+                "register": "edi",
+                "value": {
+                    "op": "load",
+                    "width": 4,
+                    "address": {"op": "const", "width": 32, "value": 0x43219C},
+                },
+            }]
+            call = _machine_ir_transfer(
+                event={
+                    "kind": "indirect_call",
+                    "instruction_rva": 0x1006,
+                    "return_rva": 0x1008,
+                    "target": {"op": "reg", "name": "edi", "width": 32},
+                },
+                rva=0x1006,
+                size=2,
+            )
+
+            plan = plan_stage_b_native_engine(
+                machine_ir=self._write(root, [load, call]),
+                entry_rva=0x1000,
+                import_iat_vas={('kernel32.dll', 'VirtualAlloc'): 0x43219C},
+            )
+
+            site = plan.external_sites[0]
+            self.assertEqual(site.symbol, "VirtualAlloc")
+            self.assertEqual(site.iat_va, 0x43219C)
+
+    def test_register_held_iat_origin_crosses_checked_import_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            load = _machine_ir_transfer(rva=0x1000, size=6, mnemonic="mov")
+            load["semantics"]["register_writes"] = [{
+                "register": "edi",
+                "value": {
+                    "op": "load",
+                    "width": 4,
+                    "address": {"op": "const", "width": 32, "value": 0x43219C},
+                },
+            }]
+            first = _machine_ir_transfer(
+                event={
+                    "kind": "indirect_call",
+                    "instruction_rva": 0x1006,
+                    "return_rva": 0x1008,
+                    "target": {"op": "reg", "name": "edi", "width": 32},
+                },
+                rva=0x1006,
+                size=2,
+            )
+            first["semantics"]["register_writes"] = [{
+                "register": register,
+                "value": {
+                    "op": "call_response",
+                    "call_index": 0,
+                    "register": register,
+                    "width": 32,
+                },
+            } for register in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")]
+            second = _machine_ir_transfer(
+                event={
+                    "kind": "indirect_call",
+                    "instruction_rva": 0x1008,
+                    "return_rva": 0x100A,
+                    "target": {"op": "reg", "name": "edi", "width": 32},
+                },
+                rva=0x1008,
+                size=2,
+            )
+
+            plan = plan_stage_b_native_engine(
+                machine_ir=self._write(root, [load, first, second]),
+                entry_rva=0x1000,
+                import_iat_vas={('kernel32.dll', 'VirtualAlloc'): 0x43219C},
+            )
+
+            self.assertEqual(
+                [site.symbol for site in plan.external_sites],
+                ["VirtualAlloc", "VirtualAlloc"],
+            )
+
+    def test_register_iat_origin_fails_closed_at_ambiguous_join(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = []
+            for rva, iat in ((0x1000, 0x43219C), (0x2000, 0x4321A0)):
+                row = _machine_ir_transfer(rva=rva, size=6, mnemonic="mov")
+                row["semantics"]["register_writes"] = [{
+                    "register": "edi",
+                    "value": {
+                        "op": "load",
+                        "width": 4,
+                        "address": {"op": "const", "width": 32, "value": iat},
+                    },
+                }]
+                row["semantics"]["outcome"] = {
+                    "kind": "jump", "target_rva": 0x3000
+                }
+                rows.append(row)
+            rows.append(_machine_ir_transfer(
+                event={
+                    "kind": "indirect_call",
+                    "instruction_rva": 0x3000,
+                    "return_rva": 0x3002,
+                    "target": {"op": "reg", "name": "edi", "width": 32},
+                },
+                rva=0x3000,
+                size=2,
+            ))
+
+            plan = plan_stage_b_native_engine(
+                machine_ir=self._write(root, rows),
+                entry_rva=0x1000,
+                import_iat_vas={
+                    ('kernel32.dll', 'VirtualAlloc'): 0x43219C,
+                    ('kernel32.dll', 'VirtualFree'): 0x4321A0,
+                },
+            )
+
+            self.assertIsNone(plan.external_sites[0].iat_va)
+            self.assertIsNone(plan.external_sites[0].dll)
+
+    def test_register_iat_origin_fails_closed_after_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            load = _machine_ir_transfer(rva=0x1000, size=6, mnemonic="mov")
+            load["semantics"]["register_writes"] = [{
+                "register": "edi",
+                "value": {
+                    "op": "load", "width": 4,
+                    "address": {"op": "const", "width": 32, "value": 0x43219C},
+                },
+            }]
+            overwrite = _machine_ir_transfer(rva=0x1006, size=1, mnemonic="xor")
+            overwrite["semantics"]["register_writes"] = [{
+                "register": "edi",
+                "value": {"op": "const", "width": 32, "value": 0},
+            }]
+            call = _machine_ir_transfer(
+                event={
+                    "kind": "indirect_call",
+                    "instruction_rva": 0x1007,
+                    "return_rva": 0x1009,
+                    "target": {"op": "reg", "name": "edi", "width": 32},
+                },
+                rva=0x1007,
+                size=2,
+            )
+
+            plan = plan_stage_b_native_engine(
+                machine_ir=self._write(root, [load, overwrite, call]),
+                entry_rva=0x1000,
+                import_iat_vas={('kernel32.dll', 'VirtualAlloc'): 0x43219C},
+            )
+
+            self.assertIsNone(plan.external_sites[0].iat_va)
 
     def test_byte_free_iat_loaded_indirect_bridge_rejects_ambiguous_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -735,9 +1111,18 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertNotIn("stage_b_native_bridge_fn", source)
             self.assertEqual(source.count("stage_b_native_bridge();"), 1)
             self.assertIn(
-                "stage_b_native_runtime_record_external_result(event, output)",
+                "stage_b_native_runtime_record_external_result(",
                 source,
             )
+            self.assertIn(
+                "stage_b_native_runtime_capture_external_call(", source
+            )
+            self.assertIn("event, &external_snapshot, output", source)
+            self.assertIn(
+                "event->target_rva != stage_b_native_original_iat_target",
+                source,
+            )
+            self.assertIn("output->edi != preserved_edi", source)
             self.assertIn(
                 "stage_b_native_dispatch_bridge();",
                 source,
@@ -1519,6 +1904,37 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertNotIn(".long", assembly)
             self.assertNotIn("0x34, 0x12, 0x40, 0x00", assembly)
 
+    def test_x87_absolute_disp32_accepts_matching_fixed_image_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            machine = self._write(root, [_absolute_x87_replay_transfer()])
+            package = root / "package"
+            result = write_stage_b_native_engine_package(
+                state_machine=machine,
+                entry_rva=0x1420,
+                fixed_image_base=0x400000,
+                out=package,
+            )
+            self.assertEqual(result["status"], "ready", result["blockers"])
+            plan = json.loads(
+                (package / "native-engine-plan.json").read_text(encoding="ascii")
+            )
+            operation = plan["x87_operations"][0]
+            self.assertIsNone(operation["base_relocation"])
+            self.assertEqual(operation["address_binding"], {
+                "kind": "fixed_image_base",
+                "image_base": 0x400000,
+                "target_rva": 0x1234,
+            })
+            self.assertEqual(plan["image_base_policy"], {
+                "kind": "fixed",
+                "image_base": 0x400000,
+            })
+            assembly = (package / "native-engine-bridges.S").read_text(
+                encoding="ascii"
+            )
+            self.assertIn("fld DWORD PTR [___ImageBase + 0x00001234]", assembly)
+
     def test_x87_relocation_evidence_must_bind_same_reference_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1654,6 +2070,12 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertIn('"b" (modeled_esp)', wrapper)
             self.assertIn('"S" (expected_return)', wrapper)
             self.assertIn('"D" (observed_return)', wrapper)
+            self.assertIn("stage_b_native_diagnostic_value", wrapper)
+            self.assertIn("stage_b_native_diagnostic_aux", wrapper)
+            self.assertIn("stage_b_native_diagnostic_detail", wrapper)
+            self.assertIn("stage_b_native_diagnostic_value = 0U", wrapper)
+            self.assertIn("stage_b_native_diagnostic_aux = 0U", wrapper)
+            self.assertIn("stage_b_native_diagnostic_detail = 0U", wrapper)
             self.assertNotIn("static stage_b_runtime", wrapper)
             self.assertNotIn("stage_b_native_read(", wrapper)
             self.assertIn("stage_b_native_original_iat_target", wrapper)
@@ -1709,6 +2131,19 @@ class StageBNativeEngineTests(unittest.TestCase):
             stub.write_text(
                 """#include \"native-engine-wrapper.h\"
 stage_b_runtime stage_b_native_runtime_instance;
+volatile uint32_t stage_b_native_diagnostic_reason;
+volatile uint32_t stage_b_native_diagnostic_value;
+volatile uint32_t stage_b_native_diagnostic_aux;
+volatile uint32_t stage_b_native_diagnostic_detail;
+stage_b_call_status stage_b_native_runtime_capture_external_call(
+    const stage_b_call_event *event, const stage_b_machine_state *input,
+    stage_b_external_call_snapshot *snapshot) {
+  (void)input;
+  snapshot->instruction_rva = event->instruction_rva;
+  snapshot->argument_base_offset = 0U;
+  snapshot->argument_count = 0U;
+  return STAGE_B_CALL_OK;
+}
 stage_b_call_status stage_b_native_runtime_run_at_rva(
     uint32_t entry_rva,
     const stage_b_machine_state *input, stage_b_machine_state *output) {
@@ -1725,8 +2160,11 @@ stage_b_call_status stage_b_native_runtime_run_nested_callback(
   return STAGE_B_CALL_OK;
 }
 stage_b_call_status stage_b_native_runtime_record_external_result(
-    const stage_b_call_event *event, const stage_b_machine_state *output) {
+    const stage_b_call_event *event,
+    const stage_b_external_call_snapshot *snapshot,
+    const stage_b_machine_state *output) {
   (void)event;
+  (void)snapshot;
   (void)output;
   return STAGE_B_CALL_OK;
 }
@@ -1849,6 +2287,10 @@ stage_b_call_status stage_b_native_runtime_record_external_result(
             stub.write_text(
                 """#include "native-engine-wrapper.h"
 stage_b_runtime stage_b_native_runtime_instance;
+volatile uint32_t stage_b_native_diagnostic_reason;
+volatile uint32_t stage_b_native_diagnostic_value;
+volatile uint32_t stage_b_native_diagnostic_aux;
+volatile uint32_t stage_b_native_diagnostic_detail;
 stage_b_call_status stage_b_native_runtime_run_at_rva(
     uint32_t rva, const stage_b_machine_state *input,
     stage_b_machine_state *output) {

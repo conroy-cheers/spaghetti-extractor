@@ -317,12 +317,18 @@ def _build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
         "stage-b-generate-interpreter",
         "emit the portable machine-IR interpreter package",
         lambda a: write_stage_b_interpreter_package(
-            state_machine=a.state_machine, machine_ir=a.machine_ir, out=a.out
+            state_machine=a.state_machine,
+            machine_ir=a.machine_ir,
+            out=a.out,
+            allow_deferred_potential_transfers=a.allow_deferred_potential_transfers,
         ),
     )
     _path(interpreter, "state_machine")
     _path(interpreter, "machine_ir")
     _path(interpreter, "out", required=True)
+    interpreter.add_argument(
+        "--allow-deferred-potential-transfers", action="store_true"
+    )
 
     native_engine = _command(
         commands,
@@ -333,6 +339,7 @@ def _build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
             machine_ir=a.machine_ir,
             entry_rva=a.entry_rva,
             callable_external_contract=a.callable_external_contract,
+            allow_deferred_potential_transfers=a.allow_deferred_potential_transfers,
             out=a.out,
         ),
     )
@@ -341,6 +348,9 @@ def _build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     native_engine.add_argument("--entry-rva", type=lambda v: int(v, 0), required=True)
     _path(native_engine, "callable_external_contract")
     _path(native_engine, "out", required=True)
+    native_engine.add_argument(
+        "--allow-deferred-potential-transfers", action="store_true"
+    )
 
     native_runtime = _command(
         commands,

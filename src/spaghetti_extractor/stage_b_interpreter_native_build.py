@@ -437,6 +437,18 @@ def build_stage_b_interpreter_native_candidate(
         contract.runtime_headers.data, "load-image runtime headers"
     )
     optional = native_build._optional_header(header_pe)
+    candidate_dynamic_base = bool(
+        int(optional.DllCharacteristics)
+        & native_build._IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE
+    )
+    original_relocation_directory = optional.DATA_DIRECTORY[5]
+    candidate_runtime_relocations = bool(
+        int(original_relocation_directory.VirtualAddress)
+        or int(original_relocation_directory.Size)
+    ) and not bool(
+        int(native_build._file_header(header_pe).Characteristics)
+        & native_build._IMAGE_FILE_RELOCS_STRIPPED
+    )
     section_alignment = int(optional.SectionAlignment)
     file_alignment = int(optional.FileAlignment)
     header_pe.close()
@@ -729,10 +741,14 @@ def build_stage_b_interpreter_native_candidate(
             "section_alignment": section_alignment,
             "file_alignment": file_alignment,
             "freestanding": True,
-            "dynamic_base": True,
+            "dynamic_base": candidate_dynamic_base,
             "imports": "forbidden-in-payload",
             "unresolved_symbols": "forbidden",
-            "base_relocations": "complete-pe32-highlow-inventory-required",
+            "base_relocations": (
+                "complete-pe32-highlow-inventory-required"
+                if candidate_runtime_relocations
+                else "fixed-base-reference-policy"
+            ),
             "diagnostic_failure_trap": diagnostic_failure_trap,
             "region_overrides": (
                 0
@@ -776,9 +792,13 @@ def build_stage_b_interpreter_native_candidate(
         "qualification": {
             "machine": "i386",
             "bitness": 32,
-            "dynamic_base": True,
-            "relocations_stripped": relocations_stripped,
-            "base_relocations": len(relocations.relocations),
+            "dynamic_base": candidate_dynamic_base,
+            "relocations_stripped": not candidate_runtime_relocations,
+            "base_relocations": (
+                len(relocations.relocations)
+                if candidate_runtime_relocations
+                else 0
+            ),
             "relocation_inventory_complete": relocations.complete,
             "payload_imports": 0,
             "unresolved_symbols": [],
@@ -1104,13 +1124,53 @@ def _validate_package_closure(
     if not isinstance(counts, Mapping):
         raise StageBInterpreterNativeBuildError("interpreter program counts are malformed")
     transfer_count = len(plan.transfer_rvas)
+    deferred_count = counts.get("deferred_transfers", 0)
     if (
-        counts.get("input_transfers") != transfer_count
+        not isinstance(deferred_count, int)
+        or isinstance(deferred_count, bool)
+        or deferred_count < 0
+    ):
+        raise StageBInterpreterNativeBuildError(
+            "interpreter program deferred-transfer count is malformed"
+        )
+    if (
+        counts.get("input_transfers") != transfer_count + deferred_count
         or counts.get("transfers") != transfer_count
         or counts.get("blocked_transfers") != 0
     ):
         raise StageBInterpreterNativeBuildError(
             "interpreter program transfer coverage is incomplete"
+        )
+    coverage = program_payload.get("semantic_coverage")
+    execution_policy = program_payload.get("execution_policy")
+    deferred_rows = program_payload.get("deferred_transfers")
+    if deferred_count:
+        if (
+            not isinstance(coverage, Mapping)
+            or coverage.get("status") != "incomplete"
+            or coverage.get("acceptance_authority") is not False
+            or execution_policy != "fail_closed_on_deferred_potential_transfer_v1"
+            or not isinstance(deferred_rows, list)
+            or len(deferred_rows) != deferred_count
+            or any(
+                not isinstance(item, Mapping)
+                or item.get("reachability") != "potential"
+                or item.get("runtime_disposition")
+                != "fail_closed_as_unimplemented_if_reached"
+                for item in deferred_rows
+            )
+        ):
+            raise StageBInterpreterNativeBuildError(
+                "interpreter deferred-transfer policy is incomplete"
+            )
+    elif (
+        not isinstance(coverage, Mapping)
+        or coverage.get("status") != "complete"
+        or execution_policy != "complete_transfer_inventory_v1"
+        or deferred_rows != []
+    ):
+        raise StageBInterpreterNativeBuildError(
+            "interpreter complete-transfer policy is malformed"
         )
 
     if runtime.payload.get("acceptance_authority") is not False:

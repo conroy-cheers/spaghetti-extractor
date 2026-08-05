@@ -246,13 +246,12 @@ class StageBInterpreterNativeBuildIntegrationTests(unittest.TestCase):
             self.assertEqual(manifest["status"], "candidate-generated")
             self.assertEqual(manifest["acceptance_authority"], "none")
             self.assertEqual(manifest["qualification"]["payload_imports"], 0)
-            self.assertTrue(manifest["qualification"]["dynamic_base"])
+            self.assertFalse(manifest["qualification"]["dynamic_base"])
+            self.assertTrue(manifest["qualification"]["relocations_stripped"])
             self.assertTrue(
                 manifest["qualification"]["relocation_inventory_complete"]
             )
-            self.assertGreaterEqual(
-                manifest["qualification"]["base_relocations"], 1
-            )
+            self.assertEqual(manifest["qualification"]["base_relocations"], 0)
             self.assertTrue((output / "candidate.exe").is_file())
             self.assertTrue((output / "payload.map").is_file())
             self.assertTrue(
@@ -288,6 +287,12 @@ class StageBInterpreterNativeBuildIntegrationTests(unittest.TestCase):
                     (int(directory.VirtualAddress), int(directory.Size)), (0, 0)
                 )
             payload.close()
+
+            candidate = pefile.PE(str(output / "candidate.exe"))
+            self.assertTrue(int(candidate.FILE_HEADER.Characteristics) & 0x0001)
+            self.assertFalse(int(candidate.OPTIONAL_HEADER.DllCharacteristics) & 0x0040)
+            self.assertEqual(int(candidate.OPTIONAL_HEADER.DATA_DIRECTORY[5].Size), 0)
+            candidate.close()
 
             cached_manifest = json.loads(
                 (object_package / "native-object-package.json").read_text(

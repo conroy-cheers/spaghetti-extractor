@@ -61,6 +61,11 @@
       "world_effect": "callbackRegistration",
       "world_effect_argument": 0,
       "callback_lifetime": "until_replaced_or_process_exit",
+      "callback_result": {
+        "register": "eax",
+        "origin": "previous_registered_callback",
+        "nullable": true
+      },
       "callback_abi": {
         "kind": "generic_callback",
         "argument_words": 1,
@@ -303,6 +308,174 @@
         }
       ],
       "world_effect": "opaqueResources"
+    },
+    {
+      "id": 15,
+      "import": {"dll": "kernel32.dll", "symbol": "ExitProcess"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 1,
+      "disposition": "terminates",
+      "result_register_relations": [],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "id": 16,
+      "import": {"dll": "kernel32.dll", "symbol": "VirtualAlloc"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 4,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {"kind": "argument", "argument": 1, "scale": 1},
+          "minimum_size": 1,
+          "nullable": true
+        }
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "id": 17,
+      "import": {"dll": "kernel32.dll", "symbol": "VirtualFree"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 3,
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRangeRelease",
+      "world_effect_argument": 0
+    },
+    {
+      "id": 18,
+      "import": {"dll": "kernel32.dll", "symbol": "GetEnvironmentStringsW"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 0,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {
+            "kind": "bounded_zero_run",
+            "unit_bytes": 2,
+            "zero_units": 2,
+            "max_units": 1048576
+          },
+          "minimum_size": 4,
+          "nullable": true
+        }
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "id": 19,
+      "import": {"dll": "kernel32.dll", "symbol": "GetEnvironmentStrings"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 0,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {
+            "kind": "bounded_zero_run",
+            "unit_bytes": 1,
+            "zero_units": 2,
+            "max_units": 1048576
+          },
+          "minimum_size": 2,
+          "nullable": true
+        }
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "id": 20,
+      "import": {"dll": "kernel32.dll", "symbol": "FreeEnvironmentStringsW"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 1,
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRangeRelease",
+      "world_effect_argument": 0
+    },
+    {
+      "id": 21,
+      "import": {"dll": "kernel32.dll", "symbol": "FreeEnvironmentStringsA"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 1,
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRangeRelease",
+      "world_effect_argument": 0
+    },
+    {
+      "id": 22,
+      "import": {"dll": "kernel32.dll", "symbol": "GetCommandLineA"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 0,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {
+            "kind": "bounded_zero_run",
+            "unit_bytes": 1,
+            "zero_units": 1,
+            "max_units": 32768
+          },
+          "minimum_size": 1,
+          "nullable": false
+        }
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "id": 23,
+      "import": {"dll": "kernel32.dll", "symbol": "HeapAlloc"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 3,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {"kind": "argument", "argument": 2, "scale": 1},
+          "minimum_size": 1,
+          "nullable": true
+        }
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "id": 24,
+      "import": {"dll": "kernel32.dll", "symbol": "HeapFree"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 3,
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRangeRelease",
+      "world_effect_argument": 2
     }
   ]
 }

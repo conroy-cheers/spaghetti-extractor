@@ -28,6 +28,7 @@ from .machine_import_profiles import (
     load_machine_import_profile_set,
 )
 from .stage_b_interpreter_backend import (
+    STAGE_B_INTERPRETER_DEFINEDNESS_USE_FIELDS,
     STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT,
     STAGE_B_INTERPRETER_PACKAGE_FORMAT,
     STAGE_B_INTERPRETER_PROGRAM_FORMAT,
@@ -108,6 +109,8 @@ class NativeUndefinedPolicy:
 class NativeExternalRangeRule:
     instruction_rva: int
     action: str
+    argument_base_offset: int
+    argument_count: int
     register: str | None
     argument: int | None
     size_kind: str | None
@@ -116,6 +119,9 @@ class NativeExternalRangeRule:
     size_right_argument: int | None
     minimum_size: int
     nullable: bool
+    termination_unit_bytes: int
+    termination_zero_units: int
+    termination_max_units: int
     pointee_offset: int
     max_elements: int
     element_unit_bytes: int
@@ -126,6 +132,8 @@ class NativeExternalRangeRule:
         return {
             "instruction_rva": self.instruction_rva,
             "action": self.action,
+            "argument_base_offset": self.argument_base_offset,
+            "argument_count": self.argument_count,
             "register": self.register,
             "argument": self.argument,
             "size_kind": self.size_kind,
@@ -134,6 +142,9 @@ class NativeExternalRangeRule:
             "size_right_argument": self.size_right_argument,
             "minimum_size": self.minimum_size,
             "nullable": self.nullable,
+            "termination_unit_bytes": self.termination_unit_bytes,
+            "termination_zero_units": self.termination_zero_units,
+            "termination_max_units": self.termination_max_units,
             "pointee_offset": self.pointee_offset,
             "max_elements": self.max_elements,
             "element_unit_bytes": self.element_unit_bytes,
@@ -326,7 +337,12 @@ def plan_stage_b_native_runtime(
         interpreter_manifest_path.parent, program_ref, "interpreter program"
     )
     program = _read_json_object(program_path, "interpreter program manifest")
-    transfer_rvas, undefined_policies, definedness_metadata_sha256 = (
+    (
+        transfer_rvas,
+        undefined_policies,
+        definedness_metadata_sha256,
+        interpreter_deferred,
+    ) = (
         _validate_program_manifest(program, state_machine_sha256)
     )
 
@@ -359,6 +375,14 @@ def plan_stage_b_native_runtime(
         native_manifest_path.parent, plan_ref, "native-engine plan"
     )
     native_plan = _read_json_object(native_plan_path, "native-engine plan")
+    native_deferred = _validate_deferred_transfer_inventory(
+        native_plan,
+        label="native-engine plan",
+    )
+    if native_deferred != interpreter_deferred:
+        raise StageBNativeRuntimeError(
+            "interpreter and native engine defer different machine-IR transfers"
+        )
     callable_contract_path = (
         None
         if callable_external_contract is None
@@ -653,13 +677,24 @@ def write_stage_b_native_runtime_package(
 
 def _validate_program_manifest(
     payload: dict[str, Any], state_machine_sha256: str
-) -> tuple[tuple[int, ...], tuple[NativeUndefinedPolicy, ...], str | None]:
+) -> tuple[
+    tuple[int, ...],
+    tuple[NativeUndefinedPolicy, ...],
+    str | None,
+    tuple[dict[str, Any], ...],
+]:
     if payload.get("format") != STAGE_B_INTERPRETER_PROGRAM_FORMAT:
         raise StageBNativeRuntimeError("interpreter program has an unsupported format")
     if payload.get("state_machine_sha256") != state_machine_sha256:
         raise StageBNativeRuntimeError(
             "interpreter package and program bind different state machines"
         )
+    if payload.get("status") != "ready" or payload.get("blockers") != []:
+        raise StageBNativeRuntimeError("interpreter program is not runnable")
+    deferred = _validate_deferred_transfer_inventory(
+        payload,
+        label="interpreter program",
+    )
     transfers = _required_list(payload.get("transfers"), "interpreter transfers")
     rvas: list[int] = []
     for index, raw in enumerate(transfers):
@@ -692,6 +727,23 @@ def _validate_program_manifest(
         raise StageBNativeRuntimeError(
             "interpreter transfer count does not match its inventory"
         )
+    if (
+        _required_count(
+            counts.get("input_transfers"), "interpreter input-transfer count"
+        )
+        != len(rvas) + len(deferred)
+        or _required_count(
+            counts.get("blocked_transfers"), "interpreter blocked-transfer count"
+        )
+        != 0
+        or _required_count(
+            counts.get("deferred_transfers"), "interpreter deferred-transfer count"
+        )
+        != len(deferred)
+    ):
+        raise StageBNativeRuntimeError(
+            "interpreter transfer scope does not match its inventory"
+        )
     capability = _required_object(payload.get("capability"), "interpreter capability")
     word_ops = _required_list(capability.get("word_ops"), "interpreter word ops")
     has_undefined = any(op in {"undefined_bv", "undefined_flag"} for op in word_ops)
@@ -708,7 +760,60 @@ def _validate_program_manifest(
         },
         required=has_undefined,
     )
-    return tuple(rvas), policies, metadata_sha256
+    return tuple(rvas), policies, metadata_sha256, deferred
+
+
+def _validate_deferred_transfer_inventory(
+    payload: Mapping[str, Any],
+    *,
+    label: str,
+) -> tuple[dict[str, Any], ...]:
+    rows = _required_list(payload.get("deferred_transfers"), f"{label} deferred transfers")
+    coverage = _required_object(payload.get("semantic_coverage"), f"{label} coverage")
+    policy = payload.get("execution_policy")
+    expected_status = "incomplete" if rows else "complete"
+    expected_policy = (
+        "fail_closed_on_deferred_potential_transfer_v1"
+        if rows
+        else "complete_transfer_inventory_v1"
+    )
+    if (
+        coverage.get("status") != expected_status
+        or coverage.get("acceptance_authority") is not False
+        or _required_count(
+            coverage.get("deferred_transfers"), f"{label} deferred coverage count"
+        )
+        != len(rows)
+        or policy != expected_policy
+    ):
+        raise StageBNativeRuntimeError(f"{label} deferred-transfer policy is malformed")
+    normalized: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    seen_rvas: set[int] = set()
+    for index, raw in enumerate(rows):
+        row = _required_object(raw, f"{label} deferred transfer {index}")
+        transfer_id = _required_string(
+            row.get("transfer_id"), f"{label} deferred transfer id"
+        )
+        rva = _required_u32(row.get("rva_start"), f"{label} deferred transfer RVA")
+        if (
+            row.get("code") != "machine_ir_semantics_incomplete"
+            or row.get("failure_phase") != "semantic_qualification"
+            or row.get("reachability") != "potential"
+            or row.get("runtime_disposition")
+            != "fail_closed_as_unimplemented_if_reached"
+        ):
+            raise StageBNativeRuntimeError(
+                f"{label} deferred transfer {index} is not fail-closed potential code"
+            )
+        _required_string(row.get("message"), f"{label} deferred message")
+        _required_string(row.get("next_action"), f"{label} deferred next action")
+        if transfer_id in seen_ids or rva in seen_rvas:
+            raise StageBNativeRuntimeError(f"{label} has duplicate deferred transfers")
+        seen_ids.add(transfer_id)
+        seen_rvas.add(rva)
+        normalized.append(dict(row))
+    return tuple(normalized)
 
 
 def _semantic_input_binding(
@@ -764,6 +869,37 @@ def _validate_typed_x87_operations(rows: list[Any]) -> None:
             raise StageBNativeRuntimeError("typed x87 operation source span is inconsistent")
         _required_string(operation.get("mnemonic"), "typed x87 mnemonic")
         _required_object(operation.get("operand"), "typed x87 operand")
+        address_binding = _required_object(
+            row.get("address_binding"), f"typed x87 operation {index} address binding"
+        )
+        binding_kind = address_binding.get("kind")
+        if binding_kind == "fixed_image_base":
+            if (
+                _required_u32(
+                    address_binding.get("image_base"), "fixed x87 image base"
+                )
+                != _required_u32(row.get("image_base"), "typed x87 image base")
+            ):
+                raise StageBNativeRuntimeError(
+                    "fixed x87 address binding differs from its operation image base"
+                )
+            _required_u32(address_binding.get("target_rva"), "fixed x87 target RVA")
+            if row.get("base_relocation") is not None:
+                raise StageBNativeRuntimeError(
+                    "fixed x87 address binding unexpectedly carries relocation evidence"
+                )
+        elif binding_kind == "pe32_highlow_relocation":
+            _required_object(row.get("base_relocation"), "typed x87 base relocation")
+            _required_u32(address_binding.get("target_rva"), "relocated x87 target RVA")
+        elif binding_kind == "position_independent":
+            if row.get("base_relocation") is not None:
+                raise StageBNativeRuntimeError(
+                    "position-independent x87 operation carries relocation evidence"
+                )
+        else:
+            raise StageBNativeRuntimeError(
+                "typed x87 operation has an unsupported address binding"
+            )
         if not identity:
             raise StageBNativeRuntimeError("typed x87 operation identity is empty")
         rvas.append(start)
@@ -798,18 +934,7 @@ def _validate_definedness_use(
             )
         return (), None
     metadata = _required_object(raw_metadata, "interpreter definedness_use")
-    expected_fields = {
-        "format",
-        "status",
-        "proof_authority",
-        "state_machine_sha256",
-        "definedness_evidence_sha256",
-        "transfer_inventory_sha256",
-        "undefined_node_count",
-        "slots",
-        "metadata_sha256",
-    }
-    if set(metadata) != expected_fields:
+    if set(metadata) != STAGE_B_INTERPRETER_DEFINEDNESS_USE_FIELDS:
         raise StageBNativeRuntimeError(
             "interpreter definedness_use fields do not match the v1 schema"
         )
@@ -868,6 +993,17 @@ def _validate_definedness_use(
             "definedness metadata does not cover the interpreter undefined-node count"
         )
     raw_slots = _required_list(metadata.get("slots"), "definedness slots")
+    evidence_slot_count = _required_count(
+        metadata.get("evidence_slot_count"), "definedness evidence-slot count"
+    )
+    unused_evidence_slot_count = _required_count(
+        metadata.get("unused_evidence_slot_count"),
+        "definedness unused-evidence-slot count",
+    )
+    if evidence_slot_count != len(raw_slots) + unused_evidence_slot_count:
+        raise StageBNativeRuntimeError(
+            "definedness evidence-slot accounting is inconsistent"
+        )
     policies: list[NativeUndefinedPolicy] = []
     seen_slots: set[int] = set()
     seen_uses: set[tuple[str, int]] = set()
@@ -1197,6 +1333,40 @@ def _validate_native_plan(
             raise StageBNativeRuntimeError(
                 "native-engine callback ABI kind is unsupported"
             )
+    passthroughs = _required_list(
+        payload.get("callback_passthroughs"),
+        "native-engine callback passthroughs",
+    )
+    seen_passthroughs: set[tuple[int, int]] = set()
+    for index, raw in enumerate(passthroughs):
+        passthrough = _required_object(
+            raw, f"native-engine callback passthrough {index}"
+        )
+        key = (
+            _required_u32(
+                passthrough.get("instruction_rva"), "callback passthrough call RVA"
+            ),
+            _required_count(
+                passthrough.get("argument_index"), "callback passthrough argument"
+            ),
+        )
+        _required_u32(
+            passthrough.get("storage_va"), "callback passthrough storage VA"
+        )
+        if (
+            passthrough.get("origin") != "previous_registered_callback"
+            or passthrough.get("storage_invariant") not in {
+                "dominating_previous_registered_callback",
+                "initial_zero_or_previous_registered_callback",
+            }
+            or passthrough.get("runtime_action")
+            != "pass_through_environment_pointer"
+            or key in seen_passthroughs
+        ):
+            raise StageBNativeRuntimeError(
+                "native-engine callback passthrough is malformed or duplicate"
+            )
+        seen_passthroughs.add(key)
     entry_rva = _required_u32(payload.get("entry_rva"), "native-engine entry RVA")
     if entry_rva not in transfer_rvas:
         raise StageBNativeRuntimeError(
@@ -1208,6 +1378,13 @@ def _validate_native_plan(
     ):
         raise StageBNativeRuntimeError(
             "native-engine and interpreter transfer counts differ"
+        )
+    if _required_count(
+        counts.get("callback_passthroughs"),
+        "native-engine callback passthrough count",
+    ) != len(passthroughs):
+        raise StageBNativeRuntimeError(
+            "native-engine callback passthrough count differs from its inventory"
         )
     return entry_rva, tuple(
         (
@@ -1294,6 +1471,20 @@ def _external_range_rules(
             site.get("instruction_rva"), "external site instruction RVA"
         )
         contract_id = str(contract.get("id", identity))
+        argument_count = _required_count(
+            contract.get("argument_words"),
+            f"machine-call contract {contract_id} argument count",
+        )
+        if argument_count > 256:
+            raise StageBNativeRuntimeError(
+                f"machine-call contract {contract_id} has too many arguments"
+            )
+        disposition = site.get("disposition")
+        if disposition not in {"returns_here", "tail_jump"}:
+            raise StageBNativeRuntimeError(
+                f"external site {instruction_rva:#x} has an unsupported disposition"
+            )
+        argument_base_offset = 4 if disposition == "tail_jump" else 0
         relations = contract.get("result_register_relations", [])
         if not isinstance(relations, list):
             raise StageBNativeRuntimeError(
@@ -1320,6 +1511,9 @@ def _external_range_rules(
             size_value = 0
             size_argument: int | None = None
             size_right_argument: int | None = None
+            termination_unit_bytes = 0
+            termination_zero_units = 0
+            termination_max_units = 0
             if kind == "fixed":
                 size_value = _required_count(
                     size.get("bytes"), "fixed dynamic-range size"
@@ -1338,10 +1532,35 @@ def _external_range_rules(
                 size_right_argument = _required_count(
                     size.get("right_argument"), "dynamic-range right size argument"
                 )
+            elif kind == "bounded_zero_run":
+                termination_unit_bytes = _required_count(
+                    size.get("unit_bytes"), "terminated range unit size"
+                )
+                termination_zero_units = _required_count(
+                    size.get("zero_units"), "terminated range zero-run length"
+                )
+                termination_max_units = _required_count(
+                    size.get("max_units"), "terminated range unit limit"
+                )
+                if (
+                    termination_unit_bytes not in {1, 2, 4}
+                    or termination_zero_units == 0
+                    or termination_zero_units > 16
+                    or termination_max_units < termination_zero_units
+                    or termination_max_units > 1048576
+                ):
+                    raise StageBNativeRuntimeError(
+                        f"machine-call contract {contract_id} has an invalid terminated range size"
+                    )
             else:
                 raise StageBNativeRuntimeError(
                     f"machine-call contract {contract_id} has unsupported range size {kind!r}"
                 )
+            for size_index in (size_argument, size_right_argument):
+                if size_index is not None and size_index >= argument_count:
+                    raise StageBNativeRuntimeError(
+                        f"machine-call contract {contract_id} range size argument is out of bounds"
+                    )
             minimum_size = _required_count(
                 relation.get("minimum_size", 0), "dynamic-range minimum size"
             )
@@ -1354,6 +1573,8 @@ def _external_range_rules(
                 NativeExternalRangeRule(
                     instruction_rva=instruction_rva,
                     action="add_result_range",
+                    argument_base_offset=argument_base_offset,
+                    argument_count=argument_count,
                     register=register,
                     argument=None,
                     size_kind=kind,
@@ -1362,6 +1583,9 @@ def _external_range_rules(
                     size_right_argument=size_right_argument,
                     minimum_size=minimum_size,
                     nullable=nullable,
+                    termination_unit_bytes=termination_unit_bytes,
+                    termination_zero_units=termination_zero_units,
+                    termination_max_units=termination_max_units,
                     pointee_offset=0,
                     max_elements=0,
                     element_unit_bytes=0,
@@ -1435,6 +1659,8 @@ def _external_range_rules(
                     NativeExternalRangeRule(
                         instruction_rva=instruction_rva,
                         action="add_result_pointee_ranges",
+                        argument_base_offset=argument_base_offset,
+                        argument_count=argument_count,
                         register=register,
                         argument=None,
                         size_kind=None,
@@ -1443,6 +1669,9 @@ def _external_range_rules(
                         size_right_argument=None,
                         minimum_size=0,
                         nullable=True,
+                        termination_unit_bytes=0,
+                        termination_zero_units=0,
+                        termination_max_units=0,
                         pointee_offset=pointee_offset,
                         max_elements=max_elements,
                         element_unit_bytes=element_unit_bytes,
@@ -1467,6 +1696,10 @@ def _external_range_rules(
             argument = _required_count(
                 out_relation.get("argument"), "out-pointer argument"
             )
+            if argument >= argument_count:
+                raise StageBNativeRuntimeError(
+                    f"machine-call contract {contract_id} out-pointer argument is out of bounds"
+                )
             pointee_offset = _required_count(
                 out_relation.get("offset", 0), "out-pointer offset"
             )
@@ -1513,6 +1746,8 @@ def _external_range_rules(
                 NativeExternalRangeRule(
                     instruction_rva=instruction_rva,
                     action="add_argument_pointee_ranges",
+                    argument_base_offset=argument_base_offset,
+                    argument_count=argument_count,
                     register=None,
                     argument=argument,
                     size_kind=None,
@@ -1521,6 +1756,9 @@ def _external_range_rules(
                     size_right_argument=None,
                     minimum_size=0,
                     nullable=True,
+                    termination_unit_bytes=0,
+                    termination_zero_units=0,
+                    termination_max_units=0,
                     pointee_offset=pointee_offset,
                     max_elements=max_elements,
                     element_unit_bytes=element_unit_bytes,
@@ -1533,10 +1771,16 @@ def _external_range_rules(
                 contract.get("world_effect_argument"),
                 "dynamic-range release argument",
             )
+            if argument >= argument_count:
+                raise StageBNativeRuntimeError(
+                    f"machine-call contract {contract_id} release argument is out of bounds"
+                )
             rules.append(
                 NativeExternalRangeRule(
                     instruction_rva=instruction_rva,
                     action="release_argument_range",
+                    argument_base_offset=argument_base_offset,
+                    argument_count=argument_count,
                     register=None,
                     argument=argument,
                     size_kind=None,
@@ -1545,6 +1789,9 @@ def _external_range_rules(
                     size_right_argument=None,
                     minimum_size=0,
                     nullable=True,
+                    termination_unit_bytes=0,
+                    termination_zero_units=0,
+                    termination_max_units=0,
                     pointee_offset=0,
                     max_elements=0,
                     element_unit_bytes=0,
@@ -1714,15 +1961,26 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
         "add_result_pointee_ranges": 3,
         "add_argument_pointee_ranges": 4,
     }
-    size_codes = {None: 0, "fixed": 1, "argument": 2, "product": 3}
+    size_codes = {
+        None: 0,
+        "fixed": 1,
+        "argument": 2,
+        "product": 3,
+        "bounded_zero_run": 4,
+    }
     external_range_rows = "\n".join(
-        "  {{ 0x{rva:08x}U, {action}U, {register}U, {argument}U, "
+        "  {{ 0x{rva:08x}U, {action}U, {argument_base_offset}U, "
+        "{argument_count}U, {register}U, {argument}U, "
         "{size_kind}U, {size_value}U, {size_argument}U, "
         "{size_right_argument}U, {minimum_size}U, {nullable}U, "
+        "{termination_unit_bytes}U, {termination_zero_units}U, "
+        "{termination_max_units}U, "
         "{pointee_offset}U, {max_elements}U, {element_unit_bytes}U, "
         "{element_max_units}U }},".format(
             rva=rule.instruction_rva,
             action=action_codes[rule.action],
+            argument_base_offset=rule.argument_base_offset,
+            argument_count=rule.argument_count,
             register=register_codes.get(rule.register or "", 0),
             argument=rule.argument or 0,
             size_kind=size_codes[rule.size_kind],
@@ -1731,6 +1989,9 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
             size_right_argument=rule.size_right_argument or 0,
             minimum_size=rule.minimum_size,
             nullable=1 if rule.nullable else 0,
+            termination_unit_bytes=rule.termination_unit_bytes,
+            termination_zero_units=rule.termination_zero_units,
+            termination_max_units=rule.termination_max_units,
             pointee_offset=rule.pointee_offset,
             max_elements=rule.max_elements,
             element_unit_bytes=rule.element_unit_bytes,
@@ -1739,7 +2000,7 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
         for rule in plan.external_range_rules
     ) or (
         "  { 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, "
-        "0U, 0U, 0U, 0U },"
+        "0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U },"
     )
     x87_declaration = (
         r'''extern stage_b_call_status stage_b_native_execute_typed_x87_operation(
@@ -1772,6 +2033,10 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
 #define STAGE_B_NATIVE_MAX_EXTERNAL_RANGES 8192U
 
 extern const unsigned char __ImageBase[];
+volatile uint32_t stage_b_native_diagnostic_reason;
+volatile uint32_t stage_b_native_diagnostic_value;
+volatile uint32_t stage_b_native_diagnostic_aux;
+volatile uint32_t stage_b_native_diagnostic_detail;
 extern stage_b_call_status stage_b_dispatch_external_call(
     stage_b_runtime *runtime, const stage_b_call_event *event,
     const stage_b_machine_state *input, stage_b_machine_state *output);
@@ -1814,9 +2079,11 @@ static const stage_b_native_undefined_policy stage_b_native_undefined_policies[]
 static const uint32_t stage_b_native_undefined_policy_count = {len(plan.undefined_policies)}U;
 
 typedef struct stage_b_native_external_range_rule {{
-  uint32_t instruction_rva, action, register_index, argument;
+  uint32_t instruction_rva, action, argument_base_offset, argument_count;
+  uint32_t register_index, argument;
   uint32_t size_kind, size_value, size_argument, size_right_argument;
   uint32_t minimum_size, nullable;
+  uint32_t termination_unit_bytes, termination_zero_units, termination_max_units;
   uint32_t pointee_offset, max_elements, element_unit_bytes, element_max_units;
 }} stage_b_native_external_range_rule;
 static const stage_b_native_external_range_rule stage_b_native_external_range_rules[] = {{
@@ -1886,7 +2153,7 @@ typedef struct stage_b_native_context {{
   stage_b_native_callable_binding callable_bindings[{max(1, callable_binding_count)}U];
 }} stage_b_native_context;
 
-#define STAGE_B_NATIVE_TEB_READ_BYTES 0x1000U
+#define STAGE_B_NATIVE_THREAD_ENVIRONMENT_BYTES 0x1000U
 
 static stage_b_native_context stage_b_native_context_value;
 
@@ -1926,6 +2193,40 @@ static uint32_t stage_b_native_inside_external_range(
             context->external_ranges[i].size))
       return 1U;
   return 0U;
+}}
+
+static void stage_b_native_diagnose_external_range(
+    const stage_b_native_context *context, uint32_t address) {{
+  uint32_t i, nearest_start = 0U, nearest_end = 0U, has_preceding = 0U;
+  if (context == 0) return;
+  for (i = 0U; i < context->external_range_count; ++i) {{
+    uint32_t start = context->external_ranges[i].start;
+    uint32_t end;
+    if (!stage_b_native_range_end(
+            start, context->external_ranges[i].size, &end))
+      continue;
+    if ((start <= address &&
+         (has_preceding == 0U || start > nearest_start)) ||
+        (start > address && has_preceding == 0U &&
+         (nearest_start == 0U || start < nearest_start))) {{
+      nearest_start = start;
+      nearest_end = end;
+      has_preceding = start <= address;
+    }}
+  }}
+  stage_b_native_diagnostic_aux = nearest_start;
+  stage_b_native_diagnostic_detail = nearest_end;
+}}
+
+static uint32_t stage_b_native_inside_thread_environment(
+    const stage_b_native_context *context, uint32_t start, uint32_t end) {{
+  uint32_t teb_end;
+  return context->owner_fs_base != 0U &&
+      stage_b_native_range_end(
+          context->owner_fs_base,
+          STAGE_B_NATIVE_THREAD_ENVIRONMENT_BYTES,
+          &teb_end) &&
+      start >= context->owner_fs_base && end <= teb_end;
 }}
 
 static uint32_t stage_b_native_validate_image(stage_b_native_context *context) {{
@@ -2005,6 +2306,7 @@ static uint32_t stage_b_native_write_allowed(uint32_t address, uint32_t width) {
       !stage_b_native_range_end(context->image_base, context->image_size, &image_end))
     return 0U;
   if (stage_b_native_inside_external_range(context, address, end)) return 1U;
+  if (stage_b_native_inside_thread_environment(context, address, end)) return 1U;
   if (end <= context->image_base || address >= image_end)
     return address >= context->stack_low && end <= context->stack_high;
   for (i = 0U; i < context->section_count; ++i) {{
@@ -2028,18 +2330,14 @@ static uint32_t stage_b_native_write_allowed(uint32_t address, uint32_t width) {
 
 static uint32_t stage_b_native_read_allowed(uint32_t address, uint32_t width) {{
   stage_b_native_context *context = &stage_b_native_context_value;
-  uint32_t end, image_end, teb_end, i;
+  uint32_t end, image_end, i;
   if (!stage_b_native_range_end(address, width, &end) ||
       !stage_b_native_range_end(context->image_base, context->image_size, &image_end))
     return 0U;
   if (address >= context->stack_low && end <= context->stack_high)
     return 1U;
   if (stage_b_native_inside_external_range(context, address, end)) return 1U;
-  if (context->owner_fs_base != 0U &&
-      stage_b_native_range_end(
-          context->owner_fs_base, STAGE_B_NATIVE_TEB_READ_BYTES, &teb_end) &&
-      address >= context->owner_fs_base && end <= teb_end)
-    return 1U;
+  if (stage_b_native_inside_thread_environment(context, address, end)) return 1U;
   if (address < context->image_base || end > image_end)
     return 0U;
   if (end <= context->image_base + context->headers_size)
@@ -2114,29 +2412,139 @@ static stage_b_call_status stage_b_native_record_callable_result(
   return STAGE_B_CALL_OK;
 }}
 
+stage_b_call_status stage_b_native_runtime_capture_external_call(
+    const stage_b_call_event *event, const stage_b_machine_state *input,
+    stage_b_external_call_snapshot *snapshot) {{
+  uint32_t i, found = 0U;
+  if (event == 0 || input == 0 || snapshot == 0 ||
+      stage_b_native_context_value.initialized == 0U) {{
+    stage_b_native_diagnostic_reason = 0x2003U;
+    return STAGE_B_CALL_UNIMPLEMENTED;
+  }}
+  snapshot->instruction_rva = event->instruction_rva;
+  snapshot->argument_base_offset = 0U;
+  snapshot->argument_count = 0U;
+  for (i = 0U; i < stage_b_native_external_range_rule_count; ++i) {{
+    const stage_b_native_external_range_rule *rule =
+        &stage_b_native_external_range_rules[i];
+    if (rule->instruction_rva != event->instruction_rva) continue;
+    if (rule->argument_count > STAGE_B_MAX_EXTERNAL_ARGUMENTS ||
+        (found != 0U &&
+         (snapshot->argument_base_offset != rule->argument_base_offset ||
+          snapshot->argument_count != rule->argument_count))) {{
+      stage_b_native_diagnostic_reason = 0x2004U;
+      return STAGE_B_CALL_UNIMPLEMENTED;
+    }}
+    snapshot->argument_base_offset = rule->argument_base_offset;
+    snapshot->argument_count = rule->argument_count;
+    found = 1U;
+  }}
+  for (i = 0U; i < snapshot->argument_count; ++i) {{
+    uint32_t offset, address, value;
+    if (i > 0x3fffffffU) {{
+      stage_b_native_diagnostic_reason = 0x2005U;
+      return STAGE_B_CALL_UNIMPLEMENTED;
+    }}
+    offset = i * 4U;
+    if (snapshot->argument_base_offset > 0xffffffffU - offset ||
+        input->esp >
+            0xffffffffU - (snapshot->argument_base_offset + offset)) {{
+      stage_b_native_diagnostic_reason = 0x2005U;
+      return STAGE_B_CALL_UNIMPLEMENTED;
+    }}
+    address = input->esp + snapshot->argument_base_offset + offset;
+    if (!stage_b_native_read_allowed(address, 4U)) {{
+      stage_b_native_diagnostic_reason = 0x2005U;
+      return STAGE_B_CALL_UNIMPLEMENTED;
+    }}
+    value = stage_b_native_u32(address);
+    if (event->arguments != 0 && i < event->argument_count &&
+        event->arguments[i] != value) {{
+      stage_b_native_diagnostic_reason = 0x2006U;
+      return STAGE_B_CALL_UNIMPLEMENTED;
+    }}
+    snapshot->arguments[i] = value;
+  }}
+  return STAGE_B_CALL_OK;
+}}
+
+static uint32_t stage_b_native_external_argument(
+    const stage_b_native_external_range_rule *rule,
+    const stage_b_call_event *event,
+    const stage_b_external_call_snapshot *snapshot,
+    uint32_t index, uint32_t *value) {{
+  if (rule == 0 || event == 0 || snapshot == 0 || value == 0 ||
+      snapshot->instruction_rva != event->instruction_rva ||
+      snapshot->argument_base_offset != rule->argument_base_offset ||
+      snapshot->argument_count != rule->argument_count ||
+      index >= snapshot->argument_count)
+    return 0U;
+  if (event->arguments != 0 && index < event->argument_count &&
+      event->arguments[index] != snapshot->arguments[index])
+    return 0U;
+  *value = snapshot->arguments[index];
+  return 1U;
+}}
+
+static uint32_t stage_b_native_zero_run_extent(
+    uint32_t start, uint32_t unit_bytes, uint32_t zero_units,
+    uint32_t max_units, uint32_t *extent) {{
+  uint32_t index, run = 0U;
+  if (start == 0U || extent == 0 ||
+      (unit_bytes != 1U && unit_bytes != 2U && unit_bytes != 4U) ||
+      zero_units == 0U || zero_units > max_units)
+    return 0U;
+  for (index = 0U; index < max_units; ++index) {{
+    uint32_t offset, address, value;
+    if (index > 0xffffffffU / unit_bytes) return 0U;
+    offset = index * unit_bytes;
+    if (start > 0xffffffffU - offset) return 0U;
+    address = start + offset;
+    value = unit_bytes == 1U
+        ? (uint32_t)*(const volatile uint8_t *)(uintptr_t)address
+        : unit_bytes == 2U
+        ? (uint32_t)stage_b_native_u16(address)
+        : stage_b_native_u32(address);
+    run = value == 0U ? run + 1U : 0U;
+    if (run == zero_units) {{
+      if (index == 0xffffffffU / unit_bytes) return 0U;
+      *extent = (index + 1U) * unit_bytes;
+      return 1U;
+    }}
+  }}
+  return 0U;
+}}
+
 static uint32_t stage_b_native_range_size(
     const stage_b_native_external_range_rule *rule,
-    const stage_b_call_event *event, uint32_t *size) {{
+    const stage_b_call_event *event,
+    const stage_b_external_call_snapshot *snapshot,
+    uint32_t pointer, uint32_t *size) {{
   uint32_t left, right;
   if (rule == 0 || event == 0 || size == 0) return 0U;
   if (rule->size_kind == 1U) {{
     *size = rule->size_value;
   }} else if (rule->size_kind == 2U) {{
-    if (event->arguments == 0 || rule->size_argument >= event->argument_count)
+    if (!stage_b_native_external_argument(
+            rule, event, snapshot, rule->size_argument, &left))
       return 0U;
-    left = event->arguments[rule->size_argument];
     if (rule->size_value != 0U && left > 0xffffffffU / rule->size_value)
       return 0U;
     *size = left * rule->size_value;
   }} else if (rule->size_kind == 3U) {{
-    if (event->arguments == 0 ||
-        rule->size_argument >= event->argument_count ||
-        rule->size_right_argument >= event->argument_count)
+    if (!stage_b_native_external_argument(
+            rule, event, snapshot, rule->size_argument, &left) ||
+        !stage_b_native_external_argument(
+            rule, event, snapshot, rule->size_right_argument, &right))
       return 0U;
-    left = event->arguments[rule->size_argument];
-    right = event->arguments[rule->size_right_argument];
     if (right != 0U && left > 0xffffffffU / right) return 0U;
     *size = left * right;
+  }} else if (rule->size_kind == 4U) {{
+    if (pointer == 0U) return rule->nullable != 0U;
+    if (!stage_b_native_zero_run_extent(
+            pointer, rule->termination_unit_bytes,
+            rule->termination_zero_units, rule->termination_max_units, size))
+      return 0U;
   }} else {{
     return 0U;
   }}
@@ -2236,13 +2644,20 @@ static stage_b_call_status stage_b_native_add_external_pointee_ranges(
 }}
 
 stage_b_call_status stage_b_native_runtime_record_external_result(
-    const stage_b_call_event *event, const stage_b_machine_state *output) {{
+    const stage_b_call_event *event,
+    const stage_b_external_call_snapshot *snapshot,
+    const stage_b_machine_state *output) {{
   uint32_t i;
-  if (event == 0 || output == 0 ||
-      stage_b_native_context_value.initialized == 0U)
+  if (event == 0 || snapshot == 0 || output == 0 ||
+      snapshot->instruction_rva != event->instruction_rva ||
+      stage_b_native_context_value.initialized == 0U) {{
+    stage_b_native_diagnostic_reason = 0x2001U;
     return STAGE_B_CALL_UNIMPLEMENTED;
-  if (stage_b_native_record_callable_result(event, output) != STAGE_B_CALL_OK)
+  }}
+  if (stage_b_native_record_callable_result(event, output) != STAGE_B_CALL_OK) {{
+    stage_b_native_diagnostic_reason = 0x2002U;
     return STAGE_B_CALL_UNIMPLEMENTED;
+  }}
   for (i = 0U; i < stage_b_native_external_range_rule_count; ++i) {{
     const stage_b_native_external_range_rule *rule =
         &stage_b_native_external_range_rules[i];
@@ -2252,29 +2667,52 @@ stage_b_call_status stage_b_native_runtime_record_external_result(
     if (rule->action == 1U) {{
       if (!stage_b_native_state_register(output, rule->register_index, &pointer) ||
           (!rule->nullable && pointer == 0U) ||
-          !stage_b_native_range_size(rule, event, &size))
+          !stage_b_native_range_size(rule, event, snapshot, pointer, &size)) {{
+        stage_b_native_diagnostic_reason = 0x2101U;
         return STAGE_B_CALL_UNIMPLEMENTED;
+      }}
       if (pointer == 0U || size == 0U) continue;
       status = stage_b_native_add_external_range(pointer, size);
     }} else if (rule->action == 2U) {{
-      if (event->arguments == 0 || rule->argument >= event->argument_count)
+      if (!stage_b_native_external_argument(
+              rule, event, snapshot, rule->argument, &pointer)) {{
+        stage_b_native_diagnostic_reason = 0x2201U;
         return STAGE_B_CALL_UNIMPLEMENTED;
-      status = stage_b_native_release_external_range(
-          event->arguments[rule->argument]);
+      }}
+      status = stage_b_native_release_external_range(pointer);
     }} else if (rule->action == 3U) {{
       if (!stage_b_native_state_register(
-              output, rule->register_index, &pointer))
+              output, rule->register_index, &pointer)) {{
+        stage_b_native_diagnostic_reason = 0x2301U;
         return STAGE_B_CALL_UNIMPLEMENTED;
+      }}
       status = stage_b_native_add_external_pointee_ranges(rule, pointer);
     }} else if (rule->action == 4U) {{
-      if (event->arguments == 0 || rule->argument >= event->argument_count)
+      if (!stage_b_native_external_argument(
+              rule, event, snapshot, rule->argument, &pointer)) {{
+        stage_b_native_diagnostic_reason = 0x2401U;
         return STAGE_B_CALL_UNIMPLEMENTED;
+      }}
       status = stage_b_native_add_external_pointee_ranges(
-          rule, event->arguments[rule->argument]);
+          rule, pointer);
     }} else {{
+      stage_b_native_diagnostic_reason = 0x2f01U;
       return STAGE_B_CALL_UNIMPLEMENTED;
     }}
-    if (status != STAGE_B_CALL_OK) return status;
+    if (status != STAGE_B_CALL_OK) {{
+      if (rule->action == 2U) {{
+        stage_b_native_diagnostic_value =
+            stage_b_native_context_value.external_range_count;
+        stage_b_native_diagnostic_aux = pointer;
+        stage_b_native_diagnostic_detail =
+            stage_b_native_context_value.external_range_count != 0U
+            ? stage_b_native_context_value.external_ranges[
+                stage_b_native_context_value.external_range_count - 1U].start
+            : 0U;
+      }}
+      stage_b_native_diagnostic_reason = 0x2000U + rule->action * 0x100U + 2U;
+      return status;
+    }}
   }}
   return STAGE_B_CALL_OK;
 }}
@@ -2289,8 +2727,12 @@ static uint32_t stage_b_native_flat_read(
   if (context == 0 || context->initialized == 0U ||
       (width != 1U && width != 2U && width != 4U) ||
       !stage_b_native_range_end(address, width, &end) ||
-      !stage_b_native_read_allowed(address, width))
+      !stage_b_native_read_allowed(address, width)) {{
+    stage_b_native_diagnostic_reason = 0x3001U;
+    stage_b_native_diagnostic_value = address;
+    stage_b_native_diagnose_external_range(context, address);
     return 0U;
+  }}
   (void)end;
   p = (const volatile uint8_t *)(uintptr_t)address;
   for (i = 0U; i < width; ++i) value |= (uint32_t)p[i] << (i * 8U);
@@ -2308,8 +2750,12 @@ static void stage_b_native_flat_write(
   *fault = 1U;
   if (context == 0 || context->initialized == 0U ||
       (width != 1U && width != 2U && width != 4U) ||
-      !stage_b_native_write_allowed(address, width))
+      !stage_b_native_write_allowed(address, width)) {{
+    stage_b_native_diagnostic_reason = 0x3002U;
+    stage_b_native_diagnostic_value = address;
+    stage_b_native_diagnose_external_range(context, address);
     return;
+  }}
   p = (volatile uint8_t *)(uintptr_t)address;
   for (i = 0U; i < width; ++i) p[i] = (uint8_t)(value >> (i * 8U));
   *fault = 0U;
