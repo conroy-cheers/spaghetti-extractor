@@ -107,7 +107,7 @@ conservative self-map used to emit a baseline contract and state machine.
 | Module | Purpose |
 |---|---|
 | `stage_b_state_machine.py` | Normalizes static transfer contracts into the generated baseline state machine. |
-| `reconstruction_ir.py` | Exports byte-free canonical machine IR with exact artifact bindings. |
+| `reconstruction_ir.py` | Prepares exact byte-bound units once, then exports byte-free canonical machine IR with freshly derived global control facts. |
 | `reconstruction_control.py` | Proposes clusters from decoded control structure. |
 | `reconstruction_composition.py` | Composes compatible machine units into larger reconstruction clusters. |
 | `reconstruction_contract_analysis.py` | Derives cluster inputs, outputs, effects, and frontiers. |
@@ -118,8 +118,10 @@ conservative self-map used to emit a baseline contract and state machine.
 | `stage_b_c_backend.py` | Deterministic semantic-state-machine to C lowering. |
 | `stage_b_interpreter_backend.py` | Portable machine-IR interpreter generation. |
 | `stage_b_interpreter_native_build.py` | Freestanding PE32 build from interpreter, engine, and runtime packages. |
+| `stage_b_machine_ir_scope.py` | Fail-closed partition of executable and deferred machine-IR transfers for candidate generation. |
 | `stage_b_engine_layout.py` | Structural engine layout tables. |
 | `stage_b_native_engine.py` | IA-32 ABI bridge and typed x87 native operations. |
+| `stage_b_native_image.py` | Derives entry, callback, relocation, import, and zero-fill inputs from a checked load-image contract. |
 | `stage_b_native_runtime.py` | Candidate external runtime package. |
 | `stage_b_native_binding.py` | Runtime-boundary inventory and adapters. |
 | `stage_b_native_build.py` | Generic native compile/compose pipeline. |
@@ -251,7 +253,9 @@ enforce this with `xvfb-run` where Wine is used.
 | `stage-b-semantic-components.nix` | Component catalog phase. |
 | `stage-b-semantic-component-workspaces.nix` | Per-component workspace/check/qualification DAG. |
 | `stage-b-interpreter-package.nix` | Machine-IR interpreter package. |
-| `stage-b-native-object-graph.nix` | Granular native object build graph. |
+| `stage-b-native-object-graph.nix` | Per-source/header-closure native object DAG; compiler nodes do not depend on the parent graph. |
+| `stage-b-hybrid-candidate.nix` | Composes interpreter, native engine/runtime, cached objects, and a PE candidate. |
+| `python-module-closure.nix` | Content-addressed transitive local-Python import closure for phase-specific invalidation. |
 | `stage-b-linked-libraries.nix` | Library constellation and replacement-plan DAG. |
 | `stage-b-source-call-substitutions.nix` | Call-frontier through source-binding DAG. |
 | `stage-b-source-component-assurance.nix` | Source component evidence aggregation. |

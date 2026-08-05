@@ -9,6 +9,14 @@
   maxCandidatesPerSeed ? 12,
 }:
 
+let
+  phasePythonSource = import ./python-module-closure.nix {
+    inherit pkgs;
+    source = pythonSource;
+    modules = [ "spaghetti_extractor.component_discovery" ];
+    name = "${namePrefix}-component-discovery-python-closure";
+  };
+in
 pkgs.runCommand
   "${namePrefix}-component-proposals-v1"
   {
@@ -21,7 +29,7 @@ pkgs.runCommand
     set -euo pipefail
     export PYTHONHASHSEED=0
     export LC_ALL=C.UTF-8
-    export PYTHONPATH=${pythonSource}/src
+    export PYTHONPATH=${phasePythonSource}/src
     mkdir -p "$out"
     ${pythonEnv}/bin/python3 - \
       ${machineIr} \

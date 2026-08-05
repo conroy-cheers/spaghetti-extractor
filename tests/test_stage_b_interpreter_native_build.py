@@ -59,6 +59,19 @@ def _expanded_header_pe() -> bytes:
     return bytes(source)
 
 
+def _refresh_source_binding(manifest_path: Path, source_path: Path) -> None:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    matches = [
+        row
+        for row in manifest["sources"]
+        if row.get("path") == source_path.name
+    ]
+    if len(matches) != 1:
+        raise AssertionError(f"expected one source binding for {source_path.name}")
+    matches[0]["sha256"] = sha256_file(source_path)
+    _write_json(manifest_path, manifest)
+
+
 def _transfer(rva: int = 0x1000) -> dict[str, object]:
     return {
         "id": f"semantic-transfer:{rva:08x}",
@@ -176,6 +189,115 @@ class StageBInterpreterNativeBuildValidationTests(unittest.TestCase):
     shutil.which("i686-w64-mingw32-gcc"), "i686 MinGW compiler unavailable"
 )
 class StageBInterpreterNativeBuildIntegrationTests(unittest.TestCase):
+    def test_compile_keys_track_only_transitive_source_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            packages = _Packages(root / "inputs")
+            baseline = prepare_stage_b_interpreter_native_object_graph(
+                interpreter_package=packages.interpreter,
+                native_engine_package=packages.engine,
+                native_runtime_package=packages.runtime,
+                out_dir=root / "baseline-graph",
+            )
+            runtime_source = packages.runtime / "native-runtime.c"
+            runtime_source.write_text(
+                runtime_source.read_text(encoding="ascii") + "\n",
+                encoding="ascii",
+            )
+            _refresh_source_binding(
+                packages.runtime / "native-runtime-package.json", runtime_source
+            )
+            changed = prepare_stage_b_interpreter_native_object_graph(
+                interpreter_package=packages.interpreter,
+                native_engine_package=packages.engine,
+                native_runtime_package=packages.runtime,
+                out_dir=root / "changed-graph",
+            )
+
+            baseline_keys = {
+                row["id"]: row["compile_key_sha256"] for row in baseline["units"]
+            }
+            changed_keys = {
+                row["id"]: row["compile_key_sha256"] for row in changed["units"]
+            }
+            changed_ids = {
+                unit_id
+                for unit_id in baseline_keys
+                if baseline_keys[unit_id] != changed_keys[unit_id]
+            }
+            self.assertEqual(changed_ids, {"native_runtime-native_runtime_source"})
+
+    def test_diagnostic_mode_invalidates_only_macro_consumers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            packages = _Packages(root / "inputs")
+            normal = prepare_stage_b_interpreter_native_object_graph(
+                interpreter_package=packages.interpreter,
+                native_engine_package=packages.engine,
+                native_runtime_package=packages.runtime,
+                out_dir=root / "normal-graph",
+            )
+            diagnostic = prepare_stage_b_interpreter_native_object_graph(
+                interpreter_package=packages.interpreter,
+                native_engine_package=packages.engine,
+                native_runtime_package=packages.runtime,
+                diagnostic_failure_trap=True,
+                out_dir=root / "diagnostic-graph",
+            )
+
+            normal_rows = {row["id"]: row for row in normal["units"]}
+            diagnostic_rows = {row["id"]: row for row in diagnostic["units"]}
+            changed_ids = {
+                unit_id
+                for unit_id, row in normal_rows.items()
+                if row["compile_key_sha256"]
+                != diagnostic_rows[unit_id]["compile_key_sha256"]
+            }
+            sensitive_ids = {
+                row["id"] for row in diagnostic["units"] if row["diagnostic_sensitive"]
+            }
+            self.assertEqual(changed_ids, sensitive_ids)
+            self.assertTrue(sensitive_ids)
+            self.assertLess(len(sensitive_ids), len(diagnostic["units"]))
+
+    def test_compile_graph_records_exact_quoted_include_closures(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            packages = _Packages(root / "inputs")
+            graph = prepare_stage_b_interpreter_native_object_graph(
+                interpreter_package=packages.interpreter,
+                native_engine_package=packages.engine,
+                native_runtime_package=packages.runtime,
+                out_dir=root / "graph",
+            )
+            rows = {row["id"]: row for row in graph["units"]}
+            interpreter_headers = {
+                item["path"]
+                for item in rows["interpreter-interpreter_source"]["dependencies"]
+            }
+            self.assertEqual(
+                interpreter_headers,
+                {
+                    "state-machine-interpreter-internal.h",
+                    "state-machine-interpreter.h",
+                    "state-machine-runtime.h",
+                },
+            )
+            runtime_headers = {
+                (item["owner"], item["path"])
+                for item in rows["native_runtime-native_runtime_source"][
+                    "dependencies"
+                ]
+            }
+            self.assertEqual(
+                runtime_headers,
+                {
+                    ("native_runtime", "native-runtime.h"),
+                    ("interpreter", "state-machine-interpreter.h"),
+                    ("interpreter", "state-machine-runtime.h"),
+                },
+            )
+
     def test_builds_content_bound_relocatable_candidate_and_linker_map(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

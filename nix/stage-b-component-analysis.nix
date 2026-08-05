@@ -30,6 +30,26 @@ let
     export SOURCE_DATE_EPOCH=1
     export PYTHONPATH=${source}/src
   '';
+  mkPythonClosure = source: suffix: modules:
+    import ./python-module-closure.nix {
+      inherit pkgs source modules;
+      name = "${namePrefix}-${suffix}-python-closure";
+    };
+  inventoryPythonSource = mkPythonClosure staticPythonSource "inventory" [
+    "spaghetti_extractor.analysis.binary_inventory"
+  ];
+  staticExportPythonSource = mkPythonClosure staticPythonSource "static-export" [
+    "spaghetti_extractor.opaque_reconstruction"
+  ];
+  rootedControlPythonSource = mkPythonClosure staticPythonSource "rooted-control" [
+    "spaghetti_extractor.rooted_state_machine"
+  ];
+  machineIrPythonSource = mkPythonClosure staticPythonSource "machine-ir" [
+    "spaghetti_extractor.reconstruction_ir"
+  ];
+  reconstructionPlanPythonSource = mkPythonClosure planningPythonSource "reconstruction-plan" [
+    "spaghetti_extractor.component_backend"
+  ];
   machineImportProfiles = [ externalProfile ] ++ externalInterfaceProfiles;
   machineImportProfilesJson = builtins.toJSON (
     map toString machineImportProfiles
@@ -46,7 +66,7 @@ let
     commonAttrs
     ''
       set -euo pipefail
-      ${commonEnvironment staticPythonSource}
+      ${commonEnvironment inventoryPythonSource}
       mkdir -p "$out"
       ${python} - \
         ${lib.escapeShellArg (toString original)} \
@@ -79,7 +99,7 @@ let
     commonAttrs
     ''
       set -euo pipefail
-      ${commonEnvironment staticPythonSource}
+      ${commonEnvironment staticExportPythonSource}
       ${python} - \
         ${lib.escapeShellArg (toString original)} \
         ${originalInventory}/inventory.json \
@@ -120,7 +140,7 @@ let
     commonAttrs
     ''
       set -euo pipefail
-      ${commonEnvironment staticPythonSource}
+      ${commonEnvironment rootedControlPythonSource}
       mkdir -p "$out"
       ${python} - \
         ${inputStateMachine} \
@@ -167,9 +187,10 @@ let
     name,
     stateMachineInput,
     requireClosedRootedDirect,
+    preparedMachineIr ? null,
   }: pkgs.runCommand name commonAttrs ''
       set -euo pipefail
-      ${commonEnvironment staticPythonSource}
+      ${commonEnvironment machineIrPythonSource}
       ${python} - \
         ${stateMachineInput} \
         ${lib.escapeShellArg (toString original)} \
@@ -178,6 +199,7 @@ let
         ${lib.escapeShellArg machineImportProfilesJson} \
         ${lib.escapeShellArg externalInterfaceProfilesJson} \
         ${lib.escapeShellArg externalOperationProfilesJson} \
+        ${if preparedMachineIr == null then "-" else toString preparedMachineIr} \
         "$out" <<'PY'
       import json
       import pathlib
@@ -192,6 +214,7 @@ let
           machine_profiles_json,
           interface_profiles_json,
           operation_profiles_json,
+          prepared_machine_ir,
           output,
       ) = sys.argv[1:]
       export_machine_ir_package(
@@ -210,6 +233,11 @@ let
           external_operation_profiles=tuple(
               pathlib.Path(path) for path in json.loads(operation_profiles_json)
           ),
+          prepared_machine_ir=(
+              None
+              if prepared_machine_ir == "-"
+              else pathlib.Path(prepared_machine_ir)
+          ),
           out=pathlib.Path(output),
       )
       PY
@@ -219,6 +247,7 @@ let
         (.status == "qualified" or .status == "incomplete") and
         .binary.sha256 == $expected_sha256 and
         .counts.units > 0 and .counts.instructions > 0 and
+        .counts.prepared_units_reused + .counts.prepared_units_computed == .counts.units and
         .counts.violated_issues == 0 and
         .coverage.counts.unknown_bytes == 0 and
         .control.counts.roots > 0 and
@@ -248,6 +277,44 @@ let
       fi
     '';
 
+  mkPreparedMachineIr = {
+    name,
+    stateMachineInput,
+    reuse ? null,
+  }: pkgs.runCommand name commonAttrs ''
+      set -euo pipefail
+      ${commonEnvironment machineIrPythonSource}
+      ${python} - \
+        ${stateMachineInput} \
+        ${lib.escapeShellArg (toString original)} \
+        ${staticExport}/reference-contract.json \
+        ${if reuse == null then "-" else toString reuse} \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.reconstruction_ir import (
+          prepare_machine_ir_units_package,
+      )
+
+      state_machine, original, reference, reuse, output = sys.argv[1:]
+      prepare_machine_ir_units_package(
+          state_machine=pathlib.Path(state_machine),
+          original_pe=pathlib.Path(original),
+          reference_contract=pathlib.Path(reference),
+          prepared_machine_ir=None if reuse == "-" else pathlib.Path(reuse),
+          out=pathlib.Path(output),
+      )
+      PY
+      jq -e '
+        .format == "stage-a-prepared-machine-ir-v1" and
+        .status == "prepared" and .counts.units > 0 and
+        .counts.units_reused + .counts.units_computed == .counts.units and
+        (.constraints.original_binary_executed | not) and
+        .constraints.unit_bytes_bound_to_original_pe and
+        .constraints.prepared_unit_reuse_is_exact_input_hash_bound
+      ' "$out/prepared-machine-ir-manifest.json" >/dev/null
+    '';
+
   # Direct recursive decoding is cheap.  Provenance analysis is expensive but
   # cached as its own derivation, and proposes the additional rooted targets
   # needed by the final exact decode.  The final IR then checks the closed
@@ -257,10 +324,16 @@ let
     inputStateMachine = "${staticExport}/state-machine.jsonl";
   };
 
+  directPreparedMachineIr = mkPreparedMachineIr {
+    name = "${namePrefix}-direct-prepared-machine-ir-v1";
+    stateMachineInput = "${directStateMachine}/state-machine.jsonl";
+  };
+
   provisionalMachineIr = mkMachineIr {
     name = "${namePrefix}-provisional-machine-ir-v2";
     stateMachineInput = "${directStateMachine}/state-machine.jsonl";
     requireClosedRootedDirect = false;
+    preparedMachineIr = directPreparedMachineIr;
   };
 
   stateMachine = mkRootedStateMachine {
@@ -269,10 +342,17 @@ let
     controlManifest = provisionalMachineIr;
   };
 
+  preparedMachineIr = mkPreparedMachineIr {
+    name = "${namePrefix}-prepared-machine-ir-v1";
+    stateMachineInput = "${stateMachine}/state-machine.jsonl";
+    reuse = directPreparedMachineIr;
+  };
+
   machineIr = mkMachineIr {
     name = "${namePrefix}-machine-ir-v2";
     stateMachineInput = "${stateMachine}/state-machine.jsonl";
     requireClosedRootedDirect = true;
+    preparedMachineIr = preparedMachineIr;
   };
 
   reconstructionPlan = pkgs.runCommand
@@ -280,7 +360,7 @@ let
     commonAttrs
     ''
       set -euo pipefail
-      ${commonEnvironment planningPythonSource}
+      ${commonEnvironment reconstructionPlanPythonSource}
       mkdir -p "$out"
       ${python} - \
         ${machineIr} \
@@ -320,8 +400,10 @@ in
     originalInventory
     staticExport
     directStateMachine
+    directPreparedMachineIr
     provisionalMachineIr
     stateMachine
+    preparedMachineIr
     machineIr
     reconstructionPlan
     componentProposals

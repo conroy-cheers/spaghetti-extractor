@@ -14,6 +14,12 @@
 
 let
   lib = pkgs.lib;
+  phasePythonSource = import ./python-module-closure.nix {
+    inherit pkgs;
+    source = pythonSource;
+    modules = [ "spaghetti_extractor.stage_b_functional" ];
+    name = "${namePrefix}-functional-python-closure";
+  };
   cases = map (id: { inherit id; }) caseIds;
   commandSpec = pkgs.writeText
     "${namePrefix}-candidate-command.json"
@@ -36,7 +42,7 @@ let
         export PYTHONHASHSEED=0
         export LC_ALL=C.UTF-8
         export SOURCE_DATE_EPOCH=1
-        export PYTHONPATH=${pythonSource}/src
+        export PYTHONPATH=${phasePythonSource}/src
         mkdir -p "$out"
         ${pythonEnv}/bin/python3 - \
           ${suite} \
@@ -84,7 +90,7 @@ let
       export PYTHONHASHSEED=0
       export LC_ALL=C.UTF-8
       export SOURCE_DATE_EPOCH=1
-      export PYTHONPATH=${pythonSource}/src
+      export PYTHONPATH=${phasePythonSource}/src
       ${pythonEnv}/bin/python3 - ${suite} "$out" ${caseArgs} <<'PY'
       import pathlib
       import sys

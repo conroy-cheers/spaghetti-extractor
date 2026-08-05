@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -52,6 +53,9 @@ from .value_provenance import legacy_value_provenance_view
 MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
 MACHINE_IR_FILENAME = "machine-ir.jsonl"
 MACHINE_IR_MANIFEST_FILENAME = "machine-ir-manifest.json"
+PREPARED_MACHINE_IR_FORMAT = "stage-a-prepared-machine-ir-v1"
+PREPARED_MACHINE_IR_FILENAME = "prepared-machine-ir.jsonl"
+PREPARED_MACHINE_IR_MANIFEST_FILENAME = "prepared-machine-ir-manifest.json"
 X87_MICRO_OP_FORMAT = "stage-a-x87-micro-op-v1"
 INDIRECT_TARGET_PROFILE_FORMAT = "stage-a-indirect-target-profile-v1"
 
@@ -192,6 +196,14 @@ class MachineIRPackage:
 
 
 @dataclass(frozen=True)
+class PreparedMachineIRPackage:
+    manifest: Path
+    prepared_units: Path
+    unit_count: int
+    reused_unit_count: int
+
+
+@dataclass(frozen=True)
 class _Instruction:
     rva: int
     size: int
@@ -220,6 +232,108 @@ class _Instruction:
         }
 
 
+def prepare_machine_ir_units_package(
+    *,
+    state_machine: Path,
+    original_pe: Path,
+    out: Path,
+    reference_contract: Path | None = None,
+    prepared_machine_ir: Path | None = None,
+) -> PreparedMachineIRPackage:
+    """Prepare exact byte-bound units independently of global control analysis."""
+
+    state_path = _regular_file(state_machine, "canonical state machine")
+    original_path = _regular_file(original_pe, "original PE")
+    binary = _parse_stage_a_pe(original_path)
+    if binary.machine != "i386" or binary.bitness != 32:
+        raise MachineIRExportError(
+            "machine IR v2 supports x86 PE32 inputs only",
+            code="unsupported_binary_model",
+        )
+    reference_sha256: str | None = None
+    if reference_contract is not None:
+        reference_path = _regular_file(reference_contract, "reference contract")
+        reference_sha256 = load_stage_a_reference_contract_binding(
+            reference_path, original_pe=original_path
+        ).sha256
+
+    rows = _read_canonical_rows(state_path)
+    _validate_unique_units(rows)
+    reusable = _load_reusable_prepared_units(
+        prepared_machine_ir,
+        binary_sha256=binary.sha256,
+        reference_sha256=reference_sha256,
+    )
+    prepared, reused_units = _prepare_units(
+        rows,
+        binary=binary,
+        reference_sha256=reference_sha256,
+        reusable=reusable,
+    )
+    prepared_bytes = b"".join(_canonical_json(unit) + b"\n" for unit in prepared)
+    manifest = {
+        "format": PREPARED_MACHINE_IR_FORMAT,
+        "status": "prepared",
+        "authority": "static candidate-generation input; no original execution",
+        "inputs": {
+            "state_machine": {
+                "path": state_path.name,
+                "sha256": sha256_file(state_path),
+            },
+            "original_pe": {"path": original_path.name, "sha256": binary.sha256},
+            "reference_contract": (
+                None
+                if reference_contract is None
+                else {
+                    "path": Path(reference_contract).name,
+                    "sha256": reference_sha256,
+                }
+            ),
+            "prepared_machine_ir": (
+                None
+                if prepared_machine_ir is None
+                else {
+                    "path": Path(prepared_machine_ir).name,
+                    "sha256": sha256_file(
+                        _machine_ir_artifact_path(Path(prepared_machine_ir))
+                    ),
+                }
+            ),
+        },
+        "binary": _binary_inventory(binary),
+        "artifacts": {
+            "prepared_units": {
+                "path": PREPARED_MACHINE_IR_FILENAME,
+                "sha256": sha256_bytes(prepared_bytes),
+                "format": MACHINE_IR_FORMAT,
+            }
+        },
+        "counts": {
+            "units": len(prepared),
+            "units_reused": reused_units,
+            "units_computed": len(prepared) - reused_units,
+        },
+        "constraints": {
+            "original_binary_executed": False,
+            "unit_bytes_bound_to_original_pe": True,
+            "prepared_unit_reuse_is_exact_input_hash_bound": True,
+        },
+    }
+    _assert_byte_free(manifest)
+    output = Path(out)
+    output.mkdir(parents=True, exist_ok=True)
+    units_path = output / PREPARED_MACHINE_IR_FILENAME
+    manifest_path = output / PREPARED_MACHINE_IR_MANIFEST_FILENAME
+    units_path.write_bytes(prepared_bytes)
+    write_json(manifest_path, manifest)
+    return PreparedMachineIRPackage(
+        manifest=manifest_path.resolve(),
+        prepared_units=units_path.resolve(),
+        unit_count=len(prepared),
+        reused_unit_count=reused_units,
+    )
+
+
 def export_machine_ir_package(
     *,
     state_machine: Path,
@@ -230,6 +344,7 @@ def export_machine_ir_package(
     machine_import_profiles: Sequence[Path] = (),
     external_interface_profiles: Sequence[Path] = (),
     external_operation_profiles: Sequence[Path] = (),
+    prepared_machine_ir: Path | None = None,
 ) -> MachineIRPackage:
     """Validate and export a deterministic, byte-free PE32 machine IR package."""
 
@@ -280,19 +395,16 @@ def export_machine_ir_package(
     )
     rows = _read_canonical_rows(state_path)
     _validate_unique_units(rows)
-    prepared = [
-        _prepare_unit(
-            row,
-            binary=binary,
-            reference_sha256=reference_sha256,
-        )
-        for row in rows
-    ]
-    prepared.sort(
-        key=lambda item: (
-            int(item["source"]["original"]["rva_start"]),
-            str(item["id"]),
-        )
+    reusable = _load_reusable_prepared_units(
+        prepared_machine_ir,
+        binary_sha256=binary.sha256,
+        reference_sha256=reference_sha256,
+    )
+    prepared, reused_units = _prepare_units(
+        rows,
+        binary=binary,
+        reference_sha256=reference_sha256,
+        reusable=reusable,
     )
 
     issues = _unit_issues(prepared)
@@ -402,6 +514,16 @@ def export_machine_ir_package(
                     operation_profile_paths, operation_profiles, strict=True
                 )
             ],
+            "prepared_machine_ir": (
+                None
+                if prepared_machine_ir is None
+                else {
+                    "path": Path(prepared_machine_ir).name,
+                    "sha256": sha256_file(
+                        _machine_ir_artifact_path(Path(prepared_machine_ir))
+                    ),
+                }
+            ),
         },
         "binary": _binary_inventory(binary),
         "artifacts": {
@@ -422,6 +544,8 @@ def export_machine_ir_package(
         "issues": issue_payloads,
         "counts": {
             "units": len(prepared),
+            "prepared_units_reused": reused_units,
+            "prepared_units_computed": len(prepared) - reused_units,
             "instructions": sum(len(unit["instructions"]) for unit in prepared),
             "x87_micro_ops": sum(len(unit["x87_micro_ops"]) for unit in prepared),
             "external_events": len(external["events"]),
@@ -439,6 +563,7 @@ def export_machine_ir_package(
             "source_rows_canonically_hashed": True,
             "unit_bytes_bound_to_original_pe": True,
             "deterministic_serialization": True,
+            "prepared_unit_reuse_is_exact_input_hash_bound": True,
         },
     }
     _assert_byte_free(manifest)
@@ -493,6 +618,182 @@ def _read_canonical_rows(path: Path) -> list[dict[str, Any]]:
             "canonical state machine is empty", code="empty_state_machine"
         )
     return rows
+
+
+def _preparation_input_sha256(
+    row: Mapping[str, Any], *, binary_sha256: str, reference_sha256: str | None
+) -> str:
+    return sha256_bytes(
+        _canonical_json(
+            {
+                "format": "stage-a-machine-ir-unit-preparation-input-v1",
+                "binary_sha256": binary_sha256,
+                "reference_contract_sha256": reference_sha256,
+                "state_machine_row": row,
+            }
+        )
+    )
+
+
+def _machine_ir_artifact_path(value: Path) -> Path:
+    path = value
+    if path.is_dir():
+        candidates = [
+            candidate
+            for candidate in (
+                path / PREPARED_MACHINE_IR_FILENAME,
+                path / MACHINE_IR_FILENAME,
+            )
+            if candidate.is_file()
+        ]
+        if len(candidates) != 1:
+            raise MachineIRExportError(
+                "prepared machine IR directory must contain exactly one unit artifact",
+                code="prepared_machine_ir_artifact_ambiguous",
+            )
+        path = candidates[0]
+    return _regular_file(path, "prepared machine IR")
+
+
+def _load_reusable_prepared_units(
+    value: Path | None,
+    *,
+    binary_sha256: str,
+    reference_sha256: str | None,
+) -> dict[str, dict[str, Any]]:
+    if value is None:
+        return {}
+    machine_path = _machine_ir_artifact_path(Path(value))
+    manifest_path = machine_path.parent / (
+        PREPARED_MACHINE_IR_MANIFEST_FILENAME
+        if machine_path.name == PREPARED_MACHINE_IR_FILENAME
+        else MACHINE_IR_MANIFEST_FILENAME
+    )
+    manifest = _json_object(
+        _regular_file(manifest_path, "prepared machine IR manifest"),
+        "prepared machine IR manifest",
+    )
+    manifest_format = manifest.get("format")
+    if manifest_format not in {MACHINE_IR_FORMAT, PREPARED_MACHINE_IR_FORMAT}:
+        raise MachineIRExportError(
+            "prepared machine IR has an unsupported format",
+            code="prepared_machine_ir_format_mismatch",
+        )
+    binary = manifest.get("binary")
+    inputs = manifest.get("inputs")
+    artifact_key = (
+        "prepared_units"
+        if manifest_format == PREPARED_MACHINE_IR_FORMAT
+        else "machine_ir"
+    )
+    artifacts = manifest.get("artifacts")
+    artifact = artifacts.get(artifact_key) if isinstance(artifacts, Mapping) else None
+    reference = inputs.get("reference_contract") if isinstance(inputs, Mapping) else None
+    reference_binding_sha256 = (
+        reference.get("sha256") if isinstance(reference, Mapping) else None
+    )
+    if (
+        not isinstance(binary, Mapping)
+        or binary.get("sha256") != binary_sha256
+        or not isinstance(inputs, Mapping)
+        or (reference is not None and not isinstance(reference, Mapping))
+        or reference_binding_sha256 != reference_sha256
+        or not isinstance(artifact, Mapping)
+        or artifact.get("sha256") != sha256_file(machine_path)
+    ):
+        raise MachineIRExportError(
+            "prepared machine IR input or artifact binding is stale",
+            code="prepared_machine_ir_binding_mismatch",
+        )
+
+    units: dict[str, dict[str, Any]] = {}
+    for line_number, line in enumerate(
+        machine_path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise MachineIRExportError(
+                f"prepared machine IR line {line_number} is not JSON",
+                code="prepared_machine_ir_malformed",
+            ) from exc
+        if not isinstance(raw, dict) or raw.get("format") != MACHINE_IR_FORMAT:
+            raise MachineIRExportError(
+                f"prepared machine IR line {line_number} is malformed",
+                code="prepared_machine_ir_malformed",
+            )
+        _assert_byte_free(raw)
+        identity = _required_string(raw.get("id"), "prepared machine IR unit id")
+        preparation = raw.get("preparation")
+        if (
+            not isinstance(preparation, Mapping)
+            or preparation.get("format")
+            != "stage-a-machine-ir-unit-preparation-v1"
+            or not isinstance(preparation.get("input_sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", preparation["input_sha256"]) is None
+        ):
+            raise MachineIRExportError(
+                f"prepared machine IR unit {identity} has no checked preparation binding",
+                code="prepared_machine_ir_unit_binding_missing",
+                unit_id=identity,
+            )
+        if identity in units:
+            raise MachineIRExportError(
+                f"prepared machine IR repeats unit {identity}",
+                code="duplicate_prepared_machine_ir_unit",
+                unit_id=identity,
+            )
+        units[identity] = raw
+    counts = manifest.get("counts")
+    if not isinstance(counts, Mapping) or len(units) != counts.get("units"):
+        raise MachineIRExportError(
+            "prepared machine IR unit count differs from its manifest",
+            code="prepared_machine_ir_count_mismatch",
+        )
+    return units
+
+
+def _prepare_units(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    binary: StageABinary,
+    reference_sha256: str | None,
+    reusable: Mapping[str, Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    prepared: list[dict[str, Any]] = []
+    reused_units = 0
+    for row in rows:
+        identity = _required_string(row.get("id"), "unit id")
+        preparation_input_sha256 = _preparation_input_sha256(
+            row,
+            binary_sha256=binary.sha256,
+            reference_sha256=reference_sha256,
+        )
+        cached = reusable.get(identity)
+        if (
+            cached is not None
+            and cached.get("preparation", {}).get("input_sha256")
+            == preparation_input_sha256
+        ):
+            unit = copy.deepcopy(dict(cached))
+            unit["reachable"] = False
+            unit.pop("reachability", None)
+            reused_units += 1
+        else:
+            unit = _prepare_unit(
+                row,
+                binary=binary,
+                reference_sha256=reference_sha256,
+            )
+        _assert_byte_free(unit)
+        prepared.append(unit)
+    prepared.sort(
+        key=lambda item: (
+            int(item["source"]["original"]["rva_start"]),
+            str(item["id"]),
+        )
+    )
+    return prepared, reused_units
 
 
 def _validate_unique_units(rows: Sequence[Mapping[str, Any]]) -> None:
@@ -600,6 +901,14 @@ def _prepare_unit(
     unit = {
         "format": MACHINE_IR_FORMAT,
         "record_kind": "unit",
+        "preparation": {
+            "format": "stage-a-machine-ir-unit-preparation-v1",
+            "input_sha256": _preparation_input_sha256(
+                row,
+                binary_sha256=binary.sha256,
+                reference_sha256=reference_sha256,
+            ),
+        },
         "id": identity,
         "unit_kind": row.get("unit_kind", "semantic_transfer"),
         "status": (
@@ -2735,8 +3044,13 @@ __all__ = [
     "MACHINE_IR_FILENAME",
     "MACHINE_IR_FORMAT",
     "MACHINE_IR_MANIFEST_FILENAME",
+    "PREPARED_MACHINE_IR_FILENAME",
+    "PREPARED_MACHINE_IR_FORMAT",
+    "PREPARED_MACHINE_IR_MANIFEST_FILENAME",
     "MachineIRExportError",
     "MachineIRPackage",
+    "PreparedMachineIRPackage",
     "X87_MICRO_OP_FORMAT",
     "export_machine_ir_package",
+    "prepare_machine_ir_units_package",
 ]

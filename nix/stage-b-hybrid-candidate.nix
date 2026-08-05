@@ -15,11 +15,27 @@ let
   lib = pkgs.lib;
   python = "${pythonEnv}/bin/python3";
   loadImageContract = "${staticExport}/load-image-contract.json";
+  mkPythonClosure = suffix: modules: import ./python-module-closure.nix {
+    inherit pkgs modules;
+    source = pythonSource;
+    name = "${namePrefix}-${suffix}-python-closure";
+  };
+  nativeEnginePythonSource = mkPythonClosure "native-engine" [
+    "spaghetti_extractor.stage_b_native_engine"
+    "spaghetti_extractor.stage_b_native_image"
+  ];
+  nativeRuntimePythonSource = mkPythonClosure "native-runtime" [
+    "spaghetti_extractor.stage_b_native_runtime"
+  ];
+  nativeBuildPythonSource = mkPythonClosure "native-build" [
+    "spaghetti_extractor.stage_b_interpreter_native_build"
+  ];
   profileArgs = lib.concatMapStringsSep " "
     (profile: lib.escapeShellArg (toString profile)) machineImportProfiles;
 
   interpreter = import ./stage-b-interpreter-package.nix {
-    inherit pkgs pythonEnv pythonSource machineIr namePrefix;
+    inherit pkgs pythonEnv machineIr namePrefix;
+    inherit pythonSource;
     inherit allowDeferredPotentialTransfers;
   };
 
@@ -33,7 +49,7 @@ let
     export PYTHONHASHSEED=0
     export LC_ALL=C.UTF-8
     export SOURCE_DATE_EPOCH=1
-    export PYTHONPATH=${pythonSource}/src
+    export PYTHONPATH=${nativeEnginePythonSource}/src
     ${python} - \
       ${machineIr}/machine-ir.jsonl \
       ${loadImageContract} \
@@ -105,7 +121,7 @@ let
     export PYTHONHASHSEED=0
     export LC_ALL=C.UTF-8
     export SOURCE_DATE_EPOCH=1
-    export PYTHONPATH=${pythonSource}/src
+    export PYTHONPATH=${nativeRuntimePythonSource}/src
     ${python} - ${interpreter} ${nativeEngine} \
       ${lib.escapeShellArg (toString (builtins.head machineImportProfiles))} \
       "$out" <<'PY'
@@ -130,7 +146,8 @@ let
   '';
 
   nativeObjects = import ./stage-b-native-object-graph.nix {
-    inherit pkgs pythonEnv pythonSource;
+    inherit pkgs pythonEnv;
+    inherit pythonSource;
     interpreterPackage = interpreter;
     nativeEnginePackage = nativeEngine;
     nativeRuntimePackage = nativeRuntime;
@@ -147,7 +164,7 @@ let
     export PYTHONHASHSEED=0
     export LC_ALL=C.UTF-8
     export SOURCE_DATE_EPOCH=1
-    export PYTHONPATH=${pythonSource}/src
+    export PYTHONPATH=${nativeBuildPythonSource}/src
     ${python} - \
       ${interpreter} ${nativeEngine} ${nativeRuntime} \
       ${loadImageContract} ${nativeObjects.package} \

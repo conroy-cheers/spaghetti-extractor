@@ -9,6 +9,7 @@
       forAllSystems = nixpkgs.lib.genAttrs systems;
     in {
       lib = {
+        mkPythonModuleClosure = import ./nix/python-module-closure.nix;
         mkISAQualificationGraph = import ./nix/stage-a-isa-qualification-graph.nix;
         mkRoundtripCorpus = import ./nix/stage-a-roundtrip-corpus.nix;
         mkExternalInterfaceProfile = import ./nix/stage-a-external-interface-profile.nix;
@@ -166,6 +167,12 @@
               ./tools
             ];
           };
+          interpreterPythonClosure = import ./nix/python-module-closure.nix {
+            inherit pkgs;
+            source = testSource;
+            modules = [ "spaghetti_extractor.stage_b_interpreter_backend" ];
+            name = "spaghetti-extractor-interpreter-python-closure-smoke";
+          };
         in {
           import-smoke = pkgs.runCommand "spaghetti-extractor-import-smoke" {
             nativeBuildInputs = [ package ];
@@ -183,6 +190,15 @@
             python -m unittest discover -s tests -p 'test_*.py'
             touch "$out"
           '';
+          python-module-closure = pkgs.runCommand
+            "spaghetti-extractor-python-module-closure-check"
+            { nativeBuildInputs = [ testPython ]; }
+            ''
+              export PYTHONPATH=${interpreterPythonClosure}/src
+              python -c 'import spaghetti_extractor.stage_b_interpreter_backend'
+              test -s ${interpreterPythonClosure}/python-module-closure.json
+              touch "$out"
+            '';
           isa-kernel = self.packages.${system}.isa-kernel;
           roundtrip = self.packages.${system}.roundtrip-qualification;
         });
@@ -191,10 +207,12 @@
         default = {
           type = "app";
           program = "${self.packages.${system}.spaghetti-extractor}/bin/spaghetti-extractor";
+          meta.description = "Static PE32 reconstruction and component-lifting toolkit";
         };
         slice = {
           type = "app";
           program = "${self.packages.${system}.spaghetti-extractor}/bin/spaghetti-extractor-slice";
+          meta.description = "Incremental candidate repair loop";
         };
       });
 
@@ -213,7 +231,7 @@
               pkgs.pkg-config
               pkgs.pkgsCross.mingw32.stdenv.cc
               pkgs.pkgsCross.mingw32.buildPackages.binutils
-              pkgs.wineWowPackages.stableFull
+              pkgs.wineWow64Packages.stableFull
               pkgs.xvfb-run
               pkgs.xwd
               pkgs.imagemagick

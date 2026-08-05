@@ -11,6 +11,16 @@ let
   python = "${pythonEnv}/bin/python3";
   targetManifest = builtins.fromJSON (builtins.readFile (target + "/target.json"));
   targetId = targetManifest.id;
+  phasePythonSource = import ./python-module-closure.nix {
+    inherit pkgs;
+    source = pythonSource;
+    modules = [
+      "spaghetti_extractor.component_selection"
+      "spaghetti_extractor.target_intent"
+      "spaghetti_extractor.util"
+    ];
+    name = "stage-b-${targetId}-intent-python-closure";
+  };
   originalSha256 = targetManifest.input.expected_sha256;
   paths = targetManifest.paths;
   mkGenerated = name: script:
@@ -25,7 +35,7 @@ let
         set -euo pipefail
         export PYTHONHASHSEED=0
         export LC_ALL=C.UTF-8
-        export PYTHONPATH=${pythonSource}/src
+        export PYTHONPATH=${phasePythonSource}/src
         mkdir -p "$out"
         ${script}
       '';

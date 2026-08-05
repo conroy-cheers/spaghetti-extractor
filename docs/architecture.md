@@ -82,6 +82,19 @@ analysis, source checks, candidate builds, and behavior suites. Original-side
 artifacts should remain unchanged during source repair. Content-addressed
 derivations allow local and remote builders to substitute identical work.
 
+Native candidate compilation uses one checked transitive quoted-include closure
+per source file. A compiler node depends only on that closure, its stable compile
+key, compiler, and flags; it does not depend on the whole generated object graph
+or Python implementation tree. Phase-specific Python import closures similarly
+prevent an unrelated generator edit from invalidating static analysis. Computed
+quoted includes fail closed rather than silently widening a dependency.
+
+Machine-IR construction separates exact per-unit preparation from global
+reachability and control finalization. The direct rooted pass prepares each
+unit once; an expanded rooted pass reuses exact input-hash-bound units and only
+prepares newly discovered transfers. Final manifests recompute graph-derived
+facts rather than accepting cached reachability.
+
 Generated files belong under Nix outputs or ignored `build/` workspaces. Authored
 intent and source belong in target bundles. Private binaries belong under the
 ignored `private/` tree and must never be copied into source or target data.

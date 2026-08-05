@@ -11,6 +11,7 @@ from spaghetti_extractor.reconstruction_ir import (
     MACHINE_IR_FILENAME,
     MACHINE_IR_FORMAT,
     MACHINE_IR_MANIFEST_FILENAME,
+    PREPARED_MACHINE_IR_FORMAT,
     MachineIRExportError,
     RvaSpan,
     _Instruction,
@@ -21,6 +22,7 @@ from spaghetti_extractor.reconstruction_ir import (
     _prefer_indirect_recoveries,
     _recover_unknown_fallthrough,
     export_machine_ir_package,
+    prepare_machine_ir_units_package,
 )
 from spaghetti_extractor.stage_b_state_machine import (
     normalize_stage_a_semantic_transfer,
@@ -556,6 +558,134 @@ class ReconstructionIRTests(unittest.TestCase):
             )
             self.assertEqual(_raw_instruction_keys(units), set())
             self.assertEqual(_raw_instruction_keys(manifest), set())
+
+    def test_final_export_reuses_only_exactly_bound_prepared_units(self) -> None:
+        rows = [
+            _row(
+                "semantic-transfer:first",
+                0x1000,
+                b"\x90",
+                outcome={"kind": "jump", "target_rva": 0x1001},
+            ),
+            _row(
+                "semantic-transfer:return",
+                0x1001,
+                b"\xc3",
+                outcome={"kind": "return", "value": _expr_register("eax")},
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            provisional_machine = root / "provisional-state-machine.jsonl"
+            final_machine = root / "final-state-machine.jsonl"
+            original.write_bytes(pe32_image(b"\x90\xc3", virtual_size=2))
+            _write_machine(provisional_machine, rows[:1])
+            _write_machine(final_machine, rows)
+
+            provisional = export_machine_ir_package(
+                state_machine=provisional_machine,
+                original_pe=original,
+                out=root / "provisional",
+            )
+            reused = export_machine_ir_package(
+                state_machine=final_machine,
+                original_pe=original,
+                prepared_machine_ir=provisional.machine_ir.parent,
+                out=root / "reused",
+            )
+            clean = export_machine_ir_package(
+                state_machine=final_machine,
+                original_pe=original,
+                out=root / "clean",
+            )
+            manifest = _read_json(reused.manifest)
+
+            self.assertEqual(manifest["counts"]["prepared_units_reused"], 1)
+            self.assertEqual(manifest["counts"]["prepared_units_computed"], 1)
+            self.assertEqual(reused.machine_ir.read_bytes(), clean.machine_ir.read_bytes())
+
+            provisional.machine_ir.write_bytes(
+                provisional.machine_ir.read_bytes() + b"\n"
+            )
+            with self.assertRaisesRegex(
+                MachineIRExportError, "prepared machine IR input or artifact binding is stale"
+            ):
+                export_machine_ir_package(
+                    state_machine=final_machine,
+                    original_pe=original,
+                    prepared_machine_ir=provisional.machine_ir.parent,
+                    out=root / "stale",
+                )
+
+    def test_prepared_unit_phase_is_deterministic_and_reusable(self) -> None:
+        rows = [
+            _row(
+                "semantic-transfer:first",
+                0x1000,
+                b"\x90",
+                outcome={"kind": "jump", "target_rva": 0x1001},
+            ),
+            _row(
+                "semantic-transfer:return",
+                0x1001,
+                b"\xc3",
+                outcome={"kind": "return", "value": _expr_register("eax")},
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            direct_machine = root / "direct-state-machine.jsonl"
+            final_machine = root / "final-state-machine.jsonl"
+            original.write_bytes(pe32_image(b"\x90\xc3", virtual_size=2))
+            _write_machine(direct_machine, rows[:1])
+            _write_machine(final_machine, rows)
+
+            direct = prepare_machine_ir_units_package(
+                state_machine=direct_machine,
+                original_pe=original,
+                out=root / "direct",
+            )
+            final = prepare_machine_ir_units_package(
+                state_machine=final_machine,
+                original_pe=original,
+                prepared_machine_ir=direct.prepared_units.parent,
+                out=root / "final",
+            )
+            clean = prepare_machine_ir_units_package(
+                state_machine=final_machine,
+                original_pe=original,
+                out=root / "clean",
+            )
+            manifest = _read_json(final.manifest)
+
+            self.assertEqual(manifest["format"], PREPARED_MACHINE_IR_FORMAT)
+            self.assertEqual(manifest["counts"]["units_reused"], 1)
+            self.assertEqual(manifest["counts"]["units_computed"], 1)
+            self.assertEqual(
+                final.prepared_units.read_bytes(), clean.prepared_units.read_bytes()
+            )
+            self.assertEqual(_raw_instruction_keys(manifest), set())
+            self.assertEqual(
+                _raw_instruction_keys(_read_jsonl(final.prepared_units)), set()
+            )
+
+            malformed_manifest = _read_json(final.manifest)
+            malformed_manifest["artifacts"] = []
+            final.manifest.write_text(
+                json.dumps(malformed_manifest), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                MachineIRExportError,
+                "prepared machine IR input or artifact binding is stale",
+            ):
+                export_machine_ir_package(
+                    state_machine=final_machine,
+                    original_pe=original,
+                    prepared_machine_ir=final.prepared_units.parent,
+                    out=root / "malformed",
+                )
 
     def test_x87_replay_becomes_typed_mnemonic_operand_micro_op_without_bytes(self) -> None:
         encoded = b"\xd9\x00"  # fld dword ptr [eax]

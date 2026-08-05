@@ -19,6 +19,15 @@
 let
   lib = pkgs.lib;
   python = "${pythonEnv}/bin/python3";
+  workspacePythonSource = import ./python-module-closure.nix {
+    inherit pkgs;
+    source = pythonSource;
+    modules = [
+      "spaghetti_extractor.component_backend"
+      "spaghetti_extractor.component_workspace"
+    ];
+    name = "${namePrefix}-component-workspace-python-closure";
+  };
   componentIdArgs = lib.concatMapStringsSep " " (
     component: lib.escapeShellArg component.componentId
   ) components;
@@ -162,7 +171,7 @@ let
   componentProfilePythonSource = component: profilePythonSources.${component.proofProfile} or null;
   componentPythonPath =
     component:
-    "${pythonSource}/src"
+    "${workspacePythonSource}/src"
     + lib.optionalString (
       componentProfilePythonSource component != null
     ) ":${componentProfilePythonSource component}/src";
@@ -183,7 +192,7 @@ let
         set -euo pipefail
         export PYTHONHASHSEED=0
         export LC_ALL=C.UTF-8
-        export PYTHONPATH=${pythonSource}/src
+        export PYTHONPATH=${workspacePythonSource}/src
         ${python} - \
           ${componentCatalog component}/semantic-component-catalog.json \
           ${reconstructionPlan}/reconstruction-plan.json \
@@ -231,7 +240,7 @@ let
         set -euo pipefail
         export PYTHONHASHSEED=0
         export LC_ALL=C.UTF-8
-        export PYTHONPATH=${pythonSource}/src
+        export PYTHONPATH=${workspacePythonSource}/src
         ${python} - \
           ${semanticComponentCatalog}/semantic-component-catalog.json \
           ${reconstructionPlan}/reconstruction-plan.json \
@@ -451,7 +460,7 @@ let
         set -euo pipefail
         export PYTHONHASHSEED=0
         export LC_ALL=C.UTF-8
-        export PYTHONPATH=${pythonSource}/src
+        export PYTHONPATH=${workspacePythonSource}/src
         ${python} - ${interpreterPackage} "$out" ${pkgs.stdenv.cc}/bin/cc <<'PY'
         import pathlib
         import sys
@@ -601,7 +610,7 @@ let
         set -euo pipefail
         export PYTHONHASHSEED=0
         export LC_ALL=C.UTF-8
-        export PYTHONPATH=${pythonSource}/src
+        export PYTHONPATH=${workspacePythonSource}/src
         ${python} - "$out" ${toString (builtins.length components)} \
           ${machineIr}/machine-ir.jsonl \
           ${lib.escapeShellArg (if linkedIslands == null then "-" else linkedIslands)} \

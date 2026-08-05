@@ -13,6 +13,14 @@
 
 assert builtins.isString namePrefix && namePrefix != "";
 
+let
+  phasePythonSource = import ./python-module-closure.nix {
+    inherit pkgs;
+    source = pythonSource;
+    modules = [ "spaghetti_extractor.source_project" ];
+    name = "${namePrefix}-source-assurance-python-closure";
+  };
+in
 pkgs.runCommand "${namePrefix}-source-component-assurance-v1"
   {
     nativeBuildInputs = [ pythonEnv pkgs.jq ];
@@ -24,7 +32,7 @@ pkgs.runCommand "${namePrefix}-source-component-assurance-v1"
     set -euo pipefail
     export PYTHONHASHSEED=0
     export LC_ALL=C.UTF-8
-    export PYTHONPATH=${pythonSource}/src
+    export PYTHONPATH=${phasePythonSource}/src
     mkdir -p "$out"
     ${pythonEnv}/bin/python3 - \
       ${pkgs.lib.escapeShellArg binding} \

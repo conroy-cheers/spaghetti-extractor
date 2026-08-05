@@ -20,6 +20,15 @@ assert (artifactInputs == null) == (artifactRoot == null);
 let
   lib = pkgs.lib;
   python = "${pythonEnv}/bin/python3";
+  phasePythonSource = import ./python-module-closure.nix {
+    inherit pkgs;
+    source = pythonSource;
+    modules = [
+      "spaghetti_extractor.linked_libraries"
+      "spaghetti_extractor.util"
+    ];
+    name = "${namePrefix}-linked-libraries-python-closure";
+  };
   commonAttrs = {
     nativeBuildInputs = [ pythonEnv pkgs.jq ];
     preferLocalBuild = false;
@@ -30,7 +39,7 @@ let
     export PYTHONHASHSEED=0
     export LC_ALL=C.UTF-8
     export SOURCE_DATE_EPOCH=1
-    export PYTHONPATH=${pythonSource}/src
+    export PYTHONPATH=${phasePythonSource}/src
   '';
   asStoreInput = name: value:
     if value != null && builtins.typeOf value == "path" then

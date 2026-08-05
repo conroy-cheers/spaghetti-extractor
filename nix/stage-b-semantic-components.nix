@@ -11,6 +11,12 @@
 }:
 
 let
+  phasePythonSource = import ./python-module-closure.nix {
+    inherit pkgs;
+    source = pythonSource;
+    modules = [ "spaghetti_extractor.semantic_components" ];
+    name = "${namePrefix}-semantic-components-python-closure";
+  };
   linkedIslandAssertion =
     if linkedIslands == null then
       ""
@@ -40,7 +46,7 @@ pkgs.runCommand "${namePrefix}-semantic-components-v1"
     set -euo pipefail
     export PYTHONHASHSEED=0
     export LC_ALL=C.UTF-8
-    export PYTHONPATH=${pythonSource}/src
+    export PYTHONPATH=${phasePythonSource}/src
     mkdir -p "$out"
     ${pythonEnv}/bin/python3 - \
       ${machineIr} \

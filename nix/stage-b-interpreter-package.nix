@@ -7,6 +7,14 @@
   allowDeferredPotentialTransfers ? false,
 }:
 
+let
+  phasePythonSource = import ./python-module-closure.nix {
+    inherit pkgs;
+    source = pythonSource;
+    modules = [ "spaghetti_extractor.stage_b_interpreter_backend" ];
+    name = "${namePrefix}-interpreter-package-python-closure";
+  };
+in
 pkgs.runCommand
   "${namePrefix}-machine-ir-interpreter-v1"
   {
@@ -20,7 +28,7 @@ pkgs.runCommand
     export PYTHONHASHSEED=0
     export LC_ALL=C.UTF-8
     export SOURCE_DATE_EPOCH=1
-    export PYTHONPATH=${pythonSource}/src
+    export PYTHONPATH=${phasePythonSource}/src
     ${pythonEnv}/bin/python3 - \
       ${machineIr}/machine-ir.jsonl "$out" <<'PY'
     import pathlib

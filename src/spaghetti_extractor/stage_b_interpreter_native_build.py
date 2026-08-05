@@ -42,8 +42,9 @@ from .util import sha256_file
 
 
 INTERPRETER_NATIVE_BUILD_MANIFEST_FILENAME = "interpreter-native-build-manifest.json"
-INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT = "stage-b-interpreter-native-object-graph-v1"
-INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT = "stage-b-interpreter-native-object-package-v1"
+INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT = "stage-b-interpreter-native-object-graph-v2"
+INTERPRETER_NATIVE_OBJECT_FORMAT = "stage-b-interpreter-native-object-v2"
+INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT = "stage-b-interpreter-native-object-package-v2"
 
 _INTERPRETER_MANIFEST_FILENAME = "state-machine-interpreter-package.json"
 _ENGINE_MANIFEST_FILENAME = "native-engine-package.json"
@@ -53,6 +54,10 @@ _ENGINE_LAYOUT_FILENAME = native_build.ENGINE_LAYOUT_FILENAME
 _RELOCATION_INVENTORY_FILENAME = native_build.PAYLOAD_RELOCATION_INVENTORY_FILENAME
 _GENERATED_ANCHOR_FILENAME = "executable-anchor-manifest.json"
 _C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_INCLUDE_DIRECTIVE = re.compile(r'^\s*#\s*include\s+(.+?)\s*(?://.*)?$')
+_QUOTED_INCLUDE = re.compile(r'^"([^"\r\n]+)"(?:\s*/\*.*\*/\s*)?$')
+_SYSTEM_INCLUDE = re.compile(r"^<[^>\r\n]+>(?:\s*/\*.*\*/\s*)?$")
+_DIAGNOSTIC_MACRO = "STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP"
 _PAYLOAD_SYMBOL = re.compile(
     r"(?m)^\s*(0x[0-9a-fA-F]+)\s+(_?stage_b_payload_(?:entry|callback_[0-9a-fA-F]{8}))\b"
 )
@@ -146,12 +151,14 @@ def prepare_stage_b_interpreter_native_object_graph(
         interpreter, engine, runtime, entry_symbol, region_overrides
     )
     toolchain = native_build._select_toolchain(compiler)
-    package_roots = (
-        interpreter.root,
-        engine.root,
-        runtime.root,
-        *((region_overrides.root,) if region_overrides is not None else ()),
+    compiler_binding = _native_compiler_binding(toolchain.compiler)
+    packages = (
+        interpreter,
+        engine,
+        runtime,
+        *((region_overrides,) if region_overrides is not None else ()),
     )
+    package_roots = tuple(package.root for package in packages)
     output = Path(out_dir)
     output.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
@@ -160,8 +167,10 @@ def prepare_stage_b_interpreter_native_object_graph(
             _native_object_graph_row(
                 index=index,
                 artifact=artifact,
+                packages=packages,
                 package_roots=package_roots,
                 compiler=toolchain.compiler,
+                compiler_binding=compiler_binding,
                 diagnostic_failure_trap=diagnostic_failure_trap,
                 region_overrides=region_overrides is not None,
             )
@@ -181,8 +190,10 @@ def prepare_stage_b_interpreter_native_object_graph(
         _native_object_graph_row(
             index=len(rows),
             artifact=relocation_artifact,
+            packages=packages,
             package_roots=package_roots,
             compiler=toolchain.compiler,
+            compiler_binding=compiler_binding,
             diagnostic_failure_trap=diagnostic_failure_trap,
             region_overrides=region_overrides is not None,
         )
@@ -193,7 +204,7 @@ def prepare_stage_b_interpreter_native_object_graph(
         "executes_original_binary": False,
         "entry_symbol": entry_symbol,
         "diagnostic_failure_trap": diagnostic_failure_trap,
-        "compiler": _native_compiler_binding(toolchain.compiler),
+        "compiler": compiler_binding,
         "packages": {
             "interpreter": interpreter.binding(),
             "native_engine": engine.binding(),
@@ -250,18 +261,11 @@ def compile_stage_b_interpreter_native_object(
     if not object_path.is_file():
         raise StageBInterpreterNativeBuildError("compiler omitted cached native object")
     core = {
-        "format": "stage-b-interpreter-native-object-v1",
+        "format": INTERPRETER_NATIVE_OBJECT_FORMAT,
         "status": "compiled",
         "executes_original_binary": False,
-        "graph_sha256": graph_payload["graph_sha256"],
-        "graph_artifact_sha256": sha256_file(graph_path),
-        "graph": {
-            "path": str(graph_path.parent),
-            "manifest": graph_path.name,
-            "manifest_sha256": sha256_file(graph_path),
-        },
         "unit_id": unit_id,
-        "unit_sha256": row["unit_sha256"],
+        "compile_key_sha256": row["compile_key_sha256"],
         "object": {
             "path": object_path.name,
             "sha256": sha256_file(object_path),
@@ -294,11 +298,8 @@ def assemble_stage_b_interpreter_native_objects(
         unit_id = str(receipt.get("unit_id"))
         if unit_id in receipts:
             raise StageBInterpreterNativeBuildError("duplicate native object receipt")
-        if (
-            receipt.get("graph_sha256") != graph_payload["graph_sha256"]
-            or receipt.get("graph_artifact_sha256") != sha256_file(graph_path)
-        ):
-            raise StageBInterpreterNativeBuildError("native object receipt graph binding is stale")
+        if receipt.get("format") != INTERPRETER_NATIVE_OBJECT_FORMAT:
+            raise StageBInterpreterNativeBuildError("unsupported native object receipt format")
         receipts[unit_id] = (receipt_path.parent, receipt)
     expected_ids = [str(row["id"]) for row in graph_payload["units"]]
     if set(receipts) != set(expected_ids):
@@ -313,8 +314,8 @@ def assemble_stage_b_interpreter_native_objects(
     for index, unit_id in enumerate(expected_ids):
         root, receipt = receipts[unit_id]
         graph_row = by_id[unit_id]
-        if receipt.get("unit_sha256") != graph_row["unit_sha256"]:
-            raise StageBInterpreterNativeBuildError("native object unit binding is stale")
+        if receipt.get("compile_key_sha256") != graph_row["compile_key_sha256"]:
+            raise StageBInterpreterNativeBuildError("native object compile-key binding is stale")
         source = root / str(receipt["object"]["path"])
         if not source.is_file() or sha256_file(source) != receipt["object"]["sha256"]:
             raise StageBInterpreterNativeBuildError("native object artifact binding is stale")
@@ -323,7 +324,7 @@ def assemble_stage_b_interpreter_native_objects(
         rows.append(
             {
                 "unit_id": unit_id,
-                "unit_sha256": graph_row["unit_sha256"],
+                "compile_key_sha256": graph_row["compile_key_sha256"],
                 "path": target.relative_to(output).as_posix(),
                 "sha256": sha256_file(target),
                 "size": target.stat().st_size,
@@ -476,6 +477,12 @@ def build_stage_b_interpreter_native_candidate(
         runtime.root,
         *((region_overrides.root,) if region_overrides is not None else ()),
     )
+    package_sequence = (
+        interpreter,
+        engine,
+        runtime,
+        *((region_overrides,) if region_overrides is not None else ()),
+    )
     relocation_source = output / ".payload-relocation-anchor.S"
     relocation_source.write_text(
         native_build._relocation_anchor_source(entry_symbol), encoding="ascii"
@@ -490,6 +497,7 @@ def build_stage_b_interpreter_native_candidate(
             precompiled_objects,
             compile_units=compile_units,
             package_roots=package_roots,
+            package_sequence=package_sequence,
             packages={
                 "interpreter": interpreter.binding(),
                 "native_engine": engine.binding(),
@@ -544,10 +552,16 @@ def build_stage_b_interpreter_native_candidate(
                 if artifact.path.suffix.lower() == ".s"
                 else "c"
             )
+            dependencies = _native_source_dependency_closure(
+                artifact, package_sequence
+            )
+            diagnostic_active = diagnostic_failure_trap and _uses_diagnostic_macro(
+                (artifact, *dependencies)
+            )
             flags = _compile_flags(
                 artifact.sha256,
                 package_roots,
-                diagnostic_failure_trap=diagnostic_failure_trap,
+                diagnostic_failure_trap=diagnostic_active,
             )
             command = [
                 str(toolchain.compiler),
@@ -581,7 +595,7 @@ def build_stage_b_interpreter_native_candidate(
                     "object_sha256": sha256_file(object_path),
                     "flags": _canonical_compile_flags(
                         artifact.sha256,
-                        diagnostic_failure_trap=diagnostic_failure_trap,
+                        diagnostic_failure_trap=diagnostic_active,
                         region_overrides=region_overrides is not None,
                     ),
                     "cache": "compiled_in_candidate_derivation",
@@ -1268,21 +1282,139 @@ def _compile_units(
     )
 
 
+def _canonical_source_root_label(owner: str) -> str:
+    labels = {
+        "interpreter": "interpreter",
+        "native_engine": "engine",
+        "native_runtime": "runtime",
+        "region_overrides": "region-overrides",
+    }
+    try:
+        return labels[owner]
+    except KeyError as exc:
+        raise StageBInterpreterNativeBuildError(
+            f"unsupported native-build source owner: {owner}"
+        ) from exc
+
+
+def _native_bundle_path(artifact: _Artifact) -> str:
+    relative = _relative_path(
+        artifact.relative_path, f"{artifact.owner} bundle source path"
+    )
+    return (Path("roots") / artifact.owner / relative).as_posix()
+
+
+def _native_source_dependency_closure(
+    source: _Artifact, packages: Sequence[_Package]
+) -> tuple[_Artifact, ...]:
+    """Resolve the exact transitive quoted-include closure for one source."""
+
+    by_path: dict[Path, _Artifact] = {}
+    roots = tuple(package.root.resolve() for package in packages)
+    for package in packages:
+        for artifact in package.artifacts:
+            resolved = artifact.path.resolve()
+            if resolved in by_path:
+                raise StageBInterpreterNativeBuildError(
+                    "native package artifacts resolve to the same source path"
+                )
+            by_path[resolved] = artifact
+
+    dependencies: list[_Artifact] = []
+    visited = {source.path.resolve()}
+    pending = [source]
+    while pending:
+        current = pending.pop(0)
+        try:
+            lines = current.path.read_text(encoding="ascii").splitlines()
+        except (OSError, UnicodeError) as exc:
+            raise StageBInterpreterNativeBuildError(
+                f"native source is not readable ASCII: {current.relative_path}"
+            ) from exc
+        for line_number, line in enumerate(lines, start=1):
+            directive = _INCLUDE_DIRECTIVE.match(line)
+            if directive is None:
+                continue
+            operand = directive.group(1).strip()
+            if _SYSTEM_INCLUDE.fullmatch(operand) is not None:
+                continue
+            quoted = _QUOTED_INCLUDE.fullmatch(operand)
+            if quoted is None:
+                raise StageBInterpreterNativeBuildError(
+                    "native source uses an unsupported computed include at "
+                    f"{current.relative_path}:{line_number}"
+                )
+            include = Path(quoted.group(1))
+            if include.is_absolute() or ".." in include.parts:
+                raise StageBInterpreterNativeBuildError(
+                    "native source quoted include is not package-relative at "
+                    f"{current.relative_path}:{line_number}"
+                )
+            candidates = (current.path.parent / include,) + tuple(
+                root / include for root in roots
+            )
+            selected = next((path.resolve() for path in candidates if path.is_file()), None)
+            if selected is None:
+                raise StageBInterpreterNativeBuildError(
+                    "native source quoted include is unresolved at "
+                    f"{current.relative_path}:{line_number}: {include.as_posix()}"
+                )
+            dependency = by_path.get(selected)
+            if dependency is None:
+                raise StageBInterpreterNativeBuildError(
+                    "native source quoted include is not content-bound by a package "
+                    f"manifest: {include.as_posix()}"
+                )
+            if selected in visited:
+                continue
+            visited.add(selected)
+            dependencies.append(dependency)
+            pending.append(dependency)
+    return tuple(dependencies)
+
+
+def _uses_diagnostic_macro(artifacts: Sequence[_Artifact]) -> bool:
+    for artifact in artifacts:
+        try:
+            if _DIAGNOSTIC_MACRO in artifact.path.read_text(encoding="ascii"):
+                return True
+        except (OSError, UnicodeError) as exc:
+            raise StageBInterpreterNativeBuildError(
+                f"native source is not readable ASCII: {artifact.relative_path}"
+            ) from exc
+    return False
+
+
 def _native_object_graph_row(
     *,
     index: int,
     artifact: _Artifact,
+    packages: Sequence[_Package],
     package_roots: Sequence[Path],
     compiler: Path,
+    compiler_binding: Mapping[str, Any],
     diagnostic_failure_trap: bool,
     region_overrides: bool,
 ) -> dict[str, Any]:
     language = "assembler-with-cpp" if artifact.path.suffix.lower() == ".s" else "c"
-    unit_id = f"{index:03d}-{artifact.owner}-{artifact.role}"
+    unit_id = f"{artifact.owner}-{artifact.role}"
     graph_relative = artifact.owner == "generated"
     source_argument = (
         artifact.relative_path if graph_relative else str(artifact.path)
     )
+    dependencies = _native_source_dependency_closure(artifact, packages)
+    diagnostic_sensitive = _uses_diagnostic_macro((artifact, *dependencies))
+    diagnostic_active = diagnostic_failure_trap and diagnostic_sensitive
+    compile_flags = _proof_profile_compile_flags(artifact.sha256)
+    if diagnostic_active:
+        compile_flags.append(f"-D{_DIAGNOSTIC_MACRO}=1")
+    root_mappings = [
+        {
+            "owner": package.owner,
+            "label": _canonical_source_root_label(package.owner),
+        }
+        for package in packages
+    ]
     arguments = [
         "-x",
         language,
@@ -1292,23 +1424,52 @@ def _native_object_graph_row(
         *_compile_flags(
             artifact.sha256,
             package_roots,
-            diagnostic_failure_trap=diagnostic_failure_trap,
+            diagnostic_failure_trap=diagnostic_active,
         ),
     ]
+    source_payload = {
+        **artifact.payload(),
+        "location": source_argument,
+        "location_base": "graph" if graph_relative else "absolute",
+        "bundle_path": _native_bundle_path(artifact),
+    }
+    dependency_payloads = [
+        {
+            **dependency.payload(),
+            "location": str(dependency.path),
+            "location_base": "absolute",
+            "bundle_path": _native_bundle_path(dependency),
+        }
+        for dependency in dependencies
+    ]
+    compile_key_core = {
+        "format": "stage-b-native-compile-key-v1",
+        "source": artifact.payload(),
+        "dependencies": [dependency.payload() for dependency in dependencies],
+        "language": language,
+        "compiler": {
+            key: value
+            for key, value in compiler_binding.items()
+            if key != "path"
+        },
+        "compile_flags": compile_flags,
+        "root_mappings": root_mappings,
+    }
     unit_core = {
         "id": unit_id,
         "index": index,
-        "source": {
-            **artifact.payload(),
-            "location": source_argument,
-            "location_base": "graph" if graph_relative else "absolute",
-        },
+        "source": source_payload,
+        "dependencies": dependency_payloads,
         "language": language,
-        "compiler": _native_compiler_binding(compiler),
+        "compiler": dict(compiler_binding),
         "arguments": arguments,
+        "compile_flags": compile_flags,
+        "root_mappings": root_mappings,
+        "diagnostic_sensitive": diagnostic_sensitive,
+        "compile_key_sha256": native_build._canonical_sha256(compile_key_core),
         "canonical_flags": _canonical_compile_flags(
             artifact.sha256,
-            diagnostic_failure_trap=diagnostic_failure_trap,
+            diagnostic_failure_trap=diagnostic_active,
             region_overrides=region_overrides,
         ),
     }
@@ -1349,6 +1510,7 @@ def _load_precompiled_native_objects(
     *,
     compile_units: Sequence[_Artifact],
     package_roots: Sequence[Path],
+    package_sequence: Sequence[_Package],
     packages: Mapping[str, Any],
     compiler: Path,
     entry_symbol: str,
@@ -1417,12 +1579,15 @@ def _load_precompiled_native_objects(
         ),
     ]
     region_overrides = packages.get("region_overrides") is not None
+    compiler_binding = _native_compiler_binding(compiler)
     expected_rows = [
         _native_object_graph_row(
             index=index,
             artifact=artifact,
+            packages=package_sequence,
             package_roots=package_roots,
             compiler=compiler,
+            compiler_binding=compiler_binding,
             diagnostic_failure_trap=diagnostic_failure_trap,
             region_overrides=region_overrides,
         )
@@ -1438,7 +1603,8 @@ def _load_precompiled_native_objects(
         if (
             not isinstance(object_row, Mapping)
             or object_row.get("unit_id") != expected_row["id"]
-            or object_row.get("unit_sha256") != expected_row["unit_sha256"]
+            or object_row.get("compile_key_sha256")
+            != expected_row["compile_key_sha256"]
         ):
             raise StageBInterpreterNativeBuildError("native object package unit binding is stale")
         object_path = package_root / str(object_row.get("path"))

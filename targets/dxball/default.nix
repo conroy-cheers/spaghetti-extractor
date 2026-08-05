@@ -6,7 +6,7 @@ let
     url = "https://archive.org/download/dxball-19/DXBall19.zip";
     hash = "sha256-ARvV4Ge3rNrGxdbEeqIAmpcb07FSayOGbUsz/ZfdUQ0=";
   };
-  wine = pkgs.wineWowPackages.stableFull;
+  wine = pkgs.wineWow64Packages.stableFull;
   installer = pkgs.runCommand "dxball-1.09-installer" {
     nativeBuildInputs = [ pkgs.unzip ];
     __contentAddressed = true;

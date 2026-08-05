@@ -11,6 +11,16 @@
 let
   lib = pkgs.lib;
   python = "${pythonEnv}/bin/python3";
+  phasePythonSource = import ./python-module-closure.nix {
+    inherit pkgs;
+    source = pythonSource;
+    modules = [
+      "spaghetti_extractor.artifact_formats"
+      "spaghetti_extractor.component_interface"
+      "spaghetti_extractor.util"
+    ];
+    name = "${namePrefix}-component-interface-python-closure";
+  };
   componentInterfaceInputs = pkgs.linkFarm
     "${namePrefix}-component-interface-inputs-v1"
     (map (component: {
@@ -41,7 +51,7 @@ let
         set -euo pipefail
         export PYTHONHASHSEED=0
         export LC_ALL=C.UTF-8
-        export PYTHONPATH=${pythonSource}/src
+        export PYTHONPATH=${phasePythonSource}/src
         ${python} - \
           ${semanticComponentCatalog}/semantic-component-catalog.json \
           ${machineIr} \
@@ -114,7 +124,7 @@ let
       set -euo pipefail
       export PYTHONHASHSEED=0
       export LC_ALL=C.UTF-8
-      export PYTHONPATH=${pythonSource}/src
+      export PYTHONPATH=${phasePythonSource}/src
       ${python} - \
         ${semanticComponentCatalog}/semantic-component-catalog.json \
         ${machineIr} "$out" ${toString (builtins.length components)} \

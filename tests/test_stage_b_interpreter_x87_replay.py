@@ -66,7 +66,7 @@ def _replay_row(
     }
     return {
         "id": identity,
-        "status": "incomplete",
+        "status": "reimplementable",
         "contract_sha256": _CONTRACT_SHA,
         "instruction_bytes_sha256": digest,
         "original": {

@@ -59,6 +59,56 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("stage-b-jq", module.lower())
         self.assertNotIn("wine", module.lower())
 
+    def test_native_compiler_nodes_have_content_minimal_dependencies(self) -> None:
+        module = (ROOT / "nix" / "stage-b-native-object-graph.nix").read_text(
+            encoding="utf-8"
+        )
+        compile_start = module.index("mkCompiledObject =")
+        compile_end = module.index("mkObjectReceipt =", compile_start)
+        compiler_node = module[compile_start:compile_end]
+
+        self.assertIn("unit.compile_key_sha256", compiler_node)
+        self.assertIn("mkSourceBundle unit", compiler_node)
+        self.assertNotIn("${graph}", compiler_node)
+        self.assertNotIn("python", compiler_node.lower())
+        self.assertIn("ownerRoots", module)
+        self.assertIn('in "${root}/${file.path}"', module)
+        self.assertIn("compiledObjects", module)
+        self.assertIn("stage-b-interpreter-native-object-graph-v2", module)
+
+    def test_machine_ir_preparation_is_a_distinct_reusable_phase(self) -> None:
+        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("mkPreparedMachineIr", module)
+        self.assertIn("directPreparedMachineIr", module)
+        self.assertIn("preparedMachineIr = mkPreparedMachineIr", module)
+        self.assertIn("preparedMachineIr = preparedMachineIr", module)
+        self.assertIn("prepared_units_reused", module)
+
+    def test_hybrid_candidate_uses_phase_specific_python_closures(self) -> None:
+        module = (ROOT / "nix" / "stage-b-hybrid-candidate.nix").read_text(
+            encoding="utf-8"
+        )
+        closure = (ROOT / "nix" / "python-module-closure.nix").read_text(
+            encoding="utf-8"
+        )
+
+        for name in (
+            "nativeEnginePythonSource",
+            "nativeRuntimePythonSource",
+            "nativeBuildPythonSource",
+        ):
+            self.assertIn(name, module)
+        interpreter = (
+            ROOT / "nix" / "stage-b-interpreter-package.nix"
+        ).read_text(encoding="utf-8")
+        self.assertIn("phasePythonSource", interpreter)
+        self.assertIn("__contentAddressed = true;", closure)
+        self.assertIn("ast.parse", closure)
+        self.assertIn("python-module-closure.json", closure)
+
     def test_jq_component_intent_is_authored_data_not_tooling(self) -> None:
         path = ROOT / "targets" / "jq" / "intent" / "components.json"
         payload = json.loads(path.read_text(encoding="utf-8"))

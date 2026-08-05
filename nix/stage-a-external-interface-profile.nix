@@ -13,6 +13,12 @@ let
   profileName =
     if name != null then name
     else "spaghetti-extractor-${specification.id}-interface-profile-v1";
+  phasePythonSource = import ./python-module-closure.nix {
+    inherit pkgs;
+    source = pythonSource;
+    modules = [ "spaghetti_extractor.external_interface_ast" ];
+    name = "${profileName}-python-closure";
+  };
   headers = map (
     binding: "${sdkHeaders}/include/${binding.include}"
   ) specification.headers;
@@ -30,7 +36,7 @@ pkgs.runCommand profileName {
   set -euo pipefail
   export PYTHONHASHSEED=0
   export LC_ALL=C.UTF-8
-  export PYTHONPATH=${pythonSource}/src
+  export PYTHONPATH=${phasePythonSource}/src
   mkdir -p "$out"
 
   cat > translation.c <<'EOF'

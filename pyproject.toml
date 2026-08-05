@@ -35,6 +35,7 @@ spaghetti_extractor = [ "lean/**/*.lean" ]
 "share/spaghetti-extractor/nix" = [
   "nix/bochs-conformance.nix",
   "nix/callable-external-runtime-contract.py",
+  "nix/python-module-closure.nix",
   "nix/singlestep-80386-conformance.nix",
   "nix/stage-a-builder-public-keys",
   "nix/stage-a-builders",
@@ -55,6 +56,7 @@ spaghetti_extractor = [ "lean/**/*.lean" ]
   "nix/stage-b-source-call-substitutions.nix",
   "nix/stage-b-source-component-assurance.nix",
   "nix/stage-b-functional-suite.nix",
+  "nix/stage-b-hybrid-candidate.nix",
   "nix/stage-b-target-intent.nix",
   "nix/stage-b-upstream-shell-suite.nix",
 ]
