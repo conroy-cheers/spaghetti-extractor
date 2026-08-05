@@ -298,7 +298,7 @@ history rather than competing with the current design.
 |---|---|
 | `targets/gnu-hello/` | Small portable-C and authored-component validation bundle. |
 | `targets/jq/` | Larger CLI/library/component intent benchmark and functional expectations. |
-| `targets/dxball/` | Proprietary 3D-era application acquisition and static-inventory benchmark; lifting is intentionally paused during cleanup. |
+| `targets/dxball/` | Proprietary 3D-era application acquisition plus generic machine-IR and component-analysis benchmark. |
 
 Target `default.nix` files acquire/build inputs and invoke generic constructors.
 Intent JSON and source are authored. Downloaded binaries and generated analyses

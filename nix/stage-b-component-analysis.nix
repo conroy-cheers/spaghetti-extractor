@@ -1,10 +1,10 @@
 {
   pkgs,
   pythonEnv,
-  sideTool,
-  staticPythonSource,
-  planningPythonSource,
-  componentDiscoveryPythonSource,
+  pythonSource,
+  staticPythonSource ? pythonSource,
+  planningPythonSource ? pythonSource,
+  componentDiscoveryPythonSource ? pythonSource,
   original,
   externalProfile,
   indirectTargetProfile ? null,
@@ -31,13 +31,13 @@ let
 
   originalInventory = pkgs.runCommand
     "${namePrefix}-original-inventory-v1"
-    (commonAttrs // { nativeBuildInputs = [ sideTool pkgs.jq pkgs.coreutils ]; })
+    commonAttrs
     ''
       set -euo pipefail
+      ${commonEnvironment staticPythonSource}
       mkdir -p "$out"
-      spaghetti-extractor-side inventory-binary \
+      ${python} -m spaghetti_extractor.cli stage-a-inventory-binary \
         --binary ${lib.escapeShellArg (toString original)} \
-        --side original \
         --out "$out/inventory.json" \
         > "$out/inventory.stdout"
       expected_sha256="$(sha256sum ${lib.escapeShellArg (toString original)} | cut -d ' ' -f 1)"

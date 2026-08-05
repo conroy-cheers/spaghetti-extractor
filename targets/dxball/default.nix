@@ -37,18 +37,18 @@ let
     test "$(sha256sum "$out/DXBall.exe" | cut -d ' ' -f 1)" = \
       191c113582e1f31016a158d40372fa21ea68d9348bf847bbfbc8e7c7bdfe195f
   '';
-  inventory = pkgs.runCommand "dxball-1.09-static-inventory" {
-    nativeBuildInputs = [ pythonEnv ];
-    __contentAddressed = true;
-  } ''
-    export PYTHONPATH=${pythonSource}/src
-    mkdir -p "$out"
-    python -m spaghetti_extractor.cli stage-a-inventory-binary \
-      --binary ${original}/DXBall.exe --out "$out/inventory.json"
-  '';
+  analysis = import ../../nix/stage-b-component-analysis.nix {
+    inherit pkgs pythonEnv pythonSource;
+    original = "${original}/DXBall.exe";
+    externalProfile = "${pythonSource}/profiles/pe32-msvcrt-machine-runtime-v1.json";
+    namePrefix = "spaghetti-extractor-dxball-1.09";
+    maxUnits = 512;
+    maxCandidatesPerSeed = 12;
+  };
+  inventory = analysis.originalInventory;
 in
 {
-  inherit archive installer original inventory;
+  inherit archive installer original inventory analysis;
   intent = import ../../nix/stage-b-target-intent.nix {
     inherit pkgs pythonEnv pythonSource;
     target = ./.;

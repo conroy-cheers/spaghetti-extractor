@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import copy
+import tempfile
 import unittest
+from pathlib import Path
 
+from tests.pe_fixtures import pe32_image
+from spaghetti_extractor.analysis.binary_inventory import stage_a_inventory_binary
 from spaghetti_extractor.opaque_reconstruction import (
     opaque_self_map_from_inventory,
+    stage_a_export_opaque_reconstruction,
 )
 from spaghetti_extractor.stage_binary import StageAInputError
 from spaghetti_extractor.util import sha256_bytes
@@ -80,6 +85,30 @@ class OpaqueReconstructionTests(unittest.TestCase):
             opaque_self_map_from_inventory(
                 _inventory(), binary_path="hello.exe", entry_rva=0x2000
             )
+
+    def test_public_inventory_round_trips_through_opaque_export(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "fixture.exe"
+            inventory = root / "inventory.json"
+            output = root / "opaque"
+            original.write_bytes(pe32_image(b"\x31\xc0\xc3", virtual_size=16))
+            stage_a_inventory_binary(
+                binary=original,
+                linker_map=None,
+                side="original",
+                out=inventory,
+            )
+
+            result = stage_a_export_opaque_reconstruction(
+                original=original,
+                inventory=inventory,
+                out=output,
+            )
+
+            self.assertEqual(result["status"], "ready")
+            self.assertTrue((output / "reference-contract.json").is_file())
+            self.assertTrue((output / "state-machine.jsonl").is_file())
 
 
 if __name__ == "__main__":

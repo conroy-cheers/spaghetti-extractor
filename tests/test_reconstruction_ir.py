@@ -199,7 +199,6 @@ def _write_reference_contract(path: Path, original: Path) -> None:
             "original": {"path": original.name, "sha256": original_digest, "exists": True},
             "candidate": None,
             "mapping": None,
-            "validation_report": None,
             "layout_contract": None,
         },
         "original": {

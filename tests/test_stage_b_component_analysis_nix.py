@@ -29,6 +29,9 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("wine", analysis.lower())
         self.assertNotIn("--candidate", analysis)
         self.assertNotIn("candidateBinary", analysis)
+        self.assertNotIn("sideTool", analysis)
+        self.assertIn("pythonSource", analysis)
+        self.assertIn("staticPythonSource ? pythonSource", analysis)
         self.assertIn('"executes_original_binary": False', analysis)
         self.assertIn(".coverage.exact.complete", discovery)
         self.assertIn(".coverage.potential.complete", discovery)
@@ -62,6 +65,13 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             context=path.relative_to(ROOT).as_posix(),
         )
         self.assertTrue(payload["components"])
+
+    def test_dxball_consumes_the_generic_component_analysis_constructor(self) -> None:
+        target = (ROOT / "targets" / "dxball" / "default.nix").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("../../nix/stage-b-component-analysis.nix", target)
+        self.assertIn("inherit archive installer original inventory analysis", target)
 
 
 if __name__ == "__main__":

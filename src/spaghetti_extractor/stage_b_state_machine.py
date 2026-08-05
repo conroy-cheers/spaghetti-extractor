@@ -125,7 +125,7 @@ def load_stage_a_reference_contract_binding(
     original = _object(payload.get("original"), "Stage A reference contract original")
     inputs = _object(payload.get("inputs"), "Stage A reference contract inputs")
     if set(inputs) != {
-        "original", "candidate", "mapping", "validation_report", "layout_contract"
+        "original", "candidate", "mapping", "layout_contract"
     }:
         raise StageAInputError("Stage A reference contract input inventory has schema drift")
     original_input = _object(inputs.get("original"), "Stage A reference contract original input")

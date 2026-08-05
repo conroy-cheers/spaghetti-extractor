@@ -97,6 +97,11 @@
           jq-intent = jqTarget.intent.validation;
           dxball-original = dxball.original;
           dxball-static-inventory = dxball.inventory;
+          dxball-static-export = dxball.analysis.staticExport;
+          dxball-state-machine = dxball.analysis.stateMachine;
+          dxball-machine-ir = dxball.analysis.machineIr;
+          dxball-reconstruction-plan = dxball.analysis.reconstructionPlan;
+          dxball-component-proposals = dxball.analysis.componentProposals;
         });
 
       checks = forAllSystems (system:
