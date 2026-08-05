@@ -35,53 +35,11 @@ def compose_linear_reconstruction_cluster(
     dedicated path/invariant contracts.
     """
 
-    normalized = [copy.deepcopy(dict(unit)) for unit in units]
-    by_id = {str(unit.get("id")): unit for unit in normalized}
-    by_rva = {_unit_start(unit): unit for unit in normalized}
+    order, failure = _linear_cluster_order(units, entry_unit_id=entry_unit_id)
+    if failure is not None:
+        return failure
+    assert order is not None
     issues: list[dict[str, Any]] = []
-    if len(by_id) != len(normalized):
-        return _incomplete("duplicate_unit_id", "cluster unit ids are not unique")
-    if len(by_rva) != len(normalized):
-        return _incomplete("duplicate_unit_rva", "cluster unit entry RVAs are not unique")
-    if entry_unit_id not in by_id:
-        return _incomplete("missing_entry_unit", "cluster entry unit is absent")
-
-    order: list[dict[str, Any]] = []
-    current = by_id[entry_unit_id]
-    visited: set[str] = set()
-    while True:
-        identity = str(current["id"])
-        if identity in visited:
-            return _incomplete(
-                "cyclic_cluster",
-                "linear composition does not accept a cycle; use a loop invariant",
-                unit_ids=[str(item["id"]) for item in order],
-            )
-        visited.add(identity)
-        order.append(current)
-        outcome = _semantics(current).get("outcome")
-        if not isinstance(outcome, Mapping):
-            return _incomplete(
-                "missing_outcome", f"unit {identity} has no normalized outcome"
-            )
-        internal_targets = [target for target in _outcome_targets(outcome) if target in by_rva]
-        if not internal_targets:
-            break
-        if not _unconditional_direct_outcome(outcome) or len(internal_targets) != 1:
-            return _incomplete(
-                "nonlinear_internal_exit",
-                f"unit {identity} has a branch or ambiguous internal destination",
-            )
-        current = by_rva[internal_targets[0]]
-
-    omitted = sorted(set(by_id) - visited)
-    if omitted:
-        return _incomplete(
-            "unvisited_cluster_units",
-            "the proposed cluster is not one finite path from its declared entry",
-            unit_ids=[str(item["id"]) for item in order],
-            omitted_unit_ids=omitted,
-        )
 
     registers: dict[str, Any] = {
         name: {"op": "reg", "name": name, "width": 32} for name in _REGISTERS
@@ -93,21 +51,21 @@ def compose_linear_reconstruction_cluster(
     external_events: list[dict[str, Any]] = []
     ordered_events: list[dict[str, Any]] = []
     faults: list[dict[str, Any]] = []
-    prior_writes: list[dict[str, Any]] = []
+    prior_write_event_indices: list[int] = []
     final_outcome: Any = None
 
-    for path_index, unit in enumerate(order):
+    for unit in order:
         semantics = _semantics(unit)
         before_registers = copy.deepcopy(registers)
         before_flags = copy.deepcopy(flags)
-        unit_prior_writes = copy.deepcopy(prior_writes)
+        unit_prior_writes = tuple(prior_write_event_indices)
         final_outcome = _substitute(
             semantics.get("outcome"),
             before_registers,
             before_flags,
             unit_prior_writes,
         )
-        unit_writes: list[dict[str, Any]] = []
+        unit_writes: list[int] = []
 
         for event_index, event in enumerate(semantics.get("memory_events", [])):
             if not isinstance(event, Mapping):
@@ -123,14 +81,7 @@ def compose_linear_reconstruction_cluster(
             rewritten["cluster_event_index"] = len(memory_events)
             memory_events.append(rewritten)
             if rewritten.get("kind") == "write":
-                unit_writes.append(
-                    {
-                        "address": copy.deepcopy(rewritten.get("address")),
-                        "width": rewritten.get("width"),
-                        "value": copy.deepcopy(rewritten.get("value")),
-                        "cluster_event_index": rewritten["cluster_event_index"],
-                    }
-                )
+                unit_writes.append(rewritten["cluster_event_index"])
 
         for event_index, event in enumerate(semantics.get("external_events", [])):
             if not isinstance(event, Mapping):
@@ -194,7 +145,7 @@ def compose_linear_reconstruction_cluster(
                     rewritten["source_unit_id"] = str(unit["id"])
                     rewritten["cluster_order_index"] = len(ordered_events)
                     ordered_events.append(rewritten)
-        prior_writes.extend(unit_writes)
+        prior_write_event_indices.extend(unit_writes)
 
     if issues:
         return {
@@ -268,15 +219,96 @@ def compose_linear_reconstruction_cluster(
     }
 
 
+def inspect_linear_reconstruction_cluster(
+    units: Sequence[Mapping[str, Any]], *, entry_unit_id: str
+) -> dict[str, Any]:
+    """Check finite-path shape without materializing symbolic semantics."""
+
+    order, failure = _linear_cluster_order(units, entry_unit_id=entry_unit_id)
+    if failure is not None:
+        return failure
+    assert order is not None
+    return {
+        "status": "complete",
+        "kind": "finite_linear_path",
+        "entry_unit_id": entry_unit_id,
+        "unit_ids": [str(item["id"]) for item in order],
+        "unit_entry_rvas": [_unit_start(item) for item in order],
+        "semantic_materialization": "deferred_until_workspace_selection",
+        "issues": [],
+    }
+
+
+def _linear_cluster_order(
+    units: Sequence[Mapping[str, Any]], *, entry_unit_id: str
+) -> tuple[list[Mapping[str, Any]] | None, dict[str, Any] | None]:
+    normalized = list(units)
+    by_id = {str(unit.get("id")): unit for unit in normalized}
+    by_rva = {_unit_start(unit): unit for unit in normalized}
+    if len(by_id) != len(normalized):
+        return None, _incomplete(
+            "duplicate_unit_id", "cluster unit ids are not unique"
+        )
+    if len(by_rva) != len(normalized):
+        return None, _incomplete(
+            "duplicate_unit_rva", "cluster unit entry RVAs are not unique"
+        )
+    if entry_unit_id not in by_id:
+        return None, _incomplete(
+            "missing_entry_unit", "cluster entry unit is absent"
+        )
+
+    order: list[Mapping[str, Any]] = []
+    current = by_id[entry_unit_id]
+    visited: set[str] = set()
+    while True:
+        identity = str(current["id"])
+        if identity in visited:
+            return None, _incomplete(
+                "cyclic_cluster",
+                "linear composition does not accept a cycle; use a loop invariant",
+                unit_ids=[str(item["id"]) for item in order],
+            )
+        visited.add(identity)
+        order.append(current)
+        outcome = _semantics(current).get("outcome")
+        if not isinstance(outcome, Mapping):
+            return None, _incomplete(
+                "missing_outcome", f"unit {identity} has no normalized outcome"
+            )
+        internal_targets = [
+            target for target in _outcome_targets(outcome) if target in by_rva
+        ]
+        if not internal_targets:
+            break
+        if not _unconditional_direct_outcome(outcome) or len(internal_targets) != 1:
+            return None, _incomplete(
+                "nonlinear_internal_exit",
+                f"unit {identity} has a branch or ambiguous internal destination",
+            )
+        current = by_rva[internal_targets[0]]
+
+    omitted = sorted(set(by_id) - visited)
+    if omitted:
+        return None, _incomplete(
+            "unvisited_cluster_units",
+            "the proposed cluster is not one finite path from its declared entry",
+            unit_ids=[str(item["id"]) for item in order],
+            omitted_unit_ids=omitted,
+        )
+    return order, None
+
+
 def _substitute(
     value: Any,
     registers: Mapping[str, Any],
     flags: Mapping[str, Any],
-    prior_writes: Sequence[Mapping[str, Any]] = (),
+    prior_write_event_indices: Sequence[int] = (),
 ) -> Any:
     if isinstance(value, list):
         return [
-            _substitute(item, registers, flags, prior_writes) for item in value
+            _substitute(item, registers, flags, prior_write_event_indices)
+            for item in value
         ]
     if not isinstance(value, Mapping):
         return copy.deepcopy(value)
@@ -286,15 +318,18 @@ def _substitute(
     if op == "flag" and str(value.get("name")) in flags:
         return copy.deepcopy(flags[str(value["name"])])
     rewritten = {
-        str(key): _substitute(child, registers, flags, prior_writes)
+        str(key): _substitute(
+            child, registers, flags, prior_write_event_indices
+        )
         for key, child in value.items()
     }
-    if op == "load" and prior_writes:
+    if op == "load" and prior_write_event_indices:
         return {
             "op": "load_after_writes",
             "address": rewritten.get("address"),
             "width": rewritten.get("width"),
-            "prior_writes": copy.deepcopy(list(prior_writes)),
+            "prior_write_event_indices": list(prior_write_event_indices),
+            "memory_event_inventory": "summary.memory_events",
         }
     return _simplify(rewritten)
 

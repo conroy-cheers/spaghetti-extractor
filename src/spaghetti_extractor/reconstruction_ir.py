@@ -285,7 +285,6 @@ def export_machine_ir_package(
             row,
             binary=binary,
             reference_sha256=reference_sha256,
-            checked_noncode=reference["noncode_ranges"],
         )
         for row in rows
     ]
@@ -525,7 +524,6 @@ def _prepare_unit(
     *,
     binary: StageABinary,
     reference_sha256: str | None,
-    checked_noncode: Sequence[RvaSpan],
 ) -> dict[str, Any]:
     identity = _required_string(row.get("id"), "unit id")
     span = _unit_span(row, identity)
@@ -538,9 +536,7 @@ def _prepare_unit(
     )
     binding = row.get("stage_a_export")
     if reference_sha256 is not None:
-        if not isinstance(binding, Mapping) and not _checked_padding_bridge(
-            row, span, checked_noncode
-        ):
+        if not isinstance(binding, Mapping):
             raise MachineIRExportError(
                 f"{identity}: supplied reference contract is not bound by the state machine",
                 code="missing_reference_contract_binding",
@@ -693,31 +689,6 @@ def _semantic_unit_qualified(
         "x87_physical_state_requires_native_exact_command_replay",
         "x87_typed_lowering_required",
     }
-
-
-def _checked_padding_bridge(
-    row: Mapping[str, Any], span: RvaSpan, checked_noncode: Sequence[RvaSpan]
-) -> bool:
-    if not any(item.start <= span.start and span.end <= item.end for item in checked_noncode):
-        return False
-    if row.get("status") != "reimplementable" or row.get("fpu_state") is not None:
-        return False
-    for field in (
-        "register_writes",
-        "flag_writes",
-        "memory_events",
-        "external_events",
-        "faults",
-        "ordered_events",
-    ):
-        if row.get(field) != []:
-            return False
-    outcome = row.get("outcome")
-    return (
-        isinstance(outcome, Mapping)
-        and outcome.get("kind") == "fallthrough"
-        and outcome.get("target_rva") == span.end
-    )
 
 
 def _instructions(

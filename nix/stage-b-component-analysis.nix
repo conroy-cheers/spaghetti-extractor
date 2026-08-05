@@ -87,82 +87,74 @@ let
       ' "$out/opaque-static-export.json" >/dev/null
     '';
 
-  stateMachine = pkgs.runCommand
-    "${namePrefix}-opaque-state-machine-v1"
+  mkRootedStateMachine = {
+    name,
+    inputStateMachine,
+    controlManifest ? null,
+  }: pkgs.runCommand
+    name
     commonAttrs
     ''
       set -euo pipefail
       ${commonEnvironment staticPythonSource}
       mkdir -p "$out"
       ${python} - \
-        ${staticExport}/state-machine.jsonl \
+        ${inputStateMachine} \
         ${lib.escapeShellArg (toString original)} \
-        ${staticExport}/opaque-self-map.json \
+        ${staticExport}/reference-contract.json \
         ${lib.escapeShellArg (toString externalProfile)} \
+        ${if controlManifest == null then "-" else "${controlManifest}/machine-ir-manifest.json"} \
         "$out/state-machine.jsonl" \
-        "$out/padding-bridges.json" <<'PY'
+        "$out/rooted-control-closure.json" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.stage_b_state_machine import (
-          augment_state_machine_with_padding_bridges,
+      from spaghetti_extractor.rooted_state_machine import (
+          close_state_machine_rooted_direct_control,
       )
-      from spaghetti_extractor.util import write_json
 
-      source, original, block_map, profile, output, report = map(
-          pathlib.Path, sys.argv[1:]
+      source, original, reference, profile, control_manifest, output, report = sys.argv[1:]
+      close_state_machine_rooted_direct_control(
+          state_machine=pathlib.Path(source),
+          original_pe=pathlib.Path(original),
+          reference_contract=pathlib.Path(reference),
+          external_profile=pathlib.Path(profile),
+          control_manifest=(
+              None if control_manifest == "-" else pathlib.Path(control_manifest)
+          ),
+          out=pathlib.Path(output),
+          report=pathlib.Path(report),
       )
-      result = augment_state_machine_with_padding_bridges(
-          state_machine=source,
-          original_pe=original,
-          block_map=block_map,
-          external_profile=profile,
-          out=output,
-      )
-      write_json(report, {
-          "format": "stage-b-padding-bridge-augmentation-v1",
-          "status": "complete",
-          "state_machine": {"path": output.name, "sha256": result.sha256},
-          "counts": {
-              "input_transfers": result.input_transfer_count,
-              "padding_bridges": result.padding_bridge_count,
-              "output_transfers": result.output_transfer_count,
-              "terminating_transfers": len(result.terminating_transfer_rvas),
-          },
-          "bridged_rvas": list(result.bridged_rvas),
-          "terminating_transfer_rvas": list(result.terminating_transfer_rvas),
-          "trust": {
-              "executes_original_binary": False,
-              "external_termination_profile_bound": True,
-          },
-      })
       PY
       jq -e '
-        .format == "stage-b-padding-bridge-augmentation-v1" and
+        .format == "stage-b-rooted-static-control-closure-v1" and
         .status == "complete" and
-        .counts.input_transfers > 0 and
-        .counts.output_transfers >= .counts.input_transfers and
+        .counts.base_transfers > 0 and
+        .counts.output_transfers >= .counts.base_transfers and
+        .counts.remaining_missing_direct_targets == 0 and
         (.trust.executes_original_binary | not) and
-        .trust.external_termination_profile_bound
-      ' "$out/padding-bridges.json" >/dev/null
+        .trust.indirect_control_is_not_silently_closed
+      ' "$out/rooted-control-closure.json" >/dev/null
     '';
 
-  machineIr = pkgs.runCommand
-    "${namePrefix}-machine-ir-v2"
-    commonAttrs
-    ''
+  mkMachineIr = {
+    name,
+    stateMachineInput,
+    requireClosedRootedDirect,
+  }: pkgs.runCommand name commonAttrs ''
       set -euo pipefail
       ${commonEnvironment staticPythonSource}
       ${python} - \
-        ${stateMachine}/state-machine.jsonl \
+        ${stateMachineInput} \
         ${lib.escapeShellArg (toString original)} \
         ${staticExport}/reference-contract.json \
         ${if indirectTargetProfile == null then "-" else lib.escapeShellArg (toString indirectTargetProfile)} \
+        ${lib.escapeShellArg (toString externalProfile)} \
         "$out" <<'PY'
       import pathlib
       import sys
       from spaghetti_extractor.reconstruction_ir import export_machine_ir_package
 
-      state_machine, original, reference, target_profile, output = sys.argv[1:]
+      state_machine, original, reference, target_profile, external_profile, output = sys.argv[1:]
       export_machine_ir_package(
           state_machine=pathlib.Path(state_machine),
           original_pe=pathlib.Path(original),
@@ -170,11 +162,12 @@ let
           indirect_target_profile=(
               None if target_profile == "-" else pathlib.Path(target_profile)
           ),
+          machine_import_profiles=(pathlib.Path(external_profile),),
           out=pathlib.Path(output),
       )
       PY
       expected_sha256="$(sha256sum ${lib.escapeShellArg (toString original)} | cut -d ' ' -f 1)"
-      jq -e --arg expected_sha256 "$expected_sha256" '
+      if ! jq -e --arg expected_sha256 "$expected_sha256" '
         .format == "stage-a-machine-ir-v2" and
         (.status == "qualified" or .status == "incomplete") and
         .binary.sha256 == $expected_sha256 and
@@ -182,10 +175,58 @@ let
         .counts.violated_issues == 0 and
         .coverage.counts.unknown_bytes == 0 and
         .control.counts.roots > 0 and
-        .control.counts.unresolved_direct_targets == 0 and
+        ${if requireClosedRootedDirect then ''
+          ([.control.reachability.frontiers[] |
+            select(.reason == "unresolved_direct_target" or
+                   .reason == "unresolved_internal_call_target")] | length) == 0 and
+        '' else ""}
         (.authority | contains("no original execution"))
-      ' "$out/machine-ir-manifest.json" >/dev/null
+      ' "$out/machine-ir-manifest.json" >/dev/null; then
+        jq '{
+          status,
+          counts,
+          coverage: .coverage.counts,
+          control: .control.counts,
+          reachability: {
+            status: .control.reachability.status,
+            counts: .control.reachability.counts,
+            direct_frontiers: [
+              .control.reachability.frontiers[] |
+              select(.reason == "unresolved_direct_target" or
+                     .reason == "unresolved_internal_call_target")
+            ][0:16]
+          }
+        }' "$out/machine-ir-manifest.json" >&2
+        exit 1
+      fi
     '';
+
+  # Direct recursive decoding is cheap.  Provenance analysis is expensive but
+  # cached as its own derivation, and proposes the additional rooted targets
+  # needed by the final exact decode.  The final IR then checks the closed
+  # state-machine artifact independently.
+  directStateMachine = mkRootedStateMachine {
+    name = "${namePrefix}-direct-rooted-state-machine-v1";
+    inputStateMachine = "${staticExport}/state-machine.jsonl";
+  };
+
+  provisionalMachineIr = mkMachineIr {
+    name = "${namePrefix}-provisional-machine-ir-v2";
+    stateMachineInput = "${directStateMachine}/state-machine.jsonl";
+    requireClosedRootedDirect = false;
+  };
+
+  stateMachine = mkRootedStateMachine {
+    name = "${namePrefix}-rooted-state-machine-v1";
+    inputStateMachine = "${directStateMachine}/state-machine.jsonl";
+    controlManifest = provisionalMachineIr;
+  };
+
+  machineIr = mkMachineIr {
+    name = "${namePrefix}-machine-ir-v2";
+    stateMachineInput = "${stateMachine}/state-machine.jsonl";
+    requireClosedRootedDirect = true;
+  };
 
   reconstructionPlan = pkgs.runCommand
     "${namePrefix}-reconstruction-plan-v1"
@@ -231,6 +272,8 @@ in
   inherit
     originalInventory
     staticExport
+    directStateMachine
+    provisionalMachineIr
     stateMachine
     machineIr
     reconstructionPlan

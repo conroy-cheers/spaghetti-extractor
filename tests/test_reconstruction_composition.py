@@ -4,6 +4,7 @@ import unittest
 
 from spaghetti_extractor.reconstruction_composition import (
     compose_linear_reconstruction_cluster,
+    inspect_linear_reconstruction_cluster,
 )
 
 
@@ -155,16 +156,33 @@ class ReconstructionCompositionTests(unittest.TestCase):
                 "op": "load_after_writes",
                 "address": address,
                 "width": 4,
-                "prior_writes": [
-                    {
-                        "address": address,
-                        "width": 4,
-                        "value": _const(7),
-                        "cluster_event_index": 0,
-                    }
-                ],
+                "prior_write_event_indices": [0],
+                "memory_event_inventory": "summary.memory_events",
             },
         )
+
+    def test_inspection_defers_symbolic_materialization(self) -> None:
+        units = [
+            _unit(
+                "entry",
+                0x1000,
+                0x1004,
+                {"outcome": {"kind": "fallthrough", "target_rva": 0x1004}},
+            ),
+            _unit("exit", 0x1004, 0x1008, {"outcome": {"kind": "return"}}),
+        ]
+
+        result = inspect_linear_reconstruction_cluster(
+            units, entry_unit_id="entry"
+        )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["unit_ids"], ["entry", "exit"])
+        self.assertEqual(
+            result["semantic_materialization"],
+            "deferred_until_workspace_selection",
+        )
+        self.assertNotIn("summary_unit", result)
 
     def test_disconnected_member_fails_closed(self) -> None:
         units = [

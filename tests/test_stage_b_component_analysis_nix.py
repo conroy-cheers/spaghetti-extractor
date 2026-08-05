@@ -32,7 +32,10 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("sideTool", analysis)
         self.assertIn("pythonSource", analysis)
         self.assertIn("staticPythonSource ? pythonSource", analysis)
-        self.assertIn('"executes_original_binary": False', analysis)
+        self.assertIn("close_state_machine_rooted_direct_control", analysis)
+        self.assertNotIn("padding-bridge", analysis)
+        self.assertNotIn("padding_bridge", analysis)
+        self.assertIn("executes_original_binary", analysis)
         self.assertIn(".coverage.exact.complete", discovery)
         self.assertIn(".coverage.potential.complete", discovery)
 
@@ -72,6 +75,17 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         )
         self.assertIn("../../nix/stage-b-component-analysis.nix", target)
         self.assertIn("inherit archive installer original inventory analysis", target)
+
+    def test_analysis_source_excludes_nix_orchestration_files(self) -> None:
+        flake = (ROOT / "flake.nix").read_text(encoding="utf-8")
+        analysis_start = flake.index("analysisSource =")
+        analysis_end = flake.index("pythonEnv =", analysis_start)
+        analysis_source = flake[analysis_start:analysis_end]
+
+        self.assertIn("./src", analysis_source)
+        self.assertIn("./profiles", analysis_source)
+        self.assertNotIn("./nix", analysis_source)
+        self.assertIn("pythonSource = analysisSource", flake)
 
 
 if __name__ == "__main__":

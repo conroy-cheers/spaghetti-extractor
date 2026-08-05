@@ -33,6 +33,7 @@ from .reconstruction_contract_analysis import analyze_reconstruction_contracts
 from .reconstruction_composition import (
     canonical_composition_sha256,
     compose_linear_reconstruction_cluster,
+    inspect_linear_reconstruction_cluster,
 )
 from .reconstruction_control import propose_semantic_clusters
 from .reconstruction_ir import (
@@ -141,14 +142,10 @@ def write_reconstruction_plan(
             }
             semantic_units = member_units
         else:
-            composition = compose_linear_reconstruction_cluster(
+            composition = inspect_linear_reconstruction_cluster(
                 member_units, entry_unit_id=str(unit["id"])
             )
-            semantic_units = (
-                [composition["summary_unit"]]
-                if composition["status"] == "complete"
-                else member_units
-            )
+            semantic_units = member_units
         expressions = _semantic_expressions(semantic_units)
         inputs = _value_inputs(expressions)
         outputs = _value_outputs(semantic_units)
@@ -464,6 +461,21 @@ def create_component_backend_workspace(
         adapter_units = [by_id[unit_id] for unit_id in requested]
     entry = by_id[str(cluster["entry_unit_id"])]
     composition = cluster.get("composition", {})
+    if (
+        len(units) > 1
+        and isinstance(composition, Mapping)
+        and composition.get("status") == "complete"
+        and not isinstance(composition.get("summary_unit"), Mapping)
+    ):
+        planned_composition = copy.deepcopy(dict(composition))
+        composition = compose_linear_reconstruction_cluster(
+            units, entry_unit_id=str(cluster["entry_unit_id"])
+        )
+        cluster = {
+            **cluster,
+            "composition_plan": planned_composition,
+            "composition": composition,
+        }
     if len(units) > 1 and (
         not isinstance(composition, Mapping)
         or composition.get("status") != "complete"

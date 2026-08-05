@@ -26,12 +26,19 @@
         let
           pkgs = import nixpkgs { inherit system; };
           pythonPackages = pkgs.python3Packages;
-          source = pkgs.lib.fileset.toSource {
+          packageSource = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
               ./pyproject.toml
               ./src
               ./nix
+              ./profiles
+            ];
+          };
+          analysisSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./src
               ./profiles
             ];
           };
@@ -45,7 +52,7 @@
             pname = "spaghetti-extractor";
             version = "0.1.0";
             pyproject = true;
-            src = source;
+            src = packageSource;
             build-system = [ pythonPackages.setuptools ];
             dependencies = with pythonPackages; [ capstone pefile z3-solver ];
             # Nixpkgs builds the z3 Python module as an output of z3 rather than
@@ -71,20 +78,21 @@
             done
           '';
           roundtrip = import ./nix/stage-a-roundtrip-corpus.nix {
-            inherit pkgs pythonEnv source;
+            inherit pkgs pythonEnv;
+            source = analysisSource;
             count = 6;
           };
           gnuHello = import ./targets/gnu-hello {
             inherit pkgs pythonEnv;
-            pythonSource = source;
+            pythonSource = analysisSource;
           };
           jqTarget = import ./targets/jq {
             inherit pkgs pythonEnv;
-            pythonSource = source;
+            pythonSource = analysisSource;
           };
           dxball = import ./targets/dxball {
             inherit pkgs pythonEnv;
-            pythonSource = source;
+            pythonSource = analysisSource;
           };
         in {
           default = package;
