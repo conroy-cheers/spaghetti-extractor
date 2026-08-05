@@ -38,6 +38,7 @@ spaghetti_extractor = [ "lean/**/*.lean" ]
   "nix/singlestep-80386-conformance.nix",
   "nix/stage-a-builder-public-keys",
   "nix/stage-a-builders",
+  "nix/stage-a-external-interface-profile.nix",
   "nix/stage-a-isa-conformance.nix",
   "nix/stage-a-isa-qualification-graph.nix",
   "nix/stage-a-lightweight-ca-builders",

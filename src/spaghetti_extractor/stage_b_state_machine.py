@@ -5,7 +5,7 @@ import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 import pefile
 
@@ -337,7 +337,7 @@ def write_stage_b_state_machine(path: Path, rows: Iterable[dict[str, Any]]) -> N
 def annotate_state_machine_import_contracts(
     rows: Iterable[dict[str, Any]],
     *,
-    external_profile: Path | None,
+    machine_import_profiles: Sequence[Path] = (),
 ) -> tuple[list[dict[str, Any]], tuple[int, ...]]:
     """Bind reviewed import arguments and no-return dispositions once.
 
@@ -345,7 +345,7 @@ def annotate_state_machine_import_contracts(
     validates the exact imported call site and the selected profile binding.
     """
 
-    contracts = _machine_import_contracts(external_profile)
+    contracts = _machine_import_contracts(machine_import_profiles)
     annotated = [
         _annotate_machine_import_arguments(dict(row), contracts) for row in rows
     ]
@@ -405,11 +405,13 @@ def semantic_direct_targets(row: Mapping[str, Any]) -> tuple[int, ...]:
     return ()
 
 def _machine_import_contracts(
-    external_profile: Path | None,
+    machine_import_profiles: Sequence[Path],
 ) -> dict[tuple[str, str, Any], dict[str, Any]]:
-    if external_profile is None:
+    if not machine_import_profiles:
         return {}
-    profile_set = load_machine_import_profile_set([Path(external_profile).resolve()])
+    profile_set = load_machine_import_profile_set(
+        [Path(path).resolve() for path in machine_import_profiles]
+    )
     result: dict[tuple[str, str, Any], dict[str, Any]] = {}
     for selected in profile_set.contracts:
         # A variadic profile describes the minimum call shape, not the exact

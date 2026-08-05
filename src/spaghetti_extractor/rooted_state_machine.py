@@ -5,7 +5,7 @@ from __future__ import annotations
 import heapq
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from ._contract_tools.common import BlockMapping
 from ._contract_tools.reference_contract import _semantic_transfer_contract
@@ -36,7 +36,7 @@ def close_state_machine_rooted_direct_control(
     reference_contract: Path,
     out: Path,
     report: Path,
-    external_profile: Path | None = None,
+    machine_import_profiles: Sequence[Path] = (),
     control_manifest: Path | None = None,
     instruction_budget: int = 65536,
     iteration_budget: int = 32,
@@ -54,10 +54,9 @@ def close_state_machine_rooted_direct_control(
     reference_contract = _regular_file(
         reference_contract, "reference contract"
     )
-    external_profile = (
-        _regular_file(external_profile, "external profile")
-        if external_profile is not None
-        else None
+    machine_import_profiles = tuple(
+        _regular_file(path, "machine import profile")
+        for path in machine_import_profiles
     )
     control_manifest = (
         _regular_file(control_manifest, "control manifest")
@@ -74,7 +73,7 @@ def close_state_machine_rooted_direct_control(
     )
     base_rows = _canonical_state_machine_rows(state_machine)
     annotated_rows, terminating_rvas = annotate_state_machine_import_contracts(
-        base_rows, external_profile=external_profile
+        base_rows, machine_import_profiles=machine_import_profiles
     )
     merged = list(annotated_rows)
     supplemental: list[dict[str, Any]] = []
@@ -126,7 +125,7 @@ def close_state_machine_rooted_direct_control(
                 for view in discovery["views"]
             ]
             round_rows, round_terminating = annotate_state_machine_import_contracts(
-                round_rows, external_profile=external_profile
+                round_rows, machine_import_profiles=machine_import_profiles
             )
             new_rows = [
                 row for row in round_rows
@@ -190,11 +189,9 @@ def close_state_machine_rooted_direct_control(
             "state_machine_sha256": sha256_file(state_machine),
             "original_pe_sha256": sha256_file(original_pe),
             "reference_contract_sha256": reference.sha256,
-            "external_profile_sha256": (
-                sha256_file(external_profile)
-                if external_profile is not None
-                else None
-            ),
+            "machine_import_profile_sha256s": [
+                sha256_file(path) for path in machine_import_profiles
+            ],
             "control_manifest_sha256": (
                 sha256_file(control_manifest)
                 if control_manifest is not None

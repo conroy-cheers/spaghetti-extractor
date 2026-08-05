@@ -226,7 +226,7 @@ class MachineImportProfileTests(unittest.TestCase):
             self.assertEqual(selected.contract["minimum_argument_words"], 1)
             self.assertNotIn(
                 selected.identity.state_machine_key(),
-                _machine_import_contracts(profile),
+                _machine_import_contracts([profile]),
             )
 
     def test_stdcall_callback_thunk_uses_return_address_offset(self) -> None:
@@ -289,7 +289,7 @@ class MachineImportProfileTests(unittest.TestCase):
                     "world_effect": "opaqueResources",
                 }],
             })
-            contracts = _machine_import_contracts(profile)
+            contracts = _machine_import_contracts([profile])
             event = {
                 "kind": "external_call", "dll": "fixture.dll",
                 "symbol": "Update", "ordinal": None,

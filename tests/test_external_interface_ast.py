@@ -30,14 +30,14 @@ class ExternalInterfaceAstTests(unittest.TestCase):
                     "include": "example.h",
                     "sha256": sha256_file(header),
                 }],
-                "interface_prefixes": ["IDirectDraw"],
+                "interface_prefixes": ["IWidget"],
                 "factories": [{
                     "id": "example.dll!Create",
                     "import": {"dll": "example.dll", "symbol": "Create"},
                     "declaration": "Create",
                     "out_interfaces": [{
                         "argument_index": 1,
-                        "interface_id": "IDirectDraw",
+                        "interface_id": "IWidget",
                     }],
                 }],
             }), encoding="utf-8")
@@ -45,23 +45,23 @@ class ExternalInterfaceAstTests(unittest.TestCase):
             ast.write_text(json.dumps({"kind": "TranslationUnitDecl", "inner": [
                 {
                     "kind": "TypedefDecl",
-                    "name": "LPDIRECTDRAW",
-                    "type": {"qualType": "struct IDirectDraw *"},
+                    "name": "LPWIDGET",
+                    "type": {"qualType": "struct IWidget *"},
                 },
                 {
                     "kind": "TypedefDecl",
-                    "name": "LPLPDIRECTDRAW",
-                    "type": {"qualType": "LPDIRECTDRAW *"},
+                    "name": "LPLPWIDGET",
+                    "type": {"qualType": "LPWIDGET *"},
                 },
                 {
                     "kind": "RecordDecl",
-                    "name": "IDirectDrawVtbl",
+                    "name": "IWidgetVtbl",
                     "inner": [
                         {
                             "kind": "FieldDecl",
                             "name": "Release",
                             "type": {
-                                "qualType": "ULONG (*)(IDirectDraw *) __attribute__((stdcall))"
+                                "qualType": "ULONG (*)(IWidget *) __attribute__((stdcall))"
                             },
                         },
                         {
@@ -69,7 +69,7 @@ class ExternalInterfaceAstTests(unittest.TestCase):
                             "name": "Duplicate",
                             "type": {
                                 "qualType": (
-                                    "HRESULT (*)(IDirectDraw *, LPLPDIRECTDRAW) "
+                                    "HRESULT (*)(IWidget *, LPLPWIDGET) "
                                     "__attribute__((stdcall))"
                                 )
                             },
@@ -81,7 +81,7 @@ class ExternalInterfaceAstTests(unittest.TestCase):
                     "name": "Create",
                     "type": {
                         "qualType": (
-                            "HRESULT (GUID *, LPDIRECTDRAW *) "
+                            "HRESULT (GUID *, LPWIDGET *) "
                             "__attribute__((stdcall))"
                         )
                     },
@@ -103,7 +103,7 @@ class ExternalInterfaceAstTests(unittest.TestCase):
             result["interfaces"][0]["methods"][1]["out_interfaces"],
             [{
                 "argument_index": 1,
-                "interface_id": "IDirectDraw",
+                "interface_id": "IWidget",
                 "write_width": 4,
             }],
         )
@@ -120,7 +120,7 @@ class ExternalInterfaceAstTests(unittest.TestCase):
                 "id": "fixture",
                 "model": "x86-pe32",
                 "headers": [{"include": "example.h", "sha256": "0" * 64}],
-                "interface_prefixes": ["IDirectDraw"],
+                "interface_prefixes": ["IWidget"],
                 "factories": [],
             }), encoding="utf-8")
             ast = root / "ast.json"

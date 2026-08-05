@@ -37,10 +37,17 @@ let
     test "$(sha256sum "$out/DXBall.exe" | cut -d ' ' -f 1)" = \
       191c113582e1f31016a158d40372fa21ea68d9348bf847bbfbc8e7c7bdfe195f
   '';
+  interfaceProfile = import ../../nix/stage-a-external-interface-profile.nix {
+    inherit pkgs pythonEnv pythonSource;
+    spec = ../../profiles/pe32-mingw-directx-interface-extraction-v1.json;
+  };
   analysis = import ../../nix/stage-b-component-analysis.nix {
     inherit pkgs pythonEnv pythonSource;
     original = "${original}/DXBall.exe";
     externalProfile = "${pythonSource}/profiles/pe32-msvcrt-machine-runtime-v1.json";
+    externalInterfaceProfiles = [
+      "${interfaceProfile}/interface-profile.json"
+    ];
     namePrefix = "spaghetti-extractor-dxball-1.09";
     maxUnits = 512;
     maxCandidatesPerSeed = 12;
@@ -48,7 +55,7 @@ let
   inventory = analysis.originalInventory;
 in
 {
-  inherit archive installer original inventory analysis;
+  inherit archive installer original interfaceProfile inventory analysis;
   intent = import ../../nix/stage-b-target-intent.nix {
     inherit pkgs pythonEnv pythonSource;
     target = ./.;

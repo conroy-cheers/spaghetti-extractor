@@ -238,6 +238,7 @@ enforce this with `xvfb-run` where Wine is used.
 
 | File | Output role |
 |---|---|
+| `stage-a-external-interface-profile.nix` | Pinned SDK headers through a checked machine-level interface profile. |
 | `stage-a-isa-conformance.nix` | One cached Lean/Unicorn/Bochs corpus evaluation. |
 | `stage-a-isa-qualification-graph.nix` | Sharded ISA evidence and qualification DAG. |
 | `stage-a-roundtrip-corpus.nix` | Generated static corpus and qualification result. |

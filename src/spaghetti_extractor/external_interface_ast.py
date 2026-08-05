@@ -16,9 +16,11 @@ from .util import sha256_file, write_json
 EXTERNAL_INTERFACE_EXTRACTION_SPEC_FORMAT = (
     "stage-a-external-interface-extraction-spec-v1"
 )
-_POINTER_ALIAS = re.compile(r"^(?:struct )?(IDirect(?:Draw|Sound)[A-Za-z0-9_]*) \*$")
-_DIRECT_DOUBLE_POINTER = re.compile(
-    r"^(?:struct )?(IDirect(?:Draw|Sound)[A-Za-z0-9_]*)\s*\*\s*\*$"
+_NAMED_POINTER = re.compile(
+    r"^(?:struct\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\*$"
+)
+_NAMED_DOUBLE_POINTER = re.compile(
+    r"^(?:struct\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\*\s*\*$"
 )
 
 
@@ -63,7 +65,7 @@ def extract_external_interface_profile(
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise StageAInputError(f"cannot read Clang AST: {exc}") from exc
     declarations = tuple(_walk_ast(ast))
-    pointer_aliases, output_aliases = _interface_aliases(declarations)
+    pointer_aliases, output_aliases = _interface_aliases(declarations, prefixes)
     interfaces = _interfaces(
         declarations, prefixes, pointer_aliases, output_aliases
     )
@@ -71,6 +73,7 @@ def extract_external_interface_profile(
     factories = _factories(
         declarations,
         _array(payload.get("factories"), "factory specifications"),
+        prefixes,
         pointer_aliases,
         output_aliases,
         known_interfaces,
@@ -141,6 +144,7 @@ def _walk_ast(value: Any) -> Iterable[Mapping[str, Any]]:
 
 def _interface_aliases(
     declarations: Sequence[Mapping[str, Any]],
+    prefixes: Sequence[str],
 ) -> tuple[dict[str, str], dict[str, str]]:
     qualified_by_name: dict[str, set[str]] = {}
     for declaration in declarations:
@@ -159,10 +163,12 @@ def _interface_aliases(
     for name, qualified_types in qualified_by_name.items():
         if len(qualified_types) != 1:
             continue
-        matched = _POINTER_ALIAS.fullmatch(next(iter(qualified_types)))
+        matched = _NAMED_POINTER.fullmatch(next(iter(qualified_types)))
         if matched is None:
             continue
         interface_id = matched.group(1)
+        if not _selected_interface(interface_id, prefixes):
+            continue
         prior = pointer_aliases.get(name)
         if prior is not None and prior != interface_id:
             raise StageAInputError(f"ambiguous interface pointer alias {name}")
@@ -176,8 +182,13 @@ def _interface_aliases(
             if name in output_aliases or len(qualified_types) != 1:
                 continue
             qualified = next(iter(qualified_types))
-            direct = _DIRECT_DOUBLE_POINTER.fullmatch(qualified)
-            interface_id = direct.group(1) if direct is not None else None
+            direct = _NAMED_DOUBLE_POINTER.fullmatch(qualified)
+            interface_id = (
+                direct.group(1)
+                if direct is not None
+                and _selected_interface(direct.group(1), prefixes)
+                else None
+            )
             if interface_id is None:
                 pointed = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\s*\*", qualified)
                 if pointed is not None:
@@ -243,7 +254,7 @@ def _interfaces(
                 "abi_template": "pe32-stdcall-v1",
                 "argument_words": len(parameters),
                 "out_interfaces": _infer_outputs(
-                    parameters, pointer_aliases, output_aliases
+                    parameters, prefixes, pointer_aliases, output_aliases
                 ),
                 "declaration_type": qualified,
             })
@@ -256,6 +267,7 @@ def _interfaces(
 def _factories(
     declarations: Sequence[Mapping[str, Any]],
     specifications: Sequence[Any],
+    prefixes: Sequence[str],
     pointer_aliases: Mapping[str, str],
     output_aliases: Mapping[str, str],
     known_interfaces: set[str],
@@ -287,7 +299,9 @@ def _factories(
         if "__attribute__((stdcall))" not in qualified:
             raise StageAInputError(f"factory {declaration} is not PE32 stdcall")
         parameters = _function_parameters(qualified)
-        inferred = _infer_outputs(parameters, pointer_aliases, output_aliases)
+        inferred = _infer_outputs(
+            parameters, prefixes, pointer_aliases, output_aliases
+        )
         expected = [
             {
                 "argument_index": _word(
@@ -342,6 +356,7 @@ def _factories(
 
 def _infer_outputs(
     parameters: Sequence[str],
+    prefixes: Sequence[str],
     pointer_aliases: Mapping[str, str],
     output_aliases: Mapping[str, str],
 ) -> list[dict[str, Any]]:
@@ -349,8 +364,11 @@ def _infer_outputs(
     for argument_index, parameter in enumerate(parameters):
         normalized = " ".join(parameter.replace("const", "").split())
         interface_id: str | None = output_aliases.get(normalized)
-        direct = _DIRECT_DOUBLE_POINTER.fullmatch(normalized)
-        if direct is not None:
+        direct = _NAMED_DOUBLE_POINTER.fullmatch(normalized)
+        if (
+            direct is not None
+            and _selected_interface(direct.group(1), prefixes)
+        ):
             interface_id = direct.group(1)
         else:
             for alias, candidate in pointer_aliases.items():
@@ -364,6 +382,10 @@ def _infer_outputs(
                 "write_width": 4,
             })
     return result
+
+
+def _selected_interface(interface_id: str, prefixes: Sequence[str]) -> bool:
+    return any(interface_id.startswith(prefix) for prefix in prefixes)
 
 
 def _function_pointer_parameters(qualified: str) -> tuple[str, ...]:

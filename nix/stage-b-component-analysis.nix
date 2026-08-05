@@ -7,6 +7,8 @@
   componentDiscoveryPythonSource ? pythonSource,
   original,
   externalProfile,
+  externalInterfaceProfiles ? [ ],
+  externalOperationProfiles ? [ ],
   indirectTargetProfile ? null,
   namePrefix,
   maxUnits ? 512,
@@ -28,6 +30,16 @@ let
     export SOURCE_DATE_EPOCH=1
     export PYTHONPATH=${source}/src
   '';
+  machineImportProfiles = [ externalProfile ] ++ externalInterfaceProfiles;
+  machineImportProfilesJson = builtins.toJSON (
+    map toString machineImportProfiles
+  );
+  externalInterfaceProfilesJson = builtins.toJSON (
+    map toString externalInterfaceProfiles
+  );
+  externalOperationProfilesJson = builtins.toJSON (
+    map toString externalOperationProfiles
+  );
 
   originalInventory = pkgs.runCommand
     "${namePrefix}-original-inventory-v1"
@@ -102,22 +114,25 @@ let
         ${inputStateMachine} \
         ${lib.escapeShellArg (toString original)} \
         ${staticExport}/reference-contract.json \
-        ${lib.escapeShellArg (toString externalProfile)} \
+        ${lib.escapeShellArg machineImportProfilesJson} \
         ${if controlManifest == null then "-" else "${controlManifest}/machine-ir-manifest.json"} \
         "$out/state-machine.jsonl" \
         "$out/rooted-control-closure.json" <<'PY'
+      import json
       import pathlib
       import sys
       from spaghetti_extractor.rooted_state_machine import (
           close_state_machine_rooted_direct_control,
       )
 
-      source, original, reference, profile, control_manifest, output, report = sys.argv[1:]
+      source, original, reference, profiles_json, control_manifest, output, report = sys.argv[1:]
       close_state_machine_rooted_direct_control(
           state_machine=pathlib.Path(source),
           original_pe=pathlib.Path(original),
           reference_contract=pathlib.Path(reference),
-          external_profile=pathlib.Path(profile),
+          machine_import_profiles=tuple(
+              pathlib.Path(path) for path in json.loads(profiles_json)
+          ),
           control_manifest=(
               None if control_manifest == "-" else pathlib.Path(control_manifest)
           ),
@@ -148,13 +163,25 @@ let
         ${lib.escapeShellArg (toString original)} \
         ${staticExport}/reference-contract.json \
         ${if indirectTargetProfile == null then "-" else lib.escapeShellArg (toString indirectTargetProfile)} \
-        ${lib.escapeShellArg (toString externalProfile)} \
+        ${lib.escapeShellArg machineImportProfilesJson} \
+        ${lib.escapeShellArg externalInterfaceProfilesJson} \
+        ${lib.escapeShellArg externalOperationProfilesJson} \
         "$out" <<'PY'
+      import json
       import pathlib
       import sys
       from spaghetti_extractor.reconstruction_ir import export_machine_ir_package
 
-      state_machine, original, reference, target_profile, external_profile, output = sys.argv[1:]
+      (
+          state_machine,
+          original,
+          reference,
+          target_profile,
+          machine_profiles_json,
+          interface_profiles_json,
+          operation_profiles_json,
+          output,
+      ) = sys.argv[1:]
       export_machine_ir_package(
           state_machine=pathlib.Path(state_machine),
           original_pe=pathlib.Path(original),
@@ -162,7 +189,15 @@ let
           indirect_target_profile=(
               None if target_profile == "-" else pathlib.Path(target_profile)
           ),
-          machine_import_profiles=(pathlib.Path(external_profile),),
+          machine_import_profiles=tuple(
+              pathlib.Path(path) for path in json.loads(machine_profiles_json)
+          ),
+          external_interface_profiles=tuple(
+              pathlib.Path(path) for path in json.loads(interface_profiles_json)
+          ),
+          external_operation_profiles=tuple(
+              pathlib.Path(path) for path in json.loads(operation_profiles_json)
+          ),
           out=pathlib.Path(output),
       )
       PY

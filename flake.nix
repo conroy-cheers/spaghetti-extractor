@@ -11,6 +11,7 @@
       lib = {
         mkISAQualificationGraph = import ./nix/stage-a-isa-qualification-graph.nix;
         mkRoundtripCorpus = import ./nix/stage-a-roundtrip-corpus.nix;
+        mkExternalInterfaceProfile = import ./nix/stage-a-external-interface-profile.nix;
         mkComponentAnalysis = import ./nix/stage-b-component-analysis.nix;
         mkComponentDiscovery = import ./nix/stage-b-component-discovery.nix;
         mkComponentInterfaces = import ./nix/stage-b-component-interfaces.nix;
@@ -104,6 +105,7 @@
           gnu-hello-intent = gnuHello.intent.validation;
           jq-intent = jqTarget.intent.validation;
           dxball-original = dxball.original;
+          dxball-interface-profile = dxball.interfaceProfile;
           dxball-static-inventory = dxball.inventory;
           dxball-static-export = dxball.analysis.staticExport;
           dxball-state-machine = dxball.analysis.stateMachine;

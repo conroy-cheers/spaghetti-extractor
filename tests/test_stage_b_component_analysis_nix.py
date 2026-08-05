@@ -74,7 +74,21 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("../../nix/stage-b-component-analysis.nix", target)
-        self.assertIn("inherit archive installer original inventory analysis", target)
+        self.assertIn(
+            "inherit archive installer original interfaceProfile inventory analysis",
+            target,
+        )
+        self.assertIn("externalInterfaceProfiles", target)
+
+    def test_sdk_interface_profile_is_a_generic_content_addressed_phase(self) -> None:
+        module = (
+            ROOT / "nix" / "stage-a-external-interface-profile.nix"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("sdkHeaders ?", module)
+        self.assertIn("extract_external_interface_profile", module)
+        self.assertIn("__contentAddressed = true;", module)
+        self.assertNotIn("dxball", module.lower())
 
     def test_analysis_source_excludes_nix_orchestration_files(self) -> None:
         flake = (ROOT / "flake.nix").read_text(encoding="utf-8")
