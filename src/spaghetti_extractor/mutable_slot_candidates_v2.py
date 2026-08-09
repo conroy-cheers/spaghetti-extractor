@@ -55,6 +55,61 @@ def derive_mutable_slot_candidates(
     return sorted(candidates)
 
 
+def derive_proposal_slot_dependencies(
+    binary: StageABinary,
+    recoveries: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Nominate writable slots referenced by non-authorizing target proposals.
+
+    The returned rows are discovery inputs only.  They identify slots that the
+    point-sensitive replay must check; neither a proposal nor its embedded PE
+    value is accepted as evidence for the resulting global-slot invariant.
+    """
+
+    dependencies: set[tuple[int, str]] = set()
+    for recovery in recoveries:
+        if (
+            not isinstance(recovery, Mapping)
+            or recovery.get("status") != "recovered"
+        ):
+            continue
+        exit_id = recovery.get("id")
+        witnesses = recovery.get("target_origin_witnesses")
+        if (
+            not isinstance(exit_id, str)
+            or not exit_id
+            or not isinstance(witnesses, Sequence)
+            or isinstance(witnesses, (str, bytes))
+        ):
+            continue
+        for witness in witnesses:
+            if (
+                not isinstance(witness, Mapping)
+                or witness.get("kind") not in {"static_code", "static_data"}
+            ):
+                continue
+            key = witness.get("key")
+            sources = key[1] if isinstance(key, list) and len(key) == 2 else None
+            if not isinstance(sources, list):
+                continue
+            for address in sources:
+                if (
+                    isinstance(address, int)
+                    and not isinstance(address, bool)
+                    and writable_image_span(binary, address, 4)
+                ):
+                    dependencies.add((address - binary.image_base, exit_id))
+    return [
+        {
+            "slot_rva": slot_rva,
+            "exit_id": exit_id,
+            "witness_only": True,
+            "proof_authority": False,
+        }
+        for slot_rva, exit_id in sorted(dependencies)
+    ]
+
+
 def rooted_reachable_unit_ids(graph: Mapping[str, Any]) -> frozenset[str]:
     roots = {
         str(row.get("unit_id"))
@@ -138,6 +193,7 @@ def writable_image_span(binary: StageABinary, address: int, width: int) -> bool:
 __all__ = [
     "constant_address",
     "derive_mutable_slot_candidates",
+    "derive_proposal_slot_dependencies",
     "rooted_reachable_unit_ids",
     "writable_image_span",
 ]

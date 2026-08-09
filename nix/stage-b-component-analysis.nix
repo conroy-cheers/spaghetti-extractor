@@ -694,7 +694,10 @@ let
               parse_launch_assumption_template_v1,
               parse_launch_profile_v2,
           )
-          from spaghetti_extractor.mutable_slot_candidates_v2 import derive_mutable_slot_candidates
+          from spaghetti_extractor.mutable_slot_candidates_v2 import (
+              derive_mutable_slot_candidates,
+              derive_proposal_slot_dependencies,
+          )
           from spaghetti_extractor.stack_range_analysis_v2 import (
               derive_stack_range_analysis_v2,
           )
@@ -734,6 +737,10 @@ let
           control = manifest.get("control", {})
           static_proposals = control.get("recovered_indirect_targets", [])
           discovery = seed.get("proposal_artifacts", {}).get("recoveries", [])
+          proposal_slot_dependencies = derive_proposal_slot_dependencies(
+              binary,
+              discovery,
+          )
           discovery_call_frames = seed.get("proposal_artifacts", {}).get(
               "call_frame_hypotheses", []
           )
@@ -881,8 +888,10 @@ let
               stack_ranges,
               interprocedural,
           ):
-              dependencies = []
-              used_slot_rvas = set()
+              dependencies = [dict(row) for row in proposal_slot_dependencies]
+              used_slot_rvas = {
+                  row["slot_rva"] for row in proposal_slot_dependencies
+              }
               for recovery in interprocedural.get("recovered_targets", []):
                   if not isinstance(recovery, dict):
                       continue

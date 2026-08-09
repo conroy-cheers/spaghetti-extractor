@@ -19,6 +19,9 @@ from spaghetti_extractor.hybrid_authority_v2 import GlobalSlotInvariant
 from spaghetti_extractor.interprocedural_phase_v2 import (
     _validate_interprocedural_mutable_handoff,
 )
+from spaghetti_extractor.mutable_slot_candidates_v2 import (
+    derive_proposal_slot_dependencies,
+)
 from spaghetti_extractor.static_hybrid_pipeline_v2 import (
     _exact_indirect_exit_id,
     derive_checked_exception_reports_v2,
@@ -385,6 +388,51 @@ class StaticHybridPipelineV2Tests(unittest.TestCase):
                 graph=graph,
             ),
             [0x403020, 0x403040],
+        )
+
+    def test_target_proposals_nominate_writable_slots_for_checked_replay(self) -> None:
+        binary = SimpleNamespace(
+            image_base=0x400000,
+            sections=(
+                SimpleNamespace(
+                    writable=False, rva_start=0x1000, rva_end=0x2000
+                ),
+                SimpleNamespace(
+                    writable=True, rva_start=0x3000, rva_end=0x4000
+                ),
+            ),
+        )
+        recoveries = [
+            {
+                "id": "indirect-exit:one",
+                "status": "recovered",
+                "target_origin_witnesses": [{
+                    "kind": "static_code",
+                    "key": [0x401100, [0x403020, 0x401020]],
+                }],
+            },
+            {
+                "id": "indirect-exit:ignored",
+                "status": "incomplete",
+                "target_origin_witnesses": [{
+                    "kind": "static_data",
+                    "key": [0x401200, [0x403024]],
+                }],
+            },
+        ]
+
+        self.assertEqual(
+            derive_proposal_slot_dependencies(
+                cast(StageABinary, binary), recoveries
+            ),
+            [
+                {
+                    "slot_rva": 0x3020,
+                    "exit_id": "indirect-exit:one",
+                    "witness_only": True,
+                    "proof_authority": False,
+                }
+            ],
         )
 
     def test_manifest_fixed_point_without_v2_handoff_is_diagnostic_only(self) -> None:

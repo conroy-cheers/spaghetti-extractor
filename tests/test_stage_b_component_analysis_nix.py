@@ -102,6 +102,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("spaghetti_extractor.global_slot_analysis_v2", joint_phase)
         self.assertIn("spaghetti_extractor.mutable_slot_candidates_v2", joint_phase)
         self.assertIn("spaghetti_extractor.global_slot_authority_v2", joint_phase)
+        self.assertIn("derive_proposal_slot_dependencies", joint_phase)
         self.assertNotIn("spaghetti_extractor.entry_state_analysis_v2", joint_phase)
         self.assertEqual(
             projection_phases.count(
