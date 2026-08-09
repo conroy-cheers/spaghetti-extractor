@@ -1546,9 +1546,17 @@ def _checked_access_classification(
 ) -> _Access | None:
     origins = [value.to_value() for value in fact.address_origins]
     kinds = {str(origin.get("kind")) for origin in origins}
-    if kinds and kinds <= {"stack_location", "dynamic_range", "dynamic_location"}:
-        return _Access("disjoint", (fact.fact_id,))
     if kinds != {"exact"}:
+        # A value-origin fact proves where the analyzer derived an address, but
+        # does not by itself prove that the underlying stack/allocation range
+        # is in bounds, non-wrapping, and disjoint from this PE image.  Only a
+        # separately checked spatial range may authorize that exclusion.
+        if kinds & {"stack_location", "dynamic_range", "dynamic_location"}:
+            return _Access(
+                "alias",
+                (fact.fact_id,),
+                "checked_non_image_origin_lacks_spatial_witness",
+            )
         return None
     concrete: list[int] = []
     for origin in origins:

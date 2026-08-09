@@ -177,7 +177,7 @@ def _codes(result: dict[str, Any]) -> set[str]:
 
 
 class GlobalSlotAnalysisV2Tests(unittest.TestCase):
-    def test_checked_stack_access_is_disjoint_from_mutable_image_slot(self) -> None:
+    def test_checked_stack_origin_requires_spatial_range_witness(self) -> None:
         units = [_unit(
             "entry",
             0x1000,
@@ -201,11 +201,38 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
         )
 
         self.assertEqual(without_fact["status"], "incomplete")
-        self.assertEqual(with_fact["status"], "complete", with_fact["issues"])
+        self.assertEqual(with_fact["status"], "incomplete")
         self.assertEqual(with_fact["counts"]["checked_memory_access_facts"], 1)
+        aliasing = with_fact["global_slot_evidence"][0][
+            "reachable_write_inventory"
+        ]["aliasing_writes"]
+        self.assertEqual(
+            aliasing[0]["reason"],
+            "checked_non_image_origin_lacks_spatial_witness",
+        )
+
+    def test_checked_exact_access_still_excludes_a_disjoint_address(self) -> None:
+        units = [_unit(
+            "entry",
+            0x1000,
+            [_write(_const(7), address=_reg("eax"))],
+        )]
+        facts = _checked_access_facts(
+            units,
+            origin={"kind": "exact", "key": [SLOT + 8]},
+        )
+
+        result = _analyze(
+            units,
+            _graph(units),
+            launch_initial_values={SLOT: 0},
+            checked_access_facts=facts,
+        )
+
+        self.assertEqual(result["status"], "complete", result["issues"])
         dependency_kinds = {
             row["kind"]
-            for row in with_fact["global_slot_evidence"][0]["dependencies"]
+            for row in result["global_slot_evidence"][0]["dependencies"]
         }
         self.assertIn("checked_memory_access_fact", dependency_kinds)
 
