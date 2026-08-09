@@ -4968,7 +4968,11 @@ def _expression_analysis_frontier(
         "and",
         "and32",
     }:
-        operands = _binary_operands(row)
+        operands = (
+            _binary_operands(row)
+            if op in {"sub", "sub32"}
+            else _arithmetic_operands(row, associative=True)
+        )
         if operands is None:
             return {
                 "code": "binary_expression_malformed",
@@ -5310,30 +5314,66 @@ def _evaluate(
     if op in {
         "add",
         "add32",
-        "sub",
-        "sub32",
         "mul",
         "mul32",
         "and",
         "and32",
     }:
+        operands = _arithmetic_operands(expression, associative=True)
+        if operands is None:
+            return None
+        result = _evaluate(
+            operands[0],
+            state,
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=budget,
+        )
+        for operand in operands[1:]:
+            value = _evaluate(
+                operand,
+                state,
+                inventory=inventory,
+                known_slots=known_slots,
+                budget=budget,
+            )
+            if op in {"and", "and32"}:
+                result = _bitwise_and_values(result, value, budget=budget)
+            elif op in {"mul", "mul32"}:
+                result = _multiply_values(result, value, budget=budget)
+            else:
+                result = _add_values(
+                    result,
+                    value,
+                    subtract=False,
+                    budget=budget,
+                    inventory=inventory,
+                )
+            if result is None:
+                return None
+        return result
+    if op in {"sub", "sub32"}:
         operands = _binary_operands(expression)
         if operands is None:
             return None
         left = _evaluate(
-            operands[0], state, inventory=inventory, known_slots=known_slots, budget=budget
+            operands[0],
+            state,
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=budget,
         )
         right = _evaluate(
-            operands[1], state, inventory=inventory, known_slots=known_slots, budget=budget
+            operands[1],
+            state,
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=budget,
         )
-        if op in {"and", "and32"}:
-            return _bitwise_and_values(left, right, budget=budget)
-        if op in {"mul", "mul32"}:
-            return _multiply_values(left, right, budget=budget)
         return _add_values(
             left,
             right,
-            subtract=op in {"sub", "sub32"},
+            subtract=True,
             budget=budget,
             inventory=inventory,
         )
@@ -6748,13 +6788,21 @@ def _signed_u32(value: int) -> int:
 
 
 def _binary_operands(expression: Mapping[str, Any]) -> tuple[Any, Any] | None:
+    operands = _arithmetic_operands(expression, associative=False)
+    return None if operands is None else (operands[0], operands[1])
+
+
+def _arithmetic_operands(
+    expression: Mapping[str, Any], *, associative: bool
+) -> tuple[Any, ...] | None:
     arguments = expression.get("args")
     if (
         isinstance(arguments, Sequence)
         and not isinstance(arguments, (str, bytes))
-        and len(arguments) == 2
+        and len(arguments) >= 2
+        and (associative or len(arguments) == 2)
     ):
-        return arguments[0], arguments[1]
+        return tuple(arguments)
     if "left" in expression and "right" in expression:
         return expression["left"], expression["right"]
     return None

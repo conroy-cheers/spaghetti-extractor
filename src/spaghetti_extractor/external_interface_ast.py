@@ -79,6 +79,7 @@ def extract_external_interface_profile(
         raise StageAInputError(f"cannot read Clang AST: {exc}") from exc
     declarations = tuple(_walk_ast(ast))
     type_aliases = _type_aliases(declarations)
+    opaque_resource_types = _opaque_resource_types(payload, declarations)
     pointer_aliases, output_aliases = _interface_aliases(declarations, prefixes)
     callback_aliases = _callback_aliases(declarations)
     callback_specs = _callback_specs(payload)
@@ -92,6 +93,7 @@ def extract_external_interface_profile(
         callback_specs,
         used_callback_specs,
         type_aliases,
+        opaque_resource_types,
     )
     unused_callback_specs = sorted(set(callback_specs) - used_callback_specs)
     if unused_callback_specs:
@@ -111,6 +113,7 @@ def extract_external_interface_profile(
         output_aliases,
         known_interfaces,
         type_aliases,
+        opaque_resource_types,
     )
     vtable_sizes = {
         interface["id"]: len(interface["methods"]) * 4
@@ -122,6 +125,7 @@ def extract_external_interface_profile(
         "model": "x86-pe32",
         "status": "complete",
         "effect_model": SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL,
+        "opaque_resource_types": sorted(opaque_resource_types),
         "provenance": {
             "kind": "pinned_clang_ast_from_reviewed_sdk_headers",
             "generator": EXTERNAL_INTERFACE_EXTRACTION_SPEC_FORMAT,
@@ -419,6 +423,7 @@ def _interfaces(
     callback_specs: Mapping[tuple[str, str, int], Mapping[str, Any]],
     used_callback_specs: set[tuple[str, str, int]],
     type_aliases: Mapping[str, str],
+    opaque_resource_types: frozenset[str],
 ) -> list[dict[str, Any]]:
     definitions: dict[str, list[Mapping[str, Any]]] = {}
     for declaration in declarations:
@@ -487,6 +492,7 @@ def _interfaces(
                         type_aliases=type_aliases,
                         interface_pointer_aliases=pointer_aliases,
                         callback_aliases=callback_aliases,
+                        opaque_resource_types=opaque_resource_types,
                         output_indices={
                             int(output["argument_index"]) for output in outputs
                         },
@@ -511,6 +517,7 @@ def _factories(
     output_aliases: Mapping[str, str],
     known_interfaces: set[str],
     type_aliases: Mapping[str, str],
+    opaque_resource_types: frozenset[str],
 ) -> list[dict[str, Any]]:
     functions: dict[str, set[str]] = {}
     for declaration in declarations:
@@ -587,6 +594,7 @@ def _factories(
                     type_aliases=type_aliases,
                     interface_pointer_aliases=pointer_aliases,
                     callback_aliases={},
+                    opaque_resource_types=opaque_resource_types,
                     output_indices={
                         int(output["argument_index"]) for output in expected
                     },
@@ -638,6 +646,7 @@ def _caller_memory_frame(
     type_aliases: Mapping[str, str],
     interface_pointer_aliases: Mapping[str, str],
     callback_aliases: Mapping[str, Mapping[str, Any]],
+    opaque_resource_types: frozenset[str],
     output_indices: set[int],
     receiver_index: int | None,
 ) -> dict[str, Any]:
@@ -661,6 +670,15 @@ def _caller_memory_frame(
             access = "read_write"
             extent = "opaque_resource"
             retention = "during_call"
+        elif _opaque_resource_pointer(
+            parameter,
+            resolved=resolved,
+            opaque_resource_types=opaque_resource_types,
+        ):
+            role = "interface_resource"
+            access = "read_write"
+            extent = "opaque_resource"
+            retention = "during_call"
         elif normalized in callback_aliases or "(*)" in resolved:
             role = "callback"
             access = "read"
@@ -679,6 +697,48 @@ def _caller_memory_frame(
             retention=retention,
         ))
     return InterfaceCallerMemoryFrame(tuple(arguments)).as_json()
+
+
+def _opaque_resource_types(
+    payload: Mapping[str, Any],
+    declarations: Sequence[Mapping[str, Any]],
+) -> frozenset[str]:
+    raw_types = payload.get("opaque_resource_types", [])
+    declared_names = {
+        str(declaration["name"])
+        for declaration in declarations
+        if declaration.get("kind") in {"TypedefDecl", "RecordDecl"}
+        and isinstance(declaration.get("name"), str)
+    }
+    result: set[str] = set()
+    for index, raw in enumerate(
+        _array(raw_types, "opaque resource types")
+    ):
+        name = _nonempty(raw, f"opaque resource type {index}")
+        if name in result:
+            raise StageAInputError(f"duplicate opaque resource type {name}")
+        if name not in declared_names:
+            raise StageAInputError(
+                f"opaque resource type is absent from the pinned AST: {name}"
+            )
+        result.add(name)
+    return frozenset(result)
+
+
+def _opaque_resource_pointer(
+    parameter: str,
+    *,
+    resolved: str,
+    opaque_resource_types: frozenset[str],
+) -> bool:
+    normalized = re.sub(r"\b(?:const|volatile|restrict)\b", "", parameter)
+    normalized = " ".join(normalized.split())
+    if normalized in opaque_resource_types:
+        return True
+    direct = _NAMED_POINTER.fullmatch(
+        re.sub(r"\b(?:const|volatile|restrict)\b", "", resolved).strip()
+    )
+    return direct is not None and direct.group(1) in opaque_resource_types
 
 
 def _resolve_pointer_type(

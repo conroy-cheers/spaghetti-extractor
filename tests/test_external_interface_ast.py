@@ -17,6 +17,7 @@ from spaghetti_extractor.external_interface_profiles import (
 from spaghetti_extractor.machine_import_profiles import (
     load_machine_import_profile_set,
 )
+from spaghetti_extractor.stage_binary import StageAInputError
 from spaghetti_extractor.util import sha256_file
 
 
@@ -37,6 +38,7 @@ class ExternalInterfaceAstTests(unittest.TestCase):
                     "sha256": sha256_file(header),
                 }],
                 "interface_prefixes": ["IWidget"],
+                "opaque_resource_types": ["HWND"],
                 "factories": [{
                     "id": "example.dll!Create",
                     "import": {"dll": "example.dll", "symbol": "Create"},
@@ -60,6 +62,11 @@ class ExternalInterfaceAstTests(unittest.TestCase):
                     "type": {"qualType": "LPWIDGET *"},
                 },
                 {
+                    "kind": "TypedefDecl",
+                    "name": "HWND",
+                    "type": {"qualType": "struct HWND__ *"},
+                },
+                {
                     "kind": "RecordDecl",
                     "name": "IWidgetVtbl",
                     "inner": [
@@ -67,7 +74,10 @@ class ExternalInterfaceAstTests(unittest.TestCase):
                             "kind": "FieldDecl",
                             "name": "Release",
                             "type": {
-                                "qualType": "ULONG (*)(IWidget *) __attribute__((stdcall))"
+                                "qualType": (
+                                    "ULONG (*)(IWidget *, HWND) "
+                                    "__attribute__((stdcall))"
+                                )
                             },
                         },
                         {
@@ -101,6 +111,20 @@ class ExternalInterfaceAstTests(unittest.TestCase):
                 headers=[header],
                 out=output,
             )
+            invalid_spec = root / "invalid-spec.json"
+            invalid_payload = json.loads(spec.read_text(encoding="utf-8"))
+            invalid_payload["opaque_resource_types"] = ["MISSPELLED_HANDLE"]
+            invalid_spec.write_text(json.dumps(invalid_payload), encoding="utf-8")
+            with self.assertRaisesRegex(
+                StageAInputError,
+                "opaque resource type is absent from the pinned AST",
+            ):
+                extract_external_interface_profile(
+                    ast_json=ast,
+                    spec=invalid_spec,
+                    headers=[header],
+                    out=root / "invalid-profile.json",
+                )
             loaded = load_external_interface_profile(output)
             machine_profile = load_machine_import_profile_set([output])
 
@@ -223,13 +247,22 @@ class ExternalInterfaceAstTests(unittest.TestCase):
             result["interfaces"][0]["methods"][0][
                 "caller_memory_frame"
             ]["arguments"],
-            [{
-                "argument_index": 0,
-                "role": "interface_resource",
-                "access": "read_write",
-                "extent": "opaque_resource",
-                "retention": "during_call",
-            }],
+            [
+                {
+                    "argument_index": 0,
+                    "role": "interface_resource",
+                    "access": "read_write",
+                    "extent": "opaque_resource",
+                    "retention": "during_call",
+                },
+                {
+                    "argument_index": 1,
+                    "role": "interface_resource",
+                    "access": "read_write",
+                    "extent": "opaque_resource",
+                    "retention": "during_call",
+                },
+            ],
         )
         self.assertEqual(
             result["interfaces"][0]["methods"][1][

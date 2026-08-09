@@ -16,6 +16,7 @@ from spaghetti_extractor.control_analysis_v2 import exact_control_inventory_v2
 from spaghetti_extractor.import_abi import SelectedImportABI
 from spaghetti_extractor.interface_provenance import (
     INTERFACE_PROVENANCE_FORMAT,
+    _guard_constraint,
     recover_external_interface_targets,
 )
 from spaghetti_extractor.provenance_domain import ValueOrigin
@@ -208,6 +209,15 @@ def edge(source: str, target: str) -> dict[str, object]:
 
 
 class InterfaceProvenanceTests(unittest.TestCase):
+    def test_masked_guard_constraint_remains_binary(self) -> None:
+        self.assertEqual(
+            _guard_constraint({
+                "op": "eq32",
+                "args": [bit_and(reg("eax"), const(0xFF)), const(7)],
+            }),
+            ("eax", "masked_eq", 7, 0xFF),
+        )
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         path = Path(self.temporary.name) / "profile.json"
@@ -753,6 +763,36 @@ class InterfaceProvenanceTests(unittest.TestCase):
             result["resolutions"][0]["analysis_dependencies"],
             ['call-frame:["root",0,"factory"]'],
         )
+
+    def test_factory_object_survives_nary_address_normalization(self) -> None:
+        nary_slot = {
+            "op": "add32",
+            "args": [const(SLOT - 8), const(4), const(4)],
+        }
+        units = [
+            factory_unit(),
+            unit("object", 0x1200, writes=[{
+                "register": "eax",
+                "value": load(nary_slot),
+            }]),
+            unit("vtable", 0x1300, writes=[{
+                "register": "ecx",
+                "value": load(reg("eax")),
+            }]),
+            indirect_call(),
+        ]
+
+        result = self._run(
+            units,
+            [
+                edge("factory", "object"),
+                edge("object", "vtable"),
+                edge("vtable", "call"),
+            ],
+            roots=["factory"],
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "recovered", result)
 
     def test_internal_summary_instantiates_input_relative_interface_result(self) -> None:
         call = {

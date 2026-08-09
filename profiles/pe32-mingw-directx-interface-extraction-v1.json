@@ -17,6 +17,12 @@
     "IDirectDraw",
     "IDirectSound"
   ],
+  "opaque_resource_types": [
+    "HANDLE",
+    "HDC",
+    "HWND",
+    "IUnknown"
+  ],
   "method_callbacks": [
     {"interface_id": "IDirectDraw", "method": "EnumDisplayModes", "argument_index": 4, "lifetime": "during_call", "nullable": false},
     {"interface_id": "IDirectDraw", "method": "EnumSurfaces", "argument_index": 4, "lifetime": "during_call", "nullable": false},
