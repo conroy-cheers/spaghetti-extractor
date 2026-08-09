@@ -169,6 +169,7 @@ def synthesize_exception_invariant_certificate_v2(
     binary_sha256: str,
     machine_ir_sha256: str,
     root_assumptions: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    requested_facts: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     finite_value_budget: int = 32,
     candidate_budget: int = 128,
     solver_timeout_ms: int = 5_000,
@@ -176,10 +177,10 @@ def synthesize_exception_invariant_certificate_v2(
     """Propose, but never authorize, one replayable SCC certificate.
 
     Candidates come only from exact edge guards, caller-supplied root facts,
-    and exact constant register writes in the supplied machine IR.  Local QF_BV
-    checks prune candidates that do not establish initiation or inductive
-    preservation.  Those checks are an optimization only: authority still
-    requires an independent call to :func:`check_exception_invariant_certificate_v2`.
+    requested facts, and exact constant register writes in the supplied
+    machine IR. Requested facts are untrusted guidance and are exported only
+    after the independent checker proves initiation and inductive preservation.
+    Local QF_BV checks prune candidates before that authority replay.
 
     The synthesis is deliberately bounded and fail-closed.  Unsupported
     predicates, candidate overflow, and faults that cannot be shown infeasible
@@ -201,7 +202,7 @@ def synthesize_exception_invariant_certificate_v2(
         region_key="scc",
         require_cyclic=True,
         frontier_member_ids=(),
-        requested_facts=None,
+        requested_facts=requested_facts,
         include_faults=True,
     )
 
@@ -463,7 +464,7 @@ def _synthesize_invariant_certificate_v2(
                     if retained_requested[unit_id]
                 ]
             }
-            if not include_faults
+            if requested
             else {}
         ),
     }
@@ -1141,12 +1142,16 @@ def _check_invariant_certificate_v2(
     )
 
     requested_exports: list[dict[str, Any]] = []
-    if control_certificate:
+    if control_certificate or "requested_facts" in certificate:
         requested_exports = _check_requested_fact_exports(
             certificate.get("requested_facts"),
             members=members,
             invariant_facts=invariant_facts,
-            frontier_members=inventory.get("frontier_members", ()),
+            frontier_members=(
+                inventory.get("frontier_members", ())
+                if control_certificate
+                else ()
+            ),
             issues=issues,
         )
 
@@ -1486,6 +1491,12 @@ def _invariant_predicate(row: Mapping[str, Any]) -> dict[str, Any]:
                     _const(remainder),
                 ],
             })
+        elif kind == "predicate":
+            if set(fact) != {"kind", "expression"}:
+                raise ExceptionInvariantV2Error(
+                    "predicate fact has noncanonical fields"
+                )
+            predicates.append(expression)
         else:
             raise ExceptionInvariantV2Error(f"unsupported invariant fact {kind!r}")
     return _conjunction(predicates)

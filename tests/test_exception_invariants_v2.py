@@ -511,6 +511,94 @@ class ExceptionInvariantV2Tests(unittest.TestCase):
         report = self._replay_synthesis(proposal, [entry, loop])
         self.assertEqual(report["status"], "complete", report["issues"])
 
+    def test_exports_checked_flag_relation_from_cyclic_scc(self) -> None:
+        entry = {
+            "id": "unit:entry",
+            "status": "qualified",
+            "source": {
+                "contract_sha256": "5" * 64,
+                "instruction_bytes_sha256": "6" * 64,
+                "original": {"rva_start": 0x900, "rva_end": 0x902},
+            },
+            "semantics": {
+                "outcome": {"kind": "jump", "target_rva": 0x1000},
+                "edge_conditions": [{
+                    "target_rva": 0x1000,
+                    "condition": {"op": "true"},
+                }],
+                "register_writes": [],
+                "flag_writes": [],
+                "faults": [],
+            },
+        }
+        producer = {
+            "id": "unit:producer",
+            "status": "qualified",
+            "source": {
+                "contract_sha256": "7" * 64,
+                "instruction_bytes_sha256": "8" * 64,
+                "original": {"rva_start": 0x1000, "rva_end": 0x1002},
+            },
+            "semantics": {
+                "outcome": {"kind": "jump", "target_rva": 0x1002},
+                "edge_conditions": [{
+                    "target_rva": 0x1002,
+                    "condition": {"op": "true"},
+                }],
+                "register_writes": [],
+                "flag_writes": [{
+                    "flag": "zf",
+                    "value": {"op": "eq", "args": [_reg("ecx"), _const(7)]},
+                }],
+                "faults": [],
+            },
+        }
+        consumer = {
+            "id": "unit:consumer",
+            "status": "qualified",
+            "source": {
+                "contract_sha256": "9" * 64,
+                "instruction_bytes_sha256": "a" * 64,
+                "original": {"rva_start": 0x1002, "rva_end": 0x1004},
+            },
+            "semantics": {
+                "outcome": {"kind": "jump", "target_rva": 0x1000},
+                "edge_conditions": [{
+                    "target_rva": 0x1000,
+                    "condition": {"op": "true"},
+                }],
+                "register_writes": [],
+                "flag_writes": [],
+                "faults": [],
+            },
+        }
+        fact = {
+            "kind": "predicate",
+            "expression": {
+                "op": "eq_bool",
+                "args": [
+                    {"op": "flag", "name": "zf"},
+                    {"op": "eq", "args": [_reg("ecx"), _const(7)]},
+                ],
+            },
+        }
+        proposal = synthesize_exception_invariant_certificate_v2(
+            units=[entry, producer, consumer],
+            member_ids=["unit:producer", "unit:consumer"],
+            binary_sha256=BINARY_SHA,
+            machine_ir_sha256=MACHINE_IR_SHA,
+            requested_facts={"unit:consumer": [fact]},
+        )
+
+        self.assertEqual(proposal["status"], "complete", proposal["issues"])
+        self.assertEqual(
+            proposal["certificate"]["requested_facts"],
+            [{"unit_id": "unit:consumer", "facts": [fact]}],
+        )
+        report = self._replay_synthesis(proposal, [entry, producer, consumer])
+        self.assertEqual(report["status"], "complete", report["issues"])
+        self.assertEqual(report["checked_invariants"][0]["fact"], fact)
+
     def test_unsupported_predicate_and_budget_overflow_fail_closed(self) -> None:
         unit = _loop_unit()
         alternatives = [
