@@ -20,6 +20,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             "staticExport",
             "stateMachine",
             "machineIr",
+            "memoryRangeInvariants",
             "staticHybridAuthorityV2",
             "reconstructionPlan",
             "componentProposals",
@@ -140,6 +141,26 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("range_authority_binding=stack_ranges.get(\"binding\")", joint_phase)
         self.assertIn("entry_range_facts=", joint_phase)
 
+    def test_memory_range_invariants_are_checked_once_before_joint_analysis(self) -> None:
+        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
+            encoding="utf-8"
+        )
+        range_phase = module[
+            module.index("      memoryRangeInvariants = {") :
+            module.index("      jointInterproceduralV2 = {")
+        ]
+        joint_phase = module[
+            module.index("      jointInterproceduralV2 = {") :
+            module.index("      interproceduralV2 = {")
+        ]
+
+        self.assertIn("derive_memory_range_invariants_v2", range_phase)
+        self.assertIn("inputs[\"memory_range_invariants\"]", joint_phase)
+        self.assertIn(
+            "memory_range_invariant_analysis=memory_range_invariants",
+            joint_phase,
+        )
+
     def test_interprocedural_phase_does_not_import_pipeline_or_audit_layers(self) -> None:
         module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
             encoding="utf-8"
@@ -217,6 +238,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             "spaghetti_extractor.joint_fixed_point_v2",
             "spaghetti_extractor.joint_interprocedural_analysis_v2",
             "spaghetti_extractor.launch_profile_v2",
+            "spaghetti_extractor.memory_range_invariants_v2",
             "spaghetti_extractor.stack_range_analysis_v2",
         ]
         closure: set[str] = set()

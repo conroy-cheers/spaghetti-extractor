@@ -126,6 +126,7 @@ conservative self-map used to emit a baseline contract and state machine.
 | `interprocedural_analysis.py` | Unified SCC worklist for call summaries, value provenance, indirect targets, and dependency closure. |
 | `interprocedural_phase_v2.py`, `joint_interprocedural_analysis_v2.py`, `joint_fixed_point_v2.py` | Phase adapters and the joint graph/stack/global-slot/interprocedural fixed point. |
 | `stack_range_analysis_v2.py` | Checked stack-range facts and call-frame entry offsets. |
+| `memory_range_invariants_v2.py` | Proposes and independently replays SCC induction facts, then exports exact event-bound static-memory ranges for alias analysis. |
 | `entry_state_contract_v2.py` | Typed entry-state and launch-root authority records. |
 | `indirect_target_dependency_v2.py`, `static_indirect_replay_v2.py` | Exact indirect-target dependencies and independent finite-target replay. |
 | `target_cutpoint_materialization_v2.py`, `recovered_executable_data.py` | Untrusted exact-span proposals for finite control destinations plus checked executable code/data and padding separation. |

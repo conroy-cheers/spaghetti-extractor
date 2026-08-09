@@ -97,6 +97,15 @@ let
         "spaghetti_extractor.control_invariant_phase_v2"
       ];
     };
+    memoryRangeInvariants = mkSpec {
+      derivationSuffix = "memory-range-invariants";
+      kind = "memory-range-invariants-v2";
+      artifactName = "memory-range-invariants-v2.json";
+      expectedFormat = "spaghetti-extractor-memory-range-invariants-v2";
+      pythonModules = [
+        "spaghetti_extractor.memory_range_invariants_v2"
+      ];
+    };
     jointInterproceduralV2 = mkSpec {
       derivationSuffix = "joint-interprocedural";
       kind = "joint-interprocedural-v2";
@@ -289,6 +298,8 @@ let
           audit_policy_only = {
             exact_unit_prep_unchanged = sameDrv graph.exactUnitPrep auditMutation.exactUnitPrep;
             base_graph_unchanged = sameDrv graph.baseGraph auditMutation.baseGraph;
+            memory_range_invariants_unchanged =
+              sameDrv graph.memoryRangeInvariants auditMutation.memoryRangeInvariants;
             interprocedural_unchanged = sameDrv graph.interproceduralV2 auditMutation.interproceduralV2;
             rooted_closure_unchanged = sameDrv graph.rootedClosure auditMutation.rootedClosure;
             external_profile_authority_unchanged = sameDrv graph.externalProfileAuthority auditMutation.externalProfileAuthority;
@@ -307,6 +318,8 @@ let
           external_profile_only = {
             exact_unit_prep_unchanged = sameDrv graph.exactUnitPrep externalProfileMutation.exactUnitPrep;
             base_graph_unchanged = sameDrv graph.baseGraph externalProfileMutation.baseGraph;
+            memory_range_invariants_unchanged =
+              sameDrv graph.memoryRangeInvariants externalProfileMutation.memoryRangeInvariants;
             interprocedural_unchanged = sameDrv graph.interproceduralV2 externalProfileMutation.interproceduralV2;
             rooted_closure_unchanged = sameDrv graph.rootedClosure externalProfileMutation.rootedClosure;
             isa_selection_unchanged = sameDrv graph.isaSelectionAuthority externalProfileMutation.isaSelectionAuthority;
@@ -336,6 +349,8 @@ let
             base_graph_unchanged = sameDrv graph.baseGraph jointInterproceduralMutation.baseGraph;
             interprocedural_seed_unchanged =
               sameDrv graph.interproceduralSeed jointInterproceduralMutation.interproceduralSeed;
+            memory_range_invariants_unchanged =
+              sameDrv graph.memoryRangeInvariants jointInterproceduralMutation.memoryRangeInvariants;
             joint_interprocedural_changed =
               !(sameDrv graph.jointInterproceduralV2 jointInterproceduralMutation.jointInterproceduralV2);
             global_slot_analysis_changed =
@@ -374,6 +389,7 @@ let
     graph.baseGraph
     graph.interproceduralSeed
     graph.controlInvariantCertificates
+    graph.memoryRangeInvariants
     graph.jointInterproceduralV2
     graph.interproceduralV2
     graph.rootedClosure

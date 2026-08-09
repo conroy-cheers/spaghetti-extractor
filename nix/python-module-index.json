@@ -635,7 +635,8 @@
         "spaghetti_extractor.analysis_schema_v2",
         "spaghetti_extractor.artifact_identity_v2",
         "spaghetti_extractor.authority_bindings_v2",
-        "spaghetti_extractor.checked_memory_access_v2"
+        "spaghetti_extractor.checked_memory_access_v2",
+        "spaghetti_extractor.memory_range_invariants_v2"
       ],
       "path": "src/spaghetti_extractor/global_slot_analysis_v2.py"
     },
@@ -648,6 +649,7 @@
         "spaghetti_extractor.global_slot_image_v2",
         "spaghetti_extractor.global_slot_proposal_v2",
         "spaghetti_extractor.machine_ir_authority_v2",
+        "spaghetti_extractor.memory_range_invariants_v2",
         "spaghetti_extractor.stage_binary"
       ],
       "path": "src/spaghetti_extractor/global_slot_authority_v2.py"
@@ -728,6 +730,7 @@
     "spaghetti_extractor.interface_provenance": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor.address_expression_v2",
         "spaghetti_extractor.call_arguments",
         "spaghetti_extractor.call_frame_hypotheses",
         "spaghetti_extractor.call_site_effects",
@@ -1073,6 +1076,15 @@
         "spaghetti_extractor.machine_ir_isa_requirements_v2"
       ],
       "path": "src/spaghetti_extractor/machine_ir_isa_selection_v2.py"
+    },
+    "spaghetti_extractor.memory_range_invariants_v2": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.analysis.scc_worklist",
+        "spaghetti_extractor.artifact_identity_v2",
+        "spaghetti_extractor.exception_invariants_v2"
+      ],
+      "path": "src/spaghetti_extractor/memory_range_invariants_v2.py"
     },
     "spaghetti_extractor.mutable_slot_candidates_v2": {
       "dependencies": [

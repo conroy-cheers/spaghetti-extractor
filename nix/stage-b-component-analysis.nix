@@ -635,6 +635,47 @@ let
         '';
       };
 
+      memoryRangeInvariants = {
+        derivationSuffix = "memory-range-invariants-v2";
+        kind = "memory-range-invariants-v2";
+        artifactName = "memory-range-invariants-v2.json";
+        expectedFormat = "spaghetti-extractor-memory-range-invariants-v2";
+        allowedStatuses = [ "complete" "incomplete" "violated" ];
+        pythonModules = [
+          "spaghetti_extractor.memory_range_invariants_v2"
+        ];
+        inputs = {
+          original_pe = original;
+          machine_ir = "${machineIr}/machine-ir.jsonl";
+        };
+        program = ''
+          import hashlib
+
+          from spaghetti_extractor.memory_range_invariants_v2 import (
+              derive_memory_range_invariants_v2,
+          )
+
+          units = [
+              json.loads(line)
+              for line in inputs["machine_ir"].read_text(encoding="utf-8").splitlines()
+              if line.strip()
+          ]
+          payload = derive_memory_range_invariants_v2(
+              units=units,
+              binary_sha256=hashlib.sha256(
+                  inputs["original_pe"].read_bytes()
+              ).hexdigest(),
+              machine_ir_sha256=hashlib.sha256(
+                  inputs["machine_ir"].read_bytes()
+              ).hexdigest(),
+          )
+          output.write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+        '';
+      };
+
       jointInterproceduralV2 = {
         derivationSuffix = "joint-interprocedural-v2";
         kind = "joint-interprocedural-v2";
@@ -648,6 +689,7 @@ let
           "spaghetti_extractor.joint_fixed_point_v2"
           "spaghetti_extractor.joint_interprocedural_analysis_v2"
           "spaghetti_extractor.launch_profile_v2"
+          "spaghetti_extractor.memory_range_invariants_v2"
           "spaghetti_extractor.mutable_slot_candidates_v2"
           "spaghetti_extractor.internal_function_contracts"
           "spaghetti_extractor.stack_range_analysis_v2"
@@ -715,6 +757,9 @@ let
           checked_control_invariants = json.loads(
               inputs["control_invariants"].read_text(encoding="utf-8")
           ).get("authority_records", [])
+          memory_range_invariants = json.loads(
+              inputs["memory_range_invariants"].read_text(encoding="utf-8")
+          )
           binary = _parse_stage_a_pe(inputs["original_pe"])
           if "launch_profile" in inputs:
               launch = parse_launch_profile_v2(
@@ -881,6 +926,9 @@ let
                   entry_range_facts=stack_ranges.get("checked_range_facts", []),
                   range_authority_binding=stack_ranges.get("binding"),
                   launch_initial_values=launch_initial_values,
+                  memory_range_invariant_analysis=memory_range_invariants,
+                  pe_sha256=binary.sha256,
+                  machine_ir_sha256=machine_ir_sha256,
               )
 
           def derive_dependency_scoped_global_slots(
@@ -963,6 +1011,7 @@ let
                           "checked_memory_access_facts", []
                       )
                   ),
+                  memory_range_invariant_analysis=memory_range_invariants,
                   pe_sha256=binary.sha256,
                   machine_ir_sha256=machine_ir_sha256,
                   interprocedural_authority_sha256=(

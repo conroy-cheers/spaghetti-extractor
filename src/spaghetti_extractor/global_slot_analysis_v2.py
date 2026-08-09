@@ -32,6 +32,7 @@ from .checked_memory_access_v2 import (
     CheckedMemoryAccessV2Error,
     validate_checked_memory_access_facts_v2,
 )
+from .memory_range_invariants_v2 import validate_memory_range_invariants_v2
 
 
 GLOBAL_SLOT_ANALYSIS_V2_FORMAT = "stage-a-global-slot-analysis-v2"
@@ -105,6 +106,7 @@ def analyze_global_slots_v2(
     relevant_read_dependencies: Sequence[Mapping[str, Any]] | None = None,
     launch_initial_values: Mapping[int, int] | None = None,
     checked_memory_access_facts: Sequence[Mapping[str, Any]] = (),
+    memory_range_invariant_analysis: Mapping[str, Any] | None = None,
     pe_sha256: str | None = None,
     machine_ir_sha256: str | None = None,
     interprocedural_authority_sha256: str | None = None,
@@ -160,6 +162,7 @@ def analyze_global_slots_v2(
     )
     normalized_units, unit_issues = _normalize_units(units)
     access_facts: dict[str, CheckedMemoryAccessFact] = {}
+    access_range_facts: dict[str, Mapping[str, Any]] = {}
     access_fact_issues: list[dict[str, Any]] = []
     if checked_memory_access_facts:
         if not all(
@@ -190,6 +193,25 @@ def analyze_global_slots_v2(
                 access_fact_issues.append(_issue(
                     "violated",
                     "checked_memory_access_fact_invalid",
+                    reason=str(exc),
+                ))
+    if memory_range_invariant_analysis is not None:
+        if not _digest(pe_sha256) or not _digest(machine_ir_sha256):
+            access_fact_issues.append(
+                _issue("violated", "memory_range_invariant_binding_missing")
+            )
+        else:
+            try:
+                access_range_facts = validate_memory_range_invariants_v2(
+                    memory_range_invariant_analysis,
+                    units=list(normalized_units.values()),
+                    binary_sha256=str(pe_sha256),
+                    machine_ir_sha256=str(machine_ir_sha256),
+                )
+            except (TypeError, ValueError) as exc:
+                access_fact_issues.append(_issue(
+                    "violated",
+                    "memory_range_invariant_analysis_invalid",
                     reason=str(exc),
                 ))
     range_facts, range_issues = _normalize_range_facts(
@@ -236,6 +258,7 @@ def analyze_global_slots_v2(
         slots=normalized_slots,
         range_facts=range_facts,
         access_facts=access_facts,
+        access_range_facts=access_range_facts,
         alternative_budget=alternative_budget,
         global_issues=slot_replay_issues,
         inductive_graph_frontiers=inductive_graph_frontiers,
@@ -251,6 +274,7 @@ def analyze_global_slots_v2(
         slots=normalized_slots,
         range_facts=range_facts,
         access_facts=access_facts,
+        access_range_facts=access_range_facts,
         alternative_budget=alternative_budget,
         global_issues=slot_replay_issues,
         inductive_graph_frontiers=inductive_graph_frontiers,
@@ -314,10 +338,16 @@ def analyze_global_slots_v2(
             "incomplete_slots": sum(value == "incomplete" for value in slot_statuses),
             "violated_slots": sum(value == "violated" for value in slot_statuses),
             "checked_memory_access_facts": len(access_facts),
+            "checked_memory_address_ranges": len(access_range_facts),
         },
         "checked_memory_access_facts": [
             fact.to_payload() for fact in access_facts.values()
         ],
+        "memory_range_invariant_analysis": (
+            None
+            if memory_range_invariant_analysis is None
+            else copy.deepcopy(dict(memory_range_invariant_analysis))
+        ),
         "global_slot_evidence": evidence_rows,
         "slots": slot_results,
         "cold_replay": {
@@ -339,6 +369,7 @@ def _analyze_once(
     slots: Sequence[int],
     range_facts: Sequence[Mapping[str, Any]],
     access_facts: Mapping[str, CheckedMemoryAccessFact],
+    access_range_facts: Mapping[str, Mapping[str, Any]],
     alternative_budget: int,
     global_issues: Sequence[Mapping[str, Any]],
     inductive_graph_frontiers: Sequence[Mapping[str, Any]],
@@ -375,6 +406,7 @@ def _analyze_once(
             event_graph=event_graph,
             range_facts=range_facts,
             access_facts=access_facts,
+            access_range_facts=access_range_facts,
             alternative_budget=alternative_budget,
             machine_ir_dependency=machine_ir_dependency,
             graph_dependency=graph_dependency,
@@ -403,6 +435,7 @@ def _analyze_slot(
     event_graph: Mapping[str, Any],
     range_facts: Sequence[Mapping[str, Any]],
     access_facts: Mapping[str, CheckedMemoryAccessFact],
+    access_range_facts: Mapping[str, Mapping[str, Any]],
     alternative_budget: int,
     machine_ir_dependency: Mapping[str, Any],
     graph_dependency: Mapping[str, Any],
@@ -423,6 +456,7 @@ def _analyze_slot(
             slot_address=address,
             range_facts=range_facts,
             checked_fact=access_facts.get(node_id),
+            checked_range=access_range_facts.get(node_id),
         )
         accesses[node_id] = access
         used_fact_ids.update(access.dependency_ids)
@@ -642,6 +676,18 @@ def _analyze_slot(
         }
         for identity in sorted(used_fact_ids)
         if identity in access_by_id
+    )
+    access_range_by_id = {
+        str(fact["id"]): fact for fact in access_range_facts.values()
+    }
+    dependencies.extend(
+        {
+            "kind": "checked_memory_address_range",
+            "id": identity,
+            "sha256": str(access_range_by_id[identity]["fact_sha256"]),
+        }
+        for identity in sorted(used_fact_ids)
+        if identity in access_range_by_id
     )
     dependencies = sorted(dependencies, key=lambda row: (str(row["kind"]), str(row["id"])))
 
@@ -1432,6 +1478,7 @@ def _classify_access(
     slot_address: int,
     range_facts: Sequence[Mapping[str, Any]],
     checked_fact: CheckedMemoryAccessFact | None = None,
+    checked_range: Mapping[str, Any] | None = None,
 ) -> _Access:
     if event.kind not in _MEMORY_KINDS or event.width is None:
         return _Access("unknown", reason="memory_event_shape_unknown")
@@ -1442,6 +1489,20 @@ def _classify_access(
         )
         if checked is not None:
             return checked
+    if checked_range is not None:
+        minimum = int(checked_range["minimum_address"])
+        maximum = int(checked_range["maximum_address"])
+        identity = str(checked_range["id"])
+        if maximum + event.width > _UINT32_LIMIT:
+            return _Access("alias", (identity,), "checked_address_range_wraps")
+        if (
+            maximum + event.width <= slot_address
+            or slot_address + 4 <= minimum
+        ):
+            return _Access("disjoint", (identity,))
+        return _Access(
+            "alias", (identity,), "checked_address_range_may_overlap_slot"
+        )
     constant = _constant(event.address)
     if constant is not None:
         if event.width == 4 and constant == slot_address:

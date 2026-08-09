@@ -20,6 +20,7 @@ let
     "baseGraph"
     "interproceduralSeed"
     "controlInvariantCertificates"
+    "memoryRangeInvariants"
     "jointInterproceduralV2"
     "interproceduralV2"
     "rootedClosure"
@@ -80,11 +81,15 @@ let
   controlInvariantCertificates = mkPhase "controlInvariantCertificates" {
     exact_unit_prep = exactUnitPrep.artifact;
   };
+  memoryRangeInvariants = mkPhase "memoryRangeInvariants" {
+    exact_unit_prep = exactUnitPrep.artifact;
+  };
   jointInterproceduralV2 = mkPhase "jointInterproceduralV2" {
     exact_unit_prep = exactUnitPrep.artifact;
     base_graph = baseGraph.artifact;
     interprocedural_seed = interproceduralSeed.artifact;
     control_invariants = controlInvariantCertificates.artifact;
+    memory_range_invariants = memoryRangeInvariants.artifact;
   };
   globalSlotAnalysis = mkPhase "globalSlotAnalysis" {
     joint_interprocedural = jointInterproceduralV2.artifact;
@@ -162,6 +167,7 @@ let
     baseGraph
     interproceduralSeed
     controlInvariantCertificates
+    memoryRangeInvariants
     jointInterproceduralV2
     globalSlotAnalysis
     globalSlotAuthority
@@ -189,6 +195,7 @@ assert contentAddressed;
     baseGraph
     interproceduralSeed
     controlInvariantCertificates
+    memoryRangeInvariants
     jointInterproceduralV2
     interproceduralV2
     rootedClosure

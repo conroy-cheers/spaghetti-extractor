@@ -19,6 +19,7 @@ from .global_slot_image_v2 import (
     loader_initial_bytes_v2,
 )
 from .machine_ir_authority_v2 import recompute_unit_binding
+from .memory_range_invariants_v2 import validate_memory_range_invariants_v2
 from .stage_binary import StageABinary
 
 
@@ -80,6 +81,28 @@ def build_global_slot_authority_v2(
                 "checked_memory_access_binding_invalid",
                 detail=str(exc),
             ))
+    raw_memory_ranges = global_slot_analysis.get(
+        "memory_range_invariant_analysis"
+    )
+    if raw_memory_ranges is not None:
+        if not isinstance(raw_memory_ranges, Mapping):
+            issues.append(_issue(
+                "violated", "memory_range_invariant_inventory_corrupt"
+            ))
+        else:
+            try:
+                validate_memory_range_invariants_v2(
+                    raw_memory_ranges,
+                    units=units,
+                    binary_sha256=pe_sha256,
+                    machine_ir_sha256=machine_ir_sha256,
+                )
+            except (TypeError, ValueError) as exc:
+                issues.append(_issue(
+                    "violated",
+                    "memory_range_invariant_binding_invalid",
+                    detail=str(exc),
+                ))
     raw_evidence = global_slot_analysis.get("global_slot_evidence")
     evidence_rows = raw_evidence if isinstance(raw_evidence, list) else []
     if not isinstance(raw_evidence, list):

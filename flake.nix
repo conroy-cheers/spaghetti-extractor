@@ -179,6 +179,8 @@
             dxball.analysis.staticHybridAuthorityV2.checkedExternalSites.derivation;
           dxball-control-invariants-v2 =
             dxball.analysis.staticHybridAuthorityV2.controlInvariantCertificates.derivation;
+          dxball-memory-range-invariants-v2 =
+            dxball.analysis.staticHybridAuthorityV2.memoryRangeInvariants.derivation;
           dxball-joint-interprocedural-v2 =
             dxball.analysis.staticHybridAuthorityV2.jointInterproceduralV2.derivation;
           dxball-interprocedural-v2 =
