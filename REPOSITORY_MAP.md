@@ -128,6 +128,7 @@ conservative self-map used to emit a baseline contract and state machine.
 | `stack_range_analysis_v2.py` | Checked stack-range facts and call-frame entry offsets. |
 | `entry_state_contract_v2.py` | Typed entry-state and launch-root authority records. |
 | `indirect_target_dependency_v2.py`, `static_indirect_replay_v2.py` | Exact indirect-target dependencies and independent finite-target replay. |
+| `target_cutpoint_materialization_v2.py`, `recovered_executable_data.py` | Untrusted exact-span proposals for finite control destinations plus checked executable code/data and padding separation. |
 | `exception_invariants_v2.py`, `control_invariant_phase_v2.py` | Non-authorizing invariant synthesis plus independent replay of exceptional SCC and finite indirect-control certificates. |
 | `exception_phase_v2.py` | Cached exceptional-control certificate phase adapter. |
 | `checked_external_site_contract.py` | Canonical machine-level external call/jump contracts and exact profile matching. |

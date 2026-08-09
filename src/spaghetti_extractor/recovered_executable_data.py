@@ -549,8 +549,21 @@ def recover_executable_data_ranges(
                 recovery_ids=recovery_ids,
             )
         )
+    protected_code_rvas = set(known_code_unit_rvas or ())
+    for recovery in recoveries:
+        if not isinstance(recovery, Mapping):
+            continue
+        protected_code_rvas.update(
+            target
+            for target in recovery.get("target_rvas", [])
+            if isinstance(target, int) and not isinstance(target, bool)
+        )
     ranges.extend(
-        _recover_adjacent_alignment_padding(binary=binary, data_ranges=ranges)
+        _recover_adjacent_alignment_padding(
+            binary=binary,
+            data_ranges=ranges,
+            protected_code_rvas=protected_code_rvas,
+        )
     )
     ranges.extend(
         _recover_adjacent_static_code_pointer_slots(
@@ -652,6 +665,7 @@ def _recover_adjacent_alignment_padding(
     *,
     binary: StageABinary,
     data_ranges: Sequence[RecoveredExecutableDataRange],
+    protected_code_rvas: set[int],
 ) -> tuple[RecoveredExecutableDataRange, ...]:
     """Recover bounded semantic no-ops adjoining checked immutable data.
 
@@ -692,9 +706,13 @@ def _recover_adjacent_alignment_padding(
             end=item.rva_start,
         )
         if left_start is not None:
-            proposals.append(
-                (left_start, item.rva_start, set(item.recovery_ids))
-            )
+            if not any(
+                left_start <= target < item.rva_start
+                for target in protected_code_rvas
+            ):
+                proposals.append(
+                    (left_start, item.rva_start, set(item.recovery_ids))
+                )
 
         right_end = _bounded_noop_prefix_end(
             binary=binary,
@@ -702,7 +720,11 @@ def _recover_adjacent_alignment_padding(
             end=next_start,
         )
         if right_end is not None:
-            proposals.append((item.rva_end, right_end, set(item.recovery_ids)))
+            if not any(
+                item.rva_end <= target < right_end
+                for target in protected_code_rvas
+            ):
+                proposals.append((item.rva_end, right_end, set(item.recovery_ids)))
 
     normalized: list[tuple[int, int, set[str]]] = []
     for start, end, recovery_ids in sorted(proposals):

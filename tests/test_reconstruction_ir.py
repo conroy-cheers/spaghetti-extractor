@@ -84,6 +84,10 @@ def _row(
         b"\xd9\x00": ("fld", "dword ptr [eax]"),
         b"\xeb\xfe": ("jmp", "0x401000"),
         b"\xff\xe0": ("jmp", "eax"),
+        b"\xff\x24\x85\x10\x10\x40\x00": (
+            "jmp",
+            "dword ptr [eax*4 + 0x401010]",
+        ),
         b"\xff\x15\x40\x20\x40\x00": ("call", "dword ptr [0x402040]"),
     }[encoded]
     transfer = {
@@ -593,6 +597,72 @@ class ReconstructionIRTests(unittest.TestCase):
                 manifest["trust_assumptions"][0]["id"],
                 "complete-static-indirect-target-recovery",
             )
+
+    def test_exact_finite_target_is_materialized_from_pe_bytes(self) -> None:
+        encoded = b"\xff\x24\x85\x10\x10\x40\x00"
+        target_expression = {
+            "op": "load",
+            "width": 4,
+            "address": {
+                "op": "add32",
+                "args": [
+                    {"op": "const", "value": 0x401010, "width": 32},
+                    {
+                        "op": "mul32",
+                        "args": [
+                            {"op": "const", "value": 0, "width": 32},
+                            {"op": "const", "value": 4, "width": 32},
+                        ],
+                    },
+                ],
+            },
+        }
+        row = _row(
+            "semantic-transfer:dispatch",
+            0x1000,
+            encoded,
+            outcome={"kind": "indirect_jump", "target": target_expression},
+        )
+        code = bytearray(b"\x90" * 0x22)
+        code[: len(encoded)] = encoded
+        code[0x10:0x14] = (0x401020).to_bytes(4, "little")
+        code[0x20:0x22] = b"\x90\xc3"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            machine = root / "state-machine.jsonl"
+            original.write_bytes(pe32_image(bytes(code), virtual_size=len(code)))
+            _write_machine(machine, [row])
+
+            package = export_machine_ir_package(
+                state_machine=machine,
+                original_pe=original,
+                out=root / "out",
+            )
+            manifest = _read_json(package.manifest)
+            units = _read_jsonl(package.machine_ir)
+            recovery = manifest["control"]["recovered_indirect_targets"][0]
+
+        materialized = next(
+            unit
+            for unit in units
+            if unit["source"]["original"]["rva_start"] == 0x1020
+        )
+        self.assertEqual(materialized["status"], "qualified")
+        self.assertEqual(
+            materialized["preparation"]["target_cutpoint_materialization"][
+                "target_rva"
+            ],
+            0x1020,
+        )
+        self.assertEqual(recovery["unit_binding"]["status"], "complete")
+        self.assertEqual(recovery["target_unit_ids"], [materialized["id"]])
+        self.assertEqual(manifest["counts"]["materialized_target_units"], 1)
+        self.assertEqual(
+            manifest["control"]["target_cutpoint_materialization"]["status"],
+            "complete",
+        )
 
     def test_terminating_external_disposition_removes_nominal_fallthrough(self) -> None:
         event = {

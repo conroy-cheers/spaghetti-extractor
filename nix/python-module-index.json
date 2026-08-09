@@ -1131,6 +1131,9 @@
     "spaghetti_extractor.reconstruction_ir": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor._contract_tools.common",
+        "spaghetti_extractor._contract_tools.reference_contract",
+        "spaghetti_extractor.analysis.cutpoints",
         "spaghetti_extractor.authority_bindings_v2",
         "spaghetti_extractor.callback_contracts",
         "spaghetti_extractor.finite_value_domain",
@@ -1142,6 +1145,7 @@
         "spaghetti_extractor.stage_b_state_machine",
         "spaghetti_extractor.stage_binary",
         "spaghetti_extractor.static_indirect_replay_v2",
+        "spaghetti_extractor.target_cutpoint_materialization_v2",
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/reconstruction_ir.py"
@@ -1618,6 +1622,13 @@
         "spaghetti_extractor.stage_binary"
       ],
       "path": "src/spaghetti_extractor/static_indirect_replay_v2.py"
+    },
+    "spaghetti_extractor.target_cutpoint_materialization_v2": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.stage_binary"
+      ],
+      "path": "src/spaghetti_extractor/target_cutpoint_materialization_v2.py"
     },
     "spaghetti_extractor.target_intent": {
       "dependencies": [

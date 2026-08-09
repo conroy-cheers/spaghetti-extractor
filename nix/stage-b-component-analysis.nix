@@ -273,7 +273,7 @@ let
         .counts.prepared_units_reused + .counts.prepared_units_computed ==
           .counts.prepared_input_units and
         .counts.units + .counts.precontrol_excluded_units ==
-          .counts.prepared_input_units and
+          .counts.prepared_input_units + .counts.materialized_target_units and
         .control.counts.roots > 0 and
         (.authority | contains("no original execution"))
       ' "$out/machine-ir-manifest.json" >/dev/null; then

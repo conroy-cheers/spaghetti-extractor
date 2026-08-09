@@ -19,6 +19,9 @@ from typing import Any, Iterable, Mapping, Sequence
 import capstone
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
+from ._contract_tools.common import BlockMapping
+from ._contract_tools.reference_contract import _semantic_transfer_contract
+from .analysis.cutpoints import semantic_cutpoint_spans_for_side
 from .callback_contracts import parse_callback_source
 from .authority_bindings_v2 import indirect_exit_id_v2
 from .finite_value_domain import FiniteU32Dataflow
@@ -46,11 +49,14 @@ from .stage_b_state_machine import (
     load_stage_a_reference_contract_binding,
     normalize_stage_a_semantic_transfer,
 )
-from .stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
+from .stage_binary import BlockSide, StageABinary, StageAInputError, _parse_stage_a_pe
 from .static_indirect_replay_v2 import (
     bounded_predecessor_instruction_history as _bounded_predecessor_instruction_history,
     direct_predecessors_by_target as _direct_predecessors_by_target,
     indirect_predecessor_evidence as _indirect_predecessor_evidence,
+)
+from .target_cutpoint_materialization_v2 import (
+    plan_recovered_target_cutpoints_v2,
 )
 from .util import sha256_bytes, sha256_file, write_json
 
@@ -436,6 +442,23 @@ def export_machine_ir_package(
     prepared_input_units = len(prepared)
     (
         prepared,
+        target_cutpoint_materialization,
+        materialization_issues,
+        materialized_static_recoveries,
+        materialized_data_ranges,
+    ) = (
+        _materialize_recovered_target_cutpoints(
+            binary=binary,
+            units=prepared,
+            reference=reference,
+            reference_sha256=reference_sha256,
+        )
+    )
+    materialized_target_units = target_cutpoint_materialization["counts"][
+        "materialized_units"
+    ]
+    (
+        prepared,
         executable_classification,
         classification_issues,
         preclassified_static_recoveries,
@@ -444,9 +467,15 @@ def export_machine_ir_package(
             binary=binary,
             units=prepared,
             reference=reference,
+            precomputed_static_recoveries=materialized_static_recoveries,
+            precomputed_data_ranges=materialized_data_ranges,
+            precomputed_static_rounds=target_cutpoint_materialization[
+                "static_recovery_rounds"
+            ],
         )
     )
     issues = _unit_issues(prepared)
+    issues.extend(materialization_issues)
     issues.extend(classification_issues)
     classified_noncode_ranges = [
         RvaSpan(int(row["rva_start"]), int(row["rva_end"]))
@@ -466,6 +495,7 @@ def export_machine_ir_package(
         preclassified_static_recoveries=preclassified_static_recoveries,
         target_profile=target_profile,
     )
+    control["target_cutpoint_materialization"] = target_cutpoint_materialization
     issues.extend(control_issues)
     external = _external_inventory(prepared)
     issues.extend(_reference_issues(reference_payload))
@@ -609,6 +639,7 @@ def export_machine_ir_package(
             "prepared_input_units": prepared_input_units,
             "prepared_units_reused": reused_units,
             "prepared_units_computed": prepared_input_units - reused_units,
+            "materialized_target_units": materialized_target_units,
             "precontrol_excluded_units": executable_classification["counts"][
                 "excluded_units"
             ],
@@ -2492,11 +2523,228 @@ def _immutable_static_data_reader(
     return read
 
 
+def _materialize_recovered_target_cutpoints(
+    *,
+    binary: StageABinary,
+    units: Sequence[Mapping[str, Any]],
+    reference: Mapping[str, Any],
+    reference_sha256: str | None,
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, Any],
+    list[ExportIssue],
+    list[dict[str, Any]] | None,
+    Sequence[Any] | None,
+]:
+    """Regenerate missing finite targets from exact PE bytes and semantics."""
+
+    starts = {
+        int(unit["source"]["original"]["rva_start"]): unit for unit in units
+    }
+    block_starts = {
+        str(unit["source_location"]["block_id"]): int(
+            unit["source"]["original"]["rva_start"]
+        )
+        for unit in units
+        if unit["source_location"].get("block_id")
+    }
+    roots = _initial_control_roots(binary, reference, block_starts)
+    root_unit_ids = [
+        str(starts[rva]["id"])
+        for root in roots
+        for rva in (root.get("rva"),)
+        if isinstance(rva, int) and rva in starts
+    ]
+    recoveries, rounds, converged = _static_jump_table_recovery_fixed_point(
+        binary=binary,
+        units=units,
+        starts=starts,
+        indirect_exits=_precontrol_indirect_exits(units),
+        root_unit_ids=root_unit_ids,
+    )
+    data_ranges = recover_executable_data_ranges(
+        binary=binary,
+        recoveries=recoveries,
+        known_code_unit_rvas=set(starts),
+    )
+    plan = plan_recovered_target_cutpoints_v2(
+        binary=binary,
+        units=units,
+        recoveries=recoveries,
+        immutable_data_ranges=data_ranges,
+    )
+    issues = [
+        ExportIssue(
+            status=str(issue["status"]),
+            category=str(issue["code"]),
+            message=(
+                f"finite control target 0x{int(issue['target_rva']):x} "
+                f"could not become an exact machine-IR cutpoint"
+            ),
+            next_action=(
+                "repair exact target decoding or classify the conflicting "
+                "executable bytes before rebuilding machine IR"
+            ),
+            location=SourceLocation(
+                None,
+                None,
+                None,
+                RvaSpan(int(issue["target_rva"]), int(issue["target_rva"]) + 1),
+                "control.target_cutpoint_materialization",
+            ),
+        )
+        for issue in plan["issues"]
+    ]
+    augmented = [copy.deepcopy(dict(unit)) for unit in units]
+    augmented_starts = {
+        int(unit["source"]["original"]["rva_start"]): unit for unit in augmented
+    }
+    materialized_rows: list[dict[str, Any]] = []
+    contract_ref = {
+        "format": STAGE_A_REFERENCE_CONTRACT_FORMAT,
+        "path": "reference-contract.json",
+        "sha256": reference_sha256,
+    }
+    for target in plan["targets"]:
+        if target.get("status") != "complete" or target.get("disposition") != "materialize":
+            continue
+        for region in target["regions"]:
+            parent_span = {
+                "rva_start": int(region["rva_start"]),
+                "rva_end": int(region["rva_end"]),
+                "size": int(region["size"]),
+            }
+            spans = semantic_cutpoint_spans_for_side(
+                binary,
+                parent_span,
+                f"recovered-target-{int(target['target_rva']):08x}",
+            )
+            for span_payload in spans:
+                start = int(span_payload["rva_start"])
+                end = int(span_payload["rva_end"])
+                if start in augmented_starts:
+                    continue
+                identity = f"recovered-target-cutpoint-{start:08x}-{end:08x}"
+                side = BlockSide(start, end)
+                mapping = BlockMapping(
+                    id=identity,
+                    original=side,
+                    candidate=side,
+                    kind="code",
+                    reachable=True,
+                    invariant_checked=False,
+                    source={"source": {"function": identity}},
+                )
+                raw = _semantic_transfer_contract(
+                    binary,
+                    mapping,
+                    identity,
+                    contract_ref,
+                )
+                semantic_sha256 = sha256_bytes(_canonical_json(raw))
+                normalized = normalize_stage_a_semantic_transfer(
+                    raw,
+                    reference_contract_sha256=reference_sha256,
+                    semantic_transfer_sha256=(
+                        semantic_sha256 if reference_sha256 is not None else None
+                    ),
+                )
+                unit = _prepare_unit(
+                    normalized,
+                    binary=binary,
+                    reference_sha256=reference_sha256,
+                )
+                unit["preparation"]["target_cutpoint_materialization"] = {
+                    "format": "stage-a-target-cutpoint-unit-binding-v2",
+                    "target_rva": int(target["target_rva"]),
+                    "recovery_ids": list(target["recovery_ids"]),
+                    "plan_id": plan["id"],
+                    "region": copy.deepcopy(parent_span),
+                }
+                _assert_byte_free(unit)
+                augmented.append(unit)
+                augmented_starts[start] = unit
+                materialized_rows.append({
+                    "unit_id": unit["id"],
+                    "target_rva": int(target["target_rva"]),
+                    "rva_start": start,
+                    "rva_end": end,
+                    "status": unit["status"],
+                })
+
+    augmented.sort(
+        key=lambda item: (
+            int(item["source"]["original"]["rva_start"]),
+            str(item["id"]),
+        )
+    )
+    initial_exit_ids = {
+        str(exit_record["id"])
+        for exit_record in _precontrol_indirect_exits(units)
+    }
+    augmented_exits = _precontrol_indirect_exits(augmented)
+    augmented_exit_ids = {str(exit_record["id"]) for exit_record in augmented_exits}
+    replay_recoveries: list[dict[str, Any]] | None = None
+    replay_data_ranges: Sequence[Any] | None = None
+    if initial_exit_ids == augmented_exit_ids:
+        augmented_starts = {
+            int(unit["source"]["original"]["rva_start"]): unit
+            for unit in augmented
+        }
+        replay_recoveries = _rebind_preclassified_static_recoveries(
+            indirect_exits=augmented_exits,
+            recoveries=recoveries,
+            starts=augmented_starts,
+        )
+        replay_data_ranges = recover_executable_data_ranges(
+            binary=binary,
+            recoveries=replay_recoveries,
+            known_code_unit_rvas=set(augmented_starts),
+        )
+    report = {
+        **copy.deepcopy(plan),
+        "static_recovery_rounds": rounds,
+        "static_recovery_converged": converged,
+        "static_recovery_reused_after_materialization": (
+            replay_recoveries is not None
+        ),
+        "materialized_units": materialized_rows,
+        "counts": {
+            **copy.deepcopy(plan["counts"]),
+            "materialized_units": len(materialized_rows),
+            "qualified_materialized_units": sum(
+                row["status"] == "qualified" for row in materialized_rows
+            ),
+        },
+    }
+    if not converged:
+        report["status"] = "incomplete"
+        issues.append(
+            ExportIssue(
+                status="incomplete",
+                category="target_cutpoint_static_recovery_budget_exceeded",
+                message="finite target discovery did not converge before cutpoint planning",
+                next_action="reduce the finite target domain or increase the generic recovery budget",
+                location=SourceLocation(
+                    None,
+                    None,
+                    None,
+                    RvaSpan(binary.entrypoint_rva, binary.entrypoint_rva + 1),
+                    "control.target_cutpoint_materialization",
+                ),
+            )
+        )
+    return augmented, report, issues, replay_recoveries, replay_data_ranges
+
+
 def _classify_executable_data_before_control(
     *,
     binary: StageABinary,
     units: Sequence[Mapping[str, Any]],
     reference: Mapping[str, Any],
+    precomputed_static_recoveries: Sequence[Mapping[str, Any]] | None = None,
+    precomputed_data_ranges: Sequence[Any] | None = None,
+    precomputed_static_rounds: int = 0,
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, Any],
@@ -2530,18 +2778,33 @@ def _classify_executable_data_before_control(
     ]
     direct_edges, internal_call_edges = _precontrol_direct_edges(units)
     indirect_exits = _precontrol_indirect_exits(units)
-    static_recoveries, rounds, converged = _static_jump_table_recovery_fixed_point(
-        binary=binary,
-        units=units,
-        starts=starts,
-        indirect_exits=indirect_exits,
-        root_unit_ids=root_unit_ids,
-    )
-    data_ranges = recover_executable_data_ranges(
-        binary=binary,
-        recoveries=static_recoveries,
-        known_code_unit_rvas=set(starts),
-    )
+    if precomputed_static_recoveries is None:
+        static_recoveries, rounds, converged = (
+            _static_jump_table_recovery_fixed_point(
+                binary=binary,
+                units=units,
+                starts=starts,
+                indirect_exits=indirect_exits,
+                root_unit_ids=root_unit_ids,
+            )
+        )
+        data_ranges = recover_executable_data_ranges(
+            binary=binary,
+            recoveries=static_recoveries,
+            known_code_unit_rvas=set(starts),
+        )
+    else:
+        if precomputed_data_ranges is None:
+            raise ValueError(
+                "precomputed static recoveries require executable-data ranges"
+            )
+        static_recoveries = [
+            copy.deepcopy(dict(recovery))
+            for recovery in precomputed_static_recoveries
+        ]
+        rounds = precomputed_static_rounds
+        converged = True
+        data_ranges = tuple(precomputed_data_ranges)
     data_spans = [RvaSpan(item.rva_start, item.rva_end) for item in data_ranges]
     issues: list[ExportIssue] = []
     conflicts: list[dict[str, Any]] = []
