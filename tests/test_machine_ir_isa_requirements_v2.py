@@ -24,9 +24,13 @@ EXTRACTOR_SHA = "d" * 64
 SOURCE_SHA = "e" * 64
 
 
-def _unit(*, reachable: bool = True) -> dict[str, object]:
+def _unit(
+    *,
+    reachable: bool = True,
+    identity: str = "unit-1000",
+) -> dict[str, object]:
     return {
-        "id": "unit-1000",
+        "id": identity,
         "reachable": reachable,
         "source": {"original": {"rva_start": 0x1000, "rva_end": 0x1003}},
         "instructions": [
@@ -108,6 +112,39 @@ class MachineIRISARequirementsV2Tests(unittest.TestCase):
             compare_selection_to_machine_ir_requirements_v2(parsed, authority),
             [],
         )
+
+    def test_identical_instruction_locations_are_checked_once(self) -> None:
+        request = build_machine_ir_isa_extraction_request_v2(
+            units=[_unit(identity="path-a"), _unit(identity="path-b")],
+            binary_sha256=PE_SHA,
+        )
+
+        self.assertEqual(len(request["regions"]), 2)
+        self.assertEqual(
+            [owner["unit_id"] for owner in request["regions"][0]["owners"]],
+            ["path-a", "path-b"],
+        )
+
+    def test_different_overlapping_instruction_boundaries_are_rejected(self) -> None:
+        first = {
+            "id": "first",
+            "reachable": True,
+            "source": {"original": {"rva_start": 0x1000, "rva_end": 0x1002}},
+            "instructions": [{"rva_start": 0x1000, "rva_end": 0x1002}],
+        }
+        second = {
+            "id": "second",
+            "reachable": True,
+            "source": {"original": {"rva_start": 0x1001, "rva_end": 0x1003}},
+            "instructions": [{"rva_start": 0x1001, "rva_end": 0x1003}],
+        }
+
+        with self.assertRaisesRegex(
+            MachineIRISARequirementsV2Error, "boundaries overlap"
+        ):
+            build_machine_ir_isa_extraction_request_v2(
+                units=[first, second], binary_sha256=PE_SHA
+            )
 
     def test_machine_ir_and_lean_location_disagreement_is_rejected(self) -> None:
         request = build_machine_ir_isa_extraction_request_v2(

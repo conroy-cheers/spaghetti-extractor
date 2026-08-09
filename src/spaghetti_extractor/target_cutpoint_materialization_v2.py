@@ -185,7 +185,7 @@ def _plan_target(
             "regions": [],
         }, []
 
-    boundaries: list[tuple[Mapping[str, Any], int]] = []
+    boundaries: list[tuple[Mapping[str, Any], int, int]] = []
     interiors: list[tuple[Mapping[str, Any], int, int]] = []
     for unit in units:
         unit_start, unit_end = _unit_span(unit)
@@ -195,7 +195,7 @@ def _plan_target(
                 continue
             start, end = span
             if start == target_rva and unit_start < target_rva < unit_end:
-                boundaries.append((unit, unit_end))
+                boundaries.append((unit, unit_start, unit_end))
             elif start < target_rva < end:
                 interiors.append((unit, start, end))
     authoritative_interiors = [
@@ -220,14 +220,52 @@ def _plan_target(
             ],
         )
         return {**base, "status": "violated", "disposition": "unresolved", "regions": []}, [issue]
-    if boundaries:
-        end = min(unit_end for _, unit_end in boundaries)
+    authoritative_boundaries = [
+        item for item in boundaries
+        if str(item[0].get("id")) in authoritative_unit_ids
+    ]
+    if len(authoritative_boundaries) > 1:
+        issue = _issue(
+            "violated",
+            "ambiguous_authoritative_cutpoint_owners",
+            target_rva,
+            owners=[
+                {
+                    "unit_id": unit.get("id"),
+                    "rva_start": start,
+                    "rva_end": end,
+                }
+                for unit, start, end in authoritative_boundaries
+            ],
+        )
+        return {
+            **base,
+            "status": "violated",
+            "disposition": "unresolved",
+            "regions": [],
+        }, [issue]
+    if authoritative_boundaries:
+        owner, start, end = authoritative_boundaries[0]
         return {
             **base,
             "status": "complete",
             "disposition": "materialize",
             "evidence": "existing_instruction_boundary",
-            "regions": [{"rva_start": target_rva, "rva_end": end, "size": end - target_rva}],
+            "superseded_unit_ids": [str(owner.get("id"))],
+            "regions": [
+                {
+                    "rva_start": start,
+                    "rva_end": target_rva,
+                    "size": target_rva - start,
+                    "cutpoint_role": "prefix_replacement",
+                },
+                {
+                    "rva_start": target_rva,
+                    "rva_end": end,
+                    "size": end - target_rva,
+                    "cutpoint_role": "target",
+                },
+            ],
         }, []
 
     section = next(
@@ -265,7 +303,11 @@ def _plan_target(
         instruction_rva = int(instruction.address - binary.image_base)
         if instruction_rva != expected:
             break
-        if decoded and instruction_rva in starts:
+        if (
+            decoded
+            and instruction_rva in starts
+            and str(starts[instruction_rva].get("id")) in authoritative_unit_ids
+        ):
             stop_reason = "existing_unit_boundary"
             break
         decoded += 1

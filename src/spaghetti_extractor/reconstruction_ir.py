@@ -2569,7 +2569,9 @@ def _materialize_recovered_target_cutpoints(
     )
     data_spans = [RvaSpan(item.rva_start, item.rva_end) for item in data_ranges]
     augmented = [copy.deepcopy(dict(unit)) for unit in units]
+    input_unit_ids = {str(unit["id"]) for unit in units}
     materialized_rows: list[dict[str, Any]] = []
+    superseded_rows: list[dict[str, Any]] = []
     iteration_rows: list[dict[str, Any]] = []
     final_plan: dict[str, Any] | None = None
     converged_cutpoints = False
@@ -2686,6 +2688,8 @@ def _materialize_recovered_target_cutpoints(
             reference_sha256=reference_sha256,
             iteration=iteration,
             materialized_rows=materialized_rows,
+            superseded_rows=superseded_rows,
+            input_unit_ids=input_unit_ids,
         )
         iteration_rows.append({
             "iteration": iteration,
@@ -2763,11 +2767,16 @@ def _materialize_recovered_target_cutpoints(
             replay_recoveries is not None
         ),
         "materialized_units": materialized_rows,
+        "superseded_units": superseded_rows,
         "counts": {
             **copy.deepcopy(final_plan["counts"]),
             "materialized_units": len(materialized_rows),
             "qualified_materialized_units": sum(
                 row["status"] == "qualified" for row in materialized_rows
+            ),
+            "superseded_units": len(superseded_rows),
+            "superseded_input_units": sum(
+                row["origin"] == "prepared_input" for row in superseded_rows
             ),
         },
     }
@@ -2826,7 +2835,43 @@ def _materialize_target_cutpoint_plan(
     reference_sha256: str | None,
     iteration: int,
     materialized_rows: list[dict[str, Any]],
+    superseded_rows: list[dict[str, Any]],
+    input_unit_ids: set[str],
 ) -> int:
+    superseded_ids = {
+        str(unit_id)
+        for target in plan["targets"]
+        if target.get("status") == "complete"
+        and target.get("disposition") == "materialize"
+        for unit_id in target.get("superseded_unit_ids", [])
+    }
+    if superseded_ids:
+        prior_superseded_ids = {str(row["unit_id"]) for row in superseded_rows}
+        for unit in augmented:
+            unit_id = str(unit["id"])
+            if unit_id not in superseded_ids or unit_id in prior_superseded_ids:
+                continue
+            span = unit["source"]["original"]
+            superseded_rows.append({
+                "unit_id": unit_id,
+                "rva_start": int(span["rva_start"]),
+                "rva_end": int(span["rva_end"]),
+                "origin": (
+                    "prepared_input"
+                    if unit_id in input_unit_ids
+                    else "materialized_cutpoint"
+                ),
+                "iteration": iteration,
+                "reason": "split_at_authoritative_instruction_boundary",
+            })
+        augmented[:] = [
+            unit for unit in augmented if str(unit["id"]) not in superseded_ids
+        ]
+        materialized_rows[:] = [
+            row
+            for row in materialized_rows
+            if str(row["unit_id"]) not in superseded_ids
+        ]
     starts = {
         int(unit["source"]["original"]["rva_start"]): unit for unit in augmented
     }
@@ -2842,6 +2887,7 @@ def _materialize_target_cutpoint_plan(
                 "rva_start": int(region["rva_start"]),
                 "rva_end": int(region["rva_end"]),
                 "size": int(region["size"]),
+                "cutpoint_role": str(region.get("cutpoint_role", "target")),
             }
             spans = semantic_cutpoint_spans_for_side(
                 binary,
@@ -2891,6 +2937,9 @@ def _materialize_target_cutpoint_plan(
                     "plan_id": plan["id"],
                     "iteration": iteration,
                     "region": copy.deepcopy(parent_span),
+                    "superseded_unit_ids": list(
+                        target.get("superseded_unit_ids", [])
+                    ),
                 }
                 _assert_byte_free(unit)
                 augmented.append(unit)
@@ -2902,6 +2951,10 @@ def _materialize_target_cutpoint_plan(
                     "rva_end": end,
                     "status": unit["status"],
                     "iteration": iteration,
+                    "cutpoint_role": parent_span["cutpoint_role"],
+                    "superseded_unit_ids": list(
+                        target.get("superseded_unit_ids", [])
+                    ),
                 })
                 added += 1
     return added

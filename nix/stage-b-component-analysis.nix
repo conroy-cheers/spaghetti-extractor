@@ -272,7 +272,8 @@ let
         .counts.units > 0 and .counts.instructions > 0 and
         .counts.prepared_units_reused + .counts.prepared_units_computed ==
           .counts.prepared_input_units and
-        .counts.units + .counts.precontrol_excluded_units ==
+        .counts.units + .counts.precontrol_excluded_units +
+          .control.target_cutpoint_materialization.counts.superseded_input_units ==
           .counts.prepared_input_units + .counts.materialized_target_units and
         .control.counts.roots > 0 and
         (.authority | contains("no original execution"))

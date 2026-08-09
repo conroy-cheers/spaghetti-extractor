@@ -56,7 +56,7 @@ def build_machine_ir_isa_extraction_request_v2(
 
     binary_sha256 = _digest(binary_sha256, "binary SHA-256")
     regions: list[dict[str, Any]] = []
-    locations: set[tuple[int, int]] = set()
+    locations: dict[tuple[int, int], dict[str, Any]] = {}
     selected = sorted(
         (row for row in units if row.get("reachable") is True),
         key=lambda row: (
@@ -93,12 +93,28 @@ def build_machine_ir_isa_extraction_request_v2(
                     f"{unit_id} instruction inventory is not exact and contiguous"
                 )
             location = (instruction_start, instruction_stop - instruction_start)
-            if location in locations:
+            owner = {
+                "unit_id": unit_id,
+                "instruction_index": index,
+                "diagnostic_proposal": {
+                    "mnemonic": item.get("mnemonic"),
+                    "operands": copy.deepcopy(item.get("operands")),
+                },
+            }
+            existing = locations.get(location)
+            if existing is not None:
+                existing["owners"].append(owner)
+                cursor = instruction_stop
+                continue
+            if any(
+                instruction_start < prior_start + prior_size
+                and prior_start < instruction_stop
+                for prior_start, prior_size in locations
+            ):
                 raise MachineIRISARequirementsV2Error(
-                    "reachable machine-IR instruction locations overlap"
+                    "reachable machine-IR instruction boundaries overlap"
                 )
-            locations.add(location)
-            regions.append({
+            region = {
                 "index": len(regions),
                 "unit_id": unit_id,
                 "instruction_index": index,
@@ -111,7 +127,10 @@ def build_machine_ir_isa_extraction_request_v2(
                     "rva": location[0],
                     "size": location[1],
                 }],
-            })
+                "owners": [owner],
+            }
+            locations[location] = region
+            regions.append(region)
             cursor = instruction_stop
         if cursor != stop:
             raise MachineIRISARequirementsV2Error(

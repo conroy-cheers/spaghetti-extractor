@@ -74,8 +74,22 @@ class TargetCutpointMaterializationV2Tests(unittest.TestCase):
         self.assertEqual(report["status"], "complete")
         self.assertEqual(
             report["targets"][0]["regions"],
-            [{"rva_start": 0x1001, "rva_end": 0x1003, "size": 2}],
+            [
+                {
+                    "rva_start": 0x1000,
+                    "rva_end": 0x1001,
+                    "size": 1,
+                    "cutpoint_role": "prefix_replacement",
+                },
+                {
+                    "rva_start": 0x1001,
+                    "rva_end": 0x1003,
+                    "size": 2,
+                    "cutpoint_role": "target",
+                },
+            ],
         )
+        self.assertEqual(report["targets"][0]["superseded_unit_ids"], ["whole"])
         self.assertEqual(
             report["targets"][0]["evidence"], "existing_instruction_boundary"
         )
