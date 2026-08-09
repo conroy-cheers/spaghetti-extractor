@@ -664,6 +664,77 @@ class ReconstructionIRTests(unittest.TestCase):
             "complete",
         )
 
+    def test_rooted_direct_target_materialization_reaches_fixed_point(self) -> None:
+        root = _row(
+            "semantic-transfer:root",
+            0x1000,
+            b"\x90",
+            outcome={"kind": "fallthrough", "target_rva": 0x1001},
+        )
+        code = b"\x90\xeb\x01\x90\xc3"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            original = directory / "original.exe"
+            machine = directory / "state-machine.jsonl"
+            original.write_bytes(pe32_image(code, virtual_size=len(code)))
+            _write_machine(machine, [root])
+
+            package = export_machine_ir_package(
+                state_machine=machine,
+                original_pe=original,
+                out=directory / "out",
+            )
+            manifest = _read_json(package.manifest)
+            units = _read_jsonl(package.machine_ir)
+
+        materialized_starts = {
+            unit["source"]["original"]["rva_start"]
+            for unit in units
+            if "target_cutpoint_materialization" in unit["preparation"]
+        }
+        closure = manifest["control"]["target_cutpoint_materialization"]
+        self.assertEqual(materialized_starts, {0x1001, 0x1004})
+        self.assertTrue(closure["cutpoint_closure_converged"])
+        self.assertEqual(
+            [row["materialized_units"] for row in closure["cutpoint_closure_iterations"]],
+            [1, 1, 0],
+        )
+
+    def test_unreachable_direct_target_is_not_materialized(self) -> None:
+        root = _row(
+            "semantic-transfer:root",
+            0x1000,
+            b"\xc3",
+            outcome={"kind": "return", "stack_pop_bytes": 4},
+        )
+        speculative = _row(
+            "semantic-transfer:speculative",
+            0x1001,
+            b"\xeb\xfe",
+            outcome={"kind": "direct_jump", "target_rva": 0xDEADBEEF},
+        )
+        code = b"\xc3\xeb\xfe"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            original = directory / "original.exe"
+            machine = directory / "state-machine.jsonl"
+            original.write_bytes(pe32_image(code, virtual_size=len(code)))
+            _write_machine(machine, [root, speculative])
+
+            package = export_machine_ir_package(
+                state_machine=machine,
+                original_pe=original,
+                out=directory / "out",
+            )
+            manifest = _read_json(package.manifest)
+
+        closure = manifest["control"]["target_cutpoint_materialization"]
+        self.assertEqual(closure["status"], "complete")
+        self.assertEqual(closure["counts"]["materialized_units"], 0)
+        self.assertEqual(closure["issues"], [])
+
     def test_terminating_external_disposition_removes_nominal_fallthrough(self) -> None:
         event = {
             "kind": "external_call",

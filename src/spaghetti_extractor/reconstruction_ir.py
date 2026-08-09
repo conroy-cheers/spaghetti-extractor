@@ -2536,7 +2536,7 @@ def _materialize_recovered_target_cutpoints(
     list[dict[str, Any]] | None,
     Sequence[Any] | None,
 ]:
-    """Regenerate missing finite targets from exact PE bytes and semantics."""
+    """Regenerate the rooted finite-control closure from exact PE bytes."""
 
     starts = {
         int(unit["source"]["original"]["rva_start"]): unit for unit in units
@@ -2567,12 +2567,170 @@ def _materialize_recovered_target_cutpoints(
         recoveries=recoveries,
         known_code_unit_rvas=set(starts),
     )
-    plan = plan_recovered_target_cutpoints_v2(
-        binary=binary,
-        units=units,
-        recoveries=recoveries,
-        immutable_data_ranges=data_ranges,
+    data_spans = [RvaSpan(item.rva_start, item.rva_end) for item in data_ranges]
+    augmented = [copy.deepcopy(dict(unit)) for unit in units]
+    materialized_rows: list[dict[str, Any]] = []
+    iteration_rows: list[dict[str, Any]] = []
+    final_plan: dict[str, Any] | None = None
+    converged_cutpoints = False
+    contract_ref = {
+        "format": STAGE_A_REFERENCE_CONTRACT_FORMAT,
+        "path": "reference-contract.json",
+        "sha256": reference_sha256,
+    }
+    max_cutpoint_rounds = 16
+    recovery_ids = {str(row.get("id")) for row in recoveries}
+    for iteration in range(1, max_cutpoint_rounds + 1):
+        active_units = [
+            unit
+            for unit in augmented
+            if not any(
+                _unit_original_span(unit).start < data.end
+                and data.start < _unit_original_span(unit).end
+                for data in data_spans
+            )
+        ]
+        active_starts = {
+            int(unit["source"]["original"]["rva_start"]): unit
+            for unit in active_units
+        }
+        direct_edges, internal_call_edges = _precontrol_direct_edges(active_units)
+        indirect_exits = _precontrol_indirect_exits(active_units)
+        known_exits = [
+            row for row in indirect_exits if str(row.get("id")) in recovery_ids
+        ]
+        rebound_recoveries = _rebind_preclassified_static_recoveries(
+            indirect_exits=known_exits,
+            recoveries=recoveries,
+            starts=active_starts,
+        )
+        active_root_ids = [
+            str(active_starts[rva]["id"])
+            for root in roots
+            for rva in (root.get("rva"),)
+            if isinstance(rva, int) and rva in active_starts
+        ]
+        reachability = derive_rooted_reachable_units(
+            units=active_units,
+            roots=active_root_ids,
+            direct_edges=direct_edges,
+            internal_call_edges=internal_call_edges,
+            recovered_indirect_targets=rebound_recoveries,
+            indirect_exits=indirect_exits,
+        )
+        reached_ids = set(reachability["reachable_units"])
+        required_targets: dict[int, set[str]] = {}
+        independently_targeted_rvas: set[int] = set()
+        for root in roots:
+            rva = root.get("rva")
+            if not isinstance(rva, int):
+                continue
+            independently_targeted_rvas.add(rva)
+            if rva not in active_starts:
+                required_targets.setdefault(rva, set()).add(
+                    f"root:{root.get('kind', 'behavioral')}"
+                )
+        for edge in (*direct_edges, *internal_call_edges):
+            target_rva = edge.get("target_rva")
+            if (
+                edge.get("source_unit_id") not in reached_ids
+                or not isinstance(target_rva, int)
+            ):
+                continue
+            independently_targeted_rvas.add(target_rva)
+            if target_rva not in active_starts:
+                required_targets.setdefault(target_rva, set()).add(
+                    f"{edge.get('kind')}:{edge.get('source_unit_id')}"
+                )
+        planner_recoveries: list[dict[str, Any]] = []
+        for recovery in rebound_recoveries:
+            if recovery.get("source_unit_id") not in reached_ids:
+                continue
+            missing_targets = [
+                int(target)
+                for target in recovery.get("target_rvas", [])
+                if isinstance(target, int) and target not in active_starts
+            ]
+            independently_targeted_rvas.update(
+                int(target)
+                for target in recovery.get("target_rvas", [])
+                if isinstance(target, int)
+            )
+            if missing_targets:
+                planner_recoveries.append({
+                    **copy.deepcopy(dict(recovery)),
+                    "target_rvas": missing_targets,
+                })
+        authoritative_ids = reached_ids | {
+            str(active_starts[rva]["id"])
+            for rva in independently_targeted_rvas
+            if rva in active_starts
+        }
+        plan = plan_recovered_target_cutpoints_v2(
+            binary=binary,
+            units=active_units,
+            recoveries=planner_recoveries,
+            required_targets={
+                target: sorted(sources)
+                for target, sources in required_targets.items()
+            },
+            authoritative_unit_ids=sorted(authoritative_ids),
+            immutable_data_ranges=data_ranges,
+        )
+        final_plan = plan
+        added = _materialize_target_cutpoint_plan(
+            binary=binary,
+            augmented=augmented,
+            plan=plan,
+            contract_ref=contract_ref,
+            reference_sha256=reference_sha256,
+            iteration=iteration,
+            materialized_rows=materialized_rows,
+        )
+        iteration_rows.append({
+            "iteration": iteration,
+            "plan_id": plan["id"],
+            "status": plan["status"],
+            "reachable_units": len(reached_ids),
+            "rooted_frontiers": len(reachability["frontiers"]),
+            "targets": plan["counts"]["targets"],
+            "materialized_units": added,
+        })
+        if added == 0:
+            converged_cutpoints = True
+            break
+
+    augmented.sort(
+        key=lambda item: (
+            int(item["source"]["original"]["rva_start"]),
+            str(item["id"]),
+        )
     )
+    initial_exit_ids = {
+        str(exit_record["id"])
+        for exit_record in _precontrol_indirect_exits(units)
+    }
+    augmented_exits = _precontrol_indirect_exits(augmented)
+    augmented_exit_ids = {str(exit_record["id"]) for exit_record in augmented_exits}
+    replay_recoveries: list[dict[str, Any]] | None = None
+    replay_data_ranges: Sequence[Any] | None = None
+    if initial_exit_ids == augmented_exit_ids:
+        augmented_starts = {
+            int(unit["source"]["original"]["rva_start"]): unit
+            for unit in augmented
+        }
+        replay_recoveries = _rebind_preclassified_static_recoveries(
+            indirect_exits=augmented_exits,
+            recoveries=recoveries,
+            starts=augmented_starts,
+        )
+        replay_data_ranges = recover_executable_data_ranges(
+            binary=binary,
+            recoveries=replay_recoveries,
+            known_code_unit_rvas=set(augmented_starts),
+        )
+    if final_plan is None:
+        raise AssertionError("target cutpoint closure performed no iterations")
     issues = [
         ExportIssue(
             status=str(issue["status"]),
@@ -2593,20 +2751,91 @@ def _materialize_recovered_target_cutpoints(
                 "control.target_cutpoint_materialization",
             ),
         )
-        for issue in plan["issues"]
+        for issue in final_plan["issues"]
     ]
-    augmented = [copy.deepcopy(dict(unit)) for unit in units]
-    augmented_starts = {
+    report = {
+        **copy.deepcopy(final_plan),
+        "static_recovery_rounds": rounds,
+        "static_recovery_converged": converged,
+        "cutpoint_closure_iterations": iteration_rows,
+        "cutpoint_closure_converged": converged_cutpoints,
+        "static_recovery_reused_after_materialization": (
+            replay_recoveries is not None
+        ),
+        "materialized_units": materialized_rows,
+        "counts": {
+            **copy.deepcopy(final_plan["counts"]),
+            "materialized_units": len(materialized_rows),
+            "qualified_materialized_units": sum(
+                row["status"] == "qualified" for row in materialized_rows
+            ),
+        },
+    }
+    if not converged_cutpoints:
+        report["status"] = "incomplete"
+        issues.append(
+            ExportIssue(
+                status="incomplete",
+                category="target_cutpoint_closure_budget_exceeded",
+                message="rooted direct target materialization did not converge",
+                next_action=(
+                    "inspect the newly exposed direct-control chain or raise "
+                    "the generic closure budget"
+                ),
+                location=SourceLocation(
+                    None,
+                    None,
+                    None,
+                    RvaSpan(binary.entrypoint_rva, binary.entrypoint_rva + 1),
+                    "control.target_cutpoint_materialization",
+                ),
+            )
+        )
+    if not converged:
+        report["status"] = "incomplete"
+        issues.append(
+            ExportIssue(
+                status="incomplete",
+                category="target_cutpoint_static_recovery_budget_exceeded",
+                message=(
+                    "finite target discovery did not converge before cutpoint "
+                    "planning"
+                ),
+                next_action=(
+                    "reduce the finite target domain or increase the generic "
+                    "recovery budget"
+                ),
+                location=SourceLocation(
+                    None,
+                    None,
+                    None,
+                    RvaSpan(binary.entrypoint_rva, binary.entrypoint_rva + 1),
+                    "control.target_cutpoint_materialization",
+                ),
+            )
+        )
+    return augmented, report, issues, replay_recoveries, replay_data_ranges
+
+
+def _materialize_target_cutpoint_plan(
+    *,
+    binary: StageABinary,
+    augmented: list[dict[str, Any]],
+    plan: Mapping[str, Any],
+    contract_ref: Mapping[str, Any],
+    reference_sha256: str | None,
+    iteration: int,
+    materialized_rows: list[dict[str, Any]],
+) -> int:
+    starts = {
         int(unit["source"]["original"]["rva_start"]): unit for unit in augmented
     }
-    materialized_rows: list[dict[str, Any]] = []
-    contract_ref = {
-        "format": STAGE_A_REFERENCE_CONTRACT_FORMAT,
-        "path": "reference-contract.json",
-        "sha256": reference_sha256,
-    }
+    added = 0
     for target in plan["targets"]:
-        if target.get("status") != "complete" or target.get("disposition") != "materialize":
+        if (
+            target.get("status") != "complete"
+            or target.get("disposition") != "materialize"
+        ):
             continue
         for region in target["regions"]:
             parent_span = {
@@ -2622,7 +2851,7 @@ def _materialize_recovered_target_cutpoints(
             for span_payload in spans:
                 start = int(span_payload["rva_start"])
                 end = int(span_payload["rva_end"])
-                if start in augmented_starts:
+                if start in starts:
                     continue
                 identity = f"recovered-target-cutpoint-{start:08x}-{end:08x}"
                 side = BlockSide(start, end)
@@ -2657,84 +2886,25 @@ def _materialize_recovered_target_cutpoints(
                 unit["preparation"]["target_cutpoint_materialization"] = {
                     "format": "stage-a-target-cutpoint-unit-binding-v2",
                     "target_rva": int(target["target_rva"]),
+                    "target_sources": list(target["target_sources"]),
                     "recovery_ids": list(target["recovery_ids"]),
                     "plan_id": plan["id"],
+                    "iteration": iteration,
                     "region": copy.deepcopy(parent_span),
                 }
                 _assert_byte_free(unit)
                 augmented.append(unit)
-                augmented_starts[start] = unit
+                starts[start] = unit
                 materialized_rows.append({
                     "unit_id": unit["id"],
                     "target_rva": int(target["target_rva"]),
                     "rva_start": start,
                     "rva_end": end,
                     "status": unit["status"],
+                    "iteration": iteration,
                 })
-
-    augmented.sort(
-        key=lambda item: (
-            int(item["source"]["original"]["rva_start"]),
-            str(item["id"]),
-        )
-    )
-    initial_exit_ids = {
-        str(exit_record["id"])
-        for exit_record in _precontrol_indirect_exits(units)
-    }
-    augmented_exits = _precontrol_indirect_exits(augmented)
-    augmented_exit_ids = {str(exit_record["id"]) for exit_record in augmented_exits}
-    replay_recoveries: list[dict[str, Any]] | None = None
-    replay_data_ranges: Sequence[Any] | None = None
-    if initial_exit_ids == augmented_exit_ids:
-        augmented_starts = {
-            int(unit["source"]["original"]["rva_start"]): unit
-            for unit in augmented
-        }
-        replay_recoveries = _rebind_preclassified_static_recoveries(
-            indirect_exits=augmented_exits,
-            recoveries=recoveries,
-            starts=augmented_starts,
-        )
-        replay_data_ranges = recover_executable_data_ranges(
-            binary=binary,
-            recoveries=replay_recoveries,
-            known_code_unit_rvas=set(augmented_starts),
-        )
-    report = {
-        **copy.deepcopy(plan),
-        "static_recovery_rounds": rounds,
-        "static_recovery_converged": converged,
-        "static_recovery_reused_after_materialization": (
-            replay_recoveries is not None
-        ),
-        "materialized_units": materialized_rows,
-        "counts": {
-            **copy.deepcopy(plan["counts"]),
-            "materialized_units": len(materialized_rows),
-            "qualified_materialized_units": sum(
-                row["status"] == "qualified" for row in materialized_rows
-            ),
-        },
-    }
-    if not converged:
-        report["status"] = "incomplete"
-        issues.append(
-            ExportIssue(
-                status="incomplete",
-                category="target_cutpoint_static_recovery_budget_exceeded",
-                message="finite target discovery did not converge before cutpoint planning",
-                next_action="reduce the finite target domain or increase the generic recovery budget",
-                location=SourceLocation(
-                    None,
-                    None,
-                    None,
-                    RvaSpan(binary.entrypoint_rva, binary.entrypoint_rva + 1),
-                    "control.target_cutpoint_materialization",
-                ),
-            )
-        )
-    return augmented, report, issues, replay_recoveries, replay_data_ranges
+                added += 1
+    return added
 
 
 def _classify_executable_data_before_control(

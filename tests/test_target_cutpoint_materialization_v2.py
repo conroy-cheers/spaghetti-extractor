@@ -98,6 +98,32 @@ class TargetCutpointMaterializationV2Tests(unittest.TestCase):
             report["targets"][0]["evidence"], "decoded_control_boundary"
         )
 
+    def test_materializes_explicit_direct_or_root_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            original = Path(temporary) / "original.exe"
+            original.write_bytes(pe32_image(b"\x90\xc3", virtual_size=2))
+            binary = _parse_stage_a_pe(original)
+            try:
+                report = plan_recovered_target_cutpoints_v2(
+                    binary=binary,
+                    units=[],
+                    recoveries=[],
+                    required_targets={0x1000: ["internal_call:caller"]},
+                )
+            finally:
+                binary.pe.close()
+
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(report["counts"]["explicit_required_targets"], 1)
+        self.assertEqual(
+            report["targets"][0]["target_sources"],
+            ["internal_call:caller"],
+        )
+        self.assertEqual(
+            report["targets"][0]["regions"],
+            [{"rva_start": 0x1000, "rva_end": 0x1002, "size": 2}],
+        )
+
     def test_rejects_target_in_middle_of_instruction(self) -> None:
         report = self._plan(
             b"\xb8\x01\x00\x00\x00\xc3",
@@ -124,6 +150,32 @@ class TargetCutpointMaterializationV2Tests(unittest.TestCase):
         self.assertEqual(report["status"], "violated")
         self.assertEqual(
             report["issues"][0]["code"], "ambiguous_overlapping_target_decode"
+        )
+
+    def test_speculative_interior_decode_does_not_veto_required_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            original = Path(temporary) / "original.exe"
+            original.write_bytes(pe32_image(b"\x90\x90\xc3", virtual_size=3))
+            binary = _parse_stage_a_pe(original)
+            try:
+                report = plan_recovered_target_cutpoints_v2(
+                    binary=binary,
+                    units=[
+                        _unit("rooted", 0x1000, 0x1001, [(0x1000, 0x1001)]),
+                        _unit("speculative", 0x1000, 0x1003, [(0x1000, 0x1002)]),
+                    ],
+                    recoveries=[],
+                    required_targets={0x1001: ["direct_control:rooted"]},
+                    authoritative_unit_ids=["rooted"],
+                )
+            finally:
+                binary.pe.close()
+
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(report["targets"][0]["disposition"], "materialize")
+        self.assertEqual(
+            report["targets"][0]["regions"],
+            [{"rva_start": 0x1001, "rva_end": 0x1003, "size": 2}],
         )
 
 

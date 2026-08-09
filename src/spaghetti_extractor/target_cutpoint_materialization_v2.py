@@ -53,6 +53,8 @@ def plan_recovered_target_cutpoints_v2(
     binary: StageABinary,
     units: Sequence[Mapping[str, Any]],
     recoveries: Sequence[Mapping[str, Any]],
+    required_targets: Mapping[int, Sequence[str]] | None = None,
+    authoritative_unit_ids: Sequence[str] | None = None,
     immutable_data_ranges: Sequence[Any] = (),
     max_region_bytes: int = 256,
     max_instructions: int = 64,
@@ -70,15 +72,25 @@ def plan_recovered_target_cutpoints_v2(
         for unit in units
         if not _overlaps_any(_unit_span(unit), data_ranges)
     ]
+    authoritative_ids = (
+        {str(identity) for identity in authoritative_unit_ids}
+        if authoritative_unit_ids is not None
+        else {str(unit.get("id")) for unit in active_units}
+    )
     starts = {_unit_span(unit)[0]: unit for unit in active_units}
-    targets: dict[int, set[str]] = {}
+    targets: dict[int, set[str]] = {
+        int(target): {str(source) for source in sources}
+        for target, sources in (required_targets or {}).items()
+    }
+    recovery_ids: dict[int, set[str]] = {}
     for recovery in recoveries:
         if not _eligible_recovery(recovery):
             continue
         recovery_id = str(recovery.get("id") or "")
         for value in recovery.get("target_rvas", []):
             if isinstance(value, int) and not isinstance(value, bool):
-                targets.setdefault(value, set()).add(recovery_id)
+                targets.setdefault(value, set()).add(f"recovery:{recovery_id}")
+                recovery_ids.setdefault(value, set()).add(recovery_id)
 
     rows: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
@@ -89,7 +101,9 @@ def plan_recovered_target_cutpoints_v2(
             starts=starts,
             data_ranges=data_ranges,
             target_rva=target_rva,
-            recovery_ids=sorted(targets[target_rva]),
+            target_sources=sorted(targets[target_rva]),
+            recovery_ids=sorted(recovery_ids.get(target_rva, ())),
+            authoritative_unit_ids=authoritative_ids,
             max_region_bytes=max_region_bytes,
             max_instructions=max_instructions,
         )
@@ -110,7 +124,14 @@ def plan_recovered_target_cutpoints_v2(
             ),
         ),
         "counts": {
-            "recovered_targets": len(rows),
+            "targets": len(rows),
+            "recovered_targets": sum(bool(row["recovery_ids"]) for row in rows),
+            "explicit_required_targets": sum(
+                bool(set(row["target_sources"]) - {
+                    f"recovery:{identity}" for identity in row["recovery_ids"]
+                })
+                for row in rows
+            ),
             "existing_targets": sum(row["disposition"] == "existing" for row in rows),
             "materialize_targets": sum(
                 row["disposition"] == "materialize" for row in rows
@@ -123,6 +144,7 @@ def plan_recovered_target_cutpoints_v2(
             "plans_are_untrusted_proposals": True,
             "targets_inside_checked_data_are_rejected": True,
             "targets_inside_existing_instructions_are_rejected": True,
+            "speculative_decode_views_cannot_veto_authoritative_targets": True,
             "generated_semantics_must_be_replayed_separately": True,
         },
     }
@@ -136,12 +158,15 @@ def _plan_target(
     starts: Mapping[int, Mapping[str, Any]],
     data_ranges: Sequence[tuple[int, int]],
     target_rva: int,
+    target_sources: Sequence[str],
     recovery_ids: Sequence[str],
+    authoritative_unit_ids: set[str],
     max_region_bytes: int,
     max_instructions: int,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     base = {
         "target_rva": target_rva,
+        "target_sources": list(target_sources),
         "recovery_ids": list(recovery_ids),
     }
     if any(start <= target_rva < end for start, end in data_ranges):
@@ -173,7 +198,10 @@ def _plan_target(
                 boundaries.append((unit, unit_end))
             elif start < target_rva < end:
                 interiors.append((unit, start, end))
-    if interiors:
+    authoritative_interiors = [
+        item for item in interiors if str(item[0].get("id")) in authoritative_unit_ids
+    ]
+    if authoritative_interiors:
         issue = _issue(
             "violated",
             (
@@ -188,7 +216,7 @@ def _plan_target(
                     "instruction_rva_start": start,
                     "instruction_rva_end": end,
                 }
-                for unit, start, end in interiors
+                for unit, start, end in authoritative_interiors
             ],
         )
         return {**base, "status": "violated", "disposition": "unresolved", "regions": []}, [issue]
