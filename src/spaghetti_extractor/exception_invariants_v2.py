@@ -369,6 +369,23 @@ def _synthesize_invariant_certificate_v2(
         {"unit_id": member, "facts": candidates[member]}
         for member in members
     ]
+    retained_requested: dict[str, list[dict[str, Any]]] = {}
+    for unit_id, facts in requested.items():
+        retained_digests = {
+            canonical_sha256(fact) for fact in candidates.get(unit_id, ())
+        }
+        retained_requested[unit_id] = [
+            fact for fact in facts if canonical_sha256(fact) in retained_digests
+        ]
+        for fact in facts:
+            if canonical_sha256(fact) not in retained_digests:
+                issues.append(
+                    _issue(
+                        "incomplete",
+                        "requested_control_fact_not_synthesized",
+                        f"{unit_id}:{canonical_sha256(fact)}",
+                    )
+                )
 
     initiation = _synthesized_initiation(inventory, assumptions, members)
     if not initiation:
@@ -441,8 +458,9 @@ def _synthesize_invariant_certificate_v2(
         **(
             {
                 "requested_facts": [
-                    {"unit_id": unit_id, "facts": requested[unit_id]}
-                    for unit_id in sorted(requested)
+                    {"unit_id": unit_id, "facts": retained_requested[unit_id]}
+                    for unit_id in sorted(retained_requested)
+                    if retained_requested[unit_id]
                 ]
             }
             if not include_faults

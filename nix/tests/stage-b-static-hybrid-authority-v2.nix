@@ -88,6 +88,15 @@ let
       pythonModules = [ "spaghetti_extractor.interprocedural_phase_v2" ];
       inputs.call_profile = mkInput "call-profile";
     };
+    controlInvariantCertificates = mkSpec {
+      derivationSuffix = "control-invariants";
+      kind = "control-invariants-v2";
+      artifactName = "control-invariants-v2.json";
+      expectedFormat = "spaghetti-extractor-control-invariant-phase-v2";
+      pythonModules = [
+        "spaghetti_extractor.control_invariant_phase_v2"
+      ];
+    };
     jointInterproceduralV2 = mkSpec {
       derivationSuffix = "joint-interprocedural";
       kind = "joint-interprocedural-v2";
@@ -364,6 +373,7 @@ let
     graph.exactUnitPrep
     graph.baseGraph
     graph.interproceduralSeed
+    graph.controlInvariantCertificates
     graph.jointInterproceduralV2
     graph.interproceduralV2
     graph.rootedClosure

@@ -451,6 +451,15 @@
       ],
       "path": "src/spaghetti_extractor/control_analysis_v2.py"
     },
+    "spaghetti_extractor.control_invariant_phase_v2": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.control_analysis_v2",
+        "spaghetti_extractor.exception_invariants_v2",
+        "spaghetti_extractor.stage_binary"
+      ],
+      "path": "src/spaghetti_extractor/control_invariant_phase_v2.py"
+    },
     "spaghetti_extractor.entry_fact_derivation_v2": {
       "dependencies": [
         "spaghetti_extractor",

@@ -45,6 +45,7 @@ def derive_interprocedural_result_v2(
     global_slot_invariants: Sequence[Mapping[str, Any] | GlobalSlotInvariant] = (),
     checked_stack_entry_offsets: Mapping[str, Sequence[int]] | None = None,
     checked_stack_range_facts: Sequence[Mapping[str, Any]] = (),
+    checked_control_invariants: Sequence[Mapping[str, Any]] = (),
     stack_launch_assumptions_sha256: str | None = None,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI] | None = None,
     interface_profiles: Sequence[ExternalInterfaceProfile] | None = None,
@@ -118,6 +119,8 @@ def derive_interprocedural_result_v2(
             binary=binary,
             units=units,
             indirect_exits=indirect_exits,
+            checked_control_invariants=checked_control_invariants,
+            machine_ir_sha256=machine_ir_sha256,
         )
         if static_recoveries is None
         else _validate_static_recoveries(static_recoveries, indirect_exits)

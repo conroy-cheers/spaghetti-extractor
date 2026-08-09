@@ -594,6 +594,46 @@ let
         '';
       };
 
+      controlInvariantCertificates = {
+        derivationSuffix = "control-invariants-v2";
+        kind = "control-invariants-v2";
+        artifactName = "control-invariants-v2.json";
+        expectedFormat = "spaghetti-extractor-control-invariant-phase-v2";
+        allowedStatuses = [ "complete" "incomplete" "violated" ];
+        pythonModules = [
+          "spaghetti_extractor.control_invariant_phase_v2"
+        ];
+        inputs = {
+          original_pe = original;
+          machine_ir = "${machineIr}/machine-ir.jsonl";
+        };
+        program = ''
+          import hashlib
+
+          from spaghetti_extractor.control_invariant_phase_v2 import (
+              derive_checked_control_invariants_v2,
+          )
+          from spaghetti_extractor.stage_binary import _parse_stage_a_pe
+
+          units = [
+              json.loads(line)
+              for line in inputs["machine_ir"].read_text(encoding="utf-8").splitlines()
+              if line.strip()
+          ]
+          payload = derive_checked_control_invariants_v2(
+              units=units,
+              binary=_parse_stage_a_pe(inputs["original_pe"]),
+              machine_ir_sha256=hashlib.sha256(
+                  inputs["machine_ir"].read_bytes()
+              ).hexdigest(),
+          )
+          output.write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+        '';
+      };
+
       jointInterproceduralV2 = {
         derivationSuffix = "joint-interprocedural-v2";
         kind = "joint-interprocedural-v2";
@@ -668,6 +708,9 @@ let
           base_graph = json.loads(inputs["base_graph"].read_text(encoding="utf-8"))
           seed = json.loads(inputs["interprocedural_seed"].read_text(encoding="utf-8"))
           inventory = json.loads(inputs["selected_profiles"].read_text(encoding="utf-8"))
+          checked_control_invariants = json.loads(
+              inputs["control_invariants"].read_text(encoding="utf-8")
+          ).get("authority_records", [])
           binary = _parse_stage_a_pe(inputs["original_pe"])
           if "launch_profile" in inputs:
               launch = parse_launch_profile_v2(
@@ -742,6 +785,7 @@ let
                   global_slot_invariants=global_slot_invariants,
                   checked_stack_entry_offsets=checked_stack_entry_offsets,
                   checked_stack_range_facts=checked_stack_range_facts,
+                  checked_control_invariants=checked_control_invariants,
                   stack_launch_assumptions_sha256=launch_assumptions_sha256,
                   import_abis=import_abis,
                   interface_profiles=interface_profiles,
@@ -769,6 +813,7 @@ let
                   global_slot_invariants=global_slot_invariants,
                   checked_stack_entry_offsets=checked_stack_entry_offsets,
                   checked_stack_range_facts=checked_stack_range_facts,
+                  checked_control_invariants=checked_control_invariants,
                   stack_launch_assumptions_sha256=launch_assumptions_sha256,
                   import_abis=import_abis,
                   interface_profiles=interface_profiles,

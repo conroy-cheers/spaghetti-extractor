@@ -20,6 +20,7 @@ class StageBStaticHybridAuthorityNixTests(unittest.TestCase):
             "exactUnitPrep",
             "baseGraph",
             "interproceduralSeed",
+            "controlInvariantCertificates",
             "jointInterproceduralV2",
             "interproceduralV2",
             "rootedClosure",
@@ -49,6 +50,9 @@ class StageBStaticHybridAuthorityNixTests(unittest.TestCase):
 
         self.assertIn("exact_unit_prep = exactUnitPrep.artifact", graph)
         self.assertIn("base_graph = baseGraph.artifact", graph)
+        self.assertIn(
+            "control_invariants = controlInvariantCertificates.artifact", graph
+        )
         self.assertIn("interprocedural_v2 = interproceduralV2.artifact", graph)
         self.assertIn(
             "joint_interprocedural = jointInterproceduralV2.artifact", graph
@@ -80,6 +84,7 @@ class StageBStaticHybridAuthorityNixTests(unittest.TestCase):
             "spaghetti_extractor.reconstruction_ir",
             "spaghetti_extractor.reconstruction_control",
             "spaghetti_extractor.interprocedural_phase_v2",
+            "spaghetti_extractor.control_invariant_phase_v2",
             "spaghetti_extractor.joint_fixed_point_v2",
             "spaghetti_extractor.joint_interprocedural_analysis_v2",
             "spaghetti_extractor.artifact_projection_v2",

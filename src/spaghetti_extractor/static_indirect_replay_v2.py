@@ -8,11 +8,16 @@ semantics and PE bytes. Unsupported recovery mechanisms remain incomplete.
 from __future__ import annotations
 
 import copy
+import json
+from hashlib import sha256
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .indirect_target_dependency_v2 import build_bounded_selector_dependency_v2
-from .reconstruction_control import recover_static_pe32_jump_table_inventory
+from .reconstruction_control import (
+    pe32_jump_table_index_expression,
+    recover_static_pe32_jump_table_inventory,
+)
 from .stage_binary import StageABinary
 
 
@@ -21,6 +26,8 @@ def replay_exact_static_recoveries_v2(
     binary: StageABinary,
     units: Sequence[Mapping[str, Any]],
     indirect_exits: Sequence[Mapping[str, Any]],
+    checked_control_invariants: Sequence[Mapping[str, Any]] = (),
+    machine_ir_sha256: str | None = None,
 ) -> list[dict[str, Any]]:
     """Rebuild predecessor-bounded immutable jump tables from authority inputs."""
 
@@ -38,6 +45,13 @@ def replay_exact_static_recoveries_v2(
         if isinstance(unit.get("id"), str)
     }
     predecessors = direct_predecessors_by_target(units)
+    checked_domains = _checked_control_domains(
+        checked_control_invariants,
+        binary=binary,
+        machine_ir_sha256=machine_ir_sha256,
+        indirect_exits=indirect_exits,
+        units_by_id=units_by_id,
+    )
     result: list[dict[str, Any]] = []
     for exit_record in indirect_exits:
         source_unit_id = exit_record.get("source_unit_id")
@@ -64,10 +78,19 @@ def replay_exact_static_recoveries_v2(
             image_base=binary.image_base,
             sections=binary.sections,
             read_rva=lambda rva, size: bytes(binary.pe.get_data(rva, size)),
-            finite_index_domain=None,
+            finite_index_domain=checked_domains.get(str(exit_record.get("id"))),
             valid_target_rvas=starts,
         )
         recovery_kind = recovery.get("kind")
+        checked_domain = checked_domains.get(str(exit_record.get("id")))
+        if checked_domain is not None:
+            recovery["control_invariant_dependencies"] = list(
+                checked_domain["authority_dependencies"]
+            )
+            recovery["authority_dependencies"] = [
+                {"role": "control_invariant", "content_id": dependency}
+                for dependency in checked_domain["authority_dependencies"]
+            ]
         target_rvas = [
             int(rva)
             for rva in recovery.get("target_rvas", [])
@@ -108,6 +131,112 @@ def replay_exact_static_recoveries_v2(
                 build_bounded_selector_dependency_v2(recovery)
             )
         result.append(recovery)
+    return result
+
+
+def _checked_control_domains(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    binary: StageABinary,
+    machine_ir_sha256: str | None,
+    indirect_exits: Sequence[Mapping[str, Any]],
+    units_by_id: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    if not records:
+        return {}
+    if machine_ir_sha256 is None:
+        raise ValueError("checked control facts require a machine-IR binding")
+    exits = {str(row.get("id")): row for row in indirect_exits}
+    result: dict[str, dict[str, Any]] = {}
+    for record in records:
+        exit_id = record.get("indirect_exit_id")
+        unit_id = record.get("unit_id")
+        fact = record.get("fact")
+        authority_id = record.get("authority_id")
+        certificate_sha256 = record.get("certificate_sha256")
+        if (
+            not isinstance(exit_id, str)
+            or exit_id not in exits
+            or not isinstance(unit_id, str)
+            or unit_id not in units_by_id
+            or exits[exit_id].get("source_unit_id") != unit_id
+            or record.get("binary_sha256") != binary.sha256
+            or record.get("machine_ir_sha256") != machine_ir_sha256
+            or not isinstance(fact, Mapping)
+            or fact.get("kind") != "finite_values"
+            or not isinstance(authority_id, str)
+            or not isinstance(certificate_sha256, str)
+        ):
+            raise ValueError("checked control-invariant binding is malformed")
+        expression = fact.get("expression")
+        values = fact.get("values")
+        target_expression = exits[exit_id].get("target_expression")
+        expected_expression = (
+            pe32_jump_table_index_expression(target_expression)
+            if isinstance(target_expression, Mapping)
+            else None
+        )
+        if (
+            not isinstance(expression, Mapping)
+            or expression != expected_expression
+            or not isinstance(values, list)
+            or not values
+            or values != sorted(set(values))
+            or any(
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or not 0 <= value <= 0xFFFFFFFF
+                for value in values
+            )
+        ):
+            raise ValueError("checked control-invariant fact is not a finite index domain")
+        fact_sha256 = sha256(
+            json.dumps(
+                fact,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("ascii")
+        ).hexdigest()
+        if record.get("fact_sha256") != fact_sha256:
+            raise ValueError("checked control-invariant fact hash is stale")
+        core = {
+            "unit_id": unit_id,
+            "fact_sha256": fact_sha256,
+            "fact": copy.deepcopy(dict(fact)),
+        }
+        expected_authority_id = "checked-control-fact-v2:" + sha256(
+            json.dumps(
+                {
+                    "certificate_sha256": certificate_sha256,
+                    "fact": core,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("ascii")
+        ).hexdigest()
+        if authority_id != expected_authority_id or exit_id in result:
+            raise ValueError("checked control-invariant authority identity is corrupt")
+        expression_sha256 = sha256(
+            json.dumps(
+                expression,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("ascii")
+        ).hexdigest()
+        result[exit_id] = {
+            "format": "stage-a-finite-u32-expression-domain-v1",
+            "status": "complete",
+            "source_unit_id": unit_id,
+            "expression_sha256": expression_sha256,
+            "values": list(values),
+            "authority_dependencies": [authority_id],
+        }
     return result
 
 
