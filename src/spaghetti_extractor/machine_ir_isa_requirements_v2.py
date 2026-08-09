@@ -23,6 +23,9 @@ from .isa_semantic_forms import lean_semantic_form_id
 MACHINE_IR_ISA_REQUIREMENTS_V2_FORMAT = (
     "spaghetti-extractor-machine-ir-isa-requirements-v2"
 )
+MACHINE_IR_ISA_SEMANTIC_REQUIREMENTS_V2_FORMAT = (
+    "spaghetti-extractor-machine-ir-isa-semantic-requirements-v2"
+)
 MACHINE_IR_FALLBACK_CAPABILITY_V2 = "machine-ir-fallback-v2"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -700,6 +703,214 @@ def parse_machine_ir_isa_requirements_v2(
     )
 
 
+def build_machine_ir_isa_semantic_requirements_v2(
+    value: Mapping[str, Any] | MachineIRISARequirementsV2,
+) -> dict[str, Any]:
+    """Project authority-bound requirements onto reusable ISA semantics."""
+
+    requirements = (
+        value
+        if isinstance(value, MachineIRISARequirementsV2)
+        else parse_machine_ir_isa_requirements_v2(value)
+    )
+    if requirements.status != "complete":
+        raise MachineIRISARequirementsV2Error(
+            "only complete exact ISA requirements have a semantic projection"
+        )
+    payload = requirements.to_payload()
+    binding = _object(payload.get("binding"), "ISA requirements binding")
+    checker = {
+        "classifier_sha256": _digest(
+            binding.get("classifier_sha256"), "classifier SHA-256"
+        ),
+        "extractor_sha256": _digest(
+            binding.get("extractor_sha256"), "extractor SHA-256"
+        ),
+        "lean_source_sha256": _digest(
+            binding.get("lean_source_sha256"), "Lean source SHA-256"
+        ),
+    }
+    forms_by_id = {
+        _string(row.get("id"), f"ISA form {index} ID"): {
+            "semantic_form": _string(
+                row.get("semantic_form"), f"ISA form {index} semantic form"
+            ),
+            "instruction_hexes": set(),
+        }
+        for index, raw in enumerate(payload["forms"])
+        for row in (_object(raw, f"ISA form {index}"),)
+    }
+    for index, raw in enumerate(payload["occurrences"]):
+        row = _object(raw, f"ISA occurrence {index}")
+        form_id = _string(row.get("form_id"), f"ISA occurrence {index} form ID")
+        encoded = row.get("bytes")
+        if form_id not in forms_by_id or not isinstance(encoded, str):
+            raise MachineIRISARequirementsV2Error(
+                "ISA semantic projection does not replay from exact requirements"
+            )
+        forms_by_id[form_id]["instruction_hexes"].add(encoded)
+    forms = [
+        {
+            "form_id": form_id,
+            "semantic_form": str(forms_by_id[form_id]["semantic_form"]),
+            "instruction_hexes": sorted(forms_by_id[form_id]["instruction_hexes"]),
+        }
+        for form_id in sorted(forms_by_id)
+    ]
+    if any(not row["instruction_hexes"] for row in forms):
+        raise MachineIRISARequirementsV2Error(
+            "ISA semantic projection contains a form without an exact encoding"
+        )
+    semantic_body = {
+        "format": MACHINE_IR_ISA_SEMANTIC_REQUIREMENTS_V2_FORMAT,
+        "checker": checker,
+        "forms": forms,
+    }
+    body = {
+        **semantic_body,
+        "status": "complete",
+        "binary_sha256": requirements.binary_sha256,
+        "counts": {
+            "forms": len(forms),
+            "encodings": sum(len(row["instruction_hexes"]) for row in forms),
+        },
+        "trust": {
+            "authority_binding_retained_upstream": True,
+            "machine_ir_metadata_is_semantic": False,
+            "exact_instruction_bytes_and_forms_are_semantic": True,
+        },
+        "semantic_requirements_sha256": _canonical_sha256(semantic_body),
+    }
+    return {**body, "projection_sha256": _canonical_sha256(body)}
+
+
+def parse_machine_ir_isa_semantic_requirements_v2(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Replay a semantic projection and reject stale or broadened identities."""
+
+    payload = _json_clone(value)
+    expected = {
+        "format",
+        "status",
+        "binary_sha256",
+        "checker",
+        "forms",
+        "counts",
+        "trust",
+        "semantic_requirements_sha256",
+        "projection_sha256",
+    }
+    if set(payload) != expected:
+        raise MachineIRISARequirementsV2Error(
+            "ISA semantic requirements field inventory is invalid"
+        )
+    if payload.get("format") != MACHINE_IR_ISA_SEMANTIC_REQUIREMENTS_V2_FORMAT:
+        raise MachineIRISARequirementsV2Error(
+            "ISA semantic requirements format is invalid"
+        )
+    body = dict(payload)
+    projection_sha256 = body.pop("projection_sha256", None)
+    if projection_sha256 != _canonical_sha256(body):
+        raise MachineIRISARequirementsV2Error(
+            "ISA semantic requirements projection hash is stale"
+        )
+    if payload.get("status") != "complete":
+        raise MachineIRISARequirementsV2Error(
+            "ISA semantic requirements status is invalid"
+        )
+    _digest(payload.get("binary_sha256"), "binary SHA-256")
+    checker = _object(payload.get("checker"), "ISA semantic requirements checker")
+    if set(checker) != {
+        "classifier_sha256",
+        "extractor_sha256",
+        "lean_source_sha256",
+    }:
+        raise MachineIRISARequirementsV2Error(
+            "ISA semantic requirements checker inventory is invalid"
+        )
+    classifier_sha256 = _digest(
+        checker.get("classifier_sha256"), "classifier SHA-256"
+    )
+    _digest(checker.get("extractor_sha256"), "extractor SHA-256")
+    _digest(checker.get("lean_source_sha256"), "Lean source SHA-256")
+    raw_forms = payload.get("forms")
+    if not isinstance(raw_forms, list) or not raw_forms:
+        raise MachineIRISARequirementsV2Error(
+            "ISA semantic requirements have no forms"
+        )
+    forms: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_forms):
+        row = _object(raw, f"ISA semantic form {index}")
+        if set(row) != {"form_id", "semantic_form", "instruction_hexes"}:
+            raise MachineIRISARequirementsV2Error(
+                f"ISA semantic form {index} field inventory is invalid"
+            )
+        form_id = _string(row.get("form_id"), f"ISA semantic form {index} ID")
+        semantic_form = _string(
+            row.get("semantic_form"), f"ISA semantic form {index} semantic form"
+        )
+        if form_id != lean_semantic_form_id(
+            semantic_form, classifier_sha256=classifier_sha256
+        ):
+            raise MachineIRISARequirementsV2Error(
+                f"ISA semantic form {index} identity is stale"
+            )
+        raw_encodings = row.get("instruction_hexes")
+        if not isinstance(raw_encodings, list) or not raw_encodings:
+            raise MachineIRISARequirementsV2Error(
+                f"ISA semantic form {index} has no encodings"
+            )
+        encodings = [
+            _instruction_hex(encoded, f"ISA semantic form {index} encoding")
+            for encoded in raw_encodings
+        ]
+        if encodings != sorted(set(encodings)):
+            raise MachineIRISARequirementsV2Error(
+                f"ISA semantic form {index} encodings are not canonical"
+            )
+        forms.append({
+            "form_id": form_id,
+            "semantic_form": semantic_form,
+            "instruction_hexes": encodings,
+        })
+    if [row["form_id"] for row in forms] != sorted(
+        {row["form_id"] for row in forms}
+    ):
+        raise MachineIRISARequirementsV2Error(
+            "ISA semantic form inventory is not canonical"
+        )
+    counts = _object(payload.get("counts"), "ISA semantic requirements counts")
+    expected_counts = {
+        "forms": len(forms),
+        "encodings": sum(len(row["instruction_hexes"]) for row in forms),
+    }
+    if dict(counts) != expected_counts:
+        raise MachineIRISARequirementsV2Error(
+            "ISA semantic requirements counts are stale"
+        )
+    if payload.get("trust") != {
+        "authority_binding_retained_upstream": True,
+        "machine_ir_metadata_is_semantic": False,
+        "exact_instruction_bytes_and_forms_are_semantic": True,
+    }:
+        raise MachineIRISARequirementsV2Error(
+            "ISA semantic requirements trust policy is invalid"
+        )
+    semantic_body = {
+        "format": MACHINE_IR_ISA_SEMANTIC_REQUIREMENTS_V2_FORMAT,
+        "checker": dict(checker),
+        "forms": forms,
+    }
+    if payload.get("semantic_requirements_sha256") != _canonical_sha256(
+        semantic_body
+    ):
+        raise MachineIRISARequirementsV2Error(
+            "ISA semantic requirements identity is stale"
+        )
+    return payload
+
+
 def compare_selection_to_machine_ir_requirements_v2(
     requirements: MachineIRISARequirementsV2,
     authority: ISAKernelSelectionAuthority,
@@ -764,6 +975,19 @@ def _digest(value: Any, context: str) -> str:
     return value
 
 
+def _instruction_hex(value: Any, context: str) -> str:
+    encoded = _string(value, context)
+    if (
+        len(encoded) % 2
+        or not 1 <= len(encoded) // 2 <= 15
+        or any(character not in "0123456789abcdef" for character in encoded)
+    ):
+        raise MachineIRISARequirementsV2Error(
+            f"{context} is not a canonical x86 instruction"
+        )
+    return encoded
+
+
 def _nonnegative_int(value: Any, context: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise MachineIRISARequirementsV2Error(f"{context} must be non-negative")
@@ -796,12 +1020,15 @@ def _json_clone(value: Any) -> dict[str, Any]:
 __all__ = [
     "MACHINE_IR_FALLBACK_CAPABILITY_V2",
     "MACHINE_IR_ISA_REQUIREMENTS_V2_FORMAT",
+    "MACHINE_IR_ISA_SEMANTIC_REQUIREMENTS_V2_FORMAT",
     "MachineIRISARequirementsV2",
     "MachineIRISARequirementsV2Error",
     "build_machine_ir_isa_extraction_request_v2",
     "build_machine_ir_isa_requirements_v2",
+    "build_machine_ir_isa_semantic_requirements_v2",
     "compare_selection_to_machine_ir_requirements_v2",
     "failed_machine_ir_isa_requirements_v2",
     "incomplete_machine_ir_isa_requirements_v2",
     "parse_machine_ir_isa_requirements_v2",
+    "parse_machine_ir_isa_semantic_requirements_v2",
 ]

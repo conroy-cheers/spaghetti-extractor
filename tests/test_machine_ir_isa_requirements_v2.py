@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import unittest
 from types import SimpleNamespace
+from typing import Any
 
 from spaghetti_extractor.analysis.isa_requirements import (
     _lean_side_form_extraction_source,
@@ -12,8 +13,10 @@ from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
     MachineIRISARequirementsV2Error,
     build_machine_ir_isa_extraction_request_v2,
     build_machine_ir_isa_requirements_v2,
+    build_machine_ir_isa_semantic_requirements_v2,
     compare_selection_to_machine_ir_requirements_v2,
     parse_machine_ir_isa_requirements_v2,
+    parse_machine_ir_isa_semantic_requirements_v2,
 )
 
 
@@ -28,7 +31,7 @@ def _unit(
     *,
     reachable: bool = True,
     identity: str = "unit-1000",
-) -> dict[str, object]:
+) -> dict[str, Any]:
     return {
         "id": identity,
         "reachable": reachable,
@@ -49,7 +52,7 @@ def _evidence() -> dict[str, str]:
     }
 
 
-def _rows() -> dict[tuple[str, int], tuple[dict[str, object], ...]]:
+def _rows() -> dict[tuple[str, int], tuple[dict[str, Any], ...]]:
     return {
         ("original", 0): (
             {"rva": 0x1000, "size": 1, "bytes": "53", "form": "push-r32"},
@@ -98,7 +101,7 @@ class MachineIRISARequirementsV2Tests(unittest.TestCase):
             {row[1] for row in parsed.fallback_capability_ids},
             {MACHINE_IR_FALLBACK_CAPABILITY_V2},
         )
-        authority = SimpleNamespace(
+        authority: Any = SimpleNamespace(
             requirements=SimpleNamespace(
                 binary_sha256=PE_SHA,
                 forms=parsed.forms,
@@ -112,6 +115,84 @@ class MachineIRISARequirementsV2Tests(unittest.TestCase):
             compare_selection_to_machine_ir_requirements_v2(parsed, authority),
             [],
         )
+
+    def test_semantic_projection_excludes_machine_ir_profile_and_provenance(self) -> None:
+        first_request = build_machine_ir_isa_extraction_request_v2(
+            units=[_unit(identity="profile-a-unit")], binary_sha256=PE_SHA
+        )
+        changed_unit = _unit(identity="profile-b-renamed-unit")
+        changed_unit["profile"] = {"id": "profile-b", "provenance": "reviewed"}
+        changed_unit["instructions"][0]["mnemonic"] = "diagnostic-push"
+        second_request = build_machine_ir_isa_extraction_request_v2(
+            units=[changed_unit], binary_sha256=PE_SHA
+        )
+        first = build_machine_ir_isa_requirements_v2(
+            request=first_request,
+            machine_ir_sha256=MACHINE_SHA,
+            lean_rows=_rows(),
+            lean_evidence=_evidence(),
+        )
+        second = build_machine_ir_isa_requirements_v2(
+            request=second_request,
+            machine_ir_sha256="f" * 64,
+            lean_rows=_rows(),
+            lean_evidence=_evidence(),
+        )
+
+        self.assertNotEqual(first["requirements_sha256"], second["requirements_sha256"])
+        self.assertEqual(
+            build_machine_ir_isa_semantic_requirements_v2(first),
+            build_machine_ir_isa_semantic_requirements_v2(second),
+        )
+
+    def test_semantic_projection_changes_with_bytes_forms_and_checker(self) -> None:
+        request = build_machine_ir_isa_extraction_request_v2(
+            units=[_unit()], binary_sha256=PE_SHA
+        )
+
+        def project(*, rows=None, evidence=None):
+            return build_machine_ir_isa_semantic_requirements_v2(
+                build_machine_ir_isa_requirements_v2(
+                    request=request,
+                    machine_ir_sha256=MACHINE_SHA,
+                    lean_rows=_rows() if rows is None else rows,
+                    lean_evidence=_evidence() if evidence is None else evidence,
+                )
+            )["semantic_requirements_sha256"]
+
+        changed_bytes = _rows()
+        changed_bytes[("original", 0)][0]["bytes"] = "51"
+        changed_form = _rows()
+        changed_form[("original", 0)][0]["form"] = "push-register-alias"
+        changed_checker = _evidence()
+        changed_checker["extractor_sha256"] = "0" * 64
+
+        baseline = project()
+        self.assertNotEqual(baseline, project(rows=changed_bytes))
+        self.assertNotEqual(baseline, project(rows=changed_form))
+        self.assertNotEqual(baseline, project(evidence=changed_checker))
+
+    def test_corrupted_authority_and_semantic_bindings_fail_closed(self) -> None:
+        request = build_machine_ir_isa_extraction_request_v2(
+            units=[_unit()], binary_sha256=PE_SHA
+        )
+        requirements = build_machine_ir_isa_requirements_v2(
+            request=request,
+            machine_ir_sha256=MACHINE_SHA,
+            lean_rows=_rows(),
+            lean_evidence=_evidence(),
+        )
+        corrupted_authority = copy.deepcopy(requirements)
+        corrupted_authority["binding"]["machine_ir_sha256"] = "0" * 64
+        with self.assertRaisesRegex(MachineIRISARequirementsV2Error, "self-hash"):
+            parse_machine_ir_isa_requirements_v2(corrupted_authority)
+
+        projection = build_machine_ir_isa_semantic_requirements_v2(requirements)
+        projection["binary_sha256"] = "0" * 64
+        with self.assertRaisesRegex(
+            MachineIRISARequirementsV2Error, "projection hash"
+        ):
+            parse_machine_ir_isa_semantic_requirements_v2(projection)
 
     def test_identical_instruction_locations_are_checked_once(self) -> None:
         request = build_machine_ir_isa_extraction_request_v2(

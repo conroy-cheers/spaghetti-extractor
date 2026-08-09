@@ -12,6 +12,55 @@
 }:
 
 let
+  semanticRequirementsPythonSource = import ./python-module-closure.nix {
+    inherit pkgs;
+    source = isaPythonSource;
+    modules = [
+      "spaghetti_extractor.machine_ir_isa_requirements_v2"
+    ];
+    extraPaths = [ "spaghetti_extractor/lean/StageA" ];
+    name = "${name}-semantic-requirements-python-closure";
+  };
+  # This CA output intentionally excludes the authority input store path. The
+  # expensive qualification graph depends on its replayed semantic content.
+  semanticRequirements = pkgs.runCommand "${name}-semantic-requirements" {
+    nativeBuildInputs = [ pythonEnv pkgs.jq ];
+    preferLocalBuild = false;
+    allowSubstitutes = true;
+    __contentAddressed = true;
+  } ''
+    set -euo pipefail
+    export PYTHONHASHSEED=0
+    export PYTHONDONTWRITEBYTECODE=1
+    export PYTHONPATH=${semanticRequirementsPythonSource}/src
+    mkdir -p "$out"
+    ${pythonEnv}/bin/python3 - \
+      ${requirements} "$out/semantic-requirements.json" <<'PY'
+    import json
+    import pathlib
+    import sys
+
+    from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
+        build_machine_ir_isa_semantic_requirements_v2,
+    )
+
+    source = pathlib.Path(sys.argv[1])
+    output = pathlib.Path(sys.argv[2])
+    payload = build_machine_ir_isa_semantic_requirements_v2(
+        json.loads(source.read_text(encoding="utf-8"))
+    )
+    output.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    PY
+    jq -e '
+      .format == "spaghetti-extractor-machine-ir-isa-semantic-requirements-v2"
+      and .status == "complete"
+      and (.semantic_requirements_sha256 | test("^[0-9a-f]{64}$"))
+      and (.projection_sha256 | test("^[0-9a-f]{64}$"))
+    ' "$out/semantic-requirements.json" >/dev/null
+  '';
   mkPhase = args: import ./ca-python-json-phase.nix ({
     inherit pkgs pythonEnv;
     pythonSource = isaPythonSource;
@@ -38,7 +87,9 @@ let
       "spaghetti_extractor.machine_ir_isa_catalog_v2"
     ];
     pythonExtraPaths = [ "spaghetti_extractor/lean/StageA" ];
-    inputs = { inherit requirements; };
+    inputs = {
+      requirements = "${semanticRequirements}/semantic-requirements.json";
+    };
     program = ''
       from spaghetti_extractor.machine_ir_isa_catalog_v2 import (
           build_machine_ir_isa_catalog_proposal_v2,
@@ -169,6 +220,7 @@ let
 in
 {
   inherit
+    semanticRequirements
     catalogProposal
     catalogEnrichment
     corpus
