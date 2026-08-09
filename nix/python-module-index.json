@@ -298,6 +298,14 @@
       ],
       "path": "src/spaghetti_extractor/call_arguments.py"
     },
+    "spaghetti_extractor.call_site_effects": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.machine_abi",
+        "spaghetti_extractor.provenance_domain"
+      ],
+      "path": "src/spaghetti_extractor/call_site_effects.py"
+    },
     "spaghetti_extractor.callable_external_runtime": {
       "dependencies": [
         "spaghetti_extractor",
@@ -715,6 +723,7 @@
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.call_arguments",
+        "spaghetti_extractor.call_site_effects",
         "spaghetti_extractor.callback_contracts",
         "spaghetti_extractor.checked_memory_access_v2",
         "spaghetti_extractor.external_capabilities",
@@ -730,9 +739,11 @@
     "spaghetti_extractor.internal_call_summaries": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor.call_site_effects",
         "spaghetti_extractor.import_abi",
         "spaghetti_extractor.machine_abi",
-        "spaghetti_extractor.machine_import_profiles"
+        "spaghetti_extractor.machine_import_profiles",
+        "spaghetti_extractor.provenance_domain"
       ],
       "path": "src/spaghetti_extractor/internal_call_summaries.py"
     },
