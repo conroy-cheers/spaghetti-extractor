@@ -41,7 +41,11 @@ class InternalCallResultConsumerTests(unittest.TestCase):
     def test_recovered_indirect_call_applies_all_result_families(self) -> None:
         result = self._run_case("recovered")
 
-        self._assert_result_parity(result, dependency_unit="callee")
+        self._assert_result_parity(
+            result,
+            dependency_unit="callee",
+            target_recovery_dependency="exit:invoke",
+        )
 
     def test_typed_origins_preserve_summary_and_call_dependencies(self) -> None:
         summary_dependency = "internal-summary:typed-result"
@@ -288,13 +292,27 @@ class InternalCallResultConsumerTests(unittest.TestCase):
         return event
 
     def _assert_result_parity(
-        self, result: dict[str, object], *, dependency_unit: str
+        self,
+        result: dict[str, object],
+        *,
+        dependency_unit: str,
+        target_recovery_dependency: str | None = None,
     ) -> None:
         dependency = self._call_dependency(dependency_unit)
+        resolution_dependencies = sorted([
+            dependency,
+            *(
+                [target_recovery_dependency]
+                if target_recovery_dependency is not None
+                else []
+            ),
+        ])
         for exit_id in ("exit:register-dispatch", "exit:memory-dispatch"):
             resolution = self._resolution(result, exit_id)
             self.assertEqual(resolution["status"], "recovered", result)
-            self.assertEqual(resolution["analysis_dependencies"], [dependency])
+            self.assertEqual(
+                resolution["analysis_dependencies"], resolution_dependencies
+            )
 
         effect = self._effect(result, "invoke")
         self.assertEqual(effect["format"], CALL_SITE_EFFECT_FORMAT)
@@ -308,7 +326,7 @@ class InternalCallResultConsumerTests(unittest.TestCase):
             "preserved": True,
             "writes": [],
         })
-        self.assertEqual(effect["dependencies"], [dependency])
+        self.assertEqual(effect["dependencies"], resolution_dependencies)
         self.assertEqual(len(effect["result_frame"]["outputs"]), 2)
         self.assertFalse(result["proof_authority"])
         parsed = parse_call_site_effects(

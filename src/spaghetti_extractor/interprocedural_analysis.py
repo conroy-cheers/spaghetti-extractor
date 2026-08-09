@@ -279,6 +279,19 @@ def analyze_interprocedural_control(
     normalized_call_frame_hypotheses = parse_preserved_register_hypotheses(
         list(inductive_hypothesis_call_frames)
     )
+    eligible_inductive_hypotheses = tuple(
+        row
+        for row in inductive_hypothesis_recoveries
+        if _eligible_inductive_target_hypothesis(row)
+    )
+    rejected_inductive_hypothesis_ids = sorted({
+        str(row.get("id"))
+        for row in inductive_hypothesis_recoveries
+        if isinstance(row, Mapping)
+        and isinstance(row.get("id"), str)
+        and row.get("status") == "recovered"
+        and not _eligible_inductive_target_hypothesis(row)
+    })
     normalized_writable_ranges = _normalize_writable_image_ranges(
         writable_image_ranges
     )
@@ -339,7 +352,7 @@ def analyze_interprocedural_control(
         not proposal_only
         and cold is not None
         and (
-            inductive_hypothesis_recoveries
+            eligible_inductive_hypotheses
             or normalized_call_frame_hypotheses
         )
         and _requires_inductive_replay(
@@ -349,12 +362,12 @@ def analyze_interprocedural_control(
             internal_call_edges=internal_call_edges,
             indirect_exits=indirect_exits,
             summaries=cold.summaries,
-            hypotheses=inductive_hypothesis_recoveries,
+            hypotheses=eligible_inductive_hypotheses,
             call_frame_hypotheses=normalized_call_frame_hypotheses,
         )
     )
     effective_hypotheses = (
-        inductive_hypothesis_recoveries if inductive_required else ()
+        eligible_inductive_hypotheses if inductive_required else ()
     )
     effective_call_frame_hypotheses = (
         normalized_call_frame_hypotheses if inductive_required else ()
@@ -413,7 +426,7 @@ def analyze_interprocedural_control(
         and set(inductive_selection["accepted_nodes"])
         & ({
             str(row.get("id"))
-            for row in inductive_hypothesis_recoveries
+            for row in eligible_inductive_hypotheses
             if isinstance(row, Mapping)
             and isinstance(row.get("id"), str)
             and row.get("status") == "recovered"
@@ -545,7 +558,7 @@ def analyze_interprocedural_control(
                 if inductive_required
                 else "no_recursive_hypothesis_scc"
                 if (
-                    inductive_hypothesis_recoveries
+                    eligible_inductive_hypotheses
                     or normalized_call_frame_hypotheses
                 )
                 else "no_hypotheses"
@@ -556,12 +569,12 @@ def analyze_interprocedural_control(
             ),
             "hypothesis_count": sum(
                 row.get("status") == "recovered"
-                for row in inductive_hypothesis_recoveries
+                for row in eligible_inductive_hypotheses
                 if isinstance(row, Mapping)
             ) + len(normalized_call_frame_hypotheses),
             "target_hypothesis_count": sum(
                 row.get("status") == "recovered"
-                for row in inductive_hypothesis_recoveries
+                for row in eligible_inductive_hypotheses
                 if isinstance(row, Mapping)
             ),
             "call_frame_hypothesis_count": len(
@@ -574,6 +587,7 @@ def analyze_interprocedural_control(
             "accepted_nodes": list(inductive_selection["accepted_nodes"]),
             "accepted_sccs": list(inductive_selection["accepted_sccs"]),
             "rejected_nodes": list(inductive_selection["rejected_nodes"]),
+            "ineligible_hypothesis_ids": rejected_inductive_hypothesis_ids,
         },
         "proposal_only": proposal_only,
         "authority_only": authority_only,
@@ -637,6 +651,17 @@ def analyze_interprocedural_control(
                     if discovery is None
                     else discovery.call_frame_hypotheses
                 )
+            ],
+            "path_recovery_diagnostics": [
+                copy.deepcopy(dict(row))
+                for row in (
+                    ()
+                    if discovery is None
+                    else discovery.operation_provenance.get(
+                        "path_recovery_proposals", ()
+                    )
+                )
+                if isinstance(row, Mapping)
             ],
             "signature": discovery_signature,
         },
@@ -1002,7 +1027,7 @@ def _path_recovery_inductive_edges(
     direct_edges: Sequence[Mapping[str, Any]],
     recoveries: Sequence[Mapping[str, Any]],
 ) -> frozenset[tuple[str, str]]:
-    """Mark path proposals in control cycles for simultaneous replay.
+    """Mark complete contextual proposals for simultaneous cycle replay.
 
     A pre-widening target is not authority.  For a call or jump in a decoded
     control-flow cycle, however, its checked transition may be needed to
@@ -1021,9 +1046,8 @@ def _path_recovery_inductive_edges(
         for recovery in recoveries
         for identity in (recovery.get("id"),)
         if isinstance(identity, str)
-        and recovery.get("status") == "recovered"
-        and recovery.get("proposal_source")
-        == "path_sensitive_pre_widening_v1"
+        and _eligible_inductive_target_hypothesis(recovery)
+        and recovery.get("proposal_source") == "bounded_call_context_v1"
         and recovery.get("kind") in {"indirect_call", "indirect_jump"}
         and recovery.get("source_unit_id") in cyclic_units
     )
@@ -3034,7 +3058,8 @@ def _prefer_indirect_recoveries(
                 static,
                 *(proposals.get(str(static.get("id"))) for proposals in proposals_by_id),
             )
-            if isinstance(candidate, Mapping) and candidate.get("status") == "recovered"
+            if isinstance(candidate, Mapping)
+            and _eligible_inductive_target_hypothesis(candidate)
         ]
         alternatives = {
             _target_alternatives(candidate) for candidate in candidates
@@ -3073,6 +3098,43 @@ def _prefer_indirect_recoveries(
             selected = candidates[0] if candidates else incomplete[0]
         result.append(copy.deepcopy(dict(selected)))
     return result
+
+
+def _eligible_inductive_target_hypothesis(row: Mapping[str, Any]) -> bool:
+    """Reject partial path observations before recursive authority replay."""
+
+    if row.get("status") != "recovered":
+        return False
+    if row.get("proof_authority") is not False:
+        return True
+    coverage = row.get("context_coverage")
+    if (
+        row.get("proposal_source") != "bounded_call_context_v1"
+        or not isinstance(coverage, Mapping)
+        or coverage.get("format") != "bounded-call-context-coverage-v1"
+        or coverage.get("status") != "complete"
+        or coverage.get("impacted_by_budget") is not False
+    ):
+        return False
+    context_count = coverage.get("context_count")
+    complete_contexts = coverage.get("complete_contexts")
+    incomplete_contexts = coverage.get("incomplete_contexts")
+    contexts = coverage.get("contexts")
+    return (
+        isinstance(context_count, int)
+        and not isinstance(context_count, bool)
+        and context_count > 0
+        and complete_contexts == context_count
+        and incomplete_contexts == 0
+        and isinstance(contexts, list)
+        and len(contexts) == context_count
+        and all(
+            isinstance(context, Mapping)
+            and context.get("status") == "recovered"
+            and isinstance(context.get("id"), str)
+            for context in contexts
+        )
+    )
 
 
 def _freeze_recovery_inputs(

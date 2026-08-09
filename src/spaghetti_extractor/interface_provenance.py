@@ -32,6 +32,7 @@ from .call_frame_hypotheses import (
     PreservedRegisterHypothesis,
     hypothesis_id as call_frame_hypothesis_id,
 )
+from .address_expression_v2 import affine_register_offset
 from .external_interface_profiles import (
     ExternalInterfaceProfile,
     InterfaceCallerMemoryFrame,
@@ -300,6 +301,64 @@ class _RunResult:
     transfer_requests: int
     transfer_cache_hits: int
     budget_exceeded: int
+    context_states: int
+    context_evaluations: int
+    context_truncated_calls: int
+    context_dropped_states: int
+
+
+@dataclass(frozen=True, order=True)
+class _CallContextFrame:
+    source_unit_id: str
+    event_index: int
+    target_unit_id: str
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "source_unit_id": self.source_unit_id,
+            "event_index": self.event_index,
+            "target_unit_id": self.target_unit_id,
+        }
+
+
+@dataclass(frozen=True, order=True)
+class _PathContext:
+    root_unit_id: str
+    calls: tuple[_CallContextFrame, ...] = ()
+
+    def push(
+        self, frame: _CallContextFrame, *, depth: int
+    ) -> tuple["_PathContext", bool]:
+        calls = (*self.calls, frame)
+        truncated = len(calls) > depth
+        return _PathContext(self.root_unit_id, tuple(calls[-depth:])), truncated
+
+    def as_json(self) -> dict[str, Any]:
+        core = {
+            "root_unit_id": self.root_unit_id,
+            "calls": [frame.as_json() for frame in self.calls],
+        }
+        return {
+            "id": "bounded-call-context-v1:" + sha256(
+                json.dumps(
+                    core,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                ).encode("ascii")
+            ).hexdigest(),
+            **core,
+        }
+
+
+@dataclass
+class _ContextDiscoveryResult:
+    proposals: list[dict[str, Any]]
+    issues: list[dict[str, Any]]
+    context_states: int
+    truncated_calls: int
+    dropped_contexts: int
+    evaluations: int
 
 
 _UnitTransfer = tuple[
@@ -348,6 +407,8 @@ def recover_external_interface_targets(
     allow_global_slot_promotion: bool = True,
     collect_path_recovery_proposals: bool = False,
     preserved_register_hypotheses: Sequence[Mapping[str, Any]] = (),
+    path_context_depth: int = 1,
+    path_context_budget: int = 64,
 ) -> dict[str, Any]:
     """Recover finite external method targets from typed interface origins."""
 
@@ -359,6 +420,15 @@ def recover_external_interface_targets(
         raise ValueError("allow_global_slot_promotion must be a boolean")
     if not isinstance(collect_path_recovery_proposals, bool):
         raise ValueError("path-recovery proposal selection must be a boolean")
+    if (
+        not isinstance(path_context_depth, int)
+        or isinstance(path_context_depth, bool)
+        or path_context_depth <= 0
+        or not isinstance(path_context_budget, int)
+        or isinstance(path_context_budget, bool)
+        or path_context_budget <= 0
+    ):
+        raise ValueError("bounded call-context budgets must be positive integers")
     parsed_call_hypotheses = _parse_preserved_register_hypotheses(
         preserved_register_hypotheses
     )
@@ -494,6 +564,8 @@ def recover_external_interface_targets(
             checked_stack_entry_offsets=stack_entry_offsets,
             collect_path_recovery_proposals=collect_path_recovery_proposals,
             preserved_register_hypotheses=parsed_call_hypotheses,
+            path_context_depth=path_context_depth,
+            path_context_budget=path_context_budget,
         )
         proposed = {
             address: origins
@@ -649,6 +721,8 @@ def recover_external_interface_targets(
             "static_slots": static_slot_budget,
             "stack_slots": stack_slot_budget,
             "fixed_point_rounds": effective_fixed_point_budget,
+            "path_context_depth": path_context_depth,
+            "path_contexts_per_unit": path_context_budget,
             "fixed_point_bound_kind": (
                 "explicit" if fixed_point_budget is not None else "finite_domain_height"
             ),
@@ -715,6 +789,10 @@ def recover_external_interface_targets(
             "recovered_callable_exits": recovered_callable,
             "recovered_indirect_exits": recovered,
             "path_recovery_proposals": len(final.path_recovery_proposals),
+            "path_context_states": final.context_states,
+            "path_context_evaluations": final.context_evaluations,
+            "path_context_truncated_calls": final.context_truncated_calls,
+            "path_context_dropped_states": final.context_dropped_states,
             "static_interface_slots": sum(
                 isinstance(address, int) for address in known_slots
             ),
@@ -1133,20 +1211,11 @@ def _run_dataflow(
     preserved_register_hypotheses: Mapping[
         CallSiteId, Mapping[str, PreservedRegisterHypothesis]
     ],
+    path_context_depth: int,
+    path_context_budget: int,
 ) -> _RunResult:
     input_states = {
-        root: _State(
-            {
-                register: (
-                    _stack_location(0)
-                    if register == "esp"
-                    else _symbolic_affine_value(f"{root}:{register}")
-                )
-                for register in _REGISTERS
-            },
-            dict(known_slots),
-            {},
-        )
+        root: _initial_root_state(root, known_slots)
         for root in roots
     }
     priorities = _reverse_postorder_priorities(roots, outgoing)
@@ -1170,11 +1239,11 @@ def _run_dataflow(
             exits_by_source[source].append(exit_record)
     path_recoveries: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
 
-    def transfer_unit(source_id: str) -> _UnitTransfer:
+    def transfer_state(source_id: str, input_state: _State) -> _UnitTransfer:
         nonlocal evaluations, transfer_requests, transfer_cache_hits, budget_exceeded
         transfer_requests += 1
         checked_state = _with_checked_stack_entry(
-            input_states[source_id],
+            input_state,
             unit_id=source_id,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
         )
@@ -1214,6 +1283,9 @@ def _run_dataflow(
         evaluations += 1
         budget_exceeded += result[-1]
         return result
+
+    def transfer_unit(source_id: str) -> _UnitTransfer:
+        return transfer_state(source_id, input_states[source_id])
 
     while work:
         _, source_id = heapq.heappop(work)
@@ -1293,10 +1365,18 @@ def _run_dataflow(
                         ),
                     )
             if edge.guard_json is not None:
+                guard = _guard_in_post_state(
+                    by_id[source_id], json.loads(edge.guard_json)
+                )
                 contribution = _refine_state_for_guard(
                     contribution,
-                    json.loads(edge.guard_json),
+                    guard,
+                    inventory=inventory,
+                    known_slots=known_slots,
+                    finite_value_budget=finite_value_budget,
                 )
+                if contribution is None:
+                    continue
             if _join_state(
                 input_states,
                 edge.target_id,
@@ -1345,9 +1425,39 @@ def _run_dataflow(
         known_slots=known_slots,
         finite_value_budget=finite_value_budget,
     )
-    path_recovery_proposals = _finalize_path_recovery_proposals(
-        resolutions,
-        path_recoveries,
+    legacy_path_proposals = _finalize_path_recovery_proposals(
+        resolutions, path_recoveries
+    )
+    contextual = (
+        _run_contextual_target_discovery(
+            by_id=by_id,
+            roots=roots,
+            outgoing=outgoing,
+            indirect_exits=indirect_exits,
+            target_exit_ids=_context_target_exit_ids(
+                legacy_path_proposals=legacy_path_proposals,
+                final_resolutions=resolutions,
+            ),
+            final_resolutions=resolutions,
+            inventory=inventory,
+            import_abis=import_abis,
+            known_slots=known_slots,
+            image_base=image_base,
+            finite_value_budget=finite_value_budget,
+            static_slot_budget=static_slot_budget,
+            stack_slot_budget=stack_slot_budget,
+            checked_stack_entry_offsets=checked_stack_entry_offsets,
+            transfer_state=transfer_state,
+            context_depth=path_context_depth,
+            contexts_per_unit=path_context_budget,
+        )
+        if collect_path_recovery_proposals
+        else _ContextDiscoveryResult([], [], 0, 0, 0, 0)
+    )
+    issues.extend(contextual.issues)
+    path_recovery_proposals = _merge_context_and_legacy_proposals(
+        contextual.proposals,
+        legacy_path_proposals,
     )
     return _RunResult(
         states=input_states,
@@ -1368,7 +1478,506 @@ def _run_dataflow(
         transfer_requests=transfer_requests,
         transfer_cache_hits=transfer_cache_hits,
         budget_exceeded=budget_exceeded,
+        context_states=contextual.context_states,
+        context_evaluations=contextual.evaluations,
+        context_truncated_calls=contextual.truncated_calls,
+        context_dropped_states=contextual.dropped_contexts,
     )
+
+
+def _initial_root_state(
+    root: str, known_slots: Mapping[_MemoryLocation, _Value]
+) -> _State:
+    return _State(
+        {
+            register: (
+                _stack_location(0)
+                if register == "esp"
+                else _symbolic_affine_value(f"{root}:{register}")
+            )
+            for register in _REGISTERS
+        },
+        dict(known_slots),
+        {},
+    )
+
+
+def _context_target_exit_ids(
+    *,
+    legacy_path_proposals: Sequence[Mapping[str, Any]],
+    final_resolutions: Sequence[Mapping[str, Any]],
+) -> frozenset[str]:
+    """Select exits where bounded call history can recover lost provenance."""
+
+    identities = {
+        str(row.get("id"))
+        for row in legacy_path_proposals
+        if isinstance(row.get("id"), str)
+    }
+    identities.update(
+        str(row["id"])
+        for row in final_resolutions
+        if isinstance(row.get("id"), str)
+        and row.get("status") != "recovered"
+        and _mapping(row.get("failure")).get("code")
+        == "register_target_origin_missing"
+    )
+    return frozenset(identities)
+
+
+def _run_contextual_target_discovery(
+    *,
+    by_id: Mapping[str, Mapping[str, Any]],
+    roots: set[str],
+    outgoing: Mapping[str, set[_Edge]],
+    indirect_exits: Sequence[Mapping[str, Any]],
+    target_exit_ids: frozenset[str],
+    final_resolutions: Sequence[Mapping[str, Any]],
+    inventory: _ProfileInventory,
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    known_slots: Mapping[_MemoryLocation, _Value],
+    image_base: int,
+    finite_value_budget: int,
+    static_slot_budget: int,
+    stack_slot_budget: int,
+    checked_stack_entry_offsets: Mapping[str, frozenset[int]],
+    transfer_state: Callable[[str, _State], _UnitTransfer],
+    context_depth: int = 1,
+    contexts_per_unit: int = 64,
+) -> _ContextDiscoveryResult:
+    """Recover targets without collapsing distinct bounded call histories."""
+
+    selected_exits = [
+        row
+        for row in indirect_exits
+        if isinstance(row.get("id"), str)
+        and row.get("id") in target_exit_ids
+        and isinstance(row.get("source_unit_id"), str)
+    ]
+    exit_sources = {
+        str(row["source_unit_id"])
+        for row in selected_exits
+    }
+    relevant_units = _backward_slice_units(exit_sources, outgoing=outgoing)
+    states: dict[tuple[str, _PathContext], _State] = {}
+    contexts_by_unit: dict[str, set[_PathContext]] = defaultdict(set)
+    pending: deque[tuple[str, _PathContext]] = deque()
+    queued: set[tuple[str, _PathContext]] = set()
+    for root in sorted(roots & relevant_units):
+        context = _PathContext(root)
+        key = (root, context)
+        states[key] = _initial_root_state(root, known_slots)
+        contexts_by_unit[root].add(context)
+        pending.append(key)
+        queued.add(key)
+
+    exits_by_source: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for exit_record in selected_exits:
+        source = exit_record.get("source_unit_id")
+        if isinstance(source, str):
+            exits_by_source[source].append(exit_record)
+
+    dropped_units: set[str] = set()
+    truncated_calls = 0
+    dropped_contexts = 0
+    evaluations = 0
+    step_budget = max(
+        4096,
+        len(by_id) * min(contexts_per_unit, 8) * (finite_value_budget + 3),
+    )
+    steps = 0
+    while pending and steps < step_budget:
+        source_id, context = pending.popleft()
+        queued.discard((source_id, context))
+        steps += 1
+        state = states[(source_id, context)]
+        transfer = transfer_state(source_id, state)
+        evaluations += 1
+        for edge in sorted(
+            outgoing.get(source_id, ()),
+            key=lambda item: (
+                item.target_id,
+                item.kind,
+                item.event_index or -1,
+                item.guard_json or "",
+            ),
+        ):
+            if edge.target_id not in relevant_units:
+                continue
+            contribution = transfer[0][0]
+            next_context = context
+            if edge.kind in {"internal_call", "indirect_call"}:
+                event_index = edge.event_index
+                contribution = (
+                    transfer[0][1].get(event_index)
+                    if event_index is not None
+                    else None
+                )
+                if contribution is None:
+                    contribution = _unknown_state()
+                else:
+                    return_rva = None
+                    if event_index is not None:
+                        events = _events(by_id[source_id])
+                        if 0 <= event_index < len(events):
+                            return_rva = _integer(
+                                events[event_index].get("return_rva")
+                            )
+                    contribution = _enter_call_frame(
+                        contribution,
+                        return_address=(
+                            None
+                            if return_rva is None
+                            else (image_base + return_rva) & 0xFFFFFFFF
+                        ),
+                    )
+                    next_context, truncated = context.push(
+                        _CallContextFrame(
+                            source_id,
+                            -1 if event_index is None else event_index,
+                            edge.target_id,
+                        ),
+                        depth=context_depth,
+                    )
+                    truncated_calls += int(truncated)
+            if edge.guard_json is not None:
+                guard = _guard_in_post_state(
+                    by_id[source_id], json.loads(edge.guard_json)
+                )
+                contribution = _refine_state_for_guard(
+                    contribution,
+                    guard,
+                    inventory=inventory,
+                    known_slots=known_slots,
+                    finite_value_budget=finite_value_budget,
+                )
+                if contribution is None:
+                    continue
+            target_key = (edge.target_id, next_context)
+            if (
+                target_key not in states
+                and next_context not in contexts_by_unit[edge.target_id]
+                and len(contexts_by_unit[edge.target_id]) >= contexts_per_unit
+            ):
+                dropped_units.add(edge.target_id)
+                dropped_contexts += 1
+                continue
+            contexts_by_unit[edge.target_id].add(next_context)
+            if _join_context_state(
+                states,
+                target_key,
+                contribution,
+                finite_value_budget,
+                static_slot_budget,
+                stack_slot_budget,
+            ) and target_key not in queued:
+                pending.append(target_key)
+                queued.add(target_key)
+
+    work_budget_exceeded = bool(pending)
+    if work_budget_exceeded:
+        dropped_units.update(unit_id for unit_id, _context in pending)
+
+    impacted_exits = _context_overflow_impacted_exits(
+        dropped_units=dropped_units,
+        outgoing=outgoing,
+        exits_by_source=exits_by_source,
+    )
+    final_by_id = {
+        str(row.get("id")): row
+        for row in final_resolutions
+        if isinstance(row.get("id"), str)
+    }
+    contextual_rows: dict[str, list[tuple[_PathContext, dict[str, Any]]]] = (
+        defaultdict(list)
+    )
+    for (source_id, context), state in sorted(states.items()):
+        exits = exits_by_source.get(source_id, ())
+        if not exits:
+            continue
+        checked = _with_checked_stack_entry(
+            state,
+            unit_id=source_id,
+            checked_stack_entry_offsets=checked_stack_entry_offsets,
+        )
+        for resolution in _resolve_exits(
+            exits,
+            by_id=by_id,
+            states={source_id: checked},
+            inventory=inventory,
+            import_abis=import_abis,
+            known_slots=known_slots,
+            finite_value_budget=finite_value_budget,
+        ):
+            identity = resolution.get("id")
+            if isinstance(identity, str):
+                contextual_rows[identity].append((context, resolution))
+
+    proposals = [
+        _contextual_recovery_proposal(
+            identity=identity,
+            final_resolution=final_by_id.get(identity, {}),
+            rows=rows,
+            impacted=identity in impacted_exits or work_budget_exceeded,
+            finite_value_budget=finite_value_budget,
+            truncated_calls=truncated_calls,
+        )
+        for identity, rows in sorted(contextual_rows.items())
+        if final_by_id.get(identity, {}).get("status") != "recovered"
+    ]
+    issues: list[dict[str, Any]] = []
+    if dropped_contexts:
+        issues.append({
+            "code": "bounded_call_context_budget_exceeded",
+            "contexts_per_unit": contexts_per_unit,
+            "dropped_contexts": dropped_contexts,
+            "impacted_exit_ids": sorted(impacted_exits),
+        })
+    if work_budget_exceeded:
+        issues.append({
+            "code": "bounded_call_context_work_budget_exceeded",
+            "step_budget": step_budget,
+            "pending_states": len(pending),
+        })
+    return _ContextDiscoveryResult(
+        proposals=proposals,
+        issues=issues,
+        context_states=len(states),
+        truncated_calls=truncated_calls,
+        dropped_contexts=dropped_contexts,
+        evaluations=evaluations,
+    )
+
+
+def _backward_slice_units(
+    exit_sources: set[str], *, outgoing: Mapping[str, set[_Edge]]
+) -> set[str]:
+    """Retain every graph path that can reach a selected unresolved exit."""
+
+    incoming: dict[str, set[str]] = defaultdict(set)
+    for source, edges in outgoing.items():
+        for edge in edges:
+            incoming[edge.target_id].add(source)
+    relevant = set(exit_sources)
+    pending = deque(sorted(exit_sources))
+    while pending:
+        target = pending.popleft()
+        for source in sorted(incoming.get(target, ())):
+            if source in relevant:
+                continue
+            relevant.add(source)
+            pending.append(source)
+    return relevant
+
+
+def _join_context_state(
+    states: dict[tuple[str, _PathContext], _State],
+    target: tuple[str, _PathContext],
+    contribution: _State,
+    value_budget: int,
+    slot_budget: int,
+    stack_slot_budget: int,
+) -> bool:
+    prior = states.get(target)
+    if prior is None:
+        states[target] = contribution
+        return True
+    temporary = {target[0]: prior}
+    changed = _join_state(
+        temporary,
+        target[0],
+        contribution,
+        value_budget,
+        slot_budget,
+        stack_slot_budget,
+    )
+    if changed:
+        states[target] = temporary[target[0]]
+    return changed
+
+
+def _context_overflow_impacted_exits(
+    *,
+    dropped_units: set[str],
+    outgoing: Mapping[str, set[_Edge]],
+    exits_by_source: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> set[str]:
+    impacted: set[str] = set()
+    pending = deque(sorted(dropped_units))
+    seen: set[str] = set()
+    while pending:
+        unit_id = pending.popleft()
+        if unit_id in seen:
+            continue
+        seen.add(unit_id)
+        impacted.update(
+            str(row.get("id"))
+            for row in exits_by_source.get(unit_id, ())
+            if isinstance(row.get("id"), str)
+        )
+        pending.extend(
+            edge.target_id
+            for edge in outgoing.get(unit_id, ())
+            if edge.target_id not in seen
+        )
+    return impacted
+
+
+def _contextual_recovery_proposal(
+    *,
+    identity: str,
+    final_resolution: Mapping[str, Any],
+    rows: Sequence[tuple[_PathContext, Mapping[str, Any]]],
+    impacted: bool,
+    finite_value_budget: int,
+    truncated_calls: int,
+) -> dict[str, Any]:
+    context_records = [
+        {
+            **context.as_json(),
+            "status": str(row.get("status") or "incomplete"),
+            "target_rvas": copy.deepcopy(row.get("target_rvas", [])),
+            "target_unit_ids": copy.deepcopy(row.get("target_unit_ids", [])),
+            "failure": copy.deepcopy(row.get("failure")),
+        }
+        for context, row in sorted(rows, key=lambda item: item[0])
+    ]
+    incomplete = [
+        record for record in context_records if record["status"] != "recovered"
+    ]
+    target_rvas = sorted({
+        int(value)
+        for _context, row in rows
+        for value in row.get("target_rvas", ())
+        if isinstance(value, int) and not isinstance(value, bool)
+    })
+    target_unit_ids = sorted({
+        str(value)
+        for _context, row in rows
+        for value in row.get("target_unit_ids", ())
+        if isinstance(value, str)
+    })
+    external_by_key = {
+        json.dumps(value, sort_keys=True, separators=(",", ":")): copy.deepcopy(value)
+        for _context, row in rows
+        for value in row.get("external_targets", ())
+        if isinstance(value, Mapping)
+    }
+    target_count = len(target_rvas) + len(external_by_key)
+    complete = (
+        bool(rows)
+        and not impacted
+        and not incomplete
+        and 0 < target_count <= finite_value_budget
+    )
+    coverage = {
+        "format": "bounded-call-context-coverage-v1",
+        "status": "complete" if complete else "incomplete",
+        "context_count": len(context_records),
+        "complete_contexts": len(context_records) - len(incomplete),
+        "incomplete_contexts": len(incomplete),
+        "impacted_by_budget": impacted,
+        "truncated_call_histories": truncated_calls,
+        "contexts": context_records,
+    }
+    base = copy.deepcopy(dict(final_resolution))
+    if not complete:
+        return {
+            **base,
+            "id": identity,
+            "status": "incomplete",
+            "closure": "unresolved",
+            "target_rvas": [],
+            "target_unit_ids": [],
+            "external_targets": [],
+            "proposal_source": "bounded_call_context_v1",
+            "proof_authority": False,
+            "context_coverage": coverage,
+            "failure": {
+                "code": (
+                    "bounded_call_context_target_budget_exceeded"
+                    if target_count > finite_value_budget
+                    else "bounded_call_context_coverage_incomplete"
+                ),
+                "target_count": target_count,
+            },
+        }
+    witnesses = {
+        json.dumps(value, sort_keys=True, separators=(",", ":")): copy.deepcopy(value)
+        for _context, row in rows
+        for value in row.get("target_origin_witnesses", ())
+        if isinstance(value, Mapping)
+    }
+    dependencies = sorted({
+        str(value)
+        for _context, row in rows
+        for value in row.get("analysis_dependencies", ())
+        if isinstance(value, str)
+    })
+    origin_kinds = sorted({
+        str(value)
+        for _context, row in rows
+        for value in row.get("origin_kinds", ())
+        if isinstance(value, str)
+    })
+    exemplar = copy.deepcopy(dict(rows[0][1]))
+    return {
+        **exemplar,
+        "id": identity,
+        "status": "recovered",
+        "closure": "checked_finite_bounded_call_context_union",
+        "target_rvas": target_rvas,
+        "target_unit_ids": target_unit_ids,
+        "external_targets": [external_by_key[key] for key in sorted(external_by_key)],
+        "origin_count": len(witnesses),
+        "origin_kinds": origin_kinds,
+        "target_origin_witnesses": [witnesses[key] for key in sorted(witnesses)],
+        "analysis_dependencies": dependencies,
+        "proposal_source": "bounded_call_context_v1",
+        "proof_authority": False,
+        "context_coverage": coverage,
+        "failure": None,
+    }
+
+
+def _merge_context_and_legacy_proposals(
+    contextual: Sequence[Mapping[str, Any]],
+    legacy: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Prefer complete context coverage; retain legacy hints as diagnostics."""
+
+    contextual_by_id = {
+        str(row.get("id")): row
+        for row in contextual
+        if isinstance(row.get("id"), str)
+    }
+    legacy_by_id = {
+        str(row.get("id")): row
+        for row in legacy
+        if isinstance(row.get("id"), str)
+    }
+    result: list[dict[str, Any]] = []
+    for identity in sorted(contextual_by_id.keys() | legacy_by_id.keys()):
+        contextual_row = contextual_by_id.get(identity)
+        legacy_row = legacy_by_id.get(identity)
+        if contextual_row is not None:
+            selected = copy.deepcopy(dict(contextual_row))
+            if legacy_row is not None:
+                selected["legacy_path_hint"] = copy.deepcopy(dict(legacy_row))
+            result.append(selected)
+            continue
+        assert legacy_row is not None
+        selected = copy.deepcopy(dict(legacy_row))
+        selected.update({
+            "status": "incomplete",
+            "closure": "unresolved",
+            "target_rvas": [],
+            "target_unit_ids": [],
+            "external_targets": [],
+            "failure": {"code": "bounded_call_context_coverage_missing"},
+        })
+        result.append(selected)
+    return result
 
 
 def _state_cache_key(state: _State) -> tuple[Any, ...]:
@@ -1939,7 +2548,7 @@ def _indirect_import_identity(
     state: _State,
     *,
     inventory: _ProfileInventory,
-    known_slots: Mapping[int, _Value],
+    known_slots: Mapping[Any, _Value],
     budget: int,
 ) -> MachineImportIdentity | None:
     if event.get("kind") != "indirect_call":
@@ -2228,7 +2837,7 @@ def _selected_import_frame_facts(
     pre_call: _State,
     input_state: _State,
     inventory: _ProfileInventory,
-    known_slots: Mapping[int, _Value],
+    known_slots: Mapping[Any, _Value],
     budget: int,
 ) -> tuple[_CallFacts, dict[str, Any] | None]:
     required = _selected_import_memory_write_argument_indices(selected)
@@ -5184,7 +5793,7 @@ def _resolve_exits(
     states: Mapping[str, _State],
     inventory: _ProfileInventory,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
-    known_slots: Mapping[int, _Value],
+    known_slots: Mapping[Any, _Value],
     finite_value_budget: int,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
@@ -6904,15 +7513,39 @@ def _has_global_slot_authority_dependency(value: _Value) -> bool:
     )
 
 
-def _refine_state_for_guard(state: _State, guard: Mapping[str, Any]) -> _State:
+def _refine_state_for_guard(
+    state: _State,
+    guard: Mapping[str, Any],
+    *,
+    inventory: _ProfileInventory | None = None,
+    known_slots: Mapping[_MemoryLocation, _Value] | None = None,
+    finite_value_budget: int = 32,
+) -> _State | None:
+    if inventory is not None:
+        truth = _finite_guard_truth(
+            guard,
+            state=state,
+            inventory=inventory,
+            known_slots=known_slots or {},
+            budget=finite_value_budget,
+        )
+        if truth is False:
+            return None
+        if truth is True:
+            return state
+    relational = _refine_relational_register_guard(state, guard)
+    if relational is not state:
+        return relational
     constraint = _guard_constraint(guard)
     if constraint is None:
         return state
-    register, relation, value, mask = constraint
+    register, _relation, _value, _mask = constraint
     registers = {
         name: _refine_guarded_value(origins, constraint, constrain_exact=name == register)
         for name, origins in state.registers.items()
     }
+    if state.registers.get(register) is not None and registers[register] is None:
+        return None
     memory = {
         address: _refine_guarded_value(value, constraint)
         for address, value in state.memory.items()
@@ -6928,6 +7561,266 @@ def _refine_state_for_guard(state: _State, guard: Mapping[str, Any]) -> _State:
         stack,
         state.memory_invalidated,
     )
+
+
+def _guard_in_post_state(
+    unit: Mapping[str, Any], guard: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    """Rewrite exact terminal expressions to their post-state registers."""
+
+    raw_writes = _mapping(unit.get("semantics")).get("register_writes")
+    if not isinstance(raw_writes, list):
+        return guard
+    by_expression: dict[str, str | None] = {}
+    for raw in raw_writes:
+        row = _mapping(raw)
+        register = row.get("register")
+        value = row.get("value")
+        if not isinstance(register, str) or not isinstance(value, Mapping):
+            continue
+        key = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        normalized = register.lower()
+        prior = by_expression.get(key)
+        by_expression[key] = normalized if prior in {None, normalized} else ""
+    if not by_expression:
+        return guard
+
+    def rewrite(value: Any) -> Any:
+        if isinstance(value, list):
+            return [rewrite(child) for child in value]
+        if not isinstance(value, Mapping):
+            return copy.deepcopy(value)
+        key = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        register = by_expression.get(key)
+        if register:
+            return {"op": "reg", "name": register, "width": 32}
+        result = {str(name): rewrite(child) for name, child in value.items()}
+        arguments = result.get("args")
+        if (
+            str(result.get("op") or "").lower() in {"and", "and32", "bit_and"}
+            and isinstance(arguments, list)
+            and len(arguments) == 2
+            and arguments[0] == arguments[1]
+        ):
+            return arguments[0]
+        return result
+
+    rewritten = rewrite(guard)
+    return rewritten if isinstance(rewritten, Mapping) else guard
+
+
+def _finite_guard_truth(
+    guard: Mapping[str, Any],
+    *,
+    state: _State,
+    inventory: _ProfileInventory,
+    known_slots: Mapping[_MemoryLocation, _Value],
+    budget: int,
+) -> bool | None:
+    op = str(guard.get("op") or "").lower()
+    if op in {"true", "always"}:
+        return True
+    if op in {"false", "never"}:
+        return False
+    arguments = guard.get("args")
+    if (
+        op in {"not", "logical_not"}
+        and isinstance(arguments, list)
+        and len(arguments) == 1
+        and isinstance(arguments[0], Mapping)
+    ):
+        nested = _finite_guard_truth(
+            arguments[0],
+            state=state,
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=budget,
+        )
+        return None if nested is None else not nested
+    comparison = _comparison_operands(guard)
+    if comparison is None:
+        return None
+    relation, left_expression, right_expression = comparison
+    left = _evaluate(
+        left_expression,
+        state,
+        inventory=inventory,
+        known_slots=known_slots,
+        budget=budget,
+    )
+    right = _evaluate(
+        right_expression,
+        state,
+        inventory=inventory,
+        known_slots=known_slots,
+        budget=budget,
+    )
+    left_values = _concrete_values(left)
+    right_values = _concrete_values(right)
+    if (
+        left_values is None
+        or right_values is None
+        or len(left_values) * len(right_values) > budget
+    ):
+        return None
+    outcomes = {
+        _compare_u32(lhs, rhs, relation)
+        for lhs in left_values
+        for rhs in right_values
+    }
+    return next(iter(outcomes)) if len(outcomes) == 1 else None
+
+
+def _refine_relational_register_guard(
+    state: _State, guard: Mapping[str, Any]
+) -> _State | None:
+    comparison = _comparison_operands(guard)
+    if comparison is None:
+        return state
+    relation, left_expression, right_expression = comparison
+    left = _affine_guard_term(left_expression)
+    right = _affine_guard_term(right_expression)
+    if left is None or right is None or (left[0] is None and right[0] is None):
+        return state
+    registers = {value for value in (left[0], right[0]) if value is not None}
+    origins_by_register: dict[str, tuple[tuple[_Origin, int], ...]] = {}
+    for register in registers:
+        value = state.registers.get(register)
+        concrete = _concrete_origins(value)
+        if concrete is None:
+            return state
+        origins_by_register[register] = concrete
+
+    assignments: list[dict[str, tuple[_Origin, int]]] = []
+    if left[0] is not None and right[0] == left[0]:
+        assignments = [
+            {left[0]: pair} for pair in origins_by_register[left[0]]
+        ]
+    elif left[0] is not None and right[0] is not None:
+        assignments = [
+            {left[0]: lhs, right[0]: rhs}
+            for lhs in origins_by_register[left[0]]
+            for rhs in origins_by_register[right[0]]
+        ]
+    else:
+        register = left[0] or right[0]
+        assert register is not None
+        assignments = [{register: pair} for pair in origins_by_register[register]]
+
+    accepted: list[dict[str, tuple[_Origin, int]]] = []
+    for assignment in assignments:
+        lhs = (
+            left[1]
+            if left[0] is None
+            else assignment[left[0]][1] + left[1]
+        ) & 0xFFFFFFFF
+        rhs = (
+            right[1]
+            if right[0] is None
+            else assignment[right[0]][1] + right[1]
+        ) & 0xFFFFFFFF
+        if _compare_u32(lhs, rhs, relation):
+            accepted.append(assignment)
+    if not accepted:
+        return None
+    selected = dict(state.registers)
+    changed = False
+    for register in registers:
+        kept = frozenset(
+            assignment[register][0]
+            for assignment in accepted
+            if register in assignment
+        )
+        if kept != selected.get(register):
+            selected[register] = kept
+            changed = True
+    return (
+        _State(selected, state.memory, state.stack, state.memory_invalidated)
+        if changed
+        else state
+    )
+
+
+def _comparison_operands(
+    guard: Mapping[str, Any], *, polarity: bool = True
+) -> tuple[str, Any, Any] | None:
+    op = str(guard.get("op") or "").lower()
+    arguments = guard.get("args")
+    if (
+        op in {"not", "logical_not"}
+        and isinstance(arguments, list)
+        and len(arguments) == 1
+        and isinstance(arguments[0], Mapping)
+    ):
+        return _comparison_operands(arguments[0], polarity=not polarity)
+    relations = {
+        "eq": "eq", "eq32": "eq", "equal": "eq",
+        "ne": "ne", "ne32": "ne", "not_equal": "ne",
+        "ult": "ult", "ult32": "ult", "unsigned_less_than": "ult",
+        "ule": "ule", "ule32": "ule",
+        "ugt": "ugt", "ugt32": "ugt",
+        "uge": "uge", "uge32": "uge",
+        "slt": "slt", "slt32": "slt", "signed_less_than": "slt",
+        "sle": "sle", "sle32": "sle",
+        "sgt": "sgt", "sgt32": "sgt",
+        "sge": "sge", "sge32": "sge",
+    }
+    relation = relations.get(op)
+    operands = _binary_operands(guard)
+    if relation is None or operands is None:
+        return None
+    inverse = {
+        "eq": "ne", "ne": "eq",
+        "ult": "uge", "ule": "ugt", "ugt": "ule", "uge": "ult",
+        "slt": "sge", "sle": "sgt", "sgt": "sle", "sge": "slt",
+    }
+    return (relation if polarity else inverse[relation], operands[0], operands[1])
+
+
+def _affine_guard_term(expression: Any) -> tuple[str | None, int] | None:
+    row = _mapping(expression)
+    if str(row.get("op") or "").lower() in {"const", "constant"}:
+        value = _integer(row.get("value"))
+        return None if value is None else (None, value & 0xFFFFFFFF)
+    matches = [
+        (register, offset)
+        for register in _REGISTERS
+        if (offset := affine_register_offset(expression, register)) is not None
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _concrete_values(value: _Value) -> tuple[int, ...] | None:
+    pairs = _concrete_origins(value)
+    return None if pairs is None else tuple(pair[1] for pair in pairs)
+
+
+def _compare_u32(left: int, right: int, relation: str) -> bool:
+    left &= 0xFFFFFFFF
+    right &= 0xFFFFFFFF
+    if relation == "eq":
+        return left == right
+    if relation == "ne":
+        return left != right
+    if relation == "ult":
+        return left < right
+    if relation == "ule":
+        return left <= right
+    if relation == "ugt":
+        return left > right
+    if relation == "uge":
+        return left >= right
+    signed_left = left - 0x100000000 if left & 0x80000000 else left
+    signed_right = right - 0x100000000 if right & 0x80000000 else right
+    if relation == "slt":
+        return signed_left < signed_right
+    if relation == "sle":
+        return signed_left <= signed_right
+    if relation == "sgt":
+        return signed_left > signed_right
+    if relation == "sge":
+        return signed_left >= signed_right
+    raise ValueError(f"unsupported comparison relation {relation!r}")
 
 
 def _refine_guarded_value(

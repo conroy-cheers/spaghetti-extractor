@@ -846,8 +846,20 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         exit_row = indirect_exit("exit:a:0", "a")
         seed = recovered(exit_row, "b")
         seed.update({
-            "proposal_source": "path_sensitive_pre_widening_v1",
+            "proposal_source": "bounded_call_context_v1",
             "proof_authority": False,
+            "context_coverage": {
+                "format": "bounded-call-context-coverage-v1",
+                "status": "complete",
+                "context_count": 1,
+                "complete_contexts": 1,
+                "incomplete_contexts": 0,
+                "impacted_by_budget": False,
+                "contexts": [{
+                    "id": "bounded-call-context-v1:fixture",
+                    "status": "recovered",
+                }],
+            },
         })
 
         self.assertTrue(
@@ -1057,8 +1069,11 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         self.assertFalse(result.complete)
         self.assertEqual(result.recovered_targets[0]["status"], "incomplete")
         proposal = result.proposal_artifacts["recoveries"][0]
-        self.assertEqual(proposal["status"], "recovered")
-        self.assertFalse(proposal["proof_authority"])
+        self.assertEqual(proposal["status"], "incomplete")
+        self.assertIsNot(proposal.get("proof_authority"), True)
+        self.assertEqual(
+            result.proposal_artifacts["path_recovery_diagnostics"], [seed]
+        )
         self.assertEqual(
             result.fixed_point["inductive_replay"]["status"],
             "not_applicable",
@@ -1068,8 +1083,20 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         exit_row = indirect_exit("exit:a:0", "a")
         seed = recovered(exit_row, "b")
         seed.update({
-            "proposal_source": "path_sensitive_pre_widening_v1",
+            "proposal_source": "bounded_call_context_v1",
             "proof_authority": False,
+            "context_coverage": {
+                "format": "bounded-call-context-coverage-v1",
+                "status": "complete",
+                "context_count": 1,
+                "complete_contexts": 1,
+                "incomplete_contexts": 0,
+                "impacted_by_budget": False,
+                "contexts": [{
+                    "id": "bounded-call-context-v1:fixture",
+                    "status": "recovered",
+                }],
+            },
         })
 
         def resolver(**kwargs: object) -> dict[str, object]:

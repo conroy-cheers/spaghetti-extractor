@@ -201,6 +201,8 @@ and interfaces; it does not erase unresolved whole-program reconstruction gaps.
 | `machine_import_profiles.py` | Imported-call profile parsing and binding. |
 | `call_arguments.py` | Argument-source recovery. |
 | `internal_call_summaries.py` | Interprocedural call effect proposals. |
+| `call_frame_hypotheses.py` | Typed, non-authorizing preserved-register hypotheses used by cold interprocedural replay. |
+| `call_site_effects.py` | Canonical typed summaries of stack, register, result, and memory effects at call sites. |
 | `callback_contracts.py` | Callback registration, ABI, lifetime, and activation protocol validation. |
 | `checked_external_site_contract.py` | Canonical fail-closed machine contract shared by native external-call planning and runtime. |
 | `value_provenance.py` | Static/dynamic/code/data/import/resource value origins. |

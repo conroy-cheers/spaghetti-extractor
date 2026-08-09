@@ -1498,6 +1498,106 @@ class InterfaceProvenanceTests(unittest.TestCase):
             {"exact", "interface_object"},
         )
 
+    def test_infeasible_exact_guard_does_not_poison_reachable_target(self) -> None:
+        target_address = IMAGE_BASE + 0x2000
+        guarded = {
+            "op": "ne32",
+            "args": [reg("eax"), const(0)],
+        }
+        call_event = {
+            "kind": "indirect_call",
+            "return_rva": 0x1401,
+            "target": reg("eax"),
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        result = self._run(
+            [
+                unit(
+                    "null",
+                    0x1000,
+                    writes=[{"register": "eax", "value": const(0)}],
+                ),
+                unit(
+                    "valid",
+                    0x1010,
+                    writes=[{
+                        "register": "eax",
+                        "value": const(target_address),
+                    }],
+                ),
+                unit("call", 0x1400, events=[call_event], ordered=[call_event]),
+                unit("target", 0x2000),
+            ],
+            [
+                {
+                    "source_unit_id": "null",
+                    "target_unit_id": "call",
+                    "guard": guarded,
+                },
+                edge("valid", "call"),
+            ],
+            roots=["null", "valid"],
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "recovered")
+        self.assertEqual(result["resolutions"][0]["target_rvas"], [0x2000])
+
+    def test_post_state_unsigned_guard_excludes_infeasible_edge(self) -> None:
+        next_cursor = add(reg("esi"), const(4))
+        condition = {
+            "op": "ult32",
+            "args": [next_cursor, reg("edi")],
+        }
+        root = unit(
+            "root",
+            0x1000,
+            writes=[
+                {"register": "esi", "value": const(0x5000)},
+                {"register": "edi", "value": const(0x5008)},
+            ],
+        )
+        step = unit(
+            "step",
+            0x1010,
+            writes=[{"register": "esi", "value": next_cursor}],
+        )
+        reached = unit("reached", 0x1020, memory=[{
+            "kind": "read",
+            "width": 4,
+            "address": const(SLOT),
+        }])
+        infeasible = unit("infeasible", 0x1030, memory=[{
+            "kind": "read",
+            "width": 4,
+            "address": const(CHILD_SLOT),
+        }])
+
+        result = self._run(
+            [root, step, reached, infeasible],
+            [
+                edge("root", "step"),
+                {
+                    "source_unit_id": "step",
+                    "target_unit_id": "reached",
+                    "guard": condition,
+                },
+                {
+                    "source_unit_id": "step",
+                    "target_unit_id": "infeasible",
+                    "guard": {"op": "not", "args": [condition]},
+                },
+            ],
+            roots=["root"],
+        )
+
+        self.assertEqual(result["counts"]["reached_units"], 3)
+        proposal_addresses = {
+            row["address_origins"][0]["key"][0]
+            for row in result["memory_access_proposals"]
+        }
+        self.assertIn(SLOT, proposal_addresses)
+        self.assertNotIn(CHILD_SLOT, proposal_addresses)
+
     def test_unprofiled_method_slot_is_incomplete(self) -> None:
         call = indirect_call()
         call["semantics"]["external_events"][0]["target"] = load(add(reg("ecx"), const(8)))
@@ -3276,7 +3376,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
             {issue["code"] for issue in exact_clobber["issues"]},
         )
 
-    def test_path_proposal_retains_target_seen_before_loop_widening(self) -> None:
+    def test_transient_path_target_needs_complete_context_coverage(self) -> None:
         target_address = IMAGE_BASE + 0x2000
         seed = unit(
             "seed",
@@ -3318,13 +3418,183 @@ class InterfaceProvenanceTests(unittest.TestCase):
 
         self.assertEqual(result["resolutions"][0]["status"], "incomplete")
         proposal = result["path_recovery_proposals"][0]
-        self.assertEqual(proposal["status"], "recovered")
-        self.assertEqual(proposal["target_rvas"], [0x2000])
+        self.assertEqual(proposal["status"], "incomplete")
+        self.assertEqual(proposal["target_rvas"], [])
         self.assertFalse(proposal["proof_authority"])
         self.assertEqual(
             proposal["proposal_source"],
-            "path_sensitive_pre_widening_v1",
+            "bounded_call_context_v1",
         )
+        self.assertEqual(proposal["context_coverage"]["status"], "incomplete")
+        self.assertEqual(proposal["legacy_path_hint"]["status"], "recovered")
+        self.assertEqual(proposal["legacy_path_hint"]["target_rvas"], [0x2000])
+
+    def test_bounded_call_contexts_preserve_correlated_table_ranges(self) -> None:
+        table_a = IMAGE_BASE + 0x5000
+        table_b = IMAGE_BASE + 0x5100
+        target_a = IMAGE_BASE + 0x2000
+        target_b = IMAGE_BASE + 0x2010
+
+        def caller(identifier: str, rva: int, start: int) -> dict[str, object]:
+            pushed_end = sub(reg("esp"), const(4))
+            pushed_start = sub(pushed_end, const(4))
+            event = {
+                "kind": "internal_call",
+                "target_rva": 0x1800,
+                "return_rva": rva + 1,
+                "register_inputs": {name: reg(name) for name in REGISTERS},
+            }
+            event["register_inputs"]["esp"] = pushed_start
+            writes = [
+                {
+                    "kind": "write",
+                    "width": 4,
+                    "address": pushed_end,
+                    "value": const(start + 4),
+                },
+                {
+                    "kind": "write",
+                    "width": 4,
+                    "address": pushed_start,
+                    "value": const(start),
+                },
+            ]
+            return unit(
+                identifier,
+                rva,
+                memory=writes,
+                events=[event],
+                ordered=[*writes, event],
+            )
+
+        helper = unit(
+            "helper",
+            0x1800,
+            writes=[
+                {
+                    "register": "esi",
+                    "value": load(add(reg("esp"), const(4))),
+                },
+                {
+                    "register": "edi",
+                    "value": load(add(reg("esp"), const(8))),
+                },
+            ],
+        )
+        load_target = unit(
+            "load-target",
+            0x1810,
+            writes=[{"register": "eax", "value": load(reg("esi"))}],
+        )
+        call_event = {
+            "kind": "indirect_call",
+            "return_rva": 0x1821,
+            "target": reg("eax"),
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        call = unit("call", 0x1820, events=[call_event], ordered=[call_event])
+        next_cursor = add(reg("esi"), const(4))
+        advance = unit(
+            "advance",
+            0x1830,
+            writes=[{"register": "esi", "value": next_cursor}],
+        )
+        continue_guard = {
+            "op": "ult32",
+            "args": [next_cursor, reg("edi")],
+        }
+        exit_row = {
+            "id": "exit:table-callback",
+            "source_unit_id": "call",
+            "source_rva": 0x1820,
+            "source_event_index": 0,
+            "kind": "indirect_call",
+            "target_expression": reg("eax"),
+        }
+
+        def immutable_reader(address: int, size: int) -> bytes | None:
+            values = {table_a: target_a, table_b: target_b}
+            value = values.get(address) if size == 4 else None
+            return None if value is None else value.to_bytes(4, "little")
+
+        units = [
+            caller("caller-a", 0x1100, table_a),
+            caller("caller-b", 0x1120, table_b),
+            unit("irrelevant-root", 0x1140),
+            helper,
+            load_target,
+            call,
+            advance,
+            unit("done", 0x1840),
+            unit("target-a", 0x2000),
+            unit("target-b", 0x2010),
+        ]
+        direct = [
+            edge("helper", "load-target"),
+            edge("load-target", "call"),
+            edge("call", "advance"),
+            {
+                "source_unit_id": "advance",
+                "target_unit_id": "load-target",
+                "guard": continue_guard,
+            },
+            {
+                "source_unit_id": "advance",
+                "target_unit_id": "done",
+                "guard": {"op": "not", "args": [continue_guard]},
+            },
+        ]
+        internal = [
+            {
+                "source_unit_id": "caller-a",
+                "source_event_index": 0,
+                "target_unit_id": "helper",
+            },
+            {
+                "source_unit_id": "caller-b",
+                "source_event_index": 0,
+                "target_unit_id": "helper",
+            },
+        ]
+        result = self._run(
+            units,
+            direct,
+            roots=["caller-a", "caller-b", "irrelevant-root"],
+            internal_edges=internal,
+            indirect_exits=[exit_row],
+            static_data_reader=immutable_reader,
+            bootstrap_unknown_call_preserved_registers=frozenset({"esi", "edi"}),
+            collect_path_recovery_proposals=True,
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "incomplete")
+        proposal = result["path_recovery_proposals"][0]
+        self.assertEqual(proposal["status"], "recovered", proposal)
+        self.assertEqual(proposal["target_rvas"], [0x2000, 0x2010])
+        self.assertEqual(proposal["proposal_source"], "bounded_call_context_v1")
+        self.assertEqual(proposal["context_coverage"]["status"], "complete")
+        self.assertEqual(proposal["context_coverage"]["context_count"], 2)
+        self.assertEqual(result["counts"]["path_context_states"], 10)
+        self.assertFalse(proposal["proof_authority"])
+
+        overflow = self._run(
+            units,
+            direct,
+            roots=["caller-a", "caller-b", "irrelevant-root"],
+            internal_edges=internal,
+            indirect_exits=[exit_row],
+            static_data_reader=immutable_reader,
+            bootstrap_unknown_call_preserved_registers=frozenset({"esi", "edi"}),
+            collect_path_recovery_proposals=True,
+            path_context_budget=1,
+        )
+        overflow_proposal = overflow["path_recovery_proposals"][0]
+        self.assertEqual(overflow_proposal["status"], "incomplete")
+        self.assertEqual(overflow_proposal["target_rvas"], [])
+        self.assertTrue(
+            overflow_proposal["context_coverage"]["impacted_by_budget"]
+        )
+        self.assertGreater(overflow["counts"]["path_context_dropped_states"], 0)
 
     def _run(
         self,
@@ -3356,6 +3626,8 @@ class InterfaceProvenanceTests(unittest.TestCase):
         allow_global_slot_promotion: bool = True,
         collect_path_recovery_proposals: bool = False,
         preserved_register_hypotheses: list[dict[str, object]] | None = None,
+        path_context_depth: int = 1,
+        path_context_budget: int = 64,
     ) -> dict[str, object]:
         identity = MachineImportIdentity("example.dll", "symbol", "CreateThing")
         abi = resolve_machine_call_abi("pe32-stdcall-v1")
@@ -3413,6 +3685,8 @@ class InterfaceProvenanceTests(unittest.TestCase):
             preserved_register_hypotheses=(
                 preserved_register_hypotheses or []
             ),
+            path_context_depth=path_context_depth,
+            path_context_budget=path_context_budget,
         )
 
     def _run_selected_import_memory_case(
