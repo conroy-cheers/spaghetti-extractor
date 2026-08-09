@@ -910,6 +910,11 @@ def _requires_inductive_replay(
         summaries=dependency_summaries,
         recoveries=recovered,
     )
+    edges |= _path_recovery_inductive_edges(
+        units=units,
+        direct_edges=direct_edges,
+        recoveries=recovered,
+    )
     nodes = {
         node for edge in edges for node in edge
     } | hypothesis_ids
@@ -917,6 +922,60 @@ def _requires_inductive_replay(
     return any(
         hypothesis_ids.intersection(component)
         for component in _recursive_components(decomposition, edges)
+    )
+
+
+def _path_recovery_inductive_edges(
+    *,
+    units: Sequence[Mapping[str, Any]],
+    direct_edges: Sequence[Mapping[str, Any]],
+    recoveries: Sequence[Mapping[str, Any]],
+) -> frozenset[tuple[str, str]]:
+    """Mark path proposals in control cycles for simultaneous replay.
+
+    A pre-widening target is not authority.  For a call or jump in a decoded
+    control-flow cycle, however, its checked transition may be needed to
+    preserve the target value around that same cycle.  A self dependency asks
+    the existing inductive replay to check exactly that claim.  Proposals at
+    acyclic sites deliberately receive no such edge.
+    """
+
+    by_id = {_unit_id(unit): unit for unit in units}
+    control_edges = {
+        (source, target)
+        for source, targets in _normal_edges(direct_edges, by_id).items()
+        for target in targets
+    }
+    for recovery in recoveries:
+        if (
+            recovery.get("status") != "recovered"
+            or recovery.get("kind") != "indirect_jump"
+        ):
+            continue
+        source = recovery.get("source_unit_id")
+        if not isinstance(source, str) or source not in by_id:
+            continue
+        control_edges.update(
+            (source, target)
+            for target in recovery.get("target_unit_ids", ())
+            if isinstance(target, str) and target in by_id
+        )
+    decomposition = decompose_scc(tuple(by_id), control_edges)
+    cyclic_units = {
+        unit_id
+        for component in _recursive_components(decomposition, control_edges)
+        for unit_id in component
+    }
+    return frozenset(
+        (identity, identity)
+        for recovery in recoveries
+        for identity in (recovery.get("id"),)
+        if isinstance(identity, str)
+        and recovery.get("status") == "recovered"
+        and recovery.get("proposal_source")
+        == "path_sensitive_pre_widening_v1"
+        and recovery.get("kind") in {"indirect_call", "indirect_jump"}
+        and recovery.get("source_unit_id") in cyclic_units
     )
 
 

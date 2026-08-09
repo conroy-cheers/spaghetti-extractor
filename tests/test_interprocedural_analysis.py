@@ -797,6 +797,50 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             )
         )
 
+    def test_cyclic_path_recovery_triggers_inductive_replay(self) -> None:
+        exit_row = indirect_exit("exit:a:0", "a")
+        seed = recovered(exit_row, "b")
+        seed.update({
+            "proposal_source": "path_sensitive_pre_widening_v1",
+            "proof_authority": False,
+        })
+
+        self.assertTrue(
+            _requires_inductive_replay(
+                units=[
+                    unit("a", 0x1000),
+                    unit("loop", 0x1001),
+                    unit("b", 0x2000),
+                ],
+                roots=["a"],
+                direct_edges=[edge("a", "loop"), edge("loop", "a")],
+                internal_call_edges=[],
+                indirect_exits=[exit_row],
+                summaries={"summaries": [{"target_unit_id": "a"}]},
+                hypotheses=[seed],
+            )
+        )
+
+    def test_acyclic_path_recovery_remains_non_authorizing(self) -> None:
+        exit_row = indirect_exit("exit:a:0", "a")
+        seed = recovered(exit_row, "b")
+        seed.update({
+            "proposal_source": "path_sensitive_pre_widening_v1",
+            "proof_authority": False,
+        })
+
+        self.assertFalse(
+            _requires_inductive_replay(
+                units=[unit("a", 0x1000), unit("b", 0x2000)],
+                roots=["a"],
+                direct_edges=[],
+                internal_call_edges=[],
+                indirect_exits=[exit_row],
+                summaries={"summaries": [{"target_unit_id": "a"}]},
+                hypotheses=[seed],
+            )
+        )
+
     def test_path_recovery_is_exported_without_authorizing_cold_replay(self) -> None:
         exit_row = indirect_exit("exit:a:0", "a")
         seed = recovered(exit_row, "b")
@@ -837,6 +881,52 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             result.fixed_point["inductive_replay"]["status"],
             "not_applicable",
         )
+
+    def test_cyclic_path_recovery_can_close_only_after_witnessed_replay(self) -> None:
+        exit_row = indirect_exit("exit:a:0", "a")
+        seed = recovered(exit_row, "b")
+        seed.update({
+            "proposal_source": "path_sensitive_pre_widening_v1",
+            "proof_authority": False,
+        })
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            selected = kwargs["recovered_indirect_edges"]
+            assert isinstance(selected, list)
+            row = next(item for item in selected if item.get("id") == exit_row["id"])
+            if row.get("status") != "recovered":
+                return {"resolutions": [incomplete_recovery(exit_row)]}
+            witnessed = recovered(exit_row, "b")
+            witnessed.update({
+                "analysis_dependencies": [exit_row["id"]],
+                "origin_count": 1,
+                "origin_kinds": ["internal"],
+                "target_origin_witnesses": [
+                    {"kind": "static_code", "key": [IMAGE_BASE + 0x2000, 0]}
+                ],
+            })
+            return {"resolutions": [witnessed]}
+
+        result = self._run(
+            units=[
+                unit("a", 0x1000),
+                unit("loop", 0x1001),
+                unit("b", 0x2000),
+            ],
+            roots=["a"],
+            direct=[edge("a", "loop"), edge("loop", "a")],
+            exits=[exit_row],
+            inductive=[seed],
+            resolver=resolver,
+            authority_only=True,
+        )
+
+        self.assertTrue(result.complete, result.fixed_point)
+        replay = result.fixed_point["inductive_replay"]
+        self.assertTrue(replay["required"])
+        self.assertTrue(replay["executed"])
+        self.assertTrue(replay["proof_authority"])
+        self.assertEqual(replay["reproduced_ids"], [exit_row["id"]])
 
     def test_witnessed_inductive_replay_can_close_a_checked_cycle(self) -> None:
         exit_row = indirect_exit("exit:a:0", "a")
