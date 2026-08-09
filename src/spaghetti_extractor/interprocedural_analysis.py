@@ -52,7 +52,10 @@ from .global_slot_contract_v2 import GlobalSlotInvariant
 from .indirect_target_dependency_v2 import (
     has_value_independent_target_set_v2,
 )
-from .interface_provenance import recover_external_interface_targets
+from .interface_provenance import (
+    callback_root_argument_origins,
+    recover_external_interface_targets,
+)
 from .internal_call_summaries import derive_internal_call_preservation_summaries
 from .machine_import_profiles import MachineImportIdentity
 from .provenance_domain import (
@@ -1132,6 +1135,9 @@ def _run_typed_pass(
     scc_evaluations = 0
     decomposition: SCCDecomposition[str] = decompose_scc(tuple[str]())
     active_roots = set(roots)
+    callback_root_arguments: Mapping[
+        str, Mapping[int, FiniteValue]
+    ] = {}
     checked_global_slots = _global_slot_known_values(
         global_slot_invariants,
         image_base=image_base,
@@ -1145,6 +1151,7 @@ def _run_typed_pass(
         input_call_frame_hypotheses = _freeze_call_frame_hypotheses(
             call_frame_hypotheses
         )
+        input_callback_root_arguments = callback_root_arguments
         summaries = derive_internal_call_preservation_summaries(
             units=units,
             roots=current_roots,
@@ -1207,6 +1214,7 @@ def _run_typed_pass(
             ),
             allow_global_slot_promotion=False,
             initial_known_slots=checked_global_slots,
+            initial_root_argument_origins=callback_root_arguments,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
             collect_path_recovery_proposals=allow_bootstrap,
             preserved_register_hypotheses=[
@@ -1215,6 +1223,15 @@ def _run_typed_pass(
             ],
         )
         next_call_site_effects = _call_site_effect_rows(operation_provenance)
+        next_callback_root_arguments = callback_root_argument_origins(
+            operation_provenance,
+            finite_value_budget=finite_value_budget,
+        )
+        next_callback_root_arguments = {
+            unit_id: arguments
+            for unit_id, arguments in next_callback_root_arguments.items()
+            if unit_id not in roots
+        }
         next_roots = active_roots | _callback_root_unit_ids(
             operation_provenance, known_units=known_unit_ids
         )
@@ -1320,11 +1337,15 @@ def _run_typed_pass(
             == input_call_frame_hypotheses
         )
         roots_stable = next_roots == active_roots
+        callback_root_arguments_stable = (
+            next_callback_root_arguments == input_callback_root_arguments
+        )
         facts = next_facts
         dependency_edges = next_edges
         selected = next_selected
         call_frame_hypotheses = next_call_frame_hypotheses
         active_roots = next_roots
+        callback_root_arguments = next_callback_root_arguments
         # Proposals are a deterministic function of the frozen recovery inputs
         # and roots.  Once those inputs are stable, another whole-program
         # transfer would emit the same proposals; lattice joins and edge unions
@@ -1334,6 +1355,7 @@ def _run_typed_pass(
             and call_effects_stable
             and call_frame_hypotheses_stable
             and roots_stable
+            and callback_root_arguments_stable
         ):
             return _PassResult(
                 True,

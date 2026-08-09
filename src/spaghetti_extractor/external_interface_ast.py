@@ -81,7 +81,11 @@ def extract_external_interface_profile(
     type_aliases = _type_aliases(declarations)
     opaque_resource_types = _opaque_resource_types(payload, declarations)
     pointer_aliases, output_aliases = _interface_aliases(declarations, prefixes)
-    callback_aliases = _callback_aliases(declarations)
+    callback_aliases = _callback_aliases(
+        declarations,
+        prefixes=prefixes,
+        pointer_aliases=pointer_aliases,
+    )
     callback_specs = _callback_specs(payload)
     used_callback_specs: set[tuple[str, str, int]] = set()
     interfaces = _interfaces(
@@ -302,6 +306,9 @@ def _type_aliases(
 
 def _callback_aliases(
     declarations: Sequence[Mapping[str, Any]],
+    *,
+    prefixes: Sequence[str],
+    pointer_aliases: Mapping[str, str],
 ) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for declaration in declarations:
@@ -315,10 +322,27 @@ def _callback_aliases(
         if not isinstance(qualified, str) or "(*)(" not in qualified:
             continue
         parameters = _function_pointer_parameters(qualified)
+        arguments: list[dict[str, Any]] = []
+        for argument_index, parameter in enumerate(parameters):
+            normalized = " ".join(parameter.replace("const", "").split())
+            interface_id = pointer_aliases.get(normalized)
+            if interface_id is None:
+                direct = _NAMED_POINTER.fullmatch(normalized)
+                if direct is not None and _selected_interface(
+                    direct.group(1), prefixes
+                ):
+                    interface_id = direct.group(1)
+            if interface_id is not None:
+                arguments.append({
+                    "argument_index": argument_index,
+                    "kind": "interface_object",
+                    "interface_id": interface_id,
+                })
         result[name] = {
             "declaration_type": qualified,
             "argument_words": len(parameters),
             "abi_supported": "__attribute__((stdcall))" in qualified,
+            "arguments": arguments,
         }
     return result
 
@@ -351,10 +375,53 @@ def _callback_specs(
             raise StageAInputError(
                 f"method callback specification {index} nullable must be boolean"
             )
+        argument_origins: list[dict[str, Any]] = []
+        for argument_origin_index, raw_origin in enumerate(_array(
+            row.get("argument_origins", []),
+            f"method callback specification {index} argument origins",
+        )):
+            origin = _object(
+                raw_origin,
+                f"method callback specification {index} argument origin "
+                f"{argument_origin_index}",
+            )
+            if set(origin) != {"argument_index", "kind", "interface_id"}:
+                raise StageAInputError(
+                    f"method callback specification {index} argument origin "
+                    f"{argument_origin_index} has invalid fields"
+                )
+            argument_index = _word(
+                origin.get("argument_index"),
+                f"method callback specification {index} callback argument",
+            )
+            interface_id_origin = _nonempty(
+                origin.get("interface_id"),
+                f"method callback specification {index} callback interface",
+            )
+            if origin.get("kind") != "interface_object":
+                raise StageAInputError(
+                    f"method callback specification {index} argument origin "
+                    "kind is unsupported"
+                )
+            argument_origins.append({
+                "argument_index": argument_index,
+                "kind": "interface_object",
+                "interface_id": interface_id_origin,
+            })
+        if len({row["argument_index"] for row in argument_origins}) != len(
+            argument_origins
+        ):
+            raise StageAInputError(
+                f"method callback specification {index} duplicates an argument origin"
+            )
         key = (interface_id, method, argument)
         if key in result:
             raise StageAInputError(f"duplicate method callback specification {key}")
-        result[key] = {"lifetime": lifetime, "nullable": nullable}
+        result[key] = {
+            "lifetime": lifetime,
+            "nullable": nullable,
+            "argument_origins": tuple(argument_origins),
+        }
     return result
 
 
@@ -379,6 +446,8 @@ def _method_callback_contract(
     source: dict[str, Any] | None = None
     callback_abi: dict[str, Any] | None = None
     lifetime: str | None = None
+    specification: Mapping[str, Any] | None = None
+    declared_arguments: tuple[dict[str, Any], ...] = ()
     if len(callbacks) != 1:
         blockers.append("multiple_callback_parameters_unsupported")
     else:
@@ -394,6 +463,21 @@ def _method_callback_contract(
             used_callback_specs.add((interface_id, method_name, argument_index))
             lifetime = str(specification["lifetime"])
             nullable = bool(specification["nullable"])
+            declared_arguments = tuple(
+                dict(argument)
+                for argument in specification.get("argument_origins", ())
+            )
+            inferred_arguments = tuple(
+                dict(argument) for argument in alias.get("arguments", ())
+            )
+            if any(
+                argument not in inferred_arguments
+                for argument in declared_arguments
+            ):
+                raise StageAInputError(
+                    f"{interface_id}::{method_name} callback argument protocol "
+                    "contradicts the pinned AST type"
+                )
         if not alias.get("abi_supported"):
             blockers.append("callback_machine_abi_unsupported")
         else:
@@ -411,6 +495,11 @@ def _method_callback_contract(
         "lifetime": lifetime,
         "status": status,
         "blockers": tuple(blockers),
+        "arguments": (
+            declared_arguments
+            if len(callbacks) == 1 and specification is not None
+            else ()
+        ),
     }
 
 
@@ -630,6 +719,7 @@ def _machine_call_contract(
             lifetime=callback.get("lifetime"),
             status=str(callback["status"]),
             blockers=tuple(callback.get("blockers", ())),
+            callback_arguments=tuple(callback.get("arguments", ())),
         )
     )
     return {

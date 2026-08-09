@@ -3614,6 +3614,9 @@ def _callback_registration_mismatches(
             "interface_id": method.interface_id,
             "method": method.name,
             "slot": method.slot,
+            "callback_arguments": [
+                dict(argument) for argument in effect.callback_arguments
+            ],
         }]
     }
     if registration.get("profile_binding") != expected_binding:

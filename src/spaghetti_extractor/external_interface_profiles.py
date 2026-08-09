@@ -53,6 +53,7 @@ class InterfaceEffectContract:
     callback_lifetime: str | None = None
     callback_status: str | None = None
     callback_blockers: tuple[str, ...] = ()
+    callback_arguments: tuple[Mapping[str, Any], ...] = ()
 
     def as_json(self) -> dict[str, Any]:
         result = {
@@ -82,6 +83,9 @@ class InterfaceEffectContract:
                 "callback_lifetime": self.callback_lifetime,
                 "callback_contract_status": self.callback_status,
                 "callback_contract_blockers": list(self.callback_blockers),
+                "callback_arguments": [
+                    dict(argument) for argument in self.callback_arguments
+                ],
             })
         return result
 
@@ -108,6 +112,7 @@ def same_library_callback_call_through_effect_json(
     lifetime: str | None,
     status: str,
     blockers: tuple[str, ...] = (),
+    callback_arguments: tuple[Mapping[str, Any], ...] = (),
 ) -> dict[str, Any]:
     """Return a callback-aware native call-through proposal.
 
@@ -131,6 +136,7 @@ def same_library_callback_call_through_effect_json(
         callback_lifetime=lifetime,
         callback_status=status,
         callback_blockers=blockers,
+        callback_arguments=callback_arguments,
     ).as_json()
 
 
@@ -384,6 +390,7 @@ def load_external_interface_profile(
             context=f"factory {index}",
             required=require_call_through or row.get("machine_abi") is not None,
             argument_words=argument_words,
+            known_interfaces=interface_ids,
         )
         outputs = _outputs(
             row.get("out_interfaces"),
@@ -462,6 +469,7 @@ def _method(
         context=f"{interface_id} method {expected_slot}",
         required=require_call_through or row.get("machine_abi") is not None,
         argument_words=argument_words,
+        known_interfaces=known_interfaces,
     )
     return InterfaceMethod(
         interface_id=interface_id,
@@ -643,6 +651,7 @@ def _effects(
     context: str,
     required: bool,
     argument_words: int,
+    known_interfaces: set[str],
 ) -> InterfaceEffectContract | None:
     ordinary = same_library_call_through_effect_json()
     present = any(key in row for key in ordinary)
@@ -689,6 +698,7 @@ def _effects(
     source = row.get("callback_source")
     callback_abi = row.get("callback_abi")
     lifetime = row.get("callback_lifetime")
+    callback_arguments = row.get("callback_arguments", [])
     if status not in {"complete", "incomplete"} or not isinstance(blockers, list):
         raise ExternalInterfaceProfileError(
             f"{context} has an invalid callback contract status"
@@ -745,6 +755,37 @@ def _effects(
         raise ExternalInterfaceProfileError(
             f"{context} has an invalid callback lifetime"
         )
+    parsed_callback_arguments: list[dict[str, Any]] = []
+    seen_callback_arguments: set[int] = set()
+    for index, raw in enumerate(_array(
+        callback_arguments, f"{context} callback arguments"
+    )):
+        argument = _object(raw, f"{context} callback argument {index}")
+        if set(argument) != {"argument_index", "kind", "interface_id"}:
+            raise ExternalInterfaceProfileError(
+                f"{context} callback argument {index} has invalid fields"
+            )
+        argument_index = argument.get("argument_index")
+        interface_id = argument.get("interface_id")
+        if (
+            not isinstance(callback_abi, Mapping)
+            or not isinstance(argument_index, int)
+            or isinstance(argument_index, bool)
+            or not 0 <= argument_index < int(callback_abi["argument_words"])
+            or argument_index in seen_callback_arguments
+            or argument.get("kind") != "interface_object"
+            or not isinstance(interface_id, str)
+            or interface_id not in known_interfaces
+        ):
+            raise ExternalInterfaceProfileError(
+                f"{context} callback argument {index} is invalid"
+            )
+        seen_callback_arguments.add(argument_index)
+        parsed_callback_arguments.append({
+            "argument_index": argument_index,
+            "kind": "interface_object",
+            "interface_id": interface_id,
+        })
     return InterfaceEffectContract(
         model=SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL,
         memory_effect=_SAME_NATIVE_TARGET_EFFECT,
@@ -759,6 +800,12 @@ def _effects(
         callback_lifetime=lifetime,
         callback_status=str(status),
         callback_blockers=tuple(blockers),
+        callback_arguments=tuple(
+            sorted(
+                parsed_callback_arguments,
+                key=lambda argument: int(argument["argument_index"]),
+            )
+        ),
     )
 
 

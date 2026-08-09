@@ -67,6 +67,7 @@ from .provenance_domain import (
     join_finite_values,
     origin_concrete_value,
     origins_json,
+    parse_finite_value,
     value_dependencies,
     with_origin_dependencies,
     with_value_dependencies,
@@ -402,6 +403,9 @@ def recover_external_interface_targets(
     static_data_reader: Callable[[int, int], bytes | None] | None = None,
     bootstrap_unknown_call_preserved_registers: frozenset[str] | None = None,
     initial_known_slots: Mapping[_MemoryLocation, _Value] | None = None,
+    initial_root_argument_origins: Mapping[
+        str, Mapping[int, _Value]
+    ] | None = None,
     recovered_known_slots: dict[_MemoryLocation, _Value] | None = None,
     checked_stack_entry_offsets: Mapping[str, Sequence[int]] | None = None,
     allow_global_slot_promotion: bool = True,
@@ -529,6 +533,11 @@ def recover_external_interface_targets(
     ):
         raise ValueError("initial interface-provenance slot seed is invalid")
     initial_known_slot_count = len(known_slots)
+    root_argument_origins = _normalize_root_argument_origins(
+        initial_root_argument_origins or {},
+        roots=roots_set,
+        finite_value_budget=finite_value_budget,
+    )
     rejected_tainted_slots: set[_MemoryLocation] = set()
     final: _RunResult | None = None
     converged = False
@@ -558,6 +567,7 @@ def recover_external_interface_targets(
             ),
             image_base=image_base,
             known_slots=known_slots,
+            root_argument_origins=root_argument_origins,
             finite_value_budget=finite_value_budget,
             static_slot_budget=static_slot_budget,
             stack_slot_budget=stack_slot_budget,
@@ -1203,6 +1213,7 @@ def _run_dataflow(
     bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
     image_base: int,
     known_slots: Mapping[_MemoryLocation, _Value],
+    root_argument_origins: Mapping[str, Mapping[int, _Value]],
     finite_value_budget: int,
     static_slot_budget: int,
     stack_slot_budget: int,
@@ -1215,7 +1226,11 @@ def _run_dataflow(
     path_context_budget: int,
 ) -> _RunResult:
     input_states = {
-        root: _initial_root_state(root, known_slots)
+        root: _initial_root_state(
+            root,
+            known_slots,
+            root_argument_origins.get(root, {}),
+        )
         for root in roots
     }
     priorities = _reverse_postorder_priorities(roots, outgoing)
@@ -1442,6 +1457,7 @@ def _run_dataflow(
             inventory=inventory,
             import_abis=import_abis,
             known_slots=known_slots,
+            root_argument_origins=root_argument_origins,
             image_base=image_base,
             finite_value_budget=finite_value_budget,
             static_slot_budget=static_slot_budget,
@@ -1485,8 +1501,40 @@ def _run_dataflow(
     )
 
 
+def _normalize_root_argument_origins(
+    value: Mapping[str, Mapping[int, _Value]],
+    *,
+    roots: set[str],
+    finite_value_budget: int,
+) -> dict[str, dict[int, frozenset[_Origin]]]:
+    result: dict[str, dict[int, frozenset[_Origin]]] = {}
+    for unit_id, arguments in value.items():
+        if unit_id not in roots or not isinstance(arguments, Mapping):
+            raise ValueError("callback root arguments reference an unknown root")
+        normalized: dict[int, frozenset[_Origin]] = {}
+        for argument_index, origins in arguments.items():
+            if (
+                not isinstance(argument_index, int)
+                or isinstance(argument_index, bool)
+                or not 0 <= argument_index < 64
+                or origins is None
+                or not 1 <= len(origins) <= finite_value_budget
+                or any(
+                    not isinstance(origin, _Origin)
+                    or not _persistent_origin(origin)
+                    for origin in origins
+                )
+            ):
+                raise ValueError("callback root argument origin is invalid")
+            normalized[argument_index] = frozenset(origins)
+        result[unit_id] = normalized
+    return result
+
+
 def _initial_root_state(
-    root: str, known_slots: Mapping[_MemoryLocation, _Value]
+    root: str,
+    known_slots: Mapping[_MemoryLocation, _Value],
+    argument_origins: Mapping[int, _Value] | None = None,
 ) -> _State:
     return _State(
         {
@@ -1498,7 +1546,10 @@ def _initial_root_state(
             for register in _REGISTERS
         },
         dict(known_slots),
-        {},
+        {
+            4 + argument_index * 4: _StackCell(origins, ())
+            for argument_index, origins in (argument_origins or {}).items()
+        },
     )
 
 
@@ -1536,6 +1587,7 @@ def _run_contextual_target_discovery(
     inventory: _ProfileInventory,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     known_slots: Mapping[_MemoryLocation, _Value],
+    root_argument_origins: Mapping[str, Mapping[int, _Value]],
     image_base: int,
     finite_value_budget: int,
     static_slot_budget: int,
@@ -1566,7 +1618,11 @@ def _run_contextual_target_discovery(
     for root in sorted(roots & relevant_units):
         context = _PathContext(root)
         key = (root, context)
-        states[key] = _initial_root_state(root, known_slots)
+        states[key] = _initial_root_state(
+            root,
+            known_slots,
+            root_argument_origins.get(root, {}),
+        )
         contexts_by_unit[root].add(context)
         pending.append(key)
         queued.add(key)
@@ -3915,6 +3971,7 @@ def _call_contract(
         methods=methods,
         arguments=method_arguments,
         inventory=inventory,
+        finite_value_budget=budget,
     )
     if callback_evidence is not None:
         argument_recoveries.append(callback_evidence)
@@ -4154,6 +4211,7 @@ def _interface_method_callback_registration(
     methods: Sequence[tuple[str, InterfaceMethod]],
     arguments: Sequence[Sequence[_Value] | None],
     inventory: _ProfileInventory,
+    finite_value_budget: int,
 ) -> dict[str, Any] | None:
     effects = [method.effects for _, method in methods]
     categories = {
@@ -4170,6 +4228,12 @@ def _interface_method_callback_registration(
             "interface_id": method.interface_id,
             "method": method.name,
             "slot": method.slot,
+            "callback_arguments": [
+                dict(argument)
+                for argument in (
+                    method.effects.callback_arguments if method.effects else ()
+                )
+            ],
         }
         for profile_sha256, method in methods
     ]
@@ -4193,6 +4257,7 @@ def _interface_method_callback_registration(
         "callback_behavior": None,
         "callback_activation": None,
         "callback_instance": None,
+        "callback_entry_arguments": [],
         "origins": [],
         "source_locations": [],
         "target_rvas": [],
@@ -4288,14 +4353,144 @@ def _interface_method_callback_registration(
             "origins": _origins_json(origins),
             "failure": {"code": "callback_target_null_forbidden"},
         }
+    argument_index_sets = [
+        {
+            int(argument["argument_index"])
+            for argument in (
+                method.effects.callback_arguments if method.effects else ()
+            )
+        }
+        for _, method in methods
+    ]
+    common_argument_indices = (
+        set.intersection(*argument_index_sets) if argument_index_sets else set()
+    )
+    callback_entry_arguments: list[dict[str, Any]] = []
+    for callback_argument_index in sorted(common_argument_indices):
+        entry_origins = frozenset(
+            _Origin(
+                "interface_object",
+                (profile_sha256, str(argument["interface_id"])),
+            )
+            for profile_sha256, method in methods
+            for argument in (method.effects.callback_arguments if method.effects else ())
+            if int(argument["argument_index"]) == callback_argument_index
+            and argument.get("kind") == "interface_object"
+        )
+        if not entry_origins:
+            continue
+        if len(entry_origins) > finite_value_budget:
+            return {
+                **base,
+                "status": "incomplete",
+                "origins": _origins_json(origins),
+                "failure": {
+                    "code": "callback_entry_argument_alternative_budget_exceeded",
+                    "argument_index": callback_argument_index,
+                    "finite_value_budget": finite_value_budget,
+                },
+            }
+        callback_entry_arguments.append({
+            "argument_index": callback_argument_index,
+            "origins": _origins_json(entry_origins),
+        })
     return {
         **base,
         "status": "complete",
         "origins": _origins_json(origins),
         "target_rvas": sorted(target[0] for target in targets),
         "target_unit_ids": sorted(target[1] for target in targets),
+        "callback_entry_arguments": callback_entry_arguments,
         "failure": None,
     }
+
+
+def callback_root_argument_origins(
+    provenance: Mapping[str, Any],
+    *,
+    finite_value_budget: int,
+) -> dict[str, dict[int, frozenset[_Origin]]]:
+    """Instantiate checked callback stack inputs from complete registrations.
+
+    The returned facts are analysis inputs, not proof authority.  Cold replay
+    must rediscover the registration, exact callback target, profile-bound ABI,
+    and finite argument origins before they can influence an accepted target.
+    """
+
+    if finite_value_budget <= 0:
+        raise ValueError("finite-value budget must be positive")
+    registrations_by_target: dict[
+        str, list[dict[int, frozenset[_Origin]]]
+    ] = defaultdict(list)
+    for registration in provenance.get("callback_registrations", ()):
+        if (
+            not isinstance(registration, Mapping)
+            or registration.get("status") != "complete"
+        ):
+            continue
+        target_ids = registration.get("target_unit_ids")
+        arguments = registration.get("callback_entry_arguments")
+        if (
+            not isinstance(target_ids, Sequence)
+            or isinstance(target_ids, (str, bytes))
+            or not isinstance(arguments, Sequence)
+            or isinstance(arguments, (str, bytes))
+        ):
+            continue
+        parsed_arguments: dict[int, frozenset[_Origin]] = {}
+        malformed = False
+        for raw in arguments:
+            if not isinstance(raw, Mapping):
+                malformed = True
+                break
+            argument_index = raw.get("argument_index")
+            if (
+                not isinstance(argument_index, int)
+                or isinstance(argument_index, bool)
+                or not 0 <= argument_index < 64
+                or argument_index in parsed_arguments
+            ):
+                malformed = True
+                break
+            try:
+                parsed_arguments[argument_index] = parse_finite_value(
+                    raw.get("origins"),
+                    finite_value_budget=finite_value_budget,
+                    context=f"callback argument {argument_index}",
+                )
+            except ValueError:
+                malformed = True
+                break
+        if malformed:
+            parsed_arguments = {}
+        for target_id in target_ids:
+            if isinstance(target_id, str) and target_id:
+                registrations_by_target[target_id].append(parsed_arguments)
+
+    result: dict[str, dict[int, frozenset[_Origin]]] = {}
+    for target_id, registrations in registrations_by_target.items():
+        common_indices = (
+            set.intersection(*(set(arguments) for arguments in registrations))
+            if registrations
+            else set()
+        )
+        target: dict[int, frozenset[_Origin]] = {}
+        for argument_index in common_indices:
+            merged: _Value = frozenset()
+            for arguments in registrations:
+                merged = join_finite_values(
+                    merged,
+                    arguments[argument_index],
+                    finite_value_budget,
+                    missing_is_identity=True,
+                )
+                if merged is None:
+                    break
+            if merged:
+                target[argument_index] = merged
+        if target:
+            result[target_id] = target
+    return result
 
 
 def _machine_callback_registration(
@@ -4904,6 +5099,7 @@ def _instantiate_recovered_external_call_facts(
             methods=[(profile_sha256, method)],
             arguments=[arguments],
             inventory=inventory,
+            finite_value_budget=budget,
         )
         if callback_evidence is not None:
             recoveries.append(callback_evidence)

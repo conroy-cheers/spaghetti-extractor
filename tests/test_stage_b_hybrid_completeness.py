@@ -518,6 +518,10 @@ class StaticHybridCompletenessTests(unittest.TestCase):
                         "interface_id": method.interface_id,
                         "method": method.name,
                         "slot": method.slot,
+                        "callback_arguments": [
+                            dict(argument)
+                            for argument in effect.callback_arguments
+                        ],
                     }],
                 },
                 "callback_source": effect.callback_source,

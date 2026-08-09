@@ -262,6 +262,43 @@ def _nested_registration(
     }
 
 
+def _interface_registration() -> dict[str, object]:
+    registration = _nested_registration()
+    registration.update({
+        "contract_id": "interface-method-callback",
+        "profile_binding": {
+            "interface_protocols": [{
+                "profile_sha256": "b" * 64,
+                "interface_id": "IThing",
+                "method": "Enumerate",
+                "slot": 4,
+                "callback_arguments": [{
+                    "argument_index": 0,
+                    "kind": "interface_object",
+                    "interface_id": "IThing",
+                }],
+            }],
+        },
+        "callback_abi": {
+            "kind": "generic_callback",
+            "argument_words": 1,
+            "stack_cleanup_bytes": 4,
+            "nullable": False,
+        },
+        "callback_behavior": None,
+        "callback_activation": None,
+        "callback_instance": None,
+        "callback_entry_arguments": [{
+            "argument_index": 0,
+            "origins": [{
+                "kind": "interface_object",
+                "key": ["b" * 64, "IThing"],
+            }],
+        }],
+    })
+    return registration
+
+
 def _callback_entry_artifact(
     *,
     provenance: dict[str, object] | None = None,
@@ -502,6 +539,86 @@ class EntryStateAnalysisV2Tests(unittest.TestCase):
         )
         self.assertEqual(replay["status"], "complete")
         self.assertTrue(replay["usable"])
+
+    def test_profile_callback_argument_origins_are_checked_and_exported(self) -> None:
+        registration = _interface_registration()
+        report = derive_callback_entry_state_contracts_v2(
+            pe_sha256="a" * 64,
+            image_base=IMAGE_BASE,
+            size_of_image=0xA000,
+            interface_provenance=_interface_provenance(
+                registrations=[registration]
+            ),
+            units=_units(),
+            machine_ir_sha256=MACHINE_IR_SHA256,
+        )
+
+        self.assertEqual(report["status"], "complete", report["issues"])
+        arguments = report["contracts"][0]["alternatives"]["values"][0][
+            "callback_arguments"
+        ]
+        self.assertEqual(arguments[0]["role"], "profile_value_origin")
+        self.assertEqual(
+            arguments[0]["constraints"]["origins"],
+            registration["callback_entry_arguments"][0]["origins"],
+        )
+
+        registration["callback_entry_arguments"][0]["origins"][0]["key"][0] = (
+            "d" * 64
+        )
+        corrupted = derive_callback_entry_state_contracts_v2(
+            pe_sha256="a" * 64,
+            image_base=IMAGE_BASE,
+            size_of_image=0xA000,
+            interface_provenance=_interface_provenance(
+                registrations=[registration]
+            ),
+            units=_units(),
+            machine_ir_sha256=MACHINE_IR_SHA256,
+        )
+        self.assertEqual(corrupted["status"], "violated")
+        self.assertIn(
+            "callback_entry_argument_origin_corrupt",
+            {issue["code"] for issue in corrupted["issues"]},
+        )
+
+        registration = _interface_registration()
+        registration["callback_entry_arguments"][0]["origins"][0]["key"][0] = []
+        corrupted = derive_callback_entry_state_contracts_v2(
+            pe_sha256="a" * 64,
+            image_base=IMAGE_BASE,
+            size_of_image=0xA000,
+            interface_provenance=_interface_provenance(
+                registrations=[registration]
+            ),
+            units=_units(),
+            machine_ir_sha256=MACHINE_IR_SHA256,
+        )
+        self.assertEqual(corrupted["status"], "violated")
+        self.assertIn(
+            "callback_entry_argument_origin_corrupt",
+            {issue["code"] for issue in corrupted["issues"]},
+        )
+
+        registration = _interface_registration()
+        registration["callback_entry_arguments"][0]["origins"][0]["key"][1] = (
+            "IUnrelated"
+        )
+        corrupted = derive_callback_entry_state_contracts_v2(
+            pe_sha256="a" * 64,
+            image_base=IMAGE_BASE,
+            size_of_image=0xA000,
+            interface_provenance=_interface_provenance(
+                registrations=[registration]
+            ),
+            units=_units(),
+            machine_ir_sha256=MACHINE_IR_SHA256,
+        )
+        self.assertEqual(corrupted["status"], "violated")
+        self.assertIn(
+            "callback_entry_argument_origin_corrupt",
+            {issue["code"] for issue in corrupted["issues"]},
+        )
 
     def test_callback_missing_named_global_invariant_is_incomplete(self) -> None:
         report = derive_callback_entry_state_contracts_v2(

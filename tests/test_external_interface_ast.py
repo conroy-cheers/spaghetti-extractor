@@ -402,6 +402,11 @@ class ExternalInterfaceAstTests(unittest.TestCase):
                 "argument_index": 2,
                 "lifetime": "during_call",
                 "nullable": False,
+                "argument_origins": [{
+                    "argument_index": 0,
+                    "kind": "interface_object",
+                    "interface_id": "IWidget",
+                }],
             }]
             spec.write_text(json.dumps(complete_spec), encoding="utf-8")
             complete = extract_external_interface_profile(
@@ -414,6 +419,25 @@ class ExternalInterfaceAstTests(unittest.TestCase):
             self.assertEqual(callback["callback_contract_status"], "complete")
             self.assertEqual(callback["callback_lifetime"], "during_call")
             self.assertEqual(callback["callback_contract_blockers"], [])
+            self.assertEqual(callback["callback_arguments"], [{
+                "argument_index": 0,
+                "kind": "interface_object",
+                "interface_id": "IWidget",
+            }])
+
+            complete_spec["method_callbacks"][0]["argument_origins"][0][
+                "interface_id"
+            ] = "INotTheDeclaredType"
+            spec.write_text(json.dumps(complete_spec), encoding="utf-8")
+            with self.assertRaisesRegex(
+                StageAInputError, "contradicts the pinned AST type"
+            ):
+                extract_external_interface_profile(
+                    ast_json=ast,
+                    spec=spec,
+                    headers=[header],
+                    out=output,
+                )
 
     def test_header_digest_mismatch_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

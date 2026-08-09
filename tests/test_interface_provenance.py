@@ -21,6 +21,7 @@ from spaghetti_extractor.import_abi import SelectedImportABI
 from spaghetti_extractor.interface_provenance import (
     INTERFACE_PROVENANCE_FORMAT,
     _guard_constraint,
+    callback_root_argument_origins,
     recover_external_interface_targets,
 )
 from spaghetti_extractor.provenance_domain import ValueOrigin
@@ -2431,6 +2432,11 @@ class InterfaceProvenanceTests(unittest.TestCase):
                         },
                         lifetime="during_call",
                         status="complete",
+                        callback_arguments=({
+                            "argument_index": 0,
+                            "kind": "interface_object",
+                            "interface_id": "IThing",
+                        },),
                     ),
                     "argument_words": 2,
                     "out_interfaces": [],
@@ -2495,6 +2501,57 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(evidence["status"], "complete", evidence)
         self.assertEqual(evidence["target_rvas"], [0x1800])
         self.assertEqual(evidence["target_unit_ids"], ["callback"])
+        self.assertEqual(evidence["callback_entry_arguments"], [{
+            "argument_index": 0,
+            "origins": [{
+                "kind": "interface_object",
+                "key": [self.profile.sha256, "IThing"],
+            }],
+        }])
+
+        callback_load = unit("callback", 0x1800, writes=[{
+            "register": "eax",
+            "value": load(add(reg("esp"), const(4))),
+        }])
+        callback_vtable = unit("callback-vtable", 0x1801, writes=[{
+            "register": "ecx",
+            "value": load(reg("eax")),
+        }])
+        callback_invoke = unit(
+            "callback-invoke",
+            0x1802,
+            events=[{
+                "kind": "indirect_call",
+                "return_rva": 0x1803,
+                "target": load(reg("ecx")),
+                "register_inputs": {name: reg(name) for name in REGISTERS},
+            }],
+        )
+        callback_result = self._run(
+            [callback_load, callback_vtable, callback_invoke],
+            [
+                edge("callback", "callback-vtable"),
+                edge("callback-vtable", "callback-invoke"),
+            ],
+            roots=["callback"],
+            indirect_exits=[{
+                "id": "exit:callback-invoke",
+                "source_unit_id": "callback-invoke",
+                "source_rva": 0x1802,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": load(reg("ecx")),
+            }],
+            initial_root_argument_origins=callback_root_argument_origins(
+                {"callback_registrations": [evidence]},
+                finite_value_budget=32,
+            ),
+        )
+        self.assertEqual(
+            callback_result["resolutions"][0]["status"],
+            "recovered",
+            callback_result["resolutions"][0],
+        )
 
         writes[0]["value"] = reg("edx")
         unresolved = self._run(
@@ -2510,6 +2567,37 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(evidence["status"], "incomplete")
         self.assertEqual(
             evidence["failure"]["code"], "callback_argument_origin_unresolved"
+        )
+
+    def test_callback_root_arguments_require_all_registrations_to_agree(self) -> None:
+        origin = ValueOrigin("interface_object", ("a" * 64, "IThing"))
+        typed = {
+            "status": "complete",
+            "target_unit_ids": ["callback"],
+            "callback_entry_arguments": [{
+                "argument_index": 0,
+                "origins": [origin.as_json()],
+            }],
+        }
+        untyped = {
+            "status": "complete",
+            "target_unit_ids": ["callback"],
+            "callback_entry_arguments": [],
+        }
+
+        self.assertEqual(
+            callback_root_argument_origins(
+                {"callback_registrations": [typed]},
+                finite_value_budget=32,
+            ),
+            {"callback": {0: frozenset({origin})}},
+        )
+        self.assertEqual(
+            callback_root_argument_origins(
+                {"callback_registrations": [typed, untyped]},
+                finite_value_budget=32,
+            ),
+            {},
         )
 
     def test_converged_stack_access_is_exported_as_an_untrusted_proposal(self) -> None:
@@ -3621,6 +3709,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
             int, dict[ValueOrigin, frozenset[ValueOrigin] | None]
         ] | None = None,
         initial_known_slots: dict[object, object] | None = None,
+        initial_root_argument_origins: dict[str, dict[int, object]] | None = None,
         recovered_known_slots: dict[object, object] | None = None,
         checked_stack_entry_offsets: dict[str, list[int]] | None = None,
         allow_global_slot_promotion: bool = True,
@@ -3678,6 +3767,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
                 bootstrap_unknown_call_preserved_registers
             ),
             initial_known_slots=initial_known_slots,
+            initial_root_argument_origins=initial_root_argument_origins,
             recovered_known_slots=recovered_known_slots,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
             allow_global_slot_promotion=allow_global_slot_promotion,

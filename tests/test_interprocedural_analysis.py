@@ -356,6 +356,56 @@ def legacy_adapter(operation: dict[str, object], **_kwargs: Any) -> dict[str, ob
 
 
 class InterproceduralAnalysisTests(unittest.TestCase):
+    def test_complete_callback_registration_seeds_callback_root_arguments(self) -> None:
+        observed: list[tuple[tuple[str, ...], object]] = []
+        interface_origin = ValueOrigin(
+            "interface_object", ("f" * 64, "IThing")
+        )
+
+        def resolver(**kwargs: Any) -> dict[str, object]:
+            observed.append((
+                tuple(sorted(kwargs["roots"])),
+                kwargs.get("initial_root_argument_origins"),
+            ))
+            return {
+                "resolutions": [],
+                "call_site_effects": [],
+                "callback_registrations": [{
+                    "status": "complete",
+                    "target_unit_ids": ["callback"],
+                    "callback_entry_arguments": [{
+                        "argument_index": 0,
+                        "origins": [interface_origin.as_json()],
+                    }],
+                }],
+            }
+
+        result = self._run(
+            units=[unit("root", 0x1000), unit("callback", 0x2000)],
+            roots=["root"],
+            resolver=resolver,
+        )
+
+        self.assertEqual(result.fixed_point["status"], "complete")
+        self.assertTrue(any(
+            roots == ("callback", "root")
+            and isinstance(arguments, dict)
+            and arguments.get("callback", {}).get(0)
+            == frozenset({interface_origin})
+            for roots, arguments in observed
+        ))
+
+        observed.clear()
+        self._run(
+            units=[unit("callback", 0x2000)],
+            roots=["callback"],
+            resolver=resolver,
+        )
+        self.assertFalse(any(
+            isinstance(arguments, dict) and arguments.get("callback")
+            for _roots, arguments in observed
+        ))
+
     def test_mutable_facts_cross_only_memory_preserving_call_sites(self) -> None:
         units = [unit("caller", 0x1000, calls=(0x2000,)), unit("callee", 0x2000)]
         call_edges = [call_edge("caller", "callee")]

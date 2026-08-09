@@ -1299,6 +1299,7 @@ def _checked_callback_registrations(
         if abi is not None and not abi.nullable and not exact_addresses:
             local.append(_issue("violated", "callback_nonnullable_target_missing", index=index))
 
+        _check_callback_entry_arguments(record, abi=abi, index=index, issues=local)
         _check_nested_callback(record, abi=abi, index=index, issues=local)
         record["target_rvas"] = normalized_targets
         record["_issues"] = _deduplicate_issues(local)
@@ -1307,6 +1308,96 @@ def _checked_callback_registrations(
         result.append(record)
         issues.extend(copy.deepcopy(record["_issues"]))
     return result
+
+
+def _check_callback_entry_arguments(
+    record: Mapping[str, Any],
+    *,
+    abi: Any,
+    index: int,
+    issues: list[dict[str, Any]],
+) -> None:
+    raw_arguments = record.get("callback_entry_arguments", [])
+    if (
+        not isinstance(raw_arguments, list)
+        or abi is None
+        or len(raw_arguments) > abi.argument_words
+    ):
+        issues.append(_issue(
+            "violated", "callback_entry_argument_inventory_corrupt", index=index
+        ))
+        return
+    protocols = record.get("profile_binding")
+    protocol_rows = (
+        protocols.get("interface_protocols")
+        if isinstance(protocols, Mapping)
+        else None
+    )
+    declared_origins = {
+        (
+            str(protocol.get("profile_sha256")),
+            argument.get("argument_index"),
+            str(argument.get("interface_id")),
+        )
+        for protocol in protocol_rows
+        if isinstance(protocol, Mapping)
+        and isinstance(protocol.get("profile_sha256"), str)
+        for argument in protocol.get("callback_arguments", [])
+        if isinstance(argument, Mapping)
+        and argument.get("kind") == "interface_object"
+        and isinstance(argument.get("interface_id"), str)
+    } if isinstance(protocol_rows, list) else set()
+    seen: set[int] = set()
+    canonical_arguments: list[dict[str, Any]] = []
+    for raw in raw_arguments:
+        if not isinstance(raw, Mapping) or set(raw) != {"argument_index", "origins"}:
+            issues.append(_issue(
+                "violated", "callback_entry_argument_corrupt", index=index
+            ))
+            continue
+        argument_index = _uint32(raw.get("argument_index"))
+        origins = raw.get("origins")
+        if (
+            argument_index is None
+            or argument_index >= abi.argument_words
+            or argument_index in seen
+            or not isinstance(origins, list)
+            or not 1 <= len(origins) <= MAX_FINITE_ALTERNATIVES
+        ):
+            issues.append(_issue(
+                "violated", "callback_entry_argument_corrupt", index=index
+            ))
+            continue
+        seen.add(argument_index)
+        for origin in origins:
+            key = origin.get("key") if isinstance(origin, Mapping) else None
+            if (
+                not isinstance(origin, Mapping)
+                or set(origin) != {"kind", "key"}
+                or origin.get("kind") != "interface_object"
+                or not isinstance(key, list)
+                or len(key) != 2
+                or not isinstance(key[0], str)
+                or not isinstance(key[1], str)
+                or not key[1]
+                or (key[0], argument_index, key[1]) not in declared_origins
+            ):
+                issues.append(_issue(
+                    "violated",
+                    "callback_entry_argument_origin_corrupt",
+                    index=index,
+                    argument_index=argument_index,
+                ))
+        canonical_arguments.append({
+            "argument_index": argument_index,
+            "origins": copy.deepcopy(origins),
+        })
+    if canonical_arguments != sorted(
+        canonical_arguments, key=lambda row: int(row["argument_index"])
+    ):
+        issues.append(_issue(
+            "violated", "callback_entry_argument_order_corrupt", index=index
+        ))
 
 
 def _check_nested_callback(
@@ -1451,6 +1542,26 @@ def _callback_arguments(registration: Mapping[str, Any]) -> list[dict[str, Any]]
         )
         for argument in behavior["payload_arguments"]:
             roles[int(argument)] = ("payload", None)
+    typed_arguments = registration.get("callback_entry_arguments")
+    if isinstance(typed_arguments, Sequence) and not isinstance(
+        typed_arguments, (str, bytes)
+    ):
+        for raw in typed_arguments:
+            if not isinstance(raw, Mapping):
+                continue
+            argument_index = raw.get("argument_index")
+            origins = raw.get("origins")
+            if (
+                isinstance(argument_index, int)
+                and not isinstance(argument_index, bool)
+                and 0 <= argument_index < words
+                and isinstance(origins, list)
+                and origins
+            ):
+                roles[argument_index] = (
+                    "profile_value_origin",
+                    {"origins": copy.deepcopy(origins)},
+                )
     return [
         {
             "index": index,
