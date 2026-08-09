@@ -4,6 +4,10 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
+from spaghetti_extractor.call_frame_hypotheses import (
+    PreservedRegisterHypothesis,
+    hypothesis_id as call_frame_hypothesis_id,
+)
 from spaghetti_extractor.call_site_effects import (
     CallSiteEffect,
     CallSiteId,
@@ -108,6 +112,45 @@ def call_edge(source: str, target: str, event_index: int = 0) -> dict[str, objec
         "source_event_index": event_index,
         "target_unit_id": target,
     }
+
+
+def preserved_register_hypothesis(
+    unit_id: str, register: str
+) -> dict[str, object]:
+    return PreservedRegisterHypothesis(
+        id=call_frame_hypothesis_id(unit_id, 0, register),
+        unit_id=unit_id,
+        event_index=0,
+        transfer_kind="internal_call",
+        register=register,
+        proposal_source="fixture-v1",
+        proof_authority=False,
+    ).as_json()
+
+
+def call_effect(
+    unit_id: str,
+    *,
+    preserved: frozenset[str] | None,
+    dependencies: tuple[str, ...] = (),
+) -> dict[str, object]:
+    complete = preserved is not None
+    return CallSiteEffect(
+        site=CallSiteId(unit_id, 0),
+        transfer_kind="internal_call",
+        status="complete" if complete else "incomplete",
+        register_frame_status="complete" if complete else "incomplete",
+        preserved_registers=frozenset() if preserved is None else preserved,
+        stack_frame_status="not_applicable",
+        stack_cleanup_bytes=None,
+        result_status="not_applicable",
+        outputs=(),
+        memory_frame_status="not_applicable",
+        memory_preserved=False,
+        memory_writes=(),
+        dependencies=dependencies,
+        failure_codes=() if complete else ("call_register_frame_incomplete",),
+    ).as_json()
 
 
 def indirect_exit(
@@ -450,6 +493,7 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         exits: list[dict[str, object]] | None = None,
         proposal: list[dict[str, object]] | None = None,
         inductive: list[dict[str, object]] | None = None,
+        inductive_frames: list[dict[str, object]] | None = None,
         globals: list[GlobalSlotInvariant] | None = None,
         checked_stack_units: list[str] | None = None,
         resolver,
@@ -501,6 +545,7 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                 writable_image_ranges=writable_image_ranges or [],
                 proposal_recoveries=proposal or [],
                 inductive_hypothesis_recoveries=inductive or [],
+                inductive_hypothesis_call_frames=inductive_frames or [],
                 global_slot_invariants=globals or [],
                 checked_nonimage_stack_units=checked_stack_units or [],
                 finite_value_budget=budget,
@@ -840,6 +885,143 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                 hypotheses=[seed],
             )
         )
+
+    def test_call_frame_hypothesis_requires_a_control_cycle(self) -> None:
+        hypothesis = PreservedRegisterHypothesis.parse(
+            preserved_register_hypothesis("a", "edi")
+        )
+        units = [unit("a", 0x1000, calls=(0x2000,)), unit("b", 0x2000)]
+
+        self.assertFalse(
+            _requires_inductive_replay(
+                units=units,
+                roots=["a"],
+                direct_edges=[],
+                internal_call_edges=[call_edge("a", "b")],
+                indirect_exits=[],
+                summaries={"summaries": [summary_row("a", 0x1000)]},
+                hypotheses=[],
+                call_frame_hypotheses=[hypothesis],
+            )
+        )
+        self.assertTrue(
+            _requires_inductive_replay(
+                units=[*units, unit("loop", 0x1001)],
+                roots=["a"],
+                direct_edges=[edge("a", "loop"), edge("loop", "a")],
+                internal_call_edges=[call_edge("a", "b")],
+                indirect_exits=[],
+                summaries={"summaries": [summary_row("a", 0x1000)]},
+                hypotheses=[],
+                call_frame_hypotheses=[hypothesis],
+            )
+        )
+
+    def test_discovery_exports_cyclic_register_frame_atoms(self) -> None:
+        identity = call_frame_hypothesis_id("a", 0, "edi")
+
+        def resolver(**_kwargs: object) -> dict[str, object]:
+            return {
+                "resolutions": [],
+                "call_site_effects": [call_effect(
+                    "a",
+                    preserved=frozenset({"edi"}),
+                    dependencies=(identity,),
+                )],
+            }
+
+        result = self._run(
+            units=[
+                unit("a", 0x1000, calls=(0x2000,)),
+                unit("loop", 0x1001),
+                unit("b", 0x2000),
+            ],
+            roots=["a"],
+            direct=[edge("a", "loop"), edge("loop", "a")],
+            calls=[call_edge("a", "b")],
+            resolver=resolver,
+        )
+
+        self.assertEqual(
+            result.proposal_artifacts["call_frame_hypotheses"],
+            [{
+                **preserved_register_hypothesis("a", "edi"),
+                "proposal_source": "unresolved-call-bootstrap-v1",
+            }],
+        )
+
+    def test_call_frame_hypothesis_closes_only_after_exact_reproduction(self) -> None:
+        hypothesis = preserved_register_hypothesis("a", "edi")
+        identity = str(hypothesis["id"])
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            proposed = kwargs.get("preserved_register_hypotheses")
+            return {
+                "resolutions": [],
+                "call_site_effects": [call_effect(
+                    "a",
+                    preserved=(
+                        frozenset({"edi"}) if proposed else None
+                    ),
+                )],
+            }
+
+        result = self._run(
+            units=[
+                unit("a", 0x1000, calls=(0x2000,)),
+                unit("loop", 0x1001),
+                unit("b", 0x2000),
+            ],
+            roots=["a"],
+            direct=[edge("a", "loop"), edge("loop", "a")],
+            calls=[call_edge("a", "b")],
+            inductive_frames=[hypothesis],
+            resolver=resolver,
+            authority_only=True,
+        )
+
+        self.assertTrue(result.complete, result.fixed_point)
+        replay = result.fixed_point["inductive_replay"]
+        self.assertTrue(replay["required"])
+        self.assertTrue(replay["proof_authority"])
+        self.assertEqual(replay["call_frame_reproduced_ids"], [identity])
+        self.assertIn(identity, replay["accepted_nodes"])
+
+    def test_self_dependent_call_frame_hypothesis_remains_non_authorizing(self) -> None:
+        hypothesis = preserved_register_hypothesis("a", "edi")
+        identity = str(hypothesis["id"])
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            proposed = kwargs.get("preserved_register_hypotheses")
+            return {
+                "resolutions": [],
+                "call_site_effects": [call_effect(
+                    "a",
+                    preserved=(
+                        frozenset({"edi"}) if proposed else None
+                    ),
+                    dependencies=(identity,) if proposed else (),
+                )],
+            }
+
+        result = self._run(
+            units=[
+                unit("a", 0x1000, calls=(0x2000,)),
+                unit("loop", 0x1001),
+                unit("b", 0x2000),
+            ],
+            roots=["a"],
+            direct=[edge("a", "loop"), edge("loop", "a")],
+            calls=[call_edge("a", "b")],
+            inductive_frames=[hypothesis],
+            resolver=resolver,
+            authority_only=True,
+        )
+
+        replay = result.fixed_point["inductive_replay"]
+        self.assertFalse(replay["proof_authority"])
+        self.assertEqual(replay["call_frame_missing_ids"], [identity])
+        self.assertNotIn(identity, replay["accepted_nodes"])
 
     def test_path_recovery_is_exported_without_authorizing_cold_replay(self) -> None:
         exit_row = indirect_exit("exit:a:0", "a")

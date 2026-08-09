@@ -57,6 +57,7 @@ class JointFixedPointCallbacks:
             Mapping[str, Sequence[int]],
             Sequence[Mapping[str, Any]],
             Sequence[Mapping[str, Any]],
+            Sequence[Mapping[str, Any]],
         ],
         Mapping[str, Any],
     ] | None = None
@@ -70,6 +71,7 @@ def derive_joint_fixed_point_v2(
     *,
     proposal_graph: Mapping[str, Any],
     proposal_recoveries: Sequence[Mapping[str, Any]],
+    proposal_call_frame_hypotheses: Sequence[Mapping[str, Any]] = (),
     callbacks: JointFixedPointCallbacks,
     finite_round_budget: int = 32,
 ) -> dict[str, Any]:
@@ -99,6 +101,10 @@ def derive_joint_fixed_point_v2(
         "proposal_artifacts": {
             "proof_authority": False,
             "recoveries": [copy.deepcopy(dict(row)) for row in proposal_recoveries],
+            "call_frame_hypotheses": [
+                copy.deepcopy(dict(row))
+                for row in proposal_call_frame_hypotheses
+            ],
             "signature": canonical_sha256(proposal_recoveries),
         },
     }
@@ -136,6 +142,7 @@ def derive_joint_fixed_point_v2(
                 stack_entry_offsets,
                 stack_range_facts,
                 hypotheses,
+                proposal_call_frame_hypotheses,
             )
         )
         cold_graph = callbacks.derive_graph(interprocedural)

@@ -734,6 +734,9 @@ let
           control = manifest.get("control", {})
           static_proposals = control.get("recovered_indirect_targets", [])
           discovery = seed.get("proposal_artifacts", {}).get("recoveries", [])
+          discovery_call_frames = seed.get("proposal_artifacts", {}).get(
+              "call_frame_hypotheses", []
+          )
           proposals = merge_recovery_proposals_v2(
               exact_exits=exact["indirect_exits"],
               proposal_sets=[static_proposals, discovery],
@@ -804,6 +807,7 @@ let
               checked_stack_entry_offsets,
               checked_stack_range_facts,
               hypothesis_recoveries,
+              hypothesis_call_frames,
           ):
               return derive_interprocedural_result_v2(
                   manifest,
@@ -823,6 +827,7 @@ let
                   internal_function_contracts=internal_contracts,
                   static_recoveries=None,
                   inductive_hypothesis_recoveries=hypothesis_recoveries,
+                  inductive_hypothesis_call_frames=hypothesis_call_frames,
                   finite_value_budget=analysis_finite_value_budget,
                   proposal_only=False,
                   authority_only=True,
@@ -973,6 +978,7 @@ let
           payload = derive_joint_fixed_point_v2(
               proposal_graph=proposal_graph,
               proposal_recoveries=proposals,
+              proposal_call_frame_hypotheses=discovery_call_frames,
               callbacks=JointFixedPointCallbacks(
                   derive_interprocedural=derive_interprocedural,
                   derive_stack_ranges=derive_stack_ranges,

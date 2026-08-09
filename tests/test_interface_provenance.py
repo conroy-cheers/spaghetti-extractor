@@ -6,6 +6,10 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 
+from spaghetti_extractor.call_frame_hypotheses import (
+    PreservedRegisterHypothesis,
+    hypothesis_id as call_frame_hypothesis_id,
+)
 from spaghetti_extractor.external_interface_profiles import (
     EXTERNAL_INTERFACE_PROFILE_FORMAT,
     ExternalInterfaceProfile,
@@ -3140,6 +3144,138 @@ class InterfaceProvenanceTests(unittest.TestCase):
             {issue["code"] for issue in strict_with_contract["issues"]},
         )
 
+    def test_preserved_register_hypothesis_is_local_and_non_authorizing(self) -> None:
+        esi_target = IMAGE_BASE + 0x2000
+        edi_target = IMAGE_BASE + 0x2100
+        seed = unit(
+            "seed",
+            0x1000,
+            writes=[
+                {"register": "esi", "value": const(esi_target)},
+                {"register": "edi", "value": const(edi_target)},
+            ],
+        )
+        call = unit("internal-call", 0x1001, events=[{
+            "kind": "internal_call",
+            "target_rva": 0x3000,
+            "return_rva": 0x1002,
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }])
+        use_esi = unit("use-esi", 0x1002, events=[{
+            "kind": "indirect_call",
+            "return_rva": 0x1003,
+            "target": reg("esi"),
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }])
+        use_edi = unit("use-edi", 0x1003, events=[{
+            "kind": "indirect_call",
+            "return_rva": 0x1004,
+            "target": reg("edi"),
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }])
+        exits = [
+            {
+                "id": "exit:esi",
+                "source_unit_id": "use-esi",
+                "source_rva": 0x1002,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": reg("esi"),
+            },
+            {
+                "id": "exit:edi",
+                "source_unit_id": "use-edi",
+                "source_rva": 0x1003,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": reg("edi"),
+            },
+        ]
+        identity = call_frame_hypothesis_id("internal-call", 0, "esi")
+        hypothesis = PreservedRegisterHypothesis(
+            id=identity,
+            unit_id="internal-call",
+            event_index=0,
+            transfer_kind="internal_call",
+            register="esi",
+            proposal_source="fixture-v1",
+            proof_authority=False,
+        ).as_json()
+        common = {
+            "units": [
+                seed,
+                call,
+                use_esi,
+                use_edi,
+                unit("esi-target", 0x2000),
+                unit("edi-target", 0x2100),
+                unit("callee", 0x3000),
+            ],
+            "direct": [
+                edge("seed", "internal-call"),
+                edge("internal-call", "use-esi"),
+                edge("internal-call", "use-edi"),
+            ],
+            "roots": ["seed"],
+            "internal_edges": [{
+                "source_unit_id": "internal-call",
+                "source_event_index": 0,
+                "target_unit_id": "callee",
+                "status": "resolved",
+            }],
+            "indirect_exits": exits,
+        }
+
+        hypothesized = self._run(
+            **common,
+            preserved_register_hypotheses=[hypothesis],
+        )
+        by_id = {row["id"]: row for row in hypothesized["resolutions"]}
+        self.assertEqual(by_id["exit:esi"]["status"], "recovered")
+        self.assertIn(identity, by_id["exit:esi"]["analysis_dependencies"])
+        self.assertEqual(
+            [
+                dependency
+                for dependency in by_id["exit:esi"]["analysis_dependencies"]
+                if dependency.startswith("call-frame-hypothesis:")
+            ],
+            [identity],
+        )
+        self.assertEqual(by_id["exit:edi"]["status"], "incomplete")
+
+        exact = self._run(
+            **common,
+            preserved_register_hypotheses=[hypothesis],
+            internal_call_preserved_registers={
+                IMAGE_BASE + 0x3000: frozenset({"esi"})
+            },
+        )
+        exact_by_id = {row["id"]: row for row in exact["resolutions"]}
+        self.assertEqual(exact_by_id["exit:esi"]["status"], "recovered")
+        self.assertNotIn(
+            identity, exact_by_id["exit:esi"]["analysis_dependencies"]
+        )
+        self.assertNotIn(
+            "inductive_call_frame_hypothesis_used",
+            {issue["code"] for issue in exact["issues"]},
+        )
+
+        exact_clobber = self._run(
+            **common,
+            preserved_register_hypotheses=[hypothesis],
+            internal_call_preserved_registers={
+                IMAGE_BASE + 0x3000: frozenset()
+            },
+        )
+        clobber_by_id = {
+            row["id"]: row for row in exact_clobber["resolutions"]
+        }
+        self.assertEqual(clobber_by_id["exit:esi"]["status"], "incomplete")
+        self.assertNotIn(
+            "inductive_call_frame_hypothesis_used",
+            {issue["code"] for issue in exact_clobber["issues"]},
+        )
+
     def test_path_proposal_retains_target_seen_before_loop_widening(self) -> None:
         target_address = IMAGE_BASE + 0x2000
         seed = unit(
@@ -3219,6 +3355,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
         checked_stack_entry_offsets: dict[str, list[int]] | None = None,
         allow_global_slot_promotion: bool = True,
         collect_path_recovery_proposals: bool = False,
+        preserved_register_hypotheses: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
         identity = MachineImportIdentity("example.dll", "symbol", "CreateThing")
         abi = resolve_machine_call_abi("pe32-stdcall-v1")
@@ -3273,6 +3410,9 @@ class InterfaceProvenanceTests(unittest.TestCase):
             checked_stack_entry_offsets=checked_stack_entry_offsets,
             allow_global_slot_promotion=allow_global_slot_promotion,
             collect_path_recovery_proposals=collect_path_recovery_proposals,
+            preserved_register_hypotheses=(
+                preserved_register_hypotheses or []
+            ),
         )
 
     def _run_selected_import_memory_case(

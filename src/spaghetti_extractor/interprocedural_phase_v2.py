@@ -54,6 +54,7 @@ def derive_interprocedural_result_v2(
     internal_function_contracts: Mapping[str, Mapping[str, Any]] | None = None,
     static_recoveries: Sequence[Mapping[str, Any]] | None = None,
     inductive_hypothesis_recoveries: Sequence[Mapping[str, Any]] = (),
+    inductive_hypothesis_call_frames: Sequence[Mapping[str, Any]] = (),
     finite_value_budget: int = 32,
     proposal_only: bool = False,
     authority_only: bool = False,
@@ -200,6 +201,7 @@ def derive_interprocedural_result_v2(
         ),
         proposal_recoveries=proposal_recoveries,
         inductive_hypothesis_recoveries=inductive_hypothesis_recoveries,
+        inductive_hypothesis_call_frames=inductive_hypothesis_call_frames,
         global_slot_invariants=typed_slots,
         checked_stack_entry_offsets=checked_stack_entry_offsets,
         checked_nonimage_stack_units=tuple(sorted(checked_stack_units)),
@@ -271,6 +273,7 @@ def _incomplete_interprocedural_result(
         "proposal_artifacts": {
             "proof_authority": False,
             "recoveries": [],
+            "call_frame_hypotheses": [],
             "signature": None,
         },
         "fixed_point": fixed_point,

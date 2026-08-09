@@ -11,7 +11,7 @@ import copy
 import heapq
 import json
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -27,6 +27,10 @@ from .call_site_effects import (
     CallSiteEffect,
     CallSiteId,
     CallWriteSpan,
+)
+from .call_frame_hypotheses import (
+    PreservedRegisterHypothesis,
+    hypothesis_id as call_frame_hypothesis_id,
 )
 from .external_interface_profiles import (
     ExternalInterfaceProfile,
@@ -119,12 +123,57 @@ class _CallFacts:
     memory_preserved: bool = False
     memory_writes: tuple["_WriteSpan", ...] | None = None
     dependencies: frozenset[str] = frozenset()
+    register_dependencies: Mapping[str, frozenset[str]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True, order=True)
 class _WriteSpan:
     base: _Origin
     size: int | None
+
+
+def _parse_preserved_register_hypotheses(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[CallSiteId, dict[str, PreservedRegisterHypothesis]]:
+    result: dict[CallSiteId, dict[str, PreservedRegisterHypothesis]] = {}
+    identities: set[str] = set()
+    for raw in rows:
+        hypothesis = PreservedRegisterHypothesis.parse(raw)
+        if hypothesis.id in identities:
+            raise ValueError("duplicate preserved-register hypothesis ID")
+        identities.add(hypothesis.id)
+        site = CallSiteId(hypothesis.unit_id, hypothesis.event_index)
+        by_register = result.setdefault(site, {})
+        if hypothesis.register in by_register:
+            raise ValueError(
+                "duplicate preserved-register hypothesis for one call site"
+            )
+        by_register[hypothesis.register] = hypothesis
+    return result
+
+
+def _with_preserved_register_hypotheses(
+    facts: _CallFacts,
+    hypotheses: Mapping[str, PreservedRegisterHypothesis],
+) -> _CallFacts:
+    if facts.preserved is not None:
+        return facts
+    return _CallFacts(
+        preserved=frozenset(hypotheses),
+        abi=facts.abi,
+        argument_words=facts.argument_words,
+        stack_cleanup_bytes=facts.stack_cleanup_bytes,
+        outputs=facts.outputs,
+        memory_preserved=facts.memory_preserved,
+        memory_writes=facts.memory_writes,
+        dependencies=facts.dependencies,
+        register_dependencies={
+            register: frozenset({hypothesis.id})
+            for register, hypothesis in hypotheses.items()
+        },
+    )
 
 
 def _call_site_effect(
@@ -196,7 +245,10 @@ def _call_site_effect(
         ),
         abi=facts.abi,
         argument_words=facts.argument_words,
-        dependencies=tuple(sorted(facts.dependencies)),
+        dependencies=tuple(sorted(
+            facts.dependencies
+            | frozenset().union(*facts.register_dependencies.values())
+        )),
         failure_codes=tuple(sorted(failures)),
     )
 
@@ -295,6 +347,7 @@ def recover_external_interface_targets(
     checked_stack_entry_offsets: Mapping[str, Sequence[int]] | None = None,
     allow_global_slot_promotion: bool = True,
     collect_path_recovery_proposals: bool = False,
+    preserved_register_hypotheses: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Recover finite external method targets from typed interface origins."""
 
@@ -306,6 +359,9 @@ def recover_external_interface_targets(
         raise ValueError("allow_global_slot_promotion must be a boolean")
     if not isinstance(collect_path_recovery_proposals, bool):
         raise ValueError("path-recovery proposal selection must be a boolean")
+    parsed_call_hypotheses = _parse_preserved_register_hypotheses(
+        preserved_register_hypotheses
+    )
     effective_fixed_point_budget = (
         fixed_point_budget
         if fixed_point_budget is not None
@@ -437,6 +493,7 @@ def recover_external_interface_targets(
             stack_slot_budget=stack_slot_budget,
             checked_stack_entry_offsets=stack_entry_offsets,
             collect_path_recovery_proposals=collect_path_recovery_proposals,
+            preserved_register_hypotheses=parsed_call_hypotheses,
         )
         proposed = {
             address: origins
@@ -1073,6 +1130,9 @@ def _run_dataflow(
     stack_slot_budget: int,
     checked_stack_entry_offsets: Mapping[str, frozenset[int]],
     collect_path_recovery_proposals: bool,
+    preserved_register_hypotheses: Mapping[
+        CallSiteId, Mapping[str, PreservedRegisterHypothesis]
+    ],
 ) -> _RunResult:
     input_states = {
         root: _State(
@@ -1143,6 +1203,7 @@ def _run_dataflow(
             bootstrap_unknown_call_preserved_registers=(
                 bootstrap_unknown_call_preserved_registers
             ),
+            preserved_register_hypotheses=preserved_register_hypotheses,
             image_base=image_base,
             known_slots=known_slots,
             finite_value_budget=finite_value_budget,
@@ -1483,6 +1544,9 @@ def _transfer_unit(
     internal_call_dependency_ids: Mapping[tuple[str, int], frozenset[str]],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
     bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
+    preserved_register_hypotheses: Mapping[
+        CallSiteId, Mapping[str, PreservedRegisterHypothesis]
+    ],
     image_base: int,
     known_slots: Mapping[_MemoryLocation, _Value],
     finite_value_budget: int,
@@ -1557,15 +1621,62 @@ def _transfer_unit(
             ),
             internal_call_dependency_ids=internal_call_dependency_ids,
             recovered_calls=recovered_calls,
-            bootstrap_unknown_call_preserved_registers=(
-                bootstrap_unknown_call_preserved_registers
-            ),
             image_base=image_base,
             known_slots=known_slots,
             budget=finite_value_budget,
         )
         issues.extend(call_issues)
         argument_recoveries.extend(call_argument_recoveries)
+        hypotheses = preserved_register_hypotheses.get(
+            CallSiteId(unit_id, event_index), {}
+        )
+        if facts.preserved is None and hypotheses:
+            facts = _with_preserved_register_hypotheses(facts, hypotheses)
+            issues.append({
+                "code": "inductive_call_frame_hypothesis_used",
+                "unit_id": unit_id,
+                "event_index": event_index,
+                "hypothesis_ids": sorted(
+                    hypothesis.id for hypothesis in hypotheses.values()
+                ),
+            })
+        if (
+            facts.preserved is None
+            and bootstrap_unknown_call_preserved_registers is not None
+        ):
+            site = CallSiteId(unit_id, event_index)
+            register_dependencies = {
+                register: frozenset({
+                    call_frame_hypothesis_id(
+                        site.unit_id, site.event_index, register
+                    )
+                })
+                for register in bootstrap_unknown_call_preserved_registers
+            }
+            facts = _CallFacts(
+                preserved=bootstrap_unknown_call_preserved_registers,
+                abi=facts.abi,
+                argument_words=facts.argument_words,
+                stack_cleanup_bytes=facts.stack_cleanup_bytes,
+                outputs=facts.outputs,
+                memory_preserved=facts.memory_preserved,
+                memory_writes=facts.memory_writes,
+                dependencies=facts.dependencies,
+                register_dependencies=register_dependencies,
+            )
+            issues.append({
+                "code": "bootstrap_call_preservation_used",
+                "unit_id": unit_id,
+                "event_index": event_index,
+                "call_kind": str(event["kind"]),
+                "preserved_registers": sorted(
+                    bootstrap_unknown_call_preserved_registers
+                ),
+                "hypothesis_ids": sorted(
+                    next(iter(dependencies))
+                    for dependencies in register_dependencies.values()
+                ),
+            })
         call_site_effects = (_call_site_effect(
             unit_id=unit_id,
             event_index=event_index,
@@ -1589,7 +1700,9 @@ def _transfer_unit(
             registers={
                 register: (
                     with_value_dependencies(
-                        pre_call.registers.get(register), facts.dependencies
+                        pre_call.registers.get(register),
+                        facts.dependencies
+                        | facts.register_dependencies.get(register, frozenset()),
                     )
                     if facts.preserved is not None and register in facts.preserved
                     else None
@@ -2674,7 +2787,6 @@ def _call_contract(
     ],
     internal_call_dependency_ids: Mapping[tuple[str, int], frozenset[str]],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
-    bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
     image_base: int,
     known_slots: Mapping[_MemoryLocation, _Value],
     budget: int,
@@ -2943,28 +3055,6 @@ def _call_contract(
                 issues=issues,
             )
         )
-        if (
-            facts.preserved is None
-            and bootstrap_unknown_call_preserved_registers is not None
-        ):
-            facts = _CallFacts(
-                bootstrap_unknown_call_preserved_registers,
-                facts.abi,
-                facts.argument_words,
-                facts.stack_cleanup_bytes,
-                facts.outputs,
-                memory_preserved=facts.memory_preserved,
-                memory_writes=facts.memory_writes,
-                dependencies=facts.dependencies,
-            )
-            issues.append({
-                "code": "bootstrap_call_preservation_used",
-                "unit_id": unit_id,
-                "event_index": event_index,
-                "call_kind": "internal_call",
-                "target_rva": target_rva,
-                "preserved_registers": sorted(facts.preserved),
-            })
         return facts, issues, argument_recoveries
     if kind != "indirect_call":
         return _CallFacts(None, None, None, None, outputs), issues, argument_recoveries
@@ -3150,23 +3240,6 @@ def _call_contract(
         )
         issues.extend(recovered_issues)
         argument_recoveries.extend(recovered_argument_recoveries)
-        if facts is None and bootstrap_unknown_call_preserved_registers is not None:
-            issues.append({
-                "code": "bootstrap_call_preservation_used",
-                "unit_id": unit_id,
-                "event_index": event_index,
-                "call_kind": "indirect_call",
-                "preserved_registers": sorted(
-                    bootstrap_unknown_call_preserved_registers
-                ),
-            })
-            facts = _CallFacts(
-                bootstrap_unknown_call_preserved_registers,
-                None,
-                None,
-                None,
-                outputs,
-            )
         return (
             facts or _CallFacts(None, None, None, None, outputs),
             issues,
@@ -4323,6 +4396,7 @@ def _with_call_dependencies(
         memory_preserved=facts.memory_preserved,
         memory_writes=facts.memory_writes,
         dependencies=facts.dependencies | dependencies,
+        register_dependencies=facts.register_dependencies,
     )
 
 
@@ -4495,6 +4569,17 @@ def _combine_call_facts(
         dependencies=frozenset().union(
             *(facts.dependencies for facts in alternatives)
         ),
+        register_dependencies={
+            register: frozenset().union(*(
+                facts.register_dependencies.get(register, frozenset())
+                for facts in alternatives
+            ))
+            for register in preserved
+            if any(
+                facts.register_dependencies.get(register)
+                for facts in alternatives
+            )
+        },
     )
 
 

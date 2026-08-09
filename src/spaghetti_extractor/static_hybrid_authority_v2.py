@@ -985,21 +985,29 @@ def _interprocedural_payload(
             next_action="regenerate the unseeded interprocedural authority artifact",
         ))
     inductive = fixed.get("inductive_replay")
-    accepted_nodes = (
+    raw_accepted_nodes = (
         inductive.get("accepted_nodes")
         if isinstance(inductive, Mapping)
-        and isinstance(inductive.get("accepted_nodes"), list)
-        else []
+        else None
     )
-    reproduced_ids = (
+    accepted_nodes: list[Any] = (
+        raw_accepted_nodes if isinstance(raw_accepted_nodes, list) else []
+    )
+    raw_reproduced_ids = (
         inductive.get("reproduced_ids")
         if isinstance(inductive, Mapping)
-        and isinstance(inductive.get("reproduced_ids"), list)
-        else []
+        else None
     )
-    accepted_exit_ids = {
+    reproduced_ids: list[Any] = (
+        raw_reproduced_ids if isinstance(raw_reproduced_ids, list) else []
+    )
+    accepted_hypothesis_ids = {
         value for value in accepted_nodes
-        if isinstance(value, str) and value.startswith("indirect-exit:")
+        if isinstance(value, str)
+        and (
+            value.startswith("indirect-exit:")
+            or value.startswith("call-frame-hypothesis:")
+        )
     }
     inductive_authority_valid = bool(
         accepted_nodes
@@ -1007,7 +1015,7 @@ def _interprocedural_payload(
         and inductive.get("executed") is True
         and inductive.get("converged") is True
         and inductive.get("proof_authority") is True
-        and accepted_exit_ids <= {
+        and accepted_hypothesis_ids <= {
             value for value in reproduced_ids if isinstance(value, str)
         }
     )

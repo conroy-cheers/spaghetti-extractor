@@ -41,6 +41,12 @@ from .checked_memory_access_v2 import (
     prepare_checked_memory_access_facts_v2,
     seal_checked_memory_access_facts_v2,
 )
+from .call_frame_hypotheses import (
+    PreservedRegisterHypothesis,
+    hypothesis_id as call_frame_hypothesis_id,
+    parse_preserved_register_hypotheses,
+)
+from .call_site_effects import CallSiteId, parse_call_site_effects
 from .authority_record_core_v2 import AuthorityStatus
 from .global_slot_contract_v2 import GlobalSlotInvariant
 from .indirect_target_dependency_v2 import (
@@ -159,6 +165,7 @@ class _PassResult:
     operation_provenance: Mapping[str, Any]
     value_provenance: Mapping[str, Any]
     recoveries: tuple[Mapping[str, Any], ...]
+    call_frame_hypotheses: tuple[PreservedRegisterHypothesis, ...]
     roots: tuple[str, ...]
 
     @property
@@ -210,6 +217,7 @@ def analyze_interprocedural_control(
     internal_function_contracts: Mapping[str, Mapping[str, Any]] | None = None,
     proposal_recoveries: Sequence[Mapping[str, Any]] = (),
     inductive_hypothesis_recoveries: Sequence[Mapping[str, Any]] = (),
+    inductive_hypothesis_call_frames: Sequence[Mapping[str, Any]] = (),
     global_slot_invariants: Sequence[
         GlobalSlotInvariant | Mapping[str, Any]
     ] = (),
@@ -268,6 +276,9 @@ def analyze_interprocedural_control(
     normalized_global_slots = _normalize_global_slot_invariants(
         global_slot_invariants
     )
+    normalized_call_frame_hypotheses = parse_preserved_register_hypotheses(
+        list(inductive_hypothesis_call_frames)
+    )
     normalized_writable_ranges = _normalize_writable_image_ranges(
         writable_image_ranges
     )
@@ -291,6 +302,7 @@ def analyze_interprocedural_control(
         finite_value_budget=finite_value_budget,
         max_evaluations=evaluation_budget,
         initial_recoveries=proposal_recoveries,
+        initial_call_frame_hypotheses=(),
         global_slot_invariants=normalized_global_slots,
         checked_stack_entry_offsets=checked_stack_entry_offsets or {},
         checked_nonimage_stack_units=frozenset(checked_nonimage_stack_units),
@@ -316,6 +328,7 @@ def analyze_interprocedural_control(
         finite_value_budget=finite_value_budget,
         max_evaluations=evaluation_budget,
         initial_recoveries=(),
+        initial_call_frame_hypotheses=(),
         global_slot_invariants=normalized_global_slots,
         checked_stack_entry_offsets=checked_stack_entry_offsets or {},
         checked_nonimage_stack_units=frozenset(checked_nonimage_stack_units),
@@ -325,7 +338,10 @@ def analyze_interprocedural_control(
     inductive_required = bool(
         not proposal_only
         and cold is not None
-        and inductive_hypothesis_recoveries
+        and (
+            inductive_hypothesis_recoveries
+            or normalized_call_frame_hypotheses
+        )
         and _requires_inductive_replay(
             units=units,
             roots=roots,
@@ -334,10 +350,14 @@ def analyze_interprocedural_control(
             indirect_exits=indirect_exits,
             summaries=cold.summaries,
             hypotheses=inductive_hypothesis_recoveries,
+            call_frame_hypotheses=normalized_call_frame_hypotheses,
         )
     )
     effective_hypotheses = (
         inductive_hypothesis_recoveries if inductive_required else ()
+    )
+    effective_call_frame_hypotheses = (
+        normalized_call_frame_hypotheses if inductive_required else ()
     )
     inductive = (
         None
@@ -361,6 +381,7 @@ def analyze_interprocedural_control(
             finite_value_budget=finite_value_budget,
             max_evaluations=evaluation_budget,
             initial_recoveries=effective_hypotheses,
+            initial_call_frame_hypotheses=effective_call_frame_hypotheses,
             global_slot_invariants=normalized_global_slots,
             checked_stack_entry_offsets=checked_stack_entry_offsets or {},
             checked_nonimage_stack_units=frozenset(
@@ -375,25 +396,28 @@ def analyze_interprocedural_control(
         raise AssertionError("interprocedural analysis produced no pass")
     inductive_reproduction = _inductive_reproduction_status(
         hypotheses=effective_hypotheses,
+        call_frame_hypotheses=effective_call_frame_hypotheses,
         replay=inductive,
+        finite_value_budget=finite_value_budget,
     )
     inductive_selection = _select_inductive_authority(
         cold=cold,
         replay=inductive,
         hypotheses=effective_hypotheses,
+        call_frame_hypotheses=effective_call_frame_hypotheses,
         reproduction=inductive_reproduction,
     )
     inductive_validated = bool(
         inductive is not None
         and inductive.converged
         and set(inductive_selection["accepted_nodes"])
-        & {
+        & ({
             str(row.get("id"))
             for row in inductive_hypothesis_recoveries
             if isinstance(row, Mapping)
             and isinstance(row.get("id"), str)
             and row.get("status") == "recovered"
-        }
+        } | {hypothesis.id for hypothesis in normalized_call_frame_hypotheses})
     )
     authority_pass = (
         discovery
@@ -520,7 +544,10 @@ def analyze_interprocedural_control(
                 None
                 if inductive_required
                 else "no_recursive_hypothesis_scc"
-                if inductive_hypothesis_recoveries
+                if (
+                    inductive_hypothesis_recoveries
+                    or normalized_call_frame_hypotheses
+                )
                 else "no_hypotheses"
             ),
             "converged": inductive is not None and inductive.converged,
@@ -531,6 +558,14 @@ def analyze_interprocedural_control(
                 row.get("status") == "recovered"
                 for row in inductive_hypothesis_recoveries
                 if isinstance(row, Mapping)
+            ) + len(normalized_call_frame_hypotheses),
+            "target_hypothesis_count": sum(
+                row.get("status") == "recovered"
+                for row in inductive_hypothesis_recoveries
+                if isinstance(row, Mapping)
+            ),
+            "call_frame_hypothesis_count": len(
+                normalized_call_frame_hypotheses
             ),
             "proof_authority": inductive_validated,
             "all_hypotheses_reproduced": (
@@ -595,6 +630,14 @@ def analyze_interprocedural_control(
                     else discovery.recoveries
                 )
             ],
+            "call_frame_hypotheses": [
+                hypothesis.as_json()
+                for hypothesis in (
+                    normalized_call_frame_hypotheses
+                    if discovery is None
+                    else discovery.call_frame_hypotheses
+                )
+            ],
             "signature": discovery_signature,
         },
     )
@@ -605,6 +648,10 @@ def _pass_signature(result: _PassResult) -> str:
 
     payload = {
         "roots": list(result.roots),
+        "call_frame_hypotheses": [
+            hypothesis.as_json()
+            for hypothesis in result.call_frame_hypotheses
+        ],
         "facts": [
             {
                 "id": node_id,
@@ -634,6 +681,7 @@ def _select_inductive_authority(
     cold: _PassResult | None,
     replay: _PassResult | None,
     hypotheses: Sequence[Mapping[str, Any]],
+    call_frame_hypotheses: Sequence[PreservedRegisterHypothesis],
     reproduction: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Select independently closed replay SCCs without global all-or-nothing loss.
@@ -662,7 +710,7 @@ def _select_inductive_authority(
         if isinstance(row, Mapping)
         and isinstance(row.get("id"), str)
         and row.get("status") == "recovered"
-    }
+    } | {hypothesis.id for hypothesis in call_frame_hypotheses}
     reproduced_ids = {
         str(identity)
         for identity in reproduction.get("reproduced_ids", ())
@@ -741,6 +789,7 @@ def _select_inductive_authority(
         operation_provenance=cold.operation_provenance,
         value_provenance=cold.value_provenance,
         recoveries=merged_recoveries,
+        call_frame_hypotheses=tuple(call_frame_hypotheses),
         # New callback roots require their own entry-state contracts and are
         # promoted by the launch/root phase, not by an inductive target seed.
         roots=cold.roots,
@@ -790,6 +839,13 @@ def _complete_output_nodes(
         node
         for node, state in result.facts.items()
         if node.startswith("hybrid-authority-v2:global_slot_invariant:")
+        and state.status == "complete"
+        and state.fact.complete
+    )
+    complete.update(
+        node
+        for node, state in result.facts.items()
+        if node.startswith("call-frame-hypothesis:")
         and state.status == "complete"
         and state.fact.complete
     )
@@ -860,6 +916,7 @@ def _requires_inductive_replay(
     indirect_exits: Sequence[Mapping[str, Any]],
     summaries: Mapping[str, Any],
     hypotheses: Sequence[Mapping[str, Any]],
+    call_frame_hypotheses: Sequence[PreservedRegisterHypothesis] = (),
 ) -> bool:
     """Use simultaneous hypotheses only for an actual recursive dependency."""
 
@@ -868,10 +925,13 @@ def _requires_inductive_replay(
         for row in hypotheses
         if isinstance(row, Mapping) and row.get("status") == "recovered"
     )
-    hypothesis_ids = {
+    target_hypothesis_ids = {
         str(row.get("id"))
         for row in recovered
         if isinstance(row.get("id"), str)
+    }
+    hypothesis_ids = target_hypothesis_ids | {
+        hypothesis.id for hypothesis in call_frame_hypotheses
     }
     if not hypothesis_ids:
         return False
@@ -909,11 +969,22 @@ def _requires_inductive_replay(
         indirect_exits=indirect_exits,
         summaries=dependency_summaries,
         recoveries=recovered,
+        call_frame_hypotheses=call_frame_hypotheses,
     )
     edges |= _path_recovery_inductive_edges(
         units=units,
         direct_edges=direct_edges,
         recoveries=recovered,
+    )
+    cyclic_units = _recursive_control_units(
+        units=units,
+        direct_edges=direct_edges,
+        recoveries=recovered,
+    )
+    edges |= frozenset(
+        (hypothesis.id, hypothesis.id)
+        for hypothesis in call_frame_hypotheses
+        if hypothesis.unit_id in cyclic_units
     )
     nodes = {
         node for edge in edges for node in edge
@@ -940,6 +1011,32 @@ def _path_recovery_inductive_edges(
     acyclic sites deliberately receive no such edge.
     """
 
+    cyclic_units = _recursive_control_units(
+        units=units,
+        direct_edges=direct_edges,
+        recoveries=recoveries,
+    )
+    return frozenset(
+        (identity, identity)
+        for recovery in recoveries
+        for identity in (recovery.get("id"),)
+        if isinstance(identity, str)
+        and recovery.get("status") == "recovered"
+        and recovery.get("proposal_source")
+        == "path_sensitive_pre_widening_v1"
+        and recovery.get("kind") in {"indirect_call", "indirect_jump"}
+        and recovery.get("source_unit_id") in cyclic_units
+    )
+
+
+def _recursive_control_units(
+    *,
+    units: Sequence[Mapping[str, Any]],
+    direct_edges: Sequence[Mapping[str, Any]],
+    recoveries: Sequence[Mapping[str, Any]],
+) -> frozenset[str]:
+    """Return decoded units belonging to a checked finite control cycle."""
+
     by_id = {_unit_id(unit): unit for unit in units}
     control_edges = {
         (source, target)
@@ -961,22 +1058,13 @@ def _path_recovery_inductive_edges(
             if isinstance(target, str) and target in by_id
         )
     decomposition = decompose_scc(tuple(by_id), control_edges)
-    cyclic_units = {
+    return frozenset({
         unit_id
-        for component in _recursive_components(decomposition, control_edges)
+        for component in _recursive_components(
+            decomposition, frozenset(control_edges)
+        )
         for unit_id in component
-    }
-    return frozenset(
-        (identity, identity)
-        for recovery in recoveries
-        for identity in (recovery.get("id"),)
-        if isinstance(identity, str)
-        and recovery.get("status") == "recovered"
-        and recovery.get("proposal_source")
-        == "path_sensitive_pre_widening_v1"
-        and recovery.get("kind") in {"indirect_call", "indirect_jump"}
-        and recovery.get("source_unit_id") in cyclic_units
-    )
+    })
 
 
 def _run_typed_pass(
@@ -988,6 +1076,7 @@ def _run_typed_pass(
     indirect_exits: Sequence[Mapping[str, Any]],
     static_recoveries: Sequence[Mapping[str, Any]],
     initial_recoveries: Sequence[Mapping[str, Any]],
+    initial_call_frame_hypotheses: Sequence[PreservedRegisterHypothesis],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     imports: Sequence[Mapping[str, Any]],
     image_base: int,
@@ -1009,6 +1098,7 @@ def _run_typed_pass(
     selected = _prefer_indirect_recoveries(
         static_recoveries, initial_recoveries
     )
+    call_frame_hypotheses = tuple(initial_call_frame_hypotheses)
     facts: dict[str, _NodeState] = {}
     dependency_edges: frozenset[tuple[str, str]] = frozenset()
     summaries: Mapping[str, Any] = {"summaries": []}
@@ -1028,6 +1118,9 @@ def _run_typed_pass(
         current_roots = tuple(sorted(active_roots))
         input_recoveries = _freeze_recovery_inputs(selected)
         input_call_site_effects = _freeze_call_site_effects(call_site_effects)
+        input_call_frame_hypotheses = _freeze_call_frame_hypotheses(
+            call_frame_hypotheses
+        )
         summaries = derive_internal_call_preservation_summaries(
             units=units,
             roots=current_roots,
@@ -1092,6 +1185,10 @@ def _run_typed_pass(
             initial_known_slots=checked_global_slots,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
             collect_path_recovery_proposals=allow_bootstrap,
+            preserved_register_hypotheses=[
+                hypothesis.as_json()
+                for hypothesis in call_frame_hypotheses
+            ],
         )
         next_call_site_effects = _call_site_effect_rows(operation_provenance)
         next_roots = active_roots | _callback_root_unit_ids(
@@ -1133,6 +1230,21 @@ def _run_typed_pass(
             writable_image_ranges=writable_image_ranges,
             image_base=image_base,
         )
+        next_call_frame_hypotheses = call_frame_hypotheses
+        if allow_bootstrap:
+            cyclic_units = _recursive_control_units(
+                units=units,
+                direct_edges=direct_edges,
+                recoveries=next_selected,
+            )
+            next_call_frame_hypotheses = _merge_call_frame_hypotheses(
+                call_frame_hypotheses,
+                _call_frame_hypotheses_from_effects(
+                    next_call_site_effects,
+                    cyclic_units=cyclic_units,
+                    finite_value_budget=finite_value_budget,
+                ),
+            )
         used_global_slots = _used_global_slot_invariants(
             next_selected, global_slot_invariants
         )
@@ -1140,6 +1252,8 @@ def _run_typed_pass(
             summaries=summaries,
             recoveries=next_selected,
             global_slot_invariants=used_global_slots,
+            call_frame_hypotheses=next_call_frame_hypotheses,
+            call_site_effects=next_call_site_effects,
             finite_value_budget=finite_value_budget,
         )
         proposed_edges = _derive_dependency_edges(
@@ -1150,6 +1264,7 @@ def _run_typed_pass(
             indirect_exits=indirect_exits,
             summaries=summaries,
             recoveries=next_selected,
+            call_frame_hypotheses=next_call_frame_hypotheses,
         )
         next_edges = dependency_edges | proposed_edges
         nodes = set(facts) | set(proposals)
@@ -1176,16 +1291,26 @@ def _run_typed_pass(
             _freeze_call_site_effects(next_call_site_effects)
             == input_call_site_effects
         )
+        call_frame_hypotheses_stable = (
+            _freeze_call_frame_hypotheses(next_call_frame_hypotheses)
+            == input_call_frame_hypotheses
+        )
         roots_stable = next_roots == active_roots
         facts = next_facts
         dependency_edges = next_edges
         selected = next_selected
+        call_frame_hypotheses = next_call_frame_hypotheses
         active_roots = next_roots
         # Proposals are a deterministic function of the frozen recovery inputs
         # and roots.  Once those inputs are stable, another whole-program
         # transfer would emit the same proposals; lattice joins and edge unions
         # are idempotent, so the state below is already the least fixed point.
-        if transfer_stable and call_effects_stable and roots_stable:
+        if (
+            transfer_stable
+            and call_effects_stable
+            and call_frame_hypotheses_stable
+            and roots_stable
+        ):
             return _PassResult(
                 True,
                 evaluation,
@@ -1197,6 +1322,7 @@ def _run_typed_pass(
                 operation_provenance,
                 value_provenance,
                 tuple(copy.deepcopy(row) for row in selected),
+                call_frame_hypotheses,
                 tuple(sorted(active_roots)),
             )
         call_site_effects = next_call_site_effects
@@ -1212,6 +1338,7 @@ def _run_typed_pass(
         operation_provenance,
         value_provenance,
         tuple(copy.deepcopy(row) for row in selected),
+        call_frame_hypotheses,
         tuple(sorted(active_roots)),
     )
 
@@ -2075,6 +2202,8 @@ def _typed_proposals(
     summaries: Mapping[str, Any],
     recoveries: Sequence[Mapping[str, Any]],
     global_slot_invariants: Sequence[GlobalSlotInvariant],
+    call_frame_hypotheses: Sequence[PreservedRegisterHypothesis] = (),
+    call_site_effects: Sequence[Mapping[str, Any]] = (),
     finite_value_budget: int,
 ) -> dict[str, _NodeState]:
     result: dict[str, _NodeState] = {}
@@ -2094,7 +2223,50 @@ def _typed_proposals(
         result[invariant.content_id] = _global_slot_state(
             invariant, finite_value_budget=finite_value_budget
         )
+    parsed_effects = parse_call_site_effects(
+        call_site_effects, finite_value_budget=finite_value_budget
+    )
+    for hypothesis in call_frame_hypotheses:
+        result[hypothesis.id] = _call_frame_hypothesis_state(
+            hypothesis,
+            parsed_effects.get(
+                CallSiteId(hypothesis.unit_id, hypothesis.event_index)
+            ),
+        )
     return result
+
+
+def _call_frame_hypothesis_state(
+    hypothesis: PreservedRegisterHypothesis,
+    effect: Any,
+) -> _NodeState:
+    failure = "call_frame_hypothesis_not_reproduced"
+    complete = False
+    if effect is not None and effect.register_frame_status == "complete":
+        if hypothesis.id in effect.dependencies:
+            failure = "call_frame_hypothesis_self_dependent"
+        elif hypothesis.register in effect.preserved_registers:
+            complete = True
+            failure = ""
+        else:
+            failure = "call_frame_hypothesis_contradicted"
+    reasons = () if complete else (failure,)
+    return _NodeState(
+        InterproceduralFact(
+            may_values=Bottom(),
+            preserved_registers=MustPreservedRegisters(
+                frozenset({hypothesis.register})
+                if complete
+                else _REGISTER_UNIVERSE
+            ),
+            stack_cleanup=NoExactValue(),
+            results=NoExactValue(),
+            return_behavior=ReturnBehavior(),
+            taint=Taint.of(reasons),
+        ),
+        "complete" if complete else "incomplete",
+        reasons,
+    )
 
 
 def _global_slot_state(
@@ -2267,6 +2439,7 @@ def _derive_dependency_edges(
     indirect_exits: Sequence[Mapping[str, Any]],
     summaries: Mapping[str, Any],
     recoveries: Sequence[Mapping[str, Any]],
+    call_frame_hypotheses: Sequence[PreservedRegisterHypothesis] = (),
 ) -> frozenset[tuple[str, str]]:
     """Derive provider-to-consumer dependencies from represented behavior."""
 
@@ -2289,6 +2462,9 @@ def _derive_dependency_edges(
         str(row.get("id")): row
         for row in recoveries
         if isinstance(row.get("id"), str)
+    }
+    call_frame_ids = {
+        hypothesis.id for hypothesis in call_frame_hypotheses
     }
     calls = _call_targets_by_source(
         by_id=by_id,
@@ -2350,12 +2526,47 @@ def _derive_dependency_edges(
         ):
             continue
         for dependency in raw_dependencies:
+            if isinstance(dependency, str) and dependency in call_frame_ids:
+                dependencies.add((dependency, recovery_id))
+                continue
             if isinstance(dependency, str) and dependency in recovery_by_id:
                 dependencies.add((dependency, recovery_id))
                 continue
             target = _call_frame_dependency_target(dependency)
             if target is not None and target in summary_roots:
                 dependencies.add((_summary_node(target), recovery_id))
+
+    recoveries_by_site = {
+        (row.get("source_unit_id"), row.get("source_event_index")): identity
+        for identity, row in recovery_by_id.items()
+        if row.get("status") == "recovered"
+    }
+    for hypothesis in call_frame_hypotheses:
+        if hypothesis.transfer_kind == "indirect_call":
+            provider = recoveries_by_site.get(
+                (hypothesis.unit_id, hypothesis.event_index)
+            )
+            if provider is not None:
+                dependencies.add((provider, hypothesis.id))
+            continue
+        if hypothesis.transfer_kind != "internal_call":
+            continue
+        unit = by_id.get(hypothesis.unit_id)
+        if unit is None:
+            continue
+        events = _events(unit)
+        if not 0 <= hypothesis.event_index < len(events):
+            continue
+        raw_target_rva = events[hypothesis.event_index].get("target_rva")
+        if (
+            not isinstance(raw_target_rva, int)
+            or isinstance(raw_target_rva, bool)
+        ):
+            continue
+        target_rva = raw_target_rva
+        for target in by_rva.get(target_rva, ()):
+            if target in summary_roots:
+                dependencies.add((_summary_node(target), hypothesis.id))
     for recovery_id, recovery in recovery_by_id.items():
         raw_dependencies = recovery.get("authority_dependencies", ())
         if not isinstance(raw_dependencies, Sequence) or isinstance(
@@ -2886,6 +3097,63 @@ def _call_site_effect_rows(
     return tuple(copy.deepcopy(dict(row)) for row in raw)
 
 
+def _call_frame_hypotheses_from_effects(
+    effects: Sequence[Mapping[str, Any]],
+    *,
+    cyclic_units: frozenset[str],
+    finite_value_budget: int,
+) -> tuple[PreservedRegisterHypothesis, ...]:
+    """Extract only the register atoms introduced by discovery bootstrap."""
+
+    parsed = parse_call_site_effects(
+        effects, finite_value_budget=finite_value_budget
+    )
+    result: list[PreservedRegisterHypothesis] = []
+    for site, effect in sorted(
+        parsed.items(), key=lambda item: (item[0].unit_id, item[0].event_index)
+    ):
+        if site.unit_id not in cyclic_units:
+            continue
+        for register in sorted(effect.preserved_registers):
+            identity = call_frame_hypothesis_id(
+                site.unit_id, site.event_index, register
+            )
+            if identity not in effect.dependencies:
+                continue
+            result.append(PreservedRegisterHypothesis(
+                id=identity,
+                unit_id=site.unit_id,
+                event_index=site.event_index,
+                transfer_kind=effect.transfer_kind,
+                register=register,
+                proposal_source="unresolved-call-bootstrap-v1",
+                proof_authority=False,
+            ))
+    return tuple(result)
+
+
+def _merge_call_frame_hypotheses(
+    left: Sequence[PreservedRegisterHypothesis],
+    right: Sequence[PreservedRegisterHypothesis],
+) -> tuple[PreservedRegisterHypothesis, ...]:
+    result = {hypothesis.id: hypothesis for hypothesis in left}
+    for hypothesis in right:
+        prior = result.get(hypothesis.id)
+        if prior is not None and prior != hypothesis:
+            raise ValueError("conflicting preserved-register hypotheses")
+        result[hypothesis.id] = hypothesis
+    return tuple(result[identity] for identity in sorted(result))
+
+
+def _freeze_call_frame_hypotheses(
+    hypotheses: Sequence[PreservedRegisterHypothesis],
+) -> tuple[Hashable, ...]:
+    return tuple(
+        _freeze_value(hypothesis.as_json())
+        for hypothesis in sorted(hypotheses, key=lambda item: item.id)
+    )
+
+
 def _freeze_call_site_effects(
     effects: Sequence[Mapping[str, Any]],
 ) -> tuple[Hashable, ...]:
@@ -2895,9 +3163,11 @@ def _freeze_call_site_effects(
 def _inductive_reproduction_status(
     *,
     hypotheses: Sequence[Mapping[str, Any]],
+    call_frame_hypotheses: Sequence[PreservedRegisterHypothesis] = (),
     replay: _PassResult | None,
+    finite_value_budget: int = 32,
 ) -> dict[str, Any]:
-    """Check that every finite recovery hypothesis is reproduced exactly.
+    """Check that every finite target and call-frame atom is reproduced.
 
     Hypotheses only expose control edges to the transfer adapters.  They do
     not inject register or memory values.  Exact reproduction therefore forms
@@ -2906,26 +3176,38 @@ def _inductive_reproduction_status(
     bounded target set from the rooted machine state.
     """
 
-    expected = {
+    expected_targets = {
         str(row.get("id")): _freeze_value(_inductive_target_projection(row))
         for row in hypotheses
         if isinstance(row, Mapping)
         and isinstance(row.get("id"), str)
         and row.get("status") == "recovered"
     }
-    if not expected:
+    expected_frames = {
+        hypothesis.id: hypothesis for hypothesis in call_frame_hypotheses
+    }
+    if not expected_targets and not expected_frames:
         return {
             "status": "not_applicable",
             "reproduced_ids": [],
             "missing_ids": [],
             "mismatched_ids": [],
+            "target_reproduced_ids": [],
+            "call_frame_reproduced_ids": [],
+            "call_frame_missing_ids": [],
+            "call_frame_contradicted_ids": [],
         }
     if replay is None:
+        missing = sorted(set(expected_targets) | set(expected_frames))
         return {
             "status": "incomplete",
             "reproduced_ids": [],
-            "missing_ids": sorted(expected),
+            "missing_ids": missing,
             "mismatched_ids": [],
+            "target_reproduced_ids": [],
+            "call_frame_reproduced_ids": [],
+            "call_frame_missing_ids": sorted(expected_frames),
+            "call_frame_contradicted_ids": [],
         }
     observed_rows = {
         str(row.get("id")): row
@@ -2939,26 +3221,57 @@ def _inductive_reproduction_status(
         for identity, row in observed_rows.items()
         if _has_inductive_origin_witnesses(row)
     }
-    reproduced = sorted(
+    target_reproduced = sorted(
         identity
-        for identity, projection in expected.items()
+        for identity, projection in expected_targets.items()
         if observed.get(identity) == projection
     )
-    missing = sorted(set(expected) - set(observed))
-    mismatched = sorted(
+    target_missing = sorted(set(expected_targets) - set(observed))
+    target_mismatched = sorted(
         identity
-        for identity in set(expected) & set(observed)
-        if expected[identity] != observed[identity]
+        for identity in set(expected_targets) & set(observed)
+        if expected_targets[identity] != observed[identity]
     )
+    observed_effects = parse_call_site_effects(
+        _call_site_effect_rows(replay.operation_provenance),
+        finite_value_budget=finite_value_budget,
+    )
+    frame_reproduced: list[str] = []
+    frame_missing: list[str] = []
+    frame_contradicted: list[str] = []
+    for identity, hypothesis in sorted(expected_frames.items()):
+        effect = observed_effects.get(
+            CallSiteId(hypothesis.unit_id, hypothesis.event_index)
+        )
+        if (
+            effect is None
+            or effect.register_frame_status != "complete"
+            or identity in effect.dependencies
+        ):
+            frame_missing.append(identity)
+        elif effect.transfer_kind != hypothesis.transfer_kind:
+            frame_contradicted.append(identity)
+        elif hypothesis.register in effect.preserved_registers:
+            frame_reproduced.append(identity)
+        else:
+            frame_contradicted.append(identity)
+    reproduced = sorted(target_reproduced + frame_reproduced)
+    missing = sorted(target_missing + frame_missing)
+    mismatched = sorted(target_mismatched + frame_contradicted)
+    expected_count = len(expected_targets) + len(expected_frames)
     return {
         "status": (
             "complete"
-            if len(reproduced) == len(expected)
+            if len(reproduced) == expected_count
             else "incomplete"
         ),
         "reproduced_ids": reproduced,
         "missing_ids": missing,
         "mismatched_ids": mismatched,
+        "target_reproduced_ids": target_reproduced,
+        "call_frame_reproduced_ids": frame_reproduced,
+        "call_frame_missing_ids": frame_missing,
+        "call_frame_contradicted_ids": frame_contradicted,
     }
 
 

@@ -758,6 +758,26 @@ class StaticHybridAuthorityV2Tests(unittest.TestCase):
             {row["details"]["code"] for row in report["diagnostics"]["blockers"]},
         )
 
+    def test_unreproduced_call_frame_hypothesis_cannot_authorize_replay(self) -> None:
+        rows = [_row()]
+        interprocedural = _interprocedural()
+        identity = 'call-frame-hypothesis:["unit:entry",0,"edi"]'
+        interprocedural["fixed_point"]["inductive_replay"] = {
+            "executed": True,
+            "converged": True,
+            "proof_authority": True,
+            "accepted_nodes": [identity],
+            "reproduced_ids": [],
+        }
+
+        report = _complete_report(rows, interprocedural=interprocedural)
+
+        self.assertEqual(report["status"], "violated")
+        self.assertIn(
+            "interprocedural_completion_contradiction",
+            {row["details"]["code"] for row in report["diagnostics"]["blockers"]},
+        )
+
     def test_interprocedural_output_mutation_is_violated(self) -> None:
         rows = [_row()]
         interprocedural = _interprocedural()
