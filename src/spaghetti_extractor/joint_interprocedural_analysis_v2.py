@@ -15,6 +15,7 @@ from typing import Any, Mapping, Sequence
 from .control_analysis_v2 import exact_control_inventory_v2
 from .analysis_schema_v2 import ROOTED_CONTROL_GRAPH_V2_FORMAT
 from .artifact_identity_v2 import canonical_sha256
+from .mutable_slot_candidates_v2 import required_recovery_slot_rvas_v2
 
 
 JOINT_INTERPROCEDURAL_ANALYSIS_V2_FORMAT = (
@@ -247,6 +248,15 @@ def validate_joint_replay_v2(
         isinstance(stack_binding, Mapping)
         and stack_binding.get("rooted_graph_id") == cold_graph.get("id")
     )
+    (
+        slot_inventory_valid,
+        missing_slots,
+        extra_slots,
+        slot_inventory_error,
+    ) = _slot_inventory_check(
+        global_slot_analysis=global_slot_analysis,
+        interprocedural=interprocedural,
+    )
     checks = {
         "stack_range_replay_complete": (
             stack_range_analysis.get("status") == "complete"
@@ -258,6 +268,7 @@ def validate_joint_replay_v2(
         ),
         "slot_replay_complete": global_slot_analysis.get("status") == "complete",
         "slot_authority_valid": global_slot_authority.get("status") == "complete",
+        "mutable_slot_requirement_inventory_exact": slot_inventory_valid,
         "interprocedural_cold_complete": cold_complete,
         "cold_rooted_graph_complete": cold_graph.get("status") == "complete",
         "authoritative_evidence_stable": authoritative_evidence_stable,
@@ -272,6 +283,22 @@ def validate_joint_replay_v2(
                 stack_binding.get("rooted_graph_id")
                 if isinstance(stack_binding, Mapping)
                 else None
+            ),
+        })
+    if not slot_inventory_valid:
+        issues.append({
+            "status": "violated",
+            "code": (
+                "authoritative_mutable_slot_requirement_inventory_malformed"
+                if slot_inventory_error is not None
+                else "authoritative_mutable_slot_requirement_inventory_mismatch"
+            ),
+            "missing_slot_rvas": missing_slots,
+            "extra_slot_rvas": extra_slots,
+            **(
+                {"reason": slot_inventory_error}
+                if slot_inventory_error is not None
+                else {}
             ),
         })
     if not authoritative_evidence_stable:
@@ -317,6 +344,48 @@ def validate_joint_replay_v2(
         },
     }
     return {**body, "analysis_sha256": canonical_sha256(body)}
+
+
+def _slot_inventory_check(
+    *,
+    global_slot_analysis: Mapping[str, Any],
+    interprocedural: Mapping[str, Any],
+) -> tuple[bool, list[int], list[int], str | None]:
+    required: frozenset[int] = frozenset()
+    try:
+        raw_recoveries = interprocedural.get("recovered_targets", ())
+        if not isinstance(raw_recoveries, Sequence) or isinstance(
+            raw_recoveries, (str, bytes)
+        ):
+            raise ValueError("interprocedural recovery inventory is not an array")
+        required = required_recovery_slot_rvas_v2(raw_recoveries)
+        raw_slots = global_slot_analysis.get("slots", ())
+        if not isinstance(raw_slots, Sequence) or isinstance(raw_slots, (str, bytes)):
+            raise ValueError("global-slot replay inventory is not an array")
+        if not raw_slots and not required:
+            return True, [], [], None
+        bindings = global_slot_analysis.get("bindings")
+        image_base = bindings.get("image_base") if isinstance(bindings, Mapping) else None
+        if not isinstance(image_base, int) or isinstance(image_base, bool):
+            raise ValueError("global-slot replay has no image-base binding")
+        analyzed: set[int] = set()
+        for row in raw_slots:
+            address = row.get("address") if isinstance(row, Mapping) else None
+            if (
+                not isinstance(address, int)
+                or isinstance(address, bool)
+                or not image_base <= address <= 0xFFFF_FFFF
+            ):
+                raise ValueError("global-slot replay contains a malformed address")
+            analyzed.add(address - image_base)
+    except ValueError as exc:
+        return False, sorted(required), [], str(exc)
+    return (
+        analyzed == required,
+        sorted(required - analyzed),
+        sorted(analyzed - required),
+        None,
+    )
 
 
 def _target_projection(row: Mapping[str, Any]) -> dict[str, Any]:

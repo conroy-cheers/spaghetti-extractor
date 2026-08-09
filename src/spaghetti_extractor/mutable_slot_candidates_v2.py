@@ -2,9 +2,51 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from .stage_binary import StageABinary
+
+
+@dataclass(frozen=True, order=True)
+class MutableSlotUseV2:
+    """One exact indirect-exit dependency on a writable image slot."""
+
+    exit_id: str
+    read_sites: tuple[tuple[str, int], ...]
+    origin_witnessed: bool
+
+    def dependency_rows(self, slot_rva: int) -> tuple[dict[str, Any], ...]:
+        if self.read_sites:
+            return tuple({
+                "slot_rva": slot_rva,
+                "exit_id": self.exit_id,
+                "unit_id": unit_id,
+                "event_index": event_index,
+                "proof_authority": False,
+            } for unit_id, event_index in self.read_sites)
+        return ({
+            "slot_rva": slot_rva,
+            "exit_id": self.exit_id,
+            "witness_only": True,
+            "proof_authority": False,
+        },)
+
+
+@dataclass(frozen=True, order=True)
+class MutableSlotRequirementV2:
+    """Canonical non-authorizing requirement consumed by slot replay."""
+
+    slot_rva: int
+    width_bytes: int
+    uses: tuple[MutableSlotUseV2, ...]
+
+    def dependency_rows(self) -> tuple[dict[str, Any], ...]:
+        return tuple(
+            row
+            for use in self.uses
+            for row in use.dependency_rows(self.slot_rva)
+        )
 
 
 def derive_mutable_slot_candidates(
@@ -110,6 +152,120 @@ def derive_proposal_slot_dependencies(
     ]
 
 
+def derive_recovery_slot_requirements_v2(
+    binary: StageABinary,
+    recoveries: Sequence[Mapping[str, Any]],
+) -> tuple[MutableSlotRequirementV2, ...]:
+    """Derive the exact mutable-slot inventory required by cold recoveries.
+
+    Unlike the broader candidate finder, this inventory contains exactly the
+    slots named by the current unseeded interprocedural result. A requirement
+    is not a value fact and grants no proof authority; it tells point-sensitive
+    replay which locations must receive independently checked invariants.
+    """
+
+    by_slot: dict[int, dict[str, MutableSlotUseV2]] = {}
+    for recovery in recoveries:
+        if not isinstance(recovery, Mapping):
+            raise ValueError("mutable-slot recovery is not an object")
+        raw_dependencies = recovery.get("mutable_slot_dependencies", ())
+        if not isinstance(raw_dependencies, Sequence) or isinstance(
+            raw_dependencies, (str, bytes)
+        ):
+            raise ValueError("mutable-slot dependency inventory is not an array")
+        if not raw_dependencies:
+            continue
+        exit_id = recovery.get("id")
+        if not isinstance(exit_id, str) or not exit_id:
+            raise ValueError("mutable-slot recovery has no exact exit ID")
+        for raw in raw_dependencies:
+            if not isinstance(raw, Mapping):
+                raise ValueError("mutable-slot dependency is not an object")
+            slot_rva = _slot_rva(raw)
+            address = binary.image_base + slot_rva
+            if not writable_image_span(binary, address, 4):
+                raise ValueError(
+                    f"mutable-slot requirement {slot_rva:#x} is not writable image data"
+                )
+            read_sites = _read_sites(raw.get("read_sites", ()))
+            origin_witnessed = raw.get("origin_witnessed", False)
+            if not isinstance(origin_witnessed, bool):
+                raise ValueError("mutable-slot origin witness is not Boolean")
+            previous = by_slot.setdefault(slot_rva, {}).get(exit_id)
+            if previous is not None:
+                read_sites = tuple(sorted(set(previous.read_sites) | set(read_sites)))
+                origin_witnessed = previous.origin_witnessed or origin_witnessed
+            by_slot[slot_rva][exit_id] = MutableSlotUseV2(
+                exit_id=exit_id,
+                read_sites=read_sites,
+                origin_witnessed=origin_witnessed,
+            )
+    return tuple(
+        MutableSlotRequirementV2(
+            slot_rva=slot_rva,
+            width_bytes=4,
+            uses=tuple(sorted(uses.values())),
+        )
+        for slot_rva, uses in sorted(by_slot.items())
+    )
+
+
+def required_recovery_slot_rvas_v2(
+    recoveries: Sequence[Mapping[str, Any]],
+) -> frozenset[int]:
+    """Strictly parse the exact slot-RVA set named by cold recoveries."""
+
+    result: set[int] = set()
+    for recovery in recoveries:
+        if not isinstance(recovery, Mapping):
+            raise ValueError("mutable-slot recovery is not an object")
+        raw_dependencies = recovery.get("mutable_slot_dependencies", ())
+        if not isinstance(raw_dependencies, Sequence) or isinstance(
+            raw_dependencies, (str, bytes)
+        ):
+            raise ValueError("mutable-slot dependency inventory is not an array")
+        for raw in raw_dependencies:
+            if not isinstance(raw, Mapping):
+                raise ValueError("mutable-slot dependency is not an object")
+            result.add(_slot_rva(raw))
+    return frozenset(result)
+
+
+def _slot_rva(raw: Mapping[str, Any]) -> int:
+    slot_rva = raw.get("slot_rva")
+    width_bytes = raw.get("width_bytes")
+    if (
+        not isinstance(slot_rva, int)
+        or isinstance(slot_rva, bool)
+        or not 0 <= slot_rva <= 0xFFFF_FFFB
+        or width_bytes != 4
+        or isinstance(width_bytes, bool)
+    ):
+        raise ValueError("mutable-slot dependency has an invalid exact span")
+    return slot_rva
+
+
+def _read_sites(value: Any) -> tuple[tuple[str, int], ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError("mutable-slot read-site inventory is not an array")
+    result: set[tuple[str, int]] = set()
+    for row in value:
+        if not isinstance(row, Mapping):
+            raise ValueError("mutable-slot read site is not an object")
+        unit_id = row.get("unit_id")
+        event_index = row.get("event_index")
+        if (
+            not isinstance(unit_id, str)
+            or not unit_id
+            or not isinstance(event_index, int)
+            or isinstance(event_index, bool)
+            or event_index < 0
+        ):
+            raise ValueError("mutable-slot read site is malformed")
+        result.add((unit_id, event_index))
+    return tuple(sorted(result))
+
+
 def rooted_reachable_unit_ids(graph: Mapping[str, Any]) -> frozenset[str]:
     roots = {
         str(row.get("unit_id"))
@@ -191,9 +347,13 @@ def writable_image_span(binary: StageABinary, address: int, width: int) -> bool:
 
 
 __all__ = [
+    "MutableSlotRequirementV2",
+    "MutableSlotUseV2",
     "constant_address",
     "derive_mutable_slot_candidates",
     "derive_proposal_slot_dependencies",
+    "derive_recovery_slot_requirements_v2",
+    "required_recovery_slot_rvas_v2",
     "rooted_reachable_unit_ids",
     "writable_image_span",
 ]

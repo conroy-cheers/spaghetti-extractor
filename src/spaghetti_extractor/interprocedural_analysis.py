@@ -2024,8 +2024,18 @@ def _bind_mutable_slot_dependencies(
         }
         if influence is None:
             influence = _MutableExitInfluence((), (), False, False)
+        mutable_influence_slot_rvas = {
+            slot_rva
+            for slot_rva in influence.slot_rvas
+            if not writable_image_ranges
+            or any(
+                start <= image_base + slot_rva
+                and image_base + slot_rva + 4 <= end
+                for start, end in writable_image_ranges
+            )
+        }
         effective_slot_rvas = tuple(sorted(
-            set(influence.slot_rvas)
+            mutable_influence_slot_rvas
             | set(witnessed_slot_rvas)
             | {invariant.slot_rva for invariant in analysis_invariants}
         ))
@@ -2071,6 +2081,7 @@ def _bind_mutable_slot_dependencies(
                 {"unit_id": unit_id, "event_index": event_index}
                 for observed_slot, unit_id, event_index in influence.read_sites
                 if observed_slot == slot_rva
+                and observed_slot in mutable_influence_slot_rvas
             ]
             candidates = by_slot.get(slot_rva, ())
             if len(candidates) != 1:

@@ -213,6 +213,100 @@ class JointInterproceduralAnalysisV2Tests(unittest.TestCase):
             "authoritative_stack_graph_binding_mismatch",
         )
 
+    def test_slot_replay_must_cover_exact_recovery_requirements(self) -> None:
+        graph = build_proposal_control_graph_v2(
+            units=[_unit("root", 0x1000)], base_graph=_base(), recoveries=[]
+        )
+        result = validate_joint_replay_v2(
+            proposal_graph=graph,
+            proposal_recoveries=[],
+            stack_range_analysis={
+                "status": "complete",
+                "binding": {"rooted_graph_id": graph["id"]},
+                "cold_replay": {
+                    "status": "complete",
+                    "deterministic": True,
+                    "empty_initial_state": True,
+                },
+            },
+            global_slot_analysis={
+                "status": "complete",
+                "bindings": {"image_base": 0x400000},
+                "slots": [{"address": 0x403004}],
+            },
+            global_slot_authority={"status": "complete"},
+            interprocedural={
+                "fixed_point": {
+                    "status": "complete",
+                    "cold_replay_validated": True,
+                    "authority_replay_validated": True,
+                },
+                "recovered_targets": [{
+                    "id": "exit:slot",
+                    "mutable_slot_dependencies": [{
+                        "slot_rva": 0x3000,
+                        "width_bytes": 4,
+                        "read_sites": [],
+                    }],
+                }],
+            },
+            cold_graph=graph,
+            authoritative_evidence_stable=True,
+        )
+
+        self.assertEqual(result["status"], "violated")
+        self.assertFalse(
+            result["checks"]["mutable_slot_requirement_inventory_exact"]
+        )
+        issue = next(
+            row for row in result["issues"]
+            if row["code"].endswith("inventory_mismatch")
+        )
+        self.assertEqual(issue["missing_slot_rvas"], [0x3000])
+        self.assertEqual(issue["extra_slot_rvas"], [0x3004])
+
+    def test_malformed_slot_requirement_is_a_violation(self) -> None:
+        graph = build_proposal_control_graph_v2(
+            units=[_unit("root", 0x1000)], base_graph=_base(), recoveries=[]
+        )
+        result = validate_joint_replay_v2(
+            proposal_graph=graph,
+            proposal_recoveries=[],
+            stack_range_analysis={
+                "status": "complete",
+                "binding": {"rooted_graph_id": graph["id"]},
+                "cold_replay": {
+                    "status": "complete",
+                    "deterministic": True,
+                    "empty_initial_state": True,
+                },
+            },
+            global_slot_analysis={"status": "complete", "slots": []},
+            global_slot_authority={"status": "complete"},
+            interprocedural={
+                "fixed_point": {
+                    "status": "complete",
+                    "cold_replay_validated": True,
+                    "authority_replay_validated": True,
+                },
+                "recovered_targets": [{
+                    "id": "exit:slot",
+                    "mutable_slot_dependencies": [{
+                        "slot_rva": 0x3000,
+                        "width_bytes": 8,
+                    }],
+                }],
+            },
+            cold_graph=graph,
+            authoritative_evidence_stable=True,
+        )
+
+        self.assertEqual(result["status"], "violated")
+        self.assertIn(
+            "authoritative_mutable_slot_requirement_inventory_malformed",
+            {row["code"] for row in result["issues"]},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1713,6 +1713,39 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         )
         self.assertEqual(result.fixed_point["proposal_seed_count"], 0)
 
+    def test_readonly_image_target_never_requires_mutable_slot_authority(self) -> None:
+        readonly_slot = IMAGE_BASE + 0x1500
+        exit_row = indirect_exit("exit:dispatch:0", "dispatch")
+        exit_row["target_expression"] = load(const(readonly_slot))
+        result = self._run(
+            units=[
+                unit(
+                    "unknown-write",
+                    0x1000,
+                    memory=({
+                        "kind": "write",
+                        "width": 4,
+                        "address": reg("ecx"),
+                        "value": reg("eax"),
+                    },),
+                ),
+                unit("dispatch", 0x1010),
+                unit("target", 0x2000),
+            ],
+            roots=["unknown-write"],
+            direct=[edge("unknown-write", "dispatch")],
+            exits=[exit_row],
+            resolver=lambda **_kwargs: {
+                "resolutions": [recovered(exit_row, "target")]
+            },
+            writable_image_ranges=[(SLOT, SLOT + 0x1000)],
+        )
+
+        self.assertTrue(result.complete, result.fixed_point)
+        recovery = result.recovered_targets[0]
+        self.assertEqual(recovery["status"], "recovered")
+        self.assertNotIn("mutable_slot_dependencies", recovery)
+
     def test_unknown_memory_target_is_one_primary_frontier(self) -> None:
         exit_row = indirect_exit("exit:dispatch:0", "dispatch")
         exit_row["target_expression"] = load(reg("eax"))

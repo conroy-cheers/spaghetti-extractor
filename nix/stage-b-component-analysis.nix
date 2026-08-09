@@ -738,7 +738,7 @@ let
           )
           from spaghetti_extractor.mutable_slot_candidates_v2 import (
               derive_mutable_slot_candidates,
-              derive_proposal_slot_dependencies,
+              derive_recovery_slot_requirements_v2,
           )
           from spaghetti_extractor.stack_range_analysis_v2 import (
               derive_stack_range_analysis_v2,
@@ -782,10 +782,6 @@ let
           control = manifest.get("control", {})
           static_proposals = control.get("recovered_indirect_targets", [])
           discovery = seed.get("proposal_artifacts", {}).get("recoveries", [])
-          proposal_slot_dependencies = derive_proposal_slot_dependencies(
-              binary,
-              discovery,
-          )
           discovery_call_frames = seed.get("proposal_artifacts", {}).get(
               "call_frame_hypotheses", []
           )
@@ -936,54 +932,18 @@ let
               stack_ranges,
               interprocedural,
           ):
-              dependencies = [dict(row) for row in proposal_slot_dependencies]
-              used_slot_rvas = {
-                  row["slot_rva"] for row in proposal_slot_dependencies
-              }
-              for recovery in interprocedural.get("recovered_targets", []):
-                  if not isinstance(recovery, dict):
-                      continue
-                  exit_id = recovery.get("id")
-                  for slot in recovery.get("mutable_slot_dependencies", []):
-                      if not isinstance(slot, dict):
-                          continue
-                      slot_rva = slot.get("slot_rva")
-                      if not isinstance(slot_rva, int):
-                          continue
-                      used_slot_rvas.add(slot_rva)
-                      observed_read = False
-                      for site in slot.get("read_sites", []):
-                          if not isinstance(site, dict):
-                              continue
-                          observed_read = True
-                          dependencies.append({
-                              "slot_rva": slot_rva,
-                              "exit_id": exit_id,
-                              "unit_id": site.get("unit_id"),
-                              "event_index": site.get("event_index"),
-                          })
-                      if slot.get("origin_witnessed") is True and not observed_read:
-                          dependencies.append({
-                              "slot_rva": slot_rva,
-                              "exit_id": exit_id,
-                              "witness_only": True,
-                          })
+              requirements = derive_recovery_slot_requirements_v2(
+                  binary,
+                  interprocedural.get("recovered_targets", []),
+              )
               candidate_slots = [
-                  address
-                  for address in derive_mutable_slot_candidates(
-                      binary,
-                      provenance,
-                      units=units,
-                      graph=graph,
-                  )
-                  if address - binary.image_base in used_slot_rvas
+                  binary.image_base + requirement.slot_rva
+                  for requirement in requirements
               ]
-              candidate_slot_rvas = {
-                  address - binary.image_base for address in candidate_slots
-              }
               dependencies = [
-                  row for row in dependencies
-                  if row["slot_rva"] in candidate_slot_rvas
+                  row
+                  for requirement in requirements
+                  for row in requirement.dependency_rows()
               ]
               launch_initial_values = {}
               for address in candidate_slots:
