@@ -1,9 +1,9 @@
-"""Isolated inductive SCC certificates for exceptional machine-IR control.
+"""Checked cutpoint invariants for machine-IR control and fault closure.
 
-The checker is intentionally not wired into reconstruction or completeness.
-It checks a supplied SCC certificate against exact machine-IR records.  Loops
-are handled only by initiation and one-step inductive preservation; no path or
-predecessor enumeration is used.
+The same invariant kernel supports cyclic exceptional-control SCCs and finite
+acyclic regions ending at an explicitly declared indirect-control frontier.
+Both forms are checked against exact machine-IR records using initiation and
+one-step preservation; neither uses bounded path or predecessor enumeration.
 """
 
 from __future__ import annotations
@@ -23,6 +23,11 @@ EXCEPTION_INVARIANT_CHECK_V2_FORMAT = "stage-a-scc-exception-invariant-check-v2"
 EXCEPTION_INVARIANT_PROPOSAL_V2_FORMAT = (
     "stage-a-scc-exception-invariant-proposal-v2"
 )
+CONTROL_INVARIANT_CERTIFICATE_V2_FORMAT = (
+    "stage-a-control-invariant-certificate-v2"
+)
+CONTROL_INVARIANT_CHECK_V2_FORMAT = "stage-a-control-invariant-check-v2"
+CONTROL_INVARIANT_PROPOSAL_V2_FORMAT = "stage-a-control-invariant-proposal-v2"
 SUPPORTED_SEH_INVENTORY_V2_FORMAT = "stage-a-supported-seh-target-inventory-v2"
 
 _DIGEST_LENGTH = 64
@@ -114,6 +119,49 @@ def derive_exception_scc_inventory(
     }
 
 
+def derive_control_region_inventory(
+    units: Sequence[Mapping[str, Any]],
+    member_ids: Sequence[str],
+    frontier_member_ids: Sequence[str],
+) -> dict[str, Any]:
+    """Derive a finite region whose declared sinks have indirect control.
+
+    An indirect exit is permitted only at an exact declared frontier member.
+    The frontier declaration does not resolve that exit; it merely allows a
+    checked invariant at the member's entry to be reused by the separate
+    indirect-exit certificate.
+    """
+
+    inventory = derive_exception_scc_inventory(units, member_ids)
+    members = frozenset(inventory["members"])
+    frontiers = tuple(sorted(frontier_member_ids))
+    if len(set(frontiers)) != len(frontiers) or any(
+        frontier not in members for frontier in frontiers
+    ):
+        raise ExceptionInvariantV2Error(
+            "control-region frontiers must be unique region members"
+        )
+    expected = {
+        reason.removesuffix(":indirect_or_unknown_control")
+        for reason in inventory["incomplete_reasons"]
+        if reason.endswith(":indirect_or_unknown_control")
+    }
+    if set(frontiers) != expected:
+        raise ExceptionInvariantV2Error(
+            "control-region frontiers do not match indirect-control sinks"
+        )
+    remaining = [
+        reason
+        for reason in inventory["incomplete_reasons"]
+        if not reason.endswith(":indirect_or_unknown_control")
+    ]
+    return {
+        **inventory,
+        "frontier_members": list(frontiers),
+        "incomplete_reasons": remaining,
+    }
+
+
 def synthesize_exception_invariant_certificate_v2(
     *,
     units: Sequence[Mapping[str, Any]],
@@ -139,6 +187,81 @@ def synthesize_exception_invariant_certificate_v2(
     It never performs bounded path or predecessor enumeration.
     """
 
+    return _synthesize_invariant_certificate_v2(
+        units=units,
+        member_ids=member_ids,
+        binary_sha256=binary_sha256,
+        machine_ir_sha256=machine_ir_sha256,
+        root_assumptions=root_assumptions,
+        finite_value_budget=finite_value_budget,
+        candidate_budget=candidate_budget,
+        solver_timeout_ms=solver_timeout_ms,
+        certificate_format=EXCEPTION_INVARIANT_CERTIFICATE_V2_FORMAT,
+        proposal_format=EXCEPTION_INVARIANT_PROPOSAL_V2_FORMAT,
+        region_key="scc",
+        require_cyclic=True,
+        frontier_member_ids=(),
+        requested_facts=None,
+        include_faults=True,
+    )
+
+
+def synthesize_control_invariant_certificate_v2(
+    *,
+    units: Sequence[Mapping[str, Any]],
+    member_ids: Sequence[str],
+    frontier_member_ids: Sequence[str],
+    requested_facts: Mapping[str, Sequence[Mapping[str, Any]]],
+    binary_sha256: str,
+    machine_ir_sha256: str,
+    root_assumptions: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    finite_value_budget: int = 32,
+    candidate_budget: int = 128,
+    solver_timeout_ms: int = 5_000,
+) -> dict[str, Any]:
+    """Propose replayable facts at finite indirect-control cutpoints.
+
+    ``requested_facts`` is untrusted synthesis guidance. The replay checker
+    independently proves each retained fact from exact incoming transitions.
+    """
+
+    return _synthesize_invariant_certificate_v2(
+        units=units,
+        member_ids=member_ids,
+        binary_sha256=binary_sha256,
+        machine_ir_sha256=machine_ir_sha256,
+        root_assumptions=root_assumptions,
+        finite_value_budget=finite_value_budget,
+        candidate_budget=candidate_budget,
+        solver_timeout_ms=solver_timeout_ms,
+        certificate_format=CONTROL_INVARIANT_CERTIFICATE_V2_FORMAT,
+        proposal_format=CONTROL_INVARIANT_PROPOSAL_V2_FORMAT,
+        region_key="region",
+        require_cyclic=False,
+        frontier_member_ids=frontier_member_ids,
+        requested_facts=requested_facts,
+        include_faults=False,
+    )
+
+
+def _synthesize_invariant_certificate_v2(
+    *,
+    units: Sequence[Mapping[str, Any]],
+    member_ids: Sequence[str],
+    binary_sha256: str,
+    machine_ir_sha256: str,
+    root_assumptions: Mapping[str, Sequence[Mapping[str, Any]]] | None,
+    finite_value_budget: int,
+    candidate_budget: int,
+    solver_timeout_ms: int,
+    certificate_format: str,
+    proposal_format: str,
+    region_key: str,
+    require_cyclic: bool,
+    frontier_member_ids: Sequence[str],
+    requested_facts: Mapping[str, Sequence[Mapping[str, Any]]] | None,
+    include_faults: bool,
+) -> dict[str, Any]:
     if not _digest(binary_sha256) or not _digest(machine_ir_sha256):
         raise ExceptionInvariantV2Error("binary bindings must be SHA-256 digests")
     for name, value in (
@@ -151,9 +274,18 @@ def synthesize_exception_invariant_certificate_v2(
 
     by_id, _by_rva = _unit_indexes(units)
     members = tuple(sorted(member_ids))
-    inventory = derive_exception_scc_inventory(units, members)
+    inventory = (
+        derive_exception_scc_inventory(units, members)
+        if require_cyclic
+        else derive_control_region_inventory(units, members, frontier_member_ids)
+    )
     member_set = frozenset(members)
     assumptions = _normalize_root_assumptions(root_assumptions, member_set)
+    requested = _normalize_requested_facts(
+        requested_facts,
+        member_set,
+        finite_value_budget=finite_value_budget,
+    )
     issues: list[dict[str, str]] = []
 
     if inventory["incomplete_reasons"]:
@@ -161,7 +293,7 @@ def synthesize_exception_invariant_certificate_v2(
             _issue("incomplete", "control_effect_unknown", str(reason))
             for reason in inventory["incomplete_reasons"]
         )
-    if not _is_cyclic_strong_component(members, inventory["edges"]):
+    if require_cyclic and not _is_cyclic_strong_component(members, inventory["edges"]):
         issues.append(_issue("incomplete", "members_do_not_form_cyclic_scc"))
 
     candidates: dict[str, list[dict[str, Any]]] = {
@@ -187,6 +319,8 @@ def synthesize_exception_invariant_certificate_v2(
                 _append_unique_fact(candidates[member], fact)
             for fact in _constant_post_write_facts(source):
                 _append_unique_fact(candidates[member], fact)
+        for fact in requested.get(member, ()):
+            _append_unique_fact(candidates[member], fact)
 
     total_candidates = sum(len(values) for values in candidates.values())
     if total_candidates > candidate_budget:
@@ -244,7 +378,9 @@ def synthesize_exception_invariant_certificate_v2(
         row["unit_id"]: _invariant_predicate(row) for row in invariants
     }
     faults: list[dict[str, Any]] = []
-    for key, fault in sorted(_fault_inventory(by_id, members).items()):
+    for key, fault in (
+        sorted(_fault_inventory(by_id, members).items()) if include_faults else ()
+    ):
         claim = {
             "source_unit_id": key[0],
             "fault_index": key[1],
@@ -282,25 +418,40 @@ def synthesize_exception_invariant_certificate_v2(
         faults.append(claim)
 
     certificate = {
-        "format": EXCEPTION_INVARIANT_CERTIFICATE_V2_FORMAT,
+        "format": certificate_format,
         "bindings": {
             "binary_sha256": binary_sha256,
             "machine_ir_sha256": machine_ir_sha256,
             "units": [exception_invariant_unit_binding(by_id[member]) for member in members],
         },
-        "scc": {
+        region_key: {
             "members": list(members),
             "edges": inventory["edges"],
             "exits": inventory["exits"],
+            **(
+                {"frontier_members": inventory["frontier_members"]}
+                if not require_cyclic
+                else {}
+            ),
         },
         "invariants": invariants,
         "preservation": inventory["edges"],
         "initiation": initiation,
-        "faults": faults,
+        **({"faults": faults} if include_faults else {}),
+        **(
+            {
+                "requested_facts": [
+                    {"unit_id": unit_id, "facts": requested[unit_id]}
+                    for unit_id in sorted(requested)
+                ]
+            }
+            if not include_faults
+            else {}
+        ),
     }
     normalized_issues = _normalize_issues(issues)
     return {
-        "format": EXCEPTION_INVARIANT_PROPOSAL_V2_FORMAT,
+        "format": proposal_format,
         "status": "incomplete" if normalized_issues else "complete",
         "authorizing": False,
         "uses_bounded_paths": False,
@@ -309,6 +460,7 @@ def synthesize_exception_invariant_certificate_v2(
             "machine_ir_sha256": machine_ir_sha256,
             "member_ids": list(members),
             "root_assumptions_sha256": canonical_sha256(assumptions),
+            "requested_facts_sha256": canonical_sha256(requested),
             "finite_value_budget": finite_value_budget,
             "candidate_budget": candidate_budget,
         },
@@ -340,6 +492,41 @@ def _normalize_root_assumptions(
             if not isinstance(value, Mapping):
                 raise ExceptionInvariantV2Error("root assumption is malformed")
             normalized.append(copy.deepcopy(dict(value)))
+        result[unit_id] = normalized
+    return result
+
+
+def _normalize_requested_facts(
+    raw: Mapping[str, Sequence[Mapping[str, Any]]] | None,
+    members: frozenset[str],
+    *,
+    finite_value_budget: int,
+) -> dict[str, list[dict[str, Any]]]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ExceptionInvariantV2Error("requested facts must be an object")
+    result: dict[str, list[dict[str, Any]]] = {}
+    for unit_id in sorted(raw):
+        if unit_id not in members:
+            raise ExceptionInvariantV2Error(
+                f"requested-fact target {unit_id!r} is outside the region"
+            )
+        values = raw[unit_id]
+        if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+            raise ExceptionInvariantV2Error("requested facts must be arrays")
+        normalized: list[dict[str, Any]] = []
+        for value in values:
+            if not isinstance(value, Mapping):
+                raise ExceptionInvariantV2Error("requested invariant fact is malformed")
+            fact = copy.deepcopy(dict(value))
+            _invariant_predicate({"unit_id": unit_id, "facts": [fact]})
+            finite_values = fact.get("values") if fact.get("kind") == "finite_values" else None
+            if isinstance(finite_values, list) and len(finite_values) > finite_value_budget:
+                raise ExceptionInvariantV2Error(
+                    "requested finite-value fact exceeds the configured budget"
+                )
+            _append_unique_fact(normalized, fact)
         result[unit_id] = normalized
     return result
 
@@ -433,10 +620,73 @@ def _candidate_facts_from_predicate(
             "values": sorted(values),
         }], True
 
+    masked_alternatives = _masked_disequality_alternatives(predicate)
+    if masked_alternatives is not None:
+        expression, values = masked_alternatives
+        if len(values) > finite_value_budget:
+            return [], False
+        return [{
+            "kind": "finite_values",
+            "expression": expression,
+            "values": sorted(values),
+        }], True
+
     range_fact = _unsigned_range_fact(predicate)
     if range_fact is not None:
         return [range_fact], True
     return [], False
+
+
+def _masked_disequality_alternatives(
+    predicate: Mapping[str, Any],
+) -> tuple[dict[str, Any], set[int]] | None:
+    args = predicate.get("args")
+    if (
+        predicate.get("op") != "not"
+        or not isinstance(args, list)
+        or len(args) != 1
+        or not isinstance(args[0], Mapping)
+    ):
+        return None
+    equality = args[0]
+    equality_args = equality.get("args")
+    if (
+        equality.get("op") != "eq"
+        or not isinstance(equality_args, list)
+        or len(equality_args) != 2
+    ):
+        return None
+    for expression_side, excluded_side in (
+        (equality_args[0], equality_args[1]),
+        (equality_args[1], equality_args[0]),
+    ):
+        excluded = _expression_constant(excluded_side)
+        if excluded is None or not isinstance(expression_side, Mapping):
+            continue
+        mask_args = expression_side.get("args")
+        if (
+            expression_side.get("op") != "and32"
+            or not isinstance(mask_args, list)
+            or len(mask_args) != 2
+        ):
+            continue
+        masks = [
+            _expression_constant(mask_args[0]),
+            _expression_constant(mask_args[1]),
+        ]
+        mask = next((value for value in masks if value is not None), None)
+        if (
+            mask is None
+            or mask >= 0xFFFFFFFF
+            or not _is_power_of_two(mask + 1)
+            or excluded > mask
+        ):
+            continue
+        return (
+            copy.deepcopy(dict(expression_side)),
+            set(range(mask + 1)) - {excluded},
+        )
+    return None
 
 
 def _finite_equality_alternatives(
@@ -715,7 +965,7 @@ def _normalize_issues(
     return [json.loads(value) for value in unique]
 
 
-def check_exception_invariant_certificate_v2(
+def _check_invariant_certificate_v2(
     certificate: Mapping[str, Any],
     *,
     units: Sequence[Mapping[str, Any]],
@@ -739,31 +989,66 @@ def check_exception_invariant_certificate_v2(
     ):
         raise ExceptionInvariantV2Error("solver timeout must be a positive integer")
 
+    certificate_format = certificate.get("format") if isinstance(certificate, Mapping) else None
+    control_certificate = certificate_format == CONTROL_INVARIANT_CERTIFICATE_V2_FORMAT
+    report_format = (
+        CONTROL_INVARIANT_CHECK_V2_FORMAT
+        if control_certificate
+        else EXCEPTION_INVARIANT_CHECK_V2_FORMAT
+    )
     issues: list[dict[str, str]] = []
     obligations: list[dict[str, Any]] = []
     fault_results: list[dict[str, Any]] = []
     if not isinstance(certificate, Mapping):
-        return _report({}, issues=[_issue("violated", "certificate_malformed")])
-    if certificate.get("format") != EXCEPTION_INVARIANT_CERTIFICATE_V2_FORMAT:
+        return _report(
+            {},
+            issues=[_issue("violated", "certificate_malformed")],
+            report_format=report_format,
+        )
+    if certificate_format not in {
+        EXCEPTION_INVARIANT_CERTIFICATE_V2_FORMAT,
+        CONTROL_INVARIANT_CERTIFICATE_V2_FORMAT,
+    }:
         issues.append(_issue("violated", "certificate_format_mismatch"))
 
     try:
         by_id, _by_rva = _unit_indexes(units)
     except ExceptionInvariantV2Error as exc:
-        return _report(certificate, issues=[_issue("violated", "unit_inventory_corrupt", str(exc))])
-    scc = certificate.get("scc")
-    members_raw = scc.get("members") if isinstance(scc, Mapping) else None
+        return _report(
+            certificate,
+            issues=[_issue("violated", "unit_inventory_corrupt", str(exc))],
+            report_format=report_format,
+        )
+    region_key = "region" if control_certificate else "scc"
+    region = certificate.get(region_key)
+    members_raw = region.get("members") if isinstance(region, Mapping) else None
     if not isinstance(members_raw, list) or not all(
         isinstance(value, str) and value for value in members_raw
     ):
-        return _report(certificate, issues=[*issues, _issue("violated", "scc_members_corrupt")])
+        return _report(
+            certificate,
+            issues=[*issues, _issue("violated", "scc_members_corrupt")],
+            report_format=report_format,
+        )
     members = tuple(sorted(members_raw))
     if list(members) != members_raw or len(set(members)) != len(members):
         issues.append(_issue("violated", "scc_members_noncanonical"))
     try:
-        inventory = derive_exception_scc_inventory(units, members)
+        inventory = (
+            derive_control_region_inventory(
+                units,
+                members,
+                region.get("frontier_members", ()) if isinstance(region, Mapping) else (),
+            )
+            if control_certificate
+            else derive_exception_scc_inventory(units, members)
+        )
     except ExceptionInvariantV2Error as exc:
-        return _report(certificate, issues=[*issues, _issue("violated", "scc_members_contradict", str(exc))])
+        return _report(
+            certificate,
+            issues=[*issues, _issue("violated", "scc_members_contradict", str(exc))],
+            report_format=report_format,
+        )
 
     bindings = certificate.get("bindings")
     expected_bindings = {
@@ -773,16 +1058,17 @@ def check_exception_invariant_certificate_v2(
     }
     if bindings != expected_bindings:
         issues.append(_issue("violated", "exact_binding_contradiction"))
-    if not isinstance(scc, Mapping) or scc.get("edges") != inventory["edges"]:
+    if not isinstance(region, Mapping) or region.get("edges") != inventory["edges"]:
         issues.append(_issue("violated", "scc_edge_inventory_contradiction"))
-    if not isinstance(scc, Mapping) or scc.get("exits") != inventory["exits"]:
+    if not isinstance(region, Mapping) or region.get("exits") != inventory["exits"]:
         issues.append(_issue("violated", "scc_exit_inventory_contradiction"))
     for reason in inventory["incomplete_reasons"]:
         issues.append(_issue("incomplete", "control_effect_unknown", reason))
-    if not _is_cyclic_strong_component(members, inventory["edges"]):
+    if not control_certificate and not _is_cyclic_strong_component(members, inventory["edges"]):
         issues.append(_issue("violated", "members_do_not_form_cyclic_scc"))
 
     invariants: dict[str, dict[str, Any]] = {}
+    invariant_facts: dict[str, list[dict[str, Any]]] = {}
     raw_invariants = certificate.get("invariants")
     if not isinstance(raw_invariants, list):
         raw_invariants = []
@@ -801,6 +1087,7 @@ def check_exception_invariant_certificate_v2(
             issues.append(_issue("violated", "cutpoint_invariant_corrupt", str(exc)))
             continue
         invariants[unit_id] = predicate
+        invariant_facts[unit_id] = copy.deepcopy(list(row.get("facts", ())))
         result = _check_satisfiable(predicate, solver_timeout_ms)
         obligations.append(_obligation("invariant_consistency", unit_id, result))
         _take_solver_status(result, issues, "invariant_contradiction", unit_id)
@@ -835,8 +1122,18 @@ def check_exception_invariant_certificate_v2(
         issues=issues,
     )
 
-    faults = _fault_inventory(by_id, members)
-    claims = certificate.get("faults")
+    requested_exports: list[dict[str, Any]] = []
+    if control_certificate:
+        requested_exports = _check_requested_fact_exports(
+            certificate.get("requested_facts"),
+            members=members,
+            invariant_facts=invariant_facts,
+            frontier_members=inventory.get("frontier_members", ()),
+            issues=issues,
+        )
+
+    faults = {} if control_certificate else _fault_inventory(by_id, members)
+    claims = [] if control_certificate else certificate.get("faults")
     if not isinstance(claims, list):
         claims = []
         issues.append(_issue("incomplete", "fault_implications_missing"))
@@ -877,7 +1174,126 @@ def check_exception_invariant_certificate_v2(
         obligations=obligations,
         faults=fault_results,
         inventory=inventory,
+        report_format=report_format,
+        checked_invariants=requested_exports,
     )
+
+
+def check_exception_invariant_certificate_v2(
+    certificate: Mapping[str, Any],
+    *,
+    units: Sequence[Mapping[str, Any]],
+    binary_sha256: str,
+    machine_ir_sha256: str,
+    seh_inventories: Sequence[Mapping[str, Any]] = (),
+    solver_timeout_ms: int = 5_000,
+) -> dict[str, Any]:
+    """Replay one exact SCC exceptional-invariant certificate."""
+
+    if certificate.get("format") != EXCEPTION_INVARIANT_CERTIFICATE_V2_FORMAT:
+        return _report(
+            certificate,
+            issues=[_issue("violated", "certificate_format_mismatch")],
+        )
+    return _check_invariant_certificate_v2(
+        certificate,
+        units=units,
+        binary_sha256=binary_sha256,
+        machine_ir_sha256=machine_ir_sha256,
+        seh_inventories=seh_inventories,
+        solver_timeout_ms=solver_timeout_ms,
+    )
+
+
+def check_control_invariant_certificate_v2(
+    certificate: Mapping[str, Any],
+    *,
+    units: Sequence[Mapping[str, Any]],
+    binary_sha256: str,
+    machine_ir_sha256: str,
+    solver_timeout_ms: int = 5_000,
+) -> dict[str, Any]:
+    """Replay one finite control-region invariant certificate."""
+
+    if certificate.get("format") != CONTROL_INVARIANT_CERTIFICATE_V2_FORMAT:
+        return _report(
+            certificate,
+            issues=[_issue("violated", "certificate_format_mismatch")],
+            report_format=CONTROL_INVARIANT_CHECK_V2_FORMAT,
+        )
+    return _check_invariant_certificate_v2(
+        certificate,
+        units=units,
+        binary_sha256=binary_sha256,
+        machine_ir_sha256=machine_ir_sha256,
+        solver_timeout_ms=solver_timeout_ms,
+    )
+
+
+def _check_requested_fact_exports(
+    raw: Any,
+    *,
+    members: Sequence[str],
+    invariant_facts: Mapping[str, Sequence[Mapping[str, Any]]],
+    frontier_members: Sequence[str],
+    issues: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    if not isinstance(raw, list) or not raw:
+        issues.append(_issue("incomplete", "requested_control_facts_missing"))
+        return []
+    exports: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    canonical_rows: list[dict[str, Any]] = []
+    for index, row in enumerate(raw):
+        if not isinstance(row, Mapping):
+            issues.append(_issue("violated", "requested_control_fact_corrupt", str(index)))
+            continue
+        unit_id = row.get("unit_id")
+        facts = row.get("facts")
+        if unit_id not in members or not isinstance(facts, list) or not facts:
+            issues.append(_issue("violated", "requested_control_fact_corrupt", str(index)))
+            continue
+        if str(unit_id) in seen:
+            issues.append(_issue("violated", "requested_control_fact_duplicated", str(unit_id)))
+            continue
+        seen.add(str(unit_id))
+        checked_facts = invariant_facts.get(str(unit_id), ())
+        checked_digests = {canonical_sha256(fact) for fact in checked_facts}
+        normalized: list[dict[str, Any]] = []
+        for fact_index, fact in enumerate(facts):
+            if not isinstance(fact, Mapping):
+                issues.append(
+                    _issue(
+                        "violated",
+                        "requested_control_fact_corrupt",
+                        f"{unit_id}:{fact_index}",
+                    )
+                )
+                continue
+            normalized_fact = copy.deepcopy(dict(fact))
+            digest = canonical_sha256(normalized_fact)
+            if digest not in checked_digests:
+                issues.append(
+                    _issue(
+                        "violated",
+                        "requested_control_fact_not_in_invariant",
+                        f"{unit_id}:{digest}",
+                    )
+                )
+                continue
+            normalized.append(normalized_fact)
+            exports.append({
+                "unit_id": str(unit_id),
+                "fact_sha256": digest,
+                "fact": normalized_fact,
+            })
+        canonical_rows.append({"unit_id": str(unit_id), "facts": normalized})
+    if raw != sorted(canonical_rows, key=lambda row: row["unit_id"]):
+        issues.append(_issue("violated", "requested_control_facts_noncanonical"))
+    missing_frontiers = sorted(set(frontier_members) - seen)
+    for unit_id in missing_frontiers:
+        issues.append(_issue("incomplete", "frontier_control_fact_missing", unit_id))
+    return sorted(exports, key=lambda row: (row["unit_id"], row["fact_sha256"]))
 
 
 def _check_initiation(
@@ -1291,33 +1707,57 @@ def _report(
     obligations: Sequence[Mapping[str, Any]] = (),
     faults: Sequence[Mapping[str, Any]] = (),
     inventory: Mapping[str, Any] | None = None,
+    report_format: str = EXCEPTION_INVARIANT_CHECK_V2_FORMAT,
+    checked_invariants: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     unique = sorted(
         {json.dumps(issue, sort_keys=True, separators=(",", ":")) for issue in issues}
     )
     normalized_issues = [json.loads(value) for value in unique]
     status = "violated" if any(issue["status"] == "violated" for issue in normalized_issues) else "incomplete" if normalized_issues else "complete"
+    certificate_sha256 = canonical_sha256(certificate)
     return {
-        "format": EXCEPTION_INVARIANT_CHECK_V2_FORMAT,
+        "format": report_format,
         "status": status,
-        "certificate_sha256": canonical_sha256(certificate),
+        "certificate_sha256": certificate_sha256,
         "uses_bounded_paths": False,
         "scc_inventory": None if inventory is None else copy.deepcopy(dict(inventory)),
         "obligations": list(obligations),
         "faults": list(faults),
+        "checked_invariants": (
+            [
+                {
+                    **copy.deepcopy(dict(row)),
+                    "authority_id": "checked-control-fact-v2:"
+                    + canonical_sha256({
+                        "certificate_sha256": certificate_sha256,
+                        "fact": row,
+                    }),
+                }
+                for row in checked_invariants
+            ]
+            if status == "complete"
+            else []
+        ),
         "issues": normalized_issues,
     }
 
 
 __all__ = [
+    "CONTROL_INVARIANT_CERTIFICATE_V2_FORMAT",
+    "CONTROL_INVARIANT_CHECK_V2_FORMAT",
+    "CONTROL_INVARIANT_PROPOSAL_V2_FORMAT",
     "EXCEPTION_INVARIANT_CERTIFICATE_V2_FORMAT",
     "EXCEPTION_INVARIANT_CHECK_V2_FORMAT",
     "EXCEPTION_INVARIANT_PROPOSAL_V2_FORMAT",
     "SUPPORTED_SEH_INVENTORY_V2_FORMAT",
     "ExceptionInvariantV2Error",
     "canonical_sha256",
+    "check_control_invariant_certificate_v2",
     "check_exception_invariant_certificate_v2",
+    "derive_control_region_inventory",
     "derive_exception_scc_inventory",
     "exception_invariant_unit_binding",
+    "synthesize_control_invariant_certificate_v2",
     "synthesize_exception_invariant_certificate_v2",
 ]

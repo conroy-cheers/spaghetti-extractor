@@ -4,13 +4,17 @@ import copy
 import unittest
 
 from spaghetti_extractor.exception_invariants_v2 import (
+    CONTROL_INVARIANT_CERTIFICATE_V2_FORMAT,
+    CONTROL_INVARIANT_PROPOSAL_V2_FORMAT,
     EXCEPTION_INVARIANT_CERTIFICATE_V2_FORMAT,
     EXCEPTION_INVARIANT_PROPOSAL_V2_FORMAT,
     SUPPORTED_SEH_INVENTORY_V2_FORMAT,
     canonical_sha256,
+    check_control_invariant_certificate_v2,
     check_exception_invariant_certificate_v2,
     derive_exception_scc_inventory,
     exception_invariant_unit_binding,
+    synthesize_control_invariant_certificate_v2,
     synthesize_exception_invariant_certificate_v2,
 )
 
@@ -114,6 +118,96 @@ def _handler_unit() -> dict:
             "faults": [],
         },
     }
+
+
+def _masked_dispatch_region() -> tuple[list[dict], list[str], str, dict]:
+    masked_edi = {"op": "and32", "args": [_reg("edi"), _const(3)]}
+    entry = {
+        "id": "unit:entry",
+        "status": "qualified",
+        "source": {
+            "contract_sha256": "9" * 64,
+            "instruction_bytes_sha256": "a" * 64,
+            "original": {"rva_start": 0x900, "rva_end": 0x902},
+        },
+        "semantics": {
+            "outcome": {"kind": "branch"},
+            "edge_conditions": [{
+                "target_rva": 0x1000,
+                "condition": _not({
+                    "op": "eq",
+                    "args": [masked_edi, _const(0)],
+                }),
+            }],
+            "register_writes": [],
+            "flag_writes": [],
+            "faults": [],
+        },
+    }
+    copy_index = {
+        "id": "unit:copy-index",
+        "status": "qualified",
+        "source": {
+            "contract_sha256": "b" * 64,
+            "instruction_bytes_sha256": "c" * 64,
+            "original": {"rva_start": 0x1000, "rva_end": 0x1002},
+        },
+        "semantics": {
+            "outcome": {"kind": "jump", "target_rva": 0x1002},
+            "edge_conditions": [{
+                "target_rva": 0x1002,
+                "condition": {"op": "true"},
+            }],
+            "register_writes": [{"register": "eax", "value": _reg("edi")}],
+            "flag_writes": [],
+            "faults": [],
+        },
+    }
+    dispatch = {
+        "id": "unit:dispatch",
+        "status": "qualified",
+        "source": {
+            "contract_sha256": "d" * 64,
+            "instruction_bytes_sha256": "e" * 64,
+            "original": {"rva_start": 0x1002, "rva_end": 0x1009},
+        },
+        "semantics": {
+            "outcome": {
+                "kind": "indirect_jump",
+                "target": {
+                    "op": "load",
+                    "width": 4,
+                    "address": {
+                        "op": "add32",
+                        "args": [
+                            _const(0x401100),
+                            {
+                                "op": "mul32",
+                                "args": [
+                                    {"op": "and32", "args": [_reg("eax"), _const(3)]},
+                                    _const(4),
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+            "register_writes": [],
+            "flag_writes": [],
+            "faults": [],
+        },
+    }
+    requested = {
+        "kind": "finite_values",
+        "expression": {"op": "and32", "args": [_reg("eax"), _const(3)]},
+        "values": [1, 2, 3],
+    }
+    return (
+        [entry, copy_index, dispatch],
+        ["unit:copy-index", "unit:dispatch"],
+        "unit:dispatch",
+        requested,
+    )
 
 
 class ExceptionInvariantV2Tests(unittest.TestCase):
@@ -454,6 +548,103 @@ class ExceptionInvariantV2Tests(unittest.TestCase):
         self.assertEqual(
             report["faults"][0]["reason_code"], "fault_explicitly_incomplete"
         )
+
+    def test_control_region_proves_masked_nonzero_dispatch_index(self) -> None:
+        units, members, frontier, requested = _masked_dispatch_region()
+        proposal = synthesize_control_invariant_certificate_v2(
+            units=units,
+            member_ids=members,
+            frontier_member_ids=[frontier],
+            requested_facts={frontier: [requested]},
+            binary_sha256=BINARY_SHA,
+            machine_ir_sha256=MACHINE_IR_SHA,
+        )
+
+        self.assertEqual(
+            proposal["format"], CONTROL_INVARIANT_PROPOSAL_V2_FORMAT
+        )
+        self.assertEqual(proposal["status"], "complete", proposal["issues"])
+        certificate = proposal["certificate"]
+        self.assertEqual(
+            certificate["format"], CONTROL_INVARIANT_CERTIFICATE_V2_FORMAT
+        )
+        source_facts = next(
+            row["facts"]
+            for row in certificate["invariants"]
+            if row["unit_id"] == "unit:copy-index"
+        )
+        self.assertEqual(source_facts[0]["values"], [1, 2, 3])
+
+        report = check_control_invariant_certificate_v2(
+            certificate,
+            units=units,
+            binary_sha256=BINARY_SHA,
+            machine_ir_sha256=MACHINE_IR_SHA,
+        )
+
+        self.assertEqual(report["status"], "complete", report["issues"])
+        self.assertFalse(report["uses_bounded_paths"])
+        self.assertEqual(len(report["checked_invariants"]), 1)
+        self.assertEqual(report["checked_invariants"][0]["fact"], requested)
+        self.assertTrue(
+            report["checked_invariants"][0]["authority_id"].startswith(
+                "checked-control-fact-v2:"
+            )
+        )
+
+    def test_control_region_corrupt_requested_fact_is_violated(self) -> None:
+        units, members, frontier, requested = _masked_dispatch_region()
+        proposal = synthesize_control_invariant_certificate_v2(
+            units=units,
+            member_ids=members,
+            frontier_member_ids=[frontier],
+            requested_facts={frontier: [requested]},
+            binary_sha256=BINARY_SHA,
+            machine_ir_sha256=MACHINE_IR_SHA,
+        )
+        certificate = copy.deepcopy(proposal["certificate"])
+        certificate["requested_facts"][0]["facts"][0]["values"] = [0, 1, 2, 3]
+
+        report = check_control_invariant_certificate_v2(
+            certificate,
+            units=units,
+            binary_sha256=BINARY_SHA,
+            machine_ir_sha256=MACHINE_IR_SHA,
+        )
+
+        self.assertEqual(report["status"], "violated")
+        self.assertEqual(report["checked_invariants"], [])
+        self.assertIn(
+            "requested_control_fact_not_in_invariant",
+            {issue["code"] for issue in report["issues"]},
+        )
+
+    def test_incomplete_control_region_exports_no_authority(self) -> None:
+        units, members, frontier, requested = _masked_dispatch_region()
+        proposal = synthesize_control_invariant_certificate_v2(
+            units=units,
+            member_ids=members,
+            frontier_member_ids=[frontier],
+            requested_facts={frontier: [requested]},
+            binary_sha256=BINARY_SHA,
+            machine_ir_sha256=MACHINE_IR_SHA,
+        )
+        certificate = copy.deepcopy(proposal["certificate"])
+        certificate["invariants"] = [
+            row
+            for row in certificate["invariants"]
+            if row["unit_id"] != frontier
+        ]
+
+        report = check_control_invariant_certificate_v2(
+            certificate,
+            units=units,
+            binary_sha256=BINARY_SHA,
+            machine_ir_sha256=MACHINE_IR_SHA,
+        )
+
+        self.assertNotEqual(report["status"], "complete")
+        self.assertEqual(report["checked_invariants"], [])
 
 
 if __name__ == "__main__":
