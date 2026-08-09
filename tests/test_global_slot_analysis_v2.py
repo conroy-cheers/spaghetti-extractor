@@ -18,6 +18,9 @@ from spaghetti_extractor.checked_memory_access_v2 import (
     seal_checked_memory_access_facts_v2,
 )
 from spaghetti_extractor.machine_ir_authority_v2 import machine_ir_sha256
+from spaghetti_extractor.stack_range_analysis_v2 import (
+    derive_stack_range_analysis_v2,
+)
 
 
 IMAGE_BASE = 0x400000
@@ -111,6 +114,8 @@ def _analyze(
     launch_initial_values: dict[int, int] | None = None,
     slot: int = SLOT,
     checked_access_facts: list[dict[str, object]] | None = None,
+    checked_spatial_facts: list[dict[str, object]] | None = None,
+    range_binding: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     machine_sha = machine_ir_sha256(units)
     return analyze_global_slots_v2(
@@ -121,18 +126,25 @@ def _analyze(
         size_of_image=IMAGE_SIZE,
         entry_range_facts=[] if entry_ranges is None else entry_ranges,
         world_range_facts=[] if world_ranges is None else world_ranges,
-        range_authority_binding={
-            "pe_sha256": "a" * 64,
-            "machine_ir_sha256": "b" * 64,
-            "rooted_graph_id": graph["id"],
-            "launch_assumptions_sha256": "c" * 64,
-            "image_base": IMAGE_BASE,
-            "size_of_image": IMAGE_SIZE,
-        },
+        range_authority_binding=(
+            {
+                "pe_sha256": "a" * 64,
+                "machine_ir_sha256": "b" * 64,
+                "rooted_graph_id": graph["id"],
+                "launch_assumptions_sha256": "c" * 64,
+                "image_base": IMAGE_BASE,
+                "size_of_image": IMAGE_SIZE,
+            }
+            if range_binding is None
+            else range_binding
+        ),
         relevant_read_dependencies=relevant_reads,
         launch_initial_values=launch_initial_values,
         checked_memory_access_facts=(
             [] if checked_access_facts is None else checked_access_facts
+        ),
+        checked_memory_spatial_facts=(
+            [] if checked_spatial_facts is None else checked_spatial_facts
         ),
         pe_sha256=PE_SHA256,
         machine_ir_sha256=machine_sha,
@@ -177,6 +189,61 @@ def _codes(result: dict[str, Any]) -> set[str]:
 
 
 class GlobalSlotAnalysisV2Tests(unittest.TestCase):
+    def test_checked_event_bound_stack_spatial_fact_excludes_image_slot(self) -> None:
+        units = [_unit(
+            "entry",
+            0x1000,
+            [_write(_const(7), address=_add(_reg("esp"), 12))],
+        )]
+        graph = _graph(units)
+        launch = {
+            "assumptions": {
+                "initial_stack": {
+                    "contract": "private-non-image-stack-range-v2",
+                    "mapped_separately_from_image": True,
+                    "minimum_accessible_bytes_below": 0x1000,
+                    "minimum_accessible_bytes_above": 0x1000,
+                }
+            }
+        }
+        stack = derive_stack_range_analysis_v2(
+            units=units,
+            graph=graph,
+            launch_assumptions=launch,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=machine_ir_sha256(units),
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+
+        result = _analyze(
+            units,
+            graph,
+            launch_initial_values={SLOT: 0},
+            checked_spatial_facts=stack["checked_spatial_facts"],
+            range_binding=stack["binding"],
+        )
+
+        self.assertEqual(result["status"], "complete", result["issues"])
+        self.assertEqual(result["counts"]["checked_memory_spatial_facts"], 1)
+        dependency_kinds = {
+            row["kind"]
+            for row in result["global_slot_evidence"][0]["dependencies"]
+        }
+        self.assertIn("checked_memory_spatial_fact", dependency_kinds)
+
+        corrupted = copy.deepcopy(stack["checked_spatial_facts"])
+        corrupted[0]["maximum_start_offset"] += 4
+        rejected = _analyze(
+            units,
+            graph,
+            launch_initial_values={SLOT: 0},
+            checked_spatial_facts=corrupted,
+            range_binding=stack["binding"],
+        )
+        self.assertEqual(rejected["status"], "violated")
+        self.assertIn("checked_memory_spatial_fact_invalid", _codes(rejected))
+
     def test_checked_stack_origin_requires_spatial_range_witness(self) -> None:
         units = [_unit(
             "entry",
@@ -503,7 +570,7 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
         self.assertIn("global_slot_initialization_does_not_dominate_reads", _codes(result))
         self.assertIn("global_slot_read_before_dominated_initialization", _codes(result))
 
-    def test_aliasing_write_requires_explicit_checked_range(self) -> None:
+    def test_unreplayed_unit_range_cannot_authorize_alias_exclusion(self) -> None:
         units = [
             _unit(
                 "entry",
@@ -538,9 +605,9 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
             },
         }
         resolved = _analyze(units, graph, entry_ranges=[fact])
-        self.assertEqual(resolved["status"], "complete")
+        self.assertEqual(resolved["status"], "incomplete")
         dependencies = resolved["global_slot_evidence"][0]["dependencies"]
-        self.assertIn("entry-stack-range", {item["id"] for item in dependencies})
+        self.assertNotIn("entry-stack-range", {item["id"] for item in dependencies})
 
         stale = copy.deepcopy(fact)
         stale["authority_binding"]["rooted_graph_id"] = "another-graph"
@@ -551,7 +618,7 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
             {issue["code"] for issue in rejected["issues"]},
         )
 
-    def test_checked_stack_range_normalizes_nested_esp_arithmetic(self) -> None:
+    def test_unreplayed_nested_stack_range_remains_non_authorizing(self) -> None:
         nested_stack_address = {
             "op": "sub32",
             "args": [
@@ -595,9 +662,9 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
 
         result = _analyze(units, graph, entry_ranges=[fact])
 
-        self.assertEqual(result["status"], "complete", result["slots"][0]["issues"])
+        self.assertEqual(result["status"], "incomplete")
         dependencies = result["global_slot_evidence"][0]["dependencies"]
-        self.assertIn(
+        self.assertNotIn(
             "entry-nested-stack-range",
             {item["id"] for item in dependencies},
         )

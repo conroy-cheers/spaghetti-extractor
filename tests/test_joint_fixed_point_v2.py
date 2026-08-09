@@ -69,7 +69,7 @@ class JointFixedPointV2Tests(unittest.TestCase):
                 proposal_seed_count=0 if recoveries is None else len(recoveries),
             )
 
-        def authority(_analysis):
+        def authority(_analysis, _stack, _graph, _interprocedural):
             return {
                 "status": "complete",
                 "global_slot_invariants": [{"content_id": "slot-a"}],
@@ -121,7 +121,7 @@ class JointFixedPointV2Tests(unittest.TestCase):
 
         toggle = {"value": False}
 
-        def authority(_analysis):
+        def authority(_analysis, _stack, _graph, _interprocedural):
             toggle["value"] = not toggle["value"]
             return {
                 "status": "complete",
@@ -168,7 +168,7 @@ class JointFixedPointV2Tests(unittest.TestCase):
                     dict(summaries), graph_id=str(graph["id"])
                 ),
                 derive_global_slots=lambda _graph, _ranges: {"status": "complete"},
-                derive_global_slot_authority=lambda _analysis: {
+                derive_global_slot_authority=lambda *_args: {
                     "status": "complete",
                     "global_slot_invariants": [],
                 },
@@ -207,7 +207,7 @@ class JointFixedPointV2Tests(unittest.TestCase):
                 derive_interprocedural=interprocedural,
                 derive_stack_ranges=stack,
                 derive_global_slots=lambda _graph, _ranges: {"status": "complete"},
-                derive_global_slot_authority=lambda _analysis: {
+                derive_global_slot_authority=lambda *_args: {
                     "status": "complete",
                     "global_slot_invariants": [],
                 },

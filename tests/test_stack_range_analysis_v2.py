@@ -5,9 +5,11 @@ import unittest
 
 from spaghetti_extractor.artifact_identity_v2 import canonical_sha256
 from spaghetti_extractor.stack_range_analysis_v2 import (
+    CHECKED_STACK_SPATIAL_FACT_V2_FORMAT,
     STACK_RANGE_ANALYSIS_V2_FORMAT,
     derive_stack_range_analysis_v2,
     validate_checked_stack_range_facts_v2,
+    validate_stack_range_analysis_v2,
 )
 
 
@@ -134,6 +136,51 @@ class StackRangeAnalysisV2Tests(unittest.TestCase):
         self.assertEqual((facts["entry"]["offset_start"], facts["entry"]["offset_end"]), (-8, -4))
         self.assertEqual((facts["next"]["offset_start"], facts["next"]["offset_end"]), (0, 16))
         self.assertEqual(facts["next"]["authority_binding"]["pe_sha256"], PE_SHA)
+        spatial = {
+            (row["unit_id"], row["event_index"]): row
+            for row in result["checked_spatial_facts"]
+        }
+        self.assertEqual(len(spatial), 3)
+        self.assertEqual(
+            spatial[("next", 1)]["format"],
+            CHECKED_STACK_SPATIAL_FACT_V2_FORMAT,
+        )
+        self.assertEqual(
+            (
+                spatial[("next", 1)]["minimum_start_offset"],
+                spatial[("next", 1)]["maximum_start_offset"],
+            ),
+            (4, 4),
+        )
+
+        replayed = validate_stack_range_analysis_v2(
+            result,
+            units=units,
+            graph=_graph("entry"),
+            launch_assumptions=_launch(),
+            pe_sha256=PE_SHA,
+            machine_ir_sha256=MACHINE_SHA,
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+        self.assertEqual(
+            set(replayed),
+            {"event:entry:0", "event:next:0", "event:next:1"},
+        )
+
+        corrupted = copy.deepcopy(result)
+        corrupted["checked_spatial_facts"][0]["minimum_start_offset"] -= 4
+        with self.assertRaisesRegex(ValueError, "does not replay exactly"):
+            validate_stack_range_analysis_v2(
+                corrupted,
+                units=units,
+                graph=_graph("entry"),
+                launch_assumptions=_launch(),
+                pe_sha256=PE_SHA,
+                machine_ir_sha256=MACHINE_SHA,
+                image_base=IMAGE_BASE,
+                size_of_image=IMAGE_SIZE,
+            )
 
     def test_checked_range_facts_replay_exactly_and_reject_corruption(self) -> None:
         units = [_unit("entry", 0x1000, memory_offsets=[-4])]

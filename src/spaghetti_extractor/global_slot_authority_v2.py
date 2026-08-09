@@ -21,6 +21,7 @@ from .global_slot_image_v2 import (
 from .machine_ir_authority_v2 import recompute_unit_binding
 from .memory_range_invariants_v2 import validate_memory_range_invariants_v2
 from .stage_binary import StageABinary
+from .stack_range_analysis_v2 import validate_stack_range_analysis_v2
 
 
 GLOBAL_SLOT_AUTHORITY_V2_FORMAT = "spaghetti-extractor-global-slot-authority-v2"
@@ -37,6 +38,12 @@ def build_global_slot_authority_v2(
     image_base: int,
     size_of_image: int,
     original_binary: StageABinary | None = None,
+    stack_range_analysis: Mapping[str, Any] | None = None,
+    stack_graph: Mapping[str, Any] | None = None,
+    stack_launch_assumptions: Mapping[str, Any] | None = None,
+    stack_call_summaries: Mapping[str, Any] | None = None,
+    stack_indirect_recoveries: Sequence[Mapping[str, Any]] = (),
+    stack_finite_offset_budget: int = 256,
 ) -> dict[str, Any]:
     """Build only facts that complete cold replay can authorize."""
 
@@ -81,6 +88,54 @@ def build_global_slot_authority_v2(
                 "checked_memory_access_binding_invalid",
                 detail=str(exc),
             ))
+    raw_spatial_facts = global_slot_analysis.get(
+        "checked_memory_spatial_facts"
+    )
+    if not isinstance(raw_spatial_facts, list) or any(
+        not isinstance(row, Mapping) for row in raw_spatial_facts
+    ):
+        issues.append(_issue(
+            "violated",
+            "checked_memory_spatial_inventory_corrupt",
+        ))
+    elif raw_spatial_facts:
+        if (
+            not isinstance(stack_range_analysis, Mapping)
+            or not isinstance(stack_graph, Mapping)
+            or not isinstance(stack_launch_assumptions, Mapping)
+        ):
+            issues.append(_issue(
+                "violated",
+                "checked_memory_spatial_replay_inputs_missing",
+            ))
+        else:
+            try:
+                replayed = validate_stack_range_analysis_v2(
+                    stack_range_analysis,
+                    units=units,
+                    graph=stack_graph,
+                    launch_assumptions=stack_launch_assumptions,
+                    pe_sha256=pe_sha256,
+                    machine_ir_sha256=machine_ir_sha256,
+                    image_base=image_base,
+                    size_of_image=size_of_image,
+                    call_summaries=stack_call_summaries,
+                    indirect_recoveries=stack_indirect_recoveries,
+                    finite_offset_budget=stack_finite_offset_budget,
+                )
+                expected_spatial = [
+                    dict(row) for row in replayed.values()
+                ]
+                if raw_spatial_facts != expected_spatial:
+                    raise ValueError(
+                        "global-slot spatial inventory differs from stack replay"
+                    )
+            except (TypeError, ValueError) as exc:
+                issues.append(_issue(
+                    "violated",
+                    "checked_memory_spatial_binding_invalid",
+                    detail=str(exc),
+                ))
     raw_memory_ranges = global_slot_analysis.get(
         "memory_range_invariant_analysis"
     )
@@ -228,6 +283,7 @@ def build_global_slot_authority_v2(
         "issues": sorted(issues, key=lambda row: (row["status"], row["code"])),
         "constraints": {
             "cold_replay_required": True,
+            "checked_spatial_facts_require_full_stack_replay": True,
             "inductive_facts_require_final_complete_rooted_graph": True,
             "tainted_slots_exported": False,
             "incomplete_evidence_exported": False,

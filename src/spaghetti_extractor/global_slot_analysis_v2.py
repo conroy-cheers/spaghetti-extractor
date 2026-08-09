@@ -2,8 +2,10 @@
 
 The analyzer consumes exact machine-IR units and an already checked rooted
 control graph.  It does not infer that stack or dynamic addresses are disjoint
-from the image: symbolic accesses are excluded only by an explicit checked
-range fact bound to the same image and unit.
+from the image: symbolic accesses are excluded only by an event-bound spatial
+fact whose rooted stack analysis is replayed before evidence promotion.
+Legacy unit-wide range facts remain readable diagnostics but cannot authorize
+an exclusion.
 
 The emitted ``global_slot_evidence`` records are deliberately shaped for
 ``entry_state_analysis_v2.propose_global_slot_invariant``.  This module only
@@ -33,6 +35,7 @@ from .checked_memory_access_v2 import (
     validate_checked_memory_access_facts_v2,
 )
 from .memory_range_invariants_v2 import validate_memory_range_invariants_v2
+from .stack_range_analysis_v2 import CHECKED_STACK_SPATIAL_FACT_V2_FORMAT
 
 
 GLOBAL_SLOT_ANALYSIS_V2_FORMAT = "stage-a-global-slot-analysis-v2"
@@ -106,6 +109,7 @@ def analyze_global_slots_v2(
     relevant_read_dependencies: Sequence[Mapping[str, Any]] | None = None,
     launch_initial_values: Mapping[int, int] | None = None,
     checked_memory_access_facts: Sequence[Mapping[str, Any]] = (),
+    checked_memory_spatial_facts: Sequence[Mapping[str, Any]] = (),
     memory_range_invariant_analysis: Mapping[str, Any] | None = None,
     pe_sha256: str | None = None,
     machine_ir_sha256: str | None = None,
@@ -163,6 +167,7 @@ def analyze_global_slots_v2(
     normalized_units, unit_issues = _normalize_units(units)
     access_facts: dict[str, CheckedMemoryAccessFact] = {}
     access_range_facts: dict[str, Mapping[str, Any]] = {}
+    access_spatial_facts: dict[str, Mapping[str, Any]] = {}
     access_fact_issues: list[dict[str, Any]] = []
     if checked_memory_access_facts:
         if not all(
@@ -224,6 +229,17 @@ def analyze_global_slots_v2(
         known_units=frozenset(normalized_units),
         authority_binding=range_authority_binding,
     )
+    spatial_facts, spatial_issues = _normalize_spatial_facts(
+        checked_memory_spatial_facts,
+        units=normalized_units,
+        image_base=image_base,
+        size_of_image=size_of_image,
+        authority_binding=range_authority_binding,
+    )
+    access_spatial_facts = {
+        _event_node(str(row["unit_id"]), int(row["event_index"])): row
+        for row in spatial_facts
+    }
     graph_info, graph_issues = _normalize_graph(graph, normalized_units)
     relevant_reads, relevant_read_issues = _normalize_relevant_reads(
         relevant_read_dependencies,
@@ -237,6 +253,7 @@ def analyze_global_slots_v2(
             *unit_issues,
             *access_fact_issues,
             *range_issues,
+            *spatial_issues,
             *graph_issues,
             *relevant_read_issues,
             *initial_value_issues,
@@ -256,9 +273,9 @@ def analyze_global_slots_v2(
         units=normalized_units,
         graph_info=graph_info,
         slots=normalized_slots,
-        range_facts=range_facts,
         access_facts=access_facts,
         access_range_facts=access_range_facts,
+        access_spatial_facts=access_spatial_facts,
         alternative_budget=alternative_budget,
         global_issues=slot_replay_issues,
         inductive_graph_frontiers=inductive_graph_frontiers,
@@ -272,9 +289,9 @@ def analyze_global_slots_v2(
         units=normalized_units,
         graph_info=graph_info,
         slots=normalized_slots,
-        range_facts=range_facts,
         access_facts=access_facts,
         access_range_facts=access_range_facts,
+        access_spatial_facts=access_spatial_facts,
         alternative_budget=alternative_budget,
         global_issues=slot_replay_issues,
         inductive_graph_frontiers=inductive_graph_frontiers,
@@ -339,10 +356,12 @@ def analyze_global_slots_v2(
             "violated_slots": sum(value == "violated" for value in slot_statuses),
             "checked_memory_access_facts": len(access_facts),
             "checked_memory_address_ranges": len(access_range_facts),
+            "checked_memory_spatial_facts": len(access_spatial_facts),
         },
         "checked_memory_access_facts": [
             fact.to_payload() for fact in access_facts.values()
         ],
+        "checked_memory_spatial_facts": spatial_facts,
         "memory_range_invariant_analysis": (
             None
             if memory_range_invariant_analysis is None
@@ -367,9 +386,9 @@ def _analyze_once(
     units: Mapping[str, Mapping[str, Any]],
     graph_info: Mapping[str, Any],
     slots: Sequence[int],
-    range_facts: Sequence[Mapping[str, Any]],
     access_facts: Mapping[str, CheckedMemoryAccessFact],
     access_range_facts: Mapping[str, Mapping[str, Any]],
+    access_spatial_facts: Mapping[str, Mapping[str, Any]],
     alternative_budget: int,
     global_issues: Sequence[Mapping[str, Any]],
     inductive_graph_frontiers: Sequence[Mapping[str, Any]],
@@ -404,9 +423,9 @@ def _analyze_once(
             address=address,
             events=events,
             event_graph=event_graph,
-            range_facts=range_facts,
             access_facts=access_facts,
             access_range_facts=access_range_facts,
+            access_spatial_facts=access_spatial_facts,
             alternative_budget=alternative_budget,
             machine_ir_dependency=machine_ir_dependency,
             graph_dependency=graph_dependency,
@@ -433,9 +452,9 @@ def _analyze_slot(
     address: int,
     events: Mapping[str, _Event],
     event_graph: Mapping[str, Any],
-    range_facts: Sequence[Mapping[str, Any]],
     access_facts: Mapping[str, CheckedMemoryAccessFact],
     access_range_facts: Mapping[str, Mapping[str, Any]],
+    access_spatial_facts: Mapping[str, Mapping[str, Any]],
     alternative_budget: int,
     machine_ir_dependency: Mapping[str, Any],
     graph_dependency: Mapping[str, Any],
@@ -454,9 +473,9 @@ def _analyze_slot(
         access = _classify_access(
             event,
             slot_address=address,
-            range_facts=range_facts,
             checked_fact=access_facts.get(node_id),
             checked_range=access_range_facts.get(node_id),
+            checked_spatial=access_spatial_facts.get(node_id),
         )
         accesses[node_id] = access
         used_fact_ids.update(access.dependency_ids)
@@ -655,16 +674,6 @@ def _analyze_slot(
         ),
     ])
     dependencies = [graph_dependency, machine_ir_dependency]
-    range_by_id = {str(fact["id"]): fact for fact in range_facts}
-    dependencies.extend(
-        {
-            "kind": str(range_by_id[identity]["source_kind"]) + "_range_fact",
-            "id": identity,
-            "sha256": str(range_by_id[identity]["fact_sha256"]),
-        }
-        for identity in sorted(used_fact_ids)
-        if identity in range_by_id
-    )
     access_by_id = {
         fact.fact_id: fact.to_payload() for fact in access_facts.values()
     }
@@ -688,6 +697,18 @@ def _analyze_slot(
         }
         for identity in sorted(used_fact_ids)
         if identity in access_range_by_id
+    )
+    access_spatial_by_id = {
+        str(fact["id"]): fact for fact in access_spatial_facts.values()
+    }
+    dependencies.extend(
+        {
+            "kind": "checked_memory_spatial_fact",
+            "id": identity,
+            "sha256": str(access_spatial_by_id[identity]["fact_sha256"]),
+        }
+        for identity in sorted(used_fact_ids)
+        if identity in access_spatial_by_id
     )
     dependencies = sorted(dependencies, key=lambda row: (str(row["kind"]), str(row["id"])))
 
@@ -1243,6 +1264,153 @@ def _normalize_range_facts(
     return sorted(result, key=lambda row: str(row["id"])), _deduplicate_issues(issues)
 
 
+def _normalize_spatial_facts(
+    facts: Sequence[Mapping[str, Any]],
+    *,
+    units: Mapping[str, Mapping[str, Any]],
+    image_base: int,
+    size_of_image: int,
+    authority_binding: Mapping[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    result: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    seen_events: set[tuple[str, int]] = set()
+    expected_fields = {
+        "format",
+        "status",
+        "unit_id",
+        "event_index",
+        "memory_kind",
+        "width_bytes",
+        "address_expression",
+        "entry_esp_offsets",
+        "address_esp_offset",
+        "minimum_start_offset",
+        "maximum_start_offset",
+        "stack_contract",
+        "disjoint_from_image",
+        "authority_binding",
+        "id",
+        "fact_sha256",
+    }
+    for index, raw in enumerate(facts):
+        try:
+            if not isinstance(raw, Mapping) or set(raw) != expected_fields:
+                raise ValueError("spatial fact has noncanonical fields")
+            identity = raw.get("id")
+            unit_id = raw.get("unit_id")
+            event_index = raw.get("event_index")
+            if (
+                raw.get("format") != CHECKED_STACK_SPATIAL_FACT_V2_FORMAT
+                or raw.get("status") != "complete"
+                or not isinstance(identity, str)
+                or not identity
+                or identity in seen_ids
+                or not isinstance(unit_id, str)
+                or unit_id not in units
+                or not isinstance(event_index, int)
+                or isinstance(event_index, bool)
+                or event_index < 0
+                or (unit_id, event_index) in seen_events
+            ):
+                raise ValueError("spatial fact identity or event binding is invalid")
+            events = units[unit_id]["semantics"].get("memory_events")
+            if not isinstance(events, list) or event_index >= len(events):
+                raise ValueError("spatial fact references an unknown event")
+            event = events[event_index]
+            width = raw.get("width_bytes")
+            address_offset = affine_register_offset(
+                raw.get("address_expression"), "esp"
+            )
+            if (
+                not isinstance(event, Mapping)
+                or raw.get("memory_kind") != event.get("kind")
+                or width != event.get("width")
+                or raw.get("address_expression") != event.get("address")
+                or not isinstance(width, int)
+                or isinstance(width, bool)
+                or not 0 < width <= 4096
+                or address_offset is None
+                or raw.get("address_esp_offset") != address_offset
+            ):
+                raise ValueError("spatial fact contradicts its exact memory event")
+            offsets = raw.get("entry_esp_offsets")
+            if (
+                not isinstance(offsets, list)
+                or not offsets
+                or any(
+                    not isinstance(value, int) or isinstance(value, bool)
+                    for value in offsets
+                )
+                or offsets != sorted(set(offsets))
+            ):
+                raise ValueError("spatial fact entry offsets are not finite canonical data")
+            contract = raw.get("stack_contract")
+            if not isinstance(contract, Mapping) or set(contract) != {
+                "lower_bound", "upper_bound_exclusive"
+            }:
+                raise ValueError("spatial fact stack contract is malformed")
+            lower = contract.get("lower_bound")
+            upper = contract.get("upper_bound_exclusive")
+            if (
+                not isinstance(lower, int)
+                or isinstance(lower, bool)
+                or not isinstance(upper, int)
+                or isinstance(upper, bool)
+                or lower >= upper
+            ):
+                raise ValueError("spatial fact stack bounds are invalid")
+            starts = [int(value) + address_offset for value in offsets]
+            if (
+                raw.get("minimum_start_offset") != min(starts)
+                or raw.get("maximum_start_offset") != max(starts)
+                or any(start < lower or start + width > upper for start in starts)
+            ):
+                raise ValueError("spatial fact is outside its stack contract")
+            if raw.get("disjoint_from_image") != {
+                "image_base": image_base,
+                "size_of_image": size_of_image,
+            }:
+                raise ValueError("spatial fact has a stale image separation binding")
+            if (
+                authority_binding is None
+                or not isinstance(raw.get("authority_binding"), Mapping)
+                or dict(raw["authority_binding"]) != dict(authority_binding)
+            ):
+                raise ValueError("spatial fact authority binding is stale")
+            core = {
+                key: copy.deepcopy(value)
+                for key, value in raw.items()
+                if key not in {"id", "fact_sha256"}
+            }
+            expected_id = (
+                "checked-stack-spatial-v2:" + canonical_sha256(core)
+            )
+            payload = {**core, "id": expected_id}
+            if (
+                identity != expected_id
+                or raw.get("fact_sha256") != canonical_sha256(payload)
+            ):
+                raise ValueError("spatial fact digest is stale")
+            seen_ids.add(identity)
+            seen_events.add((unit_id, event_index))
+            result.append(copy.deepcopy(dict(raw)))
+        except (TypeError, ValueError) as exc:
+            issues.append(_issue(
+                "violated",
+                "checked_memory_spatial_fact_invalid",
+                index=index,
+                reason=str(exc),
+            ))
+    return sorted(
+        result,
+        key=lambda row: (
+            str(row["unit_id"]), int(row["event_index"]), str(row["id"])
+        ),
+    ), _deduplicate_issues(issues)
+
+
 def _events(
     units: Mapping[str, Mapping[str, Any]], reachable: frozenset[str]
 ) -> dict[str, _Event]:
@@ -1476,12 +1644,14 @@ def _classify_access(
     event: _Event,
     *,
     slot_address: int,
-    range_facts: Sequence[Mapping[str, Any]],
     checked_fact: CheckedMemoryAccessFact | None = None,
     checked_range: Mapping[str, Any] | None = None,
+    checked_spatial: Mapping[str, Any] | None = None,
 ) -> _Access:
     if event.kind not in _MEMORY_KINDS or event.width is None:
         return _Access("unknown", reason="memory_event_shape_unknown")
+    if checked_spatial is not None:
+        return _Access("disjoint", (str(checked_spatial["id"]),))
     if checked_fact is not None:
         checked = _checked_access_classification(
             checked_fact,
@@ -1512,28 +1682,6 @@ def _classify_access(
         if _spans_overlap32(constant, event.width, slot_address, 4):
             return _Access("alias", reason="constant_partial_or_overlapping_access")
         return _Access("disjoint")
-    unit_id = event.site.unit_id
-    base, offset = _affine_base_offset(event.address)
-    for fact in range_facts:
-        if unit_id not in fact["applies_to_unit_ids"]:
-            continue
-        fact_base = fact["base_expression"]
-        fact_offset = (
-            affine_register_offset(event.address, "esp")
-            if fact.get("range_kind") == "stack"
-            and _canonical_json(fact_base)
-            == _canonical_json({"op": "reg", "name": "esp", "width": 32})
-            else offset
-            if base is not None
-            and _canonical_json(base) == _canonical_json(fact_base)
-            else None
-        )
-        if (
-            fact_offset is not None
-            and fact["offset_start"] <= fact_offset
-            and fact_offset + event.width <= fact["offset_end"]
-        ):
-            return _Access("disjoint", (str(fact["id"]),))
     if isinstance(event.address, Mapping):
         return _Access("alias", reason="symbolic_address_may_alias_slot")
     return _Access("unknown", reason="memory_address_unknown")
@@ -1649,25 +1797,6 @@ def _constant(value: Any) -> int | None:
     if isinstance(value, Mapping) and value.get("op") == "const" and _u32(value.get("value")):
         return int(value["value"])
     return None
-
-
-def _affine_base_offset(value: Any) -> tuple[Mapping[str, Any] | None, int | None]:
-    if not isinstance(value, Mapping):
-        return None, None
-    op = value.get("op")
-    args = value.get("args")
-    if op in {"add32", "add"} and isinstance(args, list) and len(args) == 2:
-        left = _constant(args[0])
-        right = _constant(args[1])
-        if left is not None and isinstance(args[1], Mapping):
-            return args[1], left
-        if right is not None and isinstance(args[0], Mapping):
-            return args[0], right
-    if op in {"sub32", "sub"} and isinstance(args, list) and len(args) == 2:
-        offset = _constant(args[1])
-        if offset is not None and isinstance(args[0], Mapping):
-            return args[0], -offset
-    return value, 0
 
 
 def _spans_overlap32(left: int, left_width: int, right: int, right_width: int) -> bool:

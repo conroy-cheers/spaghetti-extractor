@@ -23,6 +23,9 @@ from .control_analysis_v2 import exact_control_inventory_v2
 
 
 STACK_RANGE_ANALYSIS_V2_FORMAT = "spaghetti-extractor-stack-range-analysis-v2"
+CHECKED_STACK_SPATIAL_FACT_V2_FORMAT = (
+    "stage-a-checked-stack-spatial-fact-v2"
+)
 _STACK_BASE = {"op": "reg", "name": "esp", "width": 32}
 _UINT32 = 1 << 32
 
@@ -97,6 +100,14 @@ def derive_stack_range_analysis_v2(
         )
         for unit_id, span in sorted(first["access_spans"].items())
     ]
+    spatial_facts = _spatial_facts(
+        units=normalized_units,
+        entry_offsets=first["entry_offsets"],
+        binding=binding,
+        stack_contract=stack_contract,
+        image_base=image_base,
+        size_of_image=size_of_image,
+    )
     statuses = [
         str(issue["status"])
         for issue in (*issues, *first["frontiers"])
@@ -115,10 +126,12 @@ def derive_stack_range_analysis_v2(
             "root_units": len(roots),
             "stack_entry_units": len(first["entry_offsets"]),
             "checked_range_facts": len(facts),
+            "checked_spatial_facts": len(spatial_facts),
             "frontiers": len(first["frontiers"]),
         },
         "entry_offsets": first["entry_offsets"],
         "checked_range_facts": facts,
+        "checked_spatial_facts": spatial_facts,
         "frontiers": first["frontiers"],
         "issues": sorted(
             _deduplicate(issues),
@@ -445,6 +458,80 @@ def _range_fact(
     return {**core, "id": "checked-stack-range-v2:" + canonical_sha256(core)}
 
 
+def _spatial_facts(
+    *,
+    units: Mapping[str, Mapping[str, Any]],
+    entry_offsets: Mapping[str, Sequence[int]],
+    binding: Mapping[str, Any],
+    stack_contract: Mapping[str, int],
+    image_base: int,
+    size_of_image: int,
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    lower_bound = -int(stack_contract["bytes_below"])
+    upper_bound = int(stack_contract["bytes_above"])
+    for unit_id, offsets in sorted(entry_offsets.items()):
+        if unit_id not in units or not offsets:
+            continue
+        events = units[unit_id]["semantics"].get("memory_events")
+        if not isinstance(events, list):
+            continue
+        for event_index, raw in enumerate(events):
+            if not isinstance(raw, Mapping):
+                continue
+            memory_kind = raw.get("kind")
+            width = raw.get("width")
+            address_offset = _affine_esp_offset(raw.get("address"))
+            if (
+                memory_kind not in {"read", "write", "read_write"}
+                or not isinstance(width, int)
+                or isinstance(width, bool)
+                or not 0 < width <= 4096
+                or address_offset is None
+            ):
+                continue
+            starts = [int(base) + address_offset for base in offsets]
+            if not starts or any(
+                start < lower_bound or start + width > upper_bound
+                for start in starts
+            ):
+                continue
+            core = {
+                "format": CHECKED_STACK_SPATIAL_FACT_V2_FORMAT,
+                "status": "complete",
+                "unit_id": unit_id,
+                "event_index": event_index,
+                "memory_kind": memory_kind,
+                "width_bytes": width,
+                "address_expression": copy.deepcopy(raw.get("address")),
+                "entry_esp_offsets": sorted(set(int(value) for value in offsets)),
+                "address_esp_offset": address_offset,
+                "minimum_start_offset": min(starts),
+                "maximum_start_offset": max(starts),
+                "stack_contract": {
+                    "lower_bound": lower_bound,
+                    "upper_bound_exclusive": upper_bound,
+                },
+                "disjoint_from_image": {
+                    "image_base": image_base,
+                    "size_of_image": size_of_image,
+                },
+                "authority_binding": copy.deepcopy(dict(binding)),
+            }
+            identity = "checked-stack-spatial-v2:" + canonical_sha256(core)
+            payload = {**core, "id": identity}
+            result.append({
+                **payload,
+                "fact_sha256": canonical_sha256(payload),
+            })
+    return sorted(
+        result,
+        key=lambda row: (
+            str(row["unit_id"]), int(row["event_index"]), str(row["id"])
+        ),
+    )
+
+
 def validate_checked_stack_range_facts_v2(
     facts: Sequence[Mapping[str, Any]],
     *,
@@ -500,6 +587,50 @@ def validate_checked_stack_range_facts_v2(
             raise ValueError("checked stack-range fact does not replay exactly")
         accepted.add(unit_id)
     return frozenset(accepted)
+
+
+def validate_stack_range_analysis_v2(
+    analysis: Mapping[str, Any],
+    *,
+    units: Sequence[Mapping[str, Any]],
+    graph: Mapping[str, Any],
+    launch_assumptions: Mapping[str, Any],
+    pe_sha256: str,
+    machine_ir_sha256: str,
+    image_base: int,
+    size_of_image: int,
+    call_summaries: Mapping[str, Any] | None = None,
+    indirect_recoveries: Sequence[Mapping[str, Any]] = (),
+    finite_offset_budget: int = 256,
+) -> dict[str, Mapping[str, Any]]:
+    """Replay the complete stack analysis and index exact spatial facts.
+
+    Consumers must not authorize a submitted range merely because its shape
+    and hashes are self-consistent.  Re-deriving the analysis checks the rooted
+    call/return propagation that justifies every entry-ESP alternative.
+    """
+
+    expected = derive_stack_range_analysis_v2(
+        units=units,
+        graph=graph,
+        launch_assumptions=launch_assumptions,
+        pe_sha256=pe_sha256,
+        machine_ir_sha256=machine_ir_sha256,
+        image_base=image_base,
+        size_of_image=size_of_image,
+        call_summaries=call_summaries,
+        indirect_recoveries=indirect_recoveries,
+        finite_offset_budget=finite_offset_budget,
+    )
+    if dict(analysis) != expected:
+        raise ValueError("stack-range analysis does not replay exactly")
+    result: dict[str, Mapping[str, Any]] = {}
+    for row in expected["checked_spatial_facts"]:
+        event_id = f"event:{row['unit_id']}:{row['event_index']}"
+        if event_id in result:
+            raise ValueError("stack spatial facts duplicate an exact event")
+        result[event_id] = row
+    return dict(sorted(result.items()))
 
 
 def _normalize_units(
@@ -726,7 +857,9 @@ def _deduplicate(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "CHECKED_STACK_SPATIAL_FACT_V2_FORMAT",
     "STACK_RANGE_ANALYSIS_V2_FORMAT",
     "derive_stack_range_analysis_v2",
     "validate_checked_stack_range_facts_v2",
+    "validate_stack_range_analysis_v2",
 ]

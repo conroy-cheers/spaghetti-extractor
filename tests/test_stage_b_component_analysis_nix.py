@@ -140,7 +140,8 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("graph=proposal_graph", joint_phase)
         self.assertNotIn('inputs["stack_range_analysis"]', joint_phase)
         self.assertIn("range_authority_binding=stack_ranges.get(\"binding\")", joint_phase)
-        self.assertIn("entry_range_facts=", joint_phase)
+        self.assertNotIn("entry_range_facts=", joint_phase)
+        self.assertIn("checked_memory_spatial_facts=", joint_phase)
 
     def test_memory_range_invariants_are_checked_once_before_joint_analysis(self) -> None:
         module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(

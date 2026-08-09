@@ -636,7 +636,8 @@
         "spaghetti_extractor.artifact_identity_v2",
         "spaghetti_extractor.authority_bindings_v2",
         "spaghetti_extractor.checked_memory_access_v2",
-        "spaghetti_extractor.memory_range_invariants_v2"
+        "spaghetti_extractor.memory_range_invariants_v2",
+        "spaghetti_extractor.stack_range_analysis_v2"
       ],
       "path": "src/spaghetti_extractor/global_slot_analysis_v2.py"
     },
@@ -650,6 +651,7 @@
         "spaghetti_extractor.global_slot_proposal_v2",
         "spaghetti_extractor.machine_ir_authority_v2",
         "spaghetti_extractor.memory_range_invariants_v2",
+        "spaghetti_extractor.stack_range_analysis_v2",
         "spaghetti_extractor.stage_binary"
       ],
       "path": "src/spaghetti_extractor/global_slot_authority_v2.py"

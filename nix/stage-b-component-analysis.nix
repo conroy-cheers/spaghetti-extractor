@@ -919,7 +919,9 @@ let
                   candidate_slot_addresses=candidate_slots,
                   image_base=binary.image_base,
                   size_of_image=binary.size_of_image,
-                  entry_range_facts=stack_ranges.get("checked_range_facts", []),
+                  checked_memory_spatial_facts=stack_ranges.get(
+                      "checked_spatial_facts", []
+                  ),
                   range_authority_binding=stack_ranges.get("binding"),
                   launch_initial_values=launch_initial_values,
                   memory_range_invariant_analysis=memory_range_invariants,
@@ -962,7 +964,9 @@ let
                   candidate_slot_addresses=candidate_slots,
                   image_base=binary.image_base,
                   size_of_image=binary.size_of_image,
-                  entry_range_facts=stack_ranges.get("checked_range_facts", []),
+                  checked_memory_spatial_facts=stack_ranges.get(
+                      "checked_spatial_facts", []
+                  ),
                   range_authority_binding=stack_ranges.get("binding"),
                   relevant_read_dependencies=dependencies,
                   launch_initial_values=launch_initial_values,
@@ -981,7 +985,12 @@ let
                   ),
               )
 
-          def derive_global_slot_authority(slot_analysis):
+          def derive_global_slot_authority(
+              slot_analysis,
+              stack_ranges,
+              graph,
+              interprocedural,
+          ):
               return build_global_slot_authority_v2(
                   provenance=provenance,
                   global_slot_analysis=slot_analysis,
@@ -991,6 +1000,16 @@ let
                   image_base=binary.image_base,
                   size_of_image=binary.size_of_image,
                   original_binary=binary,
+                  stack_range_analysis=stack_ranges,
+                  stack_graph=graph,
+                  stack_launch_assumptions={"assumptions": assumptions},
+                  stack_call_summaries=interprocedural.get(
+                      "call_summaries", {}
+                  ),
+                  stack_indirect_recoveries=interprocedural.get(
+                      "recovered_targets", []
+                  ),
+                  stack_finite_offset_budget=analysis_finite_value_budget,
               )
 
           payload = derive_joint_fixed_point_v2(

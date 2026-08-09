@@ -48,7 +48,13 @@ class JointFixedPointCallbacks:
         [Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]
     ]
     derive_global_slot_authority: Callable[
-        [Mapping[str, Any]], Mapping[str, Any]
+        [
+            Mapping[str, Any],
+            Mapping[str, Any],
+            Mapping[str, Any],
+            Mapping[str, Any],
+        ],
+        Mapping[str, Any],
     ]
     derive_graph: Callable[[Mapping[str, Any]], Mapping[str, Any]]
     derive_inductive_interprocedural: Callable[
@@ -301,7 +307,12 @@ def _derive_graph_evidence(
             interprocedural,
         )
     )
-    slot_authority = callbacks.derive_global_slot_authority(slot_analysis)
+    slot_authority = callbacks.derive_global_slot_authority(
+        slot_analysis,
+        stack_ranges,
+        graph,
+        interprocedural,
+    )
     return stack_ranges, slot_analysis, slot_authority
 
 

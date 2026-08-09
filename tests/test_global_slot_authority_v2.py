@@ -19,7 +19,11 @@ from spaghetti_extractor.global_slot_image_v2 import (
     GlobalSlotImageV2Error,
     validate_global_slot_invariant_binding_v2,
 )
+from spaghetti_extractor.machine_ir_authority_v2 import machine_ir_sha256
 from spaghetti_extractor.stage_binary import _parse_stage_a_pe
+from spaghetti_extractor.stack_range_analysis_v2 import (
+    derive_stack_range_analysis_v2,
+)
 from tests.pe_fixtures import pe32_image_with_writable_data
 
 from tests.test_global_slot_analysis_v2 import (
@@ -51,6 +55,83 @@ def _provenance(*, slot: int = SLOT) -> dict:
 
 
 class GlobalSlotAuthorityV2Tests(unittest.TestCase):
+    def test_stack_spatial_authority_requires_full_rooted_replay(self) -> None:
+        units = [_unit(
+            "entry",
+            0x1000,
+            [
+                _write(_const(7), address={
+                    "op": "add32",
+                    "args": [_reg("esp"), _const(12)],
+                }),
+                _write(_const(0x401020)),
+                _read(),
+            ],
+        )]
+        graph = _graph(units)
+        launch = {
+            "assumptions": {
+                "initial_stack": {
+                    "contract": "private-non-image-stack-range-v2",
+                    "mapped_separately_from_image": True,
+                    "minimum_accessible_bytes_below": 0x1000,
+                    "minimum_accessible_bytes_above": 0x1000,
+                }
+            }
+        }
+        machine_sha = machine_ir_sha256(units)
+        stack = derive_stack_range_analysis_v2(
+            units=units,
+            graph=graph,
+            launch_assumptions=launch,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=machine_sha,
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+        analysis = _analyze(
+            units,
+            graph,
+            checked_spatial_facts=stack["checked_spatial_facts"],
+            range_binding=stack["binding"],
+        )
+
+        authority = build_global_slot_authority_v2(
+            provenance=_provenance(),
+            global_slot_analysis=analysis,
+            units=units,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=machine_sha,
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+            stack_range_analysis=stack,
+            stack_graph=graph,
+            stack_launch_assumptions=launch,
+        )
+
+        self.assertEqual(authority["status"], "complete", authority["issues"])
+        self.assertEqual(len(authority["global_slot_invariants"]), 1)
+
+        corrupted = copy.deepcopy(stack)
+        corrupted["entry_offsets"]["entry"] = [-4]
+        rejected = build_global_slot_authority_v2(
+            provenance=_provenance(),
+            global_slot_analysis=analysis,
+            units=units,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=machine_sha,
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+            stack_range_analysis=corrupted,
+            stack_graph=graph,
+            stack_launch_assumptions=launch,
+        )
+        self.assertEqual(rejected["status"], "violated")
+        self.assertIn(
+            "checked_memory_spatial_binding_invalid",
+            {row["code"] for row in rejected["issues"]},
+        )
+
     def _writable_data_binary(self, *, relocated: bool = False):
         raw = bytearray(pe32_image_with_writable_data(
             b"\xc3",
