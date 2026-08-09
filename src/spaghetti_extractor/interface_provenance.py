@@ -1421,6 +1421,16 @@ def _transfer_unit(
         framed_memory, framed_stack, memory_invalidated = _apply_call_memory_frame(
             pre_call, facts
         )
+        if facts.memory_writes is not None:
+            taints.update(
+                location
+                for location in pre_call.memory
+                if location not in framed_memory
+                and (
+                    isinstance(location, int)
+                    or location.kind in {"dynamic_range", "dynamic_location"}
+                )
+            )
         output = _State(
             registers={
                 register: (
@@ -1452,6 +1462,7 @@ def _transfer_unit(
                 concrete = int(address.key[0]) & 0xFFFFFFFF
                 output.memory[concrete] = origins
                 proposals[concrete] = origins
+                taints.discard(concrete)
             elif address.kind == "stack_location":
                 offset = int(address.key[0])
                 output.stack[offset] = _StackCell(origins, ())
@@ -1463,10 +1474,12 @@ def _transfer_unit(
                 location = _dynamic_memory_location(address)
                 output.memory[location] = origins
                 proposals[location] = origins
+                taints.discard(location)
             elif address.kind == "symbolic_affine":
                 # Parametric addresses remain local replay facts.  They are
                 # deliberately excluded from persistent slot proposals.
                 output.memory[address] = origins
+                taints.discard(address)
         if len(output.stack) > stack_slot_budget:
             output.stack.clear()
             output.registers["esp"] = None
@@ -1694,6 +1707,8 @@ def _static_identity_matches(
 def _selected_import_call_facts(
     selected: SelectedImportABI | None,
     outputs: Mapping[_Origin, _Value],
+    *,
+    memory_writes: tuple["_WriteSpan", ...] | None = None,
 ) -> _CallFacts:
     return _CallFacts(
         frozenset(selected.abi.preserved_registers) if selected else None,
@@ -1702,6 +1717,7 @@ def _selected_import_call_facts(
         None,
         outputs,
         memory_preserved=_selected_import_memory_preserved(selected),
+        memory_writes=memory_writes,
     )
 
 
@@ -1711,8 +1727,278 @@ def _selected_import_memory_preserved(
     contract = selected.contract if selected is not None else None
     return isinstance(contract, Mapping) and contract.get("memory_effect") in {
         "none",
+        "readOnly",
         "read_only",
     }
+
+
+def _selected_import_memory_write_argument_indices(
+    selected: SelectedImportABI | None,
+) -> frozenset[int] | None:
+    """Return writable caller-memory arguments from one reviewed import frame.
+
+    ``None`` means the selected contract has no usable frame and therefore
+    cannot justify retaining any caller-memory fact.  An empty set is useful
+    evidence: the reviewed call may touch opaque resources, but cannot write
+    through caller-memory arguments.
+    """
+
+    declarations = _selected_import_caller_memory_declarations(selected)
+    if declarations is not None:
+        return frozenset(
+            int(raw["argument_index"])
+            for raw in declarations
+            if raw["role"] == "caller_memory" and raw["access"] != "read"
+        )
+    footprints = _selected_import_write_footprints(selected)
+    if footprints is None:
+        return None
+    result: set[int] = set()
+    for footprint in footprints:
+        result.add(int(footprint["base_argument"]))
+        size = footprint["size"]
+        if size["kind"] == "argument":
+            result.add(int(size["argument"]))
+    return frozenset(result)
+
+
+def _selected_import_caller_memory_declarations(
+    selected: SelectedImportABI | None,
+) -> tuple[Mapping[str, Any], ...] | None:
+    contract = selected.contract if selected is not None else None
+    frame = contract.get("caller_memory_frame") if isinstance(contract, Mapping) else None
+    raw_declarations = frame.get("arguments") if isinstance(frame, Mapping) else None
+    if (
+        selected is None
+        or selected.argument_words is None
+        or not isinstance(frame, Mapping)
+        or frame.get("status") != "complete"
+        or frame.get("model") != "pe32-declared-pointer-arguments-v1"
+        or not isinstance(raw_declarations, list)
+    ):
+        return None
+    declarations: list[Mapping[str, Any]] = []
+    seen: set[int] = set()
+    for raw in raw_declarations:
+        if not isinstance(raw, Mapping):
+            return None
+        index = _integer(raw.get("argument_index"))
+        role = raw.get("role")
+        access = raw.get("access")
+        extent = raw.get("extent")
+        retention = raw.get("retention")
+        if (
+            index is None
+            or not 0 <= index < selected.argument_words
+            or index in seen
+            or role not in {"caller_memory", "interface_resource", "callback"}
+            or access not in {"read", "read_write"}
+            or extent not in {"fixed_word", "enclosing_object", "opaque_resource"}
+            or retention not in {"during_call", "callback_contract"}
+            or (role == "caller_memory" and extent == "opaque_resource")
+            or (role != "caller_memory" and extent != "opaque_resource")
+            or (role == "callback" and retention != "callback_contract")
+            or (role != "callback" and retention != "during_call")
+        ):
+            return None
+        seen.add(index)
+        declarations.append(raw)
+    return tuple(declarations)
+
+
+def _selected_import_write_footprints(
+    selected: SelectedImportABI | None,
+) -> tuple[Mapping[str, Any], ...] | None:
+    contract = selected.contract if selected is not None else None
+    if not isinstance(contract, Mapping) or selected is None:
+        return None
+    effect = contract.get("memory_effect")
+    raw_footprints = contract.get("memory_footprints")
+    if effect in {"none", "readOnly", "read_only"}:
+        if raw_footprints is None or raw_footprints == [] or raw_footprints == ():
+            return ()
+        if not isinstance(raw_footprints, (list, tuple)):
+            return None
+        return () if all(
+            isinstance(raw, Mapping) and raw.get("access") == "read"
+            for raw in raw_footprints
+        ) else None
+    if effect != "argumentRanges" or not isinstance(raw_footprints, list):
+        return None
+    result: list[Mapping[str, Any]] = []
+    for raw in raw_footprints:
+        if not isinstance(raw, Mapping):
+            return None
+        access = raw.get("access")
+        if access == "read":
+            continue
+        base_argument = _integer(raw.get("base_argument"))
+        offset = _integer(raw.get("offset"))
+        nullable = raw.get("nullable")
+        size = raw.get("size")
+        if (
+            access not in {"write", "read_write"}
+            or base_argument is None
+            or selected.argument_words is None
+            or not 0 <= base_argument < selected.argument_words
+            or offset is None
+            or not isinstance(nullable, bool)
+            or not isinstance(size, Mapping)
+        ):
+            return None
+        size_kind = size.get("kind")
+        if size_kind == "fixed":
+            byte_count = _integer(size.get("bytes"))
+            if byte_count is None or byte_count < 0:
+                return None
+        elif size_kind == "argument":
+            size_argument = _integer(size.get("argument"))
+            scale = _integer(size.get("scale"))
+            if (
+                size_argument is None
+                or not 0 <= size_argument < selected.argument_words
+                or scale is None
+                or scale <= 0
+            ):
+                return None
+        else:
+            return None
+        result.append(raw)
+    return tuple(result)
+
+
+def _selected_import_memory_writes(
+    selected: SelectedImportABI | None,
+    arguments: Sequence[_Value] | None,
+) -> tuple["_WriteSpan", ...] | None:
+    required = _selected_import_memory_write_argument_indices(selected)
+    if required is None:
+        return None
+    if not required:
+        return ()
+    declarations = _selected_import_caller_memory_declarations(selected)
+    if arguments is None:
+        return None
+    writes: set[_WriteSpan] = set()
+    if declarations is not None:
+        for raw in declarations:
+            if raw["role"] != "caller_memory" or raw["access"] == "read":
+                continue
+            index = int(raw["argument_index"])
+            origins = arguments[index]
+            if origins is None:
+                return None
+            size = 4 if raw["extent"] == "fixed_word" else None
+            for origin in origins:
+                if origin.kind not in {
+                    "exact",
+                    "stack_location",
+                    "dynamic_range",
+                    "dynamic_location",
+                }:
+                    return None
+                if origin.kind == "exact" and int(origin.key[0]) & 0xFFFFFFFF == 0:
+                    continue
+                writes.add(_WriteSpan(origin, size))
+        return tuple(sorted(writes))
+    footprints = _selected_import_write_footprints(selected)
+    if footprints is None:
+        return None
+    for footprint in footprints:
+        base_values = arguments[int(footprint["base_argument"])]
+        if base_values is None:
+            return None
+        size_spec = footprint["size"]
+        if size_spec["kind"] == "fixed":
+            sizes = {int(size_spec["bytes"])}
+        else:
+            size_values = arguments[int(size_spec["argument"])]
+            if size_values is None:
+                return None
+            scale = int(size_spec["scale"])
+            concrete_sizes = {
+                origin_concrete_value(origin) for origin in size_values
+            }
+            if None in concrete_sizes:
+                return None
+            sizes = {int(value) * scale for value in concrete_sizes}
+        offset = int(footprint["offset"])
+        for base in base_values:
+            shifted = _offset_write_base(base, offset)
+            if shifted is None:
+                return None
+            if shifted.kind == "exact" and int(shifted.key[0]) & 0xFFFFFFFF == 0:
+                continue
+            for size in sizes:
+                if size < 0 or size > 0xFFFFFFFF:
+                    return None
+                if size:
+                    writes.add(_WriteSpan(shifted, size))
+    return tuple(sorted(writes))
+
+
+def _offset_write_base(origin: _Origin, offset: int) -> _Origin | None:
+    if origin.kind == "exact":
+        return _Origin("exact", ((int(origin.key[0]) + offset) & 0xFFFFFFFF,))
+    if origin.kind == "stack_location":
+        return _Origin("stack_location", (int(origin.key[0]) + offset,))
+    if origin.kind in {"dynamic_range", "dynamic_location"}:
+        return _offset_dynamic_location(origin, offset)
+    return None
+
+
+def _selected_import_frame_facts(
+    selected: SelectedImportABI | None,
+    outputs: Mapping[_Origin, _Value],
+    *,
+    unit_id: str,
+    unit: Mapping[str, Any],
+    event_index: int,
+    pre_call: _State,
+    input_state: _State,
+    inventory: _ProfileInventory,
+    known_slots: Mapping[int, _Value],
+    budget: int,
+) -> tuple[_CallFacts, dict[str, Any] | None]:
+    required = _selected_import_memory_write_argument_indices(selected)
+    if required is None:
+        return _selected_import_call_facts(selected, outputs), None
+    if not required:
+        return (
+            _selected_import_call_facts(selected, outputs, memory_writes=()),
+            None,
+        )
+    if (
+        selected is None
+        or selected.argument_words is None
+        or any(index >= selected.argument_words for index in required)
+    ):
+        return _selected_import_call_facts(selected, outputs), None
+    arguments, recovery = _recover_call_arguments(
+        pre_call,
+        input_state,
+        unit,
+        unit_id=unit_id,
+        event_index=event_index,
+        argument_words=selected.argument_words,
+        inventory=inventory,
+        known_slots=known_slots,
+        budget=budget,
+        required_argument_indices=required,
+    )
+    recovery["purpose"] = "machine_import_memory_frame"
+    recovery["machine_import"] = {
+        "dll": selected.identity.dll,
+        selected.identity.kind: selected.identity.value,
+    }
+    return (
+        _selected_import_call_facts(
+            selected,
+            outputs,
+            memory_writes=_selected_import_memory_writes(selected, arguments),
+        ),
+        recovery,
+    )
 
 
 def _dynamic_range_origin(
@@ -2251,17 +2537,28 @@ def _call_contract(
             )
         factory_entry = inventory.factories.get(identity) if identity is not None else None
         if factory_entry is None:
-            return (
-                _CallFacts(
-                    frozenset(selected.abi.preserved_registers) if selected else None,
-                    selected.abi if selected else None,
-                    selected.argument_words if selected else None,
-                    None,
-                    outputs,
-                ),
-                issues,
-                argument_recoveries,
+            facts, recovery = _selected_import_frame_facts(
+                selected,
+                outputs,
+                unit_id=unit_id,
+                unit=unit,
+                event_index=event_index,
+                pre_call=pre_call,
+                input_state=state,
+                inventory=inventory,
+                known_slots=known_slots,
+                budget=budget,
             )
+            if recovery is not None:
+                argument_recoveries.append(recovery)
+                if recovery["status"] != "complete":
+                    issues.append({
+                        "code": "machine_import_memory_frame_arguments_incomplete",
+                        "unit_id": unit_id,
+                        "event_index": event_index,
+                        "failure": recovery["failure"]["code"],
+                    })
+            return facts, issues, argument_recoveries
         profile_sha256, factory = factory_entry
         arguments, recovery = _recover_call_arguments(
             pre_call,
@@ -2463,6 +2760,43 @@ def _call_contract(
             argument_recoveries,
         )
     if methods is None:
+        selected = (
+            import_abis.get(call_identity)
+            if call_identity is not None
+            else None
+        )
+        if selected is not None:
+            _merge_output_effects(
+                outputs,
+                _selected_import_result_outputs(
+                    selected, unit_id=unit_id, event_index=event_index
+                ),
+                budget=budget,
+                issues=issues,
+                unit_id=unit_id,
+            )
+            facts, recovery = _selected_import_frame_facts(
+                selected,
+                outputs,
+                unit_id=unit_id,
+                unit=unit,
+                event_index=event_index,
+                pre_call=pre_call,
+                input_state=state,
+                inventory=inventory,
+                known_slots=known_slots,
+                budget=budget,
+            )
+            if recovery is not None:
+                argument_recoveries.append(recovery)
+                if recovery["status"] != "complete":
+                    issues.append({
+                        "code": "machine_import_memory_frame_arguments_incomplete",
+                        "unit_id": unit_id,
+                        "event_index": event_index,
+                        "failure": recovery["failure"]["code"],
+                    })
+            return facts, issues, argument_recoveries
         recovered = recovered_calls.get((unit_id, event_index))
         call_dependencies = frozenset(
             _call_frame_dependency_id(unit_id, event_index, target)

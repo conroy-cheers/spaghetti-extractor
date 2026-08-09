@@ -171,6 +171,38 @@ def ordinary_indirect_call(
     )
 
 
+def selected_import_call(
+    identifier: str,
+    rva: int,
+    *,
+    symbol: str,
+    pointer_argument: int | None = None,
+) -> dict[str, object]:
+    events: list[dict[str, object]] = []
+    ordered: list[dict[str, object]] = []
+    event = {
+        "kind": "external_call",
+        "dll": "example.dll",
+        "symbol": symbol,
+        "ordinal": None,
+        "return_rva": rva + 1,
+        "register_inputs": {name: reg(name) for name in REGISTERS},
+    }
+    if pointer_argument is not None:
+        call_esp = sub(reg("esp"), const(4))
+        write = {
+            "kind": "write",
+            "width": 4,
+            "address": call_esp,
+            "value": const(pointer_argument),
+        }
+        event["register_inputs"]["esp"] = call_esp
+        ordered.append(write)
+    events.append(event)
+    ordered.append(event)
+    return unit(identifier, rva, events=events, ordered=ordered)
+
+
 def edge(source: str, target: str) -> dict[str, object]:
     return {"source_unit_id": source, "target_unit_id": target}
 
@@ -348,6 +380,231 @@ class InterfaceProvenanceTests(unittest.TestCase):
 
         self.assertEqual(result["resolutions"][0]["status"], "recovered", result)
         self.assertEqual(result["counts"]["static_interface_slots"], 1)
+
+    def test_selected_import_read_frame_preserves_interface_slot(self) -> None:
+        identity = MachineImportIdentity("example.dll", "symbol", "Observe")
+        selected = self._selected_abi(
+            identity,
+            argument_words=1,
+            contract=self._caller_memory_contract(
+                argument_index=0,
+                access="read",
+                extent="enclosing_object",
+            ),
+        )
+        units = [
+            factory_unit(),
+            selected_import_call("observe", 0x1180, symbol="Observe"),
+            unit("object", 0x1200, writes=[{
+                "register": "eax", "value": load(const(SLOT)),
+            }]),
+            unit("vtable", 0x1300, writes=[{
+                "register": "ecx", "value": load(reg("eax")),
+            }]),
+            indirect_call(),
+        ]
+
+        result = self._run(
+            units,
+            [
+                edge("factory", "observe"),
+                edge("observe", "object"),
+                edge("object", "vtable"),
+                edge("vtable", "call"),
+            ],
+            roots=["factory"],
+            extra_import_abis={identity: selected},
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "recovered")
+
+    def test_selected_import_write_frame_preserves_disjoint_interface_slot(self) -> None:
+        identity = MachineImportIdentity("example.dll", "symbol", "WriteWord")
+        selected = self._selected_abi(
+            identity,
+            argument_words=1,
+            contract=self._caller_memory_contract(
+                argument_index=0,
+                access="read_write",
+                extent="fixed_word",
+            ),
+        )
+        units = [
+            factory_unit(),
+            selected_import_call(
+                "write-word", 0x1180, symbol="WriteWord", pointer_argument=CHILD_SLOT
+            ),
+            unit("object", 0x1200, writes=[{
+                "register": "eax", "value": load(const(SLOT)),
+            }]),
+            unit("vtable", 0x1300, writes=[{
+                "register": "ecx", "value": load(reg("eax")),
+            }]),
+            indirect_call(),
+        ]
+
+        result = self._run(
+            units,
+            [
+                edge("factory", "write-word"),
+                edge("write-word", "object"),
+                edge("object", "vtable"),
+                edge("vtable", "call"),
+            ],
+            roots=["factory"],
+            extra_import_abis={identity: selected},
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "recovered")
+        recovery = next(
+            row
+            for row in result["call_argument_recoveries"]
+            if row.get("purpose") == "machine_import_memory_frame"
+        )
+        self.assertEqual(recovery["status"], "complete")
+        self.assertEqual(recovery["required_argument_indices"], [0])
+
+    def test_selected_import_write_frame_invalidates_aliased_interface_slot(self) -> None:
+        identity = MachineImportIdentity("example.dll", "symbol", "WriteWord")
+        selected = self._selected_abi(
+            identity,
+            argument_words=1,
+            contract=self._caller_memory_contract(
+                argument_index=0,
+                access="read_write",
+                extent="fixed_word",
+            ),
+        )
+        units = [
+            factory_unit(),
+            selected_import_call(
+                "write-word", 0x1180, symbol="WriteWord", pointer_argument=SLOT
+            ),
+            unit("object", 0x1200, writes=[{
+                "register": "eax", "value": load(const(SLOT)),
+            }]),
+            unit("vtable", 0x1300, writes=[{
+                "register": "ecx", "value": load(reg("eax")),
+            }]),
+            indirect_call(),
+        ]
+
+        result = self._run(
+            units,
+            [
+                edge("factory", "write-word"),
+                edge("write-word", "object"),
+                edge("object", "vtable"),
+                edge("vtable", "call"),
+            ],
+            roots=["factory"],
+            extra_import_abis={identity: selected},
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "incomplete")
+
+    def test_cached_selected_import_frame_preserves_interface_slot(self) -> None:
+        identity = MachineImportIdentity("example.dll", "symbol", "Observe")
+        selected = self._selected_abi(
+            identity,
+            argument_words=1,
+            contract=self._caller_memory_contract(
+                argument_index=0,
+                access="read",
+                extent="enclosing_object",
+            ),
+        )
+        iat = IMAGE_BASE + 0x5000
+        cached_call = ordinary_indirect_call("cached-call", 0x1180)
+        cached_call["semantics"]["external_events"][0]["target"] = reg("edi")
+        cached_call["semantics"]["ordered_events"][-1]["target"] = reg("edi")
+        units = [
+            factory_unit(),
+            unit("cache", 0x1170, writes=[{
+                "register": "edi", "value": load(const(iat)),
+            }]),
+            cached_call,
+            unit("object", 0x1200, writes=[{
+                "register": "eax", "value": load(const(SLOT)),
+            }]),
+            unit("vtable", 0x1300, writes=[{
+                "register": "ecx", "value": load(reg("eax")),
+            }]),
+            indirect_call(),
+        ]
+
+        result = self._run(
+            units,
+            [
+                edge("factory", "cache"),
+                edge("cache", "cached-call"),
+                edge("cached-call", "object"),
+                edge("object", "vtable"),
+                edge("vtable", "call"),
+            ],
+            roots=["factory"],
+            imports=[{
+                "dll": "example.dll",
+                "symbol": "Observe",
+                "ordinal": None,
+                "thunk_rva": 0x5000,
+            }],
+            extra_import_abis={identity: selected},
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "recovered")
+
+    def test_selected_import_read_only_effect_preserves_interface_slot(self) -> None:
+        identity = MachineImportIdentity("example.dll", "symbol", "Inspect")
+        selected = self._selected_abi(
+            identity,
+            argument_words=1,
+            contract={
+                "memory_effect": "readOnly",
+                "memory_footprints": [{
+                    "access": "read",
+                    "base_argument": 0,
+                    "offset": 0,
+                    "size": {"kind": "fixed", "bytes": 4},
+                    "nullable": False,
+                }],
+            },
+        )
+
+        result = self._run_selected_import_memory_case(
+            selected, symbol="Inspect", pointer_argument=None
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "recovered")
+
+    def test_selected_import_argument_range_preserves_disjoint_interface_slot(self) -> None:
+        identity = MachineImportIdentity("example.dll", "symbol", "FillWord")
+        selected = self._selected_abi(
+            identity,
+            argument_words=1,
+            contract={
+                "memory_effect": "argumentRanges",
+                "memory_footprints": [{
+                    "access": "write",
+                    "base_argument": 0,
+                    "offset": 0,
+                    "size": {"kind": "fixed", "bytes": 4},
+                    "nullable": False,
+                }],
+            },
+        )
+
+        result = self._run_selected_import_memory_case(
+            selected, symbol="FillWord", pointer_argument=CHILD_SLOT
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "recovered")
+        recovery = next(
+            row
+            for row in result["call_argument_recoveries"]
+            if row.get("purpose") == "machine_import_memory_frame"
+        )
+        self.assertEqual(recovery["required_argument_indices"], [0])
 
     def test_factory_object_survives_equal_symbolic_indexed_location(self) -> None:
         factory = factory_unit()
@@ -2922,12 +3179,48 @@ class InterfaceProvenanceTests(unittest.TestCase):
             allow_global_slot_promotion=allow_global_slot_promotion,
         )
 
+    def _run_selected_import_memory_case(
+        self,
+        selected: SelectedImportABI,
+        *,
+        symbol: str,
+        pointer_argument: int | None,
+    ) -> dict[str, object]:
+        units = [
+            factory_unit(),
+            selected_import_call(
+                "selected-import",
+                0x1180,
+                symbol=symbol,
+                pointer_argument=pointer_argument,
+            ),
+            unit("object", 0x1200, writes=[{
+                "register": "eax", "value": load(const(SLOT)),
+            }]),
+            unit("vtable", 0x1300, writes=[{
+                "register": "ecx", "value": load(reg("eax")),
+            }]),
+            indirect_call(),
+        ]
+        return self._run(
+            units,
+            [
+                edge("factory", "selected-import"),
+                edge("selected-import", "object"),
+                edge("object", "vtable"),
+                edge("vtable", "call"),
+            ],
+            roots=["factory"],
+            extra_import_abis={selected.identity: selected},
+        )
+
     @staticmethod
     def _selected_abi(
         identity: MachineImportIdentity,
         *,
         argument_words: int | None,
         abi_template: str = "pe32-stdcall-v1",
+        contract: dict[str, object] | None = None,
     ) -> SelectedImportABI:
         abi = resolve_machine_call_abi(abi_template)
         assert abi is not None
@@ -2939,7 +3232,35 @@ class InterfaceProvenanceTests(unittest.TestCase):
             entry_key="machine_import_signatures",
             entry_index=1,
             argument_words=argument_words,
+            contract=contract,
         )
+
+    @staticmethod
+    def _caller_memory_contract(
+        *,
+        argument_index: int,
+        access: str,
+        extent: str,
+    ) -> dict[str, object]:
+        return {
+            "memory_effect": "sameNativeTargetCallThrough",
+            "caller_memory_frame": {
+                "status": "complete",
+                "model": "pe32-declared-pointer-arguments-v1",
+                "arguments": [{
+                    "argument_index": argument_index,
+                    "role": "caller_memory",
+                    "access": access,
+                    "extent": extent,
+                    "retention": "during_call",
+                }],
+                "assumptions": [
+                    "caller memory is accessed only through declared pointer arguments",
+                    "non-callback pointer arguments are retained only during the call",
+                    "opaque interface resources are disjoint from caller image and stack memory",
+                ],
+            },
+        }
 
 
 if __name__ == "__main__":
