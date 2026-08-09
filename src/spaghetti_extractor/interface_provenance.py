@@ -238,6 +238,7 @@ class _InternalCleanupEvidence:
 class _RunResult:
     states: dict[str, _State]
     resolutions: list[dict[str, Any]]
+    path_recovery_proposals: list[dict[str, Any]]
     proposed_slots: dict[_MemoryLocation, _Value]
     tainted_slots: set[_MemoryLocation]
     issues: list[dict[str, Any]]
@@ -293,6 +294,7 @@ def recover_external_interface_targets(
     recovered_known_slots: dict[_MemoryLocation, _Value] | None = None,
     checked_stack_entry_offsets: Mapping[str, Sequence[int]] | None = None,
     allow_global_slot_promotion: bool = True,
+    collect_path_recovery_proposals: bool = False,
 ) -> dict[str, Any]:
     """Recover finite external method targets from typed interface origins."""
 
@@ -302,6 +304,8 @@ def recover_external_interface_targets(
         raise ValueError("interface provenance budgets must be positive")
     if not isinstance(allow_global_slot_promotion, bool):
         raise ValueError("allow_global_slot_promotion must be a boolean")
+    if not isinstance(collect_path_recovery_proposals, bool):
+        raise ValueError("path-recovery proposal selection must be a boolean")
     effective_fixed_point_budget = (
         fixed_point_budget
         if fixed_point_budget is not None
@@ -432,6 +436,7 @@ def recover_external_interface_targets(
             static_slot_budget=static_slot_budget,
             stack_slot_budget=stack_slot_budget,
             checked_stack_entry_offsets=stack_entry_offsets,
+            collect_path_recovery_proposals=collect_path_recovery_proposals,
         )
         proposed = {
             address: origins
@@ -632,6 +637,11 @@ def recover_external_interface_targets(
             )
         ],
         "resolutions": final.resolutions,
+        # These path-sensitive rows are discovery hints only.  They capture a
+        # finite target observed before a must-analysis join loses provenance;
+        # the interprocedural driver must reproduce them in an unseeded or
+        # explicitly inductive replay before they become authority.
+        "path_recovery_proposals": final.path_recovery_proposals,
         "call_argument_recoveries": call_argument_recoveries,
         "callback_registrations": callback_registrations,
         "memory_access_proposals": memory_access_proposals,
@@ -647,6 +657,7 @@ def recover_external_interface_targets(
             "recovered_operation_exits": recovered_operation,
             "recovered_callable_exits": recovered_callable,
             "recovered_indirect_exits": recovered,
+            "path_recovery_proposals": len(final.path_recovery_proposals),
             "static_interface_slots": sum(
                 isinstance(address, int) for address in known_slots
             ),
@@ -1061,6 +1072,7 @@ def _run_dataflow(
     static_slot_budget: int,
     stack_slot_budget: int,
     checked_stack_entry_offsets: Mapping[str, frozenset[int]],
+    collect_path_recovery_proposals: bool,
 ) -> _RunResult:
     input_states = {
         root: _State(
@@ -1091,6 +1103,12 @@ def _run_dataflow(
     transfer_cache_hits = 0
     budget_exceeded = 0
     transfer_cache: dict[tuple[str, tuple[Any, ...]], _UnitTransfer] = {}
+    exits_by_source: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for exit_record in indirect_exits:
+        source = exit_record.get("source_unit_id")
+        if isinstance(source, str):
+            exits_by_source[source].append(exit_record)
+    path_recoveries: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
 
     def transfer_unit(source_id: str) -> _UnitTransfer:
         nonlocal evaluations, transfer_requests, transfer_cache_hits, budget_exceeded
@@ -1139,6 +1157,38 @@ def _run_dataflow(
     while work:
         _, source_id = heapq.heappop(work)
         queued.remove(source_id)
+        if collect_path_recovery_proposals and exits_by_source.get(source_id):
+            checked_state = _with_checked_stack_entry(
+                input_states[source_id],
+                unit_id=source_id,
+                checked_stack_entry_offsets=checked_stack_entry_offsets,
+            )
+            for proposal in _resolve_exits(
+                exits_by_source[source_id],
+                by_id=by_id,
+                states={source_id: checked_state},
+                inventory=inventory,
+                import_abis=import_abis,
+                known_slots=known_slots,
+                finite_value_budget=finite_value_budget,
+            ):
+                if proposal.get("status") != "recovered":
+                    continue
+                identity = str(proposal.get("id") or "")
+                projection = _recovery_target_projection(proposal)
+                key = json.dumps(
+                    projection,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                    allow_nan=False,
+                )
+                existing = path_recoveries[identity].get(key)
+                path_recoveries[identity][key] = _merge_path_recovery_proposal(
+                    existing,
+                    proposal,
+                    finite_value_budget=finite_value_budget,
+                )
         (
             transfer,
             _,
@@ -1234,9 +1284,14 @@ def _run_dataflow(
         known_slots=known_slots,
         finite_value_budget=finite_value_budget,
     )
+    path_recovery_proposals = _finalize_path_recovery_proposals(
+        resolutions,
+        path_recoveries,
+    )
     return _RunResult(
         states=input_states,
         resolutions=resolutions,
+        path_recovery_proposals=path_recovery_proposals,
         proposed_slots=proposed_slots,
         tainted_slots=tainted_slots,
         issues=_deduplicate(issues),
@@ -3999,7 +4054,11 @@ def _recovered_call_facts(
         return None, issues, argument_recoveries
 
     alternatives: list[_CallFacts] = []
-    dependencies = frozenset(
+    recovery_id = recovery.get("id")
+    dependencies = frozenset({recovery_id}) if isinstance(
+        recovery_id, str
+    ) and recovery_id else frozenset()
+    dependencies |= frozenset(
         _call_frame_dependency_id(
             str(recovery.get("source_unit_id") or "unknown"),
             _integer(recovery.get("source_event_index")) or 0,
@@ -5124,6 +5183,97 @@ def _resolve_exits(
             "target_origin_witnesses": origins_json(origins),
             "analysis_dependencies": list(value_dependencies(origins)),
             "failure": None,
+        })
+    return result
+
+
+def _recovery_target_projection(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Project one finite recovery onto the target set it proposes."""
+
+    return {
+        "target_rvas": row.get("target_rvas", []),
+        "target_unit_ids": row.get("target_unit_ids", []),
+        "external_targets": row.get("external_targets", []),
+    }
+
+
+def _merge_path_recovery_proposal(
+    existing: Mapping[str, Any] | None,
+    candidate: Mapping[str, Any],
+    *,
+    finite_value_budget: int,
+) -> dict[str, Any]:
+    """Keep one deterministic witnessed state for an agreeing path target."""
+
+    if existing is None:
+        return copy.deepcopy(dict(candidate))
+    choices = [existing, candidate]
+
+    def rank(row: Mapping[str, Any]) -> tuple[int, int, str]:
+        dependencies = row.get("analysis_dependencies", ())
+        witnesses = row.get("target_origin_witnesses", ())
+        dependency_count = (
+            len(dependencies)
+            if isinstance(dependencies, Sequence)
+            and not isinstance(dependencies, (str, bytes))
+            else 0
+        )
+        witness_count = (
+            len(witnesses)
+            if isinstance(witnesses, Sequence)
+            and not isinstance(witnesses, (str, bytes))
+            and len(witnesses) <= finite_value_budget
+            else 0
+        )
+        return (
+            dependency_count,
+            witness_count,
+            json.dumps(
+                row,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ),
+        )
+
+    return copy.deepcopy(dict(max(choices, key=rank)))
+
+
+def _finalize_path_recovery_proposals(
+    final_resolutions: Sequence[Mapping[str, Any]],
+    candidates: Mapping[str, Mapping[str, Mapping[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Emit non-authorizing finite path hints, rejecting disagreements."""
+
+    by_id = {
+        str(row.get("id")): row
+        for row in final_resolutions
+        if isinstance(row.get("id"), str)
+    }
+    result: list[dict[str, Any]] = []
+    for identity, alternatives in sorted(candidates.items()):
+        if len(alternatives) == 1:
+            row = copy.deepcopy(dict(next(iter(alternatives.values()))))
+            row["proposal_source"] = "path_sensitive_pre_widening_v1"
+            row["proof_authority"] = False
+            result.append(row)
+            continue
+        base = copy.deepcopy(dict(by_id.get(identity, {})))
+        result.append({
+            **base,
+            "id": identity,
+            "status": "incomplete",
+            "closure": "unresolved",
+            "target_rvas": [],
+            "target_unit_ids": [],
+            "external_targets": [],
+            "proposal_source": "path_sensitive_pre_widening_v1",
+            "proof_authority": False,
+            "failure": {
+                "code": "conflicting_path_recovery_proposals",
+                "alternative_count": len(alternatives),
+            },
         })
     return result
 

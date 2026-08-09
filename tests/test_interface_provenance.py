@@ -1775,6 +1775,10 @@ class InterfaceProvenanceTests(unittest.TestCase):
         )
 
         self.assertEqual(result["resolutions"][0]["status"], "recovered", result)
+        self.assertIn(
+            "exit:release",
+            result["resolutions"][0]["analysis_dependencies"],
+        )
 
     def test_conflicting_predecessor_arguments_remain_finite(self) -> None:
         def prepare(identifier: str, address: int) -> dict[str, object]:
@@ -3136,6 +3140,56 @@ class InterfaceProvenanceTests(unittest.TestCase):
             {issue["code"] for issue in strict_with_contract["issues"]},
         )
 
+    def test_path_proposal_retains_target_seen_before_loop_widening(self) -> None:
+        target_address = IMAGE_BASE + 0x2000
+        seed = unit(
+            "seed",
+            0x1000,
+            writes=[{"register": "esi", "value": const(target_address)}],
+        )
+        call_event = {
+            "kind": "indirect_call",
+            "return_rva": 0x1002,
+            "target": reg("esi"),
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        call = unit("call", 0x1001, events=[call_event])
+        clobber = unit(
+            "clobber",
+            0x1002,
+            writes=[{"register": "esi", "value": {"op": "unknown"}}],
+        )
+        exit_row = {
+            "id": "exit:call",
+            "source_unit_id": "call",
+            "source_rva": 0x1001,
+            "source_event_index": 0,
+            "kind": "indirect_call",
+            "target_expression": reg("esi"),
+        }
+        result = self._run(
+            [seed, call, clobber, unit("target", 0x2000)],
+            [
+                edge("seed", "call"),
+                edge("call", "clobber"),
+                edge("clobber", "call"),
+            ],
+            roots=["seed"],
+            indirect_exits=[exit_row],
+            bootstrap_unknown_call_preserved_registers=frozenset({"esi"}),
+            collect_path_recovery_proposals=True,
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "incomplete")
+        proposal = result["path_recovery_proposals"][0]
+        self.assertEqual(proposal["status"], "recovered")
+        self.assertEqual(proposal["target_rvas"], [0x2000])
+        self.assertFalse(proposal["proof_authority"])
+        self.assertEqual(
+            proposal["proposal_source"],
+            "path_sensitive_pre_widening_v1",
+        )
+
     def _run(
         self,
         units: list[dict[str, object]],
@@ -3164,6 +3218,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
         recovered_known_slots: dict[object, object] | None = None,
         checked_stack_entry_offsets: dict[str, list[int]] | None = None,
         allow_global_slot_promotion: bool = True,
+        collect_path_recovery_proposals: bool = False,
     ) -> dict[str, object]:
         identity = MachineImportIdentity("example.dll", "symbol", "CreateThing")
         abi = resolve_machine_call_abi("pe32-stdcall-v1")
@@ -3217,6 +3272,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
             recovered_known_slots=recovered_known_slots,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
             allow_global_slot_promotion=allow_global_slot_promotion,
+            collect_path_recovery_proposals=collect_path_recovery_proposals,
         )
 
     def _run_selected_import_memory_case(

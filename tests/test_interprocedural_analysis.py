@@ -12,6 +12,7 @@ from spaghetti_extractor.interprocedural_analysis import (
     _call_summary_inputs,
     _call_summary_memory_preservation,
     _call_site_memory_preservation,
+    _requires_inductive_replay,
     analyze_interprocedural_control,
 )
 from spaghetti_extractor.indirect_target_dependency_v2 import (
@@ -778,6 +779,64 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         self.assertFalse(replay["executed"])
         self.assertFalse(replay["proof_authority"])
         self.assertEqual(replay["missing_ids"], [])
+
+    def test_recovery_certificate_dependency_triggers_inductive_replay(self) -> None:
+        exit_row = indirect_exit("exit:a:0", "a")
+        seed = recovered(exit_row, "b")
+        seed["analysis_dependencies"] = [exit_row["id"]]
+
+        self.assertTrue(
+            _requires_inductive_replay(
+                units=[unit("a", 0x1000), unit("b", 0x2000)],
+                roots=["a"],
+                direct_edges=[],
+                internal_call_edges=[],
+                indirect_exits=[exit_row],
+                summaries={"summaries": [{"target_unit_id": "a"}]},
+                hypotheses=[seed],
+            )
+        )
+
+    def test_path_recovery_is_exported_without_authorizing_cold_replay(self) -> None:
+        exit_row = indirect_exit("exit:a:0", "a")
+        seed = recovered(exit_row, "b")
+        seed.update({
+            "analysis_dependencies": [exit_row["id"]],
+            "origin_count": 1,
+            "origin_kinds": ["internal"],
+            "target_origin_witnesses": [
+                {"kind": "static_code", "key": [IMAGE_BASE + 0x2000, 0]}
+            ],
+            "proposal_source": "path_sensitive_pre_widening_v1",
+            "proof_authority": False,
+        })
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            return {
+                "resolutions": [incomplete_recovery(exit_row)],
+                "path_recovery_proposals": (
+                    [seed]
+                    if kwargs.get("collect_path_recovery_proposals") is True
+                    else []
+                ),
+            }
+
+        result = self._run(
+            units=[unit("a", 0x1000), unit("b", 0x2000)],
+            roots=["a"],
+            exits=[exit_row],
+            resolver=resolver,
+        )
+
+        self.assertFalse(result.complete)
+        self.assertEqual(result.recovered_targets[0]["status"], "incomplete")
+        proposal = result.proposal_artifacts["recoveries"][0]
+        self.assertEqual(proposal["status"], "recovered")
+        self.assertFalse(proposal["proof_authority"])
+        self.assertEqual(
+            result.fixed_point["inductive_replay"]["status"],
+            "not_applicable",
+        )
 
     def test_witnessed_inductive_replay_can_close_a_checked_cycle(self) -> None:
         exit_row = indirect_exit("exit:a:0", "a")

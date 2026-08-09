@@ -1032,6 +1032,7 @@ def _run_typed_pass(
             allow_global_slot_promotion=False,
             initial_known_slots=checked_global_slots,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
+            collect_path_recovery_proposals=allow_bootstrap,
         )
         next_call_site_effects = _call_site_effect_rows(operation_provenance)
         next_roots = active_roots | _callback_root_unit_ids(
@@ -1058,6 +1059,11 @@ def _run_typed_pass(
         next_selected = _prefer_indirect_recoveries(
             static_recoveries,
             value_provenance.get("resolutions", []),
+            (
+                operation_provenance.get("path_recovery_proposals", [])
+                if allow_bootstrap
+                else []
+            ),
             operation_provenance.get("resolutions", []),
         )
         next_selected = _bind_mutable_slot_dependencies(
@@ -2285,6 +2291,9 @@ def _derive_dependency_edges(
         ):
             continue
         for dependency in raw_dependencies:
+            if isinstance(dependency, str) and dependency in recovery_by_id:
+                dependencies.add((dependency, recovery_id))
+                continue
             target = _call_frame_dependency_target(dependency)
             if target is not None and target in summary_roots:
                 dependencies.add((_summary_node(target), recovery_id))
