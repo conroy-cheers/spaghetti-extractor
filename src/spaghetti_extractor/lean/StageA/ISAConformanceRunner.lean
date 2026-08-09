@@ -86,20 +86,22 @@ private def controlJson : ISAConformanceControl -> Json
       ("import", importJson imported),
       ("arguments", toJson arguments)
     ]
-  | .bulkCopy destination source count direction continuationRva => Json.mkObj [
+  | .bulkCopy destination source count direction elementBytes continuationRva => Json.mkObj [
       ("kind", toJson "bulk_copy"),
       ("destination", toJson destination),
       ("source", toJson source),
       ("count", toJson count),
       ("direction", toJson direction),
+      ("element_bytes", toJson elementBytes),
       ("continuation_rva", toJson continuationRva)
     ]
-  | .bulkFill destination value count direction continuationRva => Json.mkObj [
+  | .bulkFill destination value count direction elementBytes continuationRva => Json.mkObj [
       ("kind", toJson "bulk_fill"),
       ("destination", toJson destination),
       ("value", toJson value),
       ("count", toJson count),
       ("direction", toJson direction),
+      ("element_bytes", toJson elementBytes),
       ("continuation_rva", toJson continuationRva)
     ]
   | .bulkScan accumulator destination count direction continuationRva => Json.mkObj [

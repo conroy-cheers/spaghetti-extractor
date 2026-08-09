@@ -954,6 +954,7 @@ typedef struct stage_b_call_event {
 #define STAGE_B_MAX_EXTERNAL_ARGUMENTS 256U
 typedef struct stage_b_external_call_snapshot {
   uint32_t instruction_rva;
+  uint32_t target_iat_rva;
   uint32_t argument_base_offset;
   uint32_t argument_count;
   uint32_t arguments[STAGE_B_MAX_EXTERNAL_ARGUMENTS];
@@ -1005,6 +1006,11 @@ typedef stage_b_call_status (*stage_b_callable_external_jump_handler)(
     const stage_b_machine_state *input,
     stage_b_machine_state *output);
 
+typedef void (*stage_b_transfer_trace_handler)(
+    void *context,
+    uint32_t rva,
+    const stage_b_machine_state *state);
+
 struct stage_b_runtime {
   void *context;
   uint32_t (*read)(void *context, uint32_t address, uint32_t width, uint32_t *fault);
@@ -1015,6 +1021,7 @@ struct stage_b_runtime {
       void *context, uint32_t slot, const stage_b_machine_state *input,
       uint32_t defined_value);
   stage_b_external_call_handler external_call_fallback;
+  stage_b_transfer_trace_handler trace_transfer;
   stage_b_code_target_resolver resolve_code_target;
   stage_b_callable_external_jump_handler invoke_callable_external_jump;
 };
@@ -1272,6 +1279,8 @@ stage_b_engine_result stage_b_run_function_result(
   state = *input;
   current_rva = entry_rva;
   for (;;) {
+    if (runtime != 0 && runtime->trace_transfer != 0)
+      runtime->trace_transfer(runtime->context, current_rva, &state);
     stage_b_step_result result = stage_b_step_by_rva(runtime, &state, current_rva);
     switch (result.kind) {
       case STAGE_B_FALLTHROUGH:

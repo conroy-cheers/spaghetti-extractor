@@ -879,22 +879,17 @@ def _semantic_transfer_contract(
             "blocker": f"expected {side.size} block bytes, read {len(data)}",
             "next_action": "fix block range or PE section mapping before generating a semantic transfer contract",
         }
-    instruction_effect_schedule: dict[str, Any] | None = None
-    if (
-        len(instructions) > 1
-        or _semantic_transfer_inventory_contains_x87(instructions)
-    ):
-        instruction_effect_schedule, symbolic = (
-            _semantic_instruction_effect_schedule(
-                binary,
-                side,
-                data,
-                instructions,
-                mapped,
-            )
-        )
-    else:
-        symbolic = _symbolic_execute(binary, side, data, "original", mapped)
+    # The ordered schedule is the checked per-instruction authority consumed by
+    # the hybrid completeness gate.  Emit it for singleton transfers as well as
+    # larger regions so a qualified row can never rely on aggregate semantics
+    # without an exact instruction replay ledger.
+    instruction_effect_schedule, symbolic = _semantic_instruction_effect_schedule(
+        binary,
+        side,
+        data,
+        instructions,
+        mapped,
+    )
     if symbolic.get("status") != "ok":
         instruction = symbolic.get("instruction") if isinstance(symbolic.get("instruction"), dict) else None
         blocked = {
@@ -1106,6 +1101,8 @@ _SEMANTIC_X87_SINGLETON_MNEMONICS = frozenset(
         "fucompi",
         "fsin",
         "fcos",
+        "fclex",
+        "fnclex",
         "fninit",
     }
 )
@@ -1989,23 +1986,45 @@ def _semantic_stack_delta_from_observables(observables: dict[str, Any]) -> dict[
     return {"status": "derived", "net_bytes": delta, "expression": _semantic_expr_json(esp)}
 
 def _semantic_stack_delta_expr(expr: Any) -> int | None:
+    affine = _semantic_stack_affine_expr(expr)
+    if affine is None or affine[0] != 1:
+        return None
+    unsigned = affine[1] & 0xFFFF_FFFF
+    return unsigned - (1 << 32) if unsigned >= 1 << 31 else unsigned
+
+
+def _semantic_stack_affine_expr(expr: Any) -> tuple[int, int] | None:
+    """Reduce exact bit-vector addition/subtraction to ``a*ESP + b``."""
+
     if expr == ("reg", "esp"):
-        return 0
-    if isinstance(expr, tuple) and expr and expr[0] == "add":
-        total = 0
-        saw_esp = False
+        return 1, 0
+    if (
+        isinstance(expr, tuple)
+        and len(expr) == 2
+        and expr[0] == "const"
+        and isinstance(expr[1], int)
+        and not isinstance(expr[1], bool)
+    ):
+        return 0, int(expr[1])
+    if not isinstance(expr, tuple) or not expr:
+        return None
+    operation = expr[0]
+    if operation == "add" and len(expr) >= 3:
+        coefficient = 0
+        constant = 0
         for part in expr[1:]:
-            if part == ("reg", "esp"):
-                saw_esp = True
-            elif isinstance(part, tuple) and len(part) == 2 and part[0] == "const":
-                total += int(part[1])
-            else:
+            reduced = _semantic_stack_affine_expr(part)
+            if reduced is None:
                 return None
-        return total if saw_esp else None
-    if isinstance(expr, tuple) and len(expr) == 3 and expr[0] == "sub" and expr[1] == ("reg", "esp"):
-        right = expr[2]
-        if isinstance(right, tuple) and len(right) == 2 and right[0] == "const":
-            return -int(right[1])
+            coefficient += reduced[0]
+            constant += reduced[1]
+        return coefficient, constant
+    if operation == "sub" and len(expr) == 3:
+        left = _semantic_stack_affine_expr(expr[1])
+        right = _semantic_stack_affine_expr(expr[2])
+        if left is None or right is None:
+            return None
+        return left[0] - right[0], left[1] - right[1]
     return None
 
 def _semantic_memory_frame_contracts(contract: dict[str, Any], contract_ref: dict[str, Any]) -> dict[str, Any]:

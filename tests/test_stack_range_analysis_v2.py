@@ -1,0 +1,376 @@
+from __future__ import annotations
+
+import copy
+import unittest
+
+from spaghetti_extractor.artifact_identity_v2 import canonical_sha256
+from spaghetti_extractor.stack_range_analysis_v2 import (
+    STACK_RANGE_ANALYSIS_V2_FORMAT,
+    derive_stack_range_analysis_v2,
+    validate_checked_stack_range_facts_v2,
+)
+
+
+PE_SHA = "a" * 64
+MACHINE_SHA = "b" * 64
+IMAGE_BASE = 0x400000
+IMAGE_SIZE = 0x10000
+
+
+def _reg(name: str) -> dict[str, object]:
+    return {"op": "reg", "name": name, "width": 32}
+
+
+def _const(value: int) -> dict[str, object]:
+    return {"op": "const", "value": value & 0xFFFFFFFF, "width": 32}
+
+
+def _add(value: int) -> dict[str, object]:
+    return {"op": "add32", "args": [_reg("esp"), _const(value)]}
+
+
+def _unit(
+    unit_id: str,
+    rva: int,
+    *,
+    target_rvas: list[int] = [],
+    stack_delta: int | None = 0,
+    memory_offsets: list[int] = [],
+    external_events: list[dict[str, object]] = [],
+) -> dict[str, object]:
+    stack = (
+        {"status": "unknown", "expression": {"op": "call_response"}}
+        if stack_delta is None
+        else {
+            "status": "derived",
+            "net_bytes": stack_delta,
+            "expression": _add(stack_delta),
+        }
+    )
+    return {
+        "format": "stage-a-machine-ir-v2",
+        "id": unit_id,
+        "source": {
+            "original": {"rva_start": rva, "rva_end": rva + 4},
+            "contract_sha256": f"{rva:064x}",
+            "instruction_bytes_sha256": f"{rva + 1:064x}",
+        },
+        "semantics": {
+            "stack_delta": stack,
+            "memory_events": [
+                {
+                    "kind": "write",
+                    "width": 4,
+                    "address": _add(offset),
+                    "value": _const(0),
+                }
+                for offset in memory_offsets
+            ],
+            "external_events": copy.deepcopy(external_events),
+        },
+        "control": {
+            "direct_targets": target_rvas,
+            "has_indirect_target": False,
+        },
+    }
+
+
+def _graph(root: str) -> dict[str, object]:
+    return {
+        "format": "stage-a-rooted-control-graph-v2",
+        "id": "rooted-control-graph-v2:fixture",
+        "status": "incomplete",
+        "roots": [{"unit_id": root, "kind": "pe_entrypoint"}],
+        "direct_edges": [],
+        "indirect_exits": [],
+    }
+
+
+def _launch() -> dict[str, object]:
+    return {
+        "assumptions": {
+            "initial_stack": {
+                "contract": "private-non-image-stack-range-v2",
+                "mapped_separately_from_image": True,
+                "minimum_accessible_bytes_below": 0x1000,
+                "minimum_accessible_bytes_above": 0x1000,
+            }
+        }
+    }
+
+
+def _derive(
+    units: list[dict[str, object]],
+    *,
+    summaries: dict[str, object] | None = None,
+    recoveries: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    return derive_stack_range_analysis_v2(
+        units=units,
+        graph=_graph(str(units[0]["id"])),
+        launch_assumptions=_launch(),
+        pe_sha256=PE_SHA,
+        machine_ir_sha256=MACHINE_SHA,
+        image_base=IMAGE_BASE,
+        size_of_image=IMAGE_SIZE,
+        call_summaries=summaries,
+        indirect_recoveries=[] if recoveries is None else recoveries,
+    )
+
+
+class StackRangeAnalysisV2Tests(unittest.TestCase):
+    def test_direct_affine_path_emits_binary_bound_range_facts(self) -> None:
+        units = [
+            _unit("entry", 0x1000, target_rvas=[0x1010], stack_delta=-8, memory_offsets=[-8]),
+            _unit("next", 0x1010, memory_offsets=[0, 12]),
+        ]
+
+        result = _derive(units)
+
+        self.assertEqual(result["format"], STACK_RANGE_ANALYSIS_V2_FORMAT)
+        self.assertEqual(result["cold_replay"]["status"], "complete")
+        self.assertEqual(result["entry_offsets"], {"entry": [0], "next": [-8]})
+        facts = {row["applies_to_unit_ids"][0]: row for row in result["checked_range_facts"]}
+        self.assertEqual((facts["entry"]["offset_start"], facts["entry"]["offset_end"]), (-8, -4))
+        self.assertEqual((facts["next"]["offset_start"], facts["next"]["offset_end"]), (0, 16))
+        self.assertEqual(facts["next"]["authority_binding"]["pe_sha256"], PE_SHA)
+
+    def test_checked_range_facts_replay_exactly_and_reject_corruption(self) -> None:
+        units = [_unit("entry", 0x1000, memory_offsets=[-4])]
+        facts = _derive(units)["checked_range_facts"]
+        expected = validate_checked_stack_range_facts_v2(
+            facts,
+            units=units,
+            pe_sha256=PE_SHA,
+            machine_ir_sha256=MACHINE_SHA,
+            rooted_graph_id="rooted-control-graph-v2:fixture",
+            launch_assumptions_sha256=canonical_sha256(_launch()),
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+        self.assertEqual(expected, frozenset({"entry"}))
+
+        corruptions = []
+        wrong_span = copy.deepcopy(facts)
+        wrong_span[0]["offset_start"] -= 4
+        corruptions.append(wrong_span)
+        wrong_binary = copy.deepcopy(facts)
+        wrong_binary[0]["authority_binding"]["pe_sha256"] = "f" * 64
+        corruptions.append(wrong_binary)
+        wrong_id = copy.deepcopy(facts)
+        wrong_id[0]["id"] = "checked-stack-range-v2:" + "0" * 64
+        corruptions.append(wrong_id)
+
+        for corrupted in corruptions:
+            with self.subTest(corrupted=corrupted[0]["id"]):
+                with self.assertRaises(ValueError):
+                    validate_checked_stack_range_facts_v2(
+                        corrupted,
+                        units=units,
+                        pe_sha256=PE_SHA,
+                        machine_ir_sha256=MACHINE_SHA,
+                        rooted_graph_id="rooted-control-graph-v2:fixture",
+                        launch_assumptions_sha256=canonical_sha256(_launch()),
+                        image_base=IMAGE_BASE,
+                        size_of_image=IMAGE_SIZE,
+                    )
+
+        with self.assertRaises(ValueError):
+            validate_checked_stack_range_facts_v2(
+                facts,
+                units=units,
+                pe_sha256=PE_SHA,
+                machine_ir_sha256=MACHINE_SHA,
+                rooted_graph_id="rooted-control-graph-v2:fixture",
+                launch_assumptions_sha256="e" * 64,
+                image_base=IMAGE_BASE,
+                size_of_image=IMAGE_SIZE,
+            )
+
+    def test_non_affine_stack_transition_stops_propagation(self) -> None:
+        units = [
+            _unit("entry", 0x1000, target_rvas=[0x1010], stack_delta=None),
+            _unit("next", 0x1010, memory_offsets=[0]),
+        ]
+
+        result = _derive(units)
+
+        self.assertNotIn("next", result["entry_offsets"])
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIn(
+            "non_affine_stack_transition",
+            {row["code"] for row in result["frontiers"]},
+        )
+
+    def test_checked_stdcall_frame_reaches_continuation(self) -> None:
+        call = {
+            "kind": "external_call",
+            "register_inputs": {"esp": _add(-8)},
+            "abi_contract": {
+                "template": "pe32-stdcall-v1",
+                "argument_words": 2,
+                "disposition": "returns",
+            },
+        }
+        units = [
+            _unit("entry", 0x1000, target_rvas=[0x1010], stack_delta=None, external_events=[call]),
+            _unit("next", 0x1010, memory_offsets=[0]),
+        ]
+
+        result = _derive(units)
+
+        self.assertEqual(result["entry_offsets"]["next"], [0])
+
+    def test_internal_call_requires_summary_only_for_continuation(self) -> None:
+        call = {
+            "kind": "internal_call",
+            "target_rva": 0x2000,
+            "register_inputs": {"esp": _add(-4)},
+        }
+        units = [
+            _unit("caller", 0x1000, target_rvas=[0x1010], stack_delta=None, external_events=[call]),
+            _unit("continuation", 0x1010, memory_offsets=[0]),
+            _unit("callee", 0x2000, memory_offsets=[0]),
+        ]
+
+        incomplete = _derive(units)
+        self.assertEqual(incomplete["entry_offsets"]["callee"], [-8])
+        self.assertNotIn("continuation", incomplete["entry_offsets"])
+
+        complete = _derive(
+            units,
+            summaries={
+                "summaries": [{
+                    "status": "complete",
+                    "target_rva": 0x2000,
+                    "stack_cleanup": {"status": "complete", "stack_delta": 4},
+                }]
+            },
+        )
+        self.assertEqual(complete["entry_offsets"]["continuation"], [0])
+
+        partial = _derive(
+            units,
+            summaries={
+                "summaries": [{
+                    "status": "incomplete",
+                    "target_rva": 0x2000,
+                    "stack_cleanup": {"status": "complete", "stack_delta": 4},
+                    "register_preservation": {"status": "incomplete"},
+                }]
+            },
+        )
+        self.assertEqual(partial["entry_offsets"]["continuation"], [0])
+
+        instruction_only = _derive(
+            units,
+            summaries={
+                "summaries": [{
+                    "status": "incomplete",
+                    "target_rva": 0x2000,
+                    "stack_cleanup": {
+                        "status": "incomplete",
+                        "stack_delta": None,
+                    },
+                    "return_instruction_cleanup": {
+                        "status": "complete",
+                        "cleanup_bytes": 4,
+                        "return_unit_ids": ["callee"],
+                    },
+                }]
+            },
+        )
+        self.assertEqual(instruction_only["entry_offsets"]["continuation"], [0])
+
+        conflicting = _derive(
+            units,
+            summaries={
+                "summaries": [{
+                    "status": "incomplete",
+                    "target_rva": 0x2000,
+                    "stack_cleanup": {"status": "complete", "stack_delta": 0},
+                    "return_instruction_cleanup": {
+                        "status": "complete",
+                        "cleanup_bytes": 4,
+                    },
+                }]
+            },
+        )
+        self.assertNotIn("continuation", conflicting["entry_offsets"])
+
+    def test_stack_window_overflow_fails_closed(self) -> None:
+        units = [_unit("entry", 0x1000, memory_offsets=[-0x2000])]
+
+        result = _derive(units)
+
+        self.assertEqual(result["checked_range_facts"], [])
+        self.assertIn(
+            "stack_access_outside_launch_window",
+            {row["code"] for row in result["frontiers"]},
+        )
+
+    def test_finite_offset_overflow_withholds_partial_entry_authority(self) -> None:
+        units = [
+            _unit(
+                "loop",
+                0x1000,
+                target_rvas=[0x1000],
+                stack_delta=4,
+                memory_offsets=[0],
+            )
+        ]
+
+        result = derive_stack_range_analysis_v2(
+            units=units,
+            graph=_graph("loop"),
+            launch_assumptions=_launch(),
+            pe_sha256=PE_SHA,
+            machine_ir_sha256=MACHINE_SHA,
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+            finite_offset_budget=2,
+        )
+
+        self.assertNotIn("loop", result["entry_offsets"])
+        self.assertEqual(result["checked_range_facts"], [])
+        self.assertIn(
+            "stack_offset_alternative_budget_exceeded",
+            {row["code"] for row in result["frontiers"]},
+        )
+
+    def test_cold_recovered_indirect_external_call_reaches_continuation(self) -> None:
+        call = {
+            "kind": "indirect_call",
+            "target": _reg("edi"),
+            "register_inputs": {"esp": _add(-4)},
+        }
+        units = [
+            _unit("caller", 0x1000, target_rvas=[0x1010], stack_delta=None, external_events=[call]),
+            _unit("continuation", 0x1010, memory_offsets=[0]),
+        ]
+        from spaghetti_extractor.control_analysis_v2 import exact_control_inventory_v2
+
+        exit_id = exact_control_inventory_v2(units)["indirect_exits"][0]["id"]
+        result = _derive(
+            units,
+            recoveries=[{
+                "id": exit_id,
+                "status": "recovered",
+                "kind": "indirect_call",
+                "target_unit_ids": [],
+                "target_rvas": [],
+                "external_targets": [{
+                    "argument_words": 1,
+                    "abi": {
+                        "template": "pe32-stdcall-v1",
+                        "callee_cleanup": True,
+                    },
+                }],
+            }],
+        )
+
+        self.assertEqual(result["entry_offsets"]["continuation"], [0])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,1734 @@
+"""Point-sensitive replay evidence for mutable 32-bit image slots.
+
+The analyzer consumes exact machine-IR units and an already checked rooted
+control graph.  It does not infer that stack or dynamic addresses are disjoint
+from the image: symbolic accesses are excluded only by an explicit checked
+range fact bound to the same image and unit.
+
+The emitted ``global_slot_evidence`` records are deliberately shaped for
+``entry_state_analysis_v2.propose_global_slot_invariant``.  This module only
+constructs replay evidence; the entry-state analyzer remains the authority that
+promotes complete evidence to ``GlobalSlotInvariant`` records.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+from collections import deque
+from dataclasses import dataclass
+from hashlib import sha256
+from typing import Any, Iterable, Mapping, Sequence
+
+from .address_expression_v2 import affine_register_offset
+from .analysis_schema_v2 import (
+    CHECKED_MEMORY_RANGE_FACT_V2_FORMAT,
+    ROOTED_CONTROL_GRAPH_V2_FORMAT,
+)
+from .artifact_identity_v2 import canonical_sha256
+from .authority_bindings_v2 import BinaryBinding
+from .checked_memory_access_v2 import (
+    CheckedMemoryAccessFact,
+    CheckedMemoryAccessV2Error,
+    validate_checked_memory_access_facts_v2,
+)
+
+
+GLOBAL_SLOT_ANALYSIS_V2_FORMAT = "stage-a-global-slot-analysis-v2"
+GLOBAL_SLOT_REPLAY_EVIDENCE_V2_FORMAT = "stage-a-global-slot-replay-evidence-v2"
+
+_DIGEST_LENGTH = 64
+_UINT32_LIMIT = 1 << 32
+_MEMORY_KINDS = frozenset({"read", "write", "read_write"})
+_DIAGNOSTIC_SITE_LIMIT = 32
+_INDUCTIVE_GRAPH_FRONTIER_CODES = frozenset({
+    "rooted_control_graph_incomplete",
+    "indirect_exit_certificate_incomplete",
+})
+
+
+class GlobalSlotAnalysisV2Error(ValueError):
+    """A caller option, rather than submitted evidence, is invalid."""
+
+
+@dataclass(frozen=True, order=True)
+class _Site:
+    unit_id: str
+    event_index: int
+    instruction_rva: int | None
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "unit_id": self.unit_id,
+            "event_index": self.event_index,
+            "instruction_rva": self.instruction_rva,
+        }
+
+
+@dataclass(frozen=True)
+class _Event:
+    node_id: str
+    site: _Site
+    kind: str
+    width: int | None
+    address: Any
+    value: Any
+    raw: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class _FlowState:
+    reachable: bool = False
+    initialized: bool = False
+    tainted: bool = False
+    overflow: bool = False
+    alternatives: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _Access:
+    classification: str
+    dependency_ids: tuple[str, ...] = ()
+    reason: str | None = None
+
+
+def analyze_global_slots_v2(
+    *,
+    units: Sequence[Mapping[str, Any]],
+    graph: Mapping[str, Any],
+    candidate_slot_addresses: Sequence[int],
+    image_base: int,
+    size_of_image: int,
+    entry_range_facts: Sequence[Mapping[str, Any]] = (),
+    world_range_facts: Sequence[Mapping[str, Any]] = (),
+    range_authority_binding: Mapping[str, Any] | None = None,
+    relevant_read_dependencies: Sequence[Mapping[str, Any]] | None = None,
+    launch_initial_values: Mapping[int, int] | None = None,
+    checked_memory_access_facts: Sequence[Mapping[str, Any]] = (),
+    pe_sha256: str | None = None,
+    machine_ir_sha256: str | None = None,
+    interprocedural_authority_sha256: str | None = None,
+    alternative_budget: int = 32,
+) -> dict[str, Any]:
+    """Replay all rooted memory accesses for each candidate 4-byte slot.
+
+    Missing proof evidence is reported as ``incomplete``.  Contradictory exact
+    bindings and malformed authority inputs are ``violated``.  Analysis is run
+    twice from an empty state; the cold replay digest binds the deterministic
+    second result and must match the first result.
+    """
+
+    if (
+        not isinstance(alternative_budget, int)
+        or isinstance(alternative_budget, bool)
+        or not 0 < alternative_budget <= 256
+    ):
+        raise GlobalSlotAnalysisV2Error(
+            "alternative budget must be an integer between 1 and 256"
+        )
+    if not _u32(image_base) or not isinstance(size_of_image, int) or isinstance(
+        size_of_image, bool
+    ) or not 0 < size_of_image <= _UINT32_LIMIT:
+        raise GlobalSlotAnalysisV2Error("image range is invalid")
+    if image_base + size_of_image > _UINT32_LIMIT:
+        raise GlobalSlotAnalysisV2Error("image range wraps the 32-bit address space")
+
+    normalized_slots: list[int] = []
+    option_issues: list[dict[str, Any]] = []
+    for index, value in enumerate(candidate_slot_addresses):
+        if not _u32(value) or value + 4 > _UINT32_LIMIT:
+            option_issues.append(
+                _issue("violated", "candidate_slot_address_invalid", index=index)
+            )
+            continue
+        if not (image_base <= value and value + 4 <= image_base + size_of_image):
+            option_issues.append(
+                _issue(
+                    "violated",
+                    "candidate_slot_outside_image",
+                    address=value,
+                )
+            )
+            continue
+        normalized_slots.append(value)
+    if len(normalized_slots) != len(set(normalized_slots)):
+        option_issues.append(_issue("violated", "candidate_slot_duplicated"))
+    normalized_slots = sorted(set(normalized_slots))
+    initial_values, initial_value_issues = _normalize_launch_initial_values(
+        launch_initial_values,
+        candidate_addresses=frozenset(normalized_slots),
+    )
+    normalized_units, unit_issues = _normalize_units(units)
+    access_facts: dict[str, CheckedMemoryAccessFact] = {}
+    access_fact_issues: list[dict[str, Any]] = []
+    if checked_memory_access_facts:
+        if not all(
+            _digest(value)
+            for value in (
+                pe_sha256,
+                machine_ir_sha256,
+                interprocedural_authority_sha256,
+            )
+        ):
+            access_fact_issues.append(
+                _issue("violated", "checked_memory_access_binding_missing")
+            )
+        else:
+            try:
+                access_facts = validate_checked_memory_access_facts_v2(
+                    checked_memory_access_facts,
+                    units=list(normalized_units.values()),
+                    binary=BinaryBinding(
+                        pe_sha256=str(pe_sha256),
+                        machine_ir_sha256=str(machine_ir_sha256),
+                    ),
+                    interprocedural_authority_sha256=str(
+                        interprocedural_authority_sha256
+                    ),
+                )
+            except (CheckedMemoryAccessV2Error, ValueError) as exc:
+                access_fact_issues.append(_issue(
+                    "violated",
+                    "checked_memory_access_fact_invalid",
+                    reason=str(exc),
+                ))
+    range_facts, range_issues = _normalize_range_facts(
+        [
+            *(('entry', fact) for fact in entry_range_facts),
+            *(('world', fact) for fact in world_range_facts),
+        ],
+        image_base=image_base,
+        size_of_image=size_of_image,
+        known_units=frozenset(normalized_units),
+        authority_binding=range_authority_binding,
+    )
+    graph_info, graph_issues = _normalize_graph(graph, normalized_units)
+    relevant_reads, relevant_read_issues = _normalize_relevant_reads(
+        relevant_read_dependencies,
+        units=normalized_units,
+        image_base=image_base,
+        candidate_addresses=frozenset(normalized_slots),
+    )
+    global_issues = _deduplicate_issues(
+        [
+            *option_issues,
+            *unit_issues,
+            *access_fact_issues,
+            *range_issues,
+            *graph_issues,
+            *relevant_read_issues,
+            *initial_value_issues,
+        ]
+    )
+    inductive_graph_frontiers = [
+        issue
+        for issue in global_issues
+        if issue.get("code") in _INDUCTIVE_GRAPH_FRONTIER_CODES
+        and issue.get("status") == "incomplete"
+    ]
+    slot_replay_issues = [
+        issue for issue in global_issues if issue not in inductive_graph_frontiers
+    ]
+
+    first = _analyze_once(
+        units=normalized_units,
+        graph_info=graph_info,
+        slots=normalized_slots,
+        range_facts=range_facts,
+        access_facts=access_facts,
+        alternative_budget=alternative_budget,
+        global_issues=slot_replay_issues,
+        inductive_graph_frontiers=inductive_graph_frontiers,
+        relevant_reads=relevant_reads,
+        launch_initial_values=initial_values,
+    )
+    first_bytes = _canonical_json(first).encode("ascii")
+    first_digest = sha256(first_bytes).hexdigest()
+    del first
+    second = _analyze_once(
+        units=normalized_units,
+        graph_info=graph_info,
+        slots=normalized_slots,
+        range_facts=range_facts,
+        access_facts=access_facts,
+        alternative_budget=alternative_budget,
+        global_issues=slot_replay_issues,
+        inductive_graph_frontiers=inductive_graph_frontiers,
+        relevant_reads=relevant_reads,
+        launch_initial_values=initial_values,
+    )
+    second_digest = canonical_sha256(second)
+    del second
+    first = json.loads(first_bytes)
+    cold_status = "complete" if first_digest == second_digest else "violated"
+    if cold_status == "violated":
+        global_issues = _deduplicate_issues(
+            [*global_issues, _issue("violated", "cold_replay_mismatch")]
+        )
+
+    evidence_rows: list[dict[str, Any]] = []
+    slot_results: list[dict[str, Any]] = []
+    for row in first["slots"]:
+        evidence = copy.deepcopy(row["evidence"])
+        evidence["cold_replay_sha256"] = second_digest
+        evidence_rows.append(evidence)
+        slot_results.append(
+            {
+                **copy.deepcopy(row),
+                "evidence": evidence,
+            }
+        )
+
+    issues = _deduplicate_issues(
+        [
+            *global_issues,
+            *(
+                [_issue("violated", "cold_replay_mismatch")]
+                if cold_status == "violated"
+                else []
+            ),
+        ]
+    )
+    slot_statuses = [str(row["status"]) for row in slot_results]
+    status = _aggregate_status([*slot_statuses, *[str(i["status"]) for i in issues]])
+    result = {
+        "format": GLOBAL_SLOT_ANALYSIS_V2_FORMAT,
+        "status": status,
+        "bindings": {
+            "image_base": image_base,
+            "size_of_image": size_of_image,
+            "machine_ir_sha256": first["machine_ir_sha256"],
+            "rooted_graph_sha256": first["rooted_graph_sha256"],
+            "interprocedural_authority_sha256": (
+                interprocedural_authority_sha256
+                if checked_memory_access_facts
+                else None
+            ),
+        },
+        "counts": {
+            "units": len(normalized_units),
+            "reachable_units": len(graph_info["reachable_units"]),
+            "candidate_slots": len(normalized_slots),
+            "launch_initialized_slots": len(initial_values),
+            "complete_slots": sum(value == "complete" for value in slot_statuses),
+            "incomplete_slots": sum(value == "incomplete" for value in slot_statuses),
+            "violated_slots": sum(value == "violated" for value in slot_statuses),
+            "checked_memory_access_facts": len(access_facts),
+        },
+        "checked_memory_access_facts": [
+            fact.to_payload() for fact in access_facts.values()
+        ],
+        "global_slot_evidence": evidence_rows,
+        "slots": slot_results,
+        "cold_replay": {
+            "status": cold_status,
+            "unseeded": True,
+            "first_sha256": first_digest,
+            "replay_sha256": second_digest,
+        },
+        "issues": issues,
+    }
+    result["analysis_sha256"] = canonical_sha256(result)
+    return result
+
+
+def _analyze_once(
+    *,
+    units: Mapping[str, Mapping[str, Any]],
+    graph_info: Mapping[str, Any],
+    slots: Sequence[int],
+    range_facts: Sequence[Mapping[str, Any]],
+    access_facts: Mapping[str, CheckedMemoryAccessFact],
+    alternative_budget: int,
+    global_issues: Sequence[Mapping[str, Any]],
+    inductive_graph_frontiers: Sequence[Mapping[str, Any]],
+    relevant_reads: Mapping[int, Mapping[str, Any]] | None,
+    launch_initial_values: Mapping[int, int],
+) -> dict[str, Any]:
+    reachable = frozenset(str(value) for value in graph_info["reachable_units"])
+    events = _events(units, reachable)
+    event_graph = _event_graph(
+        units=units,
+        reachable=reachable,
+        roots=graph_info["roots"],
+        successors=graph_info["successors"],
+        events=events,
+    )
+    machine_ir_sha256 = canonical_sha256(
+        [units[unit_id] for unit_id in sorted(units)]
+    )
+    machine_ir_dependency = {
+        "kind": "machine_ir_inventory",
+        "id": f"machine-ir:{machine_ir_sha256}",
+        "sha256": machine_ir_sha256,
+    }
+    graph_dependency = {
+        "kind": "rooted_control_graph",
+        "id": str(graph_info["graph_id"]),
+        "sha256": str(graph_info["graph_sha256"]),
+    }
+
+    rows = [
+        _analyze_slot(
+            address=address,
+            events=events,
+            event_graph=event_graph,
+            range_facts=range_facts,
+            access_facts=access_facts,
+            alternative_budget=alternative_budget,
+            machine_ir_dependency=machine_ir_dependency,
+            graph_dependency=graph_dependency,
+            root_kinds=graph_info["root_kinds"],
+            global_issues=global_issues,
+            inductive_graph_frontiers=inductive_graph_frontiers,
+            relevant_read_dependency=(
+                None if relevant_reads is None else relevant_reads.get(address)
+            ),
+            relevant_read_inventory_explicit=relevant_reads is not None,
+            launch_initial_value=launch_initial_values.get(address),
+        )
+        for address in slots
+    ]
+    return {
+        "machine_ir_sha256": machine_ir_sha256,
+        "rooted_graph_sha256": graph_info["graph_sha256"],
+        "slots": rows,
+    }
+
+
+def _analyze_slot(
+    *,
+    address: int,
+    events: Mapping[str, _Event],
+    event_graph: Mapping[str, Any],
+    range_facts: Sequence[Mapping[str, Any]],
+    access_facts: Mapping[str, CheckedMemoryAccessFact],
+    alternative_budget: int,
+    machine_ir_dependency: Mapping[str, Any],
+    graph_dependency: Mapping[str, Any],
+    root_kinds: Mapping[str, str],
+    global_issues: Sequence[Mapping[str, Any]],
+    inductive_graph_frontiers: Sequence[Mapping[str, Any]],
+    relevant_read_dependency: Mapping[str, Any] | None,
+    relevant_read_inventory_explicit: bool,
+    launch_initial_value: int | None,
+) -> dict[str, Any]:
+    accesses: dict[str, _Access] = {}
+    used_fact_ids: set[str] = set()
+    exact_write_values: dict[str, list[Any]] = {}
+    overflow_writes: set[str] = set()
+    for node_id, event in sorted(events.items()):
+        access = _classify_access(
+            event,
+            slot_address=address,
+            range_facts=range_facts,
+            checked_fact=access_facts.get(node_id),
+        )
+        accesses[node_id] = access
+        used_fact_ids.update(access.dependency_ids)
+        if event.kind in {"write", "read_write"} and access.classification == "exact":
+            alternatives = _event_alternatives(event.value, event.raw)
+            if alternatives is None:
+                accesses[node_id] = _Access(
+                    "unknown",
+                    access.dependency_ids,
+                    "write_value_not_finite",
+                )
+            else:
+                exact_write_values[node_id] = alternatives
+                if len(alternatives) > alternative_budget:
+                    overflow_writes.add(node_id)
+
+    flow = _flow_replay(
+        event_graph=event_graph,
+        events=events,
+        accesses=accesses,
+        exact_write_values=exact_write_values,
+        alternative_budget=alternative_budget,
+        initial_alternatives=(
+            ()
+            if launch_initial_value is None
+            else ({
+                "kind": "exact_bits",
+                "value": launch_initial_value,
+                "width_bits": 32,
+            },)
+        ),
+    )
+
+    exact_writes = sorted(
+        node_id
+        for node_id, event in events.items()
+        if event.kind in {"write", "read_write"}
+        and accesses[node_id].classification == "exact"
+        and node_id in exact_write_values
+    )
+    unknown_writes = sorted(
+        node_id
+        for node_id, event in events.items()
+        if event.kind in {"write", "read_write"}
+        and accesses[node_id].classification == "unknown"
+    )
+    aliasing_writes = sorted(
+        node_id
+        for node_id, event in events.items()
+        if event.kind in {"write", "read_write"}
+        and accesses[node_id].classification == "alias"
+    )
+    if relevant_read_inventory_explicit:
+        relevant_reads = sorted(
+            str(node_id)
+            for node_id in (
+                ()
+                if relevant_read_dependency is None
+                else relevant_read_dependency.get("node_ids", ())
+            )
+            if isinstance(node_id, str) and node_id in events
+        )
+    else:
+        relevant_reads = sorted(
+            node_id
+            for node_id, event in events.items()
+            if event.kind in {"read", "read_write"}
+            and accesses[node_id].classification in {"exact", "alias", "unknown"}
+        )
+
+    initializer = (
+        None
+        if launch_initial_value is not None
+        else _common_dominating_write(
+            event_graph=event_graph,
+            candidate_writes=exact_writes,
+            relevant_reads=relevant_reads,
+        )
+    )
+
+    issues: list[dict[str, Any]] = [copy.deepcopy(dict(issue)) for issue in global_issues]
+    if not flow["converged"]:
+        issues.append(_issue("incomplete", "global_slot_replay_did_not_converge"))
+    if launch_initial_value is None and not exact_writes:
+        issues.append(_issue("incomplete", "global_slot_exact_write_missing"))
+    if relevant_read_inventory_explicit and relevant_read_dependency is None:
+        issues.append(
+            _issue("incomplete", "global_slot_relevant_read_inventory_missing")
+        )
+    if unknown_writes:
+        issues.append(
+            _issue(
+                "incomplete",
+                "global_slot_unknown_write_taint",
+                sites=[
+                    events[node].site.payload()
+                    for node in unknown_writes[:_DIAGNOSTIC_SITE_LIMIT]
+                ],
+                site_count=len(unknown_writes),
+            )
+        )
+    if aliasing_writes:
+        issues.append(
+            _issue(
+                "incomplete",
+                "global_slot_aliasing_write_taint",
+                sites=[
+                    events[node].site.payload()
+                    for node in aliasing_writes[:_DIAGNOSTIC_SITE_LIMIT]
+                ],
+                site_count=len(aliasing_writes),
+            )
+        )
+    if overflow_writes or flow["overflow"]:
+        issues.append(
+            _issue(
+                "incomplete",
+                "global_slot_alternative_budget_exceeded",
+                budget=alternative_budget,
+            )
+        )
+    if (
+        relevant_reads
+        and launch_initial_value is None
+        and initializer is None
+    ):
+        issues.append(
+            _issue(
+                "incomplete",
+                "global_slot_initialization_does_not_dominate_reads",
+                reads=[
+                    events[node].site.payload()
+                    for node in relevant_reads[:_DIAGNOSTIC_SITE_LIMIT]
+                ],
+                read_count=len(relevant_reads),
+            )
+        )
+    read_frontiers: dict[str, list[str]] = {}
+    for node_id in relevant_reads:
+        state = flow["in_states"].get(node_id, _FlowState())
+        if not state.initialized:
+            root_kind = _uninitialized_callback_root_kind(
+                node_id=node_id,
+                event_graph=event_graph,
+                root_kinds=root_kinds,
+            )
+            read_frontiers.setdefault(
+                (
+                    "callback_entry_global_slot_invariant_missing"
+                    if root_kind == "callback"
+                    else "global_slot_read_before_dominated_initialization"
+                ),
+                [],
+            ).append(node_id)
+        if state.tainted:
+            read_frontiers.setdefault(
+                "global_slot_read_reached_by_tainted_value", []
+            ).append(node_id)
+        if accesses[node_id].classification != "exact":
+            read_frontiers.setdefault(
+                "global_slot_read_alias_unresolved", []
+            ).append(node_id)
+    for code, nodes in sorted(read_frontiers.items()):
+        issues.append(
+            _issue(
+                "incomplete",
+                code,
+                sites=[
+                    events[node].site.payload()
+                    for node in nodes[:_DIAGNOSTIC_SITE_LIMIT]
+                ],
+                site_count=len(nodes),
+                classifications=sorted({
+                    accesses[node].classification for node in nodes
+                }),
+            )
+        )
+    issues = _deduplicate_issues(issues)
+    status = _aggregate_status(str(issue["status"]) for issue in issues)
+
+    launch_alternatives = (
+        []
+        if launch_initial_value is None
+        else [{
+            "kind": "exact_bits",
+            "value": launch_initial_value,
+            "width_bits": 32,
+        }]
+    )
+    alternatives = _deduplicate_json([
+        *launch_alternatives,
+        *(
+            alternative
+            for node_id in exact_writes
+            for alternative in exact_write_values[node_id]
+        ),
+    ])
+    dependencies = [graph_dependency, machine_ir_dependency]
+    range_by_id = {str(fact["id"]): fact for fact in range_facts}
+    dependencies.extend(
+        {
+            "kind": str(range_by_id[identity]["source_kind"]) + "_range_fact",
+            "id": identity,
+            "sha256": str(range_by_id[identity]["fact_sha256"]),
+        }
+        for identity in sorted(used_fact_ids)
+        if identity in range_by_id
+    )
+    access_by_id = {
+        fact.fact_id: fact.to_payload() for fact in access_facts.values()
+    }
+    dependencies.extend(
+        {
+            "kind": "checked_memory_access_fact",
+            "id": identity,
+            "sha256": str(access_by_id[identity]["fact_sha256"]),
+        }
+        for identity in sorted(used_fact_ids)
+        if identity in access_by_id
+    )
+    dependencies = sorted(dependencies, key=lambda row: (str(row["kind"]), str(row["id"])))
+
+    diagnostic_only = status != "complete"
+    selected_exact_writes = (
+        exact_writes[:_DIAGNOSTIC_SITE_LIMIT] if diagnostic_only else exact_writes
+    )
+    selected_unknown_writes = (
+        unknown_writes[:_DIAGNOSTIC_SITE_LIMIT]
+        if diagnostic_only
+        else unknown_writes
+    )
+    selected_aliasing_writes = (
+        aliasing_writes[:_DIAGNOSTIC_SITE_LIMIT]
+        if diagnostic_only
+        else aliasing_writes
+    )
+    selected_reads = (
+        relevant_reads[:_DIAGNOSTIC_SITE_LIMIT]
+        if diagnostic_only
+        else relevant_reads
+    )
+    writes_payload = [
+        {
+            "site": events[node_id].site.payload(),
+            "classification": (
+                "initializer"
+                if node_id == initializer
+                else "bounded_alternatives"
+            ),
+            "alternatives": copy.deepcopy(exact_write_values[node_id]),
+        }
+        for node_id in selected_exact_writes
+    ]
+    unknown_payload = [
+        _access_payload(events[node_id], accesses[node_id])
+        for node_id in selected_unknown_writes
+    ]
+    alias_payload = [
+        _access_payload(events[node_id], accesses[node_id])
+        for node_id in selected_aliasing_writes
+    ]
+    read_payload = [
+        {
+            "site": events[node_id].site.payload(),
+            "dominated_by": (
+                {
+                    "kind": "launch_image",
+                    "address": address,
+                }
+                if launch_initial_value is not None
+                else events[initializer].site.payload()
+                if initializer is not None
+                else None
+            ),
+        }
+        for node_id in selected_reads
+    ]
+    read_inventory = [
+        {
+            "site": events[node_id].site.payload(),
+            "classification": accesses[node_id].classification,
+            "state": _state_payload(flow["in_states"].get(node_id, _FlowState())),
+            "dependencies": list(accesses[node_id].dependency_ids),
+        }
+        for node_id in selected_reads
+    ]
+    evidence = {
+        "format": GLOBAL_SLOT_REPLAY_EVIDENCE_V2_FORMAT,
+        "address": address,
+        "width": 4,
+        "analysis_status": status,
+        "launch_initializer": (
+            None
+            if launch_initial_value is None
+            else {
+                "kind": "launch_image",
+                "address": address,
+                "value_origin": launch_alternatives[0],
+            }
+        ),
+        "reachable_write_inventory": {
+            "status": "complete" if status == "complete" else "incomplete",
+            "writes": writes_payload,
+            "unknown_writes": unknown_payload,
+            "aliasing_writes": alias_payload,
+        },
+        "relevant_reads": read_payload,
+        "target_dependencies": (
+            []
+            if relevant_read_dependency is None
+            else copy.deepcopy(
+                list(relevant_read_dependency.get("target_dependencies", ()))
+            )
+        ),
+        "read_inventory": read_inventory,
+        "alternatives": alternatives,
+        "dependencies": dependencies,
+        "inductive_control_frontiers": [
+            copy.deepcopy(dict(issue)) for issue in inductive_graph_frontiers
+        ],
+        "final_authorization_condition": (
+            "the unseeded joint fixed point must reproduce this invariant "
+            "and close the rooted control graph"
+        ),
+        "diagnostic_inventory": {
+            "truncated": diagnostic_only and any(
+                len(values) > _DIAGNOSTIC_SITE_LIMIT
+                for values in (
+                    exact_writes,
+                    unknown_writes,
+                    aliasing_writes,
+                    relevant_reads,
+                )
+            ),
+            "limit": _DIAGNOSTIC_SITE_LIMIT,
+            "counts": {
+                "exact_writes": len(exact_writes),
+                "unknown_writes": len(unknown_writes),
+                "aliasing_writes": len(aliasing_writes),
+                "relevant_reads": len(relevant_reads),
+            },
+        },
+    }
+    return {
+        "address": address,
+        "status": status,
+        "tainted": bool(unknown_writes or aliasing_writes),
+        "evidence": evidence,
+        "issues": issues,
+    }
+
+
+def _normalize_units(
+    units: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Mapping[str, Any]], list[dict[str, Any]]]:
+    result: dict[str, Mapping[str, Any]] = {}
+    issues: list[dict[str, Any]] = []
+    for index, raw in enumerate(units):
+        if not isinstance(raw, Mapping):
+            issues.append(_issue("violated", "machine_ir_unit_malformed", index=index))
+            continue
+        unit = copy.deepcopy(dict(raw))
+        unit_id = unit.get("id")
+        source_value = unit.get("source")
+        source = source_value if isinstance(source_value, Mapping) else None
+        original = source.get("original") if source is not None else None
+        semantics = unit.get("semantics")
+        if not isinstance(unit_id, str) or not unit_id:
+            issues.append(_issue("violated", "machine_ir_unit_id_invalid", index=index))
+            continue
+        if unit_id in result:
+            issues.append(_issue("violated", "machine_ir_unit_id_duplicated", unit_id=unit_id))
+            continue
+        if (
+            not isinstance(original, Mapping)
+            or not _u32(original.get("rva_start"))
+            or not isinstance(original.get("rva_end"), int)
+            or isinstance(original.get("rva_end"), bool)
+            or not original["rva_start"] < original["rva_end"] <= _UINT32_LIMIT
+            or source is None
+            or not _digest(source.get("contract_sha256"))
+            or not _digest(source.get("instruction_bytes_sha256"))
+            or not isinstance(semantics, Mapping)
+            or not isinstance(semantics.get("memory_events"), list)
+        ):
+            issues.append(_issue("violated", "machine_ir_unit_binding_invalid", unit_id=unit_id))
+            continue
+        for event_index, event in enumerate(semantics["memory_events"]):
+            if (
+                not isinstance(event, Mapping)
+                or event.get("kind") not in _MEMORY_KINDS
+                or not isinstance(event.get("width"), int)
+                or isinstance(event.get("width"), bool)
+                or event["width"] <= 0
+                or "address" not in event
+            ):
+                issues.append(
+                    _issue(
+                        "violated",
+                        "machine_ir_memory_event_invalid",
+                        unit_id=unit_id,
+                        event_index=event_index,
+                    )
+                )
+        result[unit_id] = unit
+    return dict(sorted(result.items())), _deduplicate_issues(issues)
+
+
+def _normalize_launch_initial_values(
+    values: Mapping[int, int] | None,
+    *,
+    candidate_addresses: frozenset[int],
+) -> tuple[dict[int, int], list[dict[str, Any]]]:
+    if values is None:
+        return {}, []
+    if not isinstance(values, Mapping):
+        return {}, [_issue("violated", "launch_slot_inventory_corrupt")]
+    result: dict[int, int] = {}
+    issues: list[dict[str, Any]] = []
+    for address, value in values.items():
+        if (
+            not _u32(address)
+            or address not in candidate_addresses
+            or not _u32(value)
+        ):
+            issues.append(
+                _issue(
+                    "violated",
+                    "launch_slot_value_invalid",
+                    address=address,
+                )
+            )
+            continue
+        result[int(address)] = int(value)
+    return dict(sorted(result.items())), _deduplicate_issues(issues)
+
+
+def _normalize_relevant_reads(
+    rows: Sequence[Mapping[str, Any]] | None,
+    *,
+    units: Mapping[str, Mapping[str, Any]],
+    image_base: int,
+    candidate_addresses: frozenset[int],
+) -> tuple[dict[int, Mapping[str, Any]] | None, list[dict[str, Any]]]:
+    """Check target-to-slot read dependencies against exact memory events."""
+
+    if rows is None:
+        return None, []
+    grouped: dict[int, dict[str, Any]] = {}
+    issues: list[dict[str, Any]] = []
+    for index, raw in enumerate(rows):
+        if not isinstance(raw, Mapping):
+            issues.append(
+                _issue("violated", "relevant_slot_read_dependency_malformed", index=index)
+            )
+            continue
+        slot_rva = raw.get("slot_rva")
+        unit_id = raw.get("unit_id")
+        event_index = raw.get("event_index")
+        exit_id = raw.get("exit_id")
+        witness_only = raw.get("witness_only") is True
+        if (
+            not isinstance(slot_rva, int)
+            or isinstance(slot_rva, bool)
+            or slot_rva < 0
+            or image_base + slot_rva not in candidate_addresses
+            or not isinstance(exit_id, str)
+            or not exit_id
+        ):
+            issues.append(
+                _issue("violated", "relevant_slot_read_dependency_invalid", index=index)
+            )
+            continue
+        address = image_base + slot_rva
+        entry = grouped.setdefault(
+            address,
+            {"node_ids": set(), "target_dependencies": {}},
+        )
+        if witness_only:
+            entry["target_dependencies"][exit_id] = {
+                "exit_id": exit_id,
+                "witness_only": True,
+            }
+            continue
+        if (
+            not isinstance(unit_id, str)
+            or unit_id not in units
+            or not isinstance(event_index, int)
+            or isinstance(event_index, bool)
+            or event_index < 0
+        ):
+            issues.append(
+                _issue("violated", "relevant_slot_read_dependency_invalid", index=index)
+            )
+            continue
+        events = units[unit_id]["semantics"]["memory_events"]
+        event = events[event_index] if event_index < len(events) else None
+        expected_address = address
+        if (
+            not isinstance(event, Mapping)
+            or event.get("kind") not in {"read", "read_write"}
+            or event.get("width") not in {4, 32}
+            or _constant(event.get("address")) != expected_address
+        ):
+            issues.append(
+                _issue(
+                    "violated",
+                    "relevant_slot_read_dependency_mismatch",
+                    index=index,
+                    unit_id=unit_id,
+                    event_index=event_index,
+                )
+            )
+            continue
+        entry["node_ids"].add(_event_node(unit_id, event_index))
+        entry["target_dependencies"][exit_id] = {
+            "exit_id": exit_id,
+            "unit_id": unit_id,
+            "event_index": event_index,
+        }
+    return {
+        address: {
+            "node_ids": sorted(value["node_ids"]),
+            "target_dependencies": [
+                value["target_dependencies"][identity]
+                for identity in sorted(value["target_dependencies"])
+            ],
+        }
+        for address, value in sorted(grouped.items())
+    }, _deduplicate_issues(issues)
+
+
+def _normalize_graph(
+    graph: Mapping[str, Any], units: Mapping[str, Mapping[str, Any]]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    issues: list[dict[str, Any]] = []
+    if not isinstance(graph, Mapping):
+        graph = {}
+        issues.append(_issue("violated", "rooted_control_graph_malformed"))
+    if graph.get("status") != "complete":
+        issues.append(
+            _issue(
+                "violated" if graph.get("status") == "violated" else "incomplete",
+                "rooted_control_graph_incomplete",
+            )
+        )
+    if graph.get("format") != ROOTED_CONTROL_GRAPH_V2_FORMAT:
+        issues.append(_issue("violated", "rooted_control_graph_format_invalid"))
+    graph_id = graph.get("id", "rooted-control-graph-v2")
+    if not isinstance(graph_id, str) or not graph_id:
+        issues.append(_issue("violated", "rooted_control_graph_id_invalid"))
+        graph_id = "invalid-rooted-control-graph"
+
+    roots: list[str] = []
+    root_kinds: dict[str, str] = {}
+    raw_roots = graph.get("roots")
+    if not isinstance(raw_roots, list) or not raw_roots:
+        issues.append(_issue("incomplete", "rooted_control_roots_missing"))
+        raw_roots = []
+    for index, raw in enumerate(raw_roots):
+        if isinstance(raw, str):
+            unit_id, kind = raw, "pe"
+        elif isinstance(raw, Mapping):
+            unit_id = raw.get("unit_id")
+            kind = raw.get("kind", "pe")
+        else:
+            unit_id, kind = None, None
+        if unit_id not in units or not isinstance(kind, str) or not kind:
+            issues.append(_issue("violated", "rooted_control_root_invalid", index=index))
+            continue
+        roots.append(str(unit_id))
+        root_kinds[str(unit_id)] = str(kind)
+    roots = sorted(set(roots))
+
+    successors: dict[str, set[str]] = {unit_id: set() for unit_id in units}
+    supplied_direct: set[tuple[str, str]] = set()
+    raw_edges = graph.get("direct_edges")
+    if not isinstance(raw_edges, list):
+        issues.append(_issue("incomplete", "direct_edge_inventory_missing"))
+        raw_edges = []
+    for index, raw in enumerate(raw_edges):
+        edge = _edge(raw)
+        if edge is None or edge[0] not in units or edge[1] not in units:
+            issues.append(_issue("violated", "direct_edge_invalid", index=index))
+            continue
+        supplied_direct.add(edge)
+        successors[edge[0]].add(edge[1])
+
+    indirect_sources: set[str] = set()
+    incomplete_indirect_sources: set[str] = set()
+    raw_indirect = graph.get("indirect_exits")
+    if not isinstance(raw_indirect, list):
+        issues.append(_issue("incomplete", "indirect_exit_inventory_missing"))
+        raw_indirect = []
+    for index, raw in enumerate(raw_indirect):
+        if not isinstance(raw, Mapping):
+            issues.append(_issue("violated", "indirect_exit_certificate_invalid", index=index))
+            continue
+        source = raw.get("source_unit_id")
+        targets = raw.get("target_unit_ids")
+        external_targets = raw.get("external_targets")
+        if external_targets is None:
+            external_targets = []
+        if source not in units:
+            issues.append(_issue("violated", "indirect_exit_source_invalid", index=index))
+            continue
+        indirect_sources.add(str(source))
+        if (
+            raw.get("status") != "complete"
+            or not isinstance(targets, list)
+            or not isinstance(external_targets, list)
+            or not (targets or external_targets)
+        ):
+            incomplete_indirect_sources.add(str(source))
+            continue
+        for target in targets:
+            if target not in units:
+                issues.append(
+                    _issue("violated", "indirect_exit_target_invalid", source_unit_id=source)
+                )
+                continue
+            successors[str(source)].add(str(target))
+
+    reachable: set[str] = set()
+    pending = list(reversed(roots))
+    while pending:
+        unit_id = pending.pop()
+        if unit_id in reachable:
+            continue
+        reachable.add(unit_id)
+        pending.extend(
+            reversed(sorted(successors.get(unit_id, ()), reverse=False))
+        )
+
+    # Completeness is a rooted property.  Unreachable decoded units remain in
+    # the exact machine-IR inventory but do not require product edges until a
+    # checked transfer reaches them.  A missing edge on a reached unit still
+    # fails closed and prevents any slot fact from being promoted.
+    rva_index = {
+        int(unit["source"]["original"]["rva_start"]): unit_id
+        for unit_id, unit in units.items()
+    }
+    for source in sorted(incomplete_indirect_sources & reachable):
+        issues.append(_issue(
+            "incomplete",
+            "indirect_exit_certificate_incomplete",
+            source_unit_id=source,
+        ))
+    for unit_id in sorted(reachable):
+        control = units[unit_id].get("control")
+        if not isinstance(control, Mapping):
+            continue
+        direct_targets = control.get("direct_targets", [])
+        if isinstance(direct_targets, list):
+            for target_rva in direct_targets:
+                if isinstance(target_rva, int) and target_rva in rva_index:
+                    edge = (unit_id, rva_index[target_rva])
+                    if edge not in supplied_direct:
+                        issues.append(_issue(
+                            "incomplete",
+                            "decoded_direct_edge_omitted",
+                            source_unit_id=unit_id,
+                            target_unit_id=edge[1],
+                        ))
+        if control.get("has_indirect_target") is True and unit_id not in indirect_sources:
+            issues.append(_issue(
+                "incomplete",
+                "indirect_exit_certificate_missing",
+                source_unit_id=unit_id,
+            ))
+    normalized_graph = {
+        "format": graph.get("format", ROOTED_CONTROL_GRAPH_V2_FORMAT),
+        "id": graph_id,
+        "status": graph.get("status"),
+        "roots": [
+            {"unit_id": unit_id, "kind": root_kinds[unit_id]} for unit_id in roots
+        ],
+        "direct_edges": [
+            {"source_unit_id": source, "target_unit_id": target}
+            for source, target in sorted(supplied_direct)
+        ],
+        "indirect_exits": copy.deepcopy(raw_indirect),
+    }
+    return {
+        "graph_id": graph_id,
+        "graph_sha256": canonical_sha256(normalized_graph),
+        "roots": roots,
+        "root_kinds": root_kinds,
+        "successors": {key: sorted(value) for key, value in successors.items()},
+        "reachable_units": sorted(reachable),
+    }, _deduplicate_issues(issues)
+
+
+def _normalize_range_facts(
+    facts: Iterable[tuple[str, Mapping[str, Any]]],
+    *,
+    image_base: int,
+    size_of_image: int,
+    known_units: frozenset[str],
+    authority_binding: Mapping[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    result: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for source_kind, raw in facts:
+        if not isinstance(raw, Mapping):
+            issues.append(_issue("violated", "checked_range_fact_malformed"))
+            continue
+        identity = raw.get("id")
+        if raw.get("status") != "complete":
+            issues.append(
+                _issue(
+                    "violated" if raw.get("status") == "violated" else "incomplete",
+                    "checked_range_fact_not_complete",
+                    fact_id=identity,
+                )
+            )
+            continue
+        base = raw.get("base_expression")
+        units = raw.get("applies_to_unit_ids")
+        offset_start = raw.get("offset_start")
+        offset_end = raw.get("offset_end")
+        image = raw.get("disjoint_from_image")
+        observed_binding = raw.get("authority_binding")
+        if (
+            raw.get("format") != CHECKED_MEMORY_RANGE_FACT_V2_FORMAT
+            or not isinstance(identity, str)
+            or not identity
+            or identity in seen
+            or not isinstance(base, Mapping)
+            or not isinstance(units, list)
+            or not units
+            or any(unit not in known_units for unit in units)
+            or not isinstance(offset_start, int)
+            or isinstance(offset_start, bool)
+            or not isinstance(offset_end, int)
+            or isinstance(offset_end, bool)
+            or offset_start >= offset_end
+            or raw.get("range_kind")
+            != ("stack" if source_kind == "entry" else "dynamic")
+            or not isinstance(image, Mapping)
+            or image != {"image_base": image_base, "size_of_image": size_of_image}
+            or authority_binding is None
+            or not isinstance(observed_binding, Mapping)
+            or dict(observed_binding) != dict(authority_binding)
+        ):
+            issues.append(
+                _issue(
+                    "violated",
+                    "checked_range_fact_invalid",
+                    fact_id=identity,
+                )
+            )
+            continue
+        seen.add(identity)
+        assert isinstance(image, Mapping)
+        normalized = {
+            "format": CHECKED_MEMORY_RANGE_FACT_V2_FORMAT,
+            "id": identity,
+            "status": "complete",
+            "source_kind": source_kind,
+            "range_kind": raw.get("range_kind"),
+            "base_expression": copy.deepcopy(dict(base)),
+            "offset_start": offset_start,
+            "offset_end": offset_end,
+            "applies_to_unit_ids": sorted(set(str(unit) for unit in units)),
+            "disjoint_from_image": copy.deepcopy(dict(image)),
+            "authority_binding": copy.deepcopy(dict(observed_binding)),
+        }
+        normalized["fact_sha256"] = canonical_sha256(normalized)
+        result.append(normalized)
+    return sorted(result, key=lambda row: str(row["id"])), _deduplicate_issues(issues)
+
+
+def _events(
+    units: Mapping[str, Mapping[str, Any]], reachable: frozenset[str]
+) -> dict[str, _Event]:
+    result: dict[str, _Event] = {}
+    for unit_id in sorted(reachable):
+        semantics = units[unit_id]["semantics"]
+        for event_index, raw in enumerate(semantics["memory_events"]):
+            if not isinstance(raw, Mapping):
+                raw = {}
+            instruction_rva = raw.get("instruction_rva")
+            if not _u32(instruction_rva):
+                instruction_rva = units[unit_id]["source"]["original"]["rva_start"]
+            assert isinstance(instruction_rva, int)
+            node_id = _event_node(unit_id, event_index)
+            result[node_id] = _Event(
+                node_id=node_id,
+                site=_Site(unit_id, event_index, int(instruction_rva)),
+                kind=str(raw.get("kind", "unknown")),
+                width=(
+                    int(raw["width"])
+                    if isinstance(raw.get("width"), int)
+                    and not isinstance(raw.get("width"), bool)
+                    and raw["width"] > 0
+                    else None
+                ),
+                address=copy.deepcopy(raw.get("address")),
+                value=copy.deepcopy(raw.get("value")),
+                raw=copy.deepcopy(dict(raw)),
+            )
+    return result
+
+
+def _event_graph(
+    *,
+    units: Mapping[str, Mapping[str, Any]],
+    reachable: frozenset[str],
+    roots: Sequence[str],
+    successors: Mapping[str, Sequence[str]],
+    events: Mapping[str, _Event],
+) -> dict[str, Any]:
+    edges: dict[str, set[str]] = {"super": set()}
+    predecessors: dict[str, set[str]] = {"super": set()}
+    for unit_id in sorted(reachable):
+        entry = _entry_node(unit_id)
+        exit_node = _exit_node(unit_id)
+        nodes = [
+            _event_node(unit_id, index)
+            for index in range(len(units[unit_id]["semantics"]["memory_events"]))
+        ]
+        chain = [entry, *nodes, exit_node]
+        for node in chain:
+            edges.setdefault(node, set())
+            predecessors.setdefault(node, set())
+        for source, target in zip(chain, chain[1:]):
+            edges[source].add(target)
+            predecessors[target].add(source)
+    for root in roots:
+        if root in reachable:
+            edges["super"].add(_entry_node(root))
+            predecessors[_entry_node(root)].add("super")
+    for source in sorted(reachable):
+        for target in successors.get(source, ()):
+            if target in reachable:
+                edges[_exit_node(source)].add(_entry_node(target))
+                predecessors[_entry_node(target)].add(_exit_node(source))
+
+    seen: set[str] = set()
+    pending = ["super"]
+    while pending:
+        node = pending.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        pending.extend(sorted(edges.get(node, ()), reverse=True))
+    return {
+        "nodes": sorted(seen),
+        "edges": {node: sorted(edges.get(node, ())) for node in sorted(seen)},
+        "predecessors": {
+            node: sorted(value for value in predecessors.get(node, ()) if value in seen)
+            for node in sorted(seen)
+        },
+    }
+
+
+def _common_dominating_write(
+    *,
+    event_graph: Mapping[str, Any],
+    candidate_writes: Sequence[str],
+    relevant_reads: Sequence[str],
+) -> str | None:
+    """Select a finite write that lies on every path to every relevant read.
+
+    Computing every node's complete dominator set is quadratic in the event
+    graph and consumed gigabytes on large binaries.  A slot has only a finite
+    set of exact writes, so test those candidates directly: a candidate
+    dominates the reads exactly when no read remains reachable from the
+    synthetic root after removing that candidate.
+    """
+
+    candidates = sorted(set(candidate_writes))
+    reads = frozenset(relevant_reads)
+    if not candidates:
+        return None
+    if not reads:
+        return candidates[0]
+    edges = event_graph["edges"]
+    for candidate in candidates:
+        seen: set[str] = set()
+        pending = ["super"]
+        while pending:
+            node = pending.pop()
+            if node == candidate or node in seen:
+                continue
+            seen.add(node)
+            pending.extend(
+                target
+                for target in reversed(edges.get(node, ()))
+                if target != candidate and target not in seen
+            )
+        if reads.isdisjoint(seen):
+            return candidate
+    return None
+
+
+def _flow_replay(
+    *,
+    event_graph: Mapping[str, Any],
+    events: Mapping[str, _Event],
+    accesses: Mapping[str, _Access],
+    exact_write_values: Mapping[str, Sequence[Any]],
+    alternative_budget: int,
+    initial_alternatives: Sequence[Any] = (),
+) -> dict[str, Any]:
+    nodes = [str(value) for value in event_graph["nodes"]]
+    in_states = {node: _FlowState() for node in nodes}
+    out_states = {node: _FlowState() for node in nodes}
+    encoded_initial = tuple(
+        sorted(_canonical_json(value) for value in initial_alternatives)
+    )
+    out_states["super"] = _FlowState(
+        reachable=True,
+        initialized=bool(encoded_initial),
+        overflow=len(encoded_initial) > alternative_budget,
+        alternatives=encoded_initial[:alternative_budget],
+    )
+    pending = deque(str(node) for node in event_graph["edges"].get("super", ()))
+    queued = set(pending)
+    maximum_steps = max(8, len(nodes) * (alternative_budget + 4))
+    steps = 0
+    while pending and steps < maximum_steps:
+        node = pending.popleft()
+        queued.discard(node)
+        steps += 1
+        inputs = [
+            out_states[pred]
+            for pred in event_graph["predecessors"].get(node, [])
+            if out_states[pred].reachable
+        ]
+        incoming = _join_states(inputs, alternative_budget)
+        outgoing = _transfer_state(
+            incoming,
+            event=events.get(node),
+            access=accesses.get(node),
+            alternatives=exact_write_values.get(node),
+            alternative_budget=alternative_budget,
+        )
+        if incoming == in_states[node] and outgoing == out_states[node]:
+            continue
+        in_states[node] = incoming
+        out_states[node] = outgoing
+        for successor in event_graph["edges"].get(node, ()):
+            if successor not in queued:
+                pending.append(successor)
+                queued.add(successor)
+    converged = not pending
+    return {
+        "converged": converged,
+        "overflow": any(state.overflow for state in (*in_states.values(), *out_states.values())),
+        "in_states": in_states,
+        "out_states": out_states,
+    }
+
+
+def _join_states(states: Sequence[_FlowState], budget: int) -> _FlowState:
+    if not states:
+        return _FlowState()
+    alternatives = sorted({value for state in states for value in state.alternatives})
+    overflow = any(state.overflow for state in states) or len(alternatives) > budget
+    return _FlowState(
+        reachable=True,
+        initialized=all(state.initialized for state in states),
+        tainted=any(state.tainted for state in states),
+        overflow=overflow,
+        alternatives=tuple(alternatives[:budget]),
+    )
+
+
+def _transfer_state(
+    state: _FlowState,
+    *,
+    event: _Event | None,
+    access: _Access | None,
+    alternatives: Sequence[Any] | None,
+    alternative_budget: int,
+) -> _FlowState:
+    if not state.reachable or event is None or access is None:
+        return state
+    if event.kind not in {"write", "read_write"}:
+        return state
+    if access.classification == "disjoint":
+        return state
+    if access.classification == "exact" and alternatives is not None:
+        encoded = tuple(sorted(_canonical_json(value) for value in alternatives))
+        return _FlowState(
+            reachable=True,
+            initialized=True,
+            tainted=False,
+            overflow=len(encoded) > alternative_budget,
+            alternatives=encoded[:alternative_budget],
+        )
+    return _FlowState(
+        reachable=True,
+        initialized=state.initialized,
+        tainted=True,
+        overflow=state.overflow,
+        alternatives=state.alternatives,
+    )
+
+
+def _classify_access(
+    event: _Event,
+    *,
+    slot_address: int,
+    range_facts: Sequence[Mapping[str, Any]],
+    checked_fact: CheckedMemoryAccessFact | None = None,
+) -> _Access:
+    if event.kind not in _MEMORY_KINDS or event.width is None:
+        return _Access("unknown", reason="memory_event_shape_unknown")
+    if checked_fact is not None:
+        checked = _checked_access_classification(
+            checked_fact,
+            slot_address=slot_address,
+        )
+        if checked is not None:
+            return checked
+    constant = _constant(event.address)
+    if constant is not None:
+        if event.width == 4 and constant == slot_address:
+            return _Access("exact")
+        if event.width > 4096:
+            return _Access("alias", reason="access_span_too_large_to_exclude")
+        if _spans_overlap32(constant, event.width, slot_address, 4):
+            return _Access("alias", reason="constant_partial_or_overlapping_access")
+        return _Access("disjoint")
+    unit_id = event.site.unit_id
+    base, offset = _affine_base_offset(event.address)
+    for fact in range_facts:
+        if unit_id not in fact["applies_to_unit_ids"]:
+            continue
+        fact_base = fact["base_expression"]
+        fact_offset = (
+            affine_register_offset(event.address, "esp")
+            if fact.get("range_kind") == "stack"
+            and _canonical_json(fact_base)
+            == _canonical_json({"op": "reg", "name": "esp", "width": 32})
+            else offset
+            if base is not None
+            and _canonical_json(base) == _canonical_json(fact_base)
+            else None
+        )
+        if (
+            fact_offset is not None
+            and fact["offset_start"] <= fact_offset
+            and fact_offset + event.width <= fact["offset_end"]
+        ):
+            return _Access("disjoint", (str(fact["id"]),))
+    if isinstance(event.address, Mapping):
+        return _Access("alias", reason="symbolic_address_may_alias_slot")
+    return _Access("unknown", reason="memory_address_unknown")
+
+
+def _checked_access_classification(
+    fact: CheckedMemoryAccessFact,
+    *,
+    slot_address: int,
+) -> _Access | None:
+    origins = [value.to_value() for value in fact.address_origins]
+    kinds = {str(origin.get("kind")) for origin in origins}
+    if kinds and kinds <= {"stack_location", "dynamic_range", "dynamic_location"}:
+        return _Access("disjoint", (fact.fact_id,))
+    if kinds != {"exact"}:
+        return None
+    concrete: list[int] = []
+    for origin in origins:
+        key = origin.get("key") if isinstance(origin, Mapping) else None
+        if (
+            not isinstance(key, list)
+            or len(key) != 1
+            or not _u32(key[0])
+        ):
+            return None
+        concrete.append(int(key[0]))
+    classifications = {
+        "exact"
+        if fact.width_bytes == 4 and value == slot_address
+        else "alias"
+        if _spans_overlap32(value, fact.width_bytes, slot_address, 4)
+        else "disjoint"
+        for value in concrete
+    }
+    if len(classifications) == 1:
+        return _Access(next(iter(classifications)), (fact.fact_id,))
+    return _Access(
+        "alias",
+        (fact.fact_id,),
+        "checked_address_alternatives_have_mixed_alias_classes",
+    )
+
+
+def _event_alternatives(value: Any, raw: Mapping[str, Any]) -> list[Any] | None:
+    for key in ("value_origins", "value_alternatives", "alternatives"):
+        explicit = raw.get(key)
+        if isinstance(explicit, list) and explicit:
+            normalized = [_origin(item) for item in explicit]
+            if all(item is not None for item in normalized):
+                return _deduplicate_json(item for item in normalized if item is not None)
+            return None
+    return _value_alternatives(value)
+
+
+def _value_alternatives(value: Any) -> list[Any] | None:
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value < _UINT32_LIMIT:
+        return [{"kind": "exact_bits", "value": value, "width_bits": 32}]
+    if not isinstance(value, Mapping):
+        return None
+    if isinstance(value.get("kind"), str) and value.get("kind"):
+        normalized = _origin(value)
+        return None if normalized is None else [normalized]
+    op = value.get("op")
+    if op == "const" and _u32(value.get("value")):
+        width = value.get("width", 32)
+        if isinstance(width, int) and not isinstance(width, bool) and 0 < width <= 32:
+            return [
+                {
+                    "kind": "exact_bits",
+                    "value": int(value["value"]),
+                    "width_bits": width,
+                }
+            ]
+    if op == "ite":
+        args = value.get("args")
+        if isinstance(args, list) and len(args) == 3:
+            left = _value_alternatives(args[1])
+            right = _value_alternatives(args[2])
+            if left is not None and right is not None:
+                return _deduplicate_json([*left, *right])
+    if op == "finite":
+        raw = value.get("alternatives")
+        if isinstance(raw, list) and raw:
+            rows = [_origin(item) for item in raw]
+            if all(row is not None for row in rows):
+                return _deduplicate_json(row for row in rows if row is not None)
+    return None
+
+
+def _origin(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    if isinstance(value.get("kind"), str) and value.get("kind"):
+        try:
+            return json.loads(_canonical_json(value))
+        except (TypeError, ValueError):
+            return None
+    alternatives = _value_alternatives(value)
+    return alternatives[0] if alternatives is not None and len(alternatives) == 1 else None
+
+
+def _constant(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value < _UINT32_LIMIT:
+        return value
+    if isinstance(value, Mapping) and value.get("op") == "const" and _u32(value.get("value")):
+        return int(value["value"])
+    return None
+
+
+def _affine_base_offset(value: Any) -> tuple[Mapping[str, Any] | None, int | None]:
+    if not isinstance(value, Mapping):
+        return None, None
+    op = value.get("op")
+    args = value.get("args")
+    if op in {"add32", "add"} and isinstance(args, list) and len(args) == 2:
+        left = _constant(args[0])
+        right = _constant(args[1])
+        if left is not None and isinstance(args[1], Mapping):
+            return args[1], left
+        if right is not None and isinstance(args[0], Mapping):
+            return args[0], right
+    if op in {"sub32", "sub"} and isinstance(args, list) and len(args) == 2:
+        offset = _constant(args[1])
+        if offset is not None and isinstance(args[0], Mapping):
+            return args[0], -offset
+    return value, 0
+
+
+def _spans_overlap32(left: int, left_width: int, right: int, right_width: int) -> bool:
+    return bool(set(_span_bytes(left, left_width)) & set(_span_bytes(right, right_width)))
+
+
+def _span_bytes(start: int, width: int) -> Iterable[int]:
+    return ((start + offset) & 0xFFFFFFFF for offset in range(width))
+
+
+def _access_payload(event: _Event, access: _Access) -> dict[str, Any]:
+    return {
+        "site": event.site.payload(),
+        "reason": access.reason,
+        "address": copy.deepcopy(event.address),
+        "width": event.width,
+        "dependencies": list(access.dependency_ids),
+    }
+
+
+def _state_payload(state: _FlowState) -> dict[str, Any]:
+    return {
+        "reachable": state.reachable,
+        "initialized": state.initialized,
+        "tainted": state.tainted,
+        "overflow": state.overflow,
+        "alternatives": [json.loads(value) for value in state.alternatives],
+    }
+
+
+def _uninitialized_callback_root_kind(
+    *,
+    node_id: str,
+    event_graph: Mapping[str, Any],
+    root_kinds: Mapping[str, str],
+) -> str | None:
+    # A callback root is authoritative only at its own independent entry.  This
+    # lightweight reverse closure is diagnostic and cannot establish facts.
+    pending = [node_id]
+    seen: set[str] = set()
+    while pending:
+        node = pending.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        if node.startswith("entry:"):
+            unit_id = node.removeprefix("entry:")
+            if root_kinds.get(unit_id) == "callback":
+                return "callback"
+        pending.extend(event_graph["predecessors"].get(node, []))
+    return None
+
+
+def _edge(value: Any) -> tuple[str, str] | None:
+    if not isinstance(value, Mapping):
+        return None
+    source = value.get("source_unit_id")
+    target = value.get("target_unit_id")
+    if not isinstance(source, str) or not source or not isinstance(target, str) or not target:
+        return None
+    return source, target
+
+
+def _event_node(unit_id: str, index: int) -> str:
+    return f"event:{unit_id}:{index}"
+
+
+def _entry_node(unit_id: str) -> str:
+    return f"entry:{unit_id}"
+
+
+def _exit_node(unit_id: str) -> str:
+    return f"exit:{unit_id}"
+
+
+def _u32(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value < _UINT32_LIMIT
+
+
+def _digest(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == _DIGEST_LENGTH
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+
+
+def _deduplicate_json(values: Iterable[Any]) -> list[Any]:
+    encoded = sorted({_canonical_json(value) for value in values})
+    return [json.loads(value) for value in encoded]
+
+
+def _issue(status: str, code: str, **details: Any) -> dict[str, Any]:
+    return {
+        "status": status,
+        "code": code,
+        "details": copy.deepcopy(details),
+    }
+
+
+def _deduplicate_issues(values: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    encoded = sorted({_canonical_json(dict(value)) for value in values})
+    return [json.loads(value) for value in encoded]
+
+
+def _aggregate_status(values: Iterable[str]) -> str:
+    statuses = set(values)
+    if "violated" in statuses:
+        return "violated"
+    if "incomplete" in statuses:
+        return "incomplete"
+    return "complete"
+
+
+__all__ = [
+    "CHECKED_MEMORY_RANGE_FACT_V2_FORMAT",
+    "GLOBAL_SLOT_ANALYSIS_V2_FORMAT",
+    "GLOBAL_SLOT_REPLAY_EVIDENCE_V2_FORMAT",
+    "ROOTED_CONTROL_GRAPH_V2_FORMAT",
+    "GlobalSlotAnalysisV2Error",
+    "analyze_global_slots_v2",
+    "canonical_sha256",
+]

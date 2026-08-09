@@ -174,6 +174,8 @@ class _TransferCompiler:
         default_factory=dict
     )
     available_calls: set[int] = field(default_factory=set)
+    scheduled_word_evaluations: set[int] = field(default_factory=set)
+    word_compile_depth: int = 0
     instruction_local: bool = False
     scheduled_outcome: _Action | None = None
 
@@ -1166,15 +1168,22 @@ class _TransferCompiler:
             raw = {"op": "const", "value": raw, "width": 32}
         expr = _object(raw, f"{self.identity} word expression")
         key = _canonical(expr)
-        if key in self.memo:
-            return self.memo[key]
-        op = _string(expr.get("op"), "expression op")
-        node = self._word_node(op, expr)
-        index = len(self.nodes)
-        self.nodes.append(node)
-        self.memo[key] = index
-        self.memo_memory_dependencies[key] = _memory_dependency_keys(expr)
-        self.actions.append(_Action("eval_word", (index,)))
+        top_level = self.word_compile_depth == 0
+        self.word_compile_depth += 1
+        try:
+            index = self.memo.get(key)
+            if index is None:
+                op = _string(expr.get("op"), "expression op")
+                node = self._word_node(op, expr)
+                index = len(self.nodes)
+                self.nodes.append(node)
+                self.memo[key] = index
+                self.memo_memory_dependencies[key] = _memory_dependency_keys(expr)
+        finally:
+            self.word_compile_depth -= 1
+        if top_level and index not in self.scheduled_word_evaluations:
+            self.actions.append(_Action("eval_word", (index,)))
+            self.scheduled_word_evaluations.add(index)
         return index
 
     def x87(self, raw: Any) -> int:
@@ -1200,6 +1209,7 @@ class _TransferCompiler:
         self.memo[key] = index
         self.memo_memory_dependencies[key] = frozenset((key,))
         self.actions.append(_Action("eval_word", (index,)))
+        self.scheduled_word_evaluations.add(index)
         return index
 
     def _invalidate_memory_observation(self, load_key: str) -> None:
@@ -2260,9 +2270,7 @@ typedef struct stage_b_typed_x87_operation {
             replay_handler + "typedef uint32_t (*stage_b_code_target_resolver)(\n",
         ),
         (
-            "  stage_b_external_call_handler external_call_fallback;\n"
             "  stage_b_code_target_resolver resolve_code_target;\n",
-            "  stage_b_external_call_handler external_call_fallback;\n"
             "  stage_b_code_target_resolver resolve_code_target;\n"
             "  stage_b_typed_x87_handler execute_typed_x87_operation;\n",
         ),
@@ -2554,7 +2562,6 @@ extern const uint32_t stage_b_program_transfer_count;
 # remain reserved in the stable data ABI and fail closed if encountered.
 _INTERPRETER_KERNEL = r'''
 #define STAGE_B_MAX_CALL_ARGUMENTS 64U
-#define W(i) words[node->args[(i)]]
 
 static uint32_t stage_b_state_reg(const stage_b_machine_state *state, uint32_t index) {
   const uint32_t *registers = &state->eax;
@@ -2580,12 +2587,25 @@ static void stage_b_set_flag(stage_b_machine_state *state, uint32_t index, uint3
   if (index >= 6U) return;
   flags[index] = value & 1U;
 }
-static uint32_t stage_b_eval_word(
+static uint32_t stage_b_eval_word_index(
     stage_b_runtime *rt, const stage_b_machine_state *input,
     const stage_b_machine_state *current,
     const stage_b_machine_state *call_output, uint32_t *words,
-    const stage_b_word_node *node, uint32_t *memory_fault,
-    uint32_t *semantic_fault) {
+    uint8_t *word_valid, const stage_b_word_node *nodes,
+    uint32_t node_count, uint32_t index, uint32_t *memory_fault,
+    uint32_t *semantic_fault);
+
+#define W(i) stage_b_eval_word_index( \
+    rt, input, current, call_output, words, word_valid, nodes, node_count, \
+    node->args[(i)], memory_fault, semantic_fault)
+
+static uint32_t stage_b_eval_word_uncached(
+    stage_b_runtime *rt, const stage_b_machine_state *input,
+    const stage_b_machine_state *current,
+    const stage_b_machine_state *call_output, uint32_t *words,
+    uint8_t *word_valid, const stage_b_word_node *nodes,
+    uint32_t node_count, const stage_b_word_node *node,
+    uint32_t *memory_fault, uint32_t *semantic_fault) {
   uint32_t op = node->op;
   if (op == 0U) return node->immediate;
   if (op == 1U) return stage_b_state_reg(node->immediate?current:input, node->aux);
@@ -2688,6 +2708,29 @@ static uint32_t stage_b_eval_word(
 }
 #undef W
 
+static uint32_t stage_b_eval_word_index(
+    stage_b_runtime *rt, const stage_b_machine_state *input,
+    const stage_b_machine_state *current,
+    const stage_b_machine_state *call_output, uint32_t *words,
+    uint8_t *word_valid, const stage_b_word_node *nodes,
+    uint32_t node_count, uint32_t index, uint32_t *memory_fault,
+    uint32_t *semantic_fault) {
+  uint32_t value;
+  const stage_b_word_node *node;
+  if (index >= node_count || words == 0 || word_valid == 0 || nodes == 0) {
+    *semantic_fault = 1U;
+    return 0U;
+  }
+  if (word_valid[index] != 0U) return words[index];
+  node = &nodes[index];
+  value = stage_b_eval_word_uncached(
+      rt, input, current, call_output, words, word_valid, nodes, node_count,
+      node, memory_fault, semantic_fault);
+  words[index] = value;
+  word_valid[index] = 1U;
+  return value;
+}
+
 __attribute__((weak)) const stage_b_region_override *
 stage_b_region_override_lookup(uint32_t entry_rva) {
   (void)entry_rva;
@@ -2721,6 +2764,7 @@ stage_b_step_result stage_b_interpreter_step(
   const stage_b_program_transfer *t;
   stage_b_machine_state input,call_output;
   uint32_t words[STAGE_B_MAX_WORD_NODES],memory_fault=0U,semantic_fault=0U,i;
+  uint8_t word_valid[STAGE_B_MAX_WORD_NODES] = {0};
   if(!state)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
   override=stage_b_region_override_lookup(source_rva);
   if(override){
@@ -2745,10 +2789,14 @@ stage_b_step_result stage_b_interpreter_step(
   input=*state;call_output=input;state->original_rva=source_rva;
   for(i=0U;i<t->action_count;++i){
     const stage_b_program_action *a=&t->actions[i];
-    if(a->op==0U){const stage_b_word_node*n=&t->nodes[a->args[0]];words[a->args[0]]=stage_b_eval_word(rt,&input,state,&call_output,words,n,&memory_fault,&semantic_fault);}
+    if(a->op==0U)stage_b_eval_word_index(
+      rt,&input,state,&call_output,words,word_valid,t->nodes,t->word_count,
+      a->args[0],&memory_fault,&semantic_fault);
     else if(a->op==1U)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
     else if(a->op==2U)stage_b_write(rt,words[a->args[0]],a->aux,words[a->args[1]],&memory_fault);
-    else if(a->op==3U&&words[a->args[0]])return(stage_b_step_result){STAGE_B_DIVIDE_ERROR,0U,0U};
+    else if(a->op==3U){
+      if(words[a->args[0]])return(stage_b_step_result){STAGE_B_DIVIDE_ERROR,0U,0U};
+    }
     else if(a->op==4U){
       const stage_b_program_call*c=&t->calls[a->args[0]];stage_b_machine_state ci=*state;stage_b_call_event e;stage_b_stack_input si[64];uint32_t av[64],j;
       if(c->argument_count>64U||c->stack_input_count>64U)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,0U,0U};
@@ -2857,6 +2905,8 @@ static stage_b_call_status stage_b_run_function_checked(
   if (!in || !out) return STAGE_B_CALL_UNIMPLEMENTED;
   s = *in;
   for (;;) {
+    if (rt && rt->trace_transfer)
+      rt->trace_transfer(rt->context, rva, &s);
     stage_b_step_result r = stage_b_interpreter_step(rt, &s, rva);
     if (r.kind <= STAGE_B_BRANCH) {
       rva = r.target_rva;

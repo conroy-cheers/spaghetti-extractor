@@ -13,6 +13,7 @@ from .artifact_formats import (
     SEMANTIC_IR_FORMAT,
     SEMANTIC_TRANSFER_CONTRACT_FORMAT,
 )
+from .callback_contracts import parse_callback_abi, parse_callback_source
 from .machine_import_profiles import load_machine_import_profile_set
 from .stage_binary import StageAInputError
 from .util import sha256_bytes, sha256_file
@@ -446,36 +447,14 @@ def _machine_import_contracts(
         world_effect = contract.get("world_effect")
         callback_abi = contract.get("callback_abi")
         if world_effect == "callbackRegistration":
-            if not isinstance(callback_abi, dict) or set(callback_abi) != {
-                "kind", "argument_words", "stack_cleanup_bytes", "nullable",
-            }:
-                raise StageAInputError(
-                    f"external profile contract {contract['id']!r} has no exact callback ABI"
-                )
-            callback_argument_words = callback_abi.get("argument_words")
-            callback_cleanup = callback_abi.get("stack_cleanup_bytes")
-            if (
-                callback_abi.get("kind") != "generic_callback"
-                or not isinstance(callback_argument_words, int)
-                or isinstance(callback_argument_words, bool)
-                or not 0 <= callback_argument_words <= 64
-                or not isinstance(callback_cleanup, int)
-                or isinstance(callback_cleanup, bool)
-                or not 0 <= callback_cleanup <= 0xFFFF
-                or not isinstance(callback_abi.get("nullable"), bool)
-            ):
-                raise StageAInputError(
-                    f"external profile contract {contract['id']!r} has an invalid callback ABI"
-                )
-            world_effect_argument = contract.get("world_effect_argument")
-            if (
-                not isinstance(world_effect_argument, int)
-                or isinstance(world_effect_argument, bool)
-                or not 0 <= world_effect_argument < argument_words
-            ):
-                raise StageAInputError(
-                    f"external profile contract {contract['id']!r} has an invalid callback argument"
-                )
+            context = f"external profile contract {contract['id']!r}"
+            source = parse_callback_source(
+                contract, argument_words=argument_words, context=context
+            )
+            callback = parse_callback_abi(contract, context=context)
+            contract["callback_source"] = source.as_json()
+            contract["callback_abi"] = callback.as_json()
+            contract.pop("world_effect_argument", None)
             callback_lifetime = contract.get("callback_lifetime")
             if not isinstance(callback_lifetime, (str, dict)) or not callback_lifetime:
                 raise StageAInputError(
@@ -567,14 +546,26 @@ def _annotate_machine_import_arguments(
                 contract.get("memory_footprints", [])
             ),
             "world_effect": contract.get("world_effect", "none"),
+            "callback_effect": contract.get("callback_effect"),
+            "out_interface_relations": _machine_contract_metadata(
+                contract.get("out_interface_relations", [])
+            ),
         }
         profile_binding = contract.get("profile_binding")
         if isinstance(profile_binding, Mapping):
             abi_contract["profile_binding"] = dict(profile_binding)
         if contract.get("world_effect") == "callbackRegistration":
+            callback_source = parse_callback_source(
+                contract,
+                argument_words=argument_words,
+                context=f"machine call {contract.get('id')!r}",
+            )
+            callback = parse_callback_abi(
+                contract, context=f"machine call {contract.get('id')!r}"
+            )
             abi_contract.update({
-                "world_effect_argument": contract["world_effect_argument"],
-                "callback_abi": dict(contract["callback_abi"]),
+                "callback_source": callback_source.as_json(),
+                "callback_abi": callback.as_json(),
                 "callback_behavior": contract.get(
                     "callback_behavior", "registration"
                 ),

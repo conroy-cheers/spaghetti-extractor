@@ -36,7 +36,7 @@ from .schema import ISA_KERNEL_MODULES, STATIC_ANALYSIS_MODEL_ID
 ISA_REQUIREMENT_INVENTORY_FORMAT = "stage-a-isa-requirement-inventory-v1"
 ISA_REQUIREMENT_FORM_FORMAT = "stage-a-x86-instruction-form-v1"
 LEAN_ISA_FORM_INVENTORY_FORMAT = "stage-a-lean-isa-form-inventory-v1"
-_LEAN_FORM_EXTRACTION_DRIVER_VERSION = "region-byte-slice-inventory-v4"
+_LEAN_FORM_EXTRACTION_DRIVER_VERSION = "region-byte-slice-inventory-v5"
 
 _SIDES = ("original", "candidate")
 _PREFIX_NAMES = {
@@ -553,7 +553,10 @@ def _lean_form_source_hashes() -> dict[str, str]:
 
 
 def _lean_side_form_extraction_source(
-    side: str, regions: list[Mapping[str, Any]]
+    side: str,
+    regions: list[Mapping[str, Any]],
+    *,
+    allow_decode_gaps: bool = False,
 ) -> str:
     if side not in _SIDES:
         raise StageAInputError(f"unsupported ISA extraction side {side!r}")
@@ -580,6 +583,16 @@ def _lean_side_form_extraction_source(
         "[\n    " + ",\n    ".join(chunk) + "\n  ]"
         for chunk in request_chunks
     )
+    decode_failure = (
+        "IO.println <| Json.compress <| Json.mkObj [\n"
+        "          (\"side\", toJson " + json.dumps(side) + "),\n"
+        "          (\"node_id\", toJson request.nodeId),\n"
+        "          (\"occurrences\", toJson ([] : List Json)),\n"
+        "          (\"decode_error\", toJson \"unsupported_instruction_form\")\n"
+        "        ]"
+        if allow_decode_gaps
+        else 'throw (IO.userError s!"region {request.nodeId} did not decode")'
+    )
     return """import Lean
 import StageA.ISAInventory
 
@@ -593,7 +606,7 @@ set_option maxHeartbeats 0
 structure Request where
   nodeId : Nat
   dataOffset : Nat
-  span : Span
+  span : ISAInventory.Span
 
 def requestChunks : List (List Request) := [
   """ + request_chunks_literal + """
@@ -606,17 +619,18 @@ def run : IO Unit := do
       let dataStop := request.dataOffset + request.span.size
       if data.size < dataStop then
         throw (IO.userError s!"region {request.nodeId} bytes are truncated")
-      let bytes : Bytes :=
+      let bytes : ISAInventory.Bytes :=
         (data.extract request.dataOffset dataStop).toList.map
           (fun byte => byte.toNat)
-      let some occurrences :=
-          decodeInstructionFormsBytes request.span.start bytes |
-        throw (IO.userError s!"region {request.nodeId} did not decode")
-      IO.println <| Json.compress <| Json.mkObj [
-        ("side", toJson """ + json.dumps(side) + """),
-        ("node_id", toJson request.nodeId),
-        ("occurrences", instructionFormInventoryJson occurrences)
-      ]
+      match decodeInstructionFormsBytes request.span.start bytes with
+      | none =>
+        """ + decode_failure + """
+      | some occurrences =>
+        IO.println <| Json.compress <| Json.mkObj [
+          ("side", toJson """ + json.dumps(side) + """),
+          ("node_id", toJson request.nodeId),
+          ("occurrences", instructionFormInventoryJson occurrences)
+        ]
 
 end StageA.GeneratedSideISARequirementInventory
 
@@ -630,14 +644,19 @@ def _parse_lean_form_rows(
     *,
     sides: tuple[str, ...] = _SIDES,
     expected_spans: Mapping[tuple[str, int], tuple[int, int]] | None = None,
+    expected_identities: set[tuple[str, int]] | None = None,
 ) -> dict[tuple[str, int], tuple[dict[str, Any], ...]]:
     if not isinstance(rows, list):
         raise StageAInputError("Lean ISA form inventory rows must be a list")
-    expected = {
-        (side, node_id)
-        for side in sides
-        for node_id in range(region_count)
-    }
+    expected = (
+        {
+            (side, node_id)
+            for side in sides
+            for node_id in range(region_count)
+        }
+        if expected_identities is None
+        else set(expected_identities)
+    )
     result: dict[tuple[str, int], tuple[dict[str, Any], ...]] = {}
     for index, row in enumerate(rows):
         if not isinstance(row, Mapping) or set(row) != {
@@ -725,11 +744,77 @@ def _parse_lean_form_rows(
     return result
 
 
+def _parse_lean_partial_form_rows(
+    rows: Any,
+    region_count: int,
+    *,
+    side: str,
+    expected_spans: Mapping[tuple[str, int], tuple[int, int]],
+) -> tuple[
+    dict[tuple[str, int], tuple[dict[str, Any], ...]],
+    list[dict[str, Any]],
+]:
+    if not isinstance(rows, list):
+        raise StageAInputError("Lean ISA form inventory rows must be a list")
+    successful: list[Mapping[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping):
+            raise StageAInputError(f"Lean ISA form row {index} is malformed")
+        row_side = row.get("side")
+        node_id = row.get("node_id")
+        identity = (str(row_side), node_id)
+        if (
+            row_side != side
+            or isinstance(node_id, bool)
+            or not isinstance(node_id, int)
+            or not 0 <= node_id < region_count
+            or identity in seen
+        ):
+            raise StageAInputError(
+                f"Lean ISA form row {index} has an invalid identity"
+            )
+        seen.add(identity)
+        if "decode_error" not in row:
+            successful.append(row)
+            continue
+        if (
+            set(row) != {"side", "node_id", "occurrences", "decode_error"}
+            or row.get("occurrences") != []
+            or row.get("decode_error") != "unsupported_instruction_form"
+        ):
+            raise StageAInputError(f"Lean ISA gap row {index} is malformed")
+        start, size = expected_spans[identity]
+        gaps.append({
+            "side": side,
+            "node_id": node_id,
+            "rva": start,
+            "size": size,
+            "code": str(row["decode_error"]),
+        })
+    expected = {(side, node_id) for node_id in range(region_count)}
+    if seen != expected:
+        raise StageAInputError("Lean ISA partial inventory omitted a region")
+    successful_ids = expected - {
+        (side, int(gap["node_id"])) for gap in gaps
+    }
+    parsed = _parse_lean_form_rows(
+        successful,
+        region_count,
+        sides=(side,),
+        expected_spans=expected_spans,
+        expected_identities=successful_ids,
+    )
+    return parsed, sorted(gaps, key=lambda row: int(row["node_id"]))
+
+
 def extract_lean_instruction_forms_side(
     *,
     binary: Path,
     request: Mapping[str, Any],
     timeout_seconds: float = 300.0,
+    allow_decode_gaps: bool = False,
 ) -> tuple[dict[tuple[str, int], tuple[dict[str, Any], ...]], dict[str, Any]]:
     side = request.get("side")
     if side not in _SIDES:
@@ -764,6 +849,7 @@ def extract_lean_instruction_forms_side(
         "binary_sha256": binary_sha256,
         "request_sha256": _canonical_sha256(request),
         "lean_form_source_sha256": source_hashes["source_sha256"],
+        "allow_decode_gaps": allow_decode_gaps,
     }
     from ..lean_runner import run_lean_module_graph
 
@@ -783,17 +869,27 @@ def extract_lean_instruction_forms_side(
                 and cached.get("format") == input_identity["format"]
                 and cached.get("inputs") == input_identity
             ):
-                rows = _parse_lean_form_rows(
-                    cached.get("rows"),
-                    len(regions),
-                    sides=(str(side),),
-                    expected_spans=expected_spans,
-                )
+                if allow_decode_gaps:
+                    rows, gaps = _parse_lean_partial_form_rows(
+                        cached.get("rows"),
+                        len(regions),
+                        side=str(side),
+                        expected_spans=expected_spans,
+                    )
+                else:
+                    rows = _parse_lean_form_rows(
+                        cached.get("rows"),
+                        len(regions),
+                        sides=(str(side),),
+                        expected_spans=expected_spans,
+                    )
+                    gaps = []
                 return rows, {
                     "status": "lean_extracted_untrusted",
                     "cache": "hit",
                     **source_hashes,
                     "row_count": len(rows),
+                    "decode_gaps": gaps,
                 }
         except (OSError, json.JSONDecodeError, StageAInputError):
             pass
@@ -828,7 +924,11 @@ def extract_lean_instruction_forms_side(
         (artifacts / "regions.bin").write_bytes(region_bytes)
         bundle = f"GeneratedISARequirementInventory{str(side).title()}"
         (stage_a / f"{bundle}.lean").write_text(
-            _lean_side_form_extraction_source(str(side), regions),
+            _lean_side_form_extraction_source(
+                str(side),
+                regions,
+                allow_decode_gaps=allow_decode_gaps,
+            ),
             encoding="utf-8",
         )
         compiled = run_lean_module_graph(lean_dir, bundle=bundle)
@@ -862,12 +962,21 @@ def extract_lean_instruction_forms_side(
             raise StageAInputError(
                 f"Lean {side} ISA form extraction emitted malformed JSON: {exc}"
             ) from exc
-    rows = _parse_lean_form_rows(
-        raw_rows,
-        len(regions),
-        sides=(str(side),),
-        expected_spans=expected_spans,
-    )
+    if allow_decode_gaps:
+        rows, gaps = _parse_lean_partial_form_rows(
+            raw_rows,
+            len(regions),
+            side=str(side),
+            expected_spans=expected_spans,
+        )
+    else:
+        rows = _parse_lean_form_rows(
+            raw_rows,
+            len(regions),
+            sides=(str(side),),
+            expected_spans=expected_spans,
+        )
+        gaps = []
     if cache is not None:
         cache.parent.mkdir(parents=True, exist_ok=True)
         write_json(
@@ -887,6 +996,7 @@ def extract_lean_instruction_forms_side(
         "cache": "miss",
         **source_hashes,
         "row_count": len(rows),
+        "decode_gaps": gaps,
     }
 
 

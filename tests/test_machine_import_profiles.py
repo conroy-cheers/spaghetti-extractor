@@ -21,6 +21,59 @@ from spaghetti_extractor.stage_b_state_machine import (
 )
 
 
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+_RUNTIME_PROFILE_ARITIES = {
+    ("kernel32.dll", "CloseHandle"): 1,
+    ("kernel32.dll", "GetACP"): 0,
+    ("kernel32.dll", "GetCPInfo"): 2,
+    ("kernel32.dll", "GetCurrentProcess"): 0,
+    ("kernel32.dll", "GetFileAttributesA"): 1,
+    ("kernel32.dll", "GetFileSize"): 2,
+    ("kernel32.dll", "GetFileType"): 1,
+    ("kernel32.dll", "GetModuleFileNameA"): 3,
+    ("kernel32.dll", "GetOEMCP"): 0,
+    ("kernel32.dll", "GetStartupInfoA"): 1,
+    ("kernel32.dll", "GetStdHandle"): 1,
+    ("kernel32.dll", "GetStringTypeW"): 4,
+    ("kernel32.dll", "GetVersion"): 0,
+    ("kernel32.dll", "GlobalFree"): 1,
+    ("kernel32.dll", "GlobalUnlock"): 1,
+    ("kernel32.dll", "HeapCreate"): 3,
+    ("kernel32.dll", "HeapDestroy"): 1,
+    ("kernel32.dll", "IsBadCodePtr"): 1,
+    ("kernel32.dll", "LCMapStringA"): 6,
+    ("kernel32.dll", "LCMapStringW"): 6,
+    ("kernel32.dll", "LoadLibraryA"): 1,
+    ("kernel32.dll", "LocalFree"): 1,
+    ("kernel32.dll", "OpenSemaphoreA"): 3,
+    ("kernel32.dll", "QueryPerformanceCounter"): 1,
+    ("kernel32.dll", "QueryPerformanceFrequency"): 1,
+    ("kernel32.dll", "ReadFile"): 5,
+    ("kernel32.dll", "SetEndOfFile"): 1,
+    ("kernel32.dll", "SetFilePointer"): 4,
+    ("kernel32.dll", "SetHandleCount"): 1,
+    ("kernel32.dll", "SetStdHandle"): 2,
+    ("kernel32.dll", "TerminateProcess"): 2,
+    ("kernel32.dll", "UnmapViewOfFile"): 1,
+    ("kernel32.dll", "WriteFile"): 5,
+    ("user32.dll", "GetCursorPos"): 1,
+    ("user32.dll", "PostQuitMessage"): 1,
+    ("user32.dll", "SetCursor"): 1,
+    ("user32.dll", "SetCursorPos"): 2,
+    ("user32.dll", "WaitMessage"): 0,
+    ("winmm.dll", "midiOutPrepareHeader"): 3,
+    ("winmm.dll", "midiOutReset"): 1,
+    ("winmm.dll", "midiStreamClose"): 1,
+    ("winmm.dll", "midiStreamOpen"): 6,
+    ("winmm.dll", "midiStreamOut"): 3,
+    ("winmm.dll", "midiStreamPause"): 1,
+    ("winmm.dll", "midiStreamProperty"): 3,
+    ("winmm.dll", "midiStreamRestart"): 1,
+    ("winmm.dll", "timeGetTime"): 0,
+}
+
+
 def _write(path: Path, payload: dict[str, object]) -> Path:
     path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     return path
@@ -88,6 +141,98 @@ def _scheduled_call_row() -> dict[str, object]:
 
 
 class MachineImportProfileTests(unittest.TestCase):
+    def test_runtime_profiles_pin_reviewed_pe32_abi_and_effects(self) -> None:
+        profile_set = load_machine_import_profile_set([
+            _REPOSITORY_ROOT / "profiles/pe32-msvcrt-machine-runtime-v1.json"
+        ])
+        selected = {
+            (contract.identity.dll, str(contract.identity.value)): contract
+            for contract in profile_set.contracts
+        }
+
+        for identity, argument_words in _RUNTIME_PROFILE_ARITIES.items():
+            with self.subTest(import_identity=identity):
+                contract = selected[identity]
+                self.assertEqual(contract.arity_kind, "fixed")
+                self.assertEqual(contract.argument_words, argument_words)
+                self.assertEqual(
+                    contract.contract["abi_template"], "pe32-stdcall-v1"
+                )
+                self.assertEqual(contract.contract["disposition"], "returns")
+                self.assertIsInstance(
+                    contract.contract["result_register_relations"], list
+                )
+                self.assertIsInstance(contract.contract["memory_effect"], str)
+                self.assertIsInstance(
+                    contract.contract["memory_footprints"], list
+                )
+                self.assertIsInstance(contract.contract["world_effect"], str)
+
+    def test_runtime_profiles_preserve_argument_bounded_footprints(self) -> None:
+        selected = load_machine_import_profile_set([
+            _REPOSITORY_ROOT / "profiles/pe32-msvcrt-machine-runtime-v1.json"
+        ]).by_identity()
+
+        read_file = next(
+            contract.contract
+            for identity, contract in selected.items()
+            if identity.dll == "kernel32.dll" and identity.value == "ReadFile"
+        )
+        self.assertEqual(
+            read_file["memory_footprints"][0]["size"],
+            {"kind": "argument", "argument": 2, "scale": 1},
+        )
+        self.assertEqual(
+            read_file["memory_footprints"][2]["size"],
+            {"kind": "fixed", "bytes": 20},
+        )
+
+        string_type = next(
+            contract.contract
+            for identity, contract in selected.items()
+            if identity.dll == "kernel32.dll"
+            and identity.value == "GetStringTypeW"
+        )
+        self.assertEqual(
+            string_type["memory_footprints"][0]["size"]["kind"],
+            "argument_or_bounded_terminated",
+        )
+        self.assertEqual(
+            string_type["memory_footprints"][1]["size"]["unit_bytes"], 2
+        )
+
+    def test_callback_profiles_declare_source_abi_and_lifetime(self) -> None:
+        profile_set = load_machine_import_profile_set([
+            _REPOSITORY_ROOT / "profiles/pe32-msvcrt-machine-runtime-v1.json"
+        ])
+        callbacks = [
+            contract.contract
+            for contract in profile_set.contracts
+            if contract.contract.get("world_effect") == "callbackRegistration"
+        ]
+        self.assertTrue(callbacks)
+        for contract in callbacks:
+            with self.subTest(contract=contract["id"]):
+                self.assertEqual(contract["callback_effect"], "explicit")
+                self.assertIn("callback_lifetime", contract)
+                self.assertIn("callback_abi", contract)
+                self.assertTrue(
+                    "callback_source" in contract
+                    or "world_effect_argument" in contract
+                )
+        for contract in profile_set.contracts:
+            expected = (
+                "explicit"
+                if contract.contract.get("world_effect")
+                == "callbackRegistration"
+                else "none"
+            )
+            self.assertEqual(
+                contract.contract.get("callback_effect"),
+                expected,
+                contract.contract.get("id"),
+            )
+
     def test_reviewed_dll_policy_expands_to_exact_pe_import_abi(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -117,6 +262,10 @@ class MachineImportProfileTests(unittest.TestCase):
             self.assertEqual(
                 selected[0].abi.preserved_registers,
                 ("ebp", "ebx", "edi", "esi"),
+            )
+            self.assertEqual(
+                selected[0].contract["import"],
+                {"dll": "user32.dll", "symbol": "ShowWindow"},
             )
 
     def test_reviewed_dll_policy_fails_closed_on_uncovered_import(self) -> None:
@@ -268,7 +417,62 @@ class MachineImportProfileTests(unittest.TestCase):
             actual["abi_contract"]["callback_lifetime"],
             "until_replaced_or_process_exit",
         )
+        self.assertEqual(
+            actual["abi_contract"]["callback_source"],
+            {"kind": "argument_word", "argument": 0},
+        )
+        self.assertNotIn(
+            "world_effect_argument", actual["abi_contract"]
+        )
         self.assertEqual(actual["stack_inputs"][0]["offset"], 4)
+
+    def test_structured_callback_source_is_canonicalized(self) -> None:
+        contract = _contract(
+            "RegisterClassA", abi="pe32-stdcall-v1", words=1
+        )
+        contract.update({
+            "world_effect": "callbackRegistration",
+            "callback_source": {
+                "kind": "argument_pointee",
+                "argument": 0,
+                "offset": 4,
+            },
+            "callback_lifetime": "until_class_unregistered_or_process_exit",
+            "callback_abi": {
+                "kind": "generic_callback",
+                "argument_words": 4,
+                "stack_cleanup_bytes": 16,
+                "nullable": False,
+            },
+        })
+        contracts = {
+            ("user32.dll", "RegisterClassA", None): contract,
+        }
+        event = {
+            "kind": "external_call",
+            "dll": "user32.dll",
+            "symbol": "RegisterClassA",
+            "ordinal": None,
+            "arguments": [],
+            "stack_inputs": [],
+        }
+        row = {
+            "outcome": {"kind": "fallthrough"},
+            "external_events": [event],
+            "ordered_events": [event],
+        }
+
+        actual = _annotate_machine_import_arguments(row, contracts)[
+            "external_events"
+        ][0]
+
+        self.assertEqual(actual["abi_contract"]["callback_source"], {
+            "kind": "argument_pointee",
+            "argument": 0,
+            "offset": 4,
+        })
+        self.assertEqual(actual["abi_contract"]["argument_words"], 1)
+        self.assertEqual(actual["stack_inputs"][0]["offset"], 0)
 
     def test_selected_profile_evidence_survives_callsite_annotation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -287,6 +491,15 @@ class MachineImportProfileTests(unittest.TestCase):
                         "nullable": False,
                     }],
                     "world_effect": "opaqueResources",
+                    "out_interface_relations": [{
+                        "argument_index": 1,
+                        "interface_id": "IFixture",
+                        "write_width": 4,
+                        "object_size": 4,
+                        "vtable_size": 8,
+                        "nullable": True,
+                        "success_condition": "hresult_succeeded_eax",
+                    }],
                 }],
             })
             contracts = _machine_import_contracts([profile])
@@ -317,6 +530,15 @@ class MachineImportProfileTests(unittest.TestCase):
                 [{"register": "eax", "relation": "exact"}],
             )
             self.assertEqual(actual["world_effect"], "opaqueResources")
+            self.assertEqual(actual["out_interface_relations"], [{
+                "argument_index": 1,
+                "interface_id": "IFixture",
+                "write_width": 4,
+                "object_size": 4,
+                "vtable_size": 8,
+                "nullable": True,
+                "success_condition": "hresult_succeeded_eax",
+            }])
 
     def test_instruction_schedule_receives_the_same_machine_call_contract(self) -> None:
         contracts = {

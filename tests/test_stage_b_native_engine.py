@@ -110,6 +110,45 @@ def _machine_ir_transfer(
     }
 
 
+def _implementation_manifest(
+    machine_ir: Path,
+    *,
+    roots: list[str],
+    reachable: list[str],
+    potential: list[str] | None = None,
+    unreachable: list[str] | None = None,
+    resolutions: list[dict] | None = None,
+    summaries: list[dict] | None = None,
+) -> dict:
+    return {
+        "format": "stage-a-machine-ir-v2",
+        "artifacts": {
+            "machine_ir": {
+                "format": "stage-a-machine-ir-v2",
+                "sha256": sha256_bytes(machine_ir.read_bytes()),
+            },
+        },
+        "control": {
+            "reachability": {
+                "status": "complete" if not potential else "incomplete",
+                "roots": roots,
+                "reachable_units": reachable,
+                "potential_units": potential or [],
+                "confirmed_unreachable_units": unreachable or [],
+                "frontiers": [],
+            },
+            "internal_call_preservation": {
+                "fixed_point_complete": True,
+                "summaries": summaries or [],
+            },
+            "external_interface_provenance": {
+                "resolutions": resolutions or [],
+                "callback_registrations": [],
+            },
+        },
+    }
+
+
 def _machine_ir_x87_transfer(
     *, rva: int, mnemonic: str, encoded: bytes
 ) -> dict:
@@ -320,6 +359,7 @@ typedef struct stage_b_call_event {
 #define STAGE_B_MAX_EXTERNAL_ARGUMENTS 256U
 typedef struct stage_b_external_call_snapshot {
   uint32_t instruction_rva;
+  uint32_t target_iat_rva;
   uint32_t argument_base_offset;
   uint32_t argument_count;
   uint32_t arguments[STAGE_B_MAX_EXTERNAL_ARGUMENTS];
@@ -337,6 +377,8 @@ typedef stage_b_call_status (*stage_b_external_call_handler)(
     const stage_b_machine_state *, stage_b_machine_state *);
 typedef uint32_t (*stage_b_code_target_resolver)(
     stage_b_runtime *, uint32_t, uint32_t *);
+typedef void (*stage_b_transfer_trace_handler)(
+    void *, uint32_t, const stage_b_machine_state *);
 struct stage_b_runtime {
   void *context;
   uint32_t (*read)(void *, uint32_t, uint32_t, uint32_t *);
@@ -344,6 +386,7 @@ struct stage_b_runtime {
   uint32_t (*undefined_value)(
       void *, uint32_t, const stage_b_machine_state *, uint32_t);
   stage_b_external_call_handler external_call_fallback;
+  stage_b_transfer_trace_handler trace_transfer;
   stage_b_code_target_resolver resolve_code_target;
   void *replay_checked_x87_command;
 };
@@ -1117,6 +1160,10 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertIn(
                 "stage_b_native_runtime_capture_external_call(", source
             )
+            self.assertIn(
+                "stage_b_native_runtime_write_diagnostic((uint32_t)status, rva, state)",
+                source,
+            )
             self.assertIn("event, &external_snapshot, output", source)
             self.assertIn(
                 "event->target_rva != stage_b_native_original_iat_target",
@@ -1161,6 +1208,98 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertIsNone(plan.external_sites[0].dll)
             self.assertIsNone(plan.external_sites[0].symbol)
             self.assertEqual(plan.external_sites[0].instruction_bytes, b"\xff\xd3")
+
+    def test_hash_bound_internal_summary_propagates_import_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            iat_va = 0x43219C
+            load = _machine_ir_transfer(rva=0x1000, size=6, mnemonic="mov")
+            load["semantics"]["register_writes"] = [{
+                "register": "ebx",
+                "value": {
+                    "op": "load",
+                    "width": 4,
+                    "address": {"op": "const", "value": iat_va, "width": 32},
+                },
+            }]
+            load["semantics"]["outcome"] = {
+                "kind": "fallthrough",
+                "target_rva": 0x1010,
+            }
+            internal = _machine_ir_transfer(
+                rva=0x1010,
+                size=5,
+                event={
+                    "kind": "internal_call",
+                    "instruction_rva": 0x1010,
+                    "return_rva": 0x1015,
+                    "target_rva": 0x2000,
+                },
+            )
+            internal["semantics"]["register_writes"] = [{
+                "register": register,
+                "value": {
+                    "op": "call_response",
+                    "call_index": 0,
+                    "register": register,
+                    "width": 32,
+                },
+            } for register in ("eax", "ebp", "ebx", "ecx", "edi", "edx", "esi", "esp")]
+            indirect = _machine_ir_transfer(
+                rva=0x1015,
+                size=2,
+                event={
+                    "kind": "indirect_call",
+                    "instruction_rva": 0x1015,
+                    "return_rva": 0x1017,
+                    "target": {"op": "reg", "name": "ebx", "width": 32},
+                },
+            )
+            callee = _machine_ir_transfer(rva=0x2000, size=1, mnemonic="ret")
+            callee["semantics"]["outcome"] = {"kind": "return"}
+            machine = self._write(root, [load, internal, indirect, callee])
+            manifest = root / "machine-ir-manifest.json"
+            manifest.write_text(json.dumps({
+                "format": "stage-a-machine-ir-v2",
+                "artifacts": {
+                    "machine_ir": {
+                        "format": "stage-a-machine-ir-v2",
+                        "sha256": sha256_bytes(machine.read_bytes()),
+                    },
+                },
+                "control": {
+                    "internal_call_preservation": {
+                        "fixed_point_complete": True,
+                        "summaries": [{
+                            "status": "complete",
+                            "target_rva": 0x2000,
+                            "preserved_registers": ["ebx"],
+                        }],
+                    },
+                },
+            }), encoding="utf-8")
+
+            plan = plan_stage_b_native_engine(
+                machine_ir=machine,
+                machine_ir_manifest=manifest,
+                entry_rva=0x1000,
+                import_iat_vas={("kernel32.dll", "HeapAlloc"): iat_va},
+            )
+
+            site = next(item for item in plan.external_sites if item.instruction_rva == 0x1015)
+            self.assertEqual((site.dll, site.symbol, site.iat_va), (
+                "kernel32.dll", "HeapAlloc", iat_va,
+            ))
+            stale = json.loads(manifest.read_text(encoding="utf-8"))
+            stale["artifacts"]["machine_ir"]["sha256"] = "0" * 64
+            manifest.write_text(json.dumps(stale), encoding="utf-8")
+            with self.assertRaisesRegex(StageAInputError, "does not bind the exact"):
+                plan_stage_b_native_engine(
+                    machine_ir=machine,
+                    machine_ir_manifest=manifest,
+                    entry_rva=0x1000,
+                    import_iat_vas={("kernel32.dll", "HeapAlloc"): iat_va},
+                )
 
     def test_uses_evaluated_target_for_absolute_indirect_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1301,7 +1440,7 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertEqual(plan.status, "ready", plan.blockers)
             self.assertEqual(plan.callback_targets[0].stack_cleanup_bytes, 8)
 
-    def test_callback_registration_recovers_and_adapts_finite_static_target(self) -> None:
+    def test_callback_registration_without_checked_contract_cannot_authorize_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             callback_va = 0x403000
@@ -1389,9 +1528,14 @@ class StageBNativeEngineTests(unittest.TestCase):
                 import_iat_vas={("msvcrt.dll", "atexit"): 0x43219C},
                 base_relocation_evidence=_relocation_evidence([]),
             )
-            self.assertEqual(plan.status, "ready", plan.blockers)
+            self.assertEqual(plan.status, "incomplete")
             self.assertEqual([target.rva for target in plan.callback_targets], [0x3000])
             self.assertEqual(len(plan.callback_adapters), 1)
+            self.assertEqual(plan.callback_adapter_receipts, ())
+            self.assertEqual(
+                plan.blockers[-1]["category"],
+                "callback_adapter_receipt_missing",
+            )
             self.assertEqual(
                 plan.callback_adapters[0].payload(),
                 {
@@ -1404,19 +1548,6 @@ class StageBNativeEngineTests(unittest.TestCase):
                     "matching": "runtime-image-base-plus-rva",
                 },
             )
-            package = root / "package"
-            result = write_stage_b_native_engine_package(
-                machine_ir=machine,
-                entry_rva=0x1400,
-                import_iat_vas={("msvcrt.dll", "atexit"): 0x43219C},
-                base_relocation_evidence=_relocation_evidence([]),
-                out=package,
-            )
-            self.assertEqual(result["counts"]["callback_adapters"], 1)
-            source = (package / "native-engine-wrapper.c").read_text(encoding="ascii")
-            self.assertIn("stage_b_native_callback_adapter_for(", source)
-            self.assertIn("callback_argument_address, callback_argument_original", source)
-            self.assertIn("stage_b_payload_callback_00003000", source)
 
     def test_callback_registration_rejects_unresolved_target_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1465,6 +1596,165 @@ class StageBNativeEngineTests(unittest.TestCase):
                 plan.blockers[0]["category"],
                 "callback_target_provenance_incomplete",
             )
+
+    def test_structured_callback_uses_hash_bound_provenance_and_patches_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = {
+                "kind": "argument_pointee",
+                "argument": 0,
+                "offset": 4,
+            }
+            callback_abi = {
+                "kind": "generic_callback",
+                "argument_words": 4,
+                "stack_cleanup_bytes": 16,
+                "nullable": False,
+            }
+            registration = _machine_ir_transfer(
+                rva=0x2000,
+                size=6,
+                event={
+                    "kind": "external_call",
+                    "instruction_rva": 0x2000,
+                    "return_rva": 0x2006,
+                    "dll": "user32.dll",
+                    "symbol": "RegisterClassA",
+                    "ordinal": None,
+                    "arguments": [
+                        {"op": "reg", "name": "eax", "width": 32}
+                    ],
+                    "stack_inputs": [{
+                        "offset": 0,
+                        "width": 4,
+                        "value": {
+                            "op": "reg",
+                            "name": "eax",
+                            "width": 32,
+                        },
+                    }],
+                    "abi_contract": {
+                        "template": "pe32-stdcall-v1",
+                        "argument_words": 1,
+                        "argument_base_offset": 0,
+                        "contract_id": "register-class-a",
+                        "profile_binding": {
+                            "profile_id": "fixture-user32",
+                            "profile_sha256": "1" * 64,
+                            "entry_key": "machine_import_signatures",
+                            "entry_index": 0,
+                        },
+                        "disposition": "returns",
+                        "result_register_relations": [
+                            {"register": "eax", "relation": "exact"}
+                        ],
+                        "memory_effect": "argumentRanges",
+                        "memory_footprints": [],
+                        "world_effect": "callbackRegistration",
+                        "callback_effect": "explicit",
+                        "callback_source": source,
+                        "callback_lifetime": (
+                            "until_class_unregistered_or_process_exit"
+                        ),
+                        "callback_abi": callback_abi,
+                    },
+                },
+            )
+            callback = _machine_ir_transfer(
+                rva=0x3000, size=1, mnemonic="ret"
+            )
+            callback["semantics"]["outcome"] = {"kind": "return"}
+            machine = self._write(root, [registration, callback])
+            manifest = root / "machine-ir-manifest.json"
+            manifest.write_text(json.dumps({
+                "format": "stage-a-machine-ir-v2",
+                "artifacts": {
+                    "machine_ir": {
+                        "format": "stage-a-machine-ir-v2",
+                        "sha256": sha256_bytes(machine.read_bytes()),
+                    },
+                },
+                "control": {
+                    "internal_call_preservation": {
+                        "fixed_point_complete": True,
+                        "summaries": [],
+                    },
+                    "external_interface_provenance": {
+                        "callback_registrations": [{
+                            "format": (
+                                "stage-a-callback-registration-provenance-v1"
+                            ),
+                            "record_kind": "callback_registration",
+                            "status": "complete",
+                            "unit_id": registration["id"],
+                            "event_index": 0,
+                            "instruction_rva": 0x2000,
+                            "callback_source": source,
+                            "callback_abi": callback_abi,
+                            "callback_lifetime": (
+                                "until_class_unregistered_or_process_exit"
+                            ),
+                            "callback_behavior": "registration",
+                            "target_rvas": [0x3000],
+                            "target_unit_ids": [callback["id"]],
+                            "failure": None,
+                        }],
+                    },
+                },
+            }), encoding="utf-8")
+
+            plan = plan_stage_b_native_engine(
+                machine_ir=machine,
+                machine_ir_manifest=manifest,
+                entry_rva=0x2000,
+                import_iat_vas={
+                    ("user32.dll", "RegisterClassA"): 0x432000
+                },
+                base_relocation_evidence=_relocation_evidence([]),
+            )
+
+            self.assertEqual(plan.status, "ready", plan.blockers)
+            self.assertEqual([item.rva for item in plan.callback_targets], [0x3000])
+            self.assertEqual(
+                plan.external_sites[0].callback_source_kind,
+                "argument_pointee",
+            )
+            self.assertEqual(len(plan.callback_adapter_receipts), 1)
+            receipt = plan.callback_adapter_receipts[0].payload()
+            self.assertEqual(receipt["source"], source)
+            self.assertEqual(receipt["abi"], callback_abi)
+            self.assertEqual(
+                receipt["lifetime"],
+                "until_class_unregistered_or_process_exit",
+            )
+            self.assertEqual(
+                receipt["invocation"],
+                "nested-machine-ir-callback-adapter-v1",
+            )
+            self.assertEqual(receipt["target_rvas"], [0x3000])
+            self.assertEqual(
+                receipt["adapter_entries"],
+                [plan.callback_adapters[0].payload()],
+            )
+            self.assertRegex(receipt["receipt_sha256"], r"^[0-9a-f]{64}$")
+            package = root / "package"
+            result = write_stage_b_native_engine_package(
+                machine_ir=machine,
+                machine_ir_manifest=manifest,
+                entry_rva=0x2000,
+                import_iat_vas={
+                    ("user32.dll", "RegisterClassA"): 0x432000
+                },
+                base_relocation_evidence=_relocation_evidence([]),
+                out=package,
+            )
+            self.assertEqual(result["callback_adapter_receipts"], [receipt])
+            wrapper = (package / "native-engine-wrapper.c").read_text(
+                encoding="ascii"
+            )
+            self.assertIn("stage_b_native_callback_adapter_for(", wrapper)
+            self.assertIn("callback_container_address", wrapper)
+            self.assertIn("entry->callback_pointee_offset", wrapper)
 
     def test_typed_x87_operation_preserves_physical_fnsave_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1647,6 +1937,7 @@ class StageBNativeEngineTests(unittest.TestCase):
             ("dc18", "fcomp", "qword ptr [eax]", "fcomp QWORD PTR [eax]"),
             ("d9fe", "fsin", "", "fsin"),
             ("d9ff", "fcos", "", "fcos"),
+            ("dbe2", "fnclex", "", "fnclex"),
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2082,6 +2373,8 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertIn("frame.call_target", wrapper)
             self.assertIn("frame.parent = stage_b_native_active_bridge", wrapper)
             self.assertIn("stage_b_native_active_bridge = frame.parent", wrapper)
+            self.assertIn("output->df = 0U", wrapper)
+            self.assertIn("output->eflags &= ~(1U << 10)", wrapper)
             self.assertIn("offsetof(stage_b_machine_state, eflags) == 240U", wrapper)
             self.assertIn("state->eflags = 2U |", wrapper)
             self.assertNotIn("state->eflags & ~represented", wrapper)
@@ -2140,6 +2433,7 @@ stage_b_call_status stage_b_native_runtime_capture_external_call(
     stage_b_external_call_snapshot *snapshot) {
   (void)input;
   snapshot->instruction_rva = event->instruction_rva;
+  snapshot->target_iat_rva = 0U;
   snapshot->argument_base_offset = 0U;
   snapshot->argument_count = 0U;
   return STAGE_B_CALL_OK;
@@ -2383,6 +2677,219 @@ stage_b_call_status stage_b_native_runtime_run_nested_callback(
                 )
             finally:
                 pe.close()
+
+
+    def test_rooted_implementation_receipt_covers_each_dispatch_and_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            entry = _machine_ir_transfer(rva=0x1000, size=1, mnemonic="nop")
+            target = _machine_ir_transfer(rva=0x2000, size=1, mnemonic="ret")
+            entry["control"] = {
+                "kind": "fallthrough",
+                "direct_targets": [0x2000],
+                "has_indirect_target": False,
+            }
+            target["control"] = {
+                "kind": "return",
+                "direct_targets": [],
+                "has_indirect_target": False,
+            }
+            target["semantics"]["outcome"] = {"kind": "return"}
+            machine_ir = self._write(root, [entry, target])
+            manifest = root / "machine-ir-manifest.json"
+            manifest.write_text(json.dumps(_implementation_manifest(
+                machine_ir,
+                roots=[entry["id"]],
+                reachable=[entry["id"], target["id"]],
+            ), sort_keys=True), encoding="utf-8")
+
+            plan = plan_stage_b_native_engine(
+                machine_ir=machine_ir,
+                machine_ir_manifest=manifest,
+                entry_rva=0x1000,
+            )
+
+            self.assertEqual(plan.status, "ready", plan.blockers)
+            receipt = plan.implementation_dispatch_receipt.payload()
+            self.assertEqual(receipt["status"], "complete")
+            self.assertEqual(
+                [entry["implementation_class"] for entry in receipt["entries"]],
+                ["machine_ir_fallback", "machine_ir_fallback"],
+            )
+            self.assertEqual(
+                [(edge["source_rva"], edge["target_rva"]) for edge in receipt["targets"]],
+                [(0x1000, 0x2000)],
+            )
+            self.assertTrue(
+                receipt["policy"]["static_hybrid_closure_receipt_required_for_candidate"]
+            )
+
+    def test_rooted_implementation_receipt_rejects_missing_target_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            entry = _machine_ir_transfer(rva=0x1000, size=1, mnemonic="nop")
+            entry["control"] = {
+                "kind": "jump",
+                "direct_targets": [0x2000],
+                "has_indirect_target": False,
+            }
+            entry["semantics"]["outcome"] = {
+                "kind": "jump",
+                "target_rva": 0x2000,
+            }
+            machine_ir = self._write(root, [entry])
+            manifest = root / "machine-ir-manifest.json"
+            manifest.write_text(json.dumps(_implementation_manifest(
+                machine_ir,
+                roots=[entry["id"]],
+                reachable=[entry["id"]],
+            ), sort_keys=True), encoding="utf-8")
+
+            plan = plan_stage_b_native_engine(
+                machine_ir=machine_ir,
+                machine_ir_manifest=manifest,
+                entry_rva=0x1000,
+            )
+
+            self.assertEqual(plan.status, "incomplete")
+            self.assertIn(
+                "reachable_implementation_target_missing",
+                {blocker["category"] for blocker in plan.blockers},
+            )
+
+    def test_returning_internal_call_receipts_callee_and_continuation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            caller = _machine_ir_transfer(
+                rva=0x1000,
+                size=1,
+                event={
+                    "kind": "internal_call",
+                    "instruction_rva": 0x1000,
+                    "return_rva": 0x1001,
+                    "target_rva": 0x2000,
+                },
+            )
+            continuation = _machine_ir_transfer(
+                rva=0x1001, size=1, mnemonic="ret"
+            )
+            callee = _machine_ir_transfer(rva=0x2000, size=1, mnemonic="ret")
+            caller["control"] = {
+                "kind": "fallthrough",
+                "direct_targets": [0x1001],
+                "has_indirect_target": False,
+            }
+            for unit in (continuation, callee):
+                unit["control"] = {
+                    "kind": "return",
+                    "direct_targets": [],
+                    "has_indirect_target": False,
+                }
+                unit["semantics"]["outcome"] = {"kind": "return"}
+            machine_ir = self._write(root, [caller, continuation, callee])
+            summary = {
+                "status": "complete",
+                "target_unit_id": callee["id"],
+                "target_rva": 0x2000,
+                "preserved_registers": [],
+                "return_behavior": {
+                    "status": "complete",
+                    "may_return": True,
+                    "may_not_return": False,
+                },
+            }
+            manifest = root / "machine-ir-manifest.json"
+            manifest.write_text(json.dumps(_implementation_manifest(
+                machine_ir,
+                roots=[caller["id"]],
+                reachable=[caller["id"], continuation["id"], callee["id"]],
+                summaries=[summary],
+            ), sort_keys=True), encoding="utf-8")
+
+            plan = plan_stage_b_native_engine(
+                machine_ir=machine_ir,
+                machine_ir_manifest=manifest,
+                entry_rva=0x1000,
+            )
+
+            self.assertEqual(plan.status, "ready", plan.blockers)
+            targets = plan.implementation_dispatch_receipt.payload()["targets"]
+            self.assertIn(
+                ("internal_call", 0x2000),
+                {(target["kind"], target["target_rva"]) for target in targets},
+            )
+            self.assertIn(
+                ("call_continuation", 0x1001),
+                {(target["kind"], target["target_rva"]) for target in targets},
+            )
+
+    def test_duplicate_machine_ir_unit_id_fails_before_dispatch_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = _machine_ir_transfer(rva=0x1000, size=1, mnemonic="ret")
+            second = _machine_ir_transfer(rva=0x2000, size=1, mnemonic="ret")
+            second["id"] = first["id"]
+            machine_ir = self._write(root, [first, second])
+
+            with self.assertRaisesRegex(StageAInputError, "duplicate.*transfer id"):
+                plan_stage_b_native_engine(
+                    machine_ir=machine_ir,
+                    entry_rva=0x1000,
+                )
+
+    def test_portable_selection_is_one_fail_closed_dispatch_class(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            unit = _machine_ir_transfer(rva=0x1000, size=1, mnemonic="ret")
+            unit["control"] = {
+                "kind": "return",
+                "direct_targets": [],
+                "has_indirect_target": False,
+            }
+            unit["semantics"]["outcome"] = {"kind": "return"}
+            machine_ir = self._write(root, [unit])
+            manifest = root / "machine-ir-manifest.json"
+            manifest.write_text(json.dumps(_implementation_manifest(
+                machine_ir,
+                roots=[unit["id"]],
+                reachable=[unit["id"]],
+            ), sort_keys=True), encoding="utf-8")
+            selection = {
+                "unit_id": unit["id"],
+                "rva": 0x1000,
+                "replacement_id": "portable-return",
+                "cluster_id": "cluster-return",
+                "component_manifest_sha256": "c" * 64,
+                "fallback_on_unimplemented": False,
+            }
+
+            plan = plan_stage_b_native_engine(
+                machine_ir=machine_ir,
+                machine_ir_manifest=manifest,
+                entry_rva=0x1000,
+                selected_portable_components=[selection],
+            )
+            entry = plan.implementation_dispatch_receipt.payload()["entries"][0]
+            self.assertEqual(entry["implementation_class"], "selected_portable_component")
+            self.assertEqual(entry["dispatch_lookup"], "stage_b_region_override_lookup")
+            self.assertFalse(entry["fallback_on_unimplemented"])
+
+            with self.assertRaisesRegex(StageAInputError, "duplicate portable"):
+                plan_stage_b_native_engine(
+                    machine_ir=machine_ir,
+                    machine_ir_manifest=manifest,
+                    entry_rva=0x1000,
+                    selected_portable_components=[selection, selection],
+                )
+            permissive = dict(selection)
+            permissive["fallback_on_unimplemented"] = True
+            with self.assertRaisesRegex(StageAInputError, "must disable"):
+                plan_stage_b_native_engine(
+                    machine_ir=machine_ir,
+                    machine_ir_manifest=manifest,
+                    entry_rva=0x1000,
+                    selected_portable_components=[permissive],
+                )
 
 
 if __name__ == "__main__":

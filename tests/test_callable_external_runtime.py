@@ -115,6 +115,26 @@ def _inputs() -> tuple[dict, dict, dict, dict]:
 
 
 class CallableExternalRuntimeTests(unittest.TestCase):
+    def test_projects_and_reloads_one_strict_call_route(self) -> None:
+        proposal, capability, execution, authority = _inputs()
+        capability["resolved_abi_contracts"][0]["transfer"] = "call"
+        authority["sites"][0]["transfer_kind"] = "call"
+        contract = build_callable_external_runtime_contract(
+            proposal=proposal,
+            capability=capability,
+            execution=execution,
+            writable_slot_authority=authority,
+            proposal_sha256=_DIGEST,
+            capability_sha256="5" * 64,
+            execution_sha256="6" * 64,
+            authority_sha256="7" * 64,
+        )
+        self.assertEqual(contract.routes[0].transfer, "call")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "runtime.json"
+            path.write_text(json.dumps(contract.payload()), encoding="utf-8")
+            self.assertEqual(load_callable_external_runtime_contract(path), contract)
+
     def test_projects_and_reloads_one_strict_runtime_route(self) -> None:
         proposal, capability, execution, authority = _inputs()
         contract = build_callable_external_runtime_contract(
@@ -211,7 +231,7 @@ class CallableExternalRuntimeTests(unittest.TestCase):
         proposal, capability, execution, authority = _inputs()
         authority["sites"][0]["external_routes"][0]["capability_id"] = 19
         with self.assertRaisesRegex(
-            CallableExternalRuntimeError, "checked jump capability"
+            CallableExternalRuntimeError, "checked call/jump capability"
         ):
             build_callable_external_runtime_contract(
                 proposal=proposal,

@@ -913,6 +913,22 @@ private def instructionMetadataJson : Instruction -> Json
       ("constructor", toJson "storeDwords"),
       ("repeated", toJson repeated)
     ]
+  | .moveWords repeated => Json.mkObj [
+      ("constructor", toJson "moveWords"),
+      ("repeated", toJson repeated)
+    ]
+  | .storeWords repeated => Json.mkObj [
+      ("constructor", toJson "storeWords"),
+      ("repeated", toJson repeated)
+    ]
+  | .moveBytes repeated => Json.mkObj [
+      ("constructor", toJson "moveBytes"),
+      ("repeated", toJson repeated)
+    ]
+  | .storeBytes repeated => Json.mkObj [
+      ("constructor", toJson "storeBytes"),
+      ("repeated", toJson repeated)
+    ]
   | .scanByteNotEqual => Json.mkObj [
       ("constructor", toJson "scanByteNotEqual")
     ]
@@ -932,6 +948,11 @@ private def instructionMetadataJson : Instruction -> Json
       ("constructor", toJson "movFs32"),
       ("destination", toJson (registerName destination)),
       ("source", addressingJson source)
+    ]
+  | .movToFs32 destination source => Json.mkObj [
+      ("constructor", toJson "movToFs32"),
+      ("destination", addressingJson destination),
+      ("source", toJson (registerName source))
     ]
   | .divideUnsigned source => Json.mkObj [
       ("constructor", toJson "divideUnsigned"),
@@ -1285,8 +1306,9 @@ def _memory_effect(
     width_bits: int,
     role: str,
     condition: Mapping[str, Any] | None = None,
+    replay_control: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    effect = {
         "class": "memory",
         "id": f"memory-{role}-{access}-{width_bits:02d}",
         "width_bits": width_bits,
@@ -1294,6 +1316,9 @@ def _memory_effect(
         "address": dict(address),
         "condition": None if condition is None else dict(condition),
     }
+    if replay_control is not None:
+        effect["replay_control"] = dict(replay_control)
+    return effect
 
 
 def _x87_effect(*, stack_inputs: int, stack_outputs: int) -> dict[str, Any]:
@@ -1310,6 +1335,7 @@ def _x87_format_width(value: Any, context: str) -> int:
     widths = {
         "float32": 32,
         "int32": 32,
+        "int64": 64,
         "float64": 64,
         "float80": 80,
     }
@@ -2147,7 +2173,12 @@ def _derive_enrichment(
             operation = _condition_name(
                 row.get("operation"), f"{context}.operation"
             )
-            if operation not in {"bitNot", "negate"}:
+            if operation not in {
+                "bitNot",
+                "negate",
+                "increment",
+                "decrement",
+            }:
                 raise StageAInputError(
                     f"{context}.operation is not a reviewed unary operation"
                 )
@@ -2967,7 +2998,15 @@ def _derive_enrichment(
     if constructor == "x87Examine":
         _exact_fields(instruction, {"constructor"}, context)
         return _resolved_x87(stack_inputs=1, stack_outputs=1)
-    if constructor in {"moveDwords", "storeDwords"}:
+    string_widths = {
+        "moveBytes": 8,
+        "storeBytes": 8,
+        "moveWords": 16,
+        "storeWords": 16,
+        "moveDwords": 32,
+        "storeDwords": 32,
+    }
+    if constructor in string_widths:
         row = _exact_fields(
             instruction, {"constructor", "repeated"}, context
         )
@@ -2995,7 +3034,7 @@ def _derive_enrichment(
                     "segment": "flat",
                 },
                 access="write",
-                width_bits=32,
+                width_bits=string_widths[constructor],
                 role="destination",
                 condition=condition,
             ),
@@ -3006,9 +3045,10 @@ def _derive_enrichment(
                 "access": "read",
             },
         ]
-        reads = ["edi", "eax"] if constructor == "storeDwords" else ["esi", "edi"]
+        is_store = constructor.startswith("store")
+        reads = ["edi", "eax"] if is_store else ["esi", "edi"]
         writes = ["edi"]
-        if constructor == "moveDwords":
+        if not is_store:
             effects.append(
                 _memory_effect(
                     address={
@@ -3019,7 +3059,7 @@ def _derive_enrichment(
                         "segment": "flat",
                     },
                     access="read",
-                    width_bits=32,
+                    width_bits=string_widths[constructor],
                     role="source",
                     condition=condition,
                 )
@@ -3062,6 +3102,37 @@ def _derive_enrichment(
         register = _register_effect_around_memory(
             reads=[],
             writes=[destination],
+            effects=effects,
+        )
+        if register is not None:
+            effects.append(register)
+        return _resolved(effects=effects, eflags=_ARITHMETIC_FLAGS)
+    if constructor == "movToFs32":
+        row = _exact_fields(
+            instruction, {"constructor", "destination", "source"}, context
+        )
+        destination = _address(
+            row.get("destination"), f"{context}.destination"
+        )
+        destination["segment"] = "fs"
+        source = _register(row.get("source"), f"{context}.source")
+        effects = [
+            _memory_effect(
+                address=destination,
+                access="write",
+                width_bits=32,
+                role="destination",
+            ),
+            {
+                "class": "state",
+                "id": "state-fs",
+                "state": "fs",
+                "access": "read",
+            },
+        ]
+        register = _register_effect_around_memory(
+            reads=[source],
+            writes=[],
             effects=effects,
         )
         if register is not None:
@@ -3297,6 +3368,15 @@ def _derive_enrichment(
                 access="read",
                 width_bits=8,
                 role="source",
+                replay_control={
+                    "count_location": {"register": "ecx", "lsb": 0},
+                    "count_width_bits": 32,
+                    "stop_value": {
+                        "kind": "register",
+                        "location": {"register": "eax", "lsb": 0},
+                        "width_bits": 8,
+                    },
+                },
             )
         ]
         register = _register_effect_around_memory(
@@ -3335,13 +3415,6 @@ def _derive_enrichment(
         if register is not None:
             effects.append(register)
         return _resolved(effects=effects, eflags=_ARITHMETIC_FLAGS)
-    if constructor == "unsupported":
-        _exact_fields(instruction, {"constructor", "repr"}, context)
-        _string(instruction.get("repr"), f"{context}.repr")
-        return {
-            "status": "unresolved",
-            "reason": "instruction_family_not_soundly_derivable",
-        }
     raise StageAInputError(
         f"{context}.constructor was not emitted by the reviewed Lean exporter"
     )
@@ -3464,6 +3537,12 @@ def enrich_side_isa_catalog(
     if qualified_forms:
         resolved_isa_catalog(result)
     return result
+
+
+def validate_side_isa_catalog_proposal(value: Any) -> dict[str, Any]:
+    """Replay the strict proposal schema without performing Lean work."""
+
+    return _parse_proposal(value)
 
 
 def enrich_side_isa_catalog_with_lean(
@@ -3857,5 +3936,6 @@ __all__ = [
     "enrich_side_isa_catalog_with_lean",
     "extract_lean_decoded_metadata",
     "resolved_isa_catalog",
+    "validate_side_isa_catalog_proposal",
     "write_enriched_side_isa_catalog",
 ]

@@ -10,11 +10,31 @@
   requirements ? null,
   xedCatalog ? null,
   contentAddressed ? true,
+  pythonEnv ? pkgs.python3,
+  pythonSource,
+  leanShardCount ? 1,
 }:
 
 let
   caAttrs = pkgs.lib.optionalAttrs contentAddressed {
     __contentAddressed = true;
+  };
+  shardPythonSource =
+    if leanShardCount == 1 then
+      null
+    else
+      import ./python-module-closure.nix {
+        inherit pkgs;
+        source = pythonSource;
+        modules = [ "spaghetti_extractor.isa_conformance_shards" ];
+        extraPaths = [ "spaghetti_extractor/lean/StageA" ];
+        name = "${name}-shard-python-closure";
+      };
+  qualificationPythonSource = import ./python-module-closure.nix {
+    inherit pkgs;
+    source = pythonSource;
+    modules = [ "spaghetti_extractor.isa_qualification_worker" ];
+    name = "${name}-qualification-python-closure";
   };
   layeredArtifactSchemaPredicate = ''
     (
@@ -180,30 +200,181 @@ let
     mkUsableSelectionArtifactPredicate "stage-a-isa-kernel-selection-v1"
       "stage-a-isa-kernel-selection-v2"
       selectionArtifactSchemaPredicate;
-  mkConformance =
-    backend:
+  mkSingleConformance =
+    { backend, corpusInput, suffix ? backend, withForms ? backend == "lean" }:
     import ./stage-a-isa-conformance.nix {
       inherit
         pkgs
+        pythonEnv
+        pythonSource
         spaghettiExtractor
         kernelCache
-        corpus
         bochsRunner
         contentAddressed
         ;
-      name = "${name}-${backend}";
+      corpus = corpusInput;
+      name = "${name}-${suffix}";
       inherit backend;
-      withForms = backend == "lean";
+      inherit withForms;
     };
-  lean = mkConformance "lean";
-  unicorn = mkConformance "unicorn";
-  bochs = mkConformance "bochs";
+  mkLeanCorpusShard =
+    shardIndex:
+    pkgs.runCommand "${name}-lean-corpus-shard-${toString shardIndex}" ({
+      nativeBuildInputs = [ pythonEnv ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+    } // caAttrs) ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export PYTHONDONTWRITEBYTECODE=1
+      export PYTHONPATH=${shardPythonSource}/src
+      mkdir -p "$out"
+      ${pythonEnv}/bin/python3 - \
+          ${corpus} "$out/corpus.json" \
+          ${toString shardIndex} ${toString leanShardCount} <<'PY'
+      import json
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.isa_conformance import (
+          parse_isa_conformance_corpus,
+          serialize_isa_conformance_corpus,
+      )
+      from spaghetti_extractor.isa_conformance_shards import (
+          partition_isa_conformance_corpus,
+      )
+
+      source = pathlib.Path(sys.argv[1])
+      output = pathlib.Path(sys.argv[2])
+      shard = partition_isa_conformance_corpus(
+          parse_isa_conformance_corpus(
+              json.loads(source.read_text(encoding="utf-8"))
+          ),
+          shard_index=int(sys.argv[3]),
+          shard_count=int(sys.argv[4]),
+      )
+      output.write_text(
+          json.dumps(
+              serialize_isa_conformance_corpus(shard),
+              indent=2,
+              sort_keys=True,
+          ) + "\n",
+          encoding="utf-8",
+      )
+      PY
+    '';
+  leanShardCorpora =
+    if leanShardCount == 1 then [ ]
+    else pkgs.lib.genList mkLeanCorpusShard leanShardCount;
+  leanShardReports = pkgs.lib.imap0
+    (index: shard:
+      mkSingleConformance {
+        backend = "lean";
+        corpusInput = "${shard}/corpus.json";
+        suffix = "lean-shard-${toString index}";
+        withForms = true;
+      })
+    leanShardCorpora;
+  leanShardInputs = builtins.toJSON (pkgs.lib.imap0
+    (index: shard: {
+      corpus = "${shard}/corpus.json";
+      report = "${builtins.elemAt leanShardReports index}/report.json";
+      forms = "${builtins.elemAt leanShardReports index}/forms.json";
+    })
+    leanShardCorpora);
+  mergedLean = pkgs.runCommand "${name}-lean-merged" ({
+    nativeBuildInputs = [ pythonEnv ];
+    preferLocalBuild = false;
+    allowSubstitutes = true;
+  } // caAttrs) ''
+    set -euo pipefail
+    export PYTHONHASHSEED=0
+    export PYTHONDONTWRITEBYTECODE=1
+    export PYTHONPATH=${shardPythonSource}/src
+    mkdir -p "$out"
+    ${pythonEnv}/bin/python3 - \
+        ${corpus} "$out/report.json" "$out/forms.json" \
+        ${pkgs.lib.escapeShellArg leanShardInputs} <<'PY'
+    import json
+    import pathlib
+    import sys
+
+    from spaghetti_extractor.isa_conformance import (
+        parse_isa_conformance_corpus,
+        serialize_isa_conformance_report,
+    )
+    from spaghetti_extractor.isa_conformance_shards import (
+        merge_isa_conformance_shards,
+        merge_lean_semantic_form_shards,
+    )
+
+    full_corpus = parse_isa_conformance_corpus(
+        json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+    )
+    rows = json.loads(sys.argv[4])
+    shard_corpora = [
+        parse_isa_conformance_corpus(
+            json.loads(pathlib.Path(row["corpus"]).read_text(encoding="utf-8"))
+        )
+        for row in rows
+    ]
+    reports = [
+        json.loads(pathlib.Path(row["report"]).read_text(encoding="utf-8"))
+        for row in rows
+    ]
+    forms = [
+        json.loads(pathlib.Path(row["forms"]).read_text(encoding="utf-8"))
+        for row in rows
+    ]
+    report = merge_isa_conformance_shards(
+        full_corpus,
+        shard_corpora=shard_corpora,
+        shard_reports=reports,
+    )
+    pathlib.Path(sys.argv[2]).write_text(
+        json.dumps(
+            serialize_isa_conformance_report(report, corpus=full_corpus),
+            indent=2,
+            sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    pathlib.Path(sys.argv[3]).write_text(
+        json.dumps(
+            merge_lean_semantic_form_shards(
+                full_corpus,
+                shard_corpora=shard_corpora,
+                shard_payloads=forms,
+            ),
+            indent=2,
+            sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    PY
+  '';
+  lean =
+    if leanShardCount == 1 then
+      mkSingleConformance {
+        backend = "lean";
+        corpusInput = corpus;
+      }
+    else
+      mergedLean;
+  unicorn = mkSingleConformance {
+    backend = "unicorn";
+    corpusInput = corpus;
+  };
+  bochs = mkSingleConformance {
+    backend = "bochs";
+    corpusInput = corpus;
+  };
   qualification = pkgs.runCommand "${name}-qualification"
     (
       {
         nativeBuildInputs = [
           pkgs.jq
-          spaghettiExtractor
+          pythonEnv
         ];
         preferLocalBuild = false;
         allowSubstitutes = true;
@@ -212,24 +383,42 @@ let
     )
     ''
       mkdir -p "$out"
-      set +e
-      spaghetti-extractor stage-a-build-isa-kernel-qualification \
-        --corpus ${corpus} \
-        --lean-forms ${lean}/forms.json \
-        --bochs-report ${bochs}/report.json \
-        --unicorn-report ${unicorn}/report.json \
-        --lean-report ${lean}/report.json \
-        --semantic-kernel ${semanticKernel} \
-        ${pkgs.lib.optionalString (generatedCorpus != null) "--generated-corpus ${generatedCorpus}"} \
-        --out "$out/qualification.json" \
-        --crosswalk-out "$out/lean-form-crosswalk.json" \
-        > "$out/result.json"
-      worker_status="$?"
-      set -e
-      if [ "$worker_status" -gt 1 ]; then
-        echo "ISA qualification worker failed with status $worker_status" >&2
-        exit "$worker_status"
-      fi
+      export PYTHONHASHSEED=0
+      export PYTHONDONTWRITEBYTECODE=1
+      export PYTHONPATH=${qualificationPythonSource}/src
+      ${pythonEnv}/bin/python3 - \
+        ${corpus} \
+        ${lean}/forms.json \
+        ${bochs}/report.json \
+        ${unicorn}/report.json \
+        ${lean}/report.json \
+        ${semanticKernel} \
+        "$out/qualification.json" \
+        "$out/lean-form-crosswalk.json" \
+        ${if generatedCorpus == null then "-" else generatedCorpus} \
+        > "$out/result.json" <<'PY'
+      import json
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.isa_qualification_worker import (
+          build_isa_kernel_qualification,
+      )
+
+      generated = None if sys.argv[9] == "-" else pathlib.Path(sys.argv[9])
+      result = build_isa_kernel_qualification(
+          corpus=pathlib.Path(sys.argv[1]),
+          lean_forms=pathlib.Path(sys.argv[2]),
+          bochs_report=pathlib.Path(sys.argv[3]),
+          unicorn_report=pathlib.Path(sys.argv[4]),
+          lean_report=pathlib.Path(sys.argv[5]),
+          semantic_kernel=pathlib.Path(sys.argv[6]),
+          out=pathlib.Path(sys.argv[7]),
+          crosswalk_out=pathlib.Path(sys.argv[8]),
+          generated_corpus=generated,
+      )
+      print(json.dumps(result, indent=2, sort_keys=True))
+      PY
       jq -e '
         .format == "stage-a-isa-kernel-qualification-result-v1"
         and .proof_authority == false
@@ -468,6 +657,8 @@ let
         }' > "$out/graph.json"
     '';
 in
+assert builtins.isInt leanShardCount && leanShardCount > 0;
+assert leanShardCount == 1 || pythonSource != null;
 {
   inherit
     lean

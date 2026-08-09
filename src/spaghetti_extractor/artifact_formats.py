@@ -17,6 +17,9 @@ NATIVE_ENGINE_PLAN_FORMAT = "stage-b-native-engine-plan-v1"
 NATIVE_ENGINE_PACKAGE_FORMAT = "stage-b-native-engine-package-v1"
 NATIVE_RUNTIME_PACKAGE_FORMAT = "stage-b-native-runtime-package-v1"
 MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
+STATIC_HYBRID_FINAL_AUDIT_V2_FORMAT = (
+    "spaghetti-extractor-static-hybrid-final-audit-v2"
+)
 EXTERNAL_OPERATION_PROFILE_FORMAT = "stage-a-external-operation-profile-v2"
 EXTERNAL_OPERATION_CONTRACT_FORMAT = "stage-a-external-operation-contract-v1"
 OPERATION_PROVENANCE_FORMAT = "stage-a-operation-provenance-v2"

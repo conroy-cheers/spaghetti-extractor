@@ -31,6 +31,20 @@ _REGISTER_NAMES = frozenset({"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "e
 _FLAG_NAMES = frozenset({"cf", "zf", "sf", "of", "pf", "df"})
 _RETURN_KINDS = frozenset({"return"})
 _TERMINATION_KINDS = frozenset({"terminate", "termination", "exit", "halt"})
+_BOUNDARY_OBSERVATION_FIELDS = (
+    "register_writes",
+    "flag_writes",
+    "memory_events",
+    "external_events",
+    "ordered_events",
+    "faults",
+    "edge_conditions",
+    "outcome",
+    "fpu_state",
+)
+_INSTRUCTION_EFFECT_SCHEDULE_FORMAT = (
+    "stage-a-instruction-ordered-effect-schedule-v1"
+)
 
 _CLOSURE_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "ambiguous_cfg_target": ("a unique decoded transfer at every target RVA",),
@@ -261,6 +275,11 @@ def _analyze_slot(
 ) -> dict[str, Any]:
     blockers: list[dict[str, Any]] = []
     source_ids = sorted({item.transfer_id for item in occurrences})
+    schedule_local_dead = _instruction_schedule_local_noninterference(
+        undefined_id,
+        occurrences,
+        nodes=nodes,
+    )
     if any(not item.explicit_id for item in occurrences):
         blockers.append(_blocker("missing_stable_id", "undefined expression has no explicit stable id", source_ids[:1], nodes))
     if slot_collision:
@@ -278,13 +297,15 @@ def _analyze_slot(
             blockers.append(_blocker("ambiguous_source_rva", "undefined source RVA names multiple transfers", [source_id], nodes))
         elif (issue := _schema_issue(node.row)) is not None:
             blockers.append(_blocker("unsupported_transfer_schema", issue, [source_id], nodes))
-        elif node.row.get("reachable") is not True:
+        elif node.row.get("reachable") is not True and not schedule_local_dead:
             blockers.append(_blocker("incomplete_source_reachability", "undefined source is not explicitly reachable", [source_id], nodes))
 
     graph: dict[str, Any] | None = None
     obligations: list[dict[str, Any]] = []
     relevant_sites: list[dict[str, Any]] = []
     synchronized = False
+    if not blockers and schedule_local_dead:
+        return _instruction_schedule_local_result(undefined_id, occurrences)
     if not blockers:
         graph, blockers, obligations, relevant_sites = _build_dependency_graph(
             undefined_id,
@@ -375,6 +396,82 @@ def _analyze_slot(
             "undefined_id": undefined_id,
             "policy": "synchronized" if synchronized else "arbitrary",
             "graphs": [graph],
+        },
+        "blocking_paths": [],
+        "closure_requirements": [],
+    }
+
+
+def _instruction_schedule_local_noninterference(
+    undefined_id: str,
+    occurrences: Sequence[_Occurrence],
+    *,
+    nodes: Mapping[str, _Node],
+) -> bool:
+    """Recognize a value killed inside one checked instruction schedule.
+
+    This is independent of rooted reachability: if the transfer executes, its
+    exact final summary still establishes that the temporary value cannot cross
+    the transfer boundary. The result remains non-authoritative proposal
+    evidence until the schedule replay and summary are checked by Stage A.
+    """
+
+    if not occurrences or any(
+        not occurrence.pointer.startswith("/instruction_effect_schedule/records/")
+        for occurrence in occurrences
+    ):
+        return False
+    for source_id in sorted({item.transfer_id for item in occurrences}):
+        node = nodes.get(source_id)
+        if node is None:
+            return False
+        row = node.row
+        if row.get("blocker") is not None or row.get("status") in {
+            "blocked",
+            "incomplete",
+        }:
+            return False
+        schedule = row.get("instruction_effect_schedule")
+        if (
+            not isinstance(schedule, Mapping)
+            or schedule.get("format") != _INSTRUCTION_EFFECT_SCHEDULE_FORMAT
+            or schedule.get("status") != "complete"
+            or schedule.get("blockers") != []
+            or not isinstance(schedule.get("records"), list)
+        ):
+            return False
+        boundary_dependency = _values_dependency(
+            (row.get(field) for field in _BOUNDARY_OBSERVATION_FIELDS),
+            undefined_id,
+        )
+        if boundary_dependency.slot:
+            return False
+    return True
+
+
+def _instruction_schedule_local_result(
+    undefined_id: str,
+    occurrences: Sequence[_Occurrence],
+) -> dict[str, Any]:
+    return {
+        "classification": "unconstrained_noninterfering",
+        "witness_policy": "zero",
+        "choice_source": {
+            "format": "stage-a-definedness-choice-source-v1",
+            "kind": "noninterfering_zero",
+            "slot": occurrences[0].slot,
+            "undefined_id": undefined_id,
+            "requires_semantic_obligations": False,
+        },
+        "proof_obligations": [],
+        "behavior_relevant_sites": [],
+        "proof": {
+            "kind": "instruction-schedule-dead-value-v1",
+            "undefined_id": undefined_id,
+            "policy": "arbitrary",
+            "source_transfers": sorted(
+                {item.transfer_id for item in occurrences}
+            ),
         },
         "blocking_paths": [],
         "closure_requirements": [],

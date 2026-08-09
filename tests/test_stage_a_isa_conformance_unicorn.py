@@ -1,13 +1,20 @@
+from argparse import Namespace
 import copy
+import json
+from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
+from spaghetti_extractor.cli import _run_isa_conformance_worker
 from spaghetti_extractor.isa_conformance import (
     BackendKind,
     ObservationStatus,
     ReportQualification,
     isa_conformance_corpus_sha256,
     parse_isa_conformance_corpus,
+    parse_isa_conformance_report,
+    serialize_isa_conformance_corpus,
 )
 from spaghetti_extractor.isa_conformance_unicorn import (
     UNICORN_BACKEND_ID,
@@ -112,6 +119,40 @@ def _corpus(*cases):
 
 
 class StageAISAConformanceUnicornTests(unittest.TestCase):
+    def test_worker_emits_thin_result_manifest_and_canonical_report(self):
+        corpus = _corpus()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            corpus_path = root / "corpus.json"
+            report_path = root / "report.json"
+            corpus_path.write_text(
+                json.dumps(serialize_isa_conformance_corpus(corpus)),
+                encoding="utf-8",
+            )
+
+            result = _run_isa_conformance_worker(
+                Namespace(
+                    corpus=corpus_path,
+                    backend="unicorn",
+                    bochs_runner=None,
+                    lean_kernel_cache=None,
+                    lean_timeout_seconds=1800,
+                    forms_out=None,
+                    out=report_path,
+                )
+            )
+
+            self.assertEqual(
+                result["format"], "stage-a-isa-conformance-check-v1"
+            )
+            self.assertEqual(result["status"], "checked")
+            self.assertNotIn("observations", result)
+            report = parse_isa_conformance_report(
+                json.loads(report_path.read_text(encoding="utf-8")),
+                corpus=corpus,
+            )
+            self.assertEqual(report.counts.cases, 1)
+
     def test_backend_descriptor_is_explicit_and_evidence_only_report_is_preserved(self):
         descriptor = unicorn_backend_descriptor()
         self.assertEqual(descriptor.id, UNICORN_BACKEND_ID)
@@ -354,6 +395,38 @@ class StageAISAConformanceUnicornTests(unittest.TestCase):
                 )
 
     @unittest.skipUnless(unicorn_available(), "optional Unicorn binding unavailable")
+    def test_large_repeat_count_is_allowed_when_scan_stops_immediately(self):
+        initial_gprs = dict(GPR_VALUES)
+        initial_gprs.update(eax=1, ecx=0xFFFFFFFF, edi=0x00601000)
+        final_gprs = dict(initial_gprs)
+        final_gprs.update(ecx=0xFFFFFFFE, edi=0x00601001)
+        payload = _case(case_id="repne-scasb-large-count-early-stop")
+        payload["instruction_bytes"] = [0xF2, 0xAE]
+        payload["initial_state"] = _state(gprs=initial_gprs)
+        payload["memory"] = [{
+            "address": 0x00601000,
+            "bytes": [1],
+            "permissions": "r",
+        }]
+        payload["expected"] = {
+            "final_state": {
+                **_state(eip=0x00401002, gprs=final_gprs),
+                "eflags": 0x246,
+            },
+            "memory": [],
+            "control": "fallthrough",
+            "fault": "none",
+        }
+
+        observation = run_unicorn_case(_corpus(payload).cases[0])
+
+        self.assertEqual(
+            observation.status,
+            ObservationStatus.MATCH,
+            observation.detail,
+        )
+
+    @unittest.skipUnless(unicorn_available(), "optional Unicorn binding unavailable")
     def test_round_trips_noncanonical_x87_core_state_across_fnop(self):
         capability_issue = unicorn_x87_capability_detail()
         if capability_issue:
@@ -541,6 +614,204 @@ class StageAISAConformanceUnicornTests(unittest.TestCase):
         self.assertEqual(observation.status, ObservationStatus.MATCH)
         self.assertEqual(observation.final_state.gprs.eax, 0x44332211)
         self.assertEqual(observation.final_state.fs, case.initial_state.fs)
+
+    @unittest.skipUnless(unicorn_available(), "optional Unicorn binding unavailable")
+    def test_dxball_integer_frontier_forms_match_the_reference_executor(self):
+        flag_mask = 0x8C5  # OF, SF, ZF, PF, CF
+
+        inc_al = _case(case_id="inc-al-width-and-flags")
+        inc_al["instruction_bytes"] = [0xFE, 0xC0]
+        inc_al_gprs = dict(GPR_VALUES)
+        inc_al_gprs["eax"] = 0x123400FF
+        inc_al_initial = _state(gprs=inc_al_gprs)
+        inc_al_initial["eflags"] = 0x203
+        inc_al["initial_state"] = inc_al_initial
+        inc_al_expected = dict(inc_al_gprs)
+        inc_al_expected["eax"] = 0x12340000
+        inc_al["defined_outputs"]["eflags"] = flag_mask
+        inc_al_expected_state = _state(eip=0x00401002, gprs=inc_al_expected)
+        inc_al_expected_state["eflags"] = 0x247
+        inc_al["expected"] = {
+            "final_state": inc_al_expected_state,
+            "memory": [],
+            "control": "fallthrough",
+            "fault": "none",
+        }
+
+        inc_word = _case(case_id="inc-word-memory-width-and-flags")
+        inc_word["instruction_bytes"] = [0x66, 0xFF, 0x00]
+        inc_word_gprs = dict(GPR_VALUES)
+        inc_word_gprs["eax"] = 0x00600000
+        inc_word_initial = _state(gprs=inc_word_gprs)
+        inc_word_initial["eflags"] = 0x203
+        inc_word["initial_state"] = inc_word_initial
+        inc_word["memory"] = [
+            {
+                "address": 0x00600000,
+                "bytes": [0xFF, 0xFF],
+                "permissions": "rw",
+            }
+        ]
+        inc_word["defined_outputs"]["eflags"] = flag_mask
+        inc_word["defined_outputs"]["memory"] = [
+            {"address": 0x00600000, "mask": [0xFF, 0xFF]}
+        ]
+        inc_word_expected = _state(eip=0x00401003, gprs=inc_word_gprs)
+        inc_word_expected["eflags"] = 0x247
+        inc_word["expected"] = {
+            "final_state": inc_word_expected,
+            "memory": [{"address": 0x00600000, "bytes": [0, 0]}],
+            "control": "fallthrough",
+            "fault": "none",
+        }
+
+        rotate = _case(case_id="rcr-ebx-one-carry-and-overflow")
+        rotate["instruction_bytes"] = [0xD1, 0xDB]
+        rotate_gprs = dict(GPR_VALUES)
+        rotate_gprs["ebx"] = 1
+        rotate_initial = _state(gprs=rotate_gprs)
+        rotate_initial["eflags"] = 0x247
+        rotate["initial_state"] = rotate_initial
+        rotate_expected_gprs = dict(rotate_gprs)
+        rotate_expected_gprs["ebx"] = 0x80000000
+        rotate_expected = _state(eip=0x00401002, gprs=rotate_expected_gprs)
+        rotate_expected["eflags"] = 0xA47
+        rotate["defined_outputs"]["eflags"] = flag_mask
+        rotate["expected"] = {
+            "final_state": rotate_expected,
+            "memory": [],
+            "control": "fallthrough",
+            "fault": "none",
+        }
+
+        pop_fs = _case(case_id="pop-fs-memory-stack-and-segment")
+        pop_fs["instruction_bytes"] = [0x64, 0x8F, 0x05, 0, 0, 0, 0]
+        pop_gprs = dict(GPR_VALUES)
+        pop_gprs["esp"] = 0x00601000
+        pop_initial = _state(gprs=pop_gprs)
+        pop_initial["fs"] = {"selector": 0x3B, "base": 0x00800000}
+        pop_fs["initial_state"] = pop_initial
+        pop_fs["memory"] = [
+            {
+                "address": 0x00601000,
+                "bytes": [0x44, 0x33, 0x22, 0x11],
+                "permissions": "r",
+            },
+            {
+                "address": 0x00800000,
+                "bytes": [0, 0, 0, 0],
+                "permissions": "rw",
+            },
+        ]
+        pop_expected_gprs = dict(pop_gprs)
+        pop_expected_gprs["esp"] += 4
+        pop_expected = _state(eip=0x00401007, gprs=pop_expected_gprs)
+        pop_expected["fs"] = dict(pop_initial["fs"])
+        pop_fs["defined_outputs"]["fs"] = {
+            "selector": 0xFFFF,
+            "base": 0xFFFFFFFF,
+        }
+        pop_fs["defined_outputs"]["memory"] = [
+            {"address": 0x00800000, "mask": [0xFF] * 4}
+        ]
+        pop_fs["expected"] = {
+            "final_state": pop_expected,
+            "memory": [
+                {"address": 0x00800000, "bytes": [0x44, 0x33, 0x22, 0x11]}
+            ],
+            "control": "fallthrough",
+            "fault": "none",
+        }
+
+        pop_esp = _case(case_id="pop-esp-uses-popped-value")
+        pop_esp["instruction_bytes"] = [0x5C]
+        pop_esp_gprs = dict(GPR_VALUES)
+        pop_esp_gprs["esp"] = 0x00602000
+        pop_esp["initial_state"] = _state(gprs=pop_esp_gprs)
+        pop_esp["memory"] = [
+            {
+                "address": 0x00602000,
+                "bytes": [0x44, 0x33, 0x22, 0x11],
+                "permissions": "r",
+            }
+        ]
+        pop_esp_expected = dict(pop_esp_gprs)
+        pop_esp_expected["esp"] = 0x11223344
+        pop_esp["expected"] = {
+            "final_state": _state(eip=0x00401001, gprs=pop_esp_expected),
+            "memory": [],
+            "control": "fallthrough",
+            "fault": "none",
+        }
+
+        for payload in (inc_al, inc_word, rotate, pop_fs, pop_esp):
+            with self.subTest(case=payload["id"]):
+                observation = run_unicorn_case(_corpus(payload).cases[0])
+                self.assertEqual(
+                    observation.status,
+                    ObservationStatus.MATCH,
+                    observation.detail,
+                )
+
+    @unittest.skipUnless(unicorn_available(), "optional Unicorn binding unavailable")
+    def test_frontier_memory_write_faults_are_observed(self):
+        increment = _case(case_id="inc-word-read-only-fault")
+        increment["instruction_bytes"] = [0x66, 0xFF, 0x00]
+        initial_gprs = dict(GPR_VALUES)
+        initial_gprs["eax"] = 0x00600000
+        increment["initial_state"] = _state(gprs=initial_gprs)
+        increment["memory"] = [
+            {
+                "address": 0x00600000,
+                "bytes": [0x01, 0x00],
+                "permissions": "r",
+            }
+        ]
+        increment["defined_outputs"] = {
+            "gprs": {register: 0 for register in GPR_VALUES},
+            "eip": 0,
+            "eflags": 0,
+            "fs": {"selector": 0, "base": 0},
+            "x87": _x87_mask(),
+            "memory": [],
+        }
+        increment["expected"] = {
+            "final_state": None,
+            "memory": None,
+            "control": "fault",
+            "fault": "page_fault",
+        }
+
+        pop_fs = _case(case_id="pop-fs-read-only-fault")
+        pop_fs["instruction_bytes"] = [0x64, 0x8F, 0x05, 0, 0, 0, 0]
+        pop_gprs = dict(GPR_VALUES)
+        pop_gprs["esp"] = 0x00601000
+        pop_initial = _state(gprs=pop_gprs)
+        pop_initial["fs"] = {"selector": 0x3B, "base": 0x00800000}
+        pop_fs["initial_state"] = pop_initial
+        pop_fs["memory"] = [
+            {
+                "address": 0x00601000,
+                "bytes": [0x44, 0x33, 0x22, 0x11],
+                "permissions": "r",
+            },
+            {
+                "address": 0x00800000,
+                "bytes": [0, 0, 0, 0],
+                "permissions": "r",
+            },
+        ]
+        pop_fs["defined_outputs"] = dict(increment["defined_outputs"])
+        pop_fs["expected"] = dict(increment["expected"])
+
+        for payload in (increment, pop_fs):
+            with self.subTest(case=payload["id"]):
+                observation = run_unicorn_case(_corpus(payload).cases[0])
+                self.assertEqual(
+                    observation.status,
+                    ObservationStatus.MATCH,
+                    observation.detail,
+                )
 
     @unittest.skipUnless(unicorn_available(), "optional Unicorn binding unavailable")
     def test_observes_only_requested_memory_mask_ranges(self):

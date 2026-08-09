@@ -131,6 +131,7 @@ class CallableExternalRuntimeRoute:
     slot_rva: int
     target_origin: str
     value_register: str | None
+    transfer: str
     resolver_contract_id: int
     capability_id: int
     abi_contract_id: int
@@ -149,6 +150,7 @@ class CallableExternalRuntimeRoute:
             self.slot_rva,
             self.target_origin,
             self.value_register,
+            self.transfer,
             self.resolver_contract_id,
             self.capability_id,
             self.abi_contract_id,
@@ -173,7 +175,7 @@ class CallableExternalRuntimeRoute:
             "capability_id": self.capability_id,
             "abi_contract_id": self.abi_contract_id,
             "resource_id": self.resource_id,
-            "transfer": "jump",
+            "transfer": self.transfer,
             "argument_sources": [
                 _argument_payload(source) for source in self.argument_sources
             ],
@@ -349,6 +351,7 @@ def build_callable_external_runtime_contract(
         slot_rva: int,
         target_origin: str,
         value_register: str | None,
+        transfer: str,
     ) -> None:
         resolver_id = _natural(raw_route.get("resolver_contract_id"), "route resolver id")
         capability_id = _natural(raw_route.get("capability_id"), "route capability id")
@@ -362,11 +365,11 @@ def build_callable_external_runtime_contract(
             or selected_capability.resolver_contract_id != resolver_id
             or selected_capability.resource_id != resource_id
             or abi.capability_id != capability_id
-            or abi.transfer != "jump"
+            or abi.transfer != transfer
             or capability_id not in seen_capabilities
         ):
             raise CallableExternalRuntimeError(
-                "callable route does not name one checked jump capability"
+                "callable route does not name one checked call/jump capability"
             )
         raw_routes.append(CallableExternalRuntimeRoute(
             id=0,
@@ -375,6 +378,7 @@ def build_callable_external_runtime_contract(
             slot_rva=slot_rva,
             target_origin=target_origin,
             value_register=value_register,
+            transfer=transfer,
             resolver_contract_id=resolver_id,
             capability_id=capability_id,
             abi_contract_id=abi_id,
@@ -403,13 +407,14 @@ def build_callable_external_runtime_contract(
         if not external_routes and not origins:
             continue
         if (
-            site.get("transfer_kind") != "jump"
+            site.get("transfer_kind") not in {"call", "jump"}
             or site.get("value_relation") != "finite_origins"
         ):
             raise CallableExternalRuntimeError(
-                "callable writable-slot authority is not a finite-origin jump"
+                "callable writable-slot authority is not a finite-origin call/jump"
             )
         source_rva = _natural(site.get("source_rva"), "callable source RVA", u32=True)
+        transfer = str(site.get("transfer_kind"))
         instruction_rva = _natural(
             site.get("instruction_rva"), "callable instruction RVA", u32=True
         )
@@ -426,6 +431,7 @@ def build_callable_external_runtime_contract(
                 slot_rva=slot_rva,
                 target_origin="writable_static_slot",
                 value_register=None,
+                transfer=transfer,
             )
 
         for origin_index, raw_origin in enumerate(origins):
@@ -466,6 +472,7 @@ def build_callable_external_runtime_contract(
                     slot_rva=slot_rva,
                     target_origin="resolver_result_register",
                     value_register=value_register,
+                    transfer=transfer,
                 )
     if not raw_routes:
         raise CallableExternalRuntimeError("callable runtime has no finite-origin routes")
@@ -564,8 +571,9 @@ def load_callable_external_runtime_contract(
     routes: list[CallableExternalRuntimeRoute] = []
     for index, raw in enumerate(_list(payload.get("routes"), "callable routes")):
         row = _object(raw, f"callable routes[{index}]")
-        if row.get("transfer") != "jump" or row.get("world_effect") != "none":
-            raise CallableExternalRuntimeError("runtime route is not a supported jump")
+        transfer = row.get("transfer")
+        if transfer not in {"call", "jump"} or row.get("world_effect") != "none":
+            raise CallableExternalRuntimeError("runtime route is not a supported call/jump")
         arguments = tuple(
             CallableArgumentSourceSpec.parse(item, f"callable routes[{index}].argument_sources[{position}]")
             for position, item in enumerate(_list(row.get("argument_sources"), "route arguments"))
@@ -594,6 +602,7 @@ def load_callable_external_runtime_contract(
                 if row.get("value_register") is not None
                 else None
             ),
+            transfer=str(transfer),
             resolver_contract_id=_natural(row.get("resolver_contract_id"), "route resolver id"),
             capability_id=_natural(row.get("capability_id"), "route capability id"),
             abi_contract_id=_natural(row.get("abi_contract_id"), "route ABI id"),

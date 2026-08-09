@@ -8,17 +8,30 @@ call argument, memory update, and external frame must be replayed by Stage A.
 from __future__ import annotations
 
 import copy
+import heapq
 import json
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from .callback_contracts import (
+    parse_callback_abi,
+    parse_nested_native_callback_behavior,
+    parse_callback_result,
+    parse_callback_source,
+)
 from .call_arguments import CallArgumentRecovery, recover_pe32_stack_call_arguments
 from .external_interface_profiles import (
     ExternalInterfaceProfile,
+    InterfaceCallerMemoryFrame,
     InterfaceFactory,
     InterfaceMethod,
+)
+from .external_capabilities import (
+    CallableExternalProfile,
+    CallableExternalTargetProfileSpec,
+    CallableResolverProfileSpec,
 )
 from .external_operation_profiles import (
     DiscriminatorOutputView,
@@ -33,12 +46,19 @@ from .external_operation_profiles import (
     SuccessGuard,
 )
 from .import_abi import SelectedImportABI
-from .machine_abi import MachineCallABI
-from .machine_import_profiles import MachineImportIdentity
+from .machine_abi import MachineCallABI, resolve_machine_call_abi
+from .machine_import_profiles import MachineImportIdentity, MachineImportProfileError
+from .checked_memory_access_v2 import MEMORY_ACCESS_PROPOSAL_V2_FORMAT
 from .provenance_domain import (
     FiniteValue,
     ValueOrigin,
+    is_persistent_origin,
     join_finite_values,
+    origin_concrete_value,
+    origins_json,
+    value_dependencies,
+    with_origin_dependencies,
+    with_value_dependencies,
 )
 
 
@@ -49,13 +69,15 @@ _CALL_KINDS = frozenset({"external_call", "indirect_call", "internal_call"})
 
 _Origin = ValueOrigin
 _Value = FiniteValue
+_MemoryLocation = int | _Origin
 
 
 @dataclass
 class _State:
     registers: dict[str, _Value]
-    memory: dict[int, _Value]
+    memory: dict[_MemoryLocation, _Value]
     stack: dict[int, "_StackCell"]
+    memory_invalidated: bool = False
 
 
 @dataclass(frozen=True, order=True)
@@ -88,6 +110,15 @@ class _CallFacts:
     argument_words: int | None
     stack_cleanup_bytes: int | None
     outputs: Mapping[_Origin, _Value]
+    memory_preserved: bool = False
+    memory_writes: tuple["_WriteSpan", ...] | None = None
+    dependencies: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, order=True)
+class _WriteSpan:
+    base: _Origin
+    size: int | None
 
 
 @dataclass(frozen=True)
@@ -98,15 +129,42 @@ class _Edge:
     guard_json: str | None = None
 
 
+@dataclass(frozen=True)
+class _InternalCleanupEvidence:
+    target_address: int
+    target_unit_id: str
+    cleanup_bytes: int | None
+    return_unit_ids: tuple[str, ...]
+    status: str
+    failure_code: str | None = None
+
+    def as_json(self, *, image_base: int) -> dict[str, Any]:
+        return {
+            "target_address": self.target_address,
+            "target_rva": (self.target_address - image_base) & 0xFFFFFFFF,
+            "target_unit_id": self.target_unit_id,
+            "status": self.status,
+            "cleanup_bytes": self.cleanup_bytes,
+            "return_unit_ids": list(self.return_unit_ids),
+            "failure": (
+                None
+                if self.failure_code is None
+                else {"code": self.failure_code}
+            ),
+        }
+
+
 @dataclass
 class _RunResult:
     states: dict[str, _State]
     resolutions: list[dict[str, Any]]
-    proposed_slots: dict[int, _Value]
-    tainted_slots: set[int]
+    proposed_slots: dict[_MemoryLocation, _Value]
+    tainted_slots: set[_MemoryLocation]
     issues: list[dict[str, Any]]
     argument_recoveries: list[dict[str, Any]]
     evaluations: int
+    transfer_requests: int
+    transfer_cache_hits: int
     budget_exceeded: int
 
 
@@ -119,38 +177,92 @@ def recover_external_interface_targets(
     recovered_indirect_edges: Sequence[Mapping[str, Any]],
     indirect_exits: Sequence[Mapping[str, Any]],
     profiles: Sequence[ExternalInterfaceProfile],
+    callable_external_profiles: Sequence[CallableExternalProfile] = (),
     operation_profiles: Sequence[ExternalOperationProfile] = (),
     imports: Sequence[Mapping[str, Any]] = (),
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
     image_base: int,
     internal_call_stack_cleanup: Mapping[int, int] | None = None,
+    internal_call_result_relations: Mapping[
+        int, Mapping[str, Sequence[Mapping[str, Any]]]
+    ] | None = None,
+    internal_call_memory_preservation: Mapping[int, bool] | None = None,
+    internal_call_memory_result_relations: Mapping[
+        int, Mapping[_Origin, _Value]
+    ] | None = None,
     finite_value_budget: int = 32,
     static_slot_budget: int = 256,
     stack_slot_budget: int = 256,
-    fixed_point_budget: int = 16,
+    fixed_point_budget: int | None = None,
     static_data_reader: Callable[[int, int], bytes | None] | None = None,
+    bootstrap_unknown_call_preserved_registers: frozenset[str] | None = None,
+    initial_known_slots: Mapping[_MemoryLocation, _Value] | None = None,
+    recovered_known_slots: dict[_MemoryLocation, _Value] | None = None,
+    checked_stack_entry_offsets: Mapping[str, Sequence[int]] | None = None,
+    allow_global_slot_promotion: bool = True,
 ) -> dict[str, Any]:
     """Recover finite external method targets from typed interface origins."""
 
-    if min(
-        finite_value_budget,
-        static_slot_budget,
-        stack_slot_budget,
-        fixed_point_budget,
-    ) <= 0:
+    if min(finite_value_budget, static_slot_budget, stack_slot_budget) <= 0 or (
+        fixed_point_budget is not None and fixed_point_budget <= 0
+    ):
         raise ValueError("interface provenance budgets must be positive")
-    call_stack_cleanup = internal_call_stack_cleanup or {}
+    if not isinstance(allow_global_slot_promotion, bool):
+        raise ValueError("allow_global_slot_promotion must be a boolean")
+    effective_fixed_point_budget = (
+        fixed_point_budget
+        if fixed_point_budget is not None
+        else 1 + static_slot_budget * (finite_value_budget + 3)
+    )
+    if (
+        bootstrap_unknown_call_preserved_registers is not None
+        and not bootstrap_unknown_call_preserved_registers <= frozenset(_REGISTERS)
+    ):
+        raise ValueError("bootstrap call preservation contains an unknown register")
+    supplied_call_stack_cleanup = dict(internal_call_stack_cleanup or {})
+    supplied_call_result_relations = dict(internal_call_result_relations or {})
+    supplied_call_memory_preservation = dict(
+        internal_call_memory_preservation or {}
+    )
+    supplied_call_memory_results = _normalize_internal_call_memory_results(
+        internal_call_memory_result_relations or {},
+        finite_value_budget=finite_value_budget,
+    )
+    internal_call_dependency_ids: dict[tuple[str, int], frozenset[str]] = {}
+    for edge in internal_call_edges:
+        source = edge.get("source_unit_id")
+        event_index = _integer(edge.get("source_event_index"))
+        target = edge.get("target_unit_id")
+        if (
+            isinstance(source, str)
+            and event_index is not None
+            and isinstance(target, str)
+        ):
+            key = (source, event_index)
+            internal_call_dependency_ids[key] = (
+                internal_call_dependency_ids.get(key, frozenset())
+                | {_call_frame_dependency_id(source, event_index, target)}
+            )
+    stack_entry_offsets = _normalize_checked_stack_entry_offsets(
+        checked_stack_entry_offsets or {},
+        finite_value_budget=finite_value_budget,
+    )
     by_id = {str(unit["id"]): unit for unit in units}
     if len(by_id) != len(units):
         raise ValueError("interface provenance requires unique unit IDs")
     inventory = _ProfileInventory(
         profiles,
+        callable_external_profiles=callable_external_profiles,
         operation_profiles=operation_profiles,
         imports=imports,
         units=units,
         image_base=image_base,
         static_data_reader=static_data_reader,
+    )
+    effective_import_abis = _merge_import_abi_evidence(
+        import_abis,
+        inventory.observed_import_abis,
     )
     outgoing = _outgoing_edges(
         by_id,
@@ -158,69 +270,132 @@ def recover_external_interface_targets(
         internal_call_edges=internal_call_edges,
         recovered_indirect_edges=recovered_indirect_edges,
     )
+    cleanup_evidence = _infer_internal_call_cleanups(
+        by_id=by_id,
+        outgoing=outgoing,
+        internal_call_edges=internal_call_edges,
+        image_base=image_base,
+    )
+    call_stack_cleanup = dict(supplied_call_stack_cleanup)
+    cleanup_conflicts: list[dict[str, Any]] = []
+    for evidence in cleanup_evidence:
+        if evidence.status != "complete" or evidence.cleanup_bytes is None:
+            continue
+        supplied = supplied_call_stack_cleanup.get(evidence.target_address)
+        if supplied is not None and supplied != evidence.cleanup_bytes:
+            cleanup_conflicts.append({
+                "code": "internal_call_cleanup_evidence_conflict",
+                "target_address": evidence.target_address,
+                "supplied_cleanup_bytes": supplied,
+                "inferred_cleanup_bytes": evidence.cleanup_bytes,
+            })
+            call_stack_cleanup.pop(evidence.target_address, None)
+            continue
+        call_stack_cleanup.setdefault(
+            evidence.target_address, evidence.cleanup_bytes
+        )
     recovered_calls = _recovered_call_inventory(recovered_indirect_edges)
     roots_set = {str(root) for root in roots if str(root) in by_id}
-    known_slots: dict[int, _Value] = {}
+    known_slots = dict(initial_known_slots or {})
+    if len(known_slots) > static_slot_budget or any(
+        not isinstance(location, (int, _Origin))
+        or origins is None
+        or not origins
+        or len(origins) > finite_value_budget
+        or any(not _persistent_origin(origin) for origin in origins)
+        for location, origins in known_slots.items()
+    ):
+        raise ValueError("initial interface-provenance slot seed is invalid")
+    initial_known_slot_count = len(known_slots)
+    rejected_tainted_slots: set[_MemoryLocation] = set()
     final: _RunResult | None = None
     converged = False
     rounds = 0
-    for rounds in range(1, fixed_point_budget + 1):
+    slot_capacity_exceeded = False
+    for rounds in range(1, effective_fixed_point_budget + 1):
         final = _run_dataflow(
             by_id=by_id,
             roots=roots_set,
             outgoing=outgoing,
             indirect_exits=indirect_exits,
             inventory=inventory,
-            import_abis=import_abis,
+            import_abis=effective_import_abis,
             internal_call_preserved_registers=internal_call_preserved_registers,
             internal_call_stack_cleanup=call_stack_cleanup,
+            internal_call_result_relations=supplied_call_result_relations,
+            internal_call_memory_preservation=(
+                supplied_call_memory_preservation
+            ),
+            internal_call_memory_result_relations=(
+                supplied_call_memory_results
+            ),
+            internal_call_dependency_ids=internal_call_dependency_ids,
             recovered_calls=recovered_calls,
+            bootstrap_unknown_call_preserved_registers=(
+                bootstrap_unknown_call_preserved_registers
+            ),
             image_base=image_base,
             known_slots=known_slots,
             finite_value_budget=finite_value_budget,
             static_slot_budget=static_slot_budget,
             stack_slot_budget=stack_slot_budget,
+            checked_stack_entry_offsets=stack_entry_offsets,
         )
         proposed = {
             address: origins
             for address, origins in final.proposed_slots.items()
-            if address not in final.tainted_slots
-            and origins is not None
+            if origins is not None
             and origins
+            and address not in final.tainted_slots
+            and address not in rejected_tainted_slots
             and all(_persistent_origin(origin) for origin in origins)
         }
+        rejected_tainted_slots.update(final.tainted_slots)
+        if not allow_global_slot_promotion:
+            known_slots = {
+                address: origins
+                for address, origins in known_slots.items()
+                if address not in rejected_tainted_slots
+            }
+            converged = True
+            break
+        retained_slots = {
+            address: origins
+            for address, origins in known_slots.items()
+            if address not in rejected_tainted_slots
+        }
         merged = _merge_slot_facts(
-            known_slots, proposed, finite_value_budget, static_slot_budget
+            retained_slots, proposed, finite_value_budget, static_slot_budget
         )
+        if merged is None:
+            slot_capacity_exceeded = True
+            final.issues.append({
+                "code": "interface_provenance_slot_capacity_exceeded",
+                "slot_budget": static_slot_budget,
+            })
+            break
         if merged == known_slots:
             converged = True
             break
         known_slots = merged
     assert final is not None
-    if known_slots and converged:
-        # Emit resolutions against the stable facts rather than the preceding
-        # discovery round that first established them.
-        final = _run_dataflow(
-            by_id=by_id,
-            roots=roots_set,
-            outgoing=outgoing,
-            indirect_exits=indirect_exits,
-            inventory=inventory,
-            import_abis=import_abis,
-            internal_call_preserved_registers=internal_call_preserved_registers,
-            internal_call_stack_cleanup=call_stack_cleanup,
-            recovered_calls=recovered_calls,
-            image_base=image_base,
-            known_slots=known_slots,
-            finite_value_budget=finite_value_budget,
-            static_slot_budget=static_slot_budget,
-            stack_slot_budget=stack_slot_budget,
-        )
-    if not converged:
+    if not converged and not slot_capacity_exceeded:
         final.issues.append({
             "code": "interface_provenance_fixed_point_budget_exceeded",
             "rounds": rounds,
+            "derived_domain_bound": fixed_point_budget is None,
         })
+    final.issues.extend(cleanup_conflicts)
+    callback_registrations = [
+        row
+        for row in final.argument_recoveries
+        if row.get("record_kind") == "callback_registration"
+    ]
+    call_argument_recoveries = [
+        row
+        for row in final.argument_recoveries
+        if row.get("record_kind") != "callback_registration"
+    ]
     recovered = sum(row["status"] == "recovered" for row in final.resolutions)
     recovered_interface = sum(
         row["status"] == "recovered"
@@ -232,6 +407,26 @@ def recover_external_interface_targets(
         and "profile_operation" in row.get("origin_kinds", [])
         for row in final.resolutions
     )
+    recovered_callable = sum(
+        row["status"] == "recovered"
+        and "resolved_export" in row.get("origin_kinds", [])
+        for row in final.resolutions
+    )
+    memory_access_proposals = _memory_access_proposals(
+        by_id=by_id,
+        states=final.states,
+        inventory=inventory,
+        known_slots=known_slots,
+        checked_stack_entry_offsets=stack_entry_offsets,
+        finite_value_budget=finite_value_budget,
+    )
+    if recovered_known_slots is not None:
+        recovered_known_slots.clear()
+        recovered_known_slots.update({
+            location: origins
+            for location, origins in known_slots.items()
+            if origins
+        })
     return {
         "format": INTERFACE_PROVENANCE_FORMAT,
         "status": (
@@ -242,11 +437,20 @@ def recover_external_interface_targets(
             else "incomplete"
         ),
         "proof_authority": False,
+        "global_slot_promotion": {
+            "enabled": allow_global_slot_promotion,
+            "authority": (
+                "diagnostic_proposal_only"
+                if allow_global_slot_promotion
+                else "disabled_requires_checked_global_slot_invariants_v2"
+            ),
+        },
         "required_replay": [
             "exact expression evaluation and bounded joins",
             "ordered inter-unit stack writes and out-parameter updates",
             "external machine-call footprints and successor worlds",
             "static-slot initialization and path invariants",
+            "dynamic-range identities and field-update footprints",
         ],
         "profiles": [
             {
@@ -264,13 +468,33 @@ def recover_external_interface_targets(
             for profile in sorted(
                 operation_profiles, key=lambda item: item.profile_id
             )
+        ] + [
+            {
+                "id": profile.profile_id,
+                "sha256": profile.sha256,
+                "kind": "callable-external-v2",
+            }
+            for profile in sorted(
+                callable_external_profiles, key=lambda item: item.profile_id
+            )
         ],
-        "fixed_point": {"rounds": rounds, "converged": converged},
+        "fixed_point": {
+            "rounds": rounds,
+            "converged": converged,
+            "initial_known_slots": initial_known_slot_count,
+        },
+        "internal_call_cleanup_inference": [
+            evidence.as_json(image_base=image_base)
+            for evidence in cleanup_evidence
+        ],
         "budgets": {
             "finite_values": finite_value_budget,
             "static_slots": static_slot_budget,
             "stack_slots": stack_slot_budget,
-            "fixed_point_rounds": fixed_point_budget,
+            "fixed_point_rounds": effective_fixed_point_budget,
+            "fixed_point_bound_kind": (
+                "explicit" if fixed_point_budget is not None else "finite_domain_height"
+            ),
         },
         "static_interface_slots": [
             {
@@ -278,27 +502,152 @@ def recover_external_interface_targets(
                 "origins": _origins_json(origins),
                 "tainted": address in final.tainted_slots,
             }
-            for address, origins in sorted(known_slots.items())
+            for address, origins in sorted(
+                (
+                    (address, origins)
+                    for address, origins in known_slots.items()
+                    if isinstance(address, int)
+                ),
+                key=lambda item: item[0],
+            )
+        ],
+        "dynamic_interface_slots": [
+            {
+                "location": address.as_json(),
+                "origins": _origins_json(origins),
+                "tainted": address in final.tainted_slots,
+            }
+            for address, origins in sorted(
+                (
+                    (address, origins)
+                    for address, origins in known_slots.items()
+                    if isinstance(address, _Origin)
+                ),
+                key=lambda item: item[0],
+            )
+        ],
+        "rejected_tainted_slots": [
+            (
+                {"kind": "static", "address": address}
+                if isinstance(address, int)
+                else {"kind": "dynamic", "location": address.as_json()}
+            )
+            for address in sorted(
+                rejected_tainted_slots, key=_memory_location_sort_key
+            )
         ],
         "resolutions": final.resolutions,
-        "call_argument_recoveries": final.argument_recoveries,
+        "call_argument_recoveries": call_argument_recoveries,
+        "callback_registrations": callback_registrations,
+        "memory_access_proposals": memory_access_proposals,
         "issues": final.issues,
         "counts": {
             "units": len(units),
             "reached_units": len(final.states),
             "transfer_evaluations": final.evaluations,
+            "transfer_requests": final.transfer_requests,
+            "transfer_cache_hits": final.transfer_cache_hits,
             "indirect_exits": len(final.resolutions),
             "recovered_method_exits": recovered_interface,
             "recovered_operation_exits": recovered_operation,
+            "recovered_callable_exits": recovered_callable,
             "recovered_indirect_exits": recovered,
-            "static_interface_slots": len(known_slots),
-            "static_value_slots": len(known_slots),
-            "tainted_static_slots": len(final.tainted_slots),
-            "call_argument_recoveries": len(final.argument_recoveries),
+            "static_interface_slots": sum(
+                isinstance(address, int) for address in known_slots
+            ),
+            "static_value_slots": sum(
+                isinstance(address, int) for address in known_slots
+            ),
+            "dynamic_value_slots": sum(
+                isinstance(address, _Origin) for address in known_slots
+            ),
+            "tainted_static_slots": sum(
+                isinstance(address, int) for address in rejected_tainted_slots
+            ),
+            "tainted_dynamic_slots": sum(
+                isinstance(address, _Origin) for address in rejected_tainted_slots
+            ),
+            "call_argument_recoveries": len(call_argument_recoveries),
+            "callback_registrations": len(callback_registrations),
+            "complete_callback_registrations": sum(
+                row.get("status") == "complete"
+                for row in callback_registrations
+            ),
+            "memory_access_proposals": len(memory_access_proposals),
+            "inferred_internal_call_cleanups": sum(
+                evidence.status == "complete"
+                and evidence.target_address not in supplied_call_stack_cleanup
+                for evidence in cleanup_evidence
+            ),
             "finite_budget_exceeded": final.budget_exceeded,
             "issues": len(final.issues),
         },
     }
+
+
+def _memory_access_proposals(
+    *,
+    by_id: Mapping[str, Mapping[str, Any]],
+    states: Mapping[str, _State],
+    inventory: "_ProfileInventory",
+    known_slots: Mapping[_MemoryLocation, _Value],
+    checked_stack_entry_offsets: Mapping[str, frozenset[int]],
+    finite_value_budget: int,
+) -> list[dict[str, Any]]:
+    """Export bounded event-address facts from the converged input states.
+
+    These remain proposals until the enclosing cold interprocedural pass binds
+    them to exact unit/event identities and seals them with its authority hash.
+    Mutable-slot-derived addresses are deliberately omitted so a slot invariant
+    can never justify its own non-aliasing premise.
+    """
+
+    result: list[dict[str, Any]] = []
+    for unit_id, input_state in sorted(states.items()):
+        unit = by_id.get(unit_id)
+        if unit is None:
+            continue
+        state = _with_checked_stack_entry(
+            input_state,
+            unit_id=unit_id,
+            checked_stack_entry_offsets=checked_stack_entry_offsets,
+        )
+        semantics = _mapping(unit.get("semantics"))
+        events = semantics.get("memory_events")
+        if not isinstance(events, list):
+            continue
+        for event_index, raw in enumerate(events):
+            event = _mapping(raw)
+            kind = event.get("kind")
+            width = _integer(event.get("width"))
+            if kind not in {"read", "write", "read_write"} or width is None:
+                continue
+            origins = _evaluate(
+                event.get("address"),
+                state,
+                inventory=inventory,
+                known_slots=known_slots,
+                budget=finite_value_budget,
+            )
+            if (
+                origins is None
+                or not origins
+                or len(origins) > finite_value_budget
+                or _has_global_slot_authority_dependency(origins)
+            ):
+                continue
+            result.append({
+                "format": MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
+                "status": "complete",
+                "unit_id": unit_id,
+                "event_index": event_index,
+                "memory_kind": kind,
+                "width_bytes": width,
+                "address_expression": copy.deepcopy(event.get("address")),
+                "address_origins": _origins_json(origins),
+                "authority_dependencies": list(value_dependencies(origins)),
+            })
+    return result
 
 
 class _ProfileInventory:
@@ -306,6 +655,7 @@ class _ProfileInventory:
         self,
         profiles: Sequence[ExternalInterfaceProfile],
         *,
+        callable_external_profiles: Sequence[CallableExternalProfile],
         operation_profiles: Sequence[ExternalOperationProfile],
         imports: Sequence[Mapping[str, Any]],
         units: Sequence[Mapping[str, Any]],
@@ -321,7 +671,39 @@ class _ProfileInventory:
         self.interfaces: dict[tuple[str, str], Any] = {}
         self.iat: dict[int, MachineImportIdentity] = {}
         self.unit_targets: dict[int, list[tuple[int, str]]] = defaultdict(list)
+        self.observed_import_abis: dict[
+            MachineImportIdentity, SelectedImportABI
+        ] = {}
         self.static_data_reader = static_data_reader
+        self.callable_profiles = {
+            profile.sha256: profile for profile in callable_external_profiles
+        }
+        if len(self.callable_profiles) != len(callable_external_profiles):
+            raise ValueError("duplicate callable-external profile")
+        self.callable_resolvers: dict[
+            MachineImportIdentity, tuple[str, CallableResolverProfileSpec]
+        ] = {}
+        self.callable_loaders: dict[
+            MachineImportIdentity,
+            list[tuple[str, CallableExternalTargetProfileSpec]],
+        ] = defaultdict(list)
+        for profile in callable_external_profiles:
+            resolver_by_id = profile.resolver_by_id()
+            for resolver in profile.resolvers:
+                if resolver.identity in self.callable_resolvers:
+                    raise ValueError(
+                        f"ambiguous callable resolver import {resolver.identity}"
+                    )
+                self.callable_resolvers[resolver.identity] = (
+                    profile.sha256,
+                    resolver,
+                )
+            for target in profile.targets:
+                if target.resolver_id not in resolver_by_id:
+                    raise ValueError("callable target names an unknown resolver")
+                self.callable_loaders[target.module.loader_identity].append(
+                    (profile.sha256, target)
+                )
         all_operation_profiles = list(operation_profiles)
         self.operation_profiles = {
             profile.sha256: profile for profile in all_operation_profiles
@@ -380,6 +762,17 @@ class _ProfileInventory:
                 self.unit_targets[(image_base + rva) & 0xFFFFFFFF].append(
                     (rva, identifier)
                 )
+            for event in _events(unit):
+                selected = _selected_site_import_abi(event)
+                if selected is None:
+                    continue
+                prior = self.observed_import_abis.get(selected.identity)
+                if prior is not None and prior != selected:
+                    raise ValueError(
+                        "conflicting hash-bound import ABI contracts for "
+                        f"{selected.identity}"
+                    )
+                self.observed_import_abis[selected.identity] = selected
 
     def method(
         self, profile_sha256: str, interface_id: str, offset: int
@@ -464,6 +857,88 @@ class _ProfileInventory:
         profile = self.operation_profiles[profile_sha256]
         return profile.contracts_by_id()[operation.environment_contract_id]
 
+    def callable_target(
+        self, profile_sha256: str, target_id: int
+    ) -> CallableExternalTargetProfileSpec | None:
+        profile = self.callable_profiles.get(profile_sha256)
+        return None if profile is None else profile.target_by_id(target_id)
+
+    def callable_target_json(
+        self,
+        profile_sha256: str,
+        target: CallableExternalTargetProfileSpec,
+        *,
+        transfer: str,
+    ) -> dict[str, Any] | None:
+        profile = self.callable_profiles.get(profile_sha256)
+        if profile is None:
+            return None
+        resolver = profile.resolver_by_id().get(target.resolver_id)
+        if resolver is None:
+            return None
+        return target.target_json(
+            profile_id=profile.profile_id,
+            profile_sha256=profile.sha256,
+            resolver=resolver,
+            transfer=transfer,
+        )
+
+    def immutable_u32_origin(self, address: int) -> _Origin | None:
+        if self.static_data_reader is None:
+            return None
+        data = self.static_data_reader(address, 4)
+        if data is None or len(data) != 4:
+            return None
+        value = int.from_bytes(data, "little") & 0xFFFFFFFF
+        kind = "static_code" if len(self.unit_targets.get(value, ())) == 1 else "static_data"
+        return _Origin(kind, (value, (address & 0xFFFFFFFF,)))
+
+
+def _normalize_internal_call_memory_results(
+    values: Mapping[int, Mapping[_Origin, _Value]],
+    *,
+    finite_value_budget: int,
+) -> dict[int, dict[_Origin, _Value]]:
+    """Validate bounded caller-visible memory outputs from call summaries."""
+
+    result: dict[int, dict[_Origin, _Value]] = {}
+    for target, raw_outputs in values.items():
+        if (
+            not isinstance(target, int)
+            or isinstance(target, bool)
+            or not 0 <= target <= 0xFFFFFFFF
+            or not isinstance(raw_outputs, Mapping)
+        ):
+            raise ValueError("internal-call memory-result relation is invalid")
+        outputs: dict[_Origin, _Value] = {}
+        for location, origins in raw_outputs.items():
+            if (
+                not isinstance(location, _Origin)
+                or location.kind
+                not in {
+                    "exact",
+                    "stack_location",
+                    "dynamic_range",
+                    "dynamic_location",
+                    "symbolic_affine",
+                }
+                or origins is None
+                or not isinstance(origins, frozenset)
+                or not origins
+                or len(origins) > finite_value_budget
+                or any(
+                    not isinstance(origin, _Origin)
+                    or not _persistent_origin(origin)
+                    for origin in origins
+                )
+            ):
+                raise ValueError(
+                    "internal-call memory-result output is invalid"
+                )
+            outputs[location] = origins
+        result[target] = outputs
+    return result
+
 
 def _run_dataflow(
     *,
@@ -475,27 +950,116 @@ def _run_dataflow(
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
     internal_call_stack_cleanup: Mapping[int, int],
+    internal_call_result_relations: Mapping[
+        int, Mapping[str, Sequence[Mapping[str, Any]]]
+    ],
+    internal_call_memory_preservation: Mapping[int, bool],
+    internal_call_memory_result_relations: Mapping[
+        int, Mapping[_Origin, _Value]
+    ],
+    internal_call_dependency_ids: Mapping[tuple[str, int], frozenset[str]],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
     image_base: int,
-    known_slots: Mapping[int, _Value],
+    known_slots: Mapping[_MemoryLocation, _Value],
     finite_value_budget: int,
     static_slot_budget: int,
     stack_slot_budget: int,
+    checked_stack_entry_offsets: Mapping[str, frozenset[int]],
 ) -> _RunResult:
-    unknown_registers = {register: None for register in _REGISTERS}
-    unknown_registers["esp"] = _stack_location(0)
     input_states = {
-        root: _State(copy.deepcopy(unknown_registers), {}, {}) for root in roots
+        root: _State(
+            {
+                register: (
+                    _stack_location(0)
+                    if register == "esp"
+                    else _symbolic_affine_value(f"{root}:{register}")
+                )
+                for register in _REGISTERS
+            },
+            dict(known_slots),
+            {},
+        )
+        for root in roots
     }
-    work = deque(sorted(roots))
-    proposed_slots: dict[int, _Value] = {}
-    tainted_slots: set[int] = set()
+    priorities = _reverse_postorder_priorities(roots, outgoing)
+    work = [(priorities[root], root) for root in sorted(roots)]
+    heapq.heapify(work)
+    queued = set(roots)
+    proposed_slots: dict[_MemoryLocation, _Value] = {}
+    tainted_slots: set[_MemoryLocation] = set()
     issues: list[dict[str, Any]] = []
     argument_recoveries: list[dict[str, Any]] = []
     evaluations = 0
+    transfer_requests = 0
+    transfer_cache_hits = 0
     budget_exceeded = 0
+    transfer_cache: dict[
+        tuple[str, tuple[Any, ...]],
+        tuple[
+            tuple[_State, dict[int, _State]],
+            dict[_MemoryLocation, _Value],
+            set[_MemoryLocation],
+            list[dict[str, Any]],
+            list[dict[str, Any]],
+            int,
+        ],
+    ] = {}
+
+    def transfer_unit(source_id: str) -> tuple[
+        tuple[_State, dict[int, _State]],
+        dict[_MemoryLocation, _Value],
+        set[_MemoryLocation],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        int,
+    ]:
+        nonlocal evaluations, transfer_requests, transfer_cache_hits, budget_exceeded
+        transfer_requests += 1
+        checked_state = _with_checked_stack_entry(
+            input_states[source_id],
+            unit_id=source_id,
+            checked_stack_entry_offsets=checked_stack_entry_offsets,
+        )
+        key = (source_id, _state_cache_key(checked_state))
+        cached = transfer_cache.get(key)
+        if cached is not None:
+            transfer_cache_hits += 1
+            return cached
+        result = _transfer_unit(
+            unit_id=source_id,
+            unit=by_id[source_id],
+            input_state=checked_state,
+            inventory=inventory,
+            import_abis=import_abis,
+            internal_call_preserved_registers=internal_call_preserved_registers,
+            internal_call_stack_cleanup=internal_call_stack_cleanup,
+            internal_call_result_relations=internal_call_result_relations,
+            internal_call_memory_preservation=(
+                internal_call_memory_preservation
+            ),
+            internal_call_memory_result_relations=(
+                internal_call_memory_result_relations
+            ),
+            internal_call_dependency_ids=internal_call_dependency_ids,
+            recovered_calls=recovered_calls,
+            bootstrap_unknown_call_preserved_registers=(
+                bootstrap_unknown_call_preserved_registers
+            ),
+            image_base=image_base,
+            known_slots=known_slots,
+            finite_value_budget=finite_value_budget,
+            static_slot_budget=static_slot_budget,
+            stack_slot_budget=stack_slot_budget,
+        )
+        transfer_cache[key] = result
+        evaluations += 1
+        budget_exceeded += result[-1]
+        return result
+
     while work:
-        source_id = work.popleft()
+        _, source_id = heapq.heappop(work)
+        queued.remove(source_id)
         (
             transfer,
             _,
@@ -503,23 +1067,7 @@ def _run_dataflow(
             _,
             _,
             exceeded,
-        ) = _transfer_unit(
-            unit_id=source_id,
-            unit=by_id[source_id],
-            input_state=input_states[source_id],
-            inventory=inventory,
-            import_abis=import_abis,
-            internal_call_preserved_registers=internal_call_preserved_registers,
-            internal_call_stack_cleanup=internal_call_stack_cleanup,
-            recovered_calls=recovered_calls,
-            image_base=image_base,
-            known_slots=known_slots,
-            finite_value_budget=finite_value_budget,
-            static_slot_budget=static_slot_budget,
-            stack_slot_budget=stack_slot_budget,
-        )
-        evaluations += 1
-        budget_exceeded += exceeded
+        ) = transfer_unit(source_id)
         for edge in sorted(
             outgoing.get(source_id, ()),
             key=lambda item: (
@@ -540,7 +1088,19 @@ def _run_dataflow(
                 if contribution is None:
                     contribution = _unknown_state()
                 else:
-                    contribution = _enter_call_frame(contribution)
+                    return_rva = None
+                    if index is not None:
+                        events = _events(by_id[source_id])
+                        if 0 <= index < len(events):
+                            return_rva = _integer(events[index].get("return_rva"))
+                    contribution = _enter_call_frame(
+                        contribution,
+                        return_address=(
+                            None
+                            if return_rva is None
+                            else (image_base + return_rva) & 0xFFFFFFFF
+                        ),
+                    )
             if edge.guard_json is not None:
                 contribution = _refine_state_for_guard(
                     contribution,
@@ -553,8 +1113,12 @@ def _run_dataflow(
                 finite_value_budget,
                 static_slot_budget,
                 stack_slot_budget,
-            ):
-                work.append(edge.target_id)
+            ) and edge.target_id not in queued:
+                heapq.heappush(
+                    work,
+                    (priorities.get(edge.target_id, len(priorities)), edge.target_id),
+                )
+                queued.add(edge.target_id)
 
     # Diagnostics and global-slot proposals must describe the converged input
     # states, not transient worklist states observed on the way to the fixed
@@ -567,23 +1131,7 @@ def _run_dataflow(
             transfer_issues,
             unit_argument_recoveries,
             exceeded,
-        ) = _transfer_unit(
-            unit_id=source_id,
-            unit=by_id[source_id],
-            input_state=input_states[source_id],
-            inventory=inventory,
-            import_abis=import_abis,
-            internal_call_preserved_registers=internal_call_preserved_registers,
-            internal_call_stack_cleanup=internal_call_stack_cleanup,
-            recovered_calls=recovered_calls,
-            image_base=image_base,
-            known_slots=known_slots,
-            finite_value_budget=finite_value_budget,
-            static_slot_budget=static_slot_budget,
-            stack_slot_budget=stack_slot_budget,
-        )
-        evaluations += 1
-        budget_exceeded += exceeded
+        ) = transfer_unit(source_id)
         issues.extend(transfer_issues)
         argument_recoveries.extend(unit_argument_recoveries)
         tainted_slots.update(taints)
@@ -612,7 +1160,163 @@ def _run_dataflow(
         issues=_deduplicate(issues),
         argument_recoveries=_deduplicate(argument_recoveries),
         evaluations=evaluations,
+        transfer_requests=transfer_requests,
+        transfer_cache_hits=transfer_cache_hits,
         budget_exceeded=budget_exceeded,
+    )
+
+
+def _state_cache_key(state: _State) -> tuple[Any, ...]:
+    """Canonical immutable identity for one abstract unit input state."""
+
+    return (
+        tuple(
+            (register, _value_cache_key(state.registers.get(register)))
+            for register in _REGISTERS
+        ),
+        tuple(
+            sorted(
+                (
+                    _memory_location_cache_key(location),
+                    _value_cache_key(value),
+                )
+                for location, value in state.memory.items()
+            )
+        ),
+        tuple(
+            (
+                offset,
+                _value_cache_key(cell.value),
+                tuple(cell.witnesses),
+            )
+            for offset, cell in sorted(state.stack.items())
+        ),
+        state.memory_invalidated,
+    )
+
+
+def _memory_location_cache_key(location: _MemoryLocation) -> tuple[Any, ...]:
+    if isinstance(location, int):
+        return ("exact", location & 0xFFFFFFFF)
+    return ("origin", location.kind, _canonical_origin_key(location.key))
+
+
+def _value_cache_key(value: _Value) -> tuple[Any, ...] | None:
+    if value is None:
+        return None
+    return tuple(
+        (
+            origin.kind,
+            _canonical_origin_key(origin.key),
+            origin.dependencies,
+        )
+        for origin in sorted(value)
+    )
+
+
+def _canonical_origin_key(value: Any) -> str:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+
+
+def _reverse_postorder_priorities(
+    roots: Iterable[str], outgoing: Mapping[str, set[_Edge]]
+) -> dict[str, int]:
+    visited: set[str] = set()
+    postorder: list[str] = []
+    for root in sorted(set(roots)):
+        if root in visited:
+            continue
+        stack: list[tuple[str, bool]] = [(root, False)]
+        while stack:
+            node, expanded = stack.pop()
+            if expanded:
+                postorder.append(node)
+                continue
+            if node in visited:
+                continue
+            visited.add(node)
+            stack.append((node, True))
+            successors = sorted(
+                {edge.target_id for edge in outgoing.get(node, ())},
+                reverse=True,
+            )
+            stack.extend((target, False) for target in successors)
+    return {
+        node: index
+        for index, node in enumerate(reversed(postorder))
+    }
+
+
+def _normalize_checked_stack_entry_offsets(
+    values: Mapping[str, Sequence[int]],
+    *,
+    finite_value_budget: int,
+) -> dict[str, frozenset[int]]:
+    result: dict[str, frozenset[int]] = {}
+    for unit_id, raw_offsets in values.items():
+        if not isinstance(unit_id, str) or not unit_id:
+            raise ValueError("checked stack-entry unit ID is invalid")
+        if not isinstance(raw_offsets, Sequence) or isinstance(
+            raw_offsets, (str, bytes)
+        ):
+            raise ValueError(
+                f"checked stack-entry offsets for {unit_id!r} are not a sequence"
+            )
+        if not raw_offsets:
+            raise ValueError(
+                f"checked stack-entry offsets for {unit_id!r} are empty"
+            )
+        if len(raw_offsets) > finite_value_budget:
+            raise ValueError(
+                "checked stack-entry offsets exceed the finite-value budget: "
+                f"unit={unit_id!r} alternatives={len(raw_offsets)} "
+                f"budget={finite_value_budget}"
+            )
+        if any(
+            not isinstance(offset, int) or isinstance(offset, bool)
+            for offset in raw_offsets
+        ):
+            raise ValueError(
+                f"checked stack-entry offsets for {unit_id!r} contain a non-integer"
+            )
+        result[unit_id] = frozenset(int(offset) for offset in raw_offsets)
+    return result
+
+
+def _with_checked_stack_entry(
+    state: _State,
+    *,
+    unit_id: str,
+    checked_stack_entry_offsets: Mapping[str, frozenset[int]],
+) -> _State:
+    offsets = checked_stack_entry_offsets.get(unit_id)
+    if not offsets:
+        return state
+    checked = frozenset(
+        _Origin("stack_location", (offset,)) for offset in offsets
+    )
+    existing = state.registers.get("esp")
+    if existing is None:
+        selected = checked
+    elif all(origin.kind == "stack_location" for origin in existing):
+        selected = existing & checked
+        if not selected:
+            return state
+    else:
+        return state
+    if selected == existing:
+        return state
+    return _State(
+        {**state.registers, "esp": selected},
+        state.memory,
+        state.stack,
+        state.memory_invalidated,
     )
 
 
@@ -625,16 +1329,25 @@ def _transfer_unit(
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
     internal_call_stack_cleanup: Mapping[int, int],
+    internal_call_result_relations: Mapping[
+        int, Mapping[str, Sequence[Mapping[str, Any]]]
+    ],
+    internal_call_memory_preservation: Mapping[int, bool],
+    internal_call_memory_result_relations: Mapping[
+        int, Mapping[_Origin, _Value]
+    ],
+    internal_call_dependency_ids: Mapping[tuple[str, int], frozenset[str]],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
     image_base: int,
-    known_slots: Mapping[int, _Value],
+    known_slots: Mapping[_MemoryLocation, _Value],
     finite_value_budget: int,
     static_slot_budget: int,
     stack_slot_budget: int,
 ) -> tuple[
     tuple[_State, dict[int, _State]],
-    dict[int, _Value],
-    set[int],
+    dict[_MemoryLocation, _Value],
+    set[_MemoryLocation],
     list[dict[str, Any]],
     list[dict[str, Any]],
     int,
@@ -659,8 +1372,8 @@ def _transfer_unit(
         for index, event in enumerate(events)
         if event.get("kind") in _CALL_KINDS
     ]
-    proposals: dict[int, _Value] = {}
-    taints: set[int] = set()
+    proposals: dict[_MemoryLocation, _Value] = {}
+    taints: set[_MemoryLocation] = set()
     issues: list[dict[str, Any]] = []
     argument_recoveries: list[dict[str, Any]] = []
     if calls:
@@ -687,27 +1400,54 @@ def _transfer_unit(
             import_abis=import_abis,
             internal_call_preserved_registers=internal_call_preserved_registers,
             internal_call_stack_cleanup=internal_call_stack_cleanup,
+            internal_call_result_relations=internal_call_result_relations,
+            internal_call_memory_preservation=(
+                internal_call_memory_preservation
+            ),
+            internal_call_memory_result_relations=(
+                internal_call_memory_result_relations
+            ),
+            internal_call_dependency_ids=internal_call_dependency_ids,
             recovered_calls=recovered_calls,
+            bootstrap_unknown_call_preserved_registers=(
+                bootstrap_unknown_call_preserved_registers
+            ),
             image_base=image_base,
             known_slots=known_slots,
             budget=finite_value_budget,
         )
         issues.extend(call_issues)
         argument_recoveries.extend(call_argument_recoveries)
+        framed_memory, framed_stack, memory_invalidated = _apply_call_memory_frame(
+            pre_call, facts
+        )
         output = _State(
             registers={
                 register: (
-                    pre_call.registers.get(register)
+                    with_value_dependencies(
+                        pre_call.registers.get(register), facts.dependencies
+                    )
                     if facts.preserved is not None and register in facts.preserved
                     else None
                 )
                 for register in _REGISTERS
             },
-            memory=dict(pre_call.memory),
-            stack=dict(pre_call.stack),
+            memory={
+                location: with_value_dependencies(value, facts.dependencies)
+                for location, value in framed_memory.items()
+            },
+            stack={
+                offset: _StackCell(
+                    with_value_dependencies(cell.value, facts.dependencies),
+                    cell.witnesses,
+                )
+                for offset, cell in framed_stack.items()
+            },
+            memory_invalidated=memory_invalidated,
         )
         _apply_call_stack_result(output, pre_call, facts)
         for address, origins in facts.outputs.items():
+            origins = with_value_dependencies(origins, facts.dependencies)
             if address.kind == "exact":
                 concrete = int(address.key[0]) & 0xFFFFFFFF
                 output.memory[concrete] = origins
@@ -719,6 +1459,14 @@ def _transfer_unit(
                 register = str(address.key[0])
                 if register in output.registers:
                     output.registers[register] = origins
+            elif address.kind in {"dynamic_range", "dynamic_location"}:
+                location = _dynamic_memory_location(address)
+                output.memory[location] = origins
+                proposals[location] = origins
+            elif address.kind == "symbolic_affine":
+                # Parametric addresses remain local replay facts.  They are
+                # deliberately excluded from persistent slot proposals.
+                output.memory[address] = origins
         if len(output.stack) > stack_slot_budget:
             output.stack.clear()
             output.registers["esp"] = None
@@ -743,6 +1491,7 @@ def _transfer_unit(
         dict(input_state.registers),
         dict(input_state.memory),
         dict(input_state.stack),
+        input_state.memory_invalidated,
     )
     exceeded = 0
     semantics = _mapping(unit.get("semantics"))
@@ -788,6 +1537,16 @@ def _transfer_unit(
                 budget=finite_value_budget,
             )
             if addresses is None or len(addresses) != 1:
+                _invalidate_unknown_memory_write(
+                    output,
+                    proposals=proposals,
+                    taints=taints,
+                )
+                issues.append({
+                    "code": "memory_write_address_not_singleton",
+                    "unit_id": unit_id,
+                    "event_index": memory_event_index,
+                })
                 continue
             address = next(iter(addresses))
             value = _evaluate(
@@ -797,10 +1556,22 @@ def _transfer_unit(
                 known_slots=known_slots,
                 budget=finite_value_budget,
             )
+            value = with_value_dependencies(value, address.dependencies)
             if address.kind == "exact":
+                # An exact concrete update supersedes any symbolic location
+                # that might denote the same address.  Concrete and checked
+                # range locations remain point-sensitive.
+                output.memory = {
+                    location: origins
+                    for location, origins in output.memory.items()
+                    if not (
+                        isinstance(location, _Origin)
+                        and location.kind == "symbolic_affine"
+                    )
+                }
                 concrete = int(address.key[0]) & 0xFFFFFFFF
                 if value is None:
-                    output.memory.pop(concrete, None)
+                    output.memory[concrete] = None
                     taints.add(concrete)
                     continue
                 output.memory[concrete] = value
@@ -817,9 +1588,36 @@ def _transfer_unit(
                     value,
                     (_stack_write_witness(unit_id, memory_event_index, event, offset),),
                 )
+            elif address.kind in {"dynamic_range", "dynamic_location"}:
+                location = _dynamic_memory_location(address)
+                if value is None:
+                    output.memory[location] = None
+                    taints.add(location)
+                    continue
+                output.memory[location] = value
+                if all(_persistent_origin(origin) for origin in value):
+                    proposals[location] = value
+                else:
+                    taints.add(location)
+            elif address.kind == "symbolic_affine":
+                # Equality of canonical affine expressions is useful for an
+                # immediate write/read pair, but unequal expressions are not
+                # an alias-disjointness proof.  Preserve only this write and
+                # fail closed for every fact it may have overwritten.
+                _invalidate_unknown_memory_write(
+                    output,
+                    proposals=proposals,
+                    taints=taints,
+                )
+                location = _Origin(address.kind, address.key)
+                if value is None:
+                    output.memory[location] = None
+                    continue
+                output.memory[location] = value
     _invalidate_schedule_blockers(unit, output)
     if len(output.memory) > static_slot_budget:
         output.memory.clear()
+        output.memory_invalidated = True
         exceeded += 1
     if len(output.stack) > stack_slot_budget:
         output.stack.clear()
@@ -835,6 +1633,439 @@ def _transfer_unit(
     )
 
 
+def _invalidate_unknown_memory_write(
+    state: _State,
+    *,
+    proposals: dict[_MemoryLocation, _Value],
+    taints: set[_MemoryLocation],
+) -> None:
+    taints.update(
+        location
+        for location in state.memory
+        if isinstance(location, int)
+    )
+    proposals.clear()
+    state.memory.clear()
+    state.stack.clear()
+    state.memory_invalidated = True
+
+
+def _indirect_import_identity(
+    event: Mapping[str, Any],
+    state: _State,
+    *,
+    inventory: _ProfileInventory,
+    known_slots: Mapping[int, _Value],
+    budget: int,
+) -> MachineImportIdentity | None:
+    if event.get("kind") != "indirect_call":
+        return None
+    origins = _evaluate(
+        event.get("target"),
+        state,
+        inventory=inventory,
+        known_slots=known_slots,
+        budget=budget,
+    )
+    if origins is None or not origins or any(origin.kind != "import" for origin in origins):
+        return None
+    identities = {_origin_import_identity(origin) for origin in origins}
+    return next(iter(identities)) if len(identities) == 1 else None
+
+
+def _static_identity_matches(
+    value: _Value,
+    expected: bytes,
+    reader: Callable[[int, int], bytes | None] | None,
+) -> bool:
+    if reader is None or value is None or not value:
+        return False
+    addresses = {
+        int(origin.key[0]) & 0xFFFFFFFF
+        for origin in value
+        if origin.kind == "exact"
+    }
+    if len(addresses) != 1 or any(origin.kind != "exact" for origin in value):
+        return False
+    observed = reader(next(iter(addresses)), len(expected) + 1)
+    return observed == expected + b"\0"
+
+
+def _selected_import_call_facts(
+    selected: SelectedImportABI | None,
+    outputs: Mapping[_Origin, _Value],
+) -> _CallFacts:
+    return _CallFacts(
+        frozenset(selected.abi.preserved_registers) if selected else None,
+        selected.abi if selected else None,
+        selected.argument_words if selected else None,
+        None,
+        outputs,
+        memory_preserved=_selected_import_memory_preserved(selected),
+    )
+
+
+def _selected_import_memory_preserved(
+    selected: SelectedImportABI | None,
+) -> bool:
+    contract = selected.contract if selected is not None else None
+    return isinstance(contract, Mapping) and contract.get("memory_effect") in {
+        "none",
+        "read_only",
+    }
+
+
+def _dynamic_range_origin(
+    *,
+    producer_unit_id: str,
+    event_index: int,
+    identity: MachineImportIdentity,
+    nullable: bool,
+) -> _Value:
+    dynamic = _Origin(
+        "dynamic_range",
+        (
+            producer_unit_id,
+            event_index,
+            identity.dll,
+            identity.kind,
+            identity.value,
+        ),
+    )
+    return frozenset(
+        {_Origin("exact", (0,)), dynamic} if nullable else {dynamic}
+    )
+
+
+def _internal_dynamic_range_origin(
+    *,
+    contract_id: str,
+    producer_unit_id: str,
+    event_index: int,
+    nullable: bool,
+) -> _Value:
+    dynamic = _Origin(
+        "dynamic_range",
+        ("internal_contract", contract_id, producer_unit_id, event_index),
+    )
+    return frozenset(
+        {_Origin("exact", (0,)), dynamic} if nullable else {dynamic}
+    )
+
+
+def _selected_import_result_outputs(
+    selected: SelectedImportABI,
+    *,
+    unit_id: str,
+    event_index: int,
+) -> dict[_Origin, _Value]:
+    contract = selected.contract
+    if not isinstance(contract, Mapping):
+        return {}
+    raw_relations = contract.get("result_register_relations")
+    if not isinstance(raw_relations, list):
+        return {}
+    outputs: dict[_Origin, _Value] = {}
+    for raw in raw_relations:
+        relation = _mapping(raw)
+        register = relation.get("register")
+        if register not in _REGISTERS:
+            continue
+        if relation.get("relation") == "dynamic_range_base" and isinstance(
+            relation.get("nullable"), bool
+        ):
+            outputs[_Origin("register_location", (str(register),))] = (
+                _dynamic_range_origin(
+                    producer_unit_id=unit_id,
+                    event_index=event_index,
+                    identity=selected.identity,
+                    nullable=bool(relation["nullable"]),
+                )
+            )
+    return outputs
+
+
+def _internal_call_result_outputs(
+    relations: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    producer_unit_id: str,
+    event_index: int,
+    pre_call: _State,
+    inventory: _ProfileInventory,
+    budget: int,
+) -> dict[_Origin, _Value]:
+    outputs: dict[_Origin, _Value] = {}
+    for register, raw_origins in relations.items():
+        if register not in _REGISTERS or not isinstance(raw_origins, Sequence):
+            continue
+        origins: set[_Origin] = set()
+        malformed = False
+        for raw in raw_origins:
+            row = _mapping(raw)
+            kind = row.get("kind")
+            if kind == "exact":
+                value = _integer(row.get("value"))
+                if value is None:
+                    malformed = True
+                    break
+                origins.add(_Origin("exact", (value & 0xFFFFFFFF,)))
+                continue
+            if kind == "input_register":
+                source = row.get("register")
+                value = (
+                    pre_call.registers.get(str(source))
+                    if source in _REGISTERS
+                    else None
+                )
+                if value is None:
+                    malformed = True
+                    break
+                origins.update(value)
+                continue
+            if kind == "stack_address":
+                value = _instantiate_stack_summary_value(
+                    row,
+                    pre_call=pre_call,
+                    inventory=inventory,
+                    budget=budget,
+                )
+                if value is None:
+                    malformed = True
+                    break
+                origins.update(value)
+                continue
+            if kind == "internal_contract_result":
+                contract_id = row.get("contract_id")
+                nullable = row.get("nullable")
+                if (
+                    not isinstance(contract_id, str)
+                    or not contract_id
+                    or row.get("relation") != "dynamic_range_base"
+                    or not isinstance(nullable, bool)
+                ):
+                    malformed = True
+                    break
+                value = _internal_dynamic_range_origin(
+                    contract_id=contract_id,
+                    producer_unit_id=producer_unit_id,
+                    event_index=event_index,
+                    nullable=nullable,
+                )
+                if value is None:
+                    malformed = True
+                    break
+                origins.update(value)
+                continue
+            if kind != "external_result":
+                malformed = True
+                break
+            imported = _mapping(row.get("import"))
+            try:
+                identity = MachineImportIdentity.from_mapping(
+                    imported, context="internal result relation"
+                )
+            except MachineImportProfileError:
+                malformed = True
+                break
+            producer = row.get("producer_unit_id")
+            event_index = _integer(row.get("event_index"))
+            nullable = row.get("nullable")
+            if (
+                not isinstance(producer, str)
+                or event_index is None
+                or row.get("relation") != "dynamic_range_base"
+                or not isinstance(nullable, bool)
+            ):
+                malformed = True
+                break
+            value = _dynamic_range_origin(
+                producer_unit_id=producer,
+                event_index=event_index,
+                identity=identity,
+                nullable=nullable,
+            )
+            if value is None:
+                malformed = True
+                break
+            origins.update(value)
+        if origins and not malformed:
+            outputs[_Origin("register_location", (register,))] = frozenset(origins)
+    return outputs
+
+
+def _instantiate_stack_summary_value(
+    row: Mapping[str, Any],
+    *,
+    pre_call: _State,
+    inventory: _ProfileInventory,
+    budget: int,
+) -> _Value:
+    offset = _integer(row.get("offset"))
+    raw_terms = row.get("register_terms", [])
+    if offset is None or not isinstance(raw_terms, list):
+        return None
+    value = _add_values(
+        pre_call.registers.get("esp"),
+        frozenset({_Origin("exact", ((offset - 4) & 0xFFFFFFFF,))}),
+        subtract=False,
+        budget=budget,
+        inventory=inventory,
+    )
+    for raw_term in raw_terms:
+        term = _mapping(raw_term)
+        register = term.get("register")
+        coefficient = _integer(term.get("coefficient"))
+        if register not in _REGISTERS or coefficient in {None, 0}:
+            return None
+        scaled = _multiply_values(
+            pre_call.registers.get(str(register)),
+            frozenset({_Origin("exact", (int(coefficient) & 0xFFFFFFFF,))}),
+            budget=budget,
+        )
+        value = _add_values(
+            value,
+            scaled,
+            subtract=False,
+            budget=budget,
+            inventory=inventory,
+        )
+        if value is None:
+            return None
+    return value
+
+
+def _callable_external_call(
+    *,
+    identity: MachineImportIdentity | None,
+    unit_id: str,
+    unit: Mapping[str, Any],
+    event_index: int,
+    pre_call: _State,
+    state: _State,
+    inventory: _ProfileInventory,
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    known_slots: Mapping[int, _Value],
+    budget: int,
+) -> tuple[_CallFacts, list[dict[str, Any]], list[dict[str, Any]]] | None:
+    if identity is None:
+        return None
+    resolver_entry = inventory.callable_resolvers.get(identity)
+    loader_entries = inventory.callable_loaders.get(identity, ())
+    if resolver_entry is None and not loader_entries:
+        return None
+
+    selected = import_abis.get(identity)
+    issues: list[dict[str, Any]] = []
+    recoveries: list[dict[str, Any]] = []
+    outputs: dict[_Origin, _Value] = {}
+    if resolver_entry is not None:
+        profile_sha256, resolver = resolver_entry
+        argument_words = max(
+            (resolver.module_argument_index, *resolver.identity_argument_indices)
+        ) + 1
+        arguments, recovery = _recover_call_arguments(
+            pre_call,
+            state,
+            unit,
+            unit_id=unit_id,
+            event_index=event_index,
+            argument_words=argument_words,
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=budget,
+        )
+        recovery["callable_resolver"] = {
+            "profile_sha256": profile_sha256,
+            "resolver_id": resolver.id,
+        }
+        recoveries.append(recovery)
+        matches: list[CallableExternalTargetProfileSpec] = []
+        if arguments is not None:
+            module_value = arguments[resolver.module_argument_index]
+            expected_module = _Origin(
+                "loaded_module",
+                (profile_sha256, resolver.id),
+            )
+            module_exact = module_value == frozenset({expected_module})
+            if module_exact:
+                profile = inventory.callable_profiles[profile_sha256]
+                for target in profile.targets_by_resolver(resolver.id):
+                    if _static_identity_matches(
+                        arguments[target.name_argument_index],
+                        target.name_bytes,
+                        inventory.static_data_reader,
+                    ):
+                        matches.append(target)
+        if len(matches) == 1:
+            target = matches[0]
+            outputs[_Origin("register_location", (resolver.result_register,))] = (
+                frozenset({_Origin("resolved_export", (profile_sha256, target.id))})
+            )
+            recovery["resolved_target"] = {
+                "target_id": target.id,
+                "dll": target.identity.dll,
+                target.identity.kind: target.identity.value,
+            }
+        else:
+            issues.append({
+                "code": "callable_resolver_identity_unknown_or_ambiguous",
+                "unit_id": unit_id,
+                "event_index": event_index,
+                "resolver": {
+                    "dll": identity.dll,
+                    identity.kind: identity.value,
+                },
+                "match_count": len(matches),
+            })
+        return _selected_import_call_facts(selected, outputs), issues, recoveries
+
+    argument_words = max(
+        target.module.loader_name_argument_index for _, target in loader_entries
+    ) + 1
+    arguments, recovery = _recover_call_arguments(
+        pre_call,
+        state,
+        unit,
+        unit_id=unit_id,
+        event_index=event_index,
+        argument_words=argument_words,
+        inventory=inventory,
+        known_slots=known_slots,
+        budget=budget,
+    )
+    recovery["callable_loader"] = {
+        "dll": identity.dll,
+        identity.kind: identity.value,
+    }
+    recoveries.append(recovery)
+    module_routes = {
+        (profile_sha256, target.resolver_id): target
+        for profile_sha256, target in loader_entries
+        if arguments is not None
+        and _static_identity_matches(
+            arguments[target.module.loader_name_argument_index],
+            target.module.name_bytes,
+            inventory.static_data_reader,
+        )
+    }
+    if len(module_routes) == 1:
+        profile_sha256, resolver_id = next(iter(module_routes))
+        target = module_routes[(profile_sha256, resolver_id)]
+        if arguments is not None:
+            outputs[_Origin("register_location", ("eax",))] = frozenset({
+                _Origin("loaded_module", (profile_sha256, resolver_id))
+            })
+    else:
+        issues.append({
+            "code": "callable_loader_identity_unknown_or_ambiguous",
+            "unit_id": unit_id,
+            "event_index": event_index,
+            "loader": {"dll": identity.dll, identity.kind: identity.value},
+            "match_count": len(module_routes),
+        })
+    return _selected_import_call_facts(selected, outputs), issues, recoveries
+
+
 def _call_contract(
     *,
     unit_id: str,
@@ -847,17 +2078,115 @@ def _call_contract(
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
     internal_call_stack_cleanup: Mapping[int, int],
+    internal_call_result_relations: Mapping[
+        int, Mapping[str, Sequence[Mapping[str, Any]]]
+    ],
+    internal_call_memory_preservation: Mapping[int, bool],
+    internal_call_memory_result_relations: Mapping[
+        int, Mapping[_Origin, _Value]
+    ],
+    internal_call_dependency_ids: Mapping[tuple[str, int], frozenset[str]],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
     image_base: int,
-    known_slots: Mapping[int, _Value],
+    known_slots: Mapping[_MemoryLocation, _Value],
     budget: int,
 ) -> tuple[_CallFacts, list[dict[str, Any]], list[dict[str, Any]]]:
     kind = event.get("kind")
     outputs: dict[_Origin, _Value] = {}
     issues: list[dict[str, Any]] = []
     argument_recoveries: list[dict[str, Any]] = []
+    call_identity = (
+        _event_import_identity(event)
+        if kind == "external_call"
+        else _indirect_import_identity(
+            event,
+            pre_call,
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=budget,
+        )
+    )
+    callable_facts = _callable_external_call(
+        identity=call_identity,
+        unit_id=unit_id,
+        unit=unit,
+        event_index=event_index,
+        pre_call=pre_call,
+        state=state,
+        inventory=inventory,
+        import_abis=import_abis,
+        known_slots=known_slots,
+        budget=budget,
+    )
+    if callable_facts is not None:
+        return callable_facts
     if kind == "external_call":
         identity = _event_import_identity(event)
+        selected = import_abis.get(identity) if identity is not None else None
+        if selected is not None:
+            _merge_output_effects(
+                outputs,
+                _selected_import_result_outputs(
+                    selected, unit_id=unit_id, event_index=event_index
+                ),
+                budget=budget,
+                issues=issues,
+                unit_id=unit_id,
+            )
+        callback = _machine_callback_registration(
+            unit_id=unit_id,
+            unit=unit,
+            event_index=event_index,
+            event=event,
+            state=state,
+            pre_call=pre_call,
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=budget,
+        )
+        if callback is not None:
+            callback_evidence, callback_arguments = callback
+            argument_recoveries.extend(
+                (callback_arguments, callback_evidence)
+            )
+            if callback_evidence["status"] != "complete":
+                issues.append({
+                    "code": "callback_registration_provenance_incomplete",
+                    "unit_id": unit_id,
+                    "event_index": event_index,
+                    "instruction_rva": event.get("instruction_rva"),
+                    "failure": callback_evidence["failure"]["code"],
+                })
+            raw_contract = _mapping(event.get("abi_contract"))
+            callback_result = parse_callback_result(
+                raw_contract,
+                context=f"{unit_id} external event {event_index}",
+            )
+            if callback_result is not None:
+                callback_abi = parse_callback_abi(
+                    raw_contract,
+                    context=f"{unit_id} external event {event_index}",
+                )
+                profile_binding = json.dumps(
+                    raw_contract.get("profile_binding"),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                outputs[_Origin(
+                    "register_location", (callback_result.register,)
+                )] = frozenset({_Origin(
+                    "callback_token",
+                    (
+                        str(raw_contract.get("contract_id") or "callback"),
+                        profile_binding,
+                        callback_abi.kind,
+                        callback_abi.argument_words,
+                        callback_abi.stack_cleanup_bytes,
+                        callback_result.nullable,
+                        str(raw_contract.get("callback_lifetime") or "unknown"),
+                    ),
+                )})
         operation_entry = (
             inventory.operation_imports.get(identity)
             if identity is not None
@@ -894,7 +2223,7 @@ def _call_contract(
                     "failure": recovery["failure"]["code"],
                 })
             if arguments is not None:
-                outputs.update(_operation_output_effects(
+                _merge_output_effects(outputs, _operation_output_effects(
                     arguments,
                     operation,
                     profile_sha256=profile_sha256,
@@ -902,7 +2231,7 @@ def _call_contract(
                     inventory=inventory,
                     issues=issues,
                     unit_id=unit_id,
-                ))
+                ), budget=budget, issues=issues, unit_id=unit_id)
             recovery["world_effects"] = _operation_world_effect_evidence(
                 arguments,
                 operation,
@@ -921,7 +2250,6 @@ def _call_contract(
                 argument_recoveries,
             )
         factory_entry = inventory.factories.get(identity) if identity is not None else None
-        selected = import_abis.get(identity) if identity is not None else None
         if factory_entry is None:
             return (
                 _CallFacts(
@@ -945,23 +2273,29 @@ def _call_contract(
             inventory=inventory,
             known_slots=known_slots,
             budget=budget,
+            required_argument_indices=frozenset(
+                output.argument_index for output in factory.outputs
+            ),
         )
         argument_recoveries.append(recovery)
-        if recovery["status"] != "complete":
+        if not _interface_outputs_recoverable(arguments, factory.outputs):
             issues.append({
                 "code": "interface_factory_arguments_incomplete",
                 "unit_id": unit_id,
                 "factory": factory.declaration,
-                "failure": recovery["failure"]["code"],
+                "failure": (
+                    _mapping(recovery.get("failure")).get("code")
+                    or "interface_out_pointer_unresolved"
+                ),
             })
         if arguments is not None:
-            outputs.update(_output_effects(
+            _merge_output_effects(outputs, _output_effects(
                 arguments,
                 factory.outputs,
                 profile_sha256=profile_sha256,
                 issues=issues,
                 unit_id=unit_id,
-            ))
+            ), budget=budget, issues=issues, unit_id=unit_id)
         return (
             _CallFacts(
                 frozenset(factory.abi.preserved_registers),
@@ -969,6 +2303,9 @@ def _call_contract(
                 factory.argument_words,
                 None,
                 outputs,
+                memory_writes=_interface_memory_writes(
+                    factory.caller_memory_frame, arguments
+                ),
             ),
             issues,
             argument_recoveries,
@@ -990,8 +2327,53 @@ def _call_contract(
             if target_address is None
             else internal_call_stack_cleanup.get(target_address)
         )
+        if preserved is None and bootstrap_unknown_call_preserved_registers is not None:
+            preserved = bootstrap_unknown_call_preserved_registers
+            issues.append({
+                "code": "bootstrap_call_preservation_used",
+                "unit_id": unit_id,
+                "event_index": event_index,
+                "call_kind": "internal_call",
+                "target_rva": target_rva,
+                "preserved_registers": sorted(preserved),
+            })
+        if target_address is not None:
+            _merge_output_effects(
+                outputs,
+                _internal_call_result_outputs(
+                    internal_call_result_relations.get(target_address, {}),
+                    producer_unit_id=unit_id,
+                    event_index=event_index,
+                    pre_call=pre_call,
+                    inventory=inventory,
+                    budget=budget,
+                ),
+                budget=budget,
+                issues=issues,
+                unit_id=unit_id,
+            )
+            _merge_output_effects(
+                outputs,
+                internal_call_memory_result_relations.get(target_address, {}),
+                budget=budget,
+                issues=issues,
+                unit_id=unit_id,
+            )
         return (
-            _CallFacts(preserved, None, None, cleanup, outputs),
+            _CallFacts(
+                preserved,
+                None,
+                None,
+                cleanup,
+                outputs,
+                memory_preserved=bool(
+                    target_address is not None
+                    and internal_call_memory_preservation.get(target_address)
+                ),
+                dependencies=internal_call_dependency_ids.get(
+                    (unit_id, event_index), frozenset()
+                ),
+            ),
             issues,
             argument_recoveries,
         )
@@ -1054,7 +2436,7 @@ def _call_contract(
                     "failure": recovery["failure"]["code"],
                 })
             if arguments is not None:
-                outputs.update(_operation_output_effects(
+                _merge_output_effects(outputs, _operation_output_effects(
                     arguments,
                     operation,
                     profile_sha256=profile_sha256,
@@ -1062,7 +2444,7 @@ def _call_contract(
                     inventory=inventory,
                     issues=issues,
                     unit_id=unit_id,
-                ))
+                ), budget=budget, issues=issues, unit_id=unit_id)
             recovery["world_effects"] = _operation_world_effect_evidence(
                 arguments,
                 operation,
@@ -1081,23 +2463,76 @@ def _call_contract(
             argument_recoveries,
         )
     if methods is None:
+        recovered = recovered_calls.get((unit_id, event_index))
+        call_dependencies = frozenset(
+            _call_frame_dependency_id(unit_id, event_index, target)
+            for target in (
+                recovered.get("target_unit_ids", ())
+                if isinstance(recovered, Mapping)
+                else ()
+            )
+            if isinstance(target, str)
+        )
         direct_facts = _origin_call_facts(
             targets,
             import_abis=import_abis,
             internal_call_preserved_registers=internal_call_preserved_registers,
             internal_call_stack_cleanup=internal_call_stack_cleanup,
+            internal_call_memory_preservation=(
+                internal_call_memory_preservation
+            ),
+            internal_call_memory_result_relations=(
+                internal_call_memory_result_relations
+            ),
+            dependencies=call_dependencies,
         )
         if direct_facts is not None:
             return direct_facts, issues, argument_recoveries
-        recovered = recovered_calls.get((unit_id, event_index))
-        facts = _recovered_call_facts(
-            recovered,
-            inventory=inventory,
-            import_abis=import_abis,
-            internal_call_preserved_registers=internal_call_preserved_registers,
-            internal_call_stack_cleanup=internal_call_stack_cleanup,
-            image_base=image_base,
+        facts, recovered_issues, recovered_argument_recoveries = (
+            _recovered_call_facts(
+                recovered,
+                unit_id=unit_id,
+                unit=unit,
+                event_index=event_index,
+                event=event,
+                state=state,
+                pre_call=pre_call,
+                inventory=inventory,
+                import_abis=import_abis,
+                internal_call_preserved_registers=(
+                    internal_call_preserved_registers
+                ),
+                internal_call_stack_cleanup=internal_call_stack_cleanup,
+                internal_call_memory_preservation=(
+                    internal_call_memory_preservation
+                ),
+                internal_call_memory_result_relations=(
+                    internal_call_memory_result_relations
+                ),
+                image_base=image_base,
+                known_slots=known_slots,
+                budget=budget,
+            )
         )
+        issues.extend(recovered_issues)
+        argument_recoveries.extend(recovered_argument_recoveries)
+        if facts is None and bootstrap_unknown_call_preserved_registers is not None:
+            issues.append({
+                "code": "bootstrap_call_preservation_used",
+                "unit_id": unit_id,
+                "event_index": event_index,
+                "call_kind": "indirect_call",
+                "preserved_registers": sorted(
+                    bootstrap_unknown_call_preserved_registers
+                ),
+            })
+            facts = _CallFacts(
+                bootstrap_unknown_call_preserved_registers,
+                None,
+                None,
+                None,
+                outputs,
+            )
         return (
             facts or _CallFacts(None, None, None, None, outputs),
             issues,
@@ -1115,6 +2550,8 @@ def _call_contract(
     ):
         common_abi = None
         common_argument_words = None
+    method_arguments: list[Sequence[_Value] | None] = []
+    method_memory_writes: list[tuple[_WriteSpan, ...] | None] = []
     for profile_sha256, method in methods:
         arguments, recovery = _recover_call_arguments(
             pre_call,
@@ -1130,23 +2567,49 @@ def _call_contract(
         recovery["interface_id"] = method.interface_id
         recovery["method"] = method.name
         argument_recoveries.append(recovery)
-        if recovery["status"] != "complete":
+        method_arguments.append(arguments)
+        method_memory_writes.append(_interface_memory_writes(
+            method.caller_memory_frame, arguments
+        ))
+        if not _interface_outputs_recoverable(arguments, method.outputs):
             issues.append({
                 "code": "interface_method_arguments_incomplete",
                 "unit_id": unit_id,
                 "interface_id": method.interface_id,
                 "method": method.name,
-                "failure": recovery["failure"]["code"],
+                "failure": (
+                    _mapping(recovery.get("failure")).get("code")
+                    or "interface_out_pointer_unresolved"
+                ),
             })
         if arguments is None or not method.outputs:
             continue
-        outputs.update(_output_effects(
+        _merge_output_effects(outputs, _output_effects(
             arguments,
             method.outputs,
             profile_sha256=profile_sha256,
             issues=issues,
             unit_id=unit_id,
-        ))
+        ), budget=budget, issues=issues, unit_id=unit_id)
+    callback_evidence = _interface_method_callback_registration(
+        unit_id=unit_id,
+        unit=unit,
+        event_index=event_index,
+        event=event,
+        methods=methods,
+        arguments=method_arguments,
+        inventory=inventory,
+    )
+    if callback_evidence is not None:
+        argument_recoveries.append(callback_evidence)
+        if callback_evidence["status"] != "complete":
+            issues.append({
+                "code": "interface_method_callback_provenance_incomplete",
+                "unit_id": unit_id,
+                "event_index": event_index,
+                "instruction_rva": callback_evidence["instruction_rva"],
+                "failure": callback_evidence["failure"]["code"],
+            })
     return (
         _CallFacts(
             frozenset(preserved),
@@ -1154,10 +2617,698 @@ def _call_contract(
             common_argument_words,
             None,
             outputs,
+            memory_writes=_combine_memory_writes(method_memory_writes),
         ),
         issues,
         argument_recoveries,
     )
+
+
+def _interface_outputs_recoverable(
+    arguments: Sequence[_Value] | None,
+    declarations: Sequence[Any],
+) -> bool:
+    """Whether every type-producing out pointer has a finite address origin.
+
+    Scalar argument values are runtime data and are not required merely to
+    recover the interface type written by a call.  External-effect contracts
+    remain responsible for their ABI and memory interpretation.
+    """
+
+    if not declarations:
+        return True
+    if arguments is None:
+        return False
+    for declaration in declarations:
+        index = declaration.argument_index
+        if not 0 <= index < len(arguments):
+            return False
+        origins = arguments[index]
+        if (
+            origins is None
+            or len(origins) != 1
+            or next(iter(origins)).kind not in {
+                "exact",
+                "stack_location",
+                "dynamic_range",
+                "dynamic_location",
+                "symbolic_affine",
+            }
+        ):
+            return False
+    return True
+
+
+def _interface_memory_writes(
+    frame: InterfaceCallerMemoryFrame | None,
+    arguments: Sequence[_Value] | None,
+) -> tuple[_WriteSpan, ...] | None:
+    if frame is None:
+        return None
+    declarations = tuple(
+        declaration
+        for declaration in frame.arguments
+        if declaration.role == "caller_memory" and declaration.access != "read"
+    )
+    if not declarations:
+        return ()
+    if arguments is None:
+        return None
+    writes: set[_WriteSpan] = set()
+    for declaration in declarations:
+        if not 0 <= declaration.argument_index < len(arguments):
+            return None
+        origins = arguments[declaration.argument_index]
+        if origins is None:
+            return None
+        size = 4 if declaration.extent == "fixed_word" else None
+        for origin in origins:
+            if origin.kind not in {
+                "exact", "stack_location", "dynamic_range", "dynamic_location"
+            }:
+                return None
+            if origin.kind == "exact" and int(origin.key[0]) & 0xFFFFFFFF == 0:
+                continue
+            writes.add(_WriteSpan(origin, size))
+    return tuple(sorted(writes))
+
+
+def _combine_memory_writes(
+    alternatives: Sequence[tuple[_WriteSpan, ...] | None],
+) -> tuple[_WriteSpan, ...] | None:
+    if not alternatives or any(value is None for value in alternatives):
+        return None
+    return tuple(sorted({span for value in alternatives for span in value or ()}))
+
+
+def _apply_call_memory_frame(
+    state: _State,
+    facts: _CallFacts,
+) -> tuple[dict[_MemoryLocation, _Value], dict[int, _StackCell], bool]:
+    if facts.memory_writes is None:
+        return (
+            dict(state.memory) if facts.memory_preserved else {},
+            dict(state.stack),
+            state.memory_invalidated or not facts.memory_preserved,
+        )
+    memory = dict(state.memory)
+    stack = dict(state.stack)
+    for span in facts.memory_writes:
+        base = span.base
+        if base.kind == "exact":
+            address = int(base.key[0]) & 0xFFFFFFFF
+            if address == 0:
+                continue
+            if span.size is None:
+                memory = {
+                    location: value
+                    for location, value in memory.items()
+                    if not isinstance(location, int)
+                }
+            else:
+                memory = {
+                    location: value
+                    for location, value in memory.items()
+                    if not isinstance(location, int)
+                    or not _ranges_overlap_u32(
+                        address, span.size, location & 0xFFFFFFFF, 4
+                    )
+                }
+        elif base.kind == "stack_location":
+            offset = int(base.key[0])
+            if span.size is None:
+                stack.clear()
+            else:
+                stack = {
+                    location: cell
+                    for location, cell in stack.items()
+                    if not _ranges_overlap_linear(offset, span.size, location, 4)
+                }
+        elif base.kind in {"dynamic_range", "dynamic_location"}:
+            location = _dynamic_memory_location(base)
+            identity = location.key[:-1]
+            if span.size is None:
+                memory = {
+                    candidate: value
+                    for candidate, value in memory.items()
+                    if not (
+                        isinstance(candidate, _Origin)
+                        and candidate.kind == "dynamic_location"
+                        and candidate.key[:-1] == identity
+                    )
+                }
+            else:
+                start = int(location.key[-1])
+                memory = {
+                    candidate: value
+                    for candidate, value in memory.items()
+                    if not (
+                        isinstance(candidate, _Origin)
+                        and candidate.kind == "dynamic_location"
+                        and candidate.key[:-1] == identity
+                        and _ranges_overlap_linear(
+                            start, span.size, int(candidate.key[-1]), 4
+                        )
+                    )
+                }
+        else:
+            # A complete frame must still fail closed when its runtime base
+            # cannot be assigned to one of the checked address regions.
+            return {}, {}, True
+    return memory, stack, state.memory_invalidated
+
+
+def _ranges_overlap_u32(
+    left_start: int,
+    left_size: int,
+    right_start: int,
+    right_size: int,
+) -> bool:
+    if min(left_size, right_size) <= 0:
+        return False
+    left_end = left_start + left_size
+    right_end = right_start + right_size
+    if left_end > 0x1_0000_0000 or right_end > 0x1_0000_0000:
+        return True
+    return left_start < right_end and right_start < left_end
+
+
+def _ranges_overlap_linear(
+    left_start: int,
+    left_size: int,
+    right_start: int,
+    right_size: int,
+) -> bool:
+    return (
+        min(left_size, right_size) > 0
+        and left_start < right_start + right_size
+        and right_start < left_start + left_size
+    )
+
+
+def _merge_output_effects(
+    destination: dict[_Origin, _Value],
+    effects: Mapping[_Origin, _Value],
+    *,
+    budget: int,
+    issues: list[dict[str, Any]],
+    unit_id: str,
+) -> None:
+    for location, origins in effects.items():
+        if location not in destination:
+            destination[location] = origins
+            continue
+        merged = _join_value(destination[location], origins, budget)
+        destination[location] = merged
+        if merged is None:
+            issues.append({
+                "code": "call_output_alternative_budget_exceeded",
+                "unit_id": unit_id,
+                "location": location.as_json(),
+                "finite_value_budget": budget,
+            })
+
+
+def _interface_method_callback_registration(
+    *,
+    unit_id: str,
+    unit: Mapping[str, Any],
+    event_index: int,
+    event: Mapping[str, Any],
+    methods: Sequence[tuple[str, InterfaceMethod]],
+    arguments: Sequence[Sequence[_Value] | None],
+    inventory: _ProfileInventory,
+) -> dict[str, Any] | None:
+    effects = [method.effects for _, method in methods]
+    categories = {
+        None if effect is None else effect.callback_effect for effect in effects
+    }
+    if categories <= {None, "none"}:
+        return None
+    instruction_rva = _call_instruction_rva(
+        unit, event=event, event_index=event_index
+    )
+    protocols = [
+        {
+            "profile_sha256": profile_sha256,
+            "interface_id": method.interface_id,
+            "method": method.name,
+            "slot": method.slot,
+        }
+        for profile_sha256, method in methods
+    ]
+    base = {
+        "format": "stage-a-callback-registration-provenance-v1",
+        "record_kind": "callback_registration",
+        "proof_authority": False,
+        "required_replay": (
+            "replay the interface call arguments, finite callback target "
+            "classification, exact callback ABI, and declared lifetime"
+        ),
+        "unit_id": unit_id,
+        "event_index": event_index,
+        "instruction_rva": instruction_rva,
+        "import": None,
+        "contract_id": "interface-method-callback",
+        "profile_binding": {"interface_protocols": protocols},
+        "callback_source": None,
+        "callback_abi": None,
+        "callback_lifetime": None,
+        "callback_behavior": None,
+        "callback_activation": None,
+        "callback_instance": None,
+        "origins": [],
+        "source_locations": [],
+        "target_rvas": [],
+        "target_unit_ids": [],
+    }
+    callback_contracts = {
+        json.dumps({
+            "source": effect.callback_source,
+            "abi": effect.callback_abi,
+            "lifetime": effect.callback_lifetime,
+            "status": effect.callback_status,
+            "blockers": list(effect.callback_blockers),
+        }, sort_keys=True, separators=(",", ":"))
+        for effect in effects
+        if effect is not None and effect.callback_effect == "explicit"
+    }
+    if categories != {"explicit"} or len(callback_contracts) != 1:
+        return {
+            **base,
+            "status": "incomplete",
+            "failure": {"code": "interface_callback_contract_ambiguous"},
+        }
+    effect = effects[0]
+    assert effect is not None
+    base.update({
+        "callback_source": copy.deepcopy(effect.callback_source),
+        "callback_abi": copy.deepcopy(effect.callback_abi),
+        "callback_lifetime": effect.callback_lifetime,
+    })
+    if effect.callback_status != "complete":
+        return {
+            **base,
+            "status": "incomplete",
+            "failure": {
+                "code": "interface_callback_contract_incomplete",
+                "blockers": list(effect.callback_blockers),
+            },
+        }
+    source = effect.callback_source
+    callback_abi = effect.callback_abi
+    if source is None or callback_abi is None:
+        return {
+            **base,
+            "status": "incomplete",
+            "failure": {"code": "interface_callback_contract_incomplete"},
+        }
+    argument_index = int(source["argument"])
+    recovered_arguments = [value for value in arguments if value is not None]
+    if (
+        len(recovered_arguments) != len(arguments)
+        or not recovered_arguments
+        or any(value != recovered_arguments[0] for value in recovered_arguments[1:])
+        or not 0 <= argument_index < len(recovered_arguments[0])
+    ):
+        return {
+            **base,
+            "status": "incomplete",
+            "failure": {"code": "callback_argument_origin_unresolved"},
+        }
+    origins = recovered_arguments[0][argument_index]
+    if origins is None or not origins:
+        return {
+            **base,
+            "status": "incomplete",
+            "failure": {"code": "callback_argument_origin_unresolved"},
+        }
+    nullable = bool(callback_abi["nullable"])
+    targets: set[tuple[int, str]] = set()
+    for origin in origins:
+        if origin.kind != "exact":
+            return {
+                **base,
+                "status": "incomplete",
+                "origins": _origins_json(origins),
+                "failure": {"code": "callback_target_origin_not_exact"},
+            }
+        address = int(origin.key[0]) & 0xFFFFFFFF
+        if address == 0 and nullable:
+            continue
+        candidates = inventory.unit_targets.get(address, ())
+        if len(candidates) != 1:
+            return {
+                **base,
+                "status": "incomplete",
+                "origins": _origins_json(origins),
+                "failure": {"code": "callback_target_not_canonical_code"},
+            }
+        targets.add(candidates[0])
+    if not targets and not nullable:
+        return {
+            **base,
+            "status": "incomplete",
+            "origins": _origins_json(origins),
+            "failure": {"code": "callback_target_null_forbidden"},
+        }
+    return {
+        **base,
+        "status": "complete",
+        "origins": _origins_json(origins),
+        "target_rvas": sorted(target[0] for target in targets),
+        "target_unit_ids": sorted(target[1] for target in targets),
+        "failure": None,
+    }
+
+
+def _machine_callback_registration(
+    *,
+    unit_id: str,
+    unit: Mapping[str, Any],
+    event_index: int,
+    event: Mapping[str, Any],
+    state: _State,
+    pre_call: _State,
+    inventory: _ProfileInventory,
+    known_slots: Mapping[int, _Value],
+    budget: int,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    contract = event.get("abi_contract")
+    if not isinstance(contract, Mapping) or not (
+        contract.get("world_effect") == "callbackRegistration"
+        or contract.get("callback_effect") == "explicit"
+    ):
+        return None
+    argument_words = _integer(contract.get("argument_words"))
+    if argument_words is None or not 0 <= argument_words <= 64:
+        return None
+    context = f"{unit_id} external event {event_index}"
+    source = parse_callback_source(
+        contract, argument_words=argument_words, context=context
+    )
+    callback_abi = parse_callback_abi(contract, context=context)
+    callback_behavior = parse_nested_native_callback_behavior(
+        contract,
+        registration_argument_words=argument_words,
+        context=context,
+    )
+    instruction_rva = _call_instruction_rva(
+        unit, event=event, event_index=event_index
+    )
+    required_arguments = {source.argument_index}
+    if callback_behavior is not None:
+        required_arguments.update({
+            callback_behavior.activation.argument_index,
+            callback_behavior.instance_registration_argument,
+        })
+    arguments, recovery = _recover_call_arguments(
+        pre_call,
+        state,
+        unit,
+        unit_id=unit_id,
+        event_index=event_index,
+        argument_words=argument_words,
+        inventory=inventory,
+        known_slots=known_slots,
+        budget=budget,
+        required_argument_indices=frozenset(required_arguments),
+    )
+    recovery["contract_id"] = contract.get("contract_id")
+    recovery["purpose"] = "callback_registration_arguments"
+    base = {
+        "format": "stage-a-callback-registration-provenance-v1",
+        "record_kind": "callback_registration",
+        "proof_authority": False,
+        "required_replay": (
+            "replay the rooted argument, pointee offset, ordered memory writes, "
+            "finite target classification, and exact callback ABI"
+        ),
+        "unit_id": unit_id,
+        "event_index": event_index,
+        "instruction_rva": instruction_rva,
+        "import": {
+            "dll": event.get("dll"),
+            "symbol": event.get("symbol"),
+            "ordinal": event.get("ordinal"),
+        },
+        "contract_id": contract.get("contract_id"),
+        "profile_binding": copy.deepcopy(contract.get("profile_binding")),
+        "callback_source": source.as_json(),
+        "callback_abi": callback_abi.as_json(),
+        "callback_lifetime": copy.deepcopy(contract.get("callback_lifetime")),
+        "callback_behavior": (
+            None if callback_behavior is None else callback_behavior.as_json()
+        ),
+        "callback_activation": None,
+        "origins": [],
+        "source_locations": [],
+        "target_rvas": [],
+        "target_unit_ids": [],
+    }
+    if callback_behavior is not None:
+        activation = callback_behavior.activation
+        activation_evidence = _callback_activation_evidence(
+            (
+                None
+                if arguments is None
+                else arguments[activation.argument_index]
+            ),
+            argument_index=activation.argument_index,
+            mask=activation.mask,
+            expected=activation.value,
+        )
+        base["callback_activation"] = activation_evidence
+        if activation_evidence["status"] != "complete":
+            return ({
+                **base,
+                "status": "incomplete",
+                "failure": copy.deepcopy(activation_evidence["failure"]),
+            }, recovery)
+        instance_argument = callback_behavior.instance_registration_argument
+        instance_origins = (
+            None if arguments is None else arguments[instance_argument]
+        )
+        if instance_origins is None or not instance_origins:
+            return ({
+                **base,
+                "status": "incomplete",
+                "failure": {"code": "callback_instance_argument_unresolved"},
+            }, recovery)
+        base["callback_instance"] = {
+            "kind": "registration_argument_origins_v1",
+            "registration_argument": instance_argument,
+            "callback_argument": callback_behavior.instance_callback_argument,
+            "origins": _origins_json(instance_origins),
+        }
+    if arguments is None or recovery["status"] != "complete":
+        return ({
+            **base,
+            "status": "incomplete",
+            "failure": {"code": "callback_argument_origin_unresolved"},
+        }, recovery)
+    origins, locations = _callback_source_origins(
+        arguments[source.argument_index],
+        source_kind=source.kind,
+        pointee_offset=source.pointee_offset,
+        state=pre_call,
+        known_slots=known_slots,
+        budget=budget,
+    )
+    if origins is None:
+        return ({
+            **base,
+            "status": "incomplete",
+            "source_locations": locations,
+            "failure": {"code": "callback_source_location_unresolved"},
+        }, recovery)
+    targets: set[tuple[int, str]] = set()
+    for origin in origins:
+        if origin.kind != "exact":
+            return ({
+                **base,
+                "status": "incomplete",
+                "origins": _origins_json(origins),
+                "source_locations": locations,
+                "failure": {"code": "callback_target_origin_not_exact"},
+            }, recovery)
+        address = int(origin.key[0]) & 0xFFFFFFFF
+        if address == 0 and callback_abi.nullable:
+            continue
+        candidates = inventory.unit_targets.get(address, ())
+        if len(candidates) != 1:
+            return ({
+                **base,
+                "status": "incomplete",
+                "origins": _origins_json(origins),
+                "source_locations": locations,
+                "failure": {"code": "callback_target_not_canonical_code"},
+            }, recovery)
+        targets.add(candidates[0])
+    if not targets and not callback_abi.nullable:
+        return ({
+            **base,
+            "status": "incomplete",
+            "origins": _origins_json(origins),
+            "source_locations": locations,
+            "failure": {"code": "callback_target_null_forbidden"},
+        }, recovery)
+    return ({
+        **base,
+        "status": "complete",
+        "origins": _origins_json(origins),
+        "source_locations": locations,
+        "target_rvas": sorted(target[0] for target in targets),
+        "target_unit_ids": sorted(target[1] for target in targets),
+        "failure": None,
+    }, recovery)
+
+
+def _callback_activation_evidence(
+    origins: _Value,
+    *,
+    argument_index: int,
+    mask: int,
+    expected: int,
+) -> dict[str, Any]:
+    base = {
+        "kind": "masked_argument_equals",
+        "argument_index": argument_index,
+        "mask": mask,
+        "expected_value": expected,
+        "origins": _origins_json(origins),
+        "exact_value": None,
+        "masked_value": None,
+    }
+    if origins is None or not origins:
+        return {
+            **base,
+            "status": "incomplete",
+            "failure": {"code": "callback_activation_argument_unresolved"},
+        }
+    if any(
+        origin.kind != "exact"
+        or len(origin.key) != 1
+        or not isinstance(origin.key[0], int)
+        or isinstance(origin.key[0], bool)
+        for origin in origins
+    ):
+        return {
+            **base,
+            "status": "incomplete",
+            "failure": {"code": "callback_activation_origin_not_exact"},
+        }
+    values = sorted({int(origin.key[0]) & 0xFFFF_FFFF for origin in origins})
+    if len(values) != 1:
+        return {
+            **base,
+            "status": "incomplete",
+            "failure": {"code": "callback_activation_argument_ambiguous"},
+        }
+    value = values[0]
+    masked = value & mask
+    if masked != expected:
+        return {
+            **base,
+            "status": "incomplete",
+            "exact_value": value,
+            "masked_value": masked,
+            "failure": {"code": "callback_activation_guard_mismatch"},
+        }
+    return {
+        **base,
+        "status": "complete",
+        "exact_value": value,
+        "masked_value": masked,
+        "failure": None,
+    }
+
+
+def _callback_source_origins(
+    argument_origins: _Value,
+    *,
+    source_kind: str,
+    pointee_offset: int,
+    state: _State,
+    known_slots: Mapping[int, _Value],
+    budget: int,
+) -> tuple[_Value, list[dict[str, Any]]]:
+    if source_kind == "argument_word":
+        return argument_origins, []
+    if argument_origins is None or not argument_origins:
+        return None, []
+    result: _Value = frozenset()
+    locations: list[dict[str, Any]] = []
+    for pointer in sorted(argument_origins):
+        cell: _StackCell | None = None
+        value: _Value = None
+        if pointer.kind == "stack_location":
+            offset = int(pointer.key[0]) + pointee_offset
+            cell = state.stack.get(offset)
+            value = None if cell is None else cell.value
+            locations.append({
+                "kind": "stack_location",
+                "offset": offset,
+                "writes": (
+                    []
+                    if cell is None
+                    else [witness.as_json() for witness in cell.witnesses]
+                ),
+            })
+        elif pointer.kind == "exact":
+            address = (int(pointer.key[0]) + pointee_offset) & 0xFFFFFFFF
+            value = _read_memory_fact(
+                state,
+                address,
+                known_slots=known_slots,
+            )
+            locations.append({
+                "kind": "exact",
+                "address": address,
+                "writes": [],
+            })
+        else:
+            return None, locations
+        if value is None:
+            return None, locations
+        result = _join_value(
+            result,
+            value,
+            budget,
+            missing_is_identity=True,
+        )
+        if result is None:
+            return None, locations
+    return result, locations
+
+
+def _call_instruction_rva(
+    unit: Mapping[str, Any],
+    *,
+    event: Mapping[str, Any],
+    event_index: int,
+) -> int | None:
+    direct = _integer(event.get("instruction_rva"))
+    if direct is not None:
+        return direct
+    ordered = _mapping(unit.get("semantics")).get("ordered_events")
+    if not isinstance(ordered, list):
+        return None
+    call_ordinal = -1
+    for raw in ordered:
+        candidate = _mapping(raw)
+        if candidate.get("kind") not in _CALL_KINDS:
+            continue
+        call_ordinal += 1
+        if call_ordinal != event_index:
+            continue
+        if all(
+            candidate.get(field) == event.get(field)
+            for field in ("kind", "dll", "symbol", "ordinal", "return_rva")
+        ):
+            return _integer(candidate.get("instruction_rva"))
+        return None
+    return None
 
 
 def _origin_call_facts(
@@ -1166,6 +3317,11 @@ def _origin_call_facts(
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
     internal_call_stack_cleanup: Mapping[int, int],
+    internal_call_memory_preservation: Mapping[int, bool],
+    internal_call_memory_result_relations: Mapping[
+        int, Mapping[_Origin, _Value]
+    ],
+    dependencies: frozenset[str] = frozenset(),
 ) -> _CallFacts | None:
     if origins is None or not origins:
         return None
@@ -1181,6 +3337,8 @@ def _origin_call_facts(
                 selected.argument_words,
                 _abi_stack_cleanup(selected.abi, selected.argument_words),
                 {},
+                memory_preserved=_selected_import_memory_preserved(selected),
+                dependencies=dependencies,
             ))
             continue
         if origin.kind == "exact":
@@ -1189,7 +3347,17 @@ def _origin_call_facts(
             cleanup = internal_call_stack_cleanup.get(address)
             if preserved is None:
                 return None
-            alternatives.append(_CallFacts(preserved, None, None, cleanup, {}))
+            alternatives.append(_CallFacts(
+                preserved,
+                None,
+                None,
+                cleanup,
+                internal_call_memory_result_relations.get(address, {}),
+                memory_preserved=bool(
+                    internal_call_memory_preservation.get(address)
+                ),
+                dependencies=dependencies,
+            ))
             continue
         return None
     return _combine_call_facts(alternatives)
@@ -1198,47 +3366,296 @@ def _origin_call_facts(
 def _recovered_call_facts(
     recovery: Mapping[str, Any] | None,
     *,
+    unit_id: str,
+    unit: Mapping[str, Any],
+    event_index: int,
+    event: Mapping[str, Any],
+    state: _State,
+    pre_call: _State,
     inventory: _ProfileInventory,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
     internal_call_stack_cleanup: Mapping[int, int],
+    internal_call_memory_preservation: Mapping[int, bool],
+    internal_call_memory_result_relations: Mapping[
+        int, Mapping[_Origin, _Value]
+    ],
     image_base: int,
-) -> _CallFacts | None:
+    known_slots: Mapping[int, _Value],
+    budget: int,
+) -> tuple[_CallFacts | None, list[dict[str, Any]], list[dict[str, Any]]]:
+    issues: list[dict[str, Any]] = []
+    argument_recoveries: list[dict[str, Any]] = []
     if recovery is None or recovery.get("status") != "recovered":
-        return None
+        return None, issues, argument_recoveries
     raw_external = recovery.get("external_targets", [])
     raw_target_rvas = recovery.get("target_rvas", [])
     raw_target_units = recovery.get("target_unit_ids", [])
     if not _is_sequence(raw_external) or not _is_sequence(raw_target_rvas):
-        return None
+        return None, issues, argument_recoveries
     if not _is_sequence(raw_target_units):
-        return None
+        return None, issues, argument_recoveries
     if raw_target_units and not raw_target_rvas:
-        return None
+        return None, issues, argument_recoveries
 
     alternatives: list[_CallFacts] = []
+    dependencies = frozenset(
+        _call_frame_dependency_id(
+            str(recovery.get("source_unit_id") or "unknown"),
+            _integer(recovery.get("source_event_index")) or 0,
+            target,
+        )
+        for target in raw_target_units
+        if isinstance(target, str)
+    )
     for raw in raw_external:
         if not isinstance(raw, Mapping):
-            return None
-        facts = _external_target_call_facts(
-            raw,
-            inventory=inventory,
-            import_abis=import_abis,
+            return None, issues, argument_recoveries
+        facts, target_issues, target_recoveries = (
+            _instantiate_recovered_external_call_facts(
+                raw,
+                unit_id=unit_id,
+                unit=unit,
+                event_index=event_index,
+                event=event,
+                state=state,
+                pre_call=pre_call,
+                inventory=inventory,
+                import_abis=import_abis,
+                known_slots=known_slots,
+                budget=budget,
+            )
         )
+        issues.extend(target_issues)
+        argument_recoveries.extend(target_recoveries)
         if facts is None:
-            return None
-        alternatives.append(facts)
+            return None, issues, argument_recoveries
+        alternatives.append(_with_call_dependencies(facts, dependencies))
     for raw_rva in raw_target_rvas:
         target_rva = _integer(raw_rva)
         if target_rva is None:
-            return None
+            return None, issues, argument_recoveries
         target_address = (image_base + target_rva) & 0xFFFFFFFF
         preserved = internal_call_preserved_registers.get(target_address)
         cleanup = internal_call_stack_cleanup.get(target_address)
         if preserved is None or cleanup is None:
-            return None
-        alternatives.append(_CallFacts(preserved, None, None, cleanup, {}))
-    return _combine_call_facts(alternatives)
+            return None, issues, argument_recoveries
+        alternatives.append(_CallFacts(
+            preserved,
+            None,
+            None,
+            cleanup,
+            internal_call_memory_result_relations.get(target_address, {}),
+            memory_preserved=bool(
+                internal_call_memory_preservation.get(target_address)
+            ),
+            dependencies=dependencies,
+        ))
+    return (
+        _combine_call_facts(alternatives, budget=budget),
+        issues,
+        argument_recoveries,
+    )
+
+
+def _instantiate_recovered_external_call_facts(
+    target: Mapping[str, Any],
+    *,
+    unit_id: str,
+    unit: Mapping[str, Any],
+    event_index: int,
+    event: Mapping[str, Any],
+    state: _State,
+    pre_call: _State,
+    inventory: _ProfileInventory,
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    known_slots: Mapping[int, _Value],
+    budget: int,
+) -> tuple[_CallFacts | None, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Re-bind a recovered target to its call-site effects.
+
+    Target recovery proves which native operation is invoked.  It does not by
+    itself replay that operation's out-parameters or memory frame.  Repeating
+    that binding here keeps later fixed-point rounds semantically equivalent
+    to a call whose target provenance was available locally.
+    """
+
+    base = _external_target_call_facts(
+        target,
+        inventory=inventory,
+        import_abis=import_abis,
+    )
+    issues: list[dict[str, Any]] = []
+    recoveries: list[dict[str, Any]] = []
+    if base is None:
+        issues.append({
+            "code": "recovered_external_target_contract_invalid",
+            "unit_id": unit_id,
+            "event_index": event_index,
+        })
+        return None, issues, recoveries
+
+    protocol = _mapping(target.get("external_protocol"))
+    profile_sha256 = protocol.get("profile_sha256")
+    if protocol.get("kind") == "pe32-interface-method":
+        interface_id = protocol.get("interface_id")
+        offset = _integer(protocol.get("offset"))
+        method = (
+            inventory.method(profile_sha256, interface_id, offset)
+            if isinstance(profile_sha256, str)
+            and isinstance(interface_id, str)
+            and offset is not None
+            else None
+        )
+        if method is None:
+            return None, issues, recoveries
+        arguments, recovery = _recover_call_arguments(
+            pre_call,
+            state,
+            unit,
+            unit_id=unit_id,
+            event_index=event_index,
+            argument_words=method.argument_words,
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=budget,
+        )
+        recovery["interface_id"] = method.interface_id
+        recovery["method"] = method.name
+        recovery["target_source"] = "recovered_indirect_exit"
+        recoveries.append(recovery)
+        if not _interface_outputs_recoverable(arguments, method.outputs):
+            issues.append({
+                "code": "interface_method_arguments_incomplete",
+                "unit_id": unit_id,
+                "interface_id": method.interface_id,
+                "method": method.name,
+                "failure": (
+                    _mapping(recovery.get("failure")).get("code")
+                    or "interface_out_pointer_unresolved"
+                ),
+            })
+        outputs = (
+            {}
+            if arguments is None or not method.outputs
+            else _output_effects(
+                arguments,
+                method.outputs,
+                profile_sha256=profile_sha256,
+                issues=issues,
+                unit_id=unit_id,
+            )
+        )
+        callback_evidence = _interface_method_callback_registration(
+            unit_id=unit_id,
+            unit=unit,
+            event_index=event_index,
+            event=event,
+            methods=[(profile_sha256, method)],
+            arguments=[arguments],
+            inventory=inventory,
+        )
+        if callback_evidence is not None:
+            recoveries.append(callback_evidence)
+            if callback_evidence["status"] != "complete":
+                issues.append({
+                    "code": "interface_method_callback_provenance_incomplete",
+                    "unit_id": unit_id,
+                    "event_index": event_index,
+                    "instruction_rva": callback_evidence["instruction_rva"],
+                    "failure": callback_evidence["failure"]["code"],
+                })
+        return (
+            _CallFacts(
+                base.preserved,
+                base.abi,
+                base.argument_words,
+                base.stack_cleanup_bytes,
+                outputs,
+                memory_writes=_interface_memory_writes(
+                    method.caller_memory_frame, arguments
+                ),
+            ),
+            issues,
+            recoveries,
+        )
+
+    if protocol.get("kind") == "pe32-operation":
+        operation_id = protocol.get("operation_id")
+        operation = (
+            inventory.operation(profile_sha256, operation_id)
+            if isinstance(profile_sha256, str)
+            and isinstance(operation_id, str)
+            else None
+        )
+        if operation is None:
+            return None, issues, recoveries
+        arguments, recovery = _recover_call_arguments(
+            pre_call,
+            state,
+            unit,
+            unit_id=unit_id,
+            event_index=event_index,
+            argument_words=operation.argument_words,
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=budget,
+        )
+        recovery["operation_id"] = operation.operation_id
+        recovery["target_source"] = "recovered_indirect_exit"
+        _record_operation_contract_status(
+            recovery,
+            issues,
+            unit_id=unit_id,
+            profile_sha256=profile_sha256,
+            operation=operation,
+            inventory=inventory,
+        )
+        recoveries.append(recovery)
+        outputs = (
+            {}
+            if arguments is None
+            else _operation_output_effects(
+                arguments,
+                operation,
+                profile_sha256=profile_sha256,
+                producer_id=(
+                    f"{unit_id}:{event_index}:{operation.operation_id}"
+                ),
+                inventory=inventory,
+                issues=issues,
+                unit_id=unit_id,
+            )
+        )
+        return (
+            _CallFacts(
+                base.preserved,
+                base.abi,
+                base.argument_words,
+                base.stack_cleanup_bytes,
+                outputs,
+            ),
+            issues,
+            recoveries,
+        )
+
+    return base, issues, recoveries
+
+
+def _with_call_dependencies(
+    facts: _CallFacts,
+    dependencies: frozenset[str],
+) -> _CallFacts:
+    return _CallFacts(
+        facts.preserved,
+        facts.abi,
+        facts.argument_words,
+        facts.stack_cleanup_bytes,
+        facts.outputs,
+        memory_preserved=facts.memory_preserved,
+        memory_writes=facts.memory_writes,
+        dependencies=facts.dependencies | dependencies,
+    )
 
 
 def _external_target_call_facts(
@@ -1249,6 +3666,50 @@ def _external_target_call_facts(
 ) -> _CallFacts | None:
     protocol = _mapping(target.get("external_protocol"))
     if protocol:
+        if protocol.get("kind") == "pe32-previous-callback":
+            raw_abi = _mapping(protocol.get("callback_abi"))
+            argument_words = _integer(raw_abi.get("argument_words"))
+            cleanup = _integer(raw_abi.get("stack_cleanup_bytes"))
+            if (
+                raw_abi.get("kind") != "generic_callback"
+                or argument_words is None
+                or cleanup is None
+                or cleanup != argument_words * 4
+                or _integer(target.get("argument_words")) != argument_words
+            ):
+                return None
+            abi = resolve_machine_call_abi("pe32-stdcall-v1")
+            if _mapping(target.get("abi")) != abi.as_json():
+                return None
+            return _CallFacts(
+                frozenset(abi.preserved_registers),
+                abi,
+                argument_words,
+                cleanup,
+                {},
+            )
+        if protocol.get("kind") == "pe32-resolved-export":
+            profile_sha256 = protocol.get("profile_sha256")
+            target_id = _integer(protocol.get("target_id"))
+            if not isinstance(profile_sha256, str) or target_id is None:
+                return None
+            target_spec = inventory.callable_target(profile_sha256, target_id)
+            expected = (
+                None
+                if target_spec is None
+                else inventory.callable_target_json(
+                    profile_sha256, target_spec, transfer="call"
+                )
+            )
+            if expected is None or target != expected:
+                return None
+            return _CallFacts(
+                frozenset(target_spec.abi.preserved_registers),
+                target_spec.abi,
+                target_spec.argument_words,
+                _abi_stack_cleanup(target_spec.abi, target_spec.argument_words),
+                {},
+            )
         profile_sha256 = protocol.get("profile_sha256")
         if protocol.get("kind") == "pe32-operation":
             operation_id = protocol.get("operation_id")
@@ -1319,10 +3780,15 @@ def _external_target_call_facts(
         selected.argument_words,
         _abi_stack_cleanup(selected.abi, selected.argument_words),
         {},
+        memory_preserved=_selected_import_memory_preserved(selected),
     )
 
 
-def _combine_call_facts(alternatives: Sequence[_CallFacts]) -> _CallFacts | None:
+def _combine_call_facts(
+    alternatives: Sequence[_CallFacts],
+    *,
+    budget: int = 32,
+) -> _CallFacts | None:
     if not alternatives or any(facts.preserved is None for facts in alternatives):
         return None
     preserved = set(alternatives[0].preserved or ())
@@ -1331,6 +3797,18 @@ def _combine_call_facts(alternatives: Sequence[_CallFacts]) -> _CallFacts | None
     abis = {facts.abi for facts in alternatives}
     argument_counts = {facts.argument_words for facts in alternatives}
     cleanups = {facts.stack_cleanup_bytes for facts in alternatives}
+    common_output_locations = set(alternatives[0].outputs)
+    for facts in alternatives[1:]:
+        common_output_locations.intersection_update(facts.outputs)
+    outputs: dict[_Origin, _Value] = {}
+    for location in common_output_locations:
+        value: _Value = frozenset()
+        for facts in alternatives:
+            value = _join_value(value, facts.outputs[location], budget)
+            if value is None:
+                break
+        if value is not None:
+            outputs[location] = value
     return _CallFacts(
         frozenset(preserved),
         next(iter(abis)) if len(abis) == 1 else None,
@@ -1340,7 +3818,16 @@ def _combine_call_facts(alternatives: Sequence[_CallFacts]) -> _CallFacts | None
             if len(cleanups) == 1 and None not in cleanups
             else None
         ),
-        {},
+        outputs,
+        memory_preserved=all(
+            facts.memory_preserved for facts in alternatives
+        ),
+        memory_writes=_combine_memory_writes(
+            [facts.memory_writes for facts in alternatives]
+        ),
+        dependencies=frozenset().union(
+            *(facts.dependencies for facts in alternatives)
+        ),
     )
 
 
@@ -1361,7 +3848,15 @@ def _recover_call_arguments(
     inventory: _ProfileInventory,
     known_slots: Mapping[int, _Value],
     budget: int,
+    required_argument_indices: frozenset[int] | None = None,
 ) -> tuple[tuple[_Value, ...] | None, dict[str, Any]]:
+    required = (
+        frozenset(range(argument_words))
+        if required_argument_indices is None
+        else required_argument_indices
+    )
+    if any(index < 0 or index >= argument_words for index in required):
+        raise ValueError("required call argument index is out of range")
     local = recover_pe32_stack_call_arguments(
         unit,
         event_index=event_index,
@@ -1385,27 +3880,25 @@ def _recover_call_arguments(
             argument_words=argument_words,
             dataflow_failure="call_esp_origin_unresolved",
             local_evidence=local_evidence,
+            required_argument_indices=required,
         )
     call_esp = next(iter(offsets))
     arguments: list[_Value] = []
     evidence: list[dict[str, Any]] = []
+    unresolved: list[int] = []
     for argument_index in range(argument_words):
         offset = call_esp + argument_index * 4
         cell = pre_call.stack.get(offset)
         if cell is None or cell.value is None:
-            return _local_or_incomplete_arguments(
-                local,
-                input_state=input_state,
-                inventory=inventory,
-                known_slots=known_slots,
-                budget=budget,
-                unit_id=unit_id,
-                event_index=event_index,
-                argument_words=argument_words,
-                call_esp=call_esp,
-                dataflow_failure="argument_stack_word_missing",
-                local_evidence=local_evidence,
-            )
+            arguments.append(None)
+            unresolved.append(argument_index)
+            evidence.append({
+                "argument_index": argument_index,
+                "stack_offset": offset,
+                "origins": None,
+                "writes": [],
+            })
+            continue
         arguments.append(cell.value)
         evidence.append({
             "argument_index": argument_index,
@@ -1413,14 +3906,35 @@ def _recover_call_arguments(
             "origins": _origins_json(cell.value),
             "writes": [witness.as_json() for witness in cell.witnesses],
         })
+    if required.intersection(unresolved):
+        return _local_or_incomplete_arguments(
+            local,
+            input_state=input_state,
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=budget,
+            unit_id=unit_id,
+            event_index=event_index,
+            argument_words=argument_words,
+            call_esp=call_esp,
+            dataflow_failure="argument_stack_word_missing",
+            local_evidence=local_evidence,
+            required_argument_indices=required,
+        )
     return tuple(arguments), _argument_recovery_json(
         unit_id=unit_id,
         event_index=event_index,
         argument_words=argument_words,
         call_esp=call_esp,
         arguments=evidence,
+        required_argument_indices=required,
+        unresolved_argument_indices=unresolved,
         local_evidence=local_evidence,
-        recovery_mode="rooted_inter_unit_stack",
+        recovery_mode=(
+            "rooted_inter_unit_stack_partial"
+            if unresolved
+            else "rooted_inter_unit_stack"
+        ),
     )
 
 
@@ -1436,6 +3950,7 @@ def _local_or_incomplete_arguments(
     argument_words: int,
     dataflow_failure: str,
     local_evidence: Mapping[str, Any],
+    required_argument_indices: frozenset[int],
     call_esp: int | None = None,
 ) -> tuple[tuple[_Value, ...] | None, dict[str, Any]]:
     if local.status == "complete":
@@ -1449,7 +3964,10 @@ def _local_or_incomplete_arguments(
             )
             for expression in local.arguments
         )
-        if all(value is not None for value in values):
+        unresolved = [
+            index for index, value in enumerate(values) if value is None
+        ]
+        if not required_argument_indices.intersection(unresolved):
             evidence = [
                 {
                     "argument_index": index,
@@ -1465,8 +3983,14 @@ def _local_or_incomplete_arguments(
                 argument_words=argument_words,
                 call_esp=call_esp,
                 arguments=evidence,
+                required_argument_indices=required_argument_indices,
+                unresolved_argument_indices=unresolved,
                 local_evidence=local_evidence,
-                recovery_mode="exact_same_unit",
+                recovery_mode=(
+                    "exact_same_unit_partial"
+                    if unresolved
+                    else "exact_same_unit"
+                ),
             )
         evidence = [
             {
@@ -1483,6 +4007,8 @@ def _local_or_incomplete_arguments(
             argument_words=argument_words,
             call_esp=call_esp,
             arguments=evidence,
+            required_argument_indices=required_argument_indices,
+            unresolved_argument_indices=unresolved,
             failure="local_argument_origin_unresolved",
             local_evidence=local_evidence,
             recovery_mode="exact_same_unit_partial",
@@ -1493,6 +4019,7 @@ def _local_or_incomplete_arguments(
         argument_words=argument_words,
         call_esp=call_esp,
         failure=dataflow_failure,
+        required_argument_indices=required_argument_indices,
         local_evidence=local_evidence,
         recovery_mode="incomplete",
     )
@@ -1506,6 +4033,8 @@ def _argument_recovery_json(
     local_evidence: Mapping[str, Any],
     call_esp: int | None = None,
     arguments: Sequence[Mapping[str, Any]] = (),
+    required_argument_indices: Iterable[int] = (),
+    unresolved_argument_indices: Iterable[int] = (),
     failure: str | None = None,
     recovery_mode: str,
 ) -> dict[str, Any]:
@@ -1523,6 +4052,8 @@ def _argument_recovery_json(
         "recovery_mode": recovery_mode,
         "call_esp_stack_offset": call_esp,
         "arguments": [dict(row) for row in arguments],
+        "required_argument_indices": sorted(set(required_argument_indices)),
+        "unresolved_argument_indices": sorted(set(unresolved_argument_indices)),
         "local_exact_recovery": dict(local_evidence),
         "failure": None if failure is None else {"code": failure},
     }
@@ -1559,15 +4090,39 @@ def _apply_call_stack_result(
         output.stack.clear()
 
 
-def _enter_call_frame(state: _State) -> _State:
+def _enter_call_frame(
+    state: _State,
+    *,
+    return_address: int | None = None,
+) -> _State:
+    """Translate one checked caller stack into a fresh callee frame.
+
+    Call-event states describe ESP immediately before x86 pushes the return
+    address.  Cells at and above that ESP are therefore arguments and retain
+    their relative offsets in the callee after a four-byte frame shift.  Cells
+    below the call-time ESP are caller temporaries and are deliberately hidden.
+    """
+
+    call_offsets = _stack_offsets(state.registers.get("esp"))
+    translated_stack: dict[int, _StackCell] = {}
+    if call_offsets is not None and len(call_offsets) == 1:
+        call_esp = next(iter(call_offsets))
+        translated_stack = {
+            offset - call_esp + 4: cell
+            for offset, cell in state.stack.items()
+            if offset >= call_esp
+        }
+    if return_address is not None:
+        translated_stack[0] = _StackCell(
+            frozenset({_Origin("exact", (return_address,))}),
+            (),
+        )
     output = _State(
         dict(state.registers),
         dict(state.memory),
-        {},
+        translated_stack,
+        state.memory_invalidated,
     )
-    # A callee gets an independent relational frame origin. Incoming argument
-    # cells are intentionally not inferred until a checked call-frame bridge
-    # supplies them.
     output.registers["esp"] = _stack_location(0)
     return output
 
@@ -1586,7 +4141,13 @@ def _output_effects(
         if (
             addresses is None
             or len(addresses) != 1
-            or next(iter(addresses)).kind not in {"exact", "stack_location"}
+            or next(iter(addresses)).kind not in {
+                "exact",
+                "stack_location",
+                "dynamic_range",
+                "dynamic_location",
+                "symbolic_affine",
+            }
         ):
             issues.append({
                 "code": "interface_out_pointer_unresolved",
@@ -1910,6 +4471,9 @@ def _resolve_exits(
             origins,
             inventory=inventory,
             import_abis=import_abis,
+            transfer=(
+                "call" if exit_record.get("kind") == "indirect_call" else "jump"
+            ),
         )
         if classified is None:
             failure = _target_resolution_failure(target, origins)
@@ -1930,6 +4494,8 @@ def _resolve_exits(
                 if target_kinds == {"interface_operation"}
                 else "checked_external_operation_inventory"
                 if target_kinds == {"profile_operation"}
+                else "checked_resolver_export_inventory"
+                if target_kinds == {"resolved_export"}
                 else "checked_finite_operation_origin_inventory"
             ),
             "target_rvas": sorted({item[0] for item in internal}),
@@ -1940,6 +4506,8 @@ def _resolve_exits(
             ),
             "origin_count": len(origins or ()),
             "origin_kinds": sorted(target_kinds),
+            "target_origin_witnesses": origins_json(origins),
+            "analysis_dependencies": list(value_dependencies(origins)),
             "failure": None,
         })
     return result
@@ -1998,6 +4566,7 @@ def _classify_target_origins(
     *,
     inventory: _ProfileInventory,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    transfer: str,
 ) -> tuple[list[tuple[int, str]], list[dict[str, Any]], set[str]] | None:
     if origins is None or not origins:
         return None
@@ -2005,8 +4574,11 @@ def _classify_target_origins(
     external: dict[str, dict[str, Any]] = {}
     kinds: set[str] = set()
     for origin in origins:
-        if origin.kind == "exact":
-            candidates = inventory.unit_targets.get(int(origin.key[0]) & 0xFFFFFFFF, ())
+        if origin.kind in {"exact", "static_code", "static_data"}:
+            concrete = origin_concrete_value(origin)
+            if concrete is None:
+                return None
+            candidates = inventory.unit_targets.get(concrete, ())
             if len(candidates) != 1:
                 return None
             internal.add(candidates[0])
@@ -2033,6 +4605,7 @@ def _classify_target_origins(
                 profile_id=profile.profile_id,
                 profile_sha256=profile.sha256,
             )
+            rendered["external_protocol"]["transfer_kind"] = transfer
             external[json.dumps(rendered, sort_keys=True)] = rendered
             kinds.add("interface_operation")
             continue
@@ -2049,6 +4622,50 @@ def _classify_target_origins(
             external[json.dumps(rendered, sort_keys=True)] = rendered
             kinds.add("profile_operation")
             continue
+        if origin.kind == "resolved_export":
+            profile_sha256, target_id = origin.key
+            target = inventory.callable_target(str(profile_sha256), int(target_id))
+            if target is None or transfer not in target.transfers:
+                return None
+            rendered = inventory.callable_target_json(
+                str(profile_sha256), target, transfer=transfer
+            )
+            if rendered is None:
+                return None
+            external[json.dumps(rendered, sort_keys=True)] = rendered
+            kinds.add("resolved_export")
+            continue
+        if origin.kind == "callback_token":
+            (
+                contract_id,
+                profile_binding,
+                callback_kind,
+                argument_words,
+                stack_cleanup_bytes,
+                nullable,
+                lifetime,
+            ) = origin.key
+            abi = resolve_machine_call_abi("pe32-stdcall-v1")
+            rendered = {
+                "external_protocol": {
+                    "kind": "pe32-previous-callback",
+                    "contract_id": str(contract_id),
+                    "profile_binding": json.loads(str(profile_binding)),
+                    "callback_abi": {
+                        "kind": str(callback_kind),
+                        "argument_words": int(argument_words),
+                        "stack_cleanup_bytes": int(stack_cleanup_bytes),
+                        "nullable": bool(nullable),
+                    },
+                    "callback_lifetime": str(lifetime),
+                    "effect_model": "same-process-callback-callthrough-v1",
+                },
+                "abi": abi.as_json(),
+                "argument_words": int(argument_words),
+            }
+            external[json.dumps(rendered, sort_keys=True)] = rendered
+            kinds.add("callback_token")
+            continue
         return None
     return sorted(internal), [external[key] for key in sorted(external)], kinds
 
@@ -2058,7 +4675,7 @@ def _evaluate(
     state: _State,
     *,
     inventory: _ProfileInventory,
-    known_slots: Mapping[int, _Value],
+    known_slots: Mapping[_MemoryLocation, _Value],
     budget: int,
 ) -> _Value:
     if not isinstance(expression, Mapping):
@@ -2074,7 +4691,7 @@ def _evaluate(
             if value is None
             else frozenset({_Origin("exact", (value & 0xFFFFFFFF,))})
         )
-    if op in {"add", "add32", "sub", "sub32"}:
+    if op in {"add", "add32", "sub", "sub32", "mul", "mul32"}:
         operands = _binary_operands(expression)
         if operands is None:
             return None
@@ -2084,6 +4701,8 @@ def _evaluate(
         right = _evaluate(
             operands[1], state, inventory=inventory, known_slots=known_slots, budget=budget
         )
+        if op in {"mul", "mul32"}:
+            return _multiply_values(left, right, budget=budget)
         return _add_values(
             left,
             right,
@@ -2106,28 +4725,78 @@ def _evaluate(
             return None
         result: set[_Origin] = set()
         for address in addresses:
+            address_dependencies = address.dependencies
             if address.kind == "exact":
                 concrete = int(address.key[0]) & 0xFFFFFFFF
-                value = state.memory.get(concrete, known_slots.get(concrete))
-                if value is None and concrete in inventory.iat:
+                if concrete in state.memory:
+                    value = state.memory[concrete]
+                elif concrete in inventory.iat:
                     value = frozenset({_import_origin(inventory.iat[concrete])})
+                else:
+                    static_origin = inventory.immutable_u32_origin(concrete)
+                    if static_origin is not None:
+                        value = frozenset({static_origin})
+                    elif concrete in known_slots:
+                        value = known_slots[concrete]
+                        if (
+                            state.memory_invalidated
+                            and _has_global_slot_authority_dependency(value)
+                        ):
+                            value = None
+                    elif state.memory_invalidated:
+                        value = None
+                    else:
+                        value = None
                 if value is None:
                     return None
-                result.update(value)
+                result.update(
+                    with_value_dependencies(value, address_dependencies) or ()
+                )
             elif address.kind == "stack_location":
                 cell = state.stack.get(int(address.key[0]))
                 if cell is None or cell.value is None:
                     return None
-                result.update(cell.value)
+                result.update(
+                    with_value_dependencies(
+                        cell.value, address_dependencies
+                    ) or ()
+                )
+            elif address.kind in {"dynamic_range", "dynamic_location"}:
+                location = _dynamic_memory_location(address)
+                value = _read_memory_fact(
+                    state,
+                    location,
+                    known_slots=known_slots,
+                )
+                if value is None:
+                    return None
+                result.update(
+                    with_value_dependencies(value, address_dependencies) or ()
+                )
+            elif address.kind == "symbolic_affine":
+                value = _read_memory_fact(
+                    state,
+                    _Origin(address.kind, address.key),
+                    known_slots=known_slots,
+                )
+                if value is None:
+                    return None
+                result.update(
+                    with_value_dependencies(value, address_dependencies) or ()
+                )
             elif address.kind == "interface_object":
-                result.add(_Origin("interface_vtable", address.key))
+                result.add(_Origin(
+                    "interface_vtable", address.key, address.dependencies
+                ))
             elif address.kind == "resource_view":
                 profile_sha256, view_id, *_ = address.key
                 access = inventory.operation_view_access(
                     str(profile_sha256), str(view_id)
                 )
                 if access == "object_table":
-                    result.add(_Origin("operation_table", address.key))
+                    result.add(_Origin(
+                        "operation_table", address.key, address.dependencies
+                    ))
                 elif access == "direct_table":
                     operation = inventory.operation_for_slot(
                         str(profile_sha256), str(view_id), 0
@@ -2137,6 +4806,7 @@ def _evaluate(
                     result.add(_Origin(
                         "operation_target",
                         (profile_sha256, operation.operation_id),
+                        address.dependencies,
                     ))
                 else:
                     return None
@@ -2150,6 +4820,7 @@ def _evaluate(
                 result.add(_Origin(
                     "interface_method",
                     (profile_sha256, interface_id, method.slot),
+                    address.dependencies,
                 ))
             elif address.kind == "interface_slot":
                 profile_sha256, interface_id, offset = address.key
@@ -2161,6 +4832,7 @@ def _evaluate(
                 result.add(_Origin(
                     "interface_method",
                     (profile_sha256, interface_id, method.slot),
+                    address.dependencies,
                 ))
             elif address.kind == "operation_table":
                 profile_sha256, view_id, *_ = address.key
@@ -2172,6 +4844,7 @@ def _evaluate(
                 result.add(_Origin(
                     "operation_target",
                     (profile_sha256, operation.operation_id),
+                    address.dependencies,
                 ))
             elif address.kind == "operation_slot":
                 profile_sha256, view_id, offset, *_ = address.key
@@ -2203,23 +4876,44 @@ def _add_values(
     result: set[_Origin] = set()
     for lhs in left:
         for rhs in right:
-            if lhs.kind == "exact" and rhs.kind == "exact":
+            dependencies = tuple(sorted(
+                set(lhs.dependencies) | set(rhs.dependencies)
+            ))
+
+            def emit(origin: _Origin) -> None:
+                result.add(with_origin_dependencies(origin, dependencies))
+
+            lhs_concrete = origin_concrete_value(lhs)
+            rhs_concrete = origin_concrete_value(rhs)
+            if lhs_concrete is not None and rhs_concrete is not None:
                 value = (
-                    int(lhs.key[0]) - int(rhs.key[0])
+                    lhs_concrete - rhs_concrete
                     if subtract
-                    else int(lhs.key[0]) + int(rhs.key[0])
+                    else lhs_concrete + rhs_concrete
                 )
-                result.add(_Origin("exact", (value & 0xFFFFFFFF,)))
+                emit(_concrete_result_origin(value, lhs, rhs))
+            elif (
+                lhs.kind == "symbolic_affine"
+                or rhs.kind == "symbolic_affine"
+            ):
+                affine = _combine_affine_origins(
+                    lhs,
+                    rhs,
+                    subtract=subtract,
+                )
+                if affine is None:
+                    return None
+                emit(affine)
             elif not subtract and lhs.kind == "interface_vtable" and rhs.kind == "exact":
-                result.add(_Origin("interface_slot", (*lhs.key, int(rhs.key[0]))))
+                emit(_Origin("interface_slot", (*lhs.key, int(rhs.key[0]))))
             elif not subtract and lhs.kind == "exact" and rhs.kind == "interface_vtable":
-                result.add(_Origin("interface_slot", (*rhs.key, int(lhs.key[0]))))
+                emit(_Origin("interface_slot", (*rhs.key, int(lhs.key[0]))))
             elif not subtract and lhs.kind == "operation_table" and rhs.kind == "exact":
-                result.add(_Origin(
+                emit(_Origin(
                     "operation_slot", (lhs.key[0], lhs.key[1], int(rhs.key[0]), *lhs.key[2:])
                 ))
             elif not subtract and lhs.kind == "exact" and rhs.kind == "operation_table":
-                result.add(_Origin(
+                emit(_Origin(
                     "operation_slot", (rhs.key[0], rhs.key[1], int(lhs.key[0]), *rhs.key[2:])
                 ))
             elif not subtract and lhs.kind == "resource_view" and rhs.kind == "exact":
@@ -2227,7 +4921,7 @@ def _add_values(
                     str(lhs.key[0]), str(lhs.key[1])
                 ) != "direct_table":
                     return None
-                result.add(_Origin(
+                emit(_Origin(
                     "operation_slot",
                     (lhs.key[0], lhs.key[1], int(rhs.key[0]), *lhs.key[2:]),
                 ))
@@ -2236,14 +4930,14 @@ def _add_values(
                     str(rhs.key[0]), str(rhs.key[1])
                 ) != "direct_table":
                     return None
-                result.add(_Origin(
+                emit(_Origin(
                     "operation_slot",
                     (rhs.key[0], rhs.key[1], int(lhs.key[0]), *rhs.key[2:]),
                 ))
             elif lhs.kind == "stack_location" and rhs.kind == "exact":
                 offset = int(lhs.key[0])
                 delta = _signed_u32(int(rhs.key[0]))
-                result.add(_Origin(
+                emit(_Origin(
                     "stack_location",
                     (offset - delta if subtract else offset + delta,),
                 ))
@@ -2252,13 +4946,167 @@ def _add_values(
                 and lhs.kind == "exact"
                 and rhs.kind == "stack_location"
             ):
-                result.add(_Origin(
+                emit(_Origin(
                     "stack_location",
                     (int(rhs.key[0]) + _signed_u32(int(lhs.key[0])),),
+                ))
+            elif lhs.kind in {"dynamic_range", "dynamic_location"} and rhs.kind == "exact":
+                emit(_offset_dynamic_location(
+                    lhs,
+                    -_signed_u32(int(rhs.key[0]))
+                    if subtract
+                    else _signed_u32(int(rhs.key[0])),
+                ))
+            elif (
+                not subtract
+                and lhs.kind == "exact"
+                and rhs.kind in {"dynamic_range", "dynamic_location"}
+            ):
+                emit(_offset_dynamic_location(
+                    rhs, _signed_u32(int(lhs.key[0]))
                 ))
             else:
                 return None
     return frozenset(result) if result and len(result) <= budget else None
+
+
+def _multiply_values(left: _Value, right: _Value, *, budget: int) -> _Value:
+    if left is None or right is None or len(left) * len(right) > budget:
+        return None
+    result: set[_Origin] = set()
+    for lhs in left:
+        for rhs in right:
+            dependencies = tuple(sorted(
+                set(lhs.dependencies) | set(rhs.dependencies)
+            ))
+
+            def emit(origin: _Origin) -> None:
+                result.add(with_origin_dependencies(origin, dependencies))
+
+            lhs_concrete = origin_concrete_value(lhs)
+            rhs_concrete = origin_concrete_value(rhs)
+            if lhs_concrete is not None and rhs_concrete is not None:
+                emit(_concrete_result_origin(
+                    lhs_concrete * rhs_concrete,
+                    lhs,
+                    rhs,
+                ))
+                continue
+            if lhs.kind == "symbolic_affine" and rhs_concrete is not None:
+                emit(_scale_affine_origin(lhs, rhs_concrete))
+                continue
+            if rhs.kind == "symbolic_affine" and lhs_concrete is not None:
+                emit(_scale_affine_origin(rhs, lhs_concrete))
+                continue
+            return None
+    return frozenset(result) if result and len(result) <= budget else None
+
+
+def _symbolic_affine_value(symbol: str) -> _Value:
+    return frozenset({_Origin("symbolic_affine", (0, ((symbol, 1),)))})
+
+
+def _affine_parts(origin: _Origin) -> tuple[int, dict[str, int]] | None:
+    if origin.kind == "symbolic_affine" and len(origin.key) == 2:
+        constant, raw_terms = origin.key
+        if not isinstance(constant, int) or not isinstance(raw_terms, tuple):
+            return None
+        terms: dict[str, int] = {}
+        for raw in raw_terms:
+            if (
+                not isinstance(raw, tuple)
+                or len(raw) != 2
+                or not isinstance(raw[0], str)
+                or not isinstance(raw[1], int)
+            ):
+                return None
+            coefficient = int(raw[1]) & 0xFFFFFFFF
+            if coefficient:
+                terms[str(raw[0])] = coefficient
+        return int(constant) & 0xFFFFFFFF, terms
+    concrete = origin_concrete_value(origin)
+    if concrete is not None:
+        return concrete, {}
+    return None
+
+
+def _make_affine_origin(constant: int, terms: Mapping[str, int]) -> _Origin:
+    normalized = tuple(sorted(
+        (str(symbol), int(coefficient) & 0xFFFFFFFF)
+        for symbol, coefficient in terms.items()
+        if int(coefficient) & 0xFFFFFFFF
+    ))
+    constant &= 0xFFFFFFFF
+    if not normalized:
+        return _Origin("exact", (constant,))
+    return _Origin("symbolic_affine", (constant, normalized))
+
+
+def _combine_affine_origins(
+    left: _Origin,
+    right: _Origin,
+    *,
+    subtract: bool,
+) -> _Origin | None:
+    left_parts = _affine_parts(left)
+    right_parts = _affine_parts(right)
+    if left_parts is None or right_parts is None:
+        return None
+    left_constant, left_terms = left_parts
+    right_constant, right_terms = right_parts
+    sign = -1 if subtract else 1
+    terms = dict(left_terms)
+    for symbol, coefficient in right_terms.items():
+        terms[symbol] = (
+            terms.get(symbol, 0) + sign * coefficient
+        ) & 0xFFFFFFFF
+    return _make_affine_origin(
+        left_constant + sign * right_constant,
+        terms,
+    )
+
+
+def _scale_affine_origin(origin: _Origin, factor: int) -> _Origin:
+    parts = _affine_parts(origin)
+    if parts is None:
+        raise ValueError("affine scaling requires an affine origin")
+    constant, terms = parts
+    factor &= 0xFFFFFFFF
+    return _make_affine_origin(
+        constant * factor,
+        {symbol: coefficient * factor for symbol, coefficient in terms.items()},
+    )
+
+
+def _dynamic_memory_location(origin: _Origin) -> _Origin:
+    if origin.kind == "dynamic_location":
+        return _Origin(origin.kind, origin.key)
+    if origin.kind != "dynamic_range":
+        raise ValueError("dynamic memory location requires a dynamic origin")
+    return _Origin("dynamic_location", (*origin.key, 0))
+
+
+def _offset_dynamic_location(origin: _Origin, delta: int) -> _Origin:
+    location = _dynamic_memory_location(origin)
+    return _Origin(
+        "dynamic_location",
+        (*location.key[:-1], int(location.key[-1]) + delta),
+    )
+
+
+def _concrete_result_origin(value: int, *inputs: _Origin) -> _Origin:
+    sources = tuple(sorted({
+        int(address) & 0xFFFFFFFF
+        for origin in inputs
+        if origin.kind in {"static_code", "static_data"}
+        for address in origin.key[1]
+    }))
+    concrete = value & 0xFFFFFFFF
+    return (
+        _Origin("exact", (concrete,))
+        if not sources
+        else _Origin("static_data", (concrete, sources))
+    )
 
 
 def _method_origins(
@@ -2330,7 +5178,12 @@ def _event_state(
         if isinstance(raw, Mapping)
         else dict(state.registers)
     )
-    output = _State(registers, dict(state.memory), dict(state.stack))
+    output = _State(
+        registers,
+        dict(state.memory),
+        dict(state.stack),
+        state.memory_invalidated,
+    )
     ordered = _mapping(unit.get("semantics")).get("ordered_events")
     if not isinstance(ordered, list):
         return output
@@ -2368,10 +5221,7 @@ def _event_state(
         )
         if address.kind == "exact":
             concrete = int(address.key[0]) & 0xFFFFFFFF
-            if value is None:
-                output.memory.pop(concrete, None)
-            else:
-                output.memory[concrete] = value
+            output.memory[concrete] = value
         elif address.kind == "stack_location":
             offset = int(address.key[0])
             if value is None:
@@ -2383,6 +5233,11 @@ def _event_state(
                         unit_id, ordered_index, ordered_event, offset
                     ),),
                 )
+        elif address.kind in {"dynamic_range", "dynamic_location"}:
+            location = _dynamic_memory_location(address)
+            output.memory[location] = value
+        elif address.kind == "symbolic_affine":
+            output.memory[address] = value
     if len(output.stack) > stack_slot_budget:
         output.stack.clear()
         output.registers["esp"] = None
@@ -2429,6 +5284,190 @@ def _outgoing_edges(
     return result
 
 
+def _infer_internal_call_cleanups(
+    *,
+    by_id: Mapping[str, Mapping[str, Any]],
+    outgoing: Mapping[str, set[_Edge]],
+    internal_call_edges: Sequence[Mapping[str, Any]],
+    image_base: int,
+    unit_budget: int = 4096,
+) -> tuple[_InternalCleanupEvidence, ...]:
+    """Infer caller-visible cleanup from exact reachable ``ret`` forms.
+
+    The cleanup performed by an x86 callee is determined by the immediate on
+    each returning ``ret`` instruction.  Prologue stack motion and nested calls
+    do not affect that caller-visible fact.  This deliberately follows only
+    represented non-call continuations, requires every returning path to agree,
+    and refuses open or oversized bodies.
+    """
+
+    targets: dict[int, str] = {}
+    ambiguous: set[int] = set()
+    for raw in internal_call_edges:
+        target_id = raw.get("target_unit_id", raw.get("resolved_unit_id"))
+        if not isinstance(target_id, str) or target_id not in by_id:
+            continue
+        source = _mapping(_mapping(by_id[target_id].get("source")).get("original"))
+        target_rva = _integer(source.get("rva_start"))
+        if target_rva is None:
+            continue
+        address = (image_base + target_rva) & 0xFFFFFFFF
+        prior = targets.get(address)
+        if prior is not None and prior != target_id:
+            ambiguous.add(address)
+            continue
+        targets[address] = target_id
+
+    result: list[_InternalCleanupEvidence] = []
+    for address, target_id in sorted(targets.items()):
+        if address in ambiguous:
+            result.append(_InternalCleanupEvidence(
+                address,
+                target_id,
+                None,
+                (),
+                "incomplete",
+                "internal_call_target_unit_ambiguous",
+            ))
+            continue
+        result.append(_infer_target_cleanup(
+            target_address=address,
+            target_unit_id=target_id,
+            by_id=by_id,
+            outgoing=outgoing,
+            unit_budget=unit_budget,
+        ))
+    return tuple(result)
+
+
+def _infer_target_cleanup(
+    *,
+    target_address: int,
+    target_unit_id: str,
+    by_id: Mapping[str, Mapping[str, Any]],
+    outgoing: Mapping[str, set[_Edge]],
+    unit_budget: int,
+) -> _InternalCleanupEvidence:
+    work = deque([target_unit_id])
+    visited: set[str] = set()
+    returns: dict[str, int] = {}
+    while work:
+        unit_id = work.popleft()
+        if unit_id in visited:
+            continue
+        if len(visited) >= unit_budget:
+            return _InternalCleanupEvidence(
+                target_address,
+                target_unit_id,
+                None,
+                tuple(sorted(returns)),
+                "incomplete",
+                "internal_call_cleanup_unit_budget_exceeded",
+            )
+        unit = by_id.get(unit_id)
+        if unit is None:
+            return _InternalCleanupEvidence(
+                target_address,
+                target_unit_id,
+                None,
+                tuple(sorted(returns)),
+                "incomplete",
+                "internal_call_cleanup_unit_missing",
+            )
+        visited.add(unit_id)
+        outcome = _mapping(_mapping(unit.get("semantics")).get("outcome"))
+        if outcome.get("kind") == "return":
+            cleanup = _return_cleanup_bytes(unit)
+            if cleanup is None:
+                return _InternalCleanupEvidence(
+                    target_address,
+                    target_unit_id,
+                    None,
+                    tuple(sorted((*returns, unit_id))),
+                    "incomplete",
+                    "internal_call_return_form_unsupported",
+                )
+            returns[unit_id] = cleanup
+            continue
+
+        successors = sorted(
+            edge.target_id
+            for edge in outgoing.get(unit_id, ())
+            if edge.kind == "direct"
+        )
+        if successors:
+            work.extend(successors)
+            continue
+        if outcome.get("kind") in {
+            "fault",
+            "halt",
+            "nonreturning",
+            "termination",
+            "unreachable",
+        }:
+            continue
+        return _InternalCleanupEvidence(
+            target_address,
+            target_unit_id,
+            None,
+            tuple(sorted(returns)),
+            "incomplete",
+            "internal_call_return_frontier_open",
+        )
+
+    cleanup_values = set(returns.values())
+    if not returns:
+        return _InternalCleanupEvidence(
+            target_address,
+            target_unit_id,
+            None,
+            (),
+            "incomplete",
+            "internal_call_has_no_represented_return",
+        )
+    if len(cleanup_values) != 1:
+        return _InternalCleanupEvidence(
+            target_address,
+            target_unit_id,
+            None,
+            tuple(sorted(returns)),
+            "incomplete",
+            "internal_call_return_cleanup_ambiguous",
+        )
+    return _InternalCleanupEvidence(
+        target_address,
+        target_unit_id,
+        next(iter(cleanup_values)),
+        tuple(sorted(returns)),
+        "complete",
+    )
+
+
+def _return_cleanup_bytes(unit: Mapping[str, Any]) -> int | None:
+    instructions = unit.get("instructions")
+    if not isinstance(instructions, list) or not instructions:
+        return None
+    returns = [
+        _mapping(raw)
+        for raw in instructions
+        if str(_mapping(raw).get("mnemonic") or "").lower().startswith("ret")
+    ]
+    if len(returns) != 1:
+        return None
+    operands = returns[0].get("operands")
+    if not isinstance(operands, list):
+        return None
+    if not operands:
+        return 0
+    if len(operands) != 1:
+        return None
+    operand = _mapping(operands[0])
+    if operand.get("kind") not in {"immediate", None}:
+        return None
+    immediate = _integer(operand.get("value"))
+    return immediate if immediate is not None and 0 <= immediate <= 0xFFFF else None
+
+
 def _recovered_call_inventory(
     recoveries: Sequence[Mapping[str, Any]],
 ) -> dict[tuple[str, int], Mapping[str, Any]]:
@@ -2462,42 +5501,83 @@ def _join_state(
 ) -> bool:
     prior = states.get(target)
     if prior is None:
-        states[target] = copy.deepcopy(contribution)
+        # States are replaced, never mutated in place. Sharing the first
+        # contribution avoids copying every register, memory fact, version,
+        # and stack witness once per newly reached edge.
+        states[target] = contribution
         return True
-    registers = {
-        register: _join_value(
+    if prior is contribution:
+        return False
+    changed = False
+    registers: dict[str, _Value] = {}
+    for register in _REGISTERS:
+        joined = _join_value(
             prior.registers.get(register),
             contribution.registers.get(register),
             value_budget,
         )
-        for register in _REGISTERS
-    }
-    memory = {
-        address: joined
-        for address in prior.memory.keys() & contribution.memory.keys()
-        if (
-            joined := _join_value(
-                prior.memory[address], contribution.memory[address], value_budget
-            )
-        ) is not None
-    }
-    if len(memory) > slot_budget:
+        registers[register] = joined
+        changed = changed or joined != prior.registers.get(register)
+    if (
+        prior.memory is contribution.memory
+        or prior.memory == contribution.memory
+    ):
+        memory = prior.memory
+    else:
         memory = {}
-    stack = {
-        offset: joined
-        for offset in prior.stack.keys() & contribution.stack.keys()
-        if (
-            joined := _join_stack_cell(
+        # Join order cannot affect the lattice result. Canonical ordering
+        # belongs at artifact serialization, not in this hot path.
+        for address in prior.memory.keys() | contribution.memory.keys():
+            left_present = address in prior.memory
+            right_present = address in contribution.memory
+            left = prior.memory.get(address)
+            right = contribution.memory.get(address)
+            joined = (
+                _join_value(left, right, value_budget)
+                if left_present and right_present
+                else None
+            )
+            memory[address] = joined
+            changed = changed or not left_present or joined != left
+    memory_over_budget = len(memory) > slot_budget
+    if memory_over_budget:
+        memory = {}
+        changed = changed or bool(prior.memory)
+    if prior.stack is contribution.stack or prior.stack == contribution.stack:
+        stack = prior.stack
+    else:
+        stack = {}
+        for offset in prior.stack.keys() & contribution.stack.keys():
+            joined = _join_stack_cell(
                 prior.stack[offset], contribution.stack[offset], value_budget
             )
-        ) is not None
-    }
+            if joined is None:
+                continue
+            stack[offset] = joined
+            changed = changed or joined != prior.stack[offset]
+        changed = changed or len(stack) != len(prior.stack)
     if len(stack) > stack_slot_budget:
         stack = {}
         registers["esp"] = None
-    joined_state = _State(registers, memory, stack)
-    if joined_state == prior:
+        changed = (
+            changed
+            or bool(prior.stack)
+            or prior.registers.get("esp") is not None
+        )
+    memory_invalidated = (
+        prior.memory_invalidated
+        or contribution.memory_invalidated
+        or memory_over_budget
+    )
+    changed = changed or memory_invalidated != prior.memory_invalidated
+    if not changed:
         return False
+    joined_state = _State(
+        registers,
+        memory,
+        stack,
+        memory_invalidated,
+    )
     states[target] = joined_state
     return True
 
@@ -2509,6 +5589,8 @@ def _join_value(
     *,
     missing_is_identity: bool = False,
 ) -> _Value:
+    if left is right:
+        return left
     return join_finite_values(
         left,
         right,
@@ -2522,6 +5604,8 @@ def _join_stack_cell(
     right: _StackCell,
     budget: int,
 ) -> _StackCell | None:
+    if left is right or left == right:
+        return left
     value = _join_value(left.value, right.value, budget)
     if value is None:
         return None
@@ -2530,36 +5614,32 @@ def _join_stack_cell(
 
 
 def _merge_slot_facts(
-    left: Mapping[int, _Value],
-    right: Mapping[int, _Value],
+    left: Mapping[_MemoryLocation, _Value],
+    right: Mapping[_MemoryLocation, _Value],
     value_budget: int,
     slot_budget: int,
-) -> dict[int, _Value]:
+) -> dict[_MemoryLocation, _Value] | None:
     result = dict(left)
     for address, origins in right.items():
-        result[address] = _join_value(
-            result.get(address), origins, value_budget, missing_is_identity=True
+        result[address] = (
+            _join_value(result[address], origins, value_budget)
+            if address in result
+            else origins
         )
-    return result if len(result) <= slot_budget else {}
+    return result if len(result) <= slot_budget else None
 
 
 def _persistent_origin(origin: _Origin) -> bool:
-    return origin.kind in {
-        "exact",
-        "import",
-        "static_code",
-        "static_data",
-        "resource",
-        "resource_view",
-        "operation_table",
-        "operation_slot",
-        "operation_target",
-        "callback",
-        "interface_object",
-        "interface_vtable",
-        "interface_slot",
-        "interface_method",
-    }
+    return is_persistent_origin(origin)
+
+
+def _has_global_slot_authority_dependency(value: _Value) -> bool:
+    prefix = "hybrid-authority-v2:global_slot_invariant:"
+    return value is not None and any(
+        dependency.startswith(prefix)
+        for origin in value
+        for dependency in origin.dependencies
+    )
 
 
 def _refine_state_for_guard(state: _State, guard: Mapping[str, Any]) -> _State:
@@ -2572,16 +5652,20 @@ def _refine_state_for_guard(state: _State, guard: Mapping[str, Any]) -> _State:
         for name, origins in state.registers.items()
     }
     memory = {
-        address: refined
-        for address, origins in state.memory.items()
-        if (refined := _refine_guarded_value(origins, constraint)) is not None
+        address: _refine_guarded_value(value, constraint)
+        for address, value in state.memory.items()
     }
     stack = {
         offset: _StackCell(refined, cell.witnesses)
         for offset, cell in state.stack.items()
         if (refined := _refine_guarded_value(cell.value, constraint)) is not None
     }
-    return _State(registers, memory, stack)
+    return _State(
+        registers,
+        memory,
+        stack,
+        state.memory_invalidated,
+    )
 
 
 def _refine_guarded_value(
@@ -2608,9 +5692,11 @@ def _refine_guarded_value(
             elif relation is None:
                 result.add(origin)
             continue
-        if constrain_exact and origin.kind == "exact":
-            concrete = int(origin.key[0]) & 0xFFFFFFFF
-            if not _constraint_accepts(concrete, constraint):
+        if constrain_exact:
+            concrete = origin_concrete_value(origin)
+            if concrete is not None and not _constraint_accepts(
+                concrete, constraint
+            ):
                 continue
         result.add(origin)
     return frozenset(result) if result else None
@@ -2761,6 +5847,7 @@ def _invalidate_schedule_blockers(unit: Mapping[str, Any], state: _State) -> Non
         ):
             state.registers = {register: None for register in _REGISTERS}
             state.memory.clear()
+            state.memory_invalidated = True
             state.stack.clear()
             continue
         instruction = _mapping(instructions[index])
@@ -2779,11 +5866,17 @@ def _invalidate_schedule_blockers(unit: Mapping[str, Any], state: _State) -> Non
             for operand in operands
         ):
             state.memory.clear()
+            state.memory_invalidated = True
             state.stack.clear()
 
 
 def _unknown_state() -> _State:
-    return _State({register: None for register in _REGISTERS}, {}, {})
+    return _State(
+        {register: None for register in _REGISTERS},
+        {},
+        {},
+        memory_invalidated=True,
+    )
 
 
 def _events(unit: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -2802,6 +5895,74 @@ def _event_import_identity(event: Mapping[str, Any]) -> MachineImportIdentity | 
     if ordinal is not None:
         return MachineImportIdentity(dll.lower(), "ordinal", ordinal)
     return None
+
+
+def _selected_site_import_abi(
+    event: Mapping[str, Any],
+) -> SelectedImportABI | None:
+    if event.get("kind") != "external_call":
+        return None
+    identity = _event_import_identity(event)
+    contract = event.get("abi_contract")
+    if identity is None or not isinstance(contract, Mapping):
+        return None
+    abi = resolve_machine_call_abi(contract.get("template"))
+    argument_words = _integer(contract.get("argument_words"))
+    binding = contract.get("profile_binding")
+    if (
+        abi is None
+        or argument_words is None
+        or not 0 <= argument_words <= 64
+        or not isinstance(binding, Mapping)
+    ):
+        return None
+    profile_id = binding.get("profile_id", binding.get("id"))
+    profile_sha256 = binding.get("profile_sha256", binding.get("sha256"))
+    entry_key = binding.get("entry_key")
+    entry_index = _integer(binding.get("entry_index"))
+    if (
+        not isinstance(profile_id, str)
+        or not profile_id
+        or not isinstance(profile_sha256, str)
+        or len(profile_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in profile_sha256)
+        or not isinstance(entry_key, str)
+        or not entry_key
+        or entry_index is None
+        or entry_index < 0
+    ):
+        return None
+    return SelectedImportABI(
+        identity=identity,
+        abi=abi,
+        profile_id=profile_id,
+        profile_sha256=profile_sha256,
+        entry_key=entry_key,
+        entry_index=entry_index,
+        argument_words=argument_words,
+    )
+
+
+def _merge_import_abi_evidence(
+    selected: Mapping[MachineImportIdentity, SelectedImportABI],
+    observed: Mapping[MachineImportIdentity, SelectedImportABI],
+) -> dict[MachineImportIdentity, SelectedImportABI]:
+    result = dict(selected)
+    for identity, site in observed.items():
+        prior = result.get(identity)
+        if prior is None:
+            result[identity] = site
+            continue
+        if prior.abi != site.abi:
+            raise ValueError(f"import ABI evidence conflicts for {identity}")
+        if (
+            prior.argument_words is not None
+            and prior.argument_words != site.argument_words
+        ):
+            raise ValueError(f"import arity evidence conflicts for {identity}")
+        if prior.argument_words is None:
+            result[identity] = site
+    return result
 
 
 def _import_origin(identity: MachineImportIdentity) -> _Origin:
@@ -2847,6 +6008,27 @@ def _stack_write_witness(
     )
 
 
+def _read_memory_fact(
+    state: _State,
+    location: _MemoryLocation,
+    *,
+    known_slots: Mapping[_MemoryLocation, _Value],
+) -> _Value:
+    if location in state.memory:
+        return state.memory[location]
+    if state.memory_invalidated:
+        return None
+    return known_slots.get(location)
+
+
+def _memory_location_sort_key(location: _MemoryLocation) -> tuple[int, str]:
+    if isinstance(location, int):
+        return 0, f"{location & 0xFFFFFFFF:08x}"
+    return 1, json.dumps(
+        location.as_json(), sort_keys=True, separators=(",", ":")
+    )
+
+
 def _signed_u32(value: int) -> int:
     value &= 0xFFFFFFFF
     return value - 0x100000000 if value & 0x80000000 else value
@@ -2868,10 +6050,18 @@ def _binary_operands(expression: Mapping[str, Any]) -> tuple[Any, Any] | None:
 def _origins_json(origins: _Value) -> list[dict[str, Any]]:
     if origins is None:
         return []
-    return [
-        {"kind": origin.kind, "key": list(origin.key)}
-        for origin in sorted(origins)
-    ]
+    return [origin.as_json() for origin in sorted(origins)]
+
+
+def _call_frame_dependency_id(
+    source_unit_id: str, event_index: int, target_unit_id: str
+) -> str:
+    payload = json.dumps(
+        [source_unit_id, event_index, target_unit_id],
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return f"call-frame:{payload}"
 
 
 def _deduplicate(values: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

@@ -11,7 +11,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .artifact_formats import (
     NATIVE_ENGINE_PACKAGE_FORMAT,
@@ -23,7 +23,15 @@ from .callable_external_runtime import (
     CallableExternalRuntimeContract,
     load_callable_external_runtime_contract,
 )
+from .checked_external_site_contract import (
+    CheckedExternalSiteContract,
+    CheckedExternalSiteContractError,
+    ExternalSiteIdentity,
+    parse_checked_external_site_contract,
+    require_profile_match,
+)
 from .machine_import_profiles import (
+    MachineImportIdentity,
     MachineImportProfileError,
     load_machine_import_profile_set,
 )
@@ -48,10 +56,38 @@ _NATIVE_ENGINE_MANIFEST_FILENAME = "native-engine-package.json"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _STRICT_INPUT_MODE = "strict_exact_state_machine_v1"
 _MACHINE_IR_INPUT_MODE = "sanitized_machine_ir_v2"
+_CALLBACK_ADAPTER_RECEIPT_FORMAT = (
+    "stage-b-native-callback-adapter-receipt-v1"
+)
+_IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT = (
+    "stage-b-native-implementation-dispatch-receipt-v1"
+)
 
 
 class StageBNativeRuntimeError(StageAInputError):
     """A native-runtime package input failed closed validation."""
+
+
+@dataclass(frozen=True)
+class _InterpreterTransferBinding:
+    unit_id: str
+    rva: int
+
+
+@dataclass(frozen=True)
+class NativeImplementationDispatch:
+    unit_id: str
+    rva: int
+    implementation_class: str
+    replacement_id: str | None
+    cluster_id: str | None
+
+    @property
+    def class_code(self) -> int:
+        return {
+            "machine_ir_fallback": 0,
+            "selected_portable_component": 1,
+        }[self.implementation_class]
 
 
 @dataclass(frozen=True)
@@ -108,6 +144,7 @@ class NativeUndefinedPolicy:
 @dataclass(frozen=True)
 class NativeExternalRangeRule:
     instruction_rva: int
+    target_iat_rva: int | None
     action: str
     argument_base_offset: int
     argument_count: int
@@ -131,6 +168,7 @@ class NativeExternalRangeRule:
     def payload(self) -> dict[str, Any]:
         return {
             "instruction_rva": self.instruction_rva,
+            "target_iat_rva": self.target_iat_rva,
             "action": self.action,
             "argument_base_offset": self.argument_base_offset,
             "argument_count": self.argument_count,
@@ -159,11 +197,16 @@ class NativeRuntimePlan:
 
     entry_rva: int
     transfer_rvas: tuple[int, ...]
+    recovered_executable_data_ranges: tuple[tuple[int, int], ...]
     callback_abis: tuple[tuple[int, int], ...]
+    callback_adapter_receipts: tuple[dict[str, Any], ...]
+    implementation_dispatch_receipt: dict[str, Any]
+    implementation_dispatches: tuple[NativeImplementationDispatch, ...]
     callable_external_contract: CallableExternalRuntimeContract | None
     callable_external_contract_path: Path | None
     callable_external_contract_sha256: str | None
     external_range_rules: tuple[NativeExternalRangeRule, ...]
+    diagnostic_writer_iat_rvas: tuple[int, int, int] | None
     external_profile_path: Path | None
     external_profile_sha256: str | None
     external_profile_graph: tuple[tuple[Path, str, str], ...]
@@ -195,10 +238,20 @@ class NativeRuntimePlan:
         return {
             "entry_rva": self.entry_rva,
             "transfer_rvas": list(self.transfer_rvas),
+            "recovered_executable_data_ranges": [
+                {"rva_start": start, "rva_end": end}
+                for start, end in self.recovered_executable_data_ranges
+            ],
             "callback_abis": [
                 {"rva": rva, "stack_cleanup_bytes": cleanup}
                 for rva, cleanup in self.callback_abis
             ],
+            "callback_adapter_receipts": [
+                dict(receipt) for receipt in self.callback_adapter_receipts
+            ],
+            "implementation_dispatch_receipt": dict(
+                self.implementation_dispatch_receipt
+            ),
             "callable_external": (
                 None
                 if self.callable_external_contract is None
@@ -236,6 +289,17 @@ class NativeRuntimePlan:
                 ],
                 "rules": [rule.payload() for rule in self.external_range_rules],
             },
+            "diagnostic_writer": (
+                None
+                if self.diagnostic_writer_iat_rvas is None
+                else {
+                    "format": "stage-b-native-diagnostic-v4",
+                    "transport": "existing-kernel32-iat-binary-file-v1",
+                    "create_file_a_iat_rva": self.diagnostic_writer_iat_rvas[0],
+                    "write_file_iat_rva": self.diagnostic_writer_iat_rvas[1],
+                    "close_handle_iat_rva": self.diagnostic_writer_iat_rvas[2],
+                }
+            ),
             "definedness_use": {
                 "format": DEFINEDNESS_USE_FORMAT,
                 "metadata_sha256": self.definedness_metadata_sha256,
@@ -339,6 +403,7 @@ def plan_stage_b_native_runtime(
     program = _read_json_object(program_path, "interpreter program manifest")
     (
         transfer_rvas,
+        transfer_bindings,
         undefined_policies,
         definedness_metadata_sha256,
         interpreter_deferred,
@@ -375,6 +440,18 @@ def plan_stage_b_native_runtime(
         native_manifest_path.parent, plan_ref, "native-engine plan"
     )
     native_plan = _read_json_object(native_plan_path, "native-engine plan")
+    if native.get("callback_adapter_receipts") != native_plan.get(
+        "callback_adapter_receipts"
+    ):
+        raise StageBNativeRuntimeError(
+            "native-engine manifest and plan bind different callback adapter receipts"
+        )
+    if native.get("implementation_dispatch_receipt") != native_plan.get(
+        "implementation_dispatch_receipt"
+    ):
+        raise StageBNativeRuntimeError(
+            "native-engine manifest and plan bind different implementation dispatch receipts"
+        )
     native_deferred = _validate_deferred_transfer_inventory(
         native_plan,
         label="native-engine plan",
@@ -446,11 +523,19 @@ def plan_stage_b_native_runtime(
         raise StageBNativeRuntimeError(
             "native-engine x87 replay sites require the interpreter replay ABI"
         )
-    entry_rva, callback_abis = _validate_native_plan(
+    (
+        entry_rva,
+        callback_abis,
+        callback_adapter_receipts,
+        implementation_dispatch_receipt,
+        implementation_dispatches,
+        recovered_executable_data_ranges,
+    ) = _validate_native_plan(
         native_plan,
         state_machine_sha256=state_machine_sha256,
         input_mode=input_mode,
         transfer_rvas=transfer_rvas,
+        transfer_bindings=transfer_bindings,
     )
     has_modeled_termination = _validate_native_termination(
         native_plan.get("termination_import")
@@ -479,11 +564,16 @@ def plan_stage_b_native_runtime(
     external_range_rules = _external_range_rules(
         native_plan, external_profile_path
     )
+    diagnostic_writer_iat_rvas = _diagnostic_writer_iat_rvas(native_plan)
 
     return NativeRuntimePlan(
         entry_rva=entry_rva,
         transfer_rvas=transfer_rvas,
+        recovered_executable_data_ranges=recovered_executable_data_ranges,
         callback_abis=callback_abis,
+        callback_adapter_receipts=callback_adapter_receipts,
+        implementation_dispatch_receipt=implementation_dispatch_receipt,
+        implementation_dispatches=implementation_dispatches,
         callable_external_contract=callable_contract,
         callable_external_contract_path=callable_contract_path,
         callable_external_contract_sha256=(
@@ -492,6 +582,7 @@ def plan_stage_b_native_runtime(
             else sha256_file(callable_contract_path)
         ),
         external_range_rules=external_range_rules,
+        diagnostic_writer_iat_rvas=diagnostic_writer_iat_rvas,
         external_profile_path=external_profile_path,
         external_profile_sha256=(
             None
@@ -626,6 +717,7 @@ def write_stage_b_native_runtime_package(
         ) + profile_dependencies,
         "counts": {
             "transfers": len(plan.transfer_rvas),
+            "implementation_dispatches": len(plan.implementation_dispatches),
             "callable_external_routes": (
                 0
                 if plan.callable_external_contract is None
@@ -635,6 +727,10 @@ def write_stage_b_native_runtime_package(
         "policy": {
             "architecture": "i686-pe32",
             "freestanding": True,
+            "static_hybrid_closure_receipt_required": True,
+            "implementation_dispatch": (
+                "exact-linked-class-per-interpreter-transfer-v1"
+            ),
             "flat_memory": "exact-little-endian-widths-1-2-4",
             "read_domains": (
                 "checked-image-headers-and-sections; captured-stack; "
@@ -679,6 +775,7 @@ def _validate_program_manifest(
     payload: dict[str, Any], state_machine_sha256: str
 ) -> tuple[
     tuple[int, ...],
+    tuple[_InterpreterTransferBinding, ...],
     tuple[NativeUndefinedPolicy, ...],
     str | None,
     tuple[dict[str, Any], ...],
@@ -697,9 +794,12 @@ def _validate_program_manifest(
     )
     transfers = _required_list(payload.get("transfers"), "interpreter transfers")
     rvas: list[int] = []
+    bindings: list[_InterpreterTransferBinding] = []
     for index, raw in enumerate(transfers):
         transfer = _required_object(raw, f"interpreter transfer {index}")
-        _required_string(transfer.get("id"), f"interpreter transfer {index} id")
+        unit_id = _required_string(
+            transfer.get("id"), f"interpreter transfer {index} id"
+        )
         _required_sha256(
             transfer.get("contract_sha256"),
             f"interpreter transfer {index} contract SHA-256",
@@ -711,14 +811,18 @@ def _validate_program_manifest(
             source_digest,
             f"interpreter transfer {index} source-span SHA-256",
         )
-        rvas.append(
-            _required_u32(
-                transfer.get("rva_start"), f"interpreter transfer {index} RVA"
-            )
+        rva = _required_u32(
+            transfer.get("rva_start"), f"interpreter transfer {index} RVA"
         )
+        rvas.append(rva)
+        bindings.append(_InterpreterTransferBinding(unit_id=unit_id, rva=rva))
     if not rvas:
         raise StageBNativeRuntimeError("interpreter transfer table is empty")
-    if rvas != sorted(rvas) or len(set(rvas)) != len(rvas):
+    if (
+        rvas != sorted(rvas)
+        or len(set(rvas)) != len(rvas)
+        or len({binding.unit_id for binding in bindings}) != len(bindings)
+    ):
         raise StageBNativeRuntimeError(
             "interpreter transfer table must be strictly sorted and unique"
         )
@@ -760,7 +864,7 @@ def _validate_program_manifest(
         },
         required=has_undefined,
     )
-    return tuple(rvas), policies, metadata_sha256, deferred
+    return tuple(rvas), tuple(bindings), policies, metadata_sha256, deferred
 
 
 def _validate_deferred_transfer_inventory(
@@ -1261,13 +1365,629 @@ def _validate_definedness_use(
     return tuple(sorted(policies, key=lambda item: item.slot)), metadata_digest
 
 
+def _canonical_json_sha256(value: Any) -> str:
+    try:
+        encoded = json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("ascii")
+    except (TypeError, UnicodeEncodeError) as exc:
+        raise StageBNativeRuntimeError(
+            "native receipt is not canonical JSON"
+        ) from exc
+    return sha256_bytes(encoded)
+
+
+def _validate_implementation_dispatch_receipt(
+    payload: dict[str, Any],
+    *,
+    state_machine_sha256: str,
+    transfer_bindings: tuple[_InterpreterTransferBinding, ...],
+) -> tuple[dict[str, Any], tuple[NativeImplementationDispatch, ...]]:
+    """Validate exact dispatch coverage independently of engine generation."""
+
+    raw = _required_object(
+        payload.get("implementation_dispatch_receipt"),
+        "native-engine implementation dispatch receipt",
+    )
+    expected_fields = {
+        "format",
+        "status",
+        "semantic_input_sha256",
+        "machine_ir_manifest_sha256",
+        "reachability",
+        "policy",
+        "counts",
+        "entries",
+        "targets",
+        "blockers",
+        "receipt_sha256",
+    }
+    if (
+        set(raw) != expected_fields
+        or raw.get("format") != _IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT
+        or raw.get("semantic_input_sha256") != state_machine_sha256
+    ):
+        raise StageBNativeRuntimeError(
+            "native-engine implementation dispatch receipt is not canonically bound"
+        )
+    body = {
+        key: raw[key]
+        for key in expected_fields
+        if key not in {"format", "receipt_sha256"}
+    }
+    if (
+        _required_sha256(
+            raw.get("receipt_sha256"), "implementation dispatch receipt SHA-256"
+        )
+        != _canonical_json_sha256(body)
+    ):
+        raise StageBNativeRuntimeError(
+            "native-engine implementation dispatch receipt hash is invalid"
+        )
+    if _required_list(raw.get("blockers"), "implementation dispatch blockers"):
+        raise StageBNativeRuntimeError(
+            "ready native-engine plan has incomplete implementation dispatch"
+        )
+    policy = _required_object(
+        raw.get("policy"), "implementation dispatch policy"
+    )
+    if policy != {
+        "one_implementation_class_per_transfer": True,
+        "rooted_targets_require_implementation": True,
+        "portable_component_fallback_on_unimplemented": False,
+        "static_hybrid_closure_receipt_required_for_candidate": True,
+        "acceptance_authority": False,
+    }:
+        raise StageBNativeRuntimeError(
+            "native-engine implementation dispatch policy is unsupported"
+        )
+
+    reachability = _required_object(
+        raw.get("reachability"), "implementation dispatch reachability"
+    )
+    if set(reachability) != {"status", "roots", "reachable_unit_ids"}:
+        raise StageBNativeRuntimeError(
+            "implementation dispatch reachability fields are not canonical"
+        )
+    roots = _required_list(reachability.get("roots"), "implementation roots")
+    reachable = _required_list(
+        reachability.get("reachable_unit_ids"), "implementation reachable units"
+    )
+    if (
+        any(not isinstance(value, str) or not value for value in roots + reachable)
+        or roots != sorted(set(roots))
+        or reachable != sorted(set(reachable))
+        or not set(roots) <= set(reachable)
+    ):
+        raise StageBNativeRuntimeError(
+            "implementation dispatch rooted reachability is malformed"
+        )
+    reachability_status = reachability.get("status")
+    receipt_status = raw.get("status")
+    manifest_sha256 = raw.get("machine_ir_manifest_sha256")
+    if reachability_status == "complete":
+        if (
+            receipt_status != "complete"
+            or not roots
+            or not reachable
+            or _SHA256_RE.fullmatch(str(manifest_sha256 or "")) is None
+        ):
+            raise StageBNativeRuntimeError(
+                "complete implementation dispatch lacks rooted manifest evidence"
+            )
+    elif reachability_status == "not_bound":
+        if receipt_status != "unbound" or roots or reachable:
+            raise StageBNativeRuntimeError(
+                "unbound implementation dispatch claims rooted coverage"
+            )
+        if manifest_sha256 is not None:
+            _required_sha256(
+                manifest_sha256, "implementation dispatch manifest SHA-256"
+            )
+    else:
+        raise StageBNativeRuntimeError(
+            "ready native-engine implementation reachability is incomplete"
+        )
+
+    entries = _required_list(raw.get("entries"), "implementation dispatch entries")
+    entry_fields = {
+        "unit_id",
+        "rva",
+        "transfer_sha256",
+        "reachability",
+        "implementation_class",
+        "dispatch_lookup",
+        "replacement_id",
+        "cluster_id",
+        "component_manifest_sha256",
+        "fallback_on_unimplemented",
+        "entry_sha256",
+    }
+    if len(entries) != len(transfer_bindings):
+        raise StageBNativeRuntimeError(
+            "implementation dispatch omits or adds interpreter transfers"
+        )
+    dispatches: list[NativeImplementationDispatch] = []
+    entry_by_id: dict[str, NativeImplementationDispatch] = {}
+    for index, (raw_entry, binding) in enumerate(
+        zip(entries, transfer_bindings, strict=True)
+    ):
+        entry = _required_object(raw_entry, f"implementation dispatch entry {index}")
+        if set(entry) != entry_fields:
+            raise StageBNativeRuntimeError(
+                "implementation dispatch entry fields are not canonical"
+            )
+        entry_body = {
+            key: entry[key] for key in entry_fields if key != "entry_sha256"
+        }
+        if (
+            _required_sha256(
+                entry.get("entry_sha256"),
+                f"implementation dispatch entry {index} SHA-256",
+            )
+            != _canonical_json_sha256(entry_body)
+        ):
+            raise StageBNativeRuntimeError(
+                "implementation dispatch entry hash is invalid"
+            )
+        unit_id = _required_string(
+            entry.get("unit_id"), f"implementation dispatch entry {index} unit id"
+        )
+        rva = _required_u32(
+            entry.get("rva"), f"implementation dispatch entry {index} RVA"
+        )
+        _required_sha256(
+            entry.get("transfer_sha256"),
+            f"implementation dispatch entry {index} transfer SHA-256",
+        )
+        if unit_id != binding.unit_id or rva != binding.rva or unit_id in entry_by_id:
+            raise StageBNativeRuntimeError(
+                "implementation dispatch is duplicate, reordered, or mismatched"
+            )
+        reachability_class = entry.get("reachability")
+        expected_reachability = (
+            "root"
+            if unit_id in roots
+            else "reachable"
+            if unit_id in reachable
+            else "confirmed_unreachable"
+            if reachability_status == "complete"
+            else "unbound"
+        )
+        if reachability_class != expected_reachability:
+            raise StageBNativeRuntimeError(
+                "implementation dispatch reachability class is inconsistent"
+            )
+        implementation_class = entry.get("implementation_class")
+        replacement_id = entry.get("replacement_id")
+        cluster_id = entry.get("cluster_id")
+        component_sha256 = entry.get("component_manifest_sha256")
+        if entry.get("fallback_on_unimplemented") is not False:
+            raise StageBNativeRuntimeError(
+                "implementation dispatch permits a second fallback class"
+            )
+        if implementation_class == "machine_ir_fallback":
+            if (
+                entry.get("dispatch_lookup") != "stage_b_program_lookup"
+                or replacement_id is not None
+                or cluster_id is not None
+                or component_sha256 is not None
+            ):
+                raise StageBNativeRuntimeError(
+                    "machine-IR fallback dispatch carries portable metadata"
+                )
+        elif implementation_class == "selected_portable_component":
+            if entry.get("dispatch_lookup") != "stage_b_region_override_lookup":
+                raise StageBNativeRuntimeError(
+                    "portable component dispatch uses the wrong lookup"
+                )
+            replacement_id = _required_portable_identity(
+                replacement_id, "portable component replacement id"
+            )
+            cluster_id = _required_portable_identity(
+                cluster_id, "portable component cluster id"
+            )
+            _required_sha256(
+                component_sha256, "portable component manifest SHA-256"
+            )
+        else:
+            raise StageBNativeRuntimeError(
+                "implementation dispatch has an unsupported implementation class"
+            )
+        dispatch = NativeImplementationDispatch(
+            unit_id=unit_id,
+            rva=rva,
+            implementation_class=str(implementation_class),
+            replacement_id=replacement_id,
+            cluster_id=cluster_id,
+        )
+        entry_by_id[unit_id] = dispatch
+        dispatches.append(dispatch)
+
+    targets = _required_list(raw.get("targets"), "implementation dispatch targets")
+    target_fields = {
+        "kind",
+        "source_unit_id",
+        "source_rva",
+        "source_event_index",
+        "target_unit_id",
+        "target_rva",
+        "target_sha256",
+    }
+    seen_targets: set[tuple[str, str, int | None, str]] = set()
+    for index, raw_target in enumerate(targets):
+        target = _required_object(
+            raw_target, f"implementation dispatch target {index}"
+        )
+        if set(target) != target_fields:
+            raise StageBNativeRuntimeError(
+                "implementation dispatch target fields are not canonical"
+            )
+        target_body = {
+            key: target[key] for key in target_fields if key != "target_sha256"
+        }
+        if (
+            _required_sha256(
+                target.get("target_sha256"),
+                f"implementation dispatch target {index} SHA-256",
+            )
+            != _canonical_json_sha256(target_body)
+        ):
+            raise StageBNativeRuntimeError(
+                "implementation dispatch target hash is invalid"
+            )
+        kind = _required_string(
+            target.get("kind"), f"implementation dispatch target {index} kind"
+        )
+        if kind not in {
+            "direct_control",
+            "internal_call",
+            "call_continuation",
+            "indirect_internal",
+        }:
+            raise StageBNativeRuntimeError(
+                "implementation dispatch target kind is unsupported"
+            )
+        source_unit_id = _required_string(
+            target.get("source_unit_id"), "implementation target source unit"
+        )
+        target_unit_id = _required_string(
+            target.get("target_unit_id"), "implementation target unit"
+        )
+        event_index = target.get("source_event_index")
+        if event_index is not None:
+            event_index = _required_count(
+                event_index, "implementation target source event index"
+            )
+        source_dispatch = entry_by_id.get(source_unit_id)
+        target_dispatch = entry_by_id.get(target_unit_id)
+        key = (kind, source_unit_id, event_index, target_unit_id)
+        if (
+            reachability_status != "complete"
+            or source_dispatch is None
+            or target_dispatch is None
+            or source_unit_id not in reachable
+            or target_unit_id not in reachable
+            or _required_u32(
+                target.get("source_rva"), "implementation target source RVA"
+            )
+            != source_dispatch.rva
+            or _required_u32(
+                target.get("target_rva"), "implementation target RVA"
+            )
+            != target_dispatch.rva
+            or key in seen_targets
+        ):
+            raise StageBNativeRuntimeError(
+                "implementation target has no unique rooted executable dispatch"
+            )
+        seen_targets.add(key)
+    if reachability_status == "not_bound" and targets:
+        raise StageBNativeRuntimeError(
+            "unbound implementation dispatch contains rooted targets"
+        )
+
+    counts = _required_object(raw.get("counts"), "implementation dispatch counts")
+    expected_counts = {
+        "dispatch_entries": len(entries),
+        "rooted_reachable_units": len(reachable),
+        "rooted_targets": len(targets),
+        "machine_ir_fallback": sum(
+            dispatch.implementation_class == "machine_ir_fallback"
+            for dispatch in dispatches
+        ),
+        "selected_portable_component": sum(
+            dispatch.implementation_class == "selected_portable_component"
+            for dispatch in dispatches
+        ),
+        "blockers": 0,
+    }
+    if counts != expected_counts:
+        raise StageBNativeRuntimeError(
+            "implementation dispatch counts differ from their inventories"
+        )
+    return dict(raw), tuple(dispatches)
+
+
+def _validate_callback_adapter_receipts(
+    payload: dict[str, Any],
+    *,
+    callback_abis: list[Any],
+) -> tuple[dict[str, Any], ...]:
+    """Require an exact receipt for every generated registration adapter."""
+
+    callback_by_rva: dict[int, dict[str, Any]] = {}
+    for index, raw in enumerate(callback_abis):
+        callback = _required_object(raw, f"native-engine callback ABI {index}")
+        rva = _required_u32(callback.get("rva"), "callback ABI RVA")
+        if rva in callback_by_rva:
+            raise StageBNativeRuntimeError(
+                "native-engine callback ABI inventory contains duplicates"
+            )
+        callback_by_rva[rva] = callback
+
+    adapters = _required_list(
+        payload.get("callback_adapters"), "native-engine callback adapters"
+    )
+    normalized_adapters: list[dict[str, Any]] = []
+    adapter_by_site: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    adapter_keys: set[tuple[int, int, int, int]] = set()
+    expected_adapter_fields = {
+        "id",
+        "instruction_rva",
+        "argument_index",
+        "original_rva",
+        "callback_rva",
+        "symbol",
+        "matching",
+    }
+    for index, raw in enumerate(adapters):
+        adapter = _required_object(raw, f"native-engine callback adapter {index}")
+        if set(adapter) != expected_adapter_fields:
+            raise StageBNativeRuntimeError(
+                "native-engine callback adapter fields are not canonical"
+            )
+        adapter_id = _required_count(adapter.get("id"), "callback adapter id")
+        instruction_rva = _required_u32(
+            adapter.get("instruction_rva"), "callback adapter instruction RVA"
+        )
+        argument_index = _required_count(
+            adapter.get("argument_index"), "callback adapter argument index"
+        )
+        original_rva = _required_u32(
+            adapter.get("original_rva"), "callback adapter original RVA"
+        )
+        callback_rva = _required_u32(
+            adapter.get("callback_rva"), "callback adapter callback RVA"
+        )
+        key = (instruction_rva, argument_index, original_rva, callback_rva)
+        if (
+            adapter_id != index
+            or key in adapter_keys
+            or original_rva != callback_rva
+            or adapter.get("matching") != "runtime-image-base-plus-rva"
+            or adapter.get("symbol")
+            != f"stage_b_payload_callback_{callback_rva:08x}"
+            or callback_rva not in callback_by_rva
+        ):
+            raise StageBNativeRuntimeError(
+                "native-engine callback adapter is duplicate or mismatched"
+            )
+        adapter_keys.add(key)
+        normalized = dict(adapter)
+        normalized_adapters.append(normalized)
+        adapter_by_site.setdefault((instruction_rva, argument_index), []).append(
+            normalized
+        )
+
+    explicit_sites: dict[
+        tuple[int, str, int, int],
+        tuple[dict[str, Any], CheckedExternalSiteContract],
+    ] = {}
+    for site_index, raw in enumerate(
+        _required_list(payload.get("external_sites"), "native-engine external sites")
+    ):
+        site = _required_object(raw, f"native-engine external site {site_index}")
+        raw_contract = site.get("checked_external_contract")
+        if not isinstance(raw_contract, Mapping):
+            continue
+        try:
+            contract = parse_checked_external_site_contract(
+                raw_contract,
+                context=f"native-engine external site {site_index}",
+            )
+        except CheckedExternalSiteContractError as exc:
+            raise StageBNativeRuntimeError(str(exc)) from exc
+        if contract.callback_effect != "explicit":
+            continue
+        adapter_contract = contract.callback_adapter
+        if adapter_contract is None:
+            raise StageBNativeRuntimeError(
+                "explicit callback contract has no normalized adapter"
+            )
+        site_id = _required_count(site.get("id"), "external site id")
+        transfer_id = _required_string(
+            site.get("transfer_id"), "external site transfer id"
+        )
+        event_index = _required_count(
+            site.get("event_index"), "external site event index"
+        )
+        instruction_rva = _required_u32(
+            site.get("instruction_rva"), "external site instruction RVA"
+        )
+        key = (site_id, transfer_id, event_index, instruction_rva)
+        if key in explicit_sites:
+            raise StageBNativeRuntimeError(
+                "native-engine explicit callback sites are duplicated"
+            )
+        explicit_sites[key] = (site, contract)
+
+    receipts = _required_list(
+        payload.get("callback_adapter_receipts"),
+        "native-engine callback adapter receipts",
+    )
+    expected_receipt_fields = {
+        "format",
+        "site_id",
+        "transfer_id",
+        "event_index",
+        "instruction_rva",
+        "checked_external_contract_sha256",
+        "source",
+        "abi",
+        "lifetime",
+        "invocation",
+        "target_rvas",
+        "adapter_entries",
+        "receipt_sha256",
+    }
+    seen_sites: set[tuple[int, str, int, int]] = set()
+    consumed_adapter_ids: set[int] = set()
+    normalized_receipts: list[dict[str, Any]] = []
+    for index, raw in enumerate(receipts):
+        receipt = _required_object(
+            raw, f"native-engine callback adapter receipt {index}"
+        )
+        if (
+            set(receipt) != expected_receipt_fields
+            or receipt.get("format") != _CALLBACK_ADAPTER_RECEIPT_FORMAT
+        ):
+            raise StageBNativeRuntimeError(
+                "native-engine callback adapter receipt fields are not canonical"
+            )
+        site_key = (
+            _required_count(receipt.get("site_id"), "callback receipt site id"),
+            _required_string(
+                receipt.get("transfer_id"), "callback receipt transfer id"
+            ),
+            _required_count(
+                receipt.get("event_index"), "callback receipt event index"
+            ),
+            _required_u32(
+                receipt.get("instruction_rva"),
+                "callback receipt instruction RVA",
+            ),
+        )
+        site_binding = explicit_sites.get(site_key)
+        if site_binding is None or site_key in seen_sites:
+            raise StageBNativeRuntimeError(
+                "native-engine callback adapter receipt has no unique checked site"
+            )
+        seen_sites.add(site_key)
+        site, contract = site_binding
+        adapter_contract = contract.callback_adapter
+        assert adapter_contract is not None
+        body = {
+            key: receipt[key]
+            for key in expected_receipt_fields
+            if key not in {"format", "receipt_sha256"}
+        }
+        if (
+            _required_sha256(
+                receipt.get("receipt_sha256"), "callback receipt SHA-256"
+            ) != _canonical_json_sha256(body)
+            or receipt.get("checked_external_contract_sha256")
+            != _canonical_json_sha256(contract.payload())
+            or receipt.get("source") != adapter_contract.source
+            or receipt.get("abi") != adapter_contract.abi
+            or receipt.get("lifetime") != adapter_contract.lifetime
+            or receipt.get("invocation") != adapter_contract.invocation
+            or receipt.get("target_rvas") != list(adapter_contract.target_rvas)
+        ):
+            raise StageBNativeRuntimeError(
+                "native-engine callback adapter receipt differs from its checked contract"
+            )
+        source = adapter_contract.source
+        abi = adapter_contract.abi
+        if not isinstance(source, Mapping) or not isinstance(abi, Mapping):
+            raise StageBNativeRuntimeError(
+                "native-engine callback receipt source or ABI is malformed"
+            )
+        source_kind = source.get("kind")
+        argument_index = _required_count(
+            source.get("argument"), "callback receipt source argument"
+        )
+        pointee_offset = (
+            _required_count(source.get("offset"), "callback receipt pointee offset")
+            if source_kind == "argument_pointee"
+            else 0
+        )
+        registration = _required_object(
+            site.get("callback_registration"),
+            "native-engine callback registration",
+        )
+        nullable = abi.get("nullable")
+        if (
+            source_kind not in {"argument_word", "argument_pointee"}
+            or not isinstance(nullable, bool)
+            or registration
+            != {
+                "source_kind": source_kind,
+                "argument_index": argument_index,
+                "stack_offset": contract.argument_base_offset
+                + argument_index * 4,
+                "pointee_offset": pointee_offset,
+                "nullable": nullable,
+            }
+        ):
+            raise StageBNativeRuntimeError(
+                "native-engine callback registration differs from its receipt"
+            )
+        expected_entries = adapter_by_site.get(
+            (site_key[3], argument_index), []
+        )
+        raw_entries = _required_list(
+            receipt.get("adapter_entries"), "callback receipt adapter entries"
+        )
+        if raw_entries != expected_entries or [
+            entry.get("callback_rva") for entry in expected_entries
+        ] != list(adapter_contract.target_rvas):
+            raise StageBNativeRuntimeError(
+                "native-engine callback receipt adapter inventory is incomplete or extra"
+            )
+        expected_kind = abi.get("kind")
+        expected_cleanup = abi.get("stack_cleanup_bytes")
+        for entry in expected_entries:
+            callback = callback_by_rva[int(entry["callback_rva"])]
+            if (
+                callback.get("kind") != expected_kind
+                or callback.get("stack_cleanup_bytes") != expected_cleanup
+            ):
+                raise StageBNativeRuntimeError(
+                    "native-engine callback receipt ABI differs from its target"
+                )
+            adapter_id = int(entry["id"])
+            if adapter_id in consumed_adapter_ids:
+                raise StageBNativeRuntimeError(
+                    "native-engine callback adapter is covered by multiple receipts"
+                )
+            consumed_adapter_ids.add(adapter_id)
+        normalized_receipts.append(dict(receipt))
+
+    if seen_sites != set(explicit_sites) or consumed_adapter_ids != {
+        int(adapter["id"]) for adapter in normalized_adapters
+    }:
+        raise StageBNativeRuntimeError(
+            "native-engine callback adapter receipt coverage is incomplete"
+        )
+    return tuple(normalized_receipts)
+
+
 def _validate_native_plan(
     payload: dict[str, Any],
     *,
     state_machine_sha256: str,
     input_mode: str,
     transfer_rvas: tuple[int, ...],
-) -> tuple[int, tuple[tuple[int, int], ...]]:
+    transfer_bindings: tuple[_InterpreterTransferBinding, ...],
+) -> tuple[
+    int,
+    tuple[tuple[int, int], ...],
+    tuple[dict[str, Any], ...],
+    dict[str, Any],
+    tuple[NativeImplementationDispatch, ...],
+    tuple[tuple[int, int], ...],
+]:
     if payload.get("format") != NATIVE_ENGINE_PLAN_FORMAT:
         raise StageBNativeRuntimeError("native-engine plan has an unsupported format")
     if payload.get("status") != "ready":
@@ -1282,6 +2002,13 @@ def _validate_native_plan(
         )
     if _required_list(payload.get("blockers"), "native-engine blockers"):
         raise StageBNativeRuntimeError("ready native-engine plan contains blockers")
+    implementation_dispatch_receipt, implementation_dispatches = (
+        _validate_implementation_dispatch_receipt(
+            payload,
+            state_machine_sha256=state_machine_sha256,
+            transfer_bindings=transfer_bindings,
+        )
+    )
     callback_targets = tuple(
         _required_u32(value, "native-engine callback RVA")
         for value in _required_list(
@@ -1295,6 +2022,51 @@ def _validate_native_plan(
     if any(target not in transfer_rvas for target in callback_targets):
         raise StageBNativeRuntimeError(
             "native-engine callback lacks a checked interpreter transfer"
+        )
+    recovered_data = _required_object(
+        payload.get("recovered_executable_data"),
+        "native-engine recovered executable data",
+    )
+    if recovered_data.get("dispatch_policy") != "fail_closed_as_noncode":
+        raise StageBNativeRuntimeError(
+            "native-engine recovered executable data is not fail-closed"
+        )
+    recovered_ranges: list[tuple[int, int]] = []
+    for index, raw in enumerate(
+        _required_list(
+            recovered_data.get("ranges"),
+            "native-engine recovered executable-data ranges",
+        )
+    ):
+        row = _required_object(raw, f"recovered executable-data range {index}")
+        _required_string(row.get("id"), f"recovered executable-data range {index} id")
+        _required_sha256(
+            row.get("bytes_sha256"),
+            f"recovered executable-data range {index} SHA-256",
+        )
+        start = _required_u32(
+            row.get("rva_start"), f"recovered executable-data range {index} start"
+        )
+        end = _required_u32(
+            row.get("rva_end"), f"recovered executable-data range {index} end"
+        )
+        if end <= start:
+            raise StageBNativeRuntimeError(
+                "native-engine recovered executable-data range is empty"
+            )
+        if recovered_ranges and start < recovered_ranges[-1][1]:
+            raise StageBNativeRuntimeError(
+                "native-engine recovered executable-data ranges overlap or are unsorted"
+            )
+        recovered_ranges.append((start, end))
+    entry_rva = _required_u32(payload.get("entry_rva"), "native-engine entry RVA")
+    if any(
+        start <= target < end
+        for target in (entry_rva, *callback_targets)
+        for start, end in recovered_ranges
+    ):
+        raise StageBNativeRuntimeError(
+            "native entry or callback target overlaps recovered executable data"
         )
     callback_abis = _required_list(
         payload.get("callback_abis"), "native-engine callback ABIs"
@@ -1333,6 +2105,9 @@ def _validate_native_plan(
             raise StageBNativeRuntimeError(
                 "native-engine callback ABI kind is unsupported"
             )
+    callback_adapter_receipts = _validate_callback_adapter_receipts(
+        payload, callback_abis=callback_abis
+    )
     passthroughs = _required_list(
         payload.get("callback_passthroughs"),
         "native-engine callback passthroughs",
@@ -1367,7 +2142,6 @@ def _validate_native_plan(
                 "native-engine callback passthrough is malformed or duplicate"
             )
         seen_passthroughs.add(key)
-    entry_rva = _required_u32(payload.get("entry_rva"), "native-engine entry RVA")
     if entry_rva not in transfer_rvas:
         raise StageBNativeRuntimeError(
             "native-engine entry RVA is absent from the interpreter transfer table"
@@ -1378,6 +2152,22 @@ def _validate_native_plan(
     ):
         raise StageBNativeRuntimeError(
             "native-engine and interpreter transfer counts differ"
+        )
+    if _required_count(
+        counts.get("callback_adapters"),
+        "native-engine callback adapter count",
+    ) != len(_required_list(
+        payload.get("callback_adapters"), "native-engine callback adapters"
+    )):
+        raise StageBNativeRuntimeError(
+            "native-engine callback adapter count differs from its inventory"
+        )
+    if _required_count(
+        counts.get("callback_adapter_receipts"),
+        "native-engine callback adapter receipt count",
+    ) != len(callback_adapter_receipts):
+        raise StageBNativeRuntimeError(
+            "native-engine callback adapter receipt count differs from its inventory"
         )
     if _required_count(
         counts.get("callback_passthroughs"),
@@ -1400,7 +2190,9 @@ def _validate_native_plan(
             ),
         )
         for index, raw in enumerate(callback_abis)
-    )
+    ), callback_adapter_receipts, implementation_dispatch_receipt, (
+        implementation_dispatches
+    ), tuple(recovered_ranges)
 
 
 def _validate_native_termination(value: Any) -> bool:
@@ -1430,25 +2222,11 @@ def _validate_native_termination(value: Any) -> bool:
     return True
 
 
-def _external_range_rules(
-    native_plan: dict[str, Any], profile_path: Path | None
-) -> tuple[NativeExternalRangeRule, ...]:
-    if profile_path is None:
-        return ()
-    try:
-        profile_set = load_machine_import_profile_set([profile_path])
-    except MachineImportProfileError as exc:
-        raise StageBNativeRuntimeError(str(exc)) from exc
-    contracts: dict[tuple[str, str, str | int], dict[str, Any]] = {}
-    for selected in profile_set.contracts:
-        identity = (
-            selected.identity.dll,
-            selected.identity.kind,
-            selected.identity.value,
-        )
-        contracts[identity] = dict(selected.contract)
-
-    rules: list[NativeExternalRangeRule] = []
+def _diagnostic_writer_iat_rvas(
+    native_plan: dict[str, Any],
+) -> tuple[int, int, int] | None:
+    required = ("CreateFileA", "WriteFile", "CloseHandle")
+    found: dict[str, int] = {}
     for site_index, raw_site in enumerate(
         _required_list(native_plan.get("external_sites"), "native-engine external sites")
     ):
@@ -1456,21 +2234,235 @@ def _external_range_rules(
         imported = site.get("import")
         if not isinstance(imported, dict):
             continue
-        dll = _required_string(imported.get("dll"), "external site DLL").lower()
+        if str(imported.get("dll", "")).lower() != "kernel32.dll":
+            continue
         symbol = imported.get("symbol")
-        ordinal = imported.get("ordinal")
+        if symbol not in required:
+            continue
+        iat_va = _required_u32(site.get("iat_va"), f"{symbol} IAT VA")
+        previous = found.setdefault(symbol, iat_va)
+        if previous != iat_va:
+            raise StageBNativeRuntimeError(
+                f"native-engine external sites disagree on the {symbol} IAT VA"
+            )
+    if any(symbol not in found for symbol in required):
+        return None
+    image_policy = _required_object(
+        native_plan.get("image_base_policy"), "native-engine image-base policy"
+    )
+    if image_policy.get("kind") != "fixed":
+        return None
+    image_base = _required_u32(
+        image_policy.get("image_base"), "native-engine fixed image base"
+    )
+    if any(found[symbol] < image_base for symbol in required):
+        raise StageBNativeRuntimeError(
+            "diagnostic writer IAT VA precedes the fixed image base"
+        )
+    return (
+        found["CreateFileA"] - image_base,
+        found["WriteFile"] - image_base,
+        found["CloseHandle"] - image_base,
+    )
+
+
+def _external_range_rules(
+    native_plan: dict[str, Any], profile_path: Path | None
+) -> tuple[NativeExternalRangeRule, ...]:
+    if profile_path is None:
+        profile_set = None
+        selected_contracts = {}
+    else:
+        try:
+            profile_set = load_machine_import_profile_set([profile_path])
+        except MachineImportProfileError as exc:
+            raise StageBNativeRuntimeError(str(exc)) from exc
+        selected_contracts = profile_set.by_identity()
+
+    bindings: dict[tuple[str, str, str | int], dict[str, Any]] = {}
+    for binding_index, raw_binding in enumerate(
+        _required_list(native_plan.get("import_bindings", []), "native-engine import bindings")
+    ):
+        binding = _required_object(
+            raw_binding, f"native-engine import binding {binding_index}"
+        )
+        dll = _required_string(binding.get("dll"), "import binding DLL").lower()
+        symbol = binding.get("symbol")
+        ordinal = binding.get("ordinal")
         identity = (
             dll,
             "symbol" if isinstance(symbol, str) else "ordinal",
             symbol if isinstance(symbol, str) else ordinal,
         )
-        contract = contracts.get(identity)
-        if contract is None:
+        _required_u32(binding.get("iat_va"), "import binding IAT VA")
+        iat_rva = _required_u32(binding.get("iat_rva"), "import binding IAT RVA")
+        if iat_rva == 0 or identity in bindings:
+            raise StageBNativeRuntimeError(
+                "native-engine import bindings are duplicate or use RVA zero"
+            )
+        bindings[identity] = dict(binding)
+
+    expanded_sites: list[
+        tuple[dict[str, Any], int | None, dict[str, Any], int, str]
+    ] = []
+    for site_index, raw_site in enumerate(
+        _required_list(native_plan.get("external_sites"), "native-engine external sites")
+    ):
+        site = _required_object(raw_site, f"native-engine external site {site_index}")
+        is_external = (
+            isinstance(site.get("import"), Mapping)
+            or isinstance(site.get("external_protocol"), Mapping)
+        )
+        if not is_external:
+            # Internal indirect calls and separately hash-bound callable routes do
+            # not acquire anonymous import effects from the available profiles.
             continue
+        raw_contract = site.get("checked_external_contract")
+        if not isinstance(raw_contract, Mapping):
+            required = site.get("checked_external_contract_required", False)
+            if not isinstance(required, bool):
+                raise StageBNativeRuntimeError(
+                    f"native-engine external site {site_index} has invalid contract policy"
+                )
+            if required or isinstance(site.get("external_protocol"), Mapping):
+                raise StageBNativeRuntimeError(
+                    f"native-engine external site {site_index} has no checked external contract"
+                )
+            imported = site.get("import")
+            if not isinstance(imported, Mapping) or profile_set is None:
+                continue
+            try:
+                outer_identity = ExternalSiteIdentity.imported(
+                    imported,
+                    context=f"native-engine external site {site_index}",
+                )
+            except CheckedExternalSiteContractError as exc:
+                raise StageBNativeRuntimeError(str(exc)) from exc
+            profile_identity = MachineImportIdentity(
+                dll=str(outer_identity.dll),
+                kind="symbol" if outer_identity.symbol is not None else "ordinal",
+                value=(
+                    str(outer_identity.symbol)
+                    if outer_identity.symbol is not None
+                    else int(outer_identity.ordinal)
+                ),
+            )
+            selected = selected_contracts.get(profile_identity)
+            if selected is None:
+                raise StageBNativeRuntimeError(
+                    f"legacy external site {site_index} has no selected exact profile"
+                )
+            binding_identity = (
+                profile_identity.dll,
+                profile_identity.kind,
+                profile_identity.value,
+            )
+            binding = bindings.get(binding_identity)
+            if binding is None and site.get("site_kind") == "dynamic_target":
+                raise StageBNativeRuntimeError(
+                    f"legacy external site {site_index} has no exact import binding"
+                )
+            target_iat_rva = (
+                _required_u32(binding.get("iat_rva"), "import binding IAT RVA")
+                if site.get("site_kind") == "dynamic_target" and binding is not None
+                else None
+            )
+            disposition = site.get("disposition")
+            if disposition not in {"returns_here", "tail_jump"}:
+                raise StageBNativeRuntimeError(
+                    f"legacy external site {site_index} has invalid disposition"
+                )
+            expanded_sites.append((
+                dict(site),
+                target_iat_rva,
+                dict(selected.contract),
+                4 if disposition == "tail_jump" else 0,
+                str(selected.contract.get("id")),
+            ))
+            continue
+        try:
+            checked = parse_checked_external_site_contract(
+                raw_contract,
+                context=f"native-engine external site {site_index}",
+            )
+        except CheckedExternalSiteContractError as exc:
+            raise StageBNativeRuntimeError(str(exc)) from exc
+
+        imported_site = site.get("import")
+        if isinstance(imported_site, Mapping):
+            try:
+                outer_identity = ExternalSiteIdentity.imported(
+                    imported_site,
+                    context=f"native-engine external site {site_index}",
+                )
+            except CheckedExternalSiteContractError as exc:
+                raise StageBNativeRuntimeError(str(exc)) from exc
+            if checked.identity != outer_identity:
+                raise StageBNativeRuntimeError(
+                    f"native-engine external site {site_index} identity differs from its checked contract"
+                )
+
+        target_iat_rva: int | None = None
+        if checked.identity.kind == "import":
+            profile_identity = MachineImportIdentity(
+                dll=str(checked.identity.dll),
+                kind="symbol" if checked.identity.symbol is not None else "ordinal",
+                value=(
+                    str(checked.identity.symbol)
+                    if checked.identity.symbol is not None
+                    else int(checked.identity.ordinal)
+                ),
+            )
+            selected = selected_contracts.get(profile_identity)
+            if selected is None:
+                raise StageBNativeRuntimeError(
+                    f"native-engine external site {site_index} has no selected exact profile"
+                )
+            try:
+                require_profile_match(
+                    checked,
+                    profile_contract=selected.contract,
+                    profile_id=selected.profile_id,
+                    profile_sha256=selected.profile_sha256,
+                    entry_key=selected.entry_key,
+                    entry_index=selected.entry_index,
+                    context=f"native-engine external site {site_index}",
+                )
+            except CheckedExternalSiteContractError as exc:
+                raise StageBNativeRuntimeError(str(exc)) from exc
+            binding_identity = (
+                profile_identity.dll,
+                profile_identity.kind,
+                profile_identity.value,
+            )
+            binding = bindings.get(binding_identity)
+            if binding is None and site.get("site_kind") == "dynamic_target":
+                raise StageBNativeRuntimeError(
+                    f"native-engine external site {site_index} has no exact import binding"
+                )
+            if site.get("site_kind") == "dynamic_target" and binding is not None:
+                target_iat_rva = _required_u32(
+                    binding.get("iat_rva"), "import binding IAT RVA"
+                )
+        expanded_sites.append((
+            dict(site),
+            target_iat_rva,
+            checked.profile_effect_payload(),
+            checked.argument_base_offset,
+            checked.contract_id,
+        ))
+
+    rules: list[NativeExternalRangeRule] = []
+    for (
+        site,
+        target_iat_rva,
+        contract,
+        argument_base_offset,
+        contract_id,
+    ) in expanded_sites:
         instruction_rva = _required_u32(
             site.get("instruction_rva"), "external site instruction RVA"
         )
-        contract_id = str(contract.get("id", identity))
         argument_count = _required_count(
             contract.get("argument_words"),
             f"machine-call contract {contract_id} argument count",
@@ -1484,7 +2476,6 @@ def _external_range_rules(
             raise StageBNativeRuntimeError(
                 f"external site {instruction_rva:#x} has an unsupported disposition"
             )
-        argument_base_offset = 4 if disposition == "tail_jump" else 0
         relations = contract.get("result_register_relations", [])
         if not isinstance(relations, list):
             raise StageBNativeRuntimeError(
@@ -1572,6 +2563,7 @@ def _external_range_rules(
             rules.append(
                 NativeExternalRangeRule(
                     instruction_rva=instruction_rva,
+                    target_iat_rva=target_iat_rva,
                     action="add_result_range",
                     argument_base_offset=argument_base_offset,
                     argument_count=argument_count,
@@ -1658,6 +2650,7 @@ def _external_range_rules(
                 rules.append(
                     NativeExternalRangeRule(
                         instruction_rva=instruction_rva,
+                        target_iat_rva=target_iat_rva,
                         action="add_result_pointee_ranges",
                         argument_base_offset=argument_base_offset,
                         argument_count=argument_count,
@@ -1745,6 +2738,7 @@ def _external_range_rules(
             rules.append(
                 NativeExternalRangeRule(
                     instruction_rva=instruction_rva,
+                    target_iat_rva=target_iat_rva,
                     action="add_argument_pointee_ranges",
                     argument_base_offset=argument_base_offset,
                     argument_count=argument_count,
@@ -1766,6 +2760,70 @@ def _external_range_rules(
                     contract_id=contract_id,
                 )
             )
+        out_interface_relations = contract.get("out_interface_relations", [])
+        if not isinstance(out_interface_relations, list):
+            raise StageBNativeRuntimeError(
+                f"machine-call contract {contract_id} has invalid out-interface relations"
+            )
+        for out_index, raw_out in enumerate(out_interface_relations):
+            out_relation = _required_object(
+                raw_out,
+                f"machine-call contract {contract_id} out interface {out_index}",
+            )
+            argument = _required_count(
+                out_relation.get("argument_index"), "out-interface argument"
+            )
+            if argument >= argument_count:
+                raise StageBNativeRuntimeError(
+                    f"machine-call contract {contract_id} out-interface argument is out of bounds"
+                )
+            pointee_offset = _required_count(
+                out_relation.get("offset", 0), "out-interface offset"
+            )
+            object_size = _required_count(
+                out_relation.get("object_size"), "out-interface object size"
+            )
+            vtable_size = _required_count(
+                out_relation.get("vtable_size"), "out-interface vtable size"
+            )
+            nullable = out_relation.get("nullable")
+            if (
+                out_relation.get("write_width") != 4
+                or object_size < 4
+                or vtable_size < 4
+                or vtable_size % 4 != 0
+                or not isinstance(nullable, bool)
+                or out_relation.get("success_condition")
+                != "hresult_succeeded_eax"
+            ):
+                raise StageBNativeRuntimeError(
+                    f"machine-call contract {contract_id} has an invalid out-interface shape"
+                )
+            rules.append(
+                NativeExternalRangeRule(
+                    instruction_rva=instruction_rva,
+                    target_iat_rva=target_iat_rva,
+                    action="add_argument_interface_ranges",
+                    argument_base_offset=argument_base_offset,
+                    argument_count=argument_count,
+                    register=None,
+                    argument=argument,
+                    size_kind="fixed",
+                    size_value=vtable_size,
+                    size_argument=None,
+                    size_right_argument=None,
+                    minimum_size=object_size,
+                    nullable=nullable,
+                    termination_unit_bytes=0,
+                    termination_zero_units=0,
+                    termination_max_units=0,
+                    pointee_offset=pointee_offset,
+                    max_elements=0,
+                    element_unit_bytes=0,
+                    element_max_units=0,
+                    contract_id=contract_id,
+                )
+            )
         if contract.get("world_effect") == "dynamicRangeRelease":
             argument = _required_count(
                 contract.get("world_effect_argument"),
@@ -1778,6 +2836,7 @@ def _external_range_rules(
             rules.append(
                 NativeExternalRangeRule(
                     instruction_rva=instruction_rva,
+                    target_iat_rva=target_iat_rva,
                     action="release_argument_range",
                     argument_base_offset=argument_base_offset,
                     argument_count=argument_count,
@@ -1804,11 +2863,13 @@ def _external_range_rules(
             rules,
             key=lambda item: (
                 item.instruction_rva,
+                item.target_iat_rva or 0,
                 {
                     "add_result_range": 0,
                     "add_result_pointee_ranges": 1,
                     "add_argument_pointee_ranges": 2,
-                    "release_argument_range": 3,
+                    "add_argument_interface_ranges": 3,
+                    "release_argument_range": 4,
                 }[item.action],
                 item.contract_id,
             ),
@@ -1853,6 +2914,11 @@ stage_b_call_status stage_b_native_runtime_run_captured(
     const stage_b_machine_state *captured, stage_b_machine_state *output);
 void stage_b_native_runtime_coordinate(
     const stage_b_machine_state *captured) __attribute__((noreturn));
+#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP
+void stage_b_native_runtime_write_diagnostic(
+    uint32_t status, uint32_t failure_rva,
+    const stage_b_machine_state *state);
+#endif
 
 #endif
 '''
@@ -1862,6 +2928,31 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
     transfer_rows = "\n".join(
         f"  0x{rva:08x}U," for rva in plan.transfer_rvas
     )
+    implementation_rows = "\n".join(
+        "  {{ 0x{rva:08x}U, {class_code}U, {replacement}, {cluster} }},".format(
+            rva=dispatch.rva,
+            class_code=dispatch.class_code,
+            replacement=(
+                "0"
+                if dispatch.replacement_id is None
+                else json.dumps(dispatch.replacement_id, ensure_ascii=True)
+            ),
+            cluster=(
+                "0"
+                if dispatch.cluster_id is None
+                else json.dumps(dispatch.cluster_id, ensure_ascii=True)
+            ),
+        )
+        for dispatch in plan.implementation_dispatches
+    )
+    portable_dispatch_count = sum(
+        dispatch.implementation_class == "selected_portable_component"
+        for dispatch in plan.implementation_dispatches
+    )
+    recovered_data_rows = "\n".join(
+        f"  {{ 0x{start:08x}U, 0x{end:08x}U }},"
+        for start, end in plan.recovered_executable_data_ranges
+    ) or "  { 0U, 0U },"
     callback_rows = "\n".join(
         f"  {{ 0x{rva:08x}U, {cleanup}U }},"
         for rva, cleanup in plan.callback_abis
@@ -1960,6 +3051,7 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
         "release_argument_range": 2,
         "add_result_pointee_ranges": 3,
         "add_argument_pointee_ranges": 4,
+        "add_argument_interface_ranges": 5,
     }
     size_codes = {
         None: 0,
@@ -1968,8 +3060,10 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
         "product": 3,
         "bounded_zero_run": 4,
     }
+    diagnostic_iat_rvas = plan.diagnostic_writer_iat_rvas or (0, 0, 0)
+    diagnostic_writer_available = 1 if plan.diagnostic_writer_iat_rvas else 0
     external_range_rows = "\n".join(
-        "  {{ 0x{rva:08x}U, {action}U, {argument_base_offset}U, "
+        "  {{ 0x{rva:08x}U, 0x{target_iat_rva:08x}U, {action}U, {argument_base_offset}U, "
         "{argument_count}U, {register}U, {argument}U, "
         "{size_kind}U, {size_value}U, {size_argument}U, "
         "{size_right_argument}U, {minimum_size}U, {nullable}U, "
@@ -1978,6 +3072,7 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
         "{pointee_offset}U, {max_elements}U, {element_unit_bytes}U, "
         "{element_max_units}U }},".format(
             rva=rule.instruction_rva,
+            target_iat_rva=rule.target_iat_rva or 0,
             action=action_codes[rule.action],
             argument_base_offset=rule.argument_base_offset,
             argument_count=rule.argument_count,
@@ -1999,7 +3094,7 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
         )
         for rule in plan.external_range_rules
     ) or (
-        "  { 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, "
+        "  { 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, "
         "0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U },"
     )
     x87_declaration = (
@@ -2031,6 +3126,13 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
 #define STAGE_B_NATIVE_IMAGE_SCN_MEM_EXECUTE 0x20000000U
 #define STAGE_B_NATIVE_MAX_PE_SECTIONS 96U
 #define STAGE_B_NATIVE_MAX_EXTERNAL_RANGES 8192U
+#define STAGE_B_NATIVE_MAX_EXTERNAL_LIFECYCLE_EVENTS 64U
+#define STAGE_B_NATIVE_MAX_EXTERNAL_TRACE_EVENTS 128U
+#define STAGE_B_NATIVE_MAX_TRANSFER_TRACE_EVENTS 1024U
+#define STAGE_B_NATIVE_DIAGNOSTIC_WRITER_AVAILABLE {diagnostic_writer_available}U
+#define STAGE_B_NATIVE_DIAGNOSTIC_CREATE_FILE_IAT_RVA 0x{diagnostic_iat_rvas[0]:08x}U
+#define STAGE_B_NATIVE_DIAGNOSTIC_WRITE_FILE_IAT_RVA 0x{diagnostic_iat_rvas[1]:08x}U
+#define STAGE_B_NATIVE_DIAGNOSTIC_CLOSE_HANDLE_IAT_RVA 0x{diagnostic_iat_rvas[2]:08x}U
 
 extern const unsigned char __ImageBase[];
 volatile uint32_t stage_b_native_diagnostic_reason;
@@ -2040,6 +3142,12 @@ volatile uint32_t stage_b_native_diagnostic_detail;
 extern stage_b_call_status stage_b_dispatch_external_call(
     stage_b_runtime *runtime, const stage_b_call_event *event,
     const stage_b_machine_state *input, stage_b_machine_state *output);
+extern const stage_b_region_override *stage_b_region_override_lookup(
+    uint32_t entry_rva) __attribute__((weak));
+extern const stage_b_region_override stage_b_region_overrides[]
+    __attribute__((weak));
+extern const uint32_t stage_b_region_override_count __attribute__((weak));
+extern const uint32_t stage_b_program_transfer_count __attribute__((weak));
 {x87_declaration}
 
 _Static_assert(sizeof(uintptr_t) == 4U, "native runtime requires i686 pointers");
@@ -2062,6 +3170,27 @@ static const uint32_t stage_b_native_transfer_rvas[] = {{
 }};
 static const uint32_t stage_b_native_transfer_count = {len(plan.transfer_rvas)}U;
 
+typedef struct stage_b_native_implementation_dispatch {{
+  uint32_t rva, implementation_class;
+  const char *replacement_id, *cluster_id;
+}} stage_b_native_implementation_dispatch;
+static const stage_b_native_implementation_dispatch
+stage_b_native_implementation_dispatches[] = {{
+{implementation_rows}
+}};
+static const uint32_t stage_b_native_implementation_dispatch_count =
+    {len(plan.implementation_dispatches)}U;
+static const uint32_t stage_b_native_portable_dispatch_count =
+    {portable_dispatch_count}U;
+
+typedef struct stage_b_native_noncode_range {{
+  uint32_t rva_start, rva_end;
+}} stage_b_native_noncode_range;
+static const stage_b_native_noncode_range stage_b_native_noncode_ranges[] = {{
+{recovered_data_rows}
+}};
+static const uint32_t stage_b_native_noncode_range_count = {len(plan.recovered_executable_data_ranges)}U;
+
 typedef struct stage_b_native_callback_abi {{
   uint32_t rva, stack_cleanup_bytes;
 }} stage_b_native_callback_abi;
@@ -2079,7 +3208,8 @@ static const stage_b_native_undefined_policy stage_b_native_undefined_policies[]
 static const uint32_t stage_b_native_undefined_policy_count = {len(plan.undefined_policies)}U;
 
 typedef struct stage_b_native_external_range_rule {{
-  uint32_t instruction_rva, action, argument_base_offset, argument_count;
+  uint32_t instruction_rva, target_iat_rva, action;
+  uint32_t argument_base_offset, argument_count;
   uint32_t register_index, argument;
   uint32_t size_kind, size_value, size_argument, size_right_argument;
   uint32_t minimum_size, nullable;
@@ -2131,8 +3261,22 @@ typedef struct stage_b_native_callable_binding {{
 }} stage_b_native_callable_binding;
 
 typedef struct stage_b_native_external_range {{
-  uint32_t start, size;
+  uint32_t start, size, producer_rva, producer_action, generation;
 }} stage_b_native_external_range;
+
+typedef struct stage_b_native_external_lifecycle_event {{
+  uint32_t sequence, operation, status, instruction_rva;
+  uint32_t start, size, producer_rva, producer_action, generation;
+}} stage_b_native_external_lifecycle_event;
+
+typedef struct stage_b_native_external_trace_event {{
+  uint32_t sequence, phase, instruction_rva, target_rva, target_iat_rva;
+  uint32_t kind, status, eax, esp, eflags;
+}} stage_b_native_external_trace_event;
+
+typedef struct stage_b_native_transfer_trace_event {{
+  uint32_t sequence, rva, df, esp;
+}} stage_b_native_transfer_trace_event;
 
 typedef struct stage_b_native_context {{
   uint32_t image_base;
@@ -2144,12 +3288,30 @@ typedef struct stage_b_native_context {{
   uint32_t stack_high;
   volatile uint32_t active;
   uint32_t initialized;
+  uint32_t process_world_initialized;
   uint32_t owner_fs_base;
   uint32_t nested_depth;
   uint32_t undefined_fault;
+  uint32_t undefined_fault_slot;
+  uint32_t undefined_fault_rva;
   uint32_t last_undefined_fault;
   stage_b_native_external_range external_ranges[STAGE_B_NATIVE_MAX_EXTERNAL_RANGES];
   uint32_t external_range_count;
+  stage_b_native_external_lifecycle_event external_lifecycle_events[
+      STAGE_B_NATIVE_MAX_EXTERNAL_LIFECYCLE_EVENTS];
+  uint32_t external_lifecycle_count;
+  uint32_t external_lifecycle_next;
+  uint32_t external_lifecycle_sequence;
+  stage_b_native_external_trace_event external_trace_events[
+      STAGE_B_NATIVE_MAX_EXTERNAL_TRACE_EVENTS];
+  uint32_t external_trace_count;
+  uint32_t external_trace_next;
+  uint32_t external_trace_sequence;
+  stage_b_native_transfer_trace_event transfer_trace_events[
+      STAGE_B_NATIVE_MAX_TRANSFER_TRACE_EVENTS];
+  uint32_t transfer_trace_count;
+  uint32_t transfer_trace_next;
+  uint32_t transfer_trace_sequence;
   stage_b_native_callable_binding callable_bindings[{max(1, callable_binding_count)}U];
 }} stage_b_native_context;
 
@@ -2217,6 +3379,166 @@ static void stage_b_native_diagnose_external_range(
   stage_b_native_diagnostic_aux = nearest_start;
   stage_b_native_diagnostic_detail = nearest_end;
 }}
+
+#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP
+typedef uint32_t (__attribute__((stdcall)) *stage_b_native_create_file_a_fn)(
+    const char *, uint32_t, uint32_t, void *, uint32_t, uint32_t, uint32_t);
+typedef uint32_t (__attribute__((stdcall)) *stage_b_native_write_file_fn)(
+    uint32_t, const void *, uint32_t, uint32_t *, void *);
+typedef uint32_t (__attribute__((stdcall)) *stage_b_native_close_handle_fn)(
+    uint32_t);
+
+typedef struct stage_b_native_diagnostic_header {{
+  uint32_t magic, version, status, failure_rva;
+  uint32_t reason, value, aux, detail;
+  uint32_t external_range_count, external_lifecycle_count;
+  uint32_t external_lifecycle_next, external_lifecycle_sequence;
+  uint32_t external_trace_count, external_trace_next, external_trace_sequence;
+  uint32_t transfer_trace_count, transfer_trace_next, transfer_trace_sequence;
+  uint32_t eax, ebx, ecx, edx, esi, edi, ebp, esp, eflags, fs_base;
+  uint32_t stack_word_count;
+  uint32_t stack_words[16];
+}} stage_b_native_diagnostic_header;
+
+static uint32_t stage_b_native_diagnostic_iat_target(uint32_t iat_rva) {{
+  const stage_b_native_context *context = &stage_b_native_context_value;
+  if (iat_rva > context->image_size || context->image_size - iat_rva < 4U ||
+      context->image_base > 0xffffffffU - iat_rva)
+    return 0U;
+  return stage_b_native_u32(context->image_base + iat_rva);
+}}
+
+static uint32_t stage_b_native_diagnostic_write(
+    stage_b_native_write_file_fn write_file, uint32_t handle,
+    const void *data, uint32_t size) {{
+  uint32_t written = 0U;
+  return write_file != 0 &&
+      write_file(handle, data, size, &written, 0) != 0U && written == size;
+}}
+
+void stage_b_native_runtime_write_diagnostic(
+    uint32_t status, uint32_t failure_rva,
+    const stage_b_machine_state *state) {{
+  const stage_b_native_context *context = &stage_b_native_context_value;
+  stage_b_native_create_file_a_fn create_file;
+  stage_b_native_write_file_fn write_file;
+  stage_b_native_close_handle_fn close_handle;
+  stage_b_native_diagnostic_header header;
+  uint32_t handle, range_bytes, lifecycle_bytes, external_trace_bytes;
+  uint32_t transfer_trace_bytes;
+  if (STAGE_B_NATIVE_DIAGNOSTIC_WRITER_AVAILABLE == 0U) return;
+  create_file = (stage_b_native_create_file_a_fn)(uintptr_t)
+      stage_b_native_diagnostic_iat_target(
+          STAGE_B_NATIVE_DIAGNOSTIC_CREATE_FILE_IAT_RVA);
+  write_file = (stage_b_native_write_file_fn)(uintptr_t)
+      stage_b_native_diagnostic_iat_target(
+          STAGE_B_NATIVE_DIAGNOSTIC_WRITE_FILE_IAT_RVA);
+  close_handle = (stage_b_native_close_handle_fn)(uintptr_t)
+      stage_b_native_diagnostic_iat_target(
+          STAGE_B_NATIVE_DIAGNOSTIC_CLOSE_HANDLE_IAT_RVA);
+  if (create_file == 0 || write_file == 0 || close_handle == 0) return;
+  handle = create_file(
+      "spaghetti-extractor-diagnostic.bin", 0x40000000U, 0U, 0,
+      2U, 0x00000080U, 0U);
+  if (handle == 0U || handle == 0xffffffffU) return;
+  header.magic = 0x31444553U;
+  header.version = 4U;
+  header.status = status;
+  header.failure_rva = failure_rva;
+  header.reason = stage_b_native_diagnostic_reason;
+  header.value = stage_b_native_diagnostic_value;
+  header.aux = stage_b_native_diagnostic_aux;
+  header.detail = stage_b_native_diagnostic_detail;
+  header.external_range_count = context->external_range_count;
+  header.external_lifecycle_count = context->external_lifecycle_count;
+  header.external_lifecycle_next = context->external_lifecycle_next;
+  header.external_lifecycle_sequence = context->external_lifecycle_sequence;
+  header.external_trace_count = context->external_trace_count;
+  header.external_trace_next = context->external_trace_next;
+  header.external_trace_sequence = context->external_trace_sequence;
+  header.transfer_trace_count = context->transfer_trace_count;
+  header.transfer_trace_next = context->transfer_trace_next;
+  header.transfer_trace_sequence = context->transfer_trace_sequence;
+  header.eax = state != 0 ? state->eax : 0U;
+  header.ebx = state != 0 ? state->ebx : 0U;
+  header.ecx = state != 0 ? state->ecx : 0U;
+  header.edx = state != 0 ? state->edx : 0U;
+  header.esi = state != 0 ? state->esi : 0U;
+  header.edi = state != 0 ? state->edi : 0U;
+  header.ebp = state != 0 ? state->ebp : 0U;
+  header.esp = state != 0 ? state->esp : 0U;
+  header.eflags = state != 0 ? state->eflags : 0U;
+  header.fs_base = state != 0 ? state->fs_base : 0U;
+  header.stack_word_count = 0U;
+  if (state != 0) {{
+    uint32_t i;
+    for (i = 0U; i < 16U; ++i) {{
+      uint32_t offset = i * 4U;
+      uint32_t address, end;
+      if (state->esp > 0xffffffffU - offset) break;
+      address = state->esp + offset;
+      if (!stage_b_native_range_end(address, 4U, &end) ||
+          address < context->stack_low || end > context->stack_high)
+        break;
+      header.stack_words[i] = stage_b_native_u32(address);
+      ++header.stack_word_count;
+    }}
+    for (i = header.stack_word_count; i < 16U; ++i)
+      header.stack_words[i] = 0U;
+  }} else {{
+    uint32_t i;
+    for (i = 0U; i < 16U; ++i) header.stack_words[i] = 0U;
+  }}
+  range_bytes = context->external_range_count *
+      (uint32_t)sizeof(stage_b_native_external_range);
+  lifecycle_bytes = context->external_lifecycle_count *
+      (uint32_t)sizeof(stage_b_native_external_lifecycle_event);
+  external_trace_bytes = context->external_trace_count *
+      (uint32_t)sizeof(stage_b_native_external_trace_event);
+  transfer_trace_bytes = context->transfer_trace_count *
+      (uint32_t)sizeof(stage_b_native_transfer_trace_event);
+  if (!stage_b_native_diagnostic_write(
+          write_file, handle, &header, (uint32_t)sizeof(header)) ||
+      (range_bytes != 0U && !stage_b_native_diagnostic_write(
+          write_file, handle, context->external_ranges, range_bytes)) ||
+      (lifecycle_bytes != 0U && !stage_b_native_diagnostic_write(
+          write_file, handle, context->external_lifecycle_events,
+          lifecycle_bytes)) ||
+      (external_trace_bytes != 0U && !stage_b_native_diagnostic_write(
+          write_file, handle, context->external_trace_events,
+          external_trace_bytes)) ||
+      (transfer_trace_bytes != 0U && !stage_b_native_diagnostic_write(
+          write_file, handle, context->transfer_trace_events,
+          transfer_trace_bytes))) {{
+    close_handle(handle);
+    return;
+  }}
+  close_handle(handle);
+}}
+
+void stage_b_native_runtime_write_external_probe(
+    const stage_b_call_event *event,
+    const stage_b_machine_state *state) {{
+  uint32_t saved_last_error;
+  uint32_t saved_reason = stage_b_native_diagnostic_reason;
+  uint32_t saved_value = stage_b_native_diagnostic_value;
+  uint32_t saved_aux = stage_b_native_diagnostic_aux;
+  uint32_t saved_detail = stage_b_native_diagnostic_detail;
+  if (event == 0 || state == 0) return;
+  __asm__ volatile ("movl %%fs:0x34, %0" : "=r" (saved_last_error));
+  stage_b_native_diagnostic_reason = 0x4001U;
+  stage_b_native_diagnostic_value = event->target_rva;
+  stage_b_native_diagnostic_aux = (uint32_t)event->kind;
+  stage_b_native_diagnostic_detail = event->return_rva;
+  stage_b_native_runtime_write_diagnostic(
+      (uint32_t)STAGE_B_CALL_OK, event->instruction_rva, state);
+  stage_b_native_diagnostic_reason = saved_reason;
+  stage_b_native_diagnostic_value = saved_value;
+  stage_b_native_diagnostic_aux = saved_aux;
+  stage_b_native_diagnostic_detail = saved_detail;
+  __asm__ volatile ("movl %0, %%fs:0x34" : : "r" (saved_last_error) : "memory");
+}}
+#endif
 
 static uint32_t stage_b_native_inside_thread_environment(
     const stage_b_native_context *context, uint32_t start, uint32_t end) {{
@@ -2286,15 +3608,81 @@ static uint32_t stage_b_native_validate_stack(
   return 1U;
 }}
 
+static uint32_t stage_b_native_string_equal(
+    const char *left, const char *right) {{
+  if (left == 0 || right == 0) return left == right;
+  while (*left != '\\0' && *left == *right) {{ ++left; ++right; }}
+  return *left == *right;
+}}
+
+static uint32_t stage_b_native_override_table_valid(void) {{
+  uint32_t i, matched = 0U;
+  if ((uintptr_t)&stage_b_region_override_count == 0U ||
+      (uintptr_t)stage_b_region_overrides == 0U)
+    return stage_b_native_portable_dispatch_count == 0U;
+  if (stage_b_region_override_count != stage_b_native_portable_dispatch_count)
+    return 0U;
+  for (i = 0U; i < stage_b_region_override_count; ++i) {{
+    const stage_b_region_override *observed = &stage_b_region_overrides[i];
+    uint32_t j, found = 0U;
+    for (j = 0U; j < stage_b_native_implementation_dispatch_count; ++j) {{
+      const stage_b_native_implementation_dispatch *expected =
+          &stage_b_native_implementation_dispatches[j];
+      if (expected->implementation_class != 1U || expected->rva != observed->entry_rva)
+        continue;
+      if (found != 0U || observed->function == 0 ||
+          observed->fallback_on_unimplemented != 0U ||
+          !stage_b_native_string_equal(
+              observed->replacement_id, expected->replacement_id) ||
+          !stage_b_native_string_equal(
+              observed->cluster_id, expected->cluster_id))
+        return 0U;
+      found = 1U;
+    }}
+    if (found == 0U) return 0U;
+    ++matched;
+  }}
+  return matched == stage_b_native_portable_dispatch_count;
+}}
+
 static uint32_t stage_b_native_transfer_table_valid(void) {{
   uint32_t i;
-  if (stage_b_native_transfer_count == 0U) return 0U;
+  if ((uintptr_t)&stage_b_program_transfer_count == 0U ||
+      stage_b_program_transfer_count != stage_b_native_transfer_count ||
+      stage_b_native_transfer_count == 0U ||
+      stage_b_native_implementation_dispatch_count !=
+          stage_b_native_transfer_count ||
+      !stage_b_native_override_table_valid())
+    return 0U;
   for (i = 0U; i < stage_b_native_transfer_count; ++i) {{
     uint32_t rva = stage_b_native_transfer_rvas[i];
+    const stage_b_native_implementation_dispatch *expected =
+        &stage_b_native_implementation_dispatches[i];
+    const stage_b_region_override *override;
     if ((i != 0U && stage_b_native_transfer_rvas[i - 1U] >= rva) ||
+        expected->rva != rva ||
         rva >= stage_b_native_context_value.image_size ||
         stage_b_program_lookup(rva) == 0)
       return 0U;
+    override = (
+        stage_b_region_override_lookup == 0
+        ? (const stage_b_region_override *)0
+        : stage_b_region_override_lookup(rva));
+    if (expected->implementation_class == 0U) {{
+      if (override != 0 || expected->replacement_id != 0 ||
+          expected->cluster_id != 0)
+        return 0U;
+    }} else if (expected->implementation_class == 1U) {{
+      if (override == 0 || override->entry_rva != rva ||
+          override->function == 0 || override->fallback_on_unimplemented != 0U ||
+          !stage_b_native_string_equal(
+              override->replacement_id, expected->replacement_id) ||
+          !stage_b_native_string_equal(
+              override->cluster_id, expected->cluster_id))
+        return 0U;
+    }} else {{
+      return 0U;
+    }}
   }}
   return stage_b_program_lookup(0x{plan.entry_rva:08x}U) != 0;
 }}
@@ -2412,22 +3800,85 @@ static stage_b_call_status stage_b_native_record_callable_result(
   return STAGE_B_CALL_OK;
 }}
 
+static uint32_t stage_b_native_external_range_rule_matches(
+    const stage_b_native_external_range_rule *rule,
+    const stage_b_call_event *event) {{
+  const stage_b_native_context *context = &stage_b_native_context_value;
+  uint32_t iat_address, target;
+  if (rule == 0 || event == 0 ||
+      rule->instruction_rva != event->instruction_rva)
+    return 0U;
+  if (rule->target_iat_rva == 0U) return 1U;
+  if (event->kind != STAGE_B_CALL_INDIRECT ||
+      rule->target_iat_rva > context->image_size ||
+      context->image_base > 0xffffffffU - rule->target_iat_rva)
+    return 0U;
+  iat_address = context->image_base + rule->target_iat_rva;
+  target = stage_b_native_u32(iat_address);
+  return target != 0U && event->target_rva == target;
+}}
+
+#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP
+static void stage_b_native_record_external_trace(
+    uint32_t phase, const stage_b_call_event *call,
+    const stage_b_external_call_snapshot *snapshot,
+    const stage_b_machine_state *state, stage_b_call_status status) {{
+  stage_b_native_context *context = &stage_b_native_context_value;
+  stage_b_native_external_trace_event *event;
+  uint32_t index;
+  if (call == 0 || snapshot == 0 || state == 0) return;
+  index = context->external_trace_next;
+  event = &context->external_trace_events[index];
+  if (context->external_trace_sequence != 0xffffffffU)
+    ++context->external_trace_sequence;
+  event->sequence = context->external_trace_sequence;
+  event->phase = phase;
+  event->instruction_rva = call->instruction_rva;
+  event->target_rva = call->target_rva;
+  event->target_iat_rva = snapshot->target_iat_rva;
+  event->kind = (uint32_t)call->kind;
+  event->status = (uint32_t)status;
+  event->eax = state->eax;
+  event->esp = state->esp;
+  event->eflags = state->eflags;
+  context->external_trace_next =
+      (index + 1U) % STAGE_B_NATIVE_MAX_EXTERNAL_TRACE_EVENTS;
+  if (context->external_trace_count < STAGE_B_NATIVE_MAX_EXTERNAL_TRACE_EVENTS)
+    ++context->external_trace_count;
+}}
+#endif
+
 stage_b_call_status stage_b_native_runtime_capture_external_call(
     const stage_b_call_event *event, const stage_b_machine_state *input,
     stage_b_external_call_snapshot *snapshot) {{
-  uint32_t i, found = 0U;
+  uint32_t i, found = 0U, direct_binding_seen = 0U;
   if (event == 0 || input == 0 || snapshot == 0 ||
       stage_b_native_context_value.initialized == 0U) {{
     stage_b_native_diagnostic_reason = 0x2003U;
     return STAGE_B_CALL_UNIMPLEMENTED;
   }}
   snapshot->instruction_rva = event->instruction_rva;
+  snapshot->target_iat_rva = 0U;
   snapshot->argument_base_offset = 0U;
   snapshot->argument_count = 0U;
   for (i = 0U; i < stage_b_native_external_range_rule_count; ++i) {{
     const stage_b_native_external_range_rule *rule =
         &stage_b_native_external_range_rules[i];
-    if (rule->instruction_rva != event->instruction_rva) continue;
+    if (!stage_b_native_external_range_rule_matches(rule, event)) continue;
+    if ((rule->target_iat_rva == 0U && snapshot->target_iat_rva != 0U) ||
+        (rule->target_iat_rva != 0U && direct_binding_seen != 0U) ||
+        (rule->target_iat_rva != 0U && snapshot->target_iat_rva != 0U &&
+         snapshot->target_iat_rva != rule->target_iat_rva)) {{
+      stage_b_native_diagnostic_reason = 0x2008U;
+      stage_b_native_diagnostic_value = event->target_rva;
+      stage_b_native_diagnostic_aux = snapshot->target_iat_rva;
+      stage_b_native_diagnostic_detail = rule->target_iat_rva;
+      return STAGE_B_CALL_UNIMPLEMENTED;
+    }}
+    if (rule->target_iat_rva == 0U)
+      direct_binding_seen = 1U;
+    else
+      snapshot->target_iat_rva = rule->target_iat_rva;
     if (rule->argument_count > STAGE_B_MAX_EXTERNAL_ARGUMENTS ||
         (found != 0U &&
          (snapshot->argument_base_offset != rule->argument_base_offset ||
@@ -2465,6 +3916,10 @@ stage_b_call_status stage_b_native_runtime_capture_external_call(
     }}
     snapshot->arguments[i] = value;
   }}
+#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP
+  stage_b_native_record_external_trace(
+      1U, event, snapshot, input, STAGE_B_CALL_OK);
+#endif
   return STAGE_B_CALL_OK;
 }}
 
@@ -2475,6 +3930,7 @@ static uint32_t stage_b_native_external_argument(
     uint32_t index, uint32_t *value) {{
   if (rule == 0 || event == 0 || snapshot == 0 || value == 0 ||
       snapshot->instruction_rva != event->instruction_rva ||
+      snapshot->target_iat_rva != rule->target_iat_rva ||
       snapshot->argument_base_offset != rule->argument_base_offset ||
       snapshot->argument_count != rule->argument_count ||
       index >= snapshot->argument_count)
@@ -2551,38 +4007,134 @@ static uint32_t stage_b_native_range_size(
   return *size >= rule->minimum_size;
 }}
 
+static uint32_t stage_b_native_next_external_lifecycle_sequence(
+    stage_b_native_context *context) {{
+  if (context->external_lifecycle_sequence != 0xffffffffU)
+    ++context->external_lifecycle_sequence;
+  return context->external_lifecycle_sequence;
+}}
+
+static void stage_b_native_record_external_lifecycle(
+    stage_b_native_context *context, uint32_t operation,
+    stage_b_call_status status, uint32_t instruction_rva,
+    uint32_t start, uint32_t size, uint32_t producer_rva,
+    uint32_t producer_action, uint32_t generation) {{
+  stage_b_native_external_lifecycle_event *event;
+  if (context == 0) return;
+  event = &context->external_lifecycle_events[context->external_lifecycle_next];
+  event->sequence = stage_b_native_next_external_lifecycle_sequence(context);
+  event->operation = operation;
+  event->status = (uint32_t)status;
+  event->instruction_rva = instruction_rva;
+  event->start = start;
+  event->size = size;
+  event->producer_rva = producer_rva;
+  event->producer_action = producer_action;
+  event->generation = generation;
+  context->external_lifecycle_next =
+      (context->external_lifecycle_next + 1U) %
+      STAGE_B_NATIVE_MAX_EXTERNAL_LIFECYCLE_EVENTS;
+  if (context->external_lifecycle_count <
+      STAGE_B_NATIVE_MAX_EXTERNAL_LIFECYCLE_EVENTS)
+    ++context->external_lifecycle_count;
+}}
+
 static stage_b_call_status stage_b_native_add_external_range(
-    uint32_t start, uint32_t size) {{
+    uint32_t start, uint32_t size, uint32_t producer_rva,
+    uint32_t producer_action) {{
   stage_b_native_context *context = &stage_b_native_context_value;
-  uint32_t end, i;
-  if (!stage_b_native_range_end(start, size, &end))
+  uint32_t end, generation, i;
+  if (!stage_b_native_range_end(start, size, &end)) {{
+    stage_b_native_record_external_lifecycle(
+        context, 1U, STAGE_B_CALL_UNIMPLEMENTED, producer_rva,
+        start, size, producer_rva, producer_action, 0U);
     return STAGE_B_CALL_UNIMPLEMENTED;
+  }}
+  generation = context->external_lifecycle_sequence == 0xffffffffU
+      ? 0xffffffffU : context->external_lifecycle_sequence + 1U;
   for (i = 0U; i < context->external_range_count; ++i) {{
     if (context->external_ranges[i].start == start) {{
       context->external_ranges[i].size = size;
+      context->external_ranges[i].producer_rva = producer_rva;
+      context->external_ranges[i].producer_action = producer_action;
+      context->external_ranges[i].generation = generation;
+      stage_b_native_record_external_lifecycle(
+          context, 2U, STAGE_B_CALL_OK, producer_rva,
+          start, size, producer_rva, producer_action, generation);
       return STAGE_B_CALL_OK;
     }}
   }}
-  if (context->external_range_count == STAGE_B_NATIVE_MAX_EXTERNAL_RANGES)
+  if (context->external_range_count == STAGE_B_NATIVE_MAX_EXTERNAL_RANGES) {{
+    stage_b_native_record_external_lifecycle(
+        context, 1U, STAGE_B_CALL_UNIMPLEMENTED, producer_rva,
+        start, size, producer_rva, producer_action, generation);
     return STAGE_B_CALL_UNIMPLEMENTED;
+  }}
   context->external_ranges[context->external_range_count].start = start;
   context->external_ranges[context->external_range_count].size = size;
+  context->external_ranges[context->external_range_count].producer_rva = producer_rva;
+  context->external_ranges[context->external_range_count].producer_action =
+      producer_action;
+  context->external_ranges[context->external_range_count].generation = generation;
   ++context->external_range_count;
+  stage_b_native_record_external_lifecycle(
+      context, 1U, STAGE_B_CALL_OK, producer_rva,
+      start, size, producer_rva, producer_action, generation);
   return STAGE_B_CALL_OK;
 }}
 
-static stage_b_call_status stage_b_native_release_external_range(uint32_t start) {{
+static stage_b_call_status stage_b_native_release_external_range(
+    uint32_t start, uint32_t instruction_rva) {{
   stage_b_native_context *context = &stage_b_native_context_value;
-  uint32_t i;
+  uint32_t i, operation = 4U;
   if (start == 0U) return STAGE_B_CALL_OK;
   for (i = 0U; i < context->external_range_count; ++i) {{
     if (context->external_ranges[i].start == start) {{
+      stage_b_native_external_range released = context->external_ranges[i];
       --context->external_range_count;
       context->external_ranges[i] =
           context->external_ranges[context->external_range_count];
+      stage_b_native_record_external_lifecycle(
+          context, 3U, STAGE_B_CALL_OK, instruction_rva,
+          released.start, released.size, released.producer_rva,
+          released.producer_action, released.generation);
       return STAGE_B_CALL_OK;
     }}
   }}
+  for (i = 0U; i < context->external_range_count; ++i) {{
+    uint32_t end;
+    if (stage_b_native_range_end(
+            context->external_ranges[i].start,
+            context->external_ranges[i].size, &end) &&
+        start > context->external_ranges[i].start && start < end) {{
+      operation = 5U;
+      stage_b_native_diagnostic_aux = context->external_ranges[i].start;
+      stage_b_native_diagnostic_detail = end;
+      break;
+    }}
+  }}
+  if (operation == 4U) {{
+    uint32_t offset;
+    for (offset = 0U; offset < context->external_lifecycle_count; ++offset) {{
+      uint32_t index =
+          (context->external_lifecycle_next +
+           STAGE_B_NATIVE_MAX_EXTERNAL_LIFECYCLE_EVENTS - 1U - offset) %
+          STAGE_B_NATIVE_MAX_EXTERNAL_LIFECYCLE_EVENTS;
+      const stage_b_native_external_lifecycle_event *event =
+          &context->external_lifecycle_events[index];
+      if (event->start != start) continue;
+      if (event->operation == 3U) operation = 6U;
+      stage_b_native_diagnostic_aux = event->instruction_rva;
+      stage_b_native_diagnostic_detail = event->producer_rva;
+      break;
+    }}
+  }}
+  stage_b_native_record_external_lifecycle(
+      context, operation, STAGE_B_CALL_UNIMPLEMENTED, instruction_rva,
+      start, 0U, 0U, 0U, 0U);
+  stage_b_native_diagnostic_value = start;
+  stage_b_native_diagnostic_reason =
+      operation == 5U ? 0x2204U : operation == 6U ? 0x2203U : 0x2202U;
   return STAGE_B_CALL_UNIMPLEMENTED;
 }}
 
@@ -2631,16 +4183,39 @@ static stage_b_call_status stage_b_native_add_external_pointee_ranges(
     element = stage_b_native_u32(vector + offset);
     if (element == 0U) {{
       if (index == 0x3fffffffU) return STAGE_B_CALL_UNIMPLEMENTED;
-      return stage_b_native_add_external_range(vector, (index + 1U) * 4U);
+      return stage_b_native_add_external_range(
+          vector, (index + 1U) * 4U,
+          rule->instruction_rva, rule->action);
     }}
     if (!stage_b_native_terminated_extent(
             element, rule->element_unit_bytes, rule->element_max_units,
             &extent))
       return STAGE_B_CALL_UNIMPLEMENTED;
-    status = stage_b_native_add_external_range(element, extent);
+    status = stage_b_native_add_external_range(
+        element, extent, rule->instruction_rva, rule->action);
     if (status != STAGE_B_CALL_OK) return status;
   }}
   return STAGE_B_CALL_UNIMPLEMENTED;
+}}
+
+static stage_b_call_status stage_b_native_add_external_interface_ranges(
+    const stage_b_native_external_range_rule *rule, uint32_t cell) {{
+  uint32_t object, vtable;
+  stage_b_call_status status;
+  if (rule == 0 || cell == 0U ||
+      cell > 0xffffffffU - rule->pointee_offset)
+    return STAGE_B_CALL_UNIMPLEMENTED;
+  object = stage_b_native_u32(cell + rule->pointee_offset);
+  if (object == 0U)
+    return rule->nullable != 0U
+        ? STAGE_B_CALL_OK : STAGE_B_CALL_UNIMPLEMENTED;
+  status = stage_b_native_add_external_range(
+      object, rule->minimum_size, rule->instruction_rva, rule->action);
+  if (status != STAGE_B_CALL_OK) return status;
+  vtable = stage_b_native_u32(object);
+  if (vtable == 0U) return STAGE_B_CALL_UNIMPLEMENTED;
+  return stage_b_native_add_external_range(
+      vtable, rule->size_value, rule->instruction_rva, rule->action);
 }}
 
 stage_b_call_status stage_b_native_runtime_record_external_result(
@@ -2654,6 +4229,10 @@ stage_b_call_status stage_b_native_runtime_record_external_result(
     stage_b_native_diagnostic_reason = 0x2001U;
     return STAGE_B_CALL_UNIMPLEMENTED;
   }}
+#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP
+  stage_b_native_record_external_trace(
+      2U, event, snapshot, output, STAGE_B_CALL_OK);
+#endif
   if (stage_b_native_record_callable_result(event, output) != STAGE_B_CALL_OK) {{
     stage_b_native_diagnostic_reason = 0x2002U;
     return STAGE_B_CALL_UNIMPLEMENTED;
@@ -2663,7 +4242,9 @@ stage_b_call_status stage_b_native_runtime_record_external_result(
         &stage_b_native_external_range_rules[i];
     stage_b_call_status status;
     uint32_t pointer, size;
-    if (rule->instruction_rva != event->instruction_rva) continue;
+    if (!stage_b_native_external_range_rule_matches(rule, event) ||
+        rule->target_iat_rva != snapshot->target_iat_rva)
+      continue;
     if (rule->action == 1U) {{
       if (!stage_b_native_state_register(output, rule->register_index, &pointer) ||
           (!rule->nullable && pointer == 0U) ||
@@ -2672,14 +4253,16 @@ stage_b_call_status stage_b_native_runtime_record_external_result(
         return STAGE_B_CALL_UNIMPLEMENTED;
       }}
       if (pointer == 0U || size == 0U) continue;
-      status = stage_b_native_add_external_range(pointer, size);
+      status = stage_b_native_add_external_range(
+          pointer, size, rule->instruction_rva, rule->action);
     }} else if (rule->action == 2U) {{
       if (!stage_b_native_external_argument(
               rule, event, snapshot, rule->argument, &pointer)) {{
         stage_b_native_diagnostic_reason = 0x2201U;
         return STAGE_B_CALL_UNIMPLEMENTED;
       }}
-      status = stage_b_native_release_external_range(pointer);
+      status = stage_b_native_release_external_range(
+          pointer, rule->instruction_rva);
     }} else if (rule->action == 3U) {{
       if (!stage_b_native_state_register(
               output, rule->register_index, &pointer)) {{
@@ -2695,12 +4278,20 @@ stage_b_call_status stage_b_native_runtime_record_external_result(
       }}
       status = stage_b_native_add_external_pointee_ranges(
           rule, pointer);
+    }} else if (rule->action == 5U) {{
+      if ((int32_t)output->eax < 0) continue;
+      if (!stage_b_native_external_argument(
+              rule, event, snapshot, rule->argument, &pointer)) {{
+        stage_b_native_diagnostic_reason = 0x2501U;
+        return STAGE_B_CALL_UNIMPLEMENTED;
+      }}
+      status = stage_b_native_add_external_interface_ranges(rule, pointer);
     }} else {{
       stage_b_native_diagnostic_reason = 0x2f01U;
       return STAGE_B_CALL_UNIMPLEMENTED;
     }}
     if (status != STAGE_B_CALL_OK) {{
-      if (rule->action == 2U) {{
+      if (rule->action == 2U && stage_b_native_diagnostic_reason == 0U) {{
         stage_b_native_diagnostic_value =
             stage_b_native_context_value.external_range_count;
         stage_b_native_diagnostic_aux = pointer;
@@ -2710,7 +4301,9 @@ stage_b_call_status stage_b_native_runtime_record_external_result(
                 stage_b_native_context_value.external_range_count - 1U].start
             : 0U;
       }}
-      stage_b_native_diagnostic_reason = 0x2000U + rule->action * 0x100U + 2U;
+      if (stage_b_native_diagnostic_reason == 0U)
+        stage_b_native_diagnostic_reason =
+            0x2000U + rule->action * 0x100U + 2U;
       return status;
     }}
   }}
@@ -2854,7 +4447,6 @@ static uint32_t stage_b_native_undefined_value(
     uint32_t defined_value) {{
   stage_b_native_context *context = (stage_b_native_context *)opaque;
   uint32_t low = 0U, high = stage_b_native_undefined_policy_count;
-  (void)input;
   if (context == 0 || context->initialized == 0U) return 0U;
   while (low < high) {{
     uint32_t middle = low + (high - low) / 2U;
@@ -2863,12 +4455,20 @@ static uint32_t stage_b_native_undefined_value(
   }}
   if (low == stage_b_native_undefined_policy_count ||
       stage_b_native_undefined_policies[low].slot != slot) {{
+    if (context->undefined_fault == 0U) {{
+      context->undefined_fault_slot = slot;
+      context->undefined_fault_rva = input != 0 ? input->original_rva : 0U;
+    }}
     context->undefined_fault = 1U;
     return 0U;
   }}
   if (stage_b_native_undefined_policies[low].policy == 0U) return 0U;
   if (stage_b_native_undefined_policies[low].policy == 1U)
     return defined_value;
+  if (context->undefined_fault == 0U) {{
+    context->undefined_fault_slot = slot;
+    context->undefined_fault_rva = input != 0 ? input->original_rva : 0U;
+  }}
   context->undefined_fault = 1U;
   return 0U;
 }}
@@ -2882,6 +4482,20 @@ static uint32_t stage_b_native_resolve_code_target(
   if (context->initialized == 0U || target_word < context->image_base)
     return 1U;
   rva = target_word - context->image_base;
+  {{
+    uint32_t range_low = 0U, range_high = stage_b_native_noncode_range_count;
+    while (range_low < range_high) {{
+      uint32_t middle = range_low + (range_high - range_low) / 2U;
+      if (stage_b_native_noncode_ranges[middle].rva_end <= rva)
+        range_low = middle + 1U;
+      else
+        range_high = middle;
+    }}
+    if (range_low < stage_b_native_noncode_range_count &&
+        stage_b_native_noncode_ranges[range_low].rva_start <= rva &&
+        rva < stage_b_native_noncode_ranges[range_low].rva_end)
+      return 1U;
+  }}
   while (low < high) {{
     uint32_t middle = low + (high - low) / 2U;
     if (stage_b_native_transfer_rvas[middle] < rva) low = middle + 1U;
@@ -3019,6 +4633,27 @@ static stage_b_call_status stage_b_native_invoke_callable_external_jump(
   return STAGE_B_CALL_UNIMPLEMENTED;
 }}
 
+#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP
+static void stage_b_native_trace_transfer(
+    void *raw_context, uint32_t rva,
+    const stage_b_machine_state *state) {{
+  stage_b_native_context *context = (stage_b_native_context *)raw_context;
+  stage_b_native_transfer_trace_event *event;
+  uint32_t index;
+  if (context != &stage_b_native_context_value || state == 0) return;
+  index = context->transfer_trace_next;
+  event = &context->transfer_trace_events[index];
+  event->sequence = ++context->transfer_trace_sequence;
+  event->rva = rva;
+  event->df = state->df;
+  event->esp = state->esp;
+  context->transfer_trace_next =
+      (index + 1U) % STAGE_B_NATIVE_MAX_TRANSFER_TRACE_EVENTS;
+  if (context->transfer_trace_count < STAGE_B_NATIVE_MAX_TRANSFER_TRACE_EVENTS)
+    ++context->transfer_trace_count;
+}}
+#endif
+
 stage_b_runtime stage_b_native_runtime_instance = {{
   .context = &stage_b_native_context_value,
   .read = stage_b_native_flat_read,
@@ -3027,6 +4662,11 @@ stage_b_runtime stage_b_native_runtime_instance = {{
   .atomic_exchange = stage_b_native_atomic_exchange,
   .undefined_value = stage_b_native_undefined_value,
   .external_call_fallback = stage_b_dispatch_external_call,
+#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP
+  .trace_transfer = stage_b_native_trace_transfer,
+#else
+  .trace_transfer = 0,
+#endif
   .resolve_code_target = stage_b_native_resolve_code_target{x87_initializer}
   , .invoke_callable_external_jump =
       stage_b_native_invoke_callable_external_jump
@@ -3058,6 +4698,18 @@ static stage_b_native_terminal_kind stage_b_native_terminal_for(
 
 static uint32_t stage_b_native_has_transfer(uint32_t rva) {{
   uint32_t low = 0U, high = stage_b_native_transfer_count;
+  uint32_t range_low = 0U, range_high = stage_b_native_noncode_range_count;
+  while (range_low < range_high) {{
+    uint32_t middle = range_low + (range_high - range_low) / 2U;
+    if (stage_b_native_noncode_ranges[middle].rva_end <= rva)
+      range_low = middle + 1U;
+    else
+      range_high = middle;
+  }}
+  if (range_low < stage_b_native_noncode_range_count &&
+      stage_b_native_noncode_ranges[range_low].rva_start <= rva &&
+      rva < stage_b_native_noncode_ranges[range_low].rva_end)
+    return 0U;
   while (low < high) {{
     uint32_t middle = low + (high - low) / 2U;
     if (stage_b_native_transfer_rvas[middle] < rva) low = middle + 1U;
@@ -3090,7 +4742,13 @@ static stage_b_call_status stage_b_native_run_initialized(
   output->original_rva = entry_rva;
   status = stage_b_run_function(
       &stage_b_native_runtime_instance, entry_rva, output, output);
-  if (context->undefined_fault != 0U) return STAGE_B_CALL_UNIMPLEMENTED;
+  if (context->undefined_fault != 0U) {{
+    stage_b_native_diagnostic_reason = 0x5001U;
+    stage_b_native_diagnostic_value = context->undefined_fault_slot;
+    stage_b_native_diagnostic_aux = context->undefined_fault_rva;
+    stage_b_native_diagnostic_detail = entry_rva;
+    return STAGE_B_CALL_UNIMPLEMENTED;
+  }}
   return status;
 }}
 
@@ -3107,19 +4765,33 @@ stage_b_call_status stage_b_native_runtime_run_at_rva(
   }}
   context->initialized = 0U;
   context->undefined_fault = 0U;
+  context->undefined_fault_slot = 0U;
+  context->undefined_fault_rva = 0U;
   context->last_undefined_fault = 0U;
   context->nested_depth = 0U;
-  context->external_range_count = 0U;
-  for (i = 0U; i < stage_b_native_callable_resolver_count; ++i) {{
-    context->callable_bindings[i].capability_id =
-        stage_b_native_callable_resolvers[i].capability_id;
-    context->callable_bindings[i].target_word = 0U;
-    context->callable_bindings[i].bound = 0U;
-  }}
   if (!stage_b_native_validate_image(context) ||
       !stage_b_native_validate_stack(context, input) ||
       !stage_b_native_transfer_table_valid() || !stage_b_native_has_transfer(entry_rva))
     goto release;
+  if (context->process_world_initialized == 0U) {{
+    context->external_range_count = 0U;
+    context->external_lifecycle_count = 0U;
+    context->external_lifecycle_next = 0U;
+    context->external_lifecycle_sequence = 0U;
+    context->external_trace_count = 0U;
+    context->external_trace_next = 0U;
+    context->external_trace_sequence = 0U;
+    context->transfer_trace_count = 0U;
+    context->transfer_trace_next = 0U;
+    context->transfer_trace_sequence = 0U;
+    for (i = 0U; i < stage_b_native_callable_resolver_count; ++i) {{
+      context->callable_bindings[i].capability_id =
+          stage_b_native_callable_resolvers[i].capability_id;
+      context->callable_bindings[i].target_word = 0U;
+      context->callable_bindings[i].bound = 0U;
+    }}
+    context->process_world_initialized = 1U;
+  }}
   context->owner_fs_base = input->fs_base;
   context->initialized = 1U;
   status = stage_b_native_run_initialized(entry_rva, input, output);
@@ -3251,6 +4923,17 @@ def _required_string(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value:
         raise StageBNativeRuntimeError(f"{field} must be a non-empty string")
     return value
+
+
+def _required_portable_identity(value: Any, field: str) -> str:
+    text = _required_string(value, field)
+    try:
+        encoded = text.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise StageBNativeRuntimeError(f"{field} must be printable ASCII") from exc
+    if any(byte < 0x20 or byte > 0x7E for byte in encoded):
+        raise StageBNativeRuntimeError(f"{field} must be printable ASCII")
+    return text
 
 
 def _required_relative_path(value: Any, field: str) -> str:

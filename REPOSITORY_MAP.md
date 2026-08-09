@@ -108,6 +108,41 @@ conservative self-map used to emit a baseline contract and state machine.
 |---|---|
 | `stage_b_state_machine.py` | Normalizes static transfer contracts into the generated baseline state machine. |
 | `reconstruction_ir.py` | Prepares exact byte-bound units once, then exports byte-free canonical machine IR with freshly derived global control facts. |
+| `behavioral_roots.py` | Independently parses and hash-binds PE entry, executable export, and immutable TLS callback roots. |
+| `hybrid_authority_v2.py` | Immutable v2 authority records, exact bindings, finite alternatives, dependencies, and bundle closure. |
+| `machine_ir_authority_v2.py` | Stable exact unit/event binding kernel shared by machine-IR extraction and downstream authority replay. |
+| `analysis_schema_v2.py`, `artifact_identity_v2.py`, `artifact_projection_v2.py` | Shared v2 wire formats, canonical content identities, and independently cached artifact projections. |
+| `authority_bindings_v2.py`, `authority_record_core_v2.py` | Exact binary/unit/event bindings and common immutable authority-record validation. |
+| `address_expression_v2.py` | Normalized address-expression IR used by provenance and target certificates. |
+| `checked_memory_access_v2.py` | Exact event-bound finite memory-address facts emitted by cold interprocedural replay. |
+| `authority_v2_cli.py` | Stable command-line adapters for emitting and validating v2 authority artifacts. |
+| `control_analysis_v2.py` | Exact unit/control inventories and rooted closure, independent of legacy provenance. |
+| `entry_fact_derivation_v2.py` | Immutable launch/IAT facts and fail-closed mutable-slot promotion inputs. |
+| `entry_state_analysis_v2.py` | Exact PE/callback entry contracts and checked mutable-global invariants. |
+| `mutable_slot_candidates_v2.py` | Stable rooted discovery of writable 32-bit image slots for point-sensitive replay. |
+| `global_slot_analysis_v2.py` | Point-sensitive mutable-slot replay, taint, dominance, finite joins, and cold replay. |
+| `global_slot_authority_v2.py` | Separately cached promotion of complete cold-replayed slots into typed v2 invariants. |
+| `global_slot_contract_v2.py`, `global_slot_image_v2.py`, `global_slot_proposal_v2.py` | Typed mutable-slot invariants, exact image-span bindings, and non-authorizing replay proposals. |
+| `interprocedural_analysis.py` | Unified SCC worklist for call summaries, value provenance, indirect targets, and dependency closure. |
+| `interprocedural_phase_v2.py`, `joint_interprocedural_analysis_v2.py`, `joint_fixed_point_v2.py` | Phase adapters and the joint graph/stack/global-slot/interprocedural fixed point. |
+| `stack_range_analysis_v2.py` | Checked stack-range facts and call-frame entry offsets. |
+| `entry_state_contract_v2.py` | Typed entry-state and launch-root authority records. |
+| `indirect_target_dependency_v2.py`, `static_indirect_replay_v2.py` | Exact indirect-target dependencies and independent finite-target replay. |
+| `exception_invariants_v2.py` | Non-authorizing invariant synthesis plus independent replay of exceptional SCC certificates. |
+| `exception_phase_v2.py` | Cached exceptional-control certificate phase adapter. |
+| `checked_external_site_contract.py` | Canonical machine-level external call/jump contracts and exact profile matching. |
+| `external_site_proposals_v2.py` | Exact-bound, untrusted external-site proposals consumed by v2 replay. |
+| `external_profile_authority_v2.py` | Cold-replayed index over exact profile bytes for imports, interfaces, operations, resolvers, targets, and callbacks. |
+| `isa_kernel_selection.py` | Binary-specific binding from reachable forms to qualified semantics and fallback capabilities. |
+| `machine_ir_isa_catalog_v2.py`, `machine_ir_isa_requirements_v2.py`, `machine_ir_isa_selection_v2.py` | Exact machine-IR ISA inventory, required-form extraction, and binary-bound qualification selection. |
+| `launch_profile_v2.py` | Conditional PE32 launch assumptions and exact static/callback root inventory. |
+| `hybrid_authority_builder_v2.py` | Constructs the immutable authority bundle from independently replayed v2 records. |
+| `hybrid_diagnostics_v2.py` | Collapses dependent consequences behind deterministic primary blocker IDs. |
+| `static_hybrid_pipeline_v2.py` | Compatibility facade over the phase-oriented v2 analysis modules. |
+| `static_hybrid_authority_v2.py` | Recomputing v2 completeness checker and dependency-aware blocker diagnostics. |
+| `static_hybrid_final_audit_v2.py` | Small final replay tying the v2 bundle to exact machine IR and manifest artifacts. |
+| `stage_b_candidate_authority_v2.py` | Sole candidate-generation receipt joining the passing v2 audit with fallback implementation coverage. |
+| `internal_function_contracts.py` | Validates PE- and unit-bound, analysis-only call-frame/result contracts for opaque internal library functions. |
 | `reconstruction_control.py` | Proposes clusters from decoded control structure. |
 | `reconstruction_composition.py` | Composes compatible machine units into larger reconstruction clusters. |
 | `reconstruction_contract_analysis.py` | Derives cluster inputs, outputs, effects, and frontiers. |
@@ -118,6 +153,7 @@ conservative self-map used to emit a baseline contract and state machine.
 | `stage_b_c_backend.py` | Deterministic semantic-state-machine to C lowering. |
 | `stage_b_interpreter_backend.py` | Portable machine-IR interpreter generation. |
 | `stage_b_interpreter_native_build.py` | Freestanding PE32 build from interpreter, engine, and runtime packages. |
+| `stage_b_fallback_coverage.py` | Replays exact interpreter lowerings and portable selections and proves one implementation kind per rooted reachable unit; it has no static authority. |
 | `stage_b_machine_ir_scope.py` | Fail-closed partition of executable and deferred machine-IR transfers for candidate generation. |
 | `stage_b_engine_layout.py` | Structural engine layout tables. |
 | `stage_b_native_engine.py` | IA-32 ABI bridge and typed x87 native operations. |
@@ -128,6 +164,8 @@ conservative self-map used to emit a baseline contract and state machine.
 | `stage_b_pe_composer.py` | PE image composition, anchors, and relocation checks. |
 | `stage_b_typed_x87.py` | Typed, byte-free x87 replay records. |
 | `stage_b_provenance.py` | Candidate source/build/output hash binding. |
+| `stage_b_hybrid_completeness.py` | Legacy v1 diagnostic/proposal inventory; it cannot authorize candidate generation. |
+| `recovered_executable_data.py` | Checked classification of immutable initialized data embedded in executable sections. |
 
 `component_backend.py` contains the low-level component workspace engine.
 `component_workspace.py` is the public component-oriented facade.
@@ -162,6 +200,8 @@ and interfaces; it does not erase unresolved whole-program reconstruction gaps.
 | `machine_import_profiles.py` | Imported-call profile parsing and binding. |
 | `call_arguments.py` | Argument-source recovery. |
 | `internal_call_summaries.py` | Interprocedural call effect proposals. |
+| `callback_contracts.py` | Callback registration, ABI, lifetime, and activation protocol validation. |
+| `checked_external_site_contract.py` | Canonical fail-closed machine contract shared by native external-call planning and runtime. |
 | `value_provenance.py` | Static/dynamic/code/data/import/resource value origins. |
 | `provenance_domain.py` | Bounded provenance joins and domains. |
 | `interface_provenance.py` | Receiver, vtable, callback, out-parameter, and call-target propagation. |
@@ -203,6 +243,7 @@ partial constellations remain hypotheses and do not authorize replacement.
 | `isa_campaign.py` | Coverage campaigns and missing-form prioritization. |
 | `isa_cli.py` | Lower-level ISA campaign command helpers. |
 | `isa_conformance_nix.py` | Nix realization, remote-builder use, and provenance copying. |
+| `isa_conformance_shards.py`, `isa_conformance_worker.py`, `isa_qualification_worker.py` | Deterministic oracle sharding and isolated cached conformance/qualification workers. |
 | `lean_runner.py` | Small deterministic Lean compile/run helper. |
 
 `src/spaghetti_extractor/lean/StageA/` contains only the compact reusable ISA
@@ -243,6 +284,8 @@ enforce this with `xvfb-run` where Wine is used.
 | `stage-a-external-interface-profile.nix` | Pinned SDK headers through a checked machine-level interface profile. |
 | `stage-a-isa-conformance.nix` | One cached Lean/Unicorn/Bochs corpus evaluation. |
 | `stage-a-isa-qualification-graph.nix` | Sharded ISA evidence and qualification DAG. |
+| `stage-a-isa-semantic-kernel.nix` | Stable compiled Lean semantic kernel packaged independently of target evidence. |
+| `stage-a-machine-ir-isa-qualification-v2.nix` | Binary-specific machine-IR requirement, oracle, selection, and authority DAG. |
 | `stage-a-roundtrip-corpus.nix` | Generated static corpus and qualification result. |
 | `bochs-conformance.nix` | Pinned batched Bochs adapter. |
 | `singlestep-80386-conformance.nix` | Hardware-vector corpus packaging. |
@@ -253,9 +296,14 @@ enforce this with `xvfb-run` where Wine is used.
 | `stage-b-semantic-components.nix` | Component catalog phase. |
 | `stage-b-semantic-component-workspaces.nix` | Per-component workspace/check/qualification DAG. |
 | `stage-b-interpreter-package.nix` | Machine-IR interpreter package. |
-| `stage-b-native-object-graph.nix` | Per-source/header-closure native object DAG; compiler nodes do not depend on the parent graph. |
+| `stage-b-native-object-graph.nix` | Deterministic native object graph plus a CA compile/assembly realization; avoids evaluation-time reads of CA outputs. |
 | `stage-b-hybrid-candidate.nix` | Composes interpreter, native engine/runtime, cached objects, and a PE candidate. |
+| `stage-b-static-hybrid-completeness.nix` | Emits the legacy cacheable v1 diagnostic/proposal report; no candidate authority. |
+| `stage-b-static-hybrid-authority-v2.nix` | Content-addressed v2 evidence DAG from exact unit preparation through separately cached mutable-slot replay/promotion, SCC analysis, root/external/ISA/exception closure, and the final audit. |
+| `ca-python-json-phase.nix` | Generic CA phase constructor with explicit store dependencies, schema/status checking, and phase manifests. |
+| `stage-b-headless-diagnostic-run.nix` | Runs only a statically closed candidate in an isolated headless Wine session. |
 | `python-module-closure.nix` | Content-addressed transitive local-Python import closure for phase-specific invalidation. |
+| `python-module-index.json` | Generated checked local-import graph consumed by phase-specific Python closures. |
 | `stage-b-linked-libraries.nix` | Library constellation and replacement-plan DAG. |
 | `stage-b-source-call-substitutions.nix` | Call-frontier through source-binding DAG. |
 | `stage-b-source-component-assurance.nix` | Source component evidence aggregation. |
@@ -278,12 +326,21 @@ reviewed profiles are:
 - `pe32-kernel32-callable-resolvers-v1.json`
 - `pe32-kernel32-console-lockstep-v1.json`
 - `pe32-kernel32-lockstep-v1.json`
+- `pe32-kernel32-runtime-v1.json`
 - `pe32-mingw-directx-interface-extraction-v1.json`
 - `pe32-mingw-win32-function-extraction-v1.json`
 - `pe32-msvcrt-lockstep-v1.json`
 - `pe32-msvcrt-machine-runtime-v1.json`
+- `pe32-native-callthrough-runtime-v1.json`
 - `pe32-static-cutpoints-and-paired-callables-v1.json`
 - `pe32-win32-system-dll-abi-policy-v1.json`
+- `pe32-win32-windowing-runtime-v1.json`
+- `pe32-winmm-runtime-v1.json`
+- `pe32-win32-gui-launch-assumptions-v1.json`
+
+The launch-assumption template is deliberately non-authorizing. The Nix
+analysis phase binds it to the exact PE, checked static roots, and checked
+callback contracts before it can contribute entry-state evidence.
 
 `isa-catalogs/README.md` documents imported instruction catalogs;
 `pe32-i686-core-smoke-v1.json` is the small reviewed smoke catalog. Larger

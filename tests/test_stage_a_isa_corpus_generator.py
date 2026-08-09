@@ -177,6 +177,67 @@ def _report_payload(executor, backend_id: str, *, eax_delta: int = 1) -> dict:
 
 
 class StageAISACorpusGeneratorTests(unittest.TestCase):
+    def test_large_repeated_scan_counts_use_declared_finite_replay_control(self):
+        payload = v2_catalog_payload(
+            v2_entry(
+                "form-scan",
+                [
+                    {
+                        "class": "memory",
+                        "id": "memory-source-read-08",
+                        "width_bits": 8,
+                        "access": "read",
+                        "address": {
+                            "base": "edi",
+                            "index": None,
+                            "scale": 1,
+                            "displacement": 0,
+                            "segment": "flat",
+                        },
+                        "condition": None,
+                        "replay_control": {
+                            "count_location": {"register": "ecx", "lsb": 0},
+                            "count_width_bits": 32,
+                            "stop_value": {
+                                "kind": "register",
+                                "location": {"register": "eax", "lsb": 0},
+                                "width_bits": 8,
+                            },
+                        },
+                    },
+                    {
+                        "class": "register",
+                        "id": "register-32-gpr",
+                        "width_bits": 32,
+                        "reads": [
+                            {"register": "eax", "lsb": 0},
+                            {"register": "ecx", "lsb": 0},
+                        ],
+                        "writes": [
+                            {"register": "ecx", "lsb": 0},
+                            {"register": "edi", "lsb": 0},
+                        ],
+                    },
+                ],
+                instruction=[0xF2, 0xAE],
+            )
+        )
+        corpus = generate_boundary_isa_corpus(parse_isa_form_catalog(payload))
+        register_cases = {
+            case.coverage_cell.scenario: case
+            for case in corpus.cases
+            if case.coverage_cell.effect_id == "register-32-gpr"
+        }
+
+        maximum = register_cases[CoverageScenario.REGISTER_MAX_UNSIGNED]
+        self.assertEqual(maximum.initial_state.gprs.ecx, 0xFFFFFFFF)
+        self.assertEqual(maximum.initial_state.gprs.eax, 0xFFFFFFFF)
+        self.assertEqual(maximum.memory[0].data, b"\xff")
+
+        single = register_cases[CoverageScenario.REGISTER_ONE]
+        self.assertEqual(single.initial_state.gprs.ecx, 1)
+        self.assertEqual(single.memory[0].data, b"\x00")
+
     def test_generation_is_canonical_deterministic_and_boundary_biased(self):
         catalog = parse_isa_form_catalog(complete_catalog_payload())
         first = generate_boundary_isa_corpus(catalog, seed=17)
@@ -296,6 +357,45 @@ class StageAISACorpusGeneratorTests(unittest.TestCase):
             bytes.fromhex("00000000000000c0ff7f"),
         )
         self.assertNotEqual(x87_nan.initial_state.x87.tag_word, 0xFFFF)
+
+    def test_unreachable_page_edge_cell_is_not_generated(self):
+        payload = v2_catalog_payload(
+            v2_entry(
+                "form-index-only-byte-load",
+                [
+                    {
+                        "class": "memory",
+                        "id": "memory-source",
+                        "width_bits": 8,
+                        "access": "read",
+                        "address": {
+                            "base": None,
+                            "index": "ecx",
+                            "scale": 4,
+                            "displacement": 0x42C149,
+                            "segment": "flat",
+                        },
+                        "condition": None,
+                    }
+                ],
+                instruction=[0x8A, 0x04, 0x8D, 0x49, 0xC1, 0x42, 0x00],
+            )
+        )
+
+        corpus = generate_boundary_isa_corpus(
+            parse_isa_form_catalog(payload), seed=17
+        )
+
+        self.assertEqual(
+            {
+                case.coverage_cell.scenario
+                for case in corpus.cases
+            },
+            {
+                CoverageScenario.MEMORY_ALIGNED_ZERO,
+                CoverageScenario.MEMORY_ALIGNED_MAX,
+            },
+        )
 
     def test_v2_noop_subregister_and_state_effects_generate_canonical_cases(self):
         high_outputs = defined_outputs()

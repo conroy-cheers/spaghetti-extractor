@@ -1500,9 +1500,7 @@ def _is_padding_bytes(binary: StageABinary, rva_start: int, data: bytes) -> bool
     instructions = list(dis.disasm(data, binary.image_base + rva_start))
     if sum(int(insn.size) for insn in instructions) != len(data):
         return False
-    if all(_is_padding_instruction(insn) for insn in instructions):
-        return True
-    return _is_alignment_jump_over_padding(binary, BlockSide(rva_start, rva_start + len(data)), instructions)
+    return all(_is_padding_instruction(insn) for insn in instructions)
 
 
 def _is_padding_instruction(insn: Any) -> bool:
@@ -1515,32 +1513,6 @@ def _is_padding_instruction(insn: Any) -> bool:
         return False
     mem = source.mem
     return destination.reg == mem.base and not mem.index and mem.disp == 0
-
-
-def _is_alignment_jump_over_padding(binary: StageABinary, span: BlockSide, instructions: list[Any]) -> bool:
-    if not instructions:
-        return False
-    insn = instructions[0]
-    if insn.mnemonic not in {"jmp", "ljmp"}:
-        return False
-    target = _resolved_branch_target(binary, insn)
-    if target is None:
-        return False
-    insn_end = int(insn.address - binary.image_base) + int(insn.size)
-    if target < insn_end:
-        return False
-    if target < span.rva_end and not all(_is_padding_instruction(item) for item in instructions[1:]):
-        return False
-    bridge_end = max(span.rva_end, target)
-    section = _executable_section_covering_range(binary, span.rva_start, bridge_end)
-    if section is None:
-        return False
-    skipped_start = insn_end
-    skipped_end = target
-    if skipped_start == skipped_end:
-        return target == span.rva_end
-    skipped = binary.pe.get_data(skipped_start, skipped_end - skipped_start)
-    return len(skipped) == skipped_end - skipped_start and _is_padding_bytes(binary, skipped_start, skipped)
 
 
 def _instruction_report(binary: StageABinary, insn: Any) -> dict[str, Any]:

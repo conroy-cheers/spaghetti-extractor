@@ -167,7 +167,11 @@ def pe32_tls_image(callback_rvas: tuple[int, ...]) -> bytes:
 
 
 def pe32_image_with_writable_data(
-    code: bytes, *, relocation_offsets: list[int], data_size: int = 4
+    code: bytes,
+    *,
+    relocation_offsets: list[int],
+    relocation_page_rva: int = 0x1000,
+    data_size: int = 4,
 ) -> bytes:
     file_alignment = 0x200
     section_alignment = 0x1000
@@ -180,7 +184,7 @@ def pe32_image_with_writable_data(
     if len(entries) % 2:
         entries.append(0)
     relocations = (
-        struct.pack("<II", text_rva, 8 + 2 * len(entries))
+        struct.pack("<II", relocation_page_rva, 8 + 2 * len(entries))
         + struct.pack("<" + "H" * len(entries), *entries)
     )
     dos = bytearray(0x80)

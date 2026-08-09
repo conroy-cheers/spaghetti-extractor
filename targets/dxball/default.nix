@@ -1,4 +1,15 @@
-{ pkgs, pythonEnv, pythonSource, profileSource, candidatePythonSource }:
+{
+  pkgs,
+  pythonEnv,
+  pythonSource,
+  isaPythonSource,
+  profileSource,
+  candidatePythonSource,
+  spaghettiExtractor,
+  kernelCache,
+  semanticKernel,
+  bochsRunner,
+}:
 
 let
   archive = pkgs.fetchurl {
@@ -41,44 +52,105 @@ let
     inherit pkgs pythonEnv pythonSource;
     spec = ../../profiles/pe32-mingw-directx-interface-extraction-v1.json;
   };
+  runtimeMachineImportProfiles = [
+    "${profileSource}/profiles/pe32-msvcrt-machine-runtime-v1.json"
+    "${profileSource}/profiles/pe32-kernel32-runtime-v1.json"
+    "${profileSource}/profiles/pe32-native-callthrough-runtime-v1.json"
+    "${profileSource}/profiles/pe32-win32-windowing-runtime-v1.json"
+    "${profileSource}/profiles/pe32-winmm-runtime-v1.json"
+  ];
+  internalFunctionProfile = pkgs.writeText
+    "dxball-1.09-internal-function-contracts-v1.json"
+    (builtins.readFile ./intent/internal-functions.json);
   analysis = import ../../nix/stage-b-component-analysis.nix {
     inherit pkgs pythonEnv pythonSource;
+    inherit isaPythonSource;
     original = "${original}/DXBall.exe";
-    externalProfile = "${profileSource}/profiles/pe32-msvcrt-machine-runtime-v1.json";
+    externalProfile = builtins.head runtimeMachineImportProfiles;
+    additionalMachineImportProfiles = builtins.tail runtimeMachineImportProfiles;
     externalInterfaceProfiles = [
       "${interfaceProfile}/interface-profile.json"
     ];
+    callableExternalProfiles = [
+      "${profileSource}/profiles/pe32-kernel32-callable-resolvers-v1.json"
+    ];
+    internalFunctionContractProfiles = [
+      internalFunctionProfile
+    ];
+    launchProfileTemplate =
+      "${profileSource}/profiles/pe32-win32-gui-launch-assumptions-v1.json";
     namePrefix = "spaghetti-extractor-dxball-1.09";
     maxUnits = 512;
     maxCandidatesPerSeed = 12;
+    isaSelectionAuthority = isaQualification.selectionAuthority.artifact;
+  };
+  isaQualification = import ../../nix/stage-a-machine-ir-isa-qualification-v2.nix {
+    inherit
+      pkgs
+      pythonEnv
+      pythonSource
+      isaPythonSource
+      spaghettiExtractor
+      kernelCache
+      semanticKernel
+      bochsRunner
+      ;
+    requirements =
+      analysis.staticHybridAuthorityV2.isaRequirements.artifact;
+    name = "spaghetti-extractor-dxball-1.09-isa-v2";
   };
   hybrid = import ../../nix/stage-b-hybrid-candidate.nix {
     inherit pkgs pythonEnv;
     pythonSource = candidatePythonSource;
     machineIr = analysis.machineIr;
     staticExport = analysis.staticExport;
-    machineImportProfiles = [
-      "${profileSource}/profiles/pe32-msvcrt-machine-runtime-v1.json"
+    staticCompletenessReport = analysis.staticHybridCompleteness.report;
+    staticAuthorityV2 = analysis.staticHybridAuthorityV2;
+    machineImportProfiles = runtimeMachineImportProfiles ++ [
+      "${interfaceProfile}/interface-profile.json"
     ];
     namePrefix = "spaghetti-extractor-dxball-1.09";
-    allowDeferredPotentialTransfers = true;
+    allowDeferredPotentialTransfers = false;
   };
   hybridDiagnostic = import ../../nix/stage-b-hybrid-candidate.nix {
     inherit pkgs pythonEnv;
     pythonSource = candidatePythonSource;
     machineIr = analysis.machineIr;
     staticExport = analysis.staticExport;
-    machineImportProfiles = [
-      "${profileSource}/profiles/pe32-msvcrt-machine-runtime-v1.json"
+    staticCompletenessReport = analysis.staticHybridCompleteness.report;
+    staticAuthorityV2 = analysis.staticHybridAuthorityV2;
+    machineImportProfiles = runtimeMachineImportProfiles ++ [
+      "${interfaceProfile}/interface-profile.json"
     ];
     namePrefix = "spaghetti-extractor-dxball-1.09-diagnostic";
-    allowDeferredPotentialTransfers = true;
+    allowDeferredPotentialTransfers = false;
     diagnosticFailureTrap = true;
+  };
+  diagnosticRun = import ../../nix/stage-b-headless-diagnostic-run.nix {
+    inherit pkgs;
+    namePrefix = "spaghetti-extractor-dxball-1.09";
+    candidateBinary = "${hybridDiagnostic.candidate}/candidate.exe";
+    runtimeAssets = "${original}/runtime";
+    executableName = "DXBall.exe";
+    inputKeys = [ "Return" ];
+    screenshotAfterSeconds = 15;
   };
   inventory = analysis.originalInventory;
 in
 {
-  inherit archive installer original interfaceProfile inventory analysis hybrid hybridDiagnostic;
+  inherit
+    archive
+    installer
+    original
+    interfaceProfile
+    internalFunctionProfile
+    inventory
+    analysis
+    isaQualification
+    hybrid
+    hybridDiagnostic
+    diagnosticRun
+    ;
   intent = import ../../nix/stage-b-target-intent.nix {
     inherit pkgs pythonEnv pythonSource;
     target = ./.;

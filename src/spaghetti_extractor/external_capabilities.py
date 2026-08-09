@@ -6,16 +6,27 @@ consume these machine-level identities, arguments, and effect boundaries.
 
 from __future__ import annotations
 
+import copy
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .errors import StageAInputError
+from .machine_abi import MachineCallABI, resolve_machine_call_abi
+from .machine_import_profiles import (
+    NATIVE_DLL_CALLTHROUGH_EFFECT_MODEL,
+    NATIVE_DLL_CALLTHROUGH_PREREQUISITES,
+    MachineImportIdentity,
+)
+from .util import sha256_file
 
 
 CALLABLE_EXTERNAL_CAPABILITY_FORMAT = (
     "stage-a-callable-external-capability-v3"
 )
+CALLABLE_EXTERNAL_PROFILE_FORMAT = "stage-a-callable-external-profile-v2"
 
 _ROOT_FIELDS = frozenset({
     "format",
@@ -74,6 +85,45 @@ _ARGUMENT_REGISTERS = _REGISTERS | {"esp"}
 _TRANSFERS = frozenset({"call", "jump"})
 _MEMORY_EFFECTS = frozenset({"none", "read_only", "argument_ranges"})
 _CALLABLE_RESULT_RELATION = "opaque_callable_capability"
+
+_PROFILE_ROOT_FIELDS = frozenset({"format", "id", "model", "resolvers", "targets"})
+_PROFILE_RESOLVER_FIELDS = frozenset({
+    "id",
+    "import",
+    "result_register",
+    "module_argument_index",
+    "identity_argument_indices",
+    "nullable",
+})
+_PROFILE_TARGET_FIELDS = frozenset({
+    "id",
+    "resolver_id",
+    "module",
+    "identity_arguments",
+    "target",
+    "machine_contract",
+    "transfers",
+})
+_PROFILE_MODULE_FIELDS = frozenset({
+    "loader_import",
+    "loader_name_argument_index",
+    "bytes",
+})
+_PROFILE_IDENTITY_FIELDS = frozenset({"kind", "index", "bytes"})
+_PROFILE_TRANSFERS = frozenset({"call", "jump"})
+_NATIVE_CONTRACT_FIELDS = frozenset({
+    "id",
+    "import",
+    "abi_template",
+    "arity",
+    "disposition",
+    "result_register_relations",
+    "effect_model",
+    "memory_effect",
+    "memory_footprints",
+    "world_effect",
+    "callback_effect",
+})
 
 
 def _object(value: object, context: str) -> Mapping[str, Any]:
@@ -179,6 +229,333 @@ def _argument_sources(value: object, context: str) -> tuple[CallableArgumentSour
     return tuple(
         CallableArgumentSourceSpec.parse(item, f"{context}[{index}]")
         for index, item in enumerate(_array(value, context))
+    )
+
+
+@dataclass(frozen=True)
+class CallableResolverProfileSpec:
+    id: int
+    identity: MachineImportIdentity
+    result_register: str
+    module_argument_index: int
+    identity_argument_indices: tuple[int, ...]
+    nullable: bool
+
+
+@dataclass(frozen=True)
+class CallableModuleProfileSpec:
+    loader_identity: MachineImportIdentity
+    loader_name_argument_index: int
+    name_bytes: bytes
+
+    @property
+    def name(self) -> str:
+        return self.name_bytes.decode("ascii")
+
+
+@dataclass(frozen=True)
+class CallableExternalTargetProfileSpec:
+    id: int
+    resolver_id: int
+    module: CallableModuleProfileSpec
+    name_argument_index: int
+    name_bytes: bytes
+    identity: MachineImportIdentity
+    abi: MachineCallABI
+    argument_words: int
+    machine_contract: Mapping[str, Any]
+    transfers: tuple[str, ...]
+
+    @property
+    def name(self) -> str:
+        return self.name_bytes.decode("ascii")
+
+    def target_json(
+        self,
+        *,
+        profile_id: str,
+        profile_sha256: str,
+        resolver: CallableResolverProfileSpec,
+        transfer: str,
+    ) -> dict[str, Any]:
+        if transfer not in self.transfers:
+            raise StageAInputError(
+                f"callable target {profile_id}:{self.id} does not allow {transfer}"
+            )
+        return {
+            "external_protocol": {
+                "kind": "pe32-resolved-export",
+                "profile_id": profile_id,
+                "profile_sha256": profile_sha256,
+                "target_id": self.id,
+                "resolver_import": _identity_json(resolver.identity),
+                "loader_import": _identity_json(self.module.loader_identity),
+                "module": self.module.name,
+                "name": self.name,
+                "target": _identity_json(self.identity),
+                "transfer_kind": transfer,
+                "machine_contract": copy.deepcopy(dict(self.machine_contract)),
+            },
+            "abi": self.abi.as_json(),
+            "argument_words": self.argument_words,
+            "out_interfaces": [],
+        }
+
+
+@dataclass(frozen=True)
+class CallableExternalProfile:
+    path: Path
+    profile_id: str
+    sha256: str
+    resolvers: tuple[CallableResolverProfileSpec, ...]
+    targets: tuple[CallableExternalTargetProfileSpec, ...]
+
+    def resolver_by_id(self) -> dict[int, CallableResolverProfileSpec]:
+        return {resolver.id: resolver for resolver in self.resolvers}
+
+    def targets_by_resolver(
+        self, resolver_id: int
+    ) -> tuple[CallableExternalTargetProfileSpec, ...]:
+        return tuple(target for target in self.targets if target.resolver_id == resolver_id)
+
+    def target_by_id(self, target_id: int) -> CallableExternalTargetProfileSpec | None:
+        return next((target for target in self.targets if target.id == target_id), None)
+
+
+def _identity_json(identity: MachineImportIdentity) -> dict[str, Any]:
+    return {"dll": identity.dll, identity.kind: identity.value}
+
+
+def _ascii_identity_bytes(value: object, context: str) -> bytes:
+    raw = bytes(_byte_list(value, context))
+    if not raw or b"\0" in raw:
+        raise StageAInputError(f"{context} must be a nonempty unterminated string")
+    try:
+        decoded = raw.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise StageAInputError(f"{context} must contain ASCII identity bytes") from exc
+    if decoded.encode("ascii") != raw:
+        raise StageAInputError(f"{context} is not canonical ASCII")
+    return raw
+
+
+def _parse_profile_identity(value: object, context: str) -> MachineImportIdentity:
+    return MachineImportIdentity.from_mapping(_object(value, context), context=context)
+
+
+def _parse_native_target_contract(
+    value: object,
+    *,
+    identity: MachineImportIdentity,
+    context: str,
+) -> tuple[Mapping[str, Any], MachineCallABI, int]:
+    contract = _object(value, context)
+    _exact_fields(contract, _NATIVE_CONTRACT_FIELDS, context)
+    if _parse_profile_identity(contract["import"], f"{context}.import") != identity:
+        raise StageAInputError(f"{context}.import differs from the named target")
+    abi = resolve_machine_call_abi(contract.get("abi_template"))
+    if abi is None:
+        raise StageAInputError(f"{context}.abi_template is unsupported")
+    arity = _object(contract.get("arity"), f"{context}.arity")
+    if set(arity) != {"kind", "words"} or arity.get("kind") != "fixed":
+        raise StageAInputError(f"{context}.arity must be an exact fixed word count")
+    argument_words = _natural(arity.get("words"), f"{context}.arity.words")
+    if argument_words > 256:
+        raise StageAInputError(f"{context}.arity.words exceeds the PE32 bound")
+    if contract.get("disposition") != "returns":
+        raise StageAInputError(f"{context}.disposition must be returns")
+    results = _array(
+        contract.get("result_register_relations"),
+        f"{context}.result_register_relations",
+    )
+    for index, result in enumerate(results):
+        row = _object(result, f"{context}.result_register_relations[{index}]")
+        if (
+            set(row) != {"register", "relation"}
+            or row.get("register") not in {"eax", "edx"}
+            or row.get("relation") not in {"exact", "related_word"}
+        ):
+            raise StageAInputError(
+                f"{context}.result_register_relations[{index}] is invalid"
+            )
+    effect = _object(contract.get("effect_model"), f"{context}.effect_model")
+    prerequisites = _object(
+        effect.get("prerequisites"), f"{context}.effect_model.prerequisites"
+    )
+    if (
+        set(effect) != {"kind", "prerequisites"}
+        or effect.get("kind") != NATIVE_DLL_CALLTHROUGH_EFFECT_MODEL
+        or set(prerequisites) != NATIVE_DLL_CALLTHROUGH_PREREQUISITES
+        or any(prerequisites.get(key) is not True for key in prerequisites)
+    ):
+        raise StageAInputError(
+            f"{context} must require exact same-pinned-DLL native call-through"
+        )
+    if (
+        contract.get("memory_effect") != "nativeCallthrough"
+        or contract.get("memory_footprints") != []
+        or contract.get("world_effect") != "nativeCallthrough"
+        or contract.get("callback_effect") != "none"
+    ):
+        raise StageAInputError(
+            f"{context} must explicitly use non-callback native call-through effects"
+        )
+    return copy.deepcopy(dict(contract)), abi, argument_words
+
+
+def load_callable_external_profile(path: Path | str) -> CallableExternalProfile:
+    source = Path(path).resolve()
+    try:
+        payload = _object(json.loads(source.read_text(encoding="utf-8")), str(source))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise StageAInputError(f"cannot read callable external profile {source}: {exc}") from exc
+    _exact_fields(payload, _PROFILE_ROOT_FIELDS, str(source))
+    if payload.get("format") != CALLABLE_EXTERNAL_PROFILE_FORMAT:
+        raise StageAInputError(f"unsupported callable external profile {source}")
+    if payload.get("model") != "x86-pe32":
+        raise StageAInputError(f"{source} has an unsupported machine model")
+    profile_id = payload.get("id")
+    if not isinstance(profile_id, str) or not profile_id:
+        raise StageAInputError(f"{source} has no profile id")
+
+    resolvers: list[CallableResolverProfileSpec] = []
+    for index, raw in enumerate(_array(payload.get("resolvers"), f"{source}.resolvers")):
+        context = f"{source}.resolvers[{index}]"
+        row = _object(raw, context)
+        _exact_fields(row, _PROFILE_RESOLVER_FIELDS, context)
+        register = row.get("result_register")
+        if register not in _REGISTERS:
+            raise StageAInputError(f"{context}.result_register is unsupported")
+        module_index = _natural(
+            row.get("module_argument_index"), f"{context}.module_argument_index"
+        )
+        identity_indices = tuple(
+            _natural(value, f"{context}.identity_argument_indices[{position}]")
+            for position, value in enumerate(
+                _array(
+                    row.get("identity_argument_indices"),
+                    f"{context}.identity_argument_indices",
+                )
+            )
+        )
+        if not identity_indices or len(set(identity_indices)) != len(identity_indices):
+            raise StageAInputError(
+                f"{context}.identity_argument_indices must be nonempty and unique"
+            )
+        nullable = row.get("nullable")
+        if not isinstance(nullable, bool):
+            raise StageAInputError(f"{context}.nullable must be a boolean")
+        resolvers.append(CallableResolverProfileSpec(
+            id=_natural(row.get("id"), f"{context}.id"),
+            identity=_parse_profile_identity(row.get("import"), f"{context}.import"),
+            result_register=str(register),
+            module_argument_index=module_index,
+            identity_argument_indices=identity_indices,
+            nullable=nullable,
+        ))
+    if not resolvers:
+        raise StageAInputError(f"{source}.resolvers must not be empty")
+    _unique_ids(resolvers, f"{source}.resolvers")
+    if len({resolver.identity for resolver in resolvers}) != len(resolvers):
+        raise StageAInputError(f"{source}.resolvers contains ambiguous import identities")
+    resolver_by_id = {resolver.id: resolver for resolver in resolvers}
+
+    targets: list[CallableExternalTargetProfileSpec] = []
+    route_keys: set[tuple[int, bytes, bytes]] = set()
+    for index, raw in enumerate(_array(payload.get("targets"), f"{source}.targets")):
+        context = f"{source}.targets[{index}]"
+        row = _object(raw, context)
+        _exact_fields(row, _PROFILE_TARGET_FIELDS, context)
+        resolver_id = _natural(row.get("resolver_id"), f"{context}.resolver_id")
+        resolver = resolver_by_id.get(resolver_id)
+        if resolver is None:
+            raise StageAInputError(f"{context} names an unknown resolver")
+        module_row = _object(row.get("module"), f"{context}.module")
+        _exact_fields(module_row, _PROFILE_MODULE_FIELDS, f"{context}.module")
+        module = CallableModuleProfileSpec(
+            loader_identity=_parse_profile_identity(
+                module_row.get("loader_import"), f"{context}.module.loader_import"
+            ),
+            loader_name_argument_index=_natural(
+                module_row.get("loader_name_argument_index"),
+                f"{context}.module.loader_name_argument_index",
+            ),
+            name_bytes=_ascii_identity_bytes(
+                module_row.get("bytes"), f"{context}.module.bytes"
+            ),
+        )
+        identities = _array(
+            row.get("identity_arguments"), f"{context}.identity_arguments"
+        )
+        if len(identities) != 1:
+            raise StageAInputError(
+                f"{context}.identity_arguments must contain one static name"
+            )
+        identity_row = _object(identities[0], f"{context}.identity_arguments[0]")
+        _exact_fields(
+            identity_row, _PROFILE_IDENTITY_FIELDS, f"{context}.identity_arguments[0]"
+        )
+        if identity_row.get("kind") != "canonical_static_string":
+            raise StageAInputError(
+                f"{context}.identity_arguments[0] must be canonical_static_string"
+            )
+        name_index = _natural(
+            identity_row.get("index"), f"{context}.identity_arguments[0].index"
+        )
+        if (name_index,) != resolver.identity_argument_indices:
+            raise StageAInputError(
+                f"{context}.identity_arguments does not exactly cover the resolver identity"
+            )
+        name_bytes = _ascii_identity_bytes(
+            identity_row.get("bytes"), f"{context}.identity_arguments[0].bytes"
+        )
+        identity = _parse_profile_identity(row.get("target"), f"{context}.target")
+        if (
+            identity.kind != "symbol"
+            or identity.dll.encode("ascii") != module.name_bytes.lower()
+            or str(identity.value).encode("ascii") != name_bytes
+        ):
+            raise StageAInputError(
+                f"{context}.target must exactly match the module and static symbol name"
+            )
+        contract, abi, argument_words = _parse_native_target_contract(
+            row.get("machine_contract"), identity=identity, context=f"{context}.machine_contract"
+        )
+        transfers = tuple(
+            str(value)
+            for value in _array(row.get("transfers"), f"{context}.transfers")
+        )
+        if (
+            not transfers
+            or len(set(transfers)) != len(transfers)
+            or any(value not in _PROFILE_TRANSFERS for value in transfers)
+        ):
+            raise StageAInputError(f"{context}.transfers must be unique call/jump values")
+        route_key = (resolver_id, module.name_bytes.lower(), name_bytes)
+        if route_key in route_keys:
+            raise StageAInputError(f"{context} duplicates a resolver module/name route")
+        route_keys.add(route_key)
+        targets.append(CallableExternalTargetProfileSpec(
+            id=_natural(row.get("id"), f"{context}.id"),
+            resolver_id=resolver_id,
+            module=module,
+            name_argument_index=name_index,
+            name_bytes=name_bytes,
+            identity=identity,
+            abi=abi,
+            argument_words=argument_words,
+            machine_contract=contract,
+            transfers=transfers,
+        ))
+    if not targets:
+        raise StageAInputError(f"{source}.targets must not be empty")
+    _unique_ids(targets, f"{source}.targets")
+    return CallableExternalProfile(
+        path=source,
+        profile_id=profile_id,
+        sha256=sha256_file(source),
+        resolvers=tuple(resolvers),
+        targets=tuple(targets),
     )
 
 
@@ -613,7 +990,13 @@ def parse_callable_external_capability_artifact(
 
 __all__ = [
     "CALLABLE_EXTERNAL_CAPABILITY_FORMAT",
+    "CALLABLE_EXTERNAL_PROFILE_FORMAT",
     "CallableArgumentSourceSpec",
     "CallableExternalCapabilityArtifact",
+    "CallableExternalProfile",
+    "CallableExternalTargetProfileSpec",
+    "CallableModuleProfileSpec",
+    "CallableResolverProfileSpec",
+    "load_callable_external_profile",
     "parse_callable_external_capability_artifact",
 ]

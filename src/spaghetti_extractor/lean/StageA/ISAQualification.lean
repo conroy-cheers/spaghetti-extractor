@@ -139,13 +139,18 @@ inductive InstructionSemanticForm where
   | x87Initialize
   | x87StoreStatusAx
   | x87Examine
+  | moveBytes (repeated : Bool)
+  | moveWords (repeated : Bool)
   | moveDwords (repeated : Bool)
+  | storeBytes (repeated : Bool)
+  | storeWords (repeated : Bool)
   | storeDwords (repeated : Bool)
   | scanByteNotEqual
   | callIndirect (target : Operand32SemanticForm)
   | jumpIndirect (target : Operand32SemanticForm)
   | pushOperand (source : Operand32SemanticForm)
   | movFs32 (source : AddressingSemanticForm)
+  | movToFs32 (destination : AddressingSemanticForm)
   | divideUnsigned (source : Operand32SemanticForm)
   | divideSigned (source : Operand32SemanticForm)
   | atomicCompareExchange (destination : AddressingSemanticForm)
@@ -250,13 +255,18 @@ def Instruction.semanticForm : Instruction -> InstructionSemanticForm
   | .x87Initialize => .x87Initialize
   | .x87StoreStatusAx => .x87StoreStatusAx
   | .x87Examine => .x87Examine
+  | .moveBytes repeated => .moveBytes repeated
+  | .moveWords repeated => .moveWords repeated
   | .moveDwords repeated => .moveDwords repeated
+  | .storeBytes repeated => .storeBytes repeated
+  | .storeWords repeated => .storeWords repeated
   | .storeDwords repeated => .storeDwords repeated
   | .scanByteNotEqual => .scanByteNotEqual
   | .callIndirect target => .callIndirect target.semanticForm
   | .jumpIndirect target => .jumpIndirect target.semanticForm
   | .pushOperand source => .pushOperand source.semanticForm
   | .movFs32 _ source => .movFs32 source.semanticForm
+  | .movToFs32 destination _ => .movToFs32 destination.semanticForm
   | .divideUnsigned source => .divideUnsigned source.semanticForm
   | .divideSigned source => .divideSigned source.semanticForm
   | .atomicCompareExchange destination _ =>

@@ -17,12 +17,18 @@ repair iteration.
 1. Inventory the original PE, executable bytes, imports, relocations, roots,
    code regions, and required ISA forms.
 2. Emit an original-only reference contract and canonical machine IR.
-3. Generate a baseline interpreter or C representation.
-4. Recognize libraries and external interfaces, then propose components.
-5. Replace components with portable C using explicit interface contracts.
-6. Rebuild the candidate and run static contract checks.
-7. Run curated candidate-only behavior tests under headless Wine.
-8. Repeat until no material reconstruction gaps remain.
+3. Recognize libraries and external interfaces, then build the immutable v2
+   entry, provenance, call, external-site, exception, and ISA evidence graph.
+4. Require a passing v2 final audit, `allowDeferredPotentialTransfers = false`,
+   and a separate complete fallback-coverage receipt before generating an
+   executable candidate. The legacy v1 completeness report is diagnostic only.
+5. Generate the complete machine-oriented baseline and propose components.
+6. Replace components with portable C using explicit interface contracts while
+   retaining complete fallback coverage.
+7. Run curated candidate-only behavior tests under headless Wine only after the
+   static gate passes.
+8. Repeat lifting and candidate-only validation without using runtime execution
+   to discover missing original regions.
 
 Generated analyses are proposals unless a checker explicitly qualifies them.
 Unsupported instructions, ambiguous targets, stale hashes, missing interfaces,
@@ -62,7 +68,8 @@ and invalidates candidate checks by content hash.
   source-rendering, candidate assurance, and functional-test commands.
 - `spaghetti-extractor-slice`: incremental component/slice iteration.
 - `flake.lib`: generic Nix constructors for ISA qualification, round trips,
-  components, libraries, source substitutions, and functional suites.
+  components, libraries, static hybrid completeness, gated candidate builds,
+  headless diagnostics, source substitutions, and functional suites.
 - `targets/`: validation bundles containing authored intent and source, never
   generic Python implementation code.
 

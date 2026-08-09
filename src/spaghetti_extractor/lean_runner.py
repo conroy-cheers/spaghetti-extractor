@@ -39,6 +39,7 @@ def run_lean_module_graph(
     bundle: str,
     cancel_event: Event | None = None,
     command_timeout_seconds: float = 300,
+    emit_c: bool = False,
 ) -> dict[str, Any]:
     """Compile one closed ``StageA`` import graph in dependency order."""
 
@@ -107,10 +108,21 @@ def run_lean_module_graph(
             }
         source = stage_a / f"{module}.lean"
         output = stage_a / f"{module}.olean"
+        c_output = stage_a / f"{module}.c"
         dependency_outputs = [stage_a / f"{name}.olean" for name in imports[module]]
-        if _output_current(source, output, dependency_outputs):
+        if _output_current(source, output, dependency_outputs) and (
+            not emit_c or _output_current(source, c_output, dependency_outputs)
+        ):
             continue
-        command = [lean, "-o", f"StageA/{module}.olean", f"StageA/{module}.lean"]
+        command = [
+            lean,
+            "--trust=0",
+            "-o",
+            f"StageA/{module}.olean",
+        ]
+        if emit_c:
+            command.extend(["-c", f"StageA/{module}.c"])
+        command.append(f"StageA/{module}.lean")
         commands.append(command)
         try:
             completed = subprocess.run(

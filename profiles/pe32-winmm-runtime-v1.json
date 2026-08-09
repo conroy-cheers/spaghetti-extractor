@@ -1,0 +1,191 @@
+{
+  "format": "stage-a-static-machine-import-profile-v1",
+  "id": "pe32-winmm-runtime-v1",
+  "default_callback_effect": "none",
+  "machine_import_signatures": [
+    {
+      "id": "winmm.dll!midiOutPrepareHeader",
+      "import": {"dll": "winmm.dll", "symbol": "midiOutPrepareHeader"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 3},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "effect_model": {
+        "kind": "exact_native_dll_callthrough_v1",
+        "prerequisites": {
+          "same_pinned_dll_implementation": true,
+          "exact_machine_arguments": true,
+          "candidate_address_space_used_directly": true
+        }
+      },
+      "memory_effect": "nativeCallthrough",
+      "memory_footprints": [],
+      "world_effect": "nativeCallthrough",
+      "callback_effect": "none"
+    },
+    {
+      "id": "winmm.dll!midiOutReset",
+      "import": {"dll": "winmm.dll", "symbol": "midiOutReset"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "effect_model": {
+        "kind": "exact_native_dll_callthrough_v1",
+        "prerequisites": {
+          "same_pinned_dll_implementation": true,
+          "exact_machine_arguments": true,
+          "candidate_address_space_used_directly": true
+        }
+      },
+      "memory_effect": "nativeCallthrough",
+      "memory_footprints": [],
+      "world_effect": "nativeCallthrough",
+      "callback_effect": "none"
+    },
+    {
+      "id": "winmm.dll!midiStreamOpen",
+      "import": {"dll": "winmm.dll", "symbol": "midiStreamOpen"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 6},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {
+          "access": "write",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 4},
+          "nullable": false
+        },
+        {
+          "access": "read",
+          "base_argument": 1,
+          "offset": 0,
+          "size": {"kind": "argument", "argument": 2, "scale": 4},
+          "nullable": false
+        }
+      ],
+      "world_effect": "callbackRegistration",
+      "callback_effect": "explicit",
+      "callback_source": {"kind": "argument_word", "argument": 3},
+      "callback_lifetime": "until_midi_stream_closed_or_process_exit",
+      "callback_abi": {
+        "kind": "generic_callback",
+        "argument_words": 5,
+        "stack_cleanup_bytes": 20,
+        "nullable": false
+      },
+      "callback_behavior": {
+        "kind": "nested_native_callback_v1",
+        "provider_relation": "same_pinned_native_provider_v1",
+        "delivery": "during_call_or_until_lifetime_end",
+        "activation": {
+          "kind": "masked_argument_equals",
+          "argument": 5,
+          "mask": 458752,
+          "value": 196608
+        },
+        "message_argument": 1,
+        "message_values": [967, 968, 969, 970],
+        "resource_argument": 0,
+        "instance_binding": {
+          "callback_argument": 2,
+          "registration_argument": 4
+        },
+        "payload_arguments": [3, 4]
+      }
+    },
+    {
+      "id": "winmm.dll!midiStreamOut",
+      "import": {"dll": "winmm.dll", "symbol": "midiStreamOut"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 3},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "effect_model": {
+        "kind": "exact_native_dll_callthrough_v1",
+        "prerequisites": {
+          "same_pinned_dll_implementation": true,
+          "exact_machine_arguments": true,
+          "candidate_address_space_used_directly": true
+        }
+      },
+      "memory_effect": "nativeCallthrough",
+      "memory_footprints": [],
+      "world_effect": "nativeCallthrough",
+      "callback_effect": "none"
+    },
+    {
+      "id": "winmm.dll!midiStreamProperty",
+      "import": {"dll": "winmm.dll", "symbol": "midiStreamProperty"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 3},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "effect_model": {
+        "kind": "exact_native_dll_callthrough_v1",
+        "prerequisites": {
+          "same_pinned_dll_implementation": true,
+          "exact_machine_arguments": true,
+          "candidate_address_space_used_directly": true
+        }
+      },
+      "memory_effect": "nativeCallthrough",
+      "memory_footprints": [],
+      "world_effect": "nativeCallthrough",
+      "callback_effect": "none"
+    },
+    {
+      "id": "winmm.dll!midiStreamRestart",
+      "import": {"dll": "winmm.dll", "symbol": "midiStreamRestart"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "effect_model": {
+        "kind": "exact_native_dll_callthrough_v1",
+        "prerequisites": {
+          "same_pinned_dll_implementation": true,
+          "exact_machine_arguments": true,
+          "candidate_address_space_used_directly": true
+        }
+      },
+      "memory_effect": "nativeCallthrough",
+      "memory_footprints": [],
+      "world_effect": "nativeCallthrough",
+      "callback_effect": "none"
+    },
+    {
+      "import": {"dll": "winmm.dll", "symbol": "midiStreamClose"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "winmm.dll", "symbol": "midiStreamPause"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "winmm.dll", "symbol": "timeGetTime"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 0},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    }
+  ]
+}

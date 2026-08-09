@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,7 @@ class SelectedImportABI:
     entry_key: str
     entry_index: int
     argument_words: int | None = None
+    contract: Mapping[str, Any] | None = None
 
     def as_json(self) -> dict[str, Any]:
         imported: dict[str, Any] = {"dll": self.identity.dll}
@@ -168,6 +170,7 @@ def load_selected_import_abis(
             entry_key=selected.entry_key,
             entry_index=selected.entry_index,
             argument_words=selected.argument_words,
+            contract=copy.deepcopy(dict(selected.contract)),
         )
     return result
 

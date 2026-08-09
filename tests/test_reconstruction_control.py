@@ -6,6 +6,7 @@ from hashlib import sha256
 from typing import Any
 
 from spaghetti_extractor.reconstruction_control import (
+    classify_overlapping_instruction_starts,
     derive_rooted_reachable_units,
     propose_semantic_clusters,
     recover_static_pe32_jump_table_inventory,
@@ -345,6 +346,10 @@ class StaticPE32JumpTableTests(unittest.TestCase):
         self.assertEqual(result["table"]["rva_start"], TABLE_RVA)
         self.assertEqual(result["table"]["rva_end"], TABLE_RVA + 16)
         self.assertTrue(result["table"]["contiguous"])
+        self.assertEqual(
+            result["table"]["bytes_sha256"],
+            sha256(_table_bytes(target_rvas)).hexdigest(),
+        )
         self.assertEqual(result["target_rvas"], target_rvas)
 
         malformed = recover_static_pe32_jump_table_inventory(
@@ -598,6 +603,7 @@ class RootedReachabilityTests(unittest.TestCase):
         )
         self.assertEqual(result["frontiers"][0]["reason"], "unresolved_indirect_exit")
 
+
     def test_partially_resolved_indirect_inventory_adds_no_edges(self) -> None:
         result = derive_rooted_reachable_units(
             units=["root", "known"],
@@ -734,6 +740,83 @@ class RootedReachabilityTests(unittest.TestCase):
             }],
             indirect_exits=[{
                 "id": "exit:method",
+                "source_unit_id": "root",
+                "kind": "indirect_call",
+            }],
+        )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["frontiers"], [])
+
+    def test_profile_bound_resolved_export_closes_external_exit(self) -> None:
+        target = {"dll": "user32.dll", "symbol": "MessageBoxA"}
+        abi = {
+            "template": "pe32-stdcall-v1",
+            "preserved_registers": ["ebp", "ebx", "edi", "esi"],
+            "clobbered_registers": ["eax", "ecx", "edx"],
+            "callee_cleanup": True,
+        }
+        contract = {
+            "id": "user32.dll!MessageBoxA",
+            "import": target,
+            "abi_template": "pe32-stdcall-v1",
+            "arity": {"kind": "fixed", "words": 4},
+            "disposition": "returns",
+            "effect_model": {
+                "kind": "exact_native_dll_callthrough_v1",
+                "prerequisites": {
+                    "same_pinned_dll_implementation": True,
+                    "exact_machine_arguments": True,
+                    "candidate_address_space_used_directly": True,
+                },
+            },
+            "memory_effect": "nativeCallthrough",
+            "memory_footprints": [],
+            "world_effect": "nativeCallthrough",
+            "callback_effect": "none",
+            "result_register_relations": [
+                {"register": "eax", "relation": "exact"}
+            ],
+        }
+        result = derive_rooted_reachable_units(
+            units=["root", "continuation"],
+            roots=["root"],
+            direct_edges=[{
+                "source_unit_id": "root",
+                "target_unit_id": "continuation",
+            }],
+            recovered_indirect_targets=[{
+                "id": "exit:resolved-export",
+                "source_unit_id": "root",
+                "status": "recovered",
+                "target_unit_ids": [],
+                "external_targets": [{
+                    "external_protocol": {
+                        "kind": "pe32-resolved-export",
+                        "profile_id": "fixture",
+                        "profile_sha256": "c" * 64,
+                        "target_id": 1,
+                        "resolver_import": {
+                            "dll": "kernel32.dll",
+                            "symbol": "GetProcAddress",
+                        },
+                        "loader_import": {
+                            "dll": "kernel32.dll",
+                            "symbol": "LoadLibraryA",
+                        },
+                        "module": "user32.dll",
+                        "name": "MessageBoxA",
+                        "target": target,
+                        "transfer_kind": "call",
+                        "machine_contract": contract,
+                    },
+                    "abi": abi,
+                    "argument_words": 4,
+                    "out_interfaces": [],
+                }],
+            }],
+            indirect_exits=[{
+                "id": "exit:resolved-export",
                 "source_unit_id": "root",
                 "kind": "indirect_call",
             }],
@@ -962,6 +1045,63 @@ class RootedReachabilityTests(unittest.TestCase):
         )
         self.assertEqual(incomplete_contract["status"], "incomplete")
         self.assertEqual(len(incomplete_contract["frontiers"]), 1)
+
+
+class OverlappingInstructionStartTests(unittest.TestCase):
+    def test_excludes_untargeted_speculative_start_inside_reached_instruction(self) -> None:
+        result = classify_overlapping_instruction_starts(
+            units=[
+                {
+                    "id": "rooted",
+                    "rva": 0x1000,
+                    "instructions": [{
+                        "rva_start": 0x1000,
+                        "rva_end": 0x1005,
+                        "instruction_sha256": "a" * 64,
+                    }],
+                },
+                {"id": "speculative", "rva": 0x1002, "instructions": []},
+            ],
+            reachable_unit_ids=["rooted"],
+        )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(
+            [row["unit_id"] for row in result["excluded_units"]],
+            ["speculative"],
+        )
+        self.assertEqual(result["conflicts"], [])
+        self.assertEqual(
+            result["excluded_units"][0]["instruction_evidence"][0][
+                "instruction_sha256"
+            ],
+            "a" * 64,
+        )
+
+    def test_independently_targeted_inner_start_fails_closed(self) -> None:
+        result = classify_overlapping_instruction_starts(
+            units=[
+                {
+                    "id": "rooted",
+                    "rva": 0x1000,
+                    "instructions": [{
+                        "rva_start": 0x1000,
+                        "rva_end": 0x1005,
+                        "instruction_sha256": "a" * 64,
+                    }],
+                },
+                {"id": "inner", "rva": 0x1002, "instructions": []},
+            ],
+            reachable_unit_ids=["rooted"],
+            target_sources={0x1002: ["direct_control"]},
+        )
+
+        self.assertEqual(result["status"], "violated")
+        self.assertEqual(result["excluded_units"], [])
+        self.assertEqual(result["conflicts"][0]["unit_id"], "inner")
+        self.assertEqual(
+            result["conflicts"][0]["target_sources"], ["direct_control"]
+        )
 
 
 class SemanticClusterTests(unittest.TestCase):

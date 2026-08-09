@@ -67,145 +67,16 @@ let
     ' "$out/native-object-graph.json" >/dev/null
   '';
 
-  # Deliberate IFD: checked static extraction determines a small compile-unit
-  # inventory. Expensive compiler nodes below do not depend on this graph.
-  graphData = builtins.fromJSON (
-    builtins.unsafeDiscardStringContext (
-      builtins.readFile "${graph}/native-object-graph.json"
-    )
-  );
-
-  ownerRoots = {
-    interpreter = interpreterPackage;
-    native_engine = nativeEnginePackage;
-    native_runtime = nativeRuntimePackage;
-    generated = graph;
-  } // lib.optionalAttrs (regionOverridePackage != null) {
-    region_overrides = regionOverridePackage;
-  };
-
-  sourcePath = file:
-    let
-      root = ownerRoots.${file.owner} or (
-        throw "native object graph references unknown source owner ${file.owner}"
-      );
-    in "${root}/${file.path}";
-
-  mkCopy = file: ''
-    source=${lib.escapeShellArg (sourcePath file)}
-    target="$out/${file.bundle_path}"
-    test "$(sha256sum "$source" | cut -d ' ' -f 1)" = ${lib.escapeShellArg file.sha256}
-    mkdir -p "$(dirname "$target")"
-    cp "$source" "$target"
-  '';
-
-  mkSourceBundle = unit:
-    pkgs.runCommand
-      "stage-b-native-source-${builtins.substring 0 20 unit.compile_key_sha256}"
-      {
-        nativeBuildInputs = [ pkgs.coreutils ];
-        preferLocalBuild = false;
-        allowSubstitutes = true;
-        __contentAddressed = true;
-      }
-      ''
-        set -euo pipefail
-        mkdir -p "$out"
-        ${lib.concatMapStringsSep "\n" (mapping:
-          ''mkdir -p "$out/roots/${mapping.owner}"''
-        ) unit.root_mappings}
-        ${lib.concatMapStringsSep "\n" mkCopy ([ unit.source ] ++ unit.dependencies)}
-        find "$out" -type f -exec touch -d @1 {} +
-      '';
-
-  actualFlags = unit: bundle:
-    unit.compile_flags
-    ++ lib.concatMap (mapping:
-      let root = "${bundle}/roots/${mapping.owner}";
-      in [
-        "-ffile-prefix-map=${root}=/stage-b/${mapping.label}"
-        "-fdebug-prefix-map=${root}=/stage-b/${mapping.label}"
-        "-fmacro-prefix-map=${root}=/stage-b/${mapping.label}"
-      ]) unit.root_mappings;
-
-  mkCompiledObject = unit:
-    let
-      bundle = mkSourceBundle unit;
-      includeArgs = lib.concatMapStringsSep " "
-        (mapping: "-I ${lib.escapeShellArg "${bundle}/roots/${mapping.owner}"}")
-        unit.root_mappings;
-      flagArgs = lib.concatMapStringsSep " " lib.escapeShellArg
-        (actualFlags unit bundle);
-    in pkgs.runCommand
-      "stage-b-native-object-${builtins.substring 0 20 unit.compile_key_sha256}"
-      {
-        nativeBuildInputs = [ compiler ];
-        preferLocalBuild = false;
-        allowSubstitutes = true;
-        __contentAddressed = true;
-      }
-      ''
-        set -euo pipefail
-        export LC_ALL=C.UTF-8
-        export SOURCE_DATE_EPOCH=1
-        mkdir -p "$out"
-        ${compiler}/bin/i686-w64-mingw32-gcc \
-          -x ${lib.escapeShellArg unit.language} -c \
-          ${lib.escapeShellArg "${bundle}/${unit.source.bundle_path}"} \
-          -o "$out/object.o" ${includeArgs} ${flagArgs}
-        test -s "$out/object.o"
-        touch -d @1 "$out/object.o"
-      '';
-
-  mkObjectReceipt = unit:
-    let compiled = mkCompiledObject unit;
-    in pkgs.runCommand
-      "stage-b-native-object-receipt-${builtins.substring 0 20 unit.compile_key_sha256}"
-      {
-        nativeBuildInputs = [ pkgs.coreutils pkgs.jq ];
-        preferLocalBuild = false;
-        allowSubstitutes = true;
-        __contentAddressed = true;
-      }
-      ''
-        set -euo pipefail
-        mkdir -p "$out"
-        cp ${compiled}/object.o "$out/object.o"
-        object_sha256="$(sha256sum "$out/object.o" | cut -d ' ' -f 1)"
-        object_size="$(stat -c %s "$out/object.o")"
-        jq -n \
-          --arg format stage-b-interpreter-native-object-v2 \
-          --arg status compiled \
-          --arg unit_id ${lib.escapeShellArg unit.id} \
-          --arg compile_key_sha256 ${lib.escapeShellArg unit.compile_key_sha256} \
-          --arg object_sha256 "$object_sha256" \
-          --argjson object_size "$object_size" \
-          '{
-            format: $format,
-            status: $status,
-            executes_original_binary: false,
-            unit_id: $unit_id,
-            compile_key_sha256: $compile_key_sha256,
-            object: {
-              path: "object.o",
-              sha256: $object_sha256,
-              size: $object_size
-            }
-          }' > "$out/.receipt-core.json"
-        receipt_sha256="$(jq -cS . "$out/.receipt-core.json" | tr -d '\n' | sha256sum | cut -d ' ' -f 1)"
-        jq --arg receipt_sha256 "$receipt_sha256" \
-          '. + {object_receipt_sha256: $receipt_sha256}' \
-          "$out/.receipt-core.json" > "$out/native-object.json"
-        rm "$out/.receipt-core.json"
-        touch -d @1 "$out/object.o" "$out/native-object.json"
-      '';
-
-  compiledObjects = map mkCompiledObject graphData.units;
-  objectReceipts = map mkObjectReceipt graphData.units;
-  objectArgs = lib.concatMapStringsSep " "
-    (object: lib.escapeShellArg (toString object)) objectReceipts;
+  # The unit inventory is produced by static analysis, so reading it during
+  # evaluation would be IFD.  That is not compatible with CA inputs:
+  # their output paths are deliberately unknown until realization.  Compile
+  # the checked graph inside one CA node for now.  A future explicit two-pass
+  # command may feed a realized manifest back to Nix to recover per-unit nodes
+  # without introducing a hidden evaluation-time dependency.
+  compiledObjects = [ ];
+  objectReceipts = [ ];
   package = pkgs.runCommand "${namePrefix}-native-object-package-v2" {
-    nativeBuildInputs = [ pythonEnv pkgs.jq ];
+    nativeBuildInputs = [ pythonEnv compiler pkgs.jq ];
     preferLocalBuild = false;
     allowSubstitutes = true;
     __contentAddressed = true;
@@ -215,28 +86,44 @@ let
     export LC_ALL=C.UTF-8
     export SOURCE_DATE_EPOCH=1
     export PYTHONPATH=${phasePythonSource}/src
-    ${python} - ${graph} "$out" ${objectArgs} <<'PY'
+    ${python} - ${graph} "$out" <<'PY'
     import pathlib
+    import json
     import sys
     from spaghetti_extractor.stage_b_interpreter_native_build import (
         assemble_stage_b_interpreter_native_objects,
+        compile_stage_b_interpreter_native_object,
     )
 
+    graph = pathlib.Path(sys.argv[1])
+    output = pathlib.Path(sys.argv[2])
+    payload = json.loads((graph / "native-object-graph.json").read_text(encoding="utf-8"))
+    work = output.parent / (output.name + "-objects")
+    packages = []
+    for index, unit in enumerate(payload["units"]):
+        package = work / f"{index:04d}"
+        compile_stage_b_interpreter_native_object(
+            graph=graph,
+            unit_id=unit["id"],
+            out_dir=package,
+        )
+        packages.append(package)
     assemble_stage_b_interpreter_native_objects(
-        graph=pathlib.Path(sys.argv[1]),
-        out_dir=pathlib.Path(sys.argv[2]),
-        object_packages=[pathlib.Path(value) for value in sys.argv[3:]],
+        graph=graph,
+        out_dir=output,
+        object_packages=packages,
     )
     PY
-    jq -e --argjson expected ${toString (builtins.length graphData.units)} '
+    jq -e '
       .format == "stage-b-interpreter-native-object-package-v2" and
       .status == "complete" and (.executes_original_binary | not) and
-      .counts.objects == $expected and (.objects | length) == $expected
+      .counts.objects == (.objects | length) and
+      .counts.objects == (.units | length)
     ' "$out/native-object-package.json" >/dev/null
   '';
 in
 {
   inherit graph compiledObjects objectReceipts package;
   objects = objectReceipts;
-  unitCount = builtins.length graphData.units;
+  unitCount = null;
 }

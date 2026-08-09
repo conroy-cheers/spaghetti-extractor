@@ -922,6 +922,197 @@ int main(void) {
                 }],
             )
 
+    def test_inactive_conditional_arm_does_not_consume_undefined_value(self) -> None:
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("C compiler is unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine = root / "state-machine.jsonl"
+            undefined = {
+                "op": "undefined_bv",
+                "width": 32,
+                "id": "fixture:inactive-undefined",
+                "reason": "inactive conditional arm",
+            }
+            _write_machine(machine, [_row(expression={
+                "op": "ite",
+                "args": [
+                    {"op": "false"},
+                    undefined,
+                    {"op": "const", "value": 7, "width": 32},
+                ],
+            })])
+            package_dir = root / "package"
+            write_stage_b_interpreter_package(
+                state_machine=machine, out=package_dir
+            )
+            transfer = compile_stage_b_interpreter_program(machine)[0]
+            undefined_index = next(
+                index
+                for index, node in enumerate(transfer.nodes)
+                if node.op == "undefined_bv"
+            )
+            self.assertNotIn(
+                undefined_index,
+                {
+                    action.args[0]
+                    for action in transfer.actions
+                    if action.op == "eval_word"
+                },
+            )
+            harness = root / "harness.c"
+            harness.write_text(
+                r'''
+#include "state-machine-interpreter.h"
+
+static uint32_t undefined_calls;
+
+static uint32_t undefined_value(
+    void *context, uint32_t slot, const stage_b_machine_state *input,
+    uint32_t defined_value) {
+  (void)context; (void)slot; (void)input; (void)defined_value;
+  ++undefined_calls;
+  return 0U;
+}
+
+stage_b_call_status stage_b_dispatch_external_call(
+    stage_b_runtime *runtime, const stage_b_call_event *event,
+    const stage_b_machine_state *input, stage_b_machine_state *output) {
+  (void)runtime; (void)event; (void)input; (void)output;
+  return STAGE_B_CALL_UNIMPLEMENTED;
+}
+
+int main(void) {
+  stage_b_runtime runtime = {0};
+  stage_b_machine_state state = {0};
+  stage_b_step_result result;
+  runtime.undefined_value = undefined_value;
+  result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
+  if (result.kind == STAGE_B_UNIMPLEMENTED) return 1;
+  if (state.eax != 7U) return 2;
+  if (undefined_calls != 0U) return 3;
+  return 0;
+}
+''',
+                encoding="ascii",
+            )
+            executable = root / "inactive-undefined"
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=c11",
+                    "-Werror",
+                    "-I",
+                    str(package_dir),
+                    str(package_dir / "state-machine-interpreter.c"),
+                    str(package_dir / "state-machine-program.c"),
+                    str(harness),
+                    "-o",
+                    str(executable),
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            subprocess.run([str(executable)], check=True)
+
+    def test_false_divide_fault_guard_continues_to_register_updates(self) -> None:
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("C compiler is unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine = root / "state-machine.jsonl"
+            operands = [
+                {"op": "reg", "name": "edx", "width": 32},
+                {"op": "reg", "name": "eax", "width": 32},
+                {"op": "reg", "name": "esi", "width": 32},
+            ]
+            valid = {"op": "udiv_valid32", "args": operands}
+            row = _row(expression={
+                "op": "ite",
+                "args": [
+                    valid,
+                    {"op": "udiv_quot32", "args": operands},
+                    {
+                        "op": "undefined_bv",
+                        "width": 32,
+                        "id": "fixture:divide-fault-eax",
+                        "reason": "divide fault",
+                    },
+                ],
+            })
+            row["ordered_events"] = [{
+                "family": "fault",
+                "kind": "divide_error",
+                "condition": {"op": "not", "args": [valid]},
+            }]
+            _write_machine(machine, [row])
+            package_dir = root / "package"
+            write_stage_b_interpreter_package(
+                state_machine=machine, out=package_dir
+            )
+            harness = root / "harness.c"
+            harness.write_text(
+                r'''
+#include "state-machine-interpreter.h"
+
+static uint32_t undefined_calls;
+
+static uint32_t undefined_value(
+    void *context, uint32_t slot, const stage_b_machine_state *input,
+    uint32_t defined_value) {
+  (void)context; (void)slot; (void)input; (void)defined_value;
+  ++undefined_calls;
+  return 0U;
+}
+
+stage_b_call_status stage_b_dispatch_external_call(
+    stage_b_runtime *runtime, const stage_b_call_event *event,
+    const stage_b_machine_state *input, stage_b_machine_state *output) {
+  (void)runtime; (void)event; (void)input; (void)output;
+  return STAGE_B_CALL_UNIMPLEMENTED;
+}
+
+int main(void) {
+  stage_b_runtime runtime = {0};
+  stage_b_machine_state state = {0};
+  stage_b_step_result result;
+  runtime.undefined_value = undefined_value;
+  state.eax = 20000U;
+  state.edx = 0U;
+  state.esi = 4096U;
+  result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
+  if (result.kind != STAGE_B_FALLTHROUGH) return 1;
+  if (result.target_rva != 0x1003U) return 2;
+  if (state.eax != 4U) return 3;
+  if (undefined_calls != 0U) return 4;
+  return 0;
+}
+''',
+                encoding="ascii",
+            )
+            executable = root / "false-divide-fault"
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=c11",
+                    "-Werror",
+                    "-I",
+                    str(package_dir),
+                    str(package_dir / "state-machine-interpreter.c"),
+                    str(package_dir / "state-machine-program.c"),
+                    str(harness),
+                    "-o",
+                    str(executable),
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            subprocess.run([str(executable)], check=True)
+
     def test_blocked_transfer_definedness_slots_do_not_abort_package(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1719,6 +1910,9 @@ int main(void) {
                 interpreter_source,
             )
             self.assertIn("t=stage_b_program_lookup(source_rva);", interpreter_source)
+            self.assertIn(
+                "rt->trace_transfer(rt->context, rva, &s)", interpreter_source
+            )
             for source in ("state-machine-interpreter.c", "state-machine-program.c"):
                 subprocess.run(
                     [

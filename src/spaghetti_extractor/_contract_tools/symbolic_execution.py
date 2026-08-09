@@ -359,15 +359,28 @@ def _symbolic_execute(
             registers["esp"] = _expr_sub(original_esp, ("const", 32))
             continue
         if mnemonic == "pop":
-            if len(operands) != 1 or operands[0].type != X86_OP_REG:
-                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only register-destination pop is modeled")
-            dst = insn.reg_name(operands[0].reg)
-            if not _is_supported_register_name(dst):
-                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit general registers are modeled")
-            value = _memory_read_expr(registers["esp"], memory_events, memory_writes, memory_epoch=memory_epoch)
-            if not _write_register_expr(dst, value, registers):
-                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported pop destination register")
-            registers["esp"] = _expr_add(registers["esp"], ("const", 4))
+            if len(operands) != 1 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only register/memory-destination pop is modeled")
+            if _operand_width_bits(insn, operands[0]) != 32:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit pop destinations are modeled")
+            stack = registers["esp"]
+            value = _memory_read_expr(stack, memory_events, memory_writes, memory_epoch=memory_epoch)
+            registers["esp"] = _expr_add(stack, ("const", 4))
+            if operands[0].type == X86_OP_REG:
+                dst = insn.reg_name(operands[0].reg)
+                if not _is_supported_register_name(dst) or not _write_register_expr(dst, value, registers):
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported pop destination register")
+                continue
+            if not _write_operand_expr(
+                insn,
+                operands[0],
+                value,
+                registers,
+                memory_events,
+                memory_writes,
+                width_bits=32,
+            ):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported pop destination memory")
             continue
         if mnemonic in {"add", "sub"}:
             if len(operands) != 2 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
@@ -387,9 +400,9 @@ def _symbolic_execute(
             if len(operands) != 1 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only register/memory-destination unary arithmetic is modeled")
             width_bits = _operand_width_bits(insn, operands[0])
-            if width_bits != 32:
-                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit inc/dec is modeled")
-            value = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
+            if width_bits not in {8, 16, 32}:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 8/16/32-bit inc/dec is modeled")
+            value = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
             if value is None:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported inc/dec destination operand")
             operation = "add" if mnemonic == "inc" else "sub"
@@ -399,17 +412,17 @@ def _symbolic_execute(
                 if mnemonic == "inc"
                 else _expr_sub(value, one)
             )
-            result = _expr_mask(result, 32)
+            result = _expr_mask(result, width_bits)
             updated_flags = _arithmetic_flags(
                 operation,
                 value,
                 one,
                 result,
-                width_bits=32,
+                width_bits=width_bits,
             )
             updated_flags.pop("cf")
             flags.update(updated_flags)
-            if not _write_operand_expr(insn, operands[0], result, registers, memory_events, memory_writes, width_bits=32):
+            if not _write_operand_expr(insn, operands[0], result, registers, memory_events, memory_writes, width_bits=width_bits):
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported inc/dec destination operand")
             continue
         if mnemonic in {"adc", "sbb"}:
@@ -643,6 +656,36 @@ def _symbolic_execute(
             )
             if not _write_operand_expr(insn, operands[0], result, registers, memory_events, memory_writes, width_bits=width_bits):
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported shift destination operand")
+            continue
+        if mnemonic == "rcr":
+            if (
+                len(operands) != 2
+                or operands[0].type not in {X86_OP_REG, X86_OP_MEM}
+                or operands[1].type != X86_OP_IMM
+                or (int(operands[1].imm) & 0x1F) != 1
+            ):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit rcr destinations with an immediate count of one are modeled")
+            width_bits = _operand_width_bits(insn, operands[0])
+            if width_bits != 32:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit rcr destinations are modeled")
+            value = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
+            if value is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported rcr destination operand")
+            result = _expr_or(
+                _expr_lshr(value, ("const", 1)),
+                _expr_shl(_expr_bool_bit(flags["cf"]), ("const", 31)),
+            )
+            result = _expr_mask(result, 32)
+            flags["cf"] = _bool_eq(_expr_and(value, ("const", 1)), ("const", 1))
+            flags["of"] = _bool_xor(
+                ("msb_w", 32, result),
+                _bool_eq(
+                    _expr_and(_expr_lshr(result, ("const", 30)), ("const", 1)),
+                    ("const", 1),
+                ),
+            )
+            if not _write_operand_expr(insn, operands[0], result, registers, memory_events, memory_writes, width_bits=32):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported rcr destination operand")
             continue
         if mnemonic in {"shld", "shrd"}:
             if len(operands) != 3 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
@@ -892,6 +935,8 @@ def _symbolic_execute(
             "fucompi",
             "fsin",
             "fcos",
+            "fclex",
+            "fnclex",
             "fninit",
         }:
             fpu_touched = True
@@ -899,6 +944,21 @@ def _symbolic_execute(
                 fpu_stack = [("fpu_reg", index) for index in range(8)]
                 fpu_control = ("fpu_control_init",)
                 fpu_status = ("fpu_status_init",)
+                continue
+            if mnemonic in {"fclex", "fnclex"}:
+                if operands:
+                    return _symbolic_incomplete(
+                        binary_name,
+                        "unsupported_semantics",
+                        rva,
+                        mnemonic,
+                        insn.op_str,
+                        "x87 clear-exception instructions take no operands",
+                    )
+                fpu_status = (
+                    "fpu_clear_exceptions",
+                    _canonical_expr(fpu_status),
+                )
                 continue
             if mnemonic == "fld1":
                 _x87_push(fpu_stack, ("fpu_const", "1"))

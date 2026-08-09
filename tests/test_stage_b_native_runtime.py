@@ -60,6 +60,7 @@ def _packages(
     import_iat_vas: dict[tuple[str, str], int] | None = None,
     machine_ir: bool = False,
     modeled_termination: bool = False,
+    selected_portable_components: list[dict[str, object]] | None = None,
 ) -> tuple[Path, Path]:
     semantic_input = root / (
         "machine-ir.jsonl" if machine_ir else "state-machine.jsonl"
@@ -81,6 +82,7 @@ def _packages(
     write_stage_b_native_engine_package(
         **engine_input,
         entry_rva=0x1000,
+        preferred_image_base=0x400000,
         callback_targets=callback_targets or [],
         import_iat_vas=(
             import_iat_vas
@@ -98,6 +100,7 @@ def _packages(
             if modeled_termination
             else None
         ),
+        selected_portable_components=selected_portable_components or [],
         out=engine,
     )
     return interpreter, engine
@@ -361,6 +364,305 @@ def _write_external_profile(path: Path, *, size_kind: str = "fixed") -> None:
     }, sort_keys=True), encoding="utf-8")
 
 
+def _write_out_interface_profile(path: Path) -> None:
+    path.write_text(json.dumps({
+        "format": "stage-a-external-environment-profile-v1",
+        "id": "fixture-out-interface-profile-v1",
+        "machine_import_call_contracts": [{
+            "id": "fixture-interface-factory",
+            "import": {"dll": "msvcrt.dll", "symbol": "__p__commode"},
+            "argument_words": 2,
+            "out_interface_relations": [{
+                "argument_index": 1,
+                "interface_id": "IFixture",
+                "write_width": 4,
+                "object_size": 4,
+                "vtable_size": 24,
+                "nullable": True,
+                "success_condition": "hresult_succeeded_eax",
+            }],
+            "world_effect": "opaqueResources",
+        }],
+    }, sort_keys=True), encoding="utf-8")
+
+
+def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
+    profile = root / "callback-profile.json"
+    callback_source = {
+        "kind": "argument_pointee",
+        "argument": 0,
+        "offset": 4,
+    }
+    callback_abi = {
+        "kind": "generic_callback",
+        "argument_words": 4,
+        "stack_cleanup_bytes": 16,
+        "nullable": False,
+    }
+    profile_contract = {
+        "id": "fixture-register-class-a",
+        "import": {"dll": "user32.dll", "symbol": "RegisterClassA"},
+        "abi_template": "pe32-stdcall-v1",
+        "arity": {"kind": "fixed", "words": 1},
+        "disposition": "returns",
+        "result_register_relations": [
+            {"register": "eax", "relation": "exact"}
+        ],
+        "memory_effect": "readOnly",
+        "memory_footprints": [{
+            "access": "read",
+            "base_argument": 0,
+            "offset": 0,
+            "size": {"kind": "fixed", "bytes": 40},
+            "nullable": False,
+        }],
+        "world_effect": "callbackRegistration",
+        "callback_effect": "explicit",
+        "callback_source": callback_source,
+        "callback_lifetime": "until_class_unregistered_or_process_exit",
+        "callback_abi": callback_abi,
+    }
+    profile.write_text(json.dumps({
+        "format": "stage-a-external-environment-profile-v1",
+        "id": "fixture-callback-profile-v1",
+        "machine_import_call_contracts": [profile_contract],
+    }, sort_keys=True), encoding="utf-8")
+    profile_binding = {
+        "profile_id": "fixture-callback-profile-v1",
+        "profile_sha256": sha256_file(profile),
+        "entry_key": "machine_import_call_contracts",
+        "entry_index": 0,
+    }
+    registers = {
+        name: {"op": "reg", "name": name, "width": 32}
+        for name in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+    }
+    flags = {
+        name: {"op": "flag", "name": name}
+        for name in ("cf", "zf", "sf", "of", "pf", "df")
+    }
+    argument = {"op": "reg", "name": "eax", "width": 32}
+    event = {
+        "family": "external",
+        "kind": "external_call",
+        "instruction_rva": 0x1000,
+        "return_rva": 0x1006,
+        "dll": "user32.dll",
+        "symbol": "RegisterClassA",
+        "ordinal": None,
+        "arguments": [argument],
+        "register_inputs": registers,
+        "flag_inputs": flags,
+        "stack_inputs": [{"offset": 0, "width": 4, "value": argument}],
+        "abi_contract": {
+            "template": "pe32-stdcall-v1",
+            "argument_words": 1,
+            "argument_base_offset": 0,
+            "contract_id": "fixture-register-class-a",
+            "profile_binding": profile_binding,
+            "disposition": "returns",
+            "result_register_relations": profile_contract[
+                "result_register_relations"
+            ],
+            "memory_effect": "readOnly",
+            "memory_footprints": [{
+                "access": "read",
+                "base_argument": 0,
+                "offset": 0,
+                "size": {"kind": "fixed", "byte_count": 40},
+                "nullable": False,
+            }],
+            "world_effect": "callbackRegistration",
+            "callback_effect": "explicit",
+            "callback_source": callback_source,
+            "callback_lifetime": "until_class_unregistered_or_process_exit",
+            "callback_abi": callback_abi,
+        },
+    }
+
+    def unit(rva: int, *, registration: bool) -> dict[str, object]:
+        size = 6 if registration else 1
+        ordered = [event] if registration else []
+        return {
+            "format": "stage-a-machine-ir-v2",
+            "record_kind": "unit",
+            "id": f"semantic-transfer:typed-{rva:08x}",
+            "status": "qualified",
+            "source": {
+                "original": {"rva_start": rva, "rva_end": rva + size, "size": size},
+                "contract_sha256": _CONTRACT_SHA256,
+                "instruction_bytes_sha256": _INSTRUCTION_SHA256,
+                "semantic_export": None,
+            },
+            "instructions": [{
+                "rva_start": rva,
+                "rva_end": rva + size,
+                "size": size,
+                "instruction_sha256": _INSTRUCTION_SHA256,
+                "mnemonic": "call" if registration else "ret",
+                "operands": [],
+                "registers_read": [],
+                "registers_written": [],
+                "groups": ["call"] if registration else ["ret"],
+            }],
+            "x87_micro_ops": [],
+            "semantics": {
+                "pre_state": {},
+                "register_writes": [],
+                "flag_writes": [],
+                "memory_events": [],
+                "external_events": ordered,
+                "faults": [],
+                "ordered_events": ordered,
+                "edge_conditions": [],
+                "outcome": (
+                    {"kind": "fallthrough", "target_rva": rva + size}
+                    if registration
+                    else {
+                        "kind": "return",
+                        "value": {"op": "reg", "name": "eax", "width": 32},
+                    }
+                ),
+                "stack_delta": 0,
+                "counts": {},
+                "fpu_state": None,
+                "instruction_effect_schedule": None,
+            },
+        }
+
+    registration = unit(0x1000, registration=True)
+    callback = unit(0x3000, registration=False)
+    machine_ir = root / "callback-machine-ir.jsonl"
+    _write_state_machine(machine_ir, [registration, callback])
+    manifest = root / "callback-machine-ir-manifest.json"
+    manifest.write_text(json.dumps({
+        "format": "stage-a-machine-ir-v2",
+        "artifacts": {
+            "machine_ir": {
+                "format": "stage-a-machine-ir-v2",
+                "sha256": sha256_file(machine_ir),
+            },
+        },
+        "control": {
+            "internal_call_preservation": {
+                "fixed_point_complete": True,
+                "summaries": [],
+            },
+            "external_interface_provenance": {
+                "callback_registrations": [{
+                    "format": "stage-a-callback-registration-provenance-v1",
+                    "record_kind": "callback_registration",
+                    "status": "complete",
+                    "unit_id": registration["id"],
+                    "event_index": 0,
+                    "instruction_rva": 0x1000,
+                    "callback_source": callback_source,
+                    "callback_abi": callback_abi,
+                    "callback_lifetime": (
+                        "until_class_unregistered_or_process_exit"
+                    ),
+                    "callback_behavior": "registration",
+                    "target_rvas": [0x3000],
+                    "target_unit_ids": [callback["id"]],
+                    "failure": None,
+                }],
+            },
+        },
+    }, sort_keys=True), encoding="utf-8")
+    interpreter = root / "callback-interpreter"
+    engine = root / "callback-engine"
+    write_stage_b_interpreter_package(machine_ir=machine_ir, out=interpreter)
+    write_stage_b_native_engine_package(
+        machine_ir=machine_ir,
+        machine_ir_manifest=manifest,
+        entry_rva=0x1000,
+        fixed_image_base=0x400000,
+        preferred_image_base=0x400000,
+        import_iat_vas={("user32.dll", "RegisterClassA"): 0x432000},
+        out=engine,
+    )
+    return interpreter, engine, profile
+
+
+def _rewrite_callback_engine_plan(
+    engine: Path, mutate: object
+) -> None:
+    plan_path = engine / "native-engine-plan.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert callable(mutate)
+    mutate(plan)
+    plan_path.write_text(
+        json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    manifest_path = engine / "native-engine-package.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["plan"]["sha256"] = sha256_file(plan_path)
+    manifest["callback_adapter_receipts"] = plan[
+        "callback_adapter_receipts"
+    ]
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _rehash_callback_receipt(receipt: dict[str, object]) -> None:
+    body = {
+        key: value
+        for key, value in receipt.items()
+        if key not in {"format", "receipt_sha256"}
+    }
+    receipt["receipt_sha256"] = sha256_bytes(
+        json.dumps(
+            body, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("ascii")
+    )
+
+
+def _rehash_implementation_entry(entry: dict[str, object]) -> None:
+    body = {key: value for key, value in entry.items() if key != "entry_sha256"}
+    entry["entry_sha256"] = sha256_bytes(
+        json.dumps(
+            body, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("ascii")
+    )
+
+
+def _rehash_implementation_receipt(receipt: dict[str, object]) -> None:
+    body = {
+        key: value
+        for key, value in receipt.items()
+        if key not in {"format", "receipt_sha256"}
+    }
+    receipt["receipt_sha256"] = sha256_bytes(
+        json.dumps(
+            body, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("ascii")
+    )
+
+
+def _rewrite_implementation_engine_plan(engine: Path, mutate: object) -> None:
+    plan_path = engine / "native-engine-plan.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    receipt = plan["implementation_dispatch_receipt"]
+    assert callable(mutate)
+    mutate(receipt)
+    _rehash_implementation_receipt(receipt)
+    plan_path.write_text(
+        json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    manifest_path = engine / "native-engine-package.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["plan"]["sha256"] = sha256_file(plan_path)
+    manifest["implementation_dispatch_receipt"] = receipt
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _qualified_x87_transfer() -> dict[str, object]:
     encoded = bytes.fromhex("d9e8")
     digest = sha256_bytes(encoded)
@@ -537,6 +839,129 @@ def _attach_definedness_metadata(
 
 
 class StageBNativeRuntimeTests(unittest.TestCase):
+    def test_callback_adapter_receipt_is_bound_into_runtime_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            interpreter, engine, profile = _callback_adapter_packages(root)
+            plan = plan_stage_b_native_runtime(
+                interpreter_package=interpreter,
+                native_engine_package=engine,
+                external_profile=profile,
+            )
+
+            self.assertEqual(len(plan.callback_adapter_receipts), 1)
+            receipt = plan.callback_adapter_receipts[0]
+            self.assertEqual(receipt["target_rvas"], [0x3000])
+            self.assertEqual(len(receipt["adapter_entries"]), 1)
+            self.assertEqual(
+                receipt["invocation"],
+                "nested-machine-ir-callback-adapter-v1",
+            )
+            package = write_stage_b_native_runtime_package(
+                interpreter_package=interpreter,
+                native_engine_package=engine,
+                external_profile=profile,
+                out=root / "runtime",
+            )
+            self.assertEqual(
+                package["inputs"]["callback_adapter_receipts"],
+                [receipt],
+            )
+
+    def test_callback_adapter_receipt_tampering_fails_closed(self) -> None:
+        def missing_receipt(plan: dict[str, object]) -> None:
+            plan["callback_adapter_receipts"] = []
+            plan["counts"]["callback_adapter_receipts"] = 0
+
+        def missing_adapter(plan: dict[str, object]) -> None:
+            plan["callback_adapters"] = []
+            plan["counts"]["callback_adapters"] = 0
+
+        def extra_adapter(plan: dict[str, object]) -> None:
+            adapter = dict(plan["callback_adapters"][0])
+            adapter["id"] = 1
+            adapter["instruction_rva"] = 0x2000
+            plan["callback_adapters"].append(adapter)
+            plan["counts"]["callback_adapters"] = 2
+
+        def duplicate_adapter(plan: dict[str, object]) -> None:
+            adapter = dict(plan["callback_adapters"][0])
+            adapter["id"] = 1
+            plan["callback_adapters"].append(adapter)
+            plan["counts"]["callback_adapters"] = 2
+
+        def mismatched_adapter(plan: dict[str, object]) -> None:
+            receipt = plan["callback_adapter_receipts"][0]
+            receipt["adapter_entries"][0]["original_rva"] = 0x3010
+            _rehash_callback_receipt(receipt)
+
+        def mismatched_metadata(plan: dict[str, object]) -> None:
+            receipt = plan["callback_adapter_receipts"][0]
+            receipt["lifetime"] = "until-process-exit"
+            _rehash_callback_receipt(receipt)
+
+        def mismatched_abi(plan: dict[str, object]) -> None:
+            receipt = plan["callback_adapter_receipts"][0]
+            receipt["abi"]["stack_cleanup_bytes"] = 12
+            _rehash_callback_receipt(receipt)
+
+        def mismatched_invocation(plan: dict[str, object]) -> None:
+            receipt = plan["callback_adapter_receipts"][0]
+            receipt["invocation"] = "direct-native-callback"
+            _rehash_callback_receipt(receipt)
+
+        cases = {
+            "missing receipt": missing_receipt,
+            "missing adapter": missing_adapter,
+            "extra": extra_adapter,
+            "duplicate": duplicate_adapter,
+            "adapter mismatch": mismatched_adapter,
+            "lifetime mismatch": mismatched_metadata,
+            "ABI mismatch": mismatched_abi,
+            "invocation mismatch": mismatched_invocation,
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                interpreter, engine, profile = _callback_adapter_packages(root)
+                _rewrite_callback_engine_plan(engine, mutate)
+                with self.assertRaises(StageBNativeRuntimeError):
+                    plan_stage_b_native_runtime(
+                        interpreter_package=interpreter,
+                        native_engine_package=engine,
+                        external_profile=profile,
+                    )
+
+    def test_external_interface_output_registers_object_and_vtable_ranges(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            rows = _external_result_rows()
+            event = rows[0]["ordered_events"][0]
+            event["arguments"] = [
+                {"op": "const", "value": 0, "width": 32},
+                {"op": "const", "value": 0x500000, "width": 32},
+            ]
+            interpreter, engine = _packages(root, rows=rows)
+            profile = root / "external-profile.json"
+            _write_out_interface_profile(profile)
+
+            package = write_stage_b_native_runtime_package(
+                interpreter_package=interpreter,
+                native_engine_package=engine,
+                external_profile=profile,
+                out=root / "runtime",
+            )
+
+            rules = package["inputs"]["external_range_contracts"]["rules"]
+            self.assertEqual(len(rules), 1)
+            self.assertEqual(rules[0]["action"], "add_argument_interface_ranges")
+            self.assertEqual(rules[0]["argument"], 1)
+            self.assertEqual(rules[0]["minimum_size"], 4)
+            self.assertEqual(rules[0]["size_value"], 24)
+            source = (root / "runtime/native-runtime.c").read_text(encoding="ascii")
+            self.assertIn("stage_b_native_add_external_interface_ranges", source)
+            self.assertIn("if ((int32_t)output->eax < 0) continue;", source)
+
     def test_external_result_ranges_are_profile_bound_and_generic(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -564,6 +989,42 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             self.assertIn("stage_b_native_diagnostic_value", source)
             self.assertIn("stage_b_native_diagnostic_aux", source)
             self.assertIn("stage_b_native_diagnostic_detail", source)
+            self.assertIn(
+                "STAGE_B_NATIVE_MAX_EXTERNAL_LIFECYCLE_EVENTS 64U", source
+            )
+            self.assertIn("producer_rva, producer_action, generation", source)
+            self.assertIn("stage_b_native_record_external_lifecycle", source)
+            self.assertIn("stage_b_native_runtime_write_diagnostic", source)
+            self.assertIn("stage_b_native_runtime_write_external_probe", source)
+            self.assertIn("stage_b_native_diagnostic_reason = 0x4001U", source)
+            self.assertIn("movl %%fs:0x34", source)
+            self.assertIn("spaghetti-extractor-diagnostic.bin", source)
+            self.assertIn("header.magic = 0x31444553U", source)
+            self.assertIn("header.version = 4U", source)
+            self.assertIn("uint32_t stack_words[16]", source)
+            self.assertIn(
+                "STAGE_B_NATIVE_MAX_EXTERNAL_TRACE_EVENTS 128U", source
+            )
+            self.assertIn(
+                "sequence, phase, instruction_rva, target_rva, target_iat_rva",
+                source,
+            )
+            self.assertIn("stage_b_native_record_external_trace", source)
+            self.assertIn(
+                "STAGE_B_NATIVE_MAX_TRANSFER_TRACE_EVENTS 1024U", source
+            )
+            self.assertIn(
+                "uint32_t sequence, rva, df, esp", source
+            )
+            self.assertIn("stage_b_native_trace_transfer", source)
+            self.assertIn("STAGE_B_NATIVE_DIAGNOSTIC_WRITER_AVAILABLE", source)
+            self.assertIn("operation == 5U ? 0x2204U", source)
+            self.assertIn("operation == 6U ? 0x2203U", source)
+            self.assertIn("uint32_t process_world_initialized;", source)
+            self.assertIn(
+                "if (context->process_world_initialized == 0U)", source
+            )
+            self.assertIn("context->process_world_initialized = 1U", source)
             self.assertIn(
                 "stage_b_native_context_value.external_range_count", source
             )
@@ -608,6 +1069,39 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             self.assertEqual(len(rules), 1)
             self.assertEqual(rules[0]["action"], "add_result_range")
             self.assertEqual(rules[0]["instruction_rva"], 0x1000)
+            self.assertEqual(rules[0]["target_iat_rva"], 0x3219C)
+
+    def test_anonymous_dynamic_call_is_not_expanded_across_import_profiles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            interpreter, engine = _packages(
+                root,
+                rows=_internal_indirect_rows(),
+                import_iat_vas={("msvcrt.dll", "__p__commode"): 0x43219C},
+            )
+            profile = root / "external-profile.json"
+            _write_external_profile(profile)
+
+            package = write_stage_b_native_runtime_package(
+                interpreter_package=interpreter,
+                native_engine_package=engine,
+                external_profile=profile,
+                out=root / "runtime",
+            )
+
+            plan = json.loads(
+                (engine / "native-engine-plan.json").read_text(encoding="utf-8")
+            )
+            self.assertIsNone(plan["external_sites"][0]["import"])
+            self.assertEqual(plan["import_bindings"], [{
+                "dll": "msvcrt.dll",
+                "symbol": "__p__commode",
+                "ordinal": None,
+                "iat_va": 0x43219C,
+                "iat_rva": 0x3219C,
+            }])
+            rules = package["inputs"]["external_range_contracts"]["rules"]
+            self.assertEqual(rules, [])
 
     def test_external_range_size_can_be_read_from_checked_call_stack(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -700,7 +1194,11 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             self.assertFalse(first["acceptance_authority"])
             self.assertEqual(
                 first["counts"],
-                {"transfers": 1, "callable_external_routes": 0},
+                {
+                    "transfers": 1,
+                    "implementation_dispatches": 1,
+                    "callable_external_routes": 0,
+                },
             )
             self.assertEqual(first["inputs"]["entry_rva"], 0x1000)
             self.assertEqual(first["inputs"]["transfer_rvas"], [0x1000])
@@ -940,7 +1438,12 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             self.assertIn(f"{{ 0x{slot:08x}U, 2U, 0U }}", source)
             self.assertIn("context->undefined_fault = 1U", source)
             self.assertIn(
-                "if (context->undefined_fault != 0U) return STAGE_B_CALL_UNIMPLEMENTED;",
+                "stage_b_native_diagnostic_reason = 0x5001U;",
+                source,
+            )
+            self.assertIn("context->undefined_fault_slot = slot;", source)
+            self.assertIn(
+                "context->undefined_fault_rva = input != 0 ? input->original_rva : 0U;",
                 source,
             )
             undefined_body = source.split(
@@ -1499,6 +2002,133 @@ void stage_b_native_terminate(stage_b_native_terminal_kind status) {
                     linked_symbols,
                 )),
                 1,
+            )
+
+
+    def test_runtime_rejects_omitted_implementation_dispatch_with_valid_receipt_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            interpreter, engine = _packages(root, [_transfer(0x1000), _transfer(0x2000)])
+
+            def omit(receipt: dict[str, object]) -> None:
+                entries = receipt["entries"]
+                assert isinstance(entries, list)
+                entries.pop()
+                counts = receipt["counts"]
+                assert isinstance(counts, dict)
+                counts["dispatch_entries"] = 1
+                counts["machine_ir_fallback"] = 1
+
+            _rewrite_implementation_engine_plan(engine, omit)
+            with self.assertRaisesRegex(
+                StageBNativeRuntimeError, "omits or adds interpreter transfers"
+            ):
+                plan_stage_b_native_runtime(
+                    interpreter_package=interpreter,
+                    native_engine_package=engine,
+                )
+
+    def test_runtime_rejects_duplicate_implementation_dispatch_with_valid_receipt_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            interpreter, engine = _packages(root)
+
+            def duplicate(receipt: dict[str, object]) -> None:
+                entries = receipt["entries"]
+                assert isinstance(entries, list)
+                entries.append(dict(entries[0]))
+                counts = receipt["counts"]
+                assert isinstance(counts, dict)
+                counts["dispatch_entries"] = 2
+                counts["machine_ir_fallback"] = 2
+
+            _rewrite_implementation_engine_plan(engine, duplicate)
+            with self.assertRaisesRegex(
+                StageBNativeRuntimeError, "omits or adds interpreter transfers"
+            ):
+                plan_stage_b_native_runtime(
+                    interpreter_package=interpreter,
+                    native_engine_package=engine,
+                )
+
+    def test_runtime_rejects_mismatched_implementation_class_after_rehash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            interpreter, engine = _packages(root)
+
+            def mismatch(receipt: dict[str, object]) -> None:
+                entries = receipt["entries"]
+                assert isinstance(entries, list)
+                entry = entries[0]
+                entry["implementation_class"] = "selected_portable_component"
+                entry["dispatch_lookup"] = "stage_b_region_override_lookup"
+                _rehash_implementation_entry(entry)
+                counts = receipt["counts"]
+                assert isinstance(counts, dict)
+                counts["machine_ir_fallback"] = 0
+                counts["selected_portable_component"] = 1
+
+            _rewrite_implementation_engine_plan(engine, mismatch)
+            with self.assertRaisesRegex(
+                StageBNativeRuntimeError, "portable component replacement id"
+            ):
+                plan_stage_b_native_runtime(
+                    interpreter_package=interpreter,
+                    native_engine_package=engine,
+                )
+
+    def test_runtime_rejects_manifest_plan_implementation_receipt_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            interpreter, engine = _packages(root)
+            manifest_path = engine / "native-engine-package.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["implementation_dispatch_receipt"]["status"] = "incomplete"
+            manifest_path.write_text(
+                json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                StageBNativeRuntimeError, "different implementation dispatch receipts"
+            ):
+                plan_stage_b_native_runtime(
+                    interpreter_package=interpreter,
+                    native_engine_package=engine,
+                )
+
+    def test_portable_dispatch_is_bound_into_runtime_startup_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            selection = {
+                "unit_id": "semantic-transfer:00001000",
+                "rva": 0x1000,
+                "replacement_id": "portable-entry",
+                "cluster_id": "entry-cluster",
+                "component_manifest_sha256": "c" * 64,
+                "fallback_on_unimplemented": False,
+            }
+            interpreter, engine = _packages(
+                root, selected_portable_components=[selection]
+            )
+            runtime = root / "runtime"
+            result = write_stage_b_native_runtime_package(
+                interpreter_package=interpreter,
+                native_engine_package=engine,
+                out=runtime,
+            )
+            source = (runtime / "native-runtime.c").read_text(encoding="ascii")
+            self.assertEqual(result["counts"]["implementation_dispatches"], 1)
+            self.assertIn('"portable-entry", "entry-cluster"', source)
+            self.assertIn("override->fallback_on_unimplemented != 0U", source)
+            self.assertIn("stage_b_region_override_lookup == 0", source)
+            self.assertIn(
+                "stage_b_program_transfer_count != stage_b_native_transfer_count",
+                source,
+            )
+            self.assertIn(
+                "stage_b_region_override_count != stage_b_native_portable_dispatch_count",
+                source,
             )
 
 

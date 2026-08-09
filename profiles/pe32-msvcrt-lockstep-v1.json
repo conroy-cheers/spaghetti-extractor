@@ -1,6 +1,7 @@
 {
   "format": "stage-a-external-environment-profile-v1",
   "id": "pe32-msvcrt-lockstep-v1",
+  "default_callback_effect": "none",
   "machine_import_call_contracts": [
     {
       "id": 0,
@@ -30,6 +31,7 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "callbackRegistration",
+      "callback_effect": "explicit",
       "world_effect_argument": 0,
       "callback_lifetime": "until_invoked_or_process_exit",
       "callback_abi": {

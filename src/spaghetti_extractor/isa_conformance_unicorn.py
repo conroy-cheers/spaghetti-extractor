@@ -1081,15 +1081,6 @@ def run_unicorn_case(case: InstructionTestCase) -> BackendObservation:
     preflight = _preflight(case)
     if isinstance(preflight, str):
         return _unsupported(case, preflight)
-    if (
-        _is_repeat_instruction(preflight)
-        and case.initial_state.gprs.ecx > MAX_REPEAT_ITERATIONS
-    ):
-        return _unsupported(
-            case,
-            "repeat count exceeds the bounded Unicorn single-instruction "
-            f"limit of {MAX_REPEAT_ITERATIONS}",
-        )
     requires_x87 = (
         preflight.instruction.group(capstone_x86.X86_GRP_FPU)
         or preflight.instruction.mnemonic.lower().startswith("f")
@@ -1135,7 +1126,14 @@ def run_unicorn_case(case: InstructionTestCase) -> BackendObservation:
     repeat_bound_exceeded = [False]
     # Unicorn reports one same-EIP code hook per iteration plus a final hook
     # that retires the completed REP instruction and advances EIP.
-    repeat_hook_limit = max(1, case.initial_state.gprs.ecx + 1)
+    # A large initial count does not imply a long execution: REPE/REPNE scans
+    # and compares may stop after the first iteration. Let Unicorn execute such
+    # cases, but stop and fail closed if the actual same-EIP hook count reaches
+    # the bounded campaign budget.
+    repeat_hook_limit = min(
+        MAX_REPEAT_ITERATIONS,
+        max(1, case.initial_state.gprs.ecx + 1),
+    )
     assert _unicorn is not None
     access_permissions = {
         _unicorn.UC_MEM_READ: "r",

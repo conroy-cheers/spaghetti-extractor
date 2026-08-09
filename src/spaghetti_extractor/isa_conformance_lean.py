@@ -258,7 +258,9 @@ def _generated_module(
     return "\n".join(definitions)
 
 
-def _copy_lean_sources(destination: Path) -> None:
+def _copy_lean_sources(
+    destination: Path, *, kernel_cache: Path | None = None
+) -> None:
     source = Path(__file__).parent / "lean" / "StageA"
     stage_a = destination / "StageA"
     stage_a.mkdir(parents=True)
@@ -270,10 +272,15 @@ def _copy_lean_sources(destination: Path) -> None:
         "ISAConformanceRunner",
     ):
         shutil.copyfile(source / f"{module}.lean", stage_a / f"{module}.lean")
-
-
-def _generated_runner_module() -> str:
-    return "import StageA.GeneratedISAConformance\n"
+        if kernel_cache is not None:
+            for suffix in ("olean", "c", "o"):
+                cached = Path(kernel_cache) / "StageA" / f"{module}.{suffix}"
+                if not cached.is_file():
+                    raise ISAConformanceError(
+                        f"Lean kernel cache omits StageA.{module}.{suffix}"
+                    )
+                if suffix != "o":
+                    shutil.copyfile(cached, stage_a / f"{module}.{suffix}")
 
 
 def _control_outcome(control: dict[str, Any], image_base: int) -> tuple[ControlClass, int]:
@@ -428,7 +435,8 @@ def _report(
 def _run_lean_isa_conformance(
     corpus: ISAConformanceCorpus,
     *,
-    timeout_seconds: int = 300,
+    timeout_seconds: int = 1800,
+    kernel_cache: Path | None = None,
 ) -> tuple[ISAConformanceReport, dict[str, str]]:
     """Evaluate supported cases using the authoritative Lean semantics."""
     if not isinstance(corpus, ISAConformanceCorpus):
@@ -465,7 +473,7 @@ def _run_lean_isa_conformance(
         else:
             with tempfile.TemporaryDirectory(prefix="isa-conformance-lean-") as temporary:
                 lean_dir = Path(temporary)
-                _copy_lean_sources(lean_dir)
+                _copy_lean_sources(lean_dir, kernel_cache=kernel_cache)
                 generated = lean_dir / "StageA" / "GeneratedISAConformance.lean"
                 generated.write_text(
                     _generated_module(
@@ -478,6 +486,7 @@ def _run_lean_isa_conformance(
                     lean_dir,
                     bundle="GeneratedISAConformance",
                     command_timeout_seconds=900,
+                    emit_c=True,
                 )
                 if compiled.get("status") != "checked":
                     detail = str(compiled.get("stderr") or compiled.get("stdout"))
@@ -491,17 +500,44 @@ def _run_lean_isa_conformance(
                             detail="Lean conformance compilation failed: " + detail,
                         )
                 else:
-                    lean = shutil.which("lean")
-                    assert lean is not None
-                    runner = lean_dir / "RunGeneratedISAConformance.lean"
-                    runner.write_text(
-                        _generated_runner_module(),
-                        encoding="utf-8",
-                    )
-                    completed = subprocess.run(
-                        [lean, "--trust=0", "--run", runner.name],
+                    leanc = shutil.which("leanc")
+                    if leanc is None:
+                        raise ISAConformanceError("Lean native compiler is unavailable")
+                    runner = lean_dir / "isa-conformance-runner"
+                    if kernel_cache is None:
+                        native_inputs = sorted(
+                            str(path.relative_to(lean_dir))
+                            for path in (lean_dir / "StageA").glob("*.c")
+                        )
+                    else:
+                        native_inputs = [
+                            str(Path(kernel_cache) / "StageA" / f"{module}.o")
+                            for module in (
+                                "X87",
+                                "Formal",
+                                "ISAQualification",
+                                "ISAConformance",
+                                "ISAConformanceRunner",
+                            )
+                        ] + ["StageA/GeneratedISAConformance.c"]
+                    linked = subprocess.run(
+                        [leanc, "-O2", "-o", str(runner), *native_inputs],
                         cwd=lean_dir,
                         env={**os.environ, "LEAN_PATH": "."},
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=900,
+                        check=False,
+                    )
+                    if linked.returncode != 0:
+                        raise ISAConformanceError(
+                            "Lean conformance native link failed: "
+                            + (linked.stderr or linked.stdout)
+                        )
+                    completed = subprocess.run(
+                        [str(runner)],
+                        cwd=lean_dir,
                         text=True,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
@@ -595,11 +631,14 @@ def _run_lean_isa_conformance(
 def run_lean_isa_conformance(
     corpus: ISAConformanceCorpus,
     *,
-    timeout_seconds: int = 300,
+    timeout_seconds: int = 1800,
+    kernel_cache: Path | None = None,
 ) -> ISAConformanceReport:
     """Evaluate supported cases using the authoritative Lean semantics."""
     report, _ = _run_lean_isa_conformance(
-        corpus, timeout_seconds=timeout_seconds
+        corpus,
+        timeout_seconds=timeout_seconds,
+        kernel_cache=kernel_cache,
     )
     return report
 
@@ -607,10 +646,15 @@ def run_lean_isa_conformance(
 def run_lean_isa_conformance_with_forms(
     corpus: ISAConformanceCorpus,
     *,
-    timeout_seconds: int = 300,
+    timeout_seconds: int = 1800,
+    kernel_cache: Path | None = None,
 ) -> tuple[ISAConformanceReport, dict[str, str]]:
     """Return concrete observations plus Lean-owned semantic-form identities."""
-    return _run_lean_isa_conformance(corpus, timeout_seconds=timeout_seconds)
+    return _run_lean_isa_conformance(
+        corpus,
+        timeout_seconds=timeout_seconds,
+        kernel_cache=kernel_cache,
+    )
 
 
 __all__ = [

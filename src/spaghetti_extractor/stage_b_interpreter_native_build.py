@@ -38,6 +38,13 @@ from .stage_b_pe_composer import (
     ExecutableAnchorManifest,
     compose_stage_b_pe,
 )
+from .recovered_executable_data import load_recovered_executable_data_contract
+from .stage_b_candidate_authority_v2 import (
+    STAGE_B_CANDIDATE_AUTHORITY_V2_FORMAT,
+    CandidateAuthorityV2Error,
+    CandidateAuthorityV2Receipt,
+    validate_stage_b_candidate_authority_v2,
+)
 from .util import sha256_file
 
 
@@ -359,8 +366,15 @@ def build_stage_b_interpreter_native_candidate(
     interpreter_package: Path | str,
     native_engine_package: Path | str,
     native_runtime_package: Path | str,
+    candidate_authority: Path | str,
+    final_static_hybrid_audit: Path | str,
+    authority_bundle: Path | str,
+    machine_ir: Path | str,
+    machine_ir_manifest: Path | str,
+    fallback_coverage_receipt: Path | str,
     region_override_package: Path | str | None = None,
     load_image_contract: Path | str,
+    recovered_executable_data: Path | str | None = None,
     out_dir: Path | str,
     anchor_manifest: Path | str | None = None,
     compiler: Path | str = "i686-w64-mingw32-gcc",
@@ -369,7 +383,7 @@ def build_stage_b_interpreter_native_candidate(
     diagnostic_failure_trap: bool = False,
     precompiled_objects: Path | str | None = None,
 ) -> dict[str, Any]:
-    """Compile, qualify, and compose one interpreter-backed PE32 candidate."""
+    """Compile and compose one statically closed interpreter-backed candidate."""
 
     if not isinstance(diagnostic_failure_trap, bool):
         raise StageBInterpreterNativeBuildError(
@@ -379,6 +393,15 @@ def build_stage_b_interpreter_native_candidate(
         raise StageBInterpreterNativeBuildError(
             "payload entry symbol is not a C identifier"
         )
+
+    receipt = _validate_candidate_authority_v2(
+        receipt=candidate_authority,
+        final_static_hybrid_audit=final_static_hybrid_audit,
+        authority_bundle=authority_bundle,
+        machine_ir=machine_ir,
+        machine_ir_manifest=machine_ir_manifest,
+        fallback_coverage_receipt=fallback_coverage_receipt,
+    )
 
     interpreter = _load_package(
         interpreter_package,
@@ -401,6 +424,7 @@ def build_stage_b_interpreter_native_candidate(
         expected_format=NATIVE_RUNTIME_PACKAGE_FORMAT,
         require_roles=True,
     )
+    _validate_candidate_authority_package_bindings(receipt, interpreter, engine)
     runtime_plan = _validate_package_closure(interpreter, engine, runtime)
     region_overrides = (
         None
@@ -417,6 +441,37 @@ def build_stage_b_interpreter_native_candidate(
     contract_artifact_sha256 = sha256_file(contract_path)
     contract = load_stage_a_load_image_contract(contract_path)
     native_build._require_pe32_contract(contract)
+    if contract.identity.pe_sha256 != _candidate_manifest_pe_sha256(
+        machine_ir_manifest
+    ):
+        raise StageBInterpreterNativeBuildError(
+            "load-image contract binds a different PE than the v2 "
+            "candidate-authority receipt"
+        )
+    executable_data_path: Path | None = None
+    executable_data_artifact_sha256: str | None = None
+    executable_data = None
+    if recovered_executable_data is not None:
+        executable_data_path = _file(
+            recovered_executable_data, "recovered executable-data contract"
+        )
+        executable_data_artifact_sha256 = sha256_file(executable_data_path)
+        executable_data = load_recovered_executable_data_contract(
+            executable_data_path
+        )
+        interpreter_machine_ir = interpreter.payload.get("machine_ir")
+        engine_machine_ir = engine.payload.get("machine_ir")
+        if (
+            not isinstance(interpreter_machine_ir, Mapping)
+            or not isinstance(engine_machine_ir, Mapping)
+            or interpreter_machine_ir.get("sha256")
+            != executable_data.machine_ir_sha256
+            or engine_machine_ir.get("sha256")
+            != executable_data.machine_ir_sha256
+        ):
+            raise StageBInterpreterNativeBuildError(
+                "recovered executable-data contract binds a different machine IR"
+            )
     anchor_path: Path | None = None
     anchors: ExecutableAnchorManifest | None = None
     anchor_artifact_sha256: str | None = None
@@ -693,6 +748,13 @@ def build_stage_b_interpreter_native_candidate(
         raise StageBInterpreterNativeBuildError(
             "load-image contract changed during compilation"
         )
+    if (
+        executable_data_path is not None
+        and sha256_file(executable_data_path) != executable_data_artifact_sha256
+    ):
+        raise StageBInterpreterNativeBuildError(
+            "recovered executable-data contract changed during compilation"
+        )
     assert anchor_path is not None
     assert anchors is not None
     assert anchor_artifact_sha256 is not None
@@ -704,11 +766,24 @@ def build_stage_b_interpreter_native_candidate(
         raise StageBInterpreterNativeBuildError(
             "compiler runtime changed during compilation"
         )
+    repeated_receipt = _validate_candidate_authority_v2(
+        receipt=candidate_authority,
+        final_static_hybrid_audit=final_static_hybrid_audit,
+        authority_bundle=authority_bundle,
+        machine_ir=machine_ir,
+        machine_ir_manifest=machine_ir_manifest,
+        fallback_coverage_receipt=fallback_coverage_receipt,
+    )
+    if repeated_receipt != receipt:
+        raise StageBInterpreterNativeBuildError(
+            "v2 candidate-authority inputs changed during compilation"
+        )
     composition = compose_stage_b_pe(
         load_image_contract=contract_path,
         payload_pe=payload_path,
         anchor_manifest=anchor_path,
         payload_relocation_inventory=relocations,
+        recovered_executable_data=executable_data_path,
         out_dir=output,
     )
     composition_path = output / COMPOSITION_MANIFEST_FILENAME
@@ -720,6 +795,9 @@ def build_stage_b_interpreter_native_candidate(
         "acceptance_authority": "none",
         "assurance": "candidate static and behavioral validation required",
         "inputs": {
+            "candidate_authority": _candidate_authority_manifest_binding(
+                candidate_authority, receipt
+            ),
             "interpreter_package": interpreter.binding(),
             "native_engine_package": engine.binding(),
             "native_runtime_package": runtime.binding(),
@@ -733,6 +811,19 @@ def build_stage_b_interpreter_native_candidate(
                 "contract_sha256": contract.hashes.contract_sha256,
                 "bound_original_pe_sha256": contract.identity.pe_sha256,
             },
+            "recovered_executable_data": (
+                None
+                if executable_data is None
+                else {
+                    "artifact_sha256": executable_data_artifact_sha256,
+                    "contract_sha256": executable_data.to_payload()["hashes"][
+                        "contract_sha256"
+                    ],
+                    "machine_ir_sha256": executable_data.machine_ir_sha256,
+                    "ranges": len(executable_data.ranges),
+                    "bytes": sum(item.size for item in executable_data.ranges),
+                }
+            ),
             "executable_anchor_manifest": {
                 "artifact_sha256": anchor_artifact_sha256,
                 "canonical_sha256": native_build._canonical_sha256(
@@ -749,6 +840,12 @@ def build_stage_b_interpreter_native_candidate(
         },
         "policy": {
             "architecture": "i686-pe32",
+            "candidate_class": (
+                "diagnostic-static-closed"
+                if diagnostic_failure_trap
+                else "release-static-closed"
+            ),
+            "allow_deferred_potential_transfers": False,
             "entry_symbol": entry_symbol,
             "image_base": contract.identity.preferred_base,
             "payload_rva": selected_rva,
@@ -825,6 +922,127 @@ def build_stage_b_interpreter_native_candidate(
         output / INTERPRETER_NATIVE_BUILD_MANIFEST_FILENAME, manifest
     )
     return manifest
+
+
+def _validate_candidate_authority_v2(
+    *,
+    receipt: Path | str,
+    final_static_hybrid_audit: Path | str,
+    authority_bundle: Path | str,
+    machine_ir: Path | str,
+    machine_ir_manifest: Path | str,
+    fallback_coverage_receipt: Path | str,
+) -> CandidateAuthorityV2Receipt:
+    try:
+        return validate_stage_b_candidate_authority_v2(
+            receipt=receipt,
+            final_static_hybrid_audit=final_static_hybrid_audit,
+            authority_bundle=authority_bundle,
+            machine_ir=machine_ir,
+            machine_ir_manifest=machine_ir_manifest,
+            fallback_coverage_receipt=fallback_coverage_receipt,
+            require_authorized=True,
+        )
+    except CandidateAuthorityV2Error as exc:
+        raise StageBInterpreterNativeBuildError(str(exc)) from exc
+
+
+def _validate_candidate_authority_package_bindings(
+    receipt: CandidateAuthorityV2Receipt,
+    interpreter: _Package,
+    engine: _Package,
+) -> None:
+    machine_ir_sha256 = _candidate_input_sha256(receipt, "machine_ir")
+    machine_ir_manifest_sha256 = _candidate_input_sha256(
+        receipt, "machine_ir_manifest"
+    )
+    for package in (interpreter, engine):
+        if package.payload.get("input_mode") != "sanitized_machine_ir_v2":
+            raise StageBInterpreterNativeBuildError(
+                f"{package.owner} package is not derived from strict machine IR"
+            )
+        machine_ir = package.payload.get("machine_ir")
+        if (
+            not isinstance(machine_ir, Mapping)
+            or machine_ir.get("sha256") != machine_ir_sha256
+        ):
+            raise StageBInterpreterNativeBuildError(
+                f"{package.owner} package binds a different machine IR than "
+                "the v2 candidate-authority receipt"
+            )
+        if package.payload.get("execution_policy") != "complete_transfer_inventory_v1":
+            raise StageBInterpreterNativeBuildError(
+                f"{package.owner} package permits deferred transfers"
+            )
+        semantic_coverage = package.payload.get("semantic_coverage")
+        if (
+            not isinstance(semantic_coverage, Mapping)
+            or semantic_coverage.get("status") != "complete"
+            or semantic_coverage.get("deferred_transfers") != 0
+        ):
+            raise StageBInterpreterNativeBuildError(
+                f"{package.owner} package has incomplete semantic coverage"
+            )
+        deferred = package.payload.get("deferred_transfers")
+        if not isinstance(deferred, list) or deferred:
+            raise StageBInterpreterNativeBuildError(
+                f"{package.owner} package has deferred transfers"
+            )
+    manifest = engine.payload.get("machine_ir_manifest")
+    if (
+        not isinstance(manifest, Mapping)
+        or manifest.get("sha256") != machine_ir_manifest_sha256
+    ):
+        raise StageBInterpreterNativeBuildError(
+            "native_engine package binds a different machine-IR manifest than "
+            "the v2 candidate-authority receipt"
+        )
+
+
+def _candidate_input_sha256(
+    receipt: CandidateAuthorityV2Receipt, name: str
+) -> str:
+    binding = receipt.inputs.get(name)
+    value = binding.get("artifact_sha256") if isinstance(binding, Mapping) else None
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise StageBInterpreterNativeBuildError(
+            f"v2 candidate-authority receipt has no exact {name} binding"
+        )
+    return value
+
+
+def _candidate_manifest_pe_sha256(manifest_path: Path | str) -> str:
+    manifest = _read_json_object(
+        _file(manifest_path, "machine-IR manifest"), "machine-IR manifest"
+    )
+    authority = manifest.get("authority_bindings")
+    binary = authority.get("binary") if isinstance(authority, Mapping) else None
+    value = binary.get("pe_sha256") if isinstance(binary, Mapping) else None
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise StageBInterpreterNativeBuildError(
+            "machine-IR manifest has no exact v2 PE binding"
+        )
+    return value
+
+
+def _candidate_authority_manifest_binding(
+    receipt_path: Path | str, receipt: CandidateAuthorityV2Receipt
+) -> dict[str, Any]:
+    path = _file(receipt_path, "v2 candidate-authority receipt")
+    return {
+        "format": STAGE_B_CANDIDATE_AUTHORITY_V2_FORMAT,
+        "artifact_sha256": sha256_file(path),
+        "content_id": receipt.content_id,
+        "status": receipt.status.value,
+        "authorizes": receipt.authorizes,
+        "machine_ir_sha256": _candidate_input_sha256(receipt, "machine_ir"),
+        "machine_ir_manifest_sha256": _candidate_input_sha256(
+            receipt, "machine_ir_manifest"
+        ),
+        "fallback_coverage_receipt_sha256": _candidate_input_sha256(
+            receipt, "fallback_coverage_receipt"
+        ),
+    }
 
 
 def _load_package(

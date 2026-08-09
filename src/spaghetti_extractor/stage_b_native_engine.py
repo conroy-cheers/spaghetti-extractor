@@ -24,6 +24,18 @@ from .callable_external_runtime import (
     CallableExternalRuntimeRoute,
     load_callable_external_runtime_contract,
 )
+from .callback_contracts import (
+    CallbackABI,
+    CallbackSource,
+    parse_callback_abi,
+    parse_callback_source,
+)
+from .checked_external_site_contract import (
+    CheckedExternalSiteContract,
+    CheckedExternalSiteContractError,
+    ExternalSiteIdentity,
+    checked_external_site_contract_from_event,
+)
 from .stage_binary import StageAInputError
 from .stage_b_engine_layout import (
     render_stage_b_engine_layout_c,
@@ -37,6 +49,10 @@ from .stage_b_typed_x87 import (
     typed_x87_operation_from_micro_op,
 )
 from .stage_b_machine_ir_scope import partition_candidate_machine_ir_units
+from .recovered_executable_data import (
+    RecoveredExecutableDataRange,
+    load_recovered_executable_data_contract,
+)
 from .util import sha256_bytes, sha256_file, write_json
 
 
@@ -64,6 +80,12 @@ _MACHINE_STATE_SIZE = 252
 _MACHINE_REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
 _MACHINE_FLAGS = ("cf", "zf", "sf", "of", "pf", "df")
 _PE32_CALLEE_PRESERVED_REGISTERS = frozenset({"ebx", "esi", "edi", "ebp"})
+_CALLBACK_ADAPTER_RECEIPT_FORMAT = (
+    "stage-b-native-callback-adapter-receipt-v1"
+)
+_IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT = (
+    "stage-b-native-implementation-dispatch-receipt-v1"
+)
 _RAW_INSTRUCTION_FIELDS = frozenset({
     "bytes", "instruction_bytes", "opcode_bytes", "raw_bytes",
     "encoded_instruction",
@@ -186,9 +208,16 @@ class NativeExternalSite:
     event_identity_sha256: str | None = None
     abi_metadata_sha256: str | None = None
     target_expression: Any = None
+    callback_source_kind: str | None = None
     callback_argument_index: int | None = None
     callback_argument_offset: int | None = None
+    callback_pointee_offset: int = 0
     callback_nullable: bool = False
+    external_protocol: Mapping[str, Any] | None = None
+    interface_argument_words: int | None = None
+    out_interface_relations: tuple[Mapping[str, Any], ...] = ()
+    checked_external_contract: CheckedExternalSiteContract | None = None
+    checked_external_contract_required: bool = False
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -203,12 +232,31 @@ class NativeExternalSite:
             "target_expression": self.target_expression,
             "callback_registration": (
                 {
+                    "source_kind": self.callback_source_kind,
                     "argument_index": self.callback_argument_index,
                     "stack_offset": self.callback_argument_offset,
+                    "pointee_offset": self.callback_pointee_offset,
                     "nullable": self.callback_nullable,
                 }
                 if self.callback_argument_index is not None
                 else None
+            ),
+            "external_protocol": (
+                None
+                if self.external_protocol is None
+                else dict(self.external_protocol)
+            ),
+            "interface_argument_words": self.interface_argument_words,
+            "out_interface_relations": [
+                dict(relation) for relation in self.out_interface_relations
+            ],
+            "checked_external_contract": (
+                None
+                if self.checked_external_contract is None
+                else self.checked_external_contract.payload()
+            ),
+            "checked_external_contract_required": (
+                self.checked_external_contract_required
             ),
             "disposition": self.disposition,
             "transfer_sha256": self.transfer_sha256,
@@ -268,6 +316,24 @@ class NativeCallbackTarget:
 
 
 @dataclass(frozen=True)
+class NativeImportBinding:
+    dll: str
+    symbol: str | None
+    ordinal: int | None
+    iat_va: int
+    iat_rva: int
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "dll": self.dll,
+            "symbol": self.symbol,
+            "ordinal": self.ordinal,
+            "iat_va": self.iat_va,
+            "iat_rva": self.iat_rva,
+        }
+
+
+@dataclass(frozen=True)
 class NativeCallbackAdapter:
     id: int
     instruction_rva: int
@@ -288,6 +354,164 @@ class NativeCallbackAdapter:
             "callback_rva": self.callback_rva,
             "symbol": self.symbol,
             "matching": "runtime-image-base-plus-rva",
+        }
+
+
+@dataclass(frozen=True)
+class NativeCallbackAdapterReceipt:
+    site_id: int
+    transfer_id: str
+    event_index: int
+    instruction_rva: int
+    checked_external_contract_sha256: str
+    source: Any
+    abi: Any
+    lifetime: Any
+    invocation: str
+    target_rvas: tuple[int, ...]
+    adapter_entries: tuple[NativeCallbackAdapter, ...]
+
+    def _body(self) -> dict[str, Any]:
+        return {
+            "site_id": self.site_id,
+            "transfer_id": self.transfer_id,
+            "event_index": self.event_index,
+            "instruction_rva": self.instruction_rva,
+            "checked_external_contract_sha256": (
+                self.checked_external_contract_sha256
+            ),
+            "source": self.source,
+            "abi": self.abi,
+            "lifetime": self.lifetime,
+            "invocation": self.invocation,
+            "target_rvas": list(self.target_rvas),
+            "adapter_entries": [
+                adapter.payload() for adapter in self.adapter_entries
+            ],
+        }
+
+    def payload(self) -> dict[str, Any]:
+        body = self._body()
+        return {
+            "format": _CALLBACK_ADAPTER_RECEIPT_FORMAT,
+            **body,
+            "receipt_sha256": _canonical_sha256(body),
+        }
+
+
+@dataclass(frozen=True)
+class NativeImplementationEntry:
+    unit_id: str
+    rva: int
+    transfer_sha256: str
+    reachability: str
+    implementation_class: str
+    dispatch_lookup: str
+    replacement_id: str | None = None
+    cluster_id: str | None = None
+    component_manifest_sha256: str | None = None
+
+    def _body(self) -> dict[str, Any]:
+        return {
+            "unit_id": self.unit_id,
+            "rva": self.rva,
+            "transfer_sha256": self.transfer_sha256,
+            "reachability": self.reachability,
+            "implementation_class": self.implementation_class,
+            "dispatch_lookup": self.dispatch_lookup,
+            "replacement_id": self.replacement_id,
+            "cluster_id": self.cluster_id,
+            "component_manifest_sha256": self.component_manifest_sha256,
+            "fallback_on_unimplemented": False,
+        }
+
+    def payload(self) -> dict[str, Any]:
+        body = self._body()
+        return {**body, "entry_sha256": _canonical_sha256(body)}
+
+
+@dataclass(frozen=True)
+class NativeImplementationTarget:
+    kind: str
+    source_unit_id: str
+    source_rva: int
+    source_event_index: int | None
+    target_unit_id: str
+    target_rva: int
+
+    def payload(self) -> dict[str, Any]:
+        body = {
+            "kind": self.kind,
+            "source_unit_id": self.source_unit_id,
+            "source_rva": self.source_rva,
+            "source_event_index": self.source_event_index,
+            "target_unit_id": self.target_unit_id,
+            "target_rva": self.target_rva,
+        }
+        return {**body, "target_sha256": _canonical_sha256(body)}
+
+
+@dataclass(frozen=True)
+class NativeImplementationDispatchReceipt:
+    semantic_input_sha256: str
+    machine_ir_manifest_sha256: str | None
+    reachability_status: str
+    roots: tuple[str, ...]
+    reachable_unit_ids: tuple[str, ...]
+    entries: tuple[NativeImplementationEntry, ...]
+    targets: tuple[NativeImplementationTarget, ...]
+    blockers: tuple[dict[str, Any], ...]
+
+    @property
+    def status(self) -> str:
+        if self.blockers:
+            return "incomplete"
+        if self.reachability_status == "complete":
+            return "complete"
+        return "unbound"
+
+    def _body(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "semantic_input_sha256": self.semantic_input_sha256,
+            "machine_ir_manifest_sha256": self.machine_ir_manifest_sha256,
+            "reachability": {
+                "status": self.reachability_status,
+                "roots": list(self.roots),
+                "reachable_unit_ids": list(self.reachable_unit_ids),
+            },
+            "policy": {
+                "one_implementation_class_per_transfer": True,
+                "rooted_targets_require_implementation": True,
+                "portable_component_fallback_on_unimplemented": False,
+                "static_hybrid_closure_receipt_required_for_candidate": True,
+                "acceptance_authority": False,
+            },
+            "counts": {
+                "dispatch_entries": len(self.entries),
+                "rooted_reachable_units": len(self.reachable_unit_ids),
+                "rooted_targets": len(self.targets),
+                "machine_ir_fallback": sum(
+                    entry.implementation_class == "machine_ir_fallback"
+                    for entry in self.entries
+                ),
+                "selected_portable_component": sum(
+                    entry.implementation_class == "selected_portable_component"
+                    for entry in self.entries
+                ),
+                "blockers": len(self.blockers),
+            },
+            "entries": [entry.payload() for entry in self.entries],
+            "targets": [target.payload() for target in self.targets],
+            "blockers": list(self.blockers),
+        }
+
+    def payload(self) -> dict[str, Any]:
+        body = self._body()
+        return {
+            "format": _IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT,
+            **body,
+            "receipt_sha256": _canonical_sha256(body),
         }
 
 
@@ -400,14 +624,18 @@ class NativeEnginePlan:
     entry_rva: int
     transfer_count: int
     external_sites: tuple[NativeExternalSite, ...]
+    import_bindings: tuple[NativeImportBinding, ...]
     indirect_call_count: int
     callback_targets: tuple[NativeCallbackTarget, ...]
     callback_adapters: tuple[NativeCallbackAdapter, ...]
+    callback_adapter_receipts: tuple[NativeCallbackAdapterReceipt, ...]
+    implementation_dispatch_receipt: NativeImplementationDispatchReceipt
     callback_passthroughs: tuple[NativeCallbackPassthrough, ...]
     callable_external_contract: CallableExternalRuntimeContract | None
     x87_operations: tuple[NativeX87Operation, ...]
     termination_import: NativeTerminationImport | None
     deferred_transfers: tuple[dict[str, Any], ...]
+    recovered_executable_data_ranges: tuple[RecoveredExecutableDataRange, ...]
     fixed_image_base: int | None
     blockers: tuple[dict[str, Any], ...]
 
@@ -432,10 +660,20 @@ class NativeEnginePlan:
                 "input_transfers": self.transfer_count + len(self.deferred_transfers),
                 "transfers": self.transfer_count,
                 "deferred_transfers": len(self.deferred_transfers),
+                "recovered_executable_data_ranges": len(
+                    self.recovered_executable_data_ranges
+                ),
                 "external_sites": len(self.external_sites),
+                "import_bindings": len(self.import_bindings),
                 "indirect_calls": self.indirect_call_count,
                 "callback_targets": len(self.callback_targets),
                 "callback_adapters": len(self.callback_adapters),
+                "callback_adapter_receipts": len(
+                    self.callback_adapter_receipts
+                ),
+                "implementation_dispatch_entries": len(
+                    self.implementation_dispatch_receipt.entries
+                ),
                 "callback_passthroughs": len(self.callback_passthroughs),
                 "callable_external_routes": (
                     0
@@ -446,11 +684,18 @@ class NativeEnginePlan:
                 "blockers": len(self.blockers),
             },
             "external_sites": [site.payload() for site in self.external_sites],
+            "import_bindings": [binding.payload() for binding in self.import_bindings],
             "callback_targets": [target.rva for target in self.callback_targets],
             "callback_abis": [target.payload() for target in self.callback_targets],
             "callback_adapters": [
                 adapter.payload() for adapter in self.callback_adapters
             ],
+            "callback_adapter_receipts": [
+                receipt.payload() for receipt in self.callback_adapter_receipts
+            ],
+            "implementation_dispatch_receipt": (
+                self.implementation_dispatch_receipt.payload()
+            ),
             "callback_passthroughs": [
                 passthrough.payload() for passthrough in self.callback_passthroughs
             ],
@@ -487,6 +732,18 @@ class NativeEnginePlan:
                 else "fail_closed_on_deferred_potential_transfer_v1"
             ),
             "deferred_transfers": list(self.deferred_transfers),
+            "recovered_executable_data": {
+                "dispatch_policy": "fail_closed_as_noncode",
+                "ranges": [
+                    {
+                        "id": item.identity,
+                        "rva_start": item.rva_start,
+                        "rva_end": item.rva_end,
+                        "bytes_sha256": item.bytes_sha256,
+                    }
+                    for item in self.recovered_executable_data_ranges
+                ],
+            },
             "image_base_policy": (
                 {"kind": "fixed", "image_base": self.fixed_image_base}
                 if self.fixed_image_base is not None
@@ -793,7 +1050,7 @@ def _machine_ir_event_evidence(
 
 def _machine_ir_callback_registration(
     event: Mapping[str, Any], *, transfer_id: str, event_index: int
-) -> tuple[int, int, str, int, bool] | None:
+) -> tuple[CallbackSource, int, CallbackABI] | None:
     raw_contract = event.get("abi_contract")
     if raw_contract is None:
         return None
@@ -807,57 +1064,29 @@ def _machine_ir_callback_registration(
         raw_contract.get("argument_words"),
         f"{transfer_id} callback-registration argument count",
     )
-    argument_index = _required_u32(
-        raw_contract.get("world_effect_argument"),
-        f"{transfer_id} callback-registration argument index",
-    )
     argument_base_offset = _required_u32(
         raw_contract.get("argument_base_offset"),
         f"{transfer_id} callback-registration argument base offset",
     )
     if (
         argument_words > 64
-        or argument_index >= argument_words
         or argument_base_offset % 4 != 0
         or argument_base_offset > 0x10000
     ):
         raise StageAInputError(
             f"{transfer_id} callback-registration argument inventory is invalid"
         )
-    raw_callback = raw_contract.get("callback_abi")
-    if not isinstance(raw_callback, Mapping) or set(raw_callback) != {
-        "kind", "argument_words", "stack_cleanup_bytes", "nullable",
-    }:
-        raise StageAInputError(
-            f"{transfer_id} callback registration has no exact callback ABI"
-        )
-    kind = _required_string(
-        raw_callback.get("kind"), f"{transfer_id} callback kind"
+    context = f"{transfer_id} external event {event_index}"
+    source = parse_callback_source(
+        raw_contract,
+        argument_words=argument_words,
+        context=context,
     )
-    callback_argument_words = _required_u32(
-        raw_callback.get("argument_words"),
-        f"{transfer_id} callback argument count",
-    )
-    stack_cleanup = _required_u32(
-        raw_callback.get("stack_cleanup_bytes"),
-        f"{transfer_id} callback stack cleanup",
-    )
-    nullable = raw_callback.get("nullable")
-    if (
-        kind != "generic_callback"
-        or callback_argument_words > 64
-        or stack_cleanup > 0xFFFF
-        or not isinstance(nullable, bool)
-    ):
-        raise StageAInputError(
-            f"{transfer_id} callback registration has an unsupported callback ABI"
-        )
+    callback_abi = parse_callback_abi(raw_contract, context=context)
     return (
-        argument_index,
-        argument_base_offset + argument_index * 4,
-        kind,
-        stack_cleanup,
-        nullable,
+        source,
+        source.stack_argument_offset(argument_base_offset),
+        callback_abi,
     )
 
 
@@ -993,6 +1222,7 @@ def _machine_ir_register_import_sites(
     rows: Iterable[Mapping[str, Any]],
     *,
     import_iat_vas: Mapping[tuple[str, str | int], int],
+    internal_call_preserved_registers: Mapping[int, frozenset[str]],
 ) -> dict[tuple[int, int], tuple[str, str | None, int | None, int]]:
     """Propagate exact IAT origins through registers and checked direct CFG edges.
 
@@ -1081,12 +1311,23 @@ def _machine_ir_register_import_sites(
         if not isinstance(events, list):
             return ({name: _IMPORT_ORIGIN_UNKNOWN for name in _MACHINE_REGISTERS}, {})
         call_origins: dict[int, Any] = {}
+        call_preserved: dict[int, frozenset[str]] = {}
         site_origins: dict[int, Any] = {}
         call_index = 0
         for raw_event in events:
             if not isinstance(raw_event, Mapping) or raw_event.get("family") != "external":
                 continue
             kind = raw_event.get("kind")
+            if kind == "internal_call":
+                target_rva = raw_event.get("target_rva")
+                call_origins[call_index] = _IMPORT_ORIGIN_UNKNOWN
+                call_preserved[call_index] = (
+                    internal_call_preserved_registers.get(target_rva, frozenset())
+                    if isinstance(target_rva, int) and not isinstance(target_rva, bool)
+                    else frozenset()
+                )
+                call_index += 1
+                continue
             if kind not in _CALL_KINDS:
                 continue
             if kind == "external_call":
@@ -1094,6 +1335,11 @@ def _machine_ir_register_import_sites(
             else:
                 origin = expression_origin(raw_event.get("target"), inputs)
             call_origins[call_index] = origin
+            call_preserved[call_index] = (
+                _PE32_CALLEE_PRESERVED_REGISTERS
+                if origin not in {_IMPORT_ORIGIN_BOTTOM, _IMPORT_ORIGIN_UNKNOWN}
+                else frozenset()
+            )
             instruction_rva = raw_event.get("instruction_rva")
             if isinstance(instruction_rva, int) and not isinstance(instruction_rva, bool):
                 site_origins[instruction_rva] = origin
@@ -1116,9 +1362,7 @@ def _machine_ir_register_import_sites(
                 and value.get("op") == "call_response"
                 and value.get("register") == register
                 and isinstance(value.get("call_index"), int)
-                and call_origins.get(value["call_index"], _IMPORT_ORIGIN_UNKNOWN)
-                    not in {_IMPORT_ORIGIN_BOTTOM, _IMPORT_ORIGIN_UNKNOWN}
-                and register in _PE32_CALLEE_PRESERVED_REGISTERS
+                and register in call_preserved.get(value["call_index"], frozenset())
             ):
                 outputs[register] = inputs.get(register, _IMPORT_ORIGIN_UNKNOWN)
             else:
@@ -1183,6 +1427,957 @@ def _machine_ir_register_import_sites(
             if origin not in {_IMPORT_ORIGIN_BOTTOM, _IMPORT_ORIGIN_UNKNOWN}:
                 result[(rva, instruction_rva)] = origin
     return result
+
+
+def _machine_ir_manifest_payload(
+    *, machine_ir: Path, manifest: Path | None
+) -> Mapping[str, Any] | None:
+    if manifest is None:
+        return None
+    try:
+        payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise StageAInputError(f"cannot read machine-IR manifest: {exc}") from exc
+    if not isinstance(payload, Mapping) or payload.get("format") != _MACHINE_IR_FORMAT:
+        raise StageAInputError("machine-IR manifest has an unsupported format")
+    artifact = payload.get("artifacts")
+    artifact = artifact.get("machine_ir") if isinstance(artifact, Mapping) else None
+    if (
+        not isinstance(artifact, Mapping)
+        or artifact.get("format") != _MACHINE_IR_FORMAT
+        or artifact.get("sha256") != sha256_file(machine_ir)
+    ):
+        raise StageAInputError(
+            "machine-IR manifest does not bind the exact machine-ir.jsonl artifact"
+        )
+    return payload
+
+
+def _portable_component_selections(
+    values: Iterable[Mapping[str, Any]],
+    *,
+    transfer_by_id: Mapping[str, tuple[int, str]],
+) -> dict[str, dict[str, Any]]:
+    """Normalize explicit portable dispatch selections.
+
+    The linked runtime independently checks these identifiers against the
+    strong region-override lookup. A portable component may not fall back to
+    machine IR, because that would give the unit two selected implementation
+    classes at execution time.
+    """
+
+    expected_fields = {
+        "unit_id",
+        "rva",
+        "replacement_id",
+        "cluster_id",
+        "component_manifest_sha256",
+        "fallback_on_unimplemented",
+    }
+    result: dict[str, dict[str, Any]] = {}
+    seen_rvas: set[int] = set()
+    for index, raw in enumerate(values):
+        if not isinstance(raw, Mapping) or set(raw) != expected_fields:
+            raise StageAInputError(
+                f"portable component selection {index} fields are not canonical"
+            )
+        unit_id = _required_string(
+            raw.get("unit_id"), f"portable component selection {index} unit id"
+        )
+        rva = _required_u32(
+            raw.get("rva"), f"portable component selection {index} RVA"
+        )
+        binding = transfer_by_id.get(unit_id)
+        if binding is None or binding[0] != rva:
+            raise StageAInputError(
+                "portable component selection does not bind one exact machine-IR unit"
+            )
+        if unit_id in result or rva in seen_rvas:
+            raise StageAInputError("duplicate portable component dispatch selection")
+        if raw.get("fallback_on_unimplemented") is not False:
+            raise StageAInputError(
+                "selected portable components must disable machine-IR fallback"
+            )
+        result[unit_id] = {
+            "rva": rva,
+            "replacement_id": _required_portable_identity(
+                raw.get("replacement_id"),
+                f"portable component selection {index} replacement id",
+            ),
+            "cluster_id": _required_portable_identity(
+                raw.get("cluster_id"),
+                f"portable component selection {index} cluster id",
+            ),
+            "component_manifest_sha256": _required_sha256(
+                raw.get("component_manifest_sha256"),
+                f"portable component selection {index} manifest SHA-256",
+            ),
+        }
+        seen_rvas.add(rva)
+    return result
+
+
+def _build_implementation_dispatch_receipt(
+    *,
+    semantic_input_sha256: str,
+    machine_ir_manifest_payload: Mapping[str, Any] | None,
+    machine_ir_manifest_sha256: str | None,
+    source_rows: Iterable[Mapping[str, Any]],
+    rows: Iterable[Mapping[str, Any]],
+    external_sites: Iterable[NativeExternalSite],
+    selected_portable_components: Iterable[Mapping[str, Any]],
+) -> tuple[NativeImplementationDispatchReceipt, tuple[dict[str, Any], ...]]:
+    source_rows = tuple(source_rows)
+    rows = tuple(rows)
+    source_by_id: dict[str, Mapping[str, Any]] = {}
+    transfer_by_id: dict[str, tuple[int, str]] = {}
+    transfer_id_by_rva: dict[int, str] = {}
+    for index, (source, row) in enumerate(zip(source_rows, rows, strict=True)):
+        unit_id = _required_string(row.get("id"), f"implementation unit {index} id")
+        original = row.get("original")
+        if not isinstance(original, Mapping):
+            raise StageAInputError(f"{unit_id} has no implementation source span")
+        rva = _required_u32(
+            original.get("rva_start"), f"{unit_id} implementation RVA"
+        )
+        transfer_sha256 = str(
+            row.get("_source_record_sha256") or _canonical_sha256(source)
+        )
+        if unit_id in transfer_by_id:
+            raise StageAInputError("duplicate state-machine transfer id")
+        if rva in transfer_id_by_rva:
+            raise StageAInputError("duplicate state-machine transfer RVA")
+        source_by_id[unit_id] = source
+        transfer_by_id[unit_id] = (rva, transfer_sha256)
+        transfer_id_by_rva[rva] = unit_id
+
+    selections = _portable_component_selections(
+        selected_portable_components, transfer_by_id=transfer_by_id
+    )
+    roots: tuple[str, ...] = ()
+    reachable_unit_ids: tuple[str, ...] = ()
+    reachability_status = "not_bound"
+    reachability_classes = {unit_id: "unbound" for unit_id in transfer_by_id}
+    receipt_blockers: list[dict[str, Any]] = []
+    reachability: Mapping[str, Any] | None = None
+    if machine_ir_manifest_payload is not None:
+        control = machine_ir_manifest_payload.get("control")
+        candidate = control.get("reachability") if isinstance(control, Mapping) else None
+        if isinstance(candidate, Mapping):
+            reachability = candidate
+
+    if reachability is not None:
+        inventories: dict[str, tuple[str, ...]] = {}
+        for field in (
+            "roots",
+            "reachable_units",
+            "potential_units",
+            "confirmed_unreachable_units",
+        ):
+            raw_values = reachability.get(field)
+            if not isinstance(raw_values, list) or any(
+                not isinstance(value, str) or not value for value in raw_values
+            ):
+                raise StageAInputError(
+                    f"machine-IR reachability {field} is malformed"
+                )
+            if len(set(raw_values)) != len(raw_values):
+                raise StageAInputError(
+                    f"machine-IR reachability {field} contains duplicates"
+                )
+            inventories[field] = tuple(sorted(raw_values))
+        roots = inventories["roots"]
+        reachable_unit_ids = inventories["reachable_units"]
+        reachable = set(reachable_unit_ids)
+        potential = set(inventories["potential_units"])
+        unreachable = set(inventories["confirmed_unreachable_units"])
+        known = set(source_by_id)
+        if (
+            not roots
+            or not set(roots) <= reachable
+            or reachable & potential
+            or reachable & unreachable
+            or potential & unreachable
+            or reachable | potential | unreachable != known
+        ):
+            raise StageAInputError(
+                "machine-IR reachability does not exactly partition its unit inventory"
+            )
+        for unit_id in reachable:
+            reachability_classes[unit_id] = (
+                "root" if unit_id in roots else "reachable"
+            )
+        for unit_id in potential:
+            reachability_classes[unit_id] = "potential"
+        for unit_id in unreachable:
+            reachability_classes[unit_id] = "confirmed_unreachable"
+        frontiers = reachability.get("frontiers")
+        if not isinstance(frontiers, list):
+            raise StageAInputError("machine-IR reachability frontiers are malformed")
+        if (
+            reachability.get("status") == "complete"
+            and not frontiers
+            and not potential
+        ):
+            reachability_status = "complete"
+        else:
+            reachability_status = "incomplete"
+            receipt_blockers.append(_blocker(
+                "implementation_reachability_incomplete",
+                observed_status=reachability.get("status"),
+                potential_units=len(potential),
+                frontiers=len(frontiers),
+                next_action=(
+                    "close the prerequisite rooted static reachability receipt"
+                ),
+            ))
+
+    entries = tuple(
+        NativeImplementationEntry(
+            unit_id=unit_id,
+            rva=transfer_by_id[unit_id][0],
+            transfer_sha256=transfer_by_id[unit_id][1],
+            reachability=reachability_classes[unit_id],
+            implementation_class=(
+                "selected_portable_component"
+                if unit_id in selections
+                else "machine_ir_fallback"
+            ),
+            dispatch_lookup=(
+                "stage_b_region_override_lookup"
+                if unit_id in selections
+                else "stage_b_program_lookup"
+            ),
+            replacement_id=(
+                selections[unit_id]["replacement_id"]
+                if unit_id in selections
+                else None
+            ),
+            cluster_id=(
+                selections[unit_id]["cluster_id"]
+                if unit_id in selections
+                else None
+            ),
+            component_manifest_sha256=(
+                selections[unit_id]["component_manifest_sha256"]
+                if unit_id in selections
+                else None
+            ),
+        )
+        for unit_id in sorted(transfer_by_id, key=lambda value: transfer_by_id[value][0])
+    )
+
+    targets: list[NativeImplementationTarget] = []
+    target_keys: set[tuple[str, str, int | None, str]] = set()
+    reachable = set(reachable_unit_ids)
+
+    def add_target(
+        *,
+        kind: str,
+        source_unit_id: str,
+        source_event_index: int | None,
+        target_unit_id: str | None = None,
+        target_rva: int | None = None,
+    ) -> None:
+        source_rva = transfer_by_id[source_unit_id][0]
+        if target_unit_id is None:
+            assert target_rva is not None
+            target_unit_id = transfer_id_by_rva.get(target_rva)
+        if target_unit_id is None or target_unit_id not in transfer_by_id:
+            receipt_blockers.append(_blocker(
+                "reachable_implementation_target_missing",
+                source_unit_id=source_unit_id,
+                source_rva=source_rva,
+                source_event_index=source_event_index,
+                target_rva=target_rva,
+                next_action="emit one executable transfer for the reachable target",
+            ))
+            return
+        resolved_rva = transfer_by_id[target_unit_id][0]
+        if target_rva is not None and target_rva != resolved_rva:
+            receipt_blockers.append(_blocker(
+                "reachable_implementation_target_mismatched",
+                source_unit_id=source_unit_id,
+                source_event_index=source_event_index,
+                target_unit_id=target_unit_id,
+                expected_rva=resolved_rva,
+                observed_rva=target_rva,
+                next_action="regenerate the target binding from exact machine IR",
+            ))
+            return
+        if target_unit_id not in reachable:
+            receipt_blockers.append(_blocker(
+                "reachable_implementation_target_not_rooted",
+                source_unit_id=source_unit_id,
+                source_event_index=source_event_index,
+                target_unit_id=target_unit_id,
+                target_rva=resolved_rva,
+                next_action="include the feasible target in rooted reachability",
+            ))
+            return
+        key = (kind, source_unit_id, source_event_index, target_unit_id)
+        if key in target_keys:
+            receipt_blockers.append(_blocker(
+                "duplicate_reachable_implementation_target",
+                source_unit_id=source_unit_id,
+                source_event_index=source_event_index,
+                target_unit_id=target_unit_id,
+                next_action="emit each reachable dispatch target exactly once",
+            ))
+            return
+        target_keys.add(key)
+        targets.append(NativeImplementationTarget(
+            kind=kind,
+            source_unit_id=source_unit_id,
+            source_rva=source_rva,
+            source_event_index=source_event_index,
+            target_unit_id=target_unit_id,
+            target_rva=resolved_rva,
+        ))
+
+    if reachability_status == "complete":
+        control = machine_ir_manifest_payload.get("control")
+        assert isinstance(control, Mapping)
+        provenance = control.get("external_interface_provenance")
+        if not isinstance(provenance, Mapping):
+            raise StageAInputError(
+                "machine-IR manifest has no external-interface provenance"
+            )
+        raw_resolutions = provenance.get("resolutions")
+        if not isinstance(raw_resolutions, list):
+            raise StageAInputError("machine-IR indirect resolutions are malformed")
+        resolutions: dict[tuple[str, int | None], Mapping[str, Any]] = {}
+        for index, raw in enumerate(raw_resolutions):
+            if not isinstance(raw, Mapping):
+                raise StageAInputError(
+                    f"machine-IR indirect resolution {index} is malformed"
+                )
+            source_unit_id = _required_string(
+                raw.get("source_unit_id"),
+                f"machine-IR indirect resolution {index} source unit",
+            )
+            event_index = raw.get("source_event_index")
+            if event_index is not None and (
+                isinstance(event_index, bool) or not isinstance(event_index, int)
+            ):
+                raise StageAInputError(
+                    "machine-IR indirect resolution event index is malformed"
+                )
+            key = (source_unit_id, event_index)
+            if key in resolutions:
+                raise StageAInputError("duplicate machine-IR indirect resolution")
+            resolutions[key] = raw
+
+        site_by_event = {
+            (site.transfer_id, site.event_index): site
+            for site in external_sites
+        }
+        summaries = control.get("internal_call_preservation")
+        summaries = summaries.get("summaries") if isinstance(summaries, Mapping) else None
+        if not isinstance(summaries, list):
+            raise StageAInputError(
+                "machine-IR manifest has no internal-call summary inventory"
+            )
+        summary_by_target_rva: dict[int, Mapping[str, Any]] = {}
+        for index, raw in enumerate(summaries):
+            if not isinstance(raw, Mapping):
+                raise StageAInputError(
+                    f"internal-call summary {index} is malformed"
+                )
+            target_rva = raw.get("target_rva")
+            if isinstance(target_rva, int) and not isinstance(target_rva, bool):
+                if target_rva in summary_by_target_rva:
+                    raise StageAInputError("duplicate internal-call target summary")
+                summary_by_target_rva[target_rva] = raw
+
+        for source_unit_id in reachable_unit_ids:
+            unit = source_by_id[source_unit_id]
+            unit_control = unit.get("control")
+            if not isinstance(unit_control, Mapping):
+                raise StageAInputError(
+                    f"{source_unit_id} has no checked control inventory"
+                )
+            direct_targets = unit_control.get("direct_targets")
+            if not isinstance(direct_targets, list):
+                raise StageAInputError(
+                    f"{source_unit_id} direct target inventory is malformed"
+                )
+            if len(set(direct_targets)) != len(direct_targets):
+                raise StageAInputError(
+                    f"{source_unit_id} direct target inventory contains duplicates"
+                )
+            for target_rva in direct_targets:
+                add_target(
+                    kind="direct_control",
+                    source_unit_id=source_unit_id,
+                    source_event_index=None,
+                    target_rva=_required_u32(
+                        target_rva, f"{source_unit_id} direct target RVA"
+                    ),
+                )
+            semantics = unit.get("semantics")
+            if not isinstance(semantics, Mapping):
+                raise StageAInputError(f"{source_unit_id} semantics are malformed")
+            events = semantics.get("external_events")
+            if not isinstance(events, list):
+                raise StageAInputError(
+                    f"{source_unit_id} external event inventory is malformed"
+                )
+            for event_index, event in enumerate(events):
+                if not isinstance(event, Mapping):
+                    raise StageAInputError(
+                        f"{source_unit_id} external event {event_index} is malformed"
+                    )
+                kind = event.get("kind")
+                if kind == "internal_call":
+                    target_rva = _required_u32(
+                        event.get("target_rva"),
+                        f"{source_unit_id} internal-call target RVA",
+                    )
+                    add_target(
+                        kind="internal_call",
+                        source_unit_id=source_unit_id,
+                        source_event_index=event_index,
+                        target_rva=target_rva,
+                    )
+                    summary = summary_by_target_rva.get(target_rva)
+                    return_behavior = (
+                        summary.get("return_behavior")
+                        if isinstance(summary, Mapping)
+                        else None
+                    )
+                    may_return = (
+                        return_behavior.get("may_return")
+                        if isinstance(return_behavior, Mapping)
+                        else None
+                    )
+                    if may_return is True:
+                        add_target(
+                            kind="call_continuation",
+                            source_unit_id=source_unit_id,
+                            source_event_index=event_index,
+                            target_rva=_required_u32(
+                                event.get("return_rva"),
+                                f"{source_unit_id} return continuation RVA",
+                            ),
+                        )
+                    elif may_return is not False:
+                        receipt_blockers.append(_blocker(
+                            "call_continuation_summary_missing",
+                            source_unit_id=source_unit_id,
+                            source_event_index=event_index,
+                            target_rva=target_rva,
+                            next_action=(
+                                "complete the prerequisite internal-call return summary"
+                            ),
+                        ))
+                elif kind in {"external_call", "indirect_call"}:
+                    site = site_by_event.get((source_unit_id, event_index))
+                    if site is not None and site.disposition == "returns_here":
+                        add_target(
+                            kind="call_continuation",
+                            source_unit_id=source_unit_id,
+                            source_event_index=event_index,
+                            target_rva=_required_u32(
+                                event.get("return_rva"),
+                                f"{source_unit_id} return continuation RVA",
+                            ),
+                        )
+                if kind != "indirect_call":
+                    continue
+                resolution = resolutions.get((source_unit_id, event_index))
+                if resolution is None or resolution.get("status") != "recovered":
+                    receipt_blockers.append(_blocker(
+                        "reachable_indirect_implementation_targets_missing",
+                        source_unit_id=source_unit_id,
+                        source_event_index=event_index,
+                        next_action=(
+                            "close the prerequisite finite indirect-target inventory"
+                        ),
+                    ))
+                    continue
+                target_unit_ids = resolution.get("target_unit_ids")
+                if not isinstance(target_unit_ids, list) or any(
+                    not isinstance(value, str) for value in target_unit_ids
+                ):
+                    raise StageAInputError(
+                        "machine-IR indirect internal targets are malformed"
+                    )
+                if len(set(target_unit_ids)) != len(target_unit_ids):
+                    raise StageAInputError(
+                        "machine-IR indirect internal targets contain duplicates"
+                    )
+                for target_unit_id in target_unit_ids:
+                    add_target(
+                        kind="indirect_internal",
+                        source_unit_id=source_unit_id,
+                        source_event_index=event_index,
+                        target_unit_id=target_unit_id,
+                    )
+
+            outcome = semantics.get("outcome")
+            if isinstance(outcome, Mapping) and outcome.get("kind") == "indirect_jump":
+                resolution = resolutions.get((source_unit_id, None))
+                if resolution is None or resolution.get("status") != "recovered":
+                    receipt_blockers.append(_blocker(
+                        "reachable_indirect_implementation_targets_missing",
+                        source_unit_id=source_unit_id,
+                        source_event_index=None,
+                        next_action=(
+                            "close the prerequisite finite indirect-target inventory"
+                        ),
+                    ))
+                else:
+                    target_unit_ids = resolution.get("target_unit_ids")
+                    if not isinstance(target_unit_ids, list) or any(
+                        not isinstance(value, str) for value in target_unit_ids
+                    ):
+                        raise StageAInputError(
+                            "machine-IR indirect jump targets are malformed"
+                        )
+                    if len(set(target_unit_ids)) != len(target_unit_ids):
+                        raise StageAInputError(
+                            "machine-IR indirect jump targets contain duplicates"
+                        )
+                    for target_unit_id in target_unit_ids:
+                        add_target(
+                            kind="indirect_internal",
+                            source_unit_id=source_unit_id,
+                            source_event_index=None,
+                            target_unit_id=target_unit_id,
+                        )
+
+    targets_tuple = tuple(sorted(
+        targets,
+        key=lambda item: (
+            item.source_rva,
+            item.kind,
+            -1 if item.source_event_index is None else item.source_event_index,
+            item.target_rva,
+        ),
+    ))
+    blockers_tuple = tuple(sorted(
+        receipt_blockers,
+        key=lambda item: (
+            str(item.get("category")),
+            str(item.get("source_unit_id")),
+            str(item.get("source_event_index")),
+            str(item.get("target_unit_id")),
+            str(item.get("target_rva")),
+        ),
+    ))
+    receipt = NativeImplementationDispatchReceipt(
+        semantic_input_sha256=semantic_input_sha256,
+        machine_ir_manifest_sha256=machine_ir_manifest_sha256,
+        reachability_status=reachability_status,
+        roots=roots,
+        reachable_unit_ids=reachable_unit_ids,
+        entries=entries,
+        targets=targets_tuple,
+        blockers=blockers_tuple,
+    )
+    return receipt, blockers_tuple
+
+
+def _machine_ir_internal_call_preservation(
+    payload: Mapping[str, Any] | None,
+) -> dict[int, frozenset[str]]:
+    """Load complete preservation summaries from a hash-bound manifest."""
+
+    if payload is None:
+        return {}
+    control = payload.get("control")
+    summaries = (
+        control.get("internal_call_preservation")
+        if isinstance(control, Mapping)
+        else None
+    )
+    if not isinstance(summaries, Mapping):
+        raise StageAInputError(
+            "machine-IR manifest has no internal-call preservation inventory"
+        )
+    if summaries.get("fixed_point_complete") is not True:
+        return {}
+    rows = summaries.get("summaries")
+    if not isinstance(rows, list):
+        raise StageAInputError("internal-call preservation summaries must be a list")
+    result: dict[int, frozenset[str]] = {}
+    for index, raw in enumerate(rows):
+        if not isinstance(raw, Mapping):
+            raise StageAInputError(
+                f"internal-call preservation summary {index} is malformed"
+            )
+        if raw.get("status") != "complete":
+            continue
+        target_rva = _required_u32(
+            raw.get("target_rva"),
+            f"internal-call preservation summary {index} target RVA",
+        )
+        registers = raw.get("preserved_registers")
+        if not isinstance(registers, list) or any(
+            not isinstance(register, str)
+            or register not in _PE32_CALLEE_PRESERVED_REGISTERS
+            for register in registers
+        ):
+            raise StageAInputError(
+                f"internal-call preservation summary {index} has invalid registers"
+            )
+        preserved = frozenset(registers)
+        if target_rva in result and result[target_rva] != preserved:
+            raise StageAInputError(
+                f"internal-call preservation target {target_rva:#x} is ambiguous"
+            )
+        result[target_rva] = preserved
+    return result
+
+
+def _machine_ir_callback_registrations(
+    payload: Mapping[str, Any] | None,
+) -> dict[tuple[str, int], Mapping[str, Any]]:
+    if payload is None:
+        return {}
+    control = payload.get("control")
+    provenance = (
+        control.get("external_interface_provenance")
+        if isinstance(control, Mapping)
+        else None
+    )
+    rows = (
+        provenance.get("callback_registrations")
+        if isinstance(provenance, Mapping)
+        else None
+    )
+    if rows is None:
+        return {}
+    if not isinstance(rows, list):
+        raise StageAInputError("callback-registration provenance must be a list")
+    result: dict[tuple[str, int], Mapping[str, Any]] = {}
+    for index, row in enumerate(rows):
+        if (
+            not isinstance(row, Mapping)
+            or row.get("format")
+            != "stage-a-callback-registration-provenance-v1"
+            or row.get("record_kind") != "callback_registration"
+            or not isinstance(row.get("unit_id"), str)
+            or not isinstance(row.get("event_index"), int)
+            or isinstance(row.get("event_index"), bool)
+        ):
+            raise StageAInputError(
+                f"callback-registration provenance {index} is malformed"
+            )
+        key = (str(row["unit_id"]), int(row["event_index"]))
+        if key in result and result[key] != row:
+            raise StageAInputError(
+                f"callback-registration provenance for {key!r} is ambiguous"
+            )
+        result[key] = row
+    return result
+
+
+def _machine_ir_external_interface_methods(
+    payload: Mapping[str, Any] | None,
+) -> dict[tuple[str, int], Mapping[str, Any]]:
+    """Load uniquely recovered external call protocols from the bound manifest."""
+
+    if payload is None:
+        return {}
+    control = payload.get("control")
+    provenance = (
+        control.get("external_interface_provenance")
+        if isinstance(control, Mapping)
+        else None
+    )
+    rows = provenance.get("resolutions") if isinstance(provenance, Mapping) else None
+    if rows is None:
+        return {}
+    if not isinstance(rows, list):
+        raise StageAInputError("external-interface resolutions must be a list")
+    result: dict[tuple[str, int], Mapping[str, Any]] = {}
+    for index, raw in enumerate(rows):
+        if not isinstance(raw, Mapping) or raw.get("status") != "recovered":
+            continue
+        unit_id = raw.get("source_unit_id")
+        event_index = raw.get("source_event_index")
+        targets = raw.get("external_targets")
+        if (
+            not isinstance(unit_id, str)
+            or not isinstance(event_index, int)
+            or isinstance(event_index, bool)
+            or not isinstance(targets, list)
+            or len(targets) != 1
+            or not isinstance(targets[0], Mapping)
+        ):
+            continue
+        target = targets[0]
+        protocol = target.get("external_protocol")
+        if protocol is None:
+            continue
+        argument_words = target.get("argument_words")
+        outputs = target.get("out_interfaces", [])
+        protocol_kind = (
+            protocol.get("kind") if isinstance(protocol, Mapping) else None
+        )
+        callback_abi = (
+            protocol.get("callback_abi")
+            if protocol_kind == "pe32-previous-callback"
+            else None
+        )
+        resolved_contract = (
+            protocol.get("machine_contract")
+            if protocol_kind == "pe32-resolved-export"
+            and isinstance(protocol, Mapping)
+            else None
+        )
+        resolved_target = (
+            protocol.get("target")
+            if protocol_kind == "pe32-resolved-export"
+            and isinstance(protocol, Mapping)
+            else None
+        )
+        if (
+            not isinstance(protocol, Mapping)
+            or protocol_kind
+            not in {
+                "pe32-interface-method",
+                "pe32-previous-callback",
+                "pe32-resolved-export",
+            }
+            or not isinstance(argument_words, int)
+            or isinstance(argument_words, bool)
+            or not 0 <= argument_words <= 256
+            or not isinstance(outputs, list)
+            or any(not isinstance(output, Mapping) for output in outputs)
+            or (
+                protocol_kind == "pe32-previous-callback"
+                and (
+                    not isinstance(callback_abi, Mapping)
+                    or callback_abi.get("kind") != "generic_callback"
+                    or callback_abi.get("argument_words") != argument_words
+                    or callback_abi.get("stack_cleanup_bytes")
+                    != argument_words * 4
+                    or not isinstance(callback_abi.get("nullable"), bool)
+                    or outputs
+                )
+            )
+            or (
+                protocol_kind == "pe32-resolved-export"
+                and (
+                    protocol.get("transfer_kind") != "call"
+                    or not isinstance(resolved_target, Mapping)
+                    or not isinstance(resolved_contract, Mapping)
+                    or resolved_contract.get("import") != resolved_target
+                    or not isinstance(resolved_contract.get("arity"), Mapping)
+                    or resolved_contract["arity"].get("kind") != "fixed"
+                    or resolved_contract["arity"].get("words") != argument_words
+                    or not isinstance(resolved_contract.get("effect_model"), Mapping)
+                    or resolved_contract["effect_model"].get("kind")
+                    != "exact_native_dll_callthrough_v1"
+                    or resolved_contract["effect_model"].get("prerequisites")
+                    != {
+                        "same_pinned_dll_implementation": True,
+                        "exact_machine_arguments": True,
+                        "candidate_address_space_used_directly": True,
+                    }
+                    or resolved_contract.get("memory_effect") != "nativeCallthrough"
+                    or resolved_contract.get("world_effect") != "nativeCallthrough"
+                    or resolved_contract.get("callback_effect") != "none"
+                    or not isinstance(target.get("abi"), Mapping)
+                    or target["abi"].get("template")
+                    != resolved_contract.get("abi_template")
+                    or outputs
+                )
+            )
+        ):
+            raise StageAInputError(
+                f"recovered external protocol resolution {index} is malformed"
+            )
+        key = (unit_id, event_index)
+        value = dict(target)
+        if key in result and result[key] != value:
+            raise StageAInputError(
+                f"external-interface resolution for {key!r} is ambiguous"
+            )
+        result[key] = value
+    return result
+
+
+def _build_callback_adapter_receipts(
+    *,
+    sites: tuple[NativeExternalSite, ...],
+    adapters: tuple[NativeCallbackAdapter, ...],
+    targets: tuple[NativeCallbackTarget, ...],
+) -> tuple[
+    tuple[NativeCallbackAdapterReceipt, ...],
+    tuple[dict[str, Any], ...],
+]:
+    """Bind generated adapter entries to their normalized callback contracts."""
+
+    adapters_by_site: dict[
+        tuple[int, int], list[NativeCallbackAdapter]
+    ] = {}
+    duplicate_entries: set[tuple[int, int, int, int]] = set()
+    seen_entries: set[tuple[int, int, int, int]] = set()
+    for adapter in adapters:
+        key = (
+            adapter.instruction_rva,
+            adapter.argument_index,
+            adapter.original_rva,
+            adapter.callback_rva,
+        )
+        if key in seen_entries:
+            duplicate_entries.add(key)
+        seen_entries.add(key)
+        adapters_by_site.setdefault(
+            (adapter.instruction_rva, adapter.argument_index), []
+        ).append(adapter)
+
+    blockers: list[dict[str, Any]] = []
+    if duplicate_entries:
+        blockers.append(_blocker(
+            "callback_adapter_receipt_duplicate",
+            observed=[list(value) for value in sorted(duplicate_entries)],
+            next_action=(
+                "emit exactly one native callback adapter entry for each checked "
+                "registration-site target"
+            ),
+        ))
+
+    target_by_rva = {target.rva: target for target in targets}
+    consumed_adapter_ids: set[int] = set()
+    receipts: list[NativeCallbackAdapterReceipt] = []
+    for site in sorted(
+        sites, key=lambda item: (item.instruction_rva, item.event_index)
+    ):
+        contract = site.checked_external_contract
+        if contract is None or contract.callback_effect != "explicit":
+            continue
+        checked_adapter = contract.callback_adapter
+        if checked_adapter is None:
+            blockers.append(_blocker(
+                "callback_adapter_receipt_incomplete",
+                transfer_id=site.transfer_id,
+                event_index=site.event_index,
+                instruction_rva=site.instruction_rva,
+                observed="explicit callback effect has no normalized adapter",
+                next_action=(
+                    "regenerate the exact checked external-site contract before "
+                    "native candidate planning"
+                ),
+            ))
+            continue
+        try:
+            source = parse_callback_source(
+                {"callback_source": checked_adapter.source},
+                argument_words=contract.argument_words,
+                context=f"{site.transfer_id} callback receipt",
+            )
+            abi = parse_callback_abi(
+                {"callback_abi": checked_adapter.abi},
+                context=f"{site.transfer_id} callback receipt",
+            )
+        except StageAInputError as exc:
+            blockers.append(_blocker(
+                "callback_adapter_receipt_incomplete",
+                transfer_id=site.transfer_id,
+                event_index=site.event_index,
+                instruction_rva=site.instruction_rva,
+                detail=str(exc),
+                next_action=(
+                    "emit one canonical callback source and exact PE32 callback ABI"
+                ),
+            ))
+            continue
+
+        site_key = (site.instruction_rva, source.argument_index)
+        actual_entries = tuple(sorted(
+            adapters_by_site.get(site_key, []),
+            key=lambda item: (item.callback_rva, item.original_rva, item.id),
+        ))
+        expected_rvas = checked_adapter.target_rvas
+        actual_rvas = tuple(entry.callback_rva for entry in actual_entries)
+        source_matches = (
+            site.callback_source_kind == source.kind
+            and site.callback_argument_index == source.argument_index
+            and site.callback_argument_offset
+            == source.stack_argument_offset(contract.argument_base_offset)
+            and site.callback_pointee_offset == source.pointee_offset
+            and site.callback_nullable == abi.nullable
+        )
+        target_abis_match = all(
+            target_by_rva.get(rva) is not None
+            and target_by_rva[rva].kind == abi.kind
+            and target_by_rva[rva].stack_cleanup_bytes
+            == abi.stack_cleanup_bytes
+            for rva in expected_rvas
+        )
+        entries_match = (
+            actual_rvas == expected_rvas
+            and len({entry.id for entry in actual_entries})
+            == len(actual_entries)
+            and all(
+                entry.original_rva == entry.callback_rva
+                and entry.symbol
+                == f"stage_b_payload_callback_{entry.callback_rva:08x}"
+                for entry in actual_entries
+            )
+        )
+        if not source_matches or not target_abis_match or not entries_match:
+            blockers.append(_blocker(
+                "callback_adapter_receipt_mismatch",
+                transfer_id=site.transfer_id,
+                event_index=site.event_index,
+                instruction_rva=site.instruction_rva,
+                expected={
+                    "source": checked_adapter.source,
+                    "abi": checked_adapter.abi,
+                    "target_rvas": list(expected_rvas),
+                },
+                observed={
+                    "site_callback_registration": (
+                        site.payload().get("callback_registration")
+                    ),
+                    "adapter_entries": [
+                        entry.payload() for entry in actual_entries
+                    ],
+                },
+                next_action=(
+                    "regenerate the callback adapters from the exact normalized "
+                    "finite target set"
+                ),
+            ))
+            continue
+        consumed_adapter_ids.update(entry.id for entry in actual_entries)
+        receipts.append(NativeCallbackAdapterReceipt(
+            site_id=site.id,
+            transfer_id=site.transfer_id,
+            event_index=site.event_index,
+            instruction_rva=site.instruction_rva,
+            checked_external_contract_sha256=_canonical_sha256(
+                contract.payload()
+            ),
+            source=checked_adapter.source,
+            abi=checked_adapter.abi,
+            lifetime=checked_adapter.lifetime,
+            invocation=checked_adapter.invocation,
+            target_rvas=expected_rvas,
+            adapter_entries=actual_entries,
+        ))
+
+    unreceipted = [
+        adapter.payload()
+        for adapter in adapters
+        if adapter.id not in consumed_adapter_ids
+    ]
+    if unreceipted:
+        blockers.append(_blocker(
+            "callback_adapter_receipt_missing",
+            observed=unreceipted,
+            next_action=(
+                "bind every generated callback adapter to one explicit checked "
+                "external-site callback contract"
+            ),
+        ))
+    return tuple(receipts), tuple(blockers)
 
 
 def _previous_callback_storage_writes(
@@ -1330,6 +2525,40 @@ def _add_callable_external_sites(
         row, instruction_by_rva = details
         outcome = row.get("outcome")
         instruction = instruction_by_rva.get(instruction_rva)
+        transfer_kinds = {route.transfer for route in routes}
+        if len(transfer_kinds) != 1:
+            blockers.append(_blocker(
+                "callable_external_transfer_ambiguous",
+                transfer_id=transfer_id,
+                source_rva=source_rva,
+                instruction_rva=instruction_rva,
+                observed=sorted(transfer_kinds),
+                next_action="select one exact transfer kind for the callable site",
+            ))
+            continue
+        transfer_kind = next(iter(transfer_kinds))
+        if transfer_kind == "call":
+            prior = seen_sites.get(instruction_rva)
+            if (
+                instruction is None
+                or str(instruction.get("mnemonic") or "").lower() != "call"
+                or prior is None
+                or prior.transfer_id != transfer_id
+                or prior.disposition != "returns_here"
+                or prior.site_kind != "dynamic_target"
+            ):
+                blockers.append(_blocker(
+                    "callable_external_call_bridge_missing",
+                    transfer_id=transfer_id,
+                    source_rva=source_rva,
+                    instruction_rva=instruction_rva,
+                    next_action=(
+                        "bind the checked callable CALL route to the ordinary dynamic-target bridge"
+                    ),
+                ))
+            # Normal indirect CALL already invokes the exact candidate pointer.
+            # This route adds checked provenance/ABI authority without replacing it.
+            continue
         if (
             not isinstance(outcome, Mapping)
             or outcome.get("kind") != "indirect_jump"
@@ -1415,6 +2644,8 @@ def plan_stage_b_native_engine(
     *,
     state_machine: Path | None = None,
     machine_ir: Path | None = None,
+    machine_ir_manifest: Path | None = None,
+    recovered_executable_data: Path | str | None = None,
     entry_rva: int,
     callback_targets: Iterable[int | Mapping[str, Any]] = (),
     import_iat_vas: Mapping[tuple[str, str | int], int] | None = None,
@@ -1423,7 +2654,9 @@ def plan_stage_b_native_engine(
     callable_external_contract: Path | str | None = None,
     allow_deferred_potential_transfers: bool = False,
     fixed_image_base: int | None = None,
+    preferred_image_base: int | None = None,
     initial_zero_ranges: Iterable[tuple[int, int]] = (),
+    selected_portable_components: Iterable[Mapping[str, Any]] = (),
 ) -> NativeEnginePlan:
     """Plan machine-level external bridges from one strict or byte-free input."""
 
@@ -1432,6 +2665,12 @@ def plan_stage_b_native_engine(
     input_path = Path(state_machine if state_machine is not None else machine_ir)
     if fixed_image_base is not None:
         fixed_image_base = _required_u32(fixed_image_base, "fixed image base")
+    if preferred_image_base is None:
+        preferred_image_base = fixed_image_base
+    elif preferred_image_base is not None:
+        preferred_image_base = _required_u32(
+            preferred_image_base, "preferred image base"
+        )
     checked_zero_ranges: list[tuple[int, int]] = []
     for index, value in enumerate(initial_zero_ranges):
         if not isinstance(value, tuple) or len(value) != 2:
@@ -1445,6 +2684,8 @@ def plan_stage_b_native_engine(
     raw_rows = _read_jsonl_objects(
         input_path, "state machine" if state_machine is not None else "machine IR"
     )
+    semantic_input_sha256 = sha256_file(input_path)
+    selected_portable_components = tuple(selected_portable_components)
     callback_targets = tuple(callback_targets)
     callable_contract = (
         None
@@ -1452,6 +2693,68 @@ def plan_stage_b_native_engine(
         else load_callable_external_runtime_contract(callable_external_contract)
     )
     machine_ir_mode = machine_ir is not None
+    machine_ir_manifest_payload = (
+        _machine_ir_manifest_payload(
+            machine_ir=Path(machine_ir),
+            manifest=(
+                None if machine_ir_manifest is None else Path(machine_ir_manifest)
+            ),
+        )
+        if machine_ir_mode
+        else None
+    )
+    checked_external_contracts_required = (
+        machine_ir_mode and machine_ir_manifest_payload is not None
+    )
+    recovered_data_ranges: tuple[RecoveredExecutableDataRange, ...] = ()
+    if recovered_executable_data is not None:
+        if not machine_ir_mode:
+            raise StageAInputError(
+                "recovered executable data requires sanitized machine IR input"
+            )
+        recovered_data = load_recovered_executable_data_contract(
+            recovered_executable_data
+        )
+        if recovered_data.machine_ir_sha256 != sha256_file(input_path):
+            raise StageAInputError(
+                "recovered executable-data contract binds a different machine IR"
+            )
+        manifest_binary = (
+            machine_ir_manifest_payload.get("binary")
+            if isinstance(machine_ir_manifest_payload, Mapping)
+            else None
+        )
+        if (
+            not isinstance(manifest_binary, Mapping)
+            or manifest_binary.get("sha256") != recovered_data.original_pe_sha256
+            or manifest_binary.get("image_base") != recovered_data.image_base
+        ):
+            raise StageAInputError(
+                "recovered executable-data contract binds a different original image"
+            )
+        if (
+            preferred_image_base is not None
+            and recovered_data.image_base != preferred_image_base
+        ):
+            raise StageAInputError(
+                "recovered executable-data image base differs from native inputs"
+            )
+        recovered_data_ranges = recovered_data.ranges
+    internal_call_preserved_registers = (
+        _machine_ir_internal_call_preservation(machine_ir_manifest_payload)
+        if machine_ir_mode
+        else {}
+    )
+    callback_registration_evidence = (
+        _machine_ir_callback_registrations(machine_ir_manifest_payload)
+        if machine_ir_mode
+        else {}
+    )
+    external_interface_methods = (
+        _machine_ir_external_interface_methods(machine_ir_manifest_payload)
+        if machine_ir_mode
+        else {}
+    )
     deferred_transfers: list[dict[str, Any]] = []
     if machine_ir_mode:
         scoped_rows, deferred_transfers = partition_candidate_machine_ir_units(
@@ -1462,12 +2765,41 @@ def plan_stage_b_native_engine(
             _adapt_native_machine_ir_unit(row, index)
             for index, row in enumerate(scoped_rows)
         ]
+        implementation_source_rows = scoped_rows
     else:
         rows = raw_rows
+        implementation_source_rows = raw_rows
     sites: list[NativeExternalSite] = []
     import_iat_vas = import_iat_vas or {}
+    import_bindings: list[NativeImportBinding] = []
+    if preferred_image_base is not None:
+        for (dll, identity), raw_iat_va in sorted(
+            import_iat_vas.items(), key=lambda item: (item[0][0].lower(), str(item[0][1]))
+        ):
+            iat_va = _required_u32(raw_iat_va, "import IAT VA")
+            if iat_va < preferred_image_base:
+                raise StageAInputError("import IAT VA precedes the preferred image base")
+            if not isinstance(dll, str) or not dll:
+                raise StageAInputError("import binding DLL must be nonempty")
+            if isinstance(identity, str) and identity:
+                symbol, ordinal = identity, None
+            elif isinstance(identity, int) and not isinstance(identity, bool) and identity >= 0:
+                symbol, ordinal = None, identity
+            else:
+                raise StageAInputError("import binding must use one symbol or ordinal")
+            import_bindings.append(NativeImportBinding(
+                dll=dll.lower(),
+                symbol=symbol,
+                ordinal=ordinal,
+                iat_va=iat_va,
+                iat_rva=iat_va - preferred_image_base,
+            ))
     propagated_import_sites = (
-        _machine_ir_register_import_sites(rows, import_iat_vas=import_iat_vas)
+        _machine_ir_register_import_sites(
+            rows,
+            import_iat_vas=import_iat_vas,
+            internal_call_preserved_registers=internal_call_preserved_registers,
+        )
         if machine_ir_mode
         else {}
     )
@@ -1479,18 +2811,24 @@ def plan_stage_b_native_engine(
     seen_sites: dict[int, NativeExternalSite] = {}
     seen_returns: dict[int, NativeExternalSite] = {}
     transfer_rvas: set[int] = set()
+    transfer_ids: set[str] = set()
     transfer_rows: dict[int, tuple[str, str]] = {}
     transfer_details: dict[int, tuple[Mapping[str, Any], dict[int, Mapping[str, Any]]]] = {}
     internal_call_inputs: dict[int, list[tuple[str, int, Mapping[str, Any]]]] = {}
     callback_site_transfer_rvas: dict[int, int] = {}
     callback_site_events: dict[int, Mapping[str, Any]] = {}
-    callback_site_abis: dict[int, tuple[int, int, str, int, bool]] = {}
+    callback_site_abis: dict[
+        int, tuple[CallbackSource, int, CallbackABI]
+    ] = {}
     x87_operations: list[NativeX87Operation] = []
     relocation_evidence = _parse_pe_base_relocation_evidence(
         base_relocation_evidence
     )
     for row_index, row in enumerate(rows):
         transfer_id = _required_string(row.get("id"), f"transfer {row_index} id")
+        if transfer_id in transfer_ids:
+            raise StageAInputError(f"duplicate state-machine transfer id {transfer_id}")
+        transfer_ids.add(transfer_id)
         original = row.get("original")
         if not isinstance(original, dict):
             raise StageAInputError(f"{transfer_id} has no original span")
@@ -1803,6 +3141,72 @@ def plan_stage_b_native_engine(
                     ))
                     event_index += 1
                     continue
+            protocol_target = external_interface_methods.get(
+                (transfer_id, event_index)
+            )
+            checked_external_contract: CheckedExternalSiteContract | None = None
+            if (
+                checked_external_contracts_required
+                or protocol_target is not None
+                or isinstance(event.get("abi_contract"), Mapping)
+            ) and (protocol_target is not None or dll is not None):
+                try:
+                    if protocol_target is not None:
+                        raw_protocol = protocol_target.get("external_protocol")
+                        if not isinstance(raw_protocol, Mapping):
+                            raise CheckedExternalSiteContractError(
+                                "resolved external target has no protocol identity"
+                            )
+                        external_identity = ExternalSiteIdentity.interface(
+                            raw_protocol,
+                            context=(
+                                f"{transfer_id} external event {event_index}"
+                            ),
+                        )
+                    else:
+                        external_identity = ExternalSiteIdentity.imported(
+                            {
+                                "dll": dll,
+                                "symbol": symbol,
+                                "ordinal": ordinal,
+                            },
+                            context=(
+                                f"{transfer_id} external event {event_index}"
+                            ),
+                        )
+                    callback_evidence = callback_registration_evidence.get(
+                        (transfer_id, event_index)
+                    )
+                    checked_external_contract = (
+                        checked_external_site_contract_from_event(
+                            event=event,
+                            identity=external_identity,
+                            transfer_kind=(
+                                "jump" if disposition == "tail_jump" else "call"
+                            ),
+                            disposition=disposition,
+                            protocol_target=protocol_target,
+                            callback_evidence=callback_evidence,
+                            context=(
+                                f"{transfer_id} external event {event_index}"
+                            ),
+                        )
+                    )
+                except CheckedExternalSiteContractError as exc:
+                    if checked_external_contracts_required:
+                        blockers.append(_blocker(
+                            "external_site_contract_incomplete",
+                            transfer_id=transfer_id,
+                            event_index=event_index,
+                            instruction_rva=instruction_rva,
+                            detail=str(exc),
+                            next_action=(
+                                "emit one exact fixed-arity machine contract including "
+                                "argument/stack inventory and all result, memory, world, "
+                                "and callback effects"
+                            ),
+                        ))
+
             site = NativeExternalSite(
                 id=len(sites),
                 transfer_id=transfer_id,
@@ -1821,8 +3225,13 @@ def plan_stage_b_native_engine(
                 event_identity_sha256=event_identity_sha256,
                 abi_metadata_sha256=abi_metadata_sha256,
                 target_expression=target_expression,
+                callback_source_kind=(
+                    callback_registration[0].kind
+                    if callback_registration is not None
+                    else None
+                ),
                 callback_argument_index=(
-                    callback_registration[0]
+                    callback_registration[0].argument_index
                     if callback_registration is not None
                     else None
                 ),
@@ -1831,10 +3240,37 @@ def plan_stage_b_native_engine(
                     if callback_registration is not None
                     else None
                 ),
+                callback_pointee_offset=(
+                    callback_registration[0].pointee_offset
+                    if callback_registration is not None
+                    else 0
+                ),
                 callback_nullable=(
-                    callback_registration[4]
+                    callback_registration[2].nullable
                     if callback_registration is not None
                     else False
+                ),
+                external_protocol=(
+                    protocol_target.get("external_protocol")
+                    if protocol_target is not None
+                    else None
+                ),
+                interface_argument_words=(
+                    protocol_target.get("argument_words")
+                    if protocol_target is not None
+                    else None
+                ),
+                out_interface_relations=(
+                    tuple(
+                        dict(value)
+                        for value in protocol_target.get("out_interfaces", [])
+                    )
+                    if protocol_target is not None
+                    else ()
+                ),
+                checked_external_contract=checked_external_contract,
+                checked_external_contract_required=(
+                    checked_external_contracts_required
                 ),
             )
             prior_site = seen_sites.get(instruction_rva)
@@ -1924,12 +3360,106 @@ def plan_stage_b_native_engine(
         registration = callback_site_abis.get(site.instruction_rva)
         if registration is None:
             continue
-        argument_index, argument_offset, callback_kind, stack_cleanup, nullable = (
-            registration
-        )
+        source_spec, argument_offset, callback_abi = registration
+        argument_index = source_spec.argument_index
+        callback_kind = callback_abi.kind
+        stack_cleanup = callback_abi.stack_cleanup_bytes
+        nullable = callback_abi.nullable
         transfer_rva = callback_site_transfer_rvas[site.instruction_rva]
         candidate_expressions: list[tuple[str, Any]] = []
-        if site.disposition == "tail_jump":
+        checked_evidence = callback_registration_evidence.get(
+            (site.transfer_id, site.event_index)
+        )
+        if checked_evidence is not None:
+            if (
+                checked_evidence.get("instruction_rva") != site.instruction_rva
+                or checked_evidence.get("callback_source")
+                != source_spec.as_json()
+                or checked_evidence.get("callback_abi")
+                != callback_abi.as_json()
+            ):
+                blockers.append(_blocker(
+                    "callback_provenance_evidence_mismatch",
+                    transfer_id=site.transfer_id,
+                    instruction_rva=site.instruction_rva,
+                    expected={
+                        "callback_source": source_spec.as_json(),
+                        "callback_abi": callback_abi.as_json(),
+                    },
+                    observed=dict(checked_evidence),
+                    next_action=(
+                        "regenerate callback provenance from the exact machine-IR "
+                        "call contract"
+                    ),
+                ))
+                continue
+            if checked_evidence.get("status") != "complete":
+                blockers.append(_blocker(
+                    "callback_target_provenance_incomplete",
+                    transfer_id=site.transfer_id,
+                    instruction_rva=site.instruction_rva,
+                    observed=checked_evidence.get("failure"),
+                    next_action=(
+                        "recover the callback source to a bounded finite set of "
+                        "canonical code targets"
+                    ),
+                ))
+                continue
+            target_rvas = checked_evidence.get("target_rvas")
+            callback_image_base = (
+                relocation_evidence.image_base
+                if relocation_evidence is not None
+                else fixed_image_base
+            )
+            if (
+                not isinstance(target_rvas, list)
+                or any(
+                    not isinstance(rva, int)
+                    or isinstance(rva, bool)
+                    or not 0 <= rva <= 0xFFFFFFFF
+                    for rva in target_rvas
+                )
+            ):
+                raise StageAInputError(
+                    f"{site.transfer_id} callback target inventory is malformed"
+                )
+            if callback_image_base is None:
+                blockers.append(_blocker(
+                    "callback_image_binding_missing",
+                    transfer_id=site.transfer_id,
+                    instruction_rva=site.instruction_rva,
+                    next_action=(
+                        "bind callback RVAs to the exact preferred PE image base"
+                    ),
+                ))
+                continue
+            candidate_expressions.extend(
+                (
+                    "bounded machine-IR callback provenance",
+                    {
+                        "op": "const",
+                        "value": (callback_image_base + int(rva)) & 0xFFFFFFFF,
+                        "width": 32,
+                    },
+                )
+                for rva in target_rvas
+            )
+        elif source_spec.kind == "argument_pointee":
+            blockers.append(_blocker(
+                "callback_target_provenance_incomplete",
+                transfer_id=site.transfer_id,
+                instruction_rva=site.instruction_rva,
+                observed={
+                    "callback_source": source_spec.as_json(),
+                    "manifest_evidence": None,
+                },
+                next_action=(
+                    "run bounded interface provenance and provide its hash-bound "
+                    "callback-registration inventory"
+                ),
+            ))
+            continue
+        elif site.disposition == "tail_jump":
             incoming = internal_call_inputs.get(transfer_rva, [])
             if not incoming:
                 if (
@@ -2141,6 +3671,14 @@ def plan_stage_b_native_engine(
             instruction_rva, argument_index, original_rva, callback_rva
         ) in enumerate(sorted(callback_adapter_specs))
     )
+    callback_adapter_receipts, receipt_blockers = (
+        _build_callback_adapter_receipts(
+            sites=tuple(sites),
+            adapters=callback_adapters,
+            targets=callbacks,
+        )
+    )
+    blockers.extend(receipt_blockers)
     callback_passthroughs = tuple(
         NativeCallbackPassthrough(
             instruction_rva=instruction_rva,
@@ -2158,6 +3696,22 @@ def plan_stage_b_native_engine(
             entry_rva=entry_rva,
             next_action="export the semantic transfer beginning at the PE entrypoint",
         ))
+    implementation_dispatch_receipt, implementation_blockers = (
+        _build_implementation_dispatch_receipt(
+            semantic_input_sha256=semantic_input_sha256,
+            machine_ir_manifest_payload=machine_ir_manifest_payload,
+            machine_ir_manifest_sha256=(
+                None
+                if machine_ir_manifest is None
+                else sha256_file(machine_ir_manifest)
+            ),
+            source_rows=implementation_source_rows,
+            rows=rows,
+            external_sites=sites,
+            selected_portable_components=selected_portable_components,
+        )
+    )
+    blockers.extend(implementation_blockers)
     return NativeEnginePlan(
         input_mode=(
             _MACHINE_IR_INPUT_MODE if machine_ir_mode else _STRICT_INPUT_MODE
@@ -2165,14 +3719,18 @@ def plan_stage_b_native_engine(
         entry_rva=_required_u32(entry_rva, "entry RVA"),
         transfer_count=len(rows),
         external_sites=tuple(sorted(sites, key=lambda item: item.instruction_rva)),
+        import_bindings=tuple(import_bindings),
         indirect_call_count=indirect_calls,
         callback_targets=callbacks,
         callback_adapters=callback_adapters,
+        callback_adapter_receipts=callback_adapter_receipts,
+        implementation_dispatch_receipt=implementation_dispatch_receipt,
         callback_passthroughs=callback_passthroughs,
         callable_external_contract=callable_contract,
         x87_operations=tuple(x87_operations),
         termination_import=checked_termination_import,
         deferred_transfers=tuple(deferred_transfers),
+        recovered_executable_data_ranges=recovered_data_ranges,
         fixed_image_base=fixed_image_base,
         blockers=tuple(blockers),
     )
@@ -2182,6 +3740,8 @@ def write_stage_b_native_engine_package(
     *,
     state_machine: Path | None = None,
     machine_ir: Path | None = None,
+    machine_ir_manifest: Path | None = None,
+    recovered_executable_data: Path | str | None = None,
     entry_rva: int,
     out: Path,
     callback_targets: Iterable[int | Mapping[str, Any]] = (),
@@ -2191,7 +3751,9 @@ def write_stage_b_native_engine_package(
     callable_external_contract: Path | str | None = None,
     allow_deferred_potential_transfers: bool = False,
     fixed_image_base: int | None = None,
+    preferred_image_base: int | None = None,
     initial_zero_ranges: Iterable[tuple[int, int]] = (),
+    selected_portable_components: Iterable[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Write deterministic wrapper sources and a fail-closed build plan."""
 
@@ -2204,6 +3766,8 @@ def write_stage_b_native_engine_package(
     plan = plan_stage_b_native_engine(
         state_machine=state_machine,
         machine_ir=machine_ir,
+        machine_ir_manifest=machine_ir_manifest,
+        recovered_executable_data=recovered_executable_data,
         entry_rva=entry_rva,
         callback_targets=callback_targets,
         import_iat_vas=import_iat_vas,
@@ -2212,7 +3776,9 @@ def write_stage_b_native_engine_package(
         callable_external_contract=callable_external_contract,
         allow_deferred_potential_transfers=allow_deferred_potential_transfers,
         fixed_image_base=fixed_image_base,
+        preferred_image_base=preferred_image_base,
         initial_zero_ranges=initial_zero_ranges,
+        selected_portable_components=selected_portable_components,
     )
     plan_path = out / "native-engine-plan.json"
     write_json(plan_path, plan.payload(state_machine_sha256=sha256_file(input_path)))
@@ -2235,6 +3801,23 @@ def write_stage_b_native_engine_package(
         "format": NATIVE_ENGINE_PACKAGE_FORMAT,
         "status": plan.status,
         input_kind: {"path": input_path.name, "sha256": sha256_file(input_path)},
+        "machine_ir_manifest": (
+            None
+            if machine_ir_manifest is None
+            else {
+                "path": Path(machine_ir_manifest).name,
+                "sha256": sha256_file(machine_ir_manifest),
+            }
+        ),
+        "recovered_executable_data": (
+            None
+            if recovered_executable_data is None
+            else {
+                "path": Path(recovered_executable_data).name,
+                "sha256": sha256_file(recovered_executable_data),
+                "ranges": len(plan.recovered_executable_data_ranges),
+            }
+        ),
         "input_mode": plan.input_mode,
         "plan": {"path": plan_path.name, "sha256": sha256_file(plan_path)},
         "callable_external_contract": (
@@ -2252,6 +3835,12 @@ def write_stage_b_native_engine_package(
         ],
         "counts": plan.payload(state_machine_sha256="")["counts"],
         "callback_abis": [target.payload() for target in plan.callback_targets],
+        "callback_adapter_receipts": [
+            receipt.payload() for receipt in plan.callback_adapter_receipts
+        ],
+        "implementation_dispatch_receipt": (
+            plan.implementation_dispatch_receipt.payload()
+        ),
         "semantic_coverage": plan.payload(state_machine_sha256="")["semantic_coverage"],
         "execution_policy": plan.payload(state_machine_sha256="")["execution_policy"],
         "deferred_transfers": list(plan.deferred_transfers),
@@ -2262,6 +3851,7 @@ def write_stage_b_native_engine_package(
             "base_relocations": "complete-pe32-highlow-inventory-required",
             "raw_x87_instruction_payloads": "forbidden",
             "typed_x87_operations": TYPED_NATIVE_X87_OPERATION_FORMAT,
+            "static_hybrid_closure_receipt_required": True,
             "root_callback_engine_buffers": "fixed-launch-buffers",
             "nested_callback_engine_buffers": "stack-local-requires-checked-runtime-frame",
             "terminal_control": (
@@ -2390,9 +3980,10 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
             f"0x{(site.iat_va or 0):08x}U, "
             f"{1 if site.site_kind != 'direct_import' else 0}U, "
             f"{1 if site.disposition == 'tail_jump' else 0}U, "
-            f"{1 if site.callback_argument_offset is not None else 0}U, "
+            f"{2 if site.callback_source_kind == 'argument_pointee' else 1 if site.callback_argument_offset is not None else 0}U, "
             f"{site.callback_argument_index or 0}U, "
             f"{site.callback_argument_offset or 0}U, "
+            f"{site.callback_pointee_offset}U, "
             f"{1 if site.callback_nullable else 0}U }},"
         )
         for site in plan.external_sites
@@ -2469,6 +4060,14 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         *declarations,
         *callback_declarations,
         *x87_declarations,
+        "#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP",
+        "void stage_b_native_runtime_write_diagnostic(",
+        "    uint32_t status, uint32_t failure_rva,",
+        "    const stage_b_machine_state *state);",
+        "void stage_b_native_runtime_write_external_probe(",
+        "    const stage_b_call_event *event,",
+        "    const stage_b_machine_state *state);",
+        "#endif",
         "",
         "extern const unsigned char __ImageBase[];",
         "",
@@ -2511,7 +4110,8 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "  uint32_t iat_va;",
         "  uint32_t dynamic_target, tail_jump;",
         "  uint32_t callback_registration, callback_argument_index;",
-        "  uint32_t callback_argument_offset, callback_nullable;",
+        "  uint32_t callback_argument_offset, callback_pointee_offset;",
+        "  uint32_t callback_nullable;",
         "} stage_b_native_bridge_entry;",
         "typedef struct stage_b_native_callback_entry {",
         "  uint32_t rva, stack_cleanup_bytes;",
@@ -2721,6 +4321,7 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "      ? stage_b_native_diagnostic_detail : state != 0 ? state->esi : 0U;",
         "  const uint32_t observed_return = stage_b_native_diagnostic_reason != 0U",
         "      ? stage_b_native_diagnostic_reason : state != 0 ? state->edi : 0U;",
+        "  stage_b_native_runtime_write_diagnostic((uint32_t)status, rva, state);",
         "  __asm__ volatile (\"int3\" : : \"a\" (rva),",
         "      \"d\" ((uint32_t)status), \"c\" (modeled_eax),",
         "      \"b\" (modeled_esp), \"S\" (expected_return),",
@@ -2770,6 +4371,9 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP",
         "  if (status != STAGE_B_CALL_OK)",
         "    stage_b_native_diagnostic_trap(status, output);",
+        "  else",
+        "    stage_b_native_runtime_write_diagnostic(",
+        "        (uint32_t)status, output->original_rva, output);",
         "#endif",
         "  if (status != STAGE_B_CALL_OK) return status;",
         "  stage_b_native_pack_flags(output);",
@@ -2852,6 +4456,7 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "  const stage_b_native_bridge_entry *entry;",
         "  const stage_b_native_callback_adapter *callback_adapter = 0;",
         "  uint32_t callback_argument_address = 0U;",
+        "  uint32_t callback_container_address = 0U;",
         "  uint32_t callback_argument_original = 0U;",
         "  uint32_t callback_argument_patched = 0U;",
         "  uint32_t preserved_ebx, preserved_esi, preserved_edi, preserved_ebp;",
@@ -2879,6 +4484,16 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "  if (stage_b_native_runtime_capture_external_call(",
         "          event, input, &external_snapshot) != STAGE_B_CALL_OK)",
         "    return STAGE_B_CALL_UNIMPLEMENTED;",
+        "  if (input->df != 0U) {",
+        "    stage_b_native_diagnostic_reason = 0x1006U;",
+        "    stage_b_native_diagnostic_value = input->df;",
+        "    stage_b_native_diagnostic_aux = event->instruction_rva;",
+        "    stage_b_native_diagnostic_detail = event->target_rva;",
+        "    return STAGE_B_CALL_UNIMPLEMENTED;",
+        "  }",
+        "#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP",
+        "  stage_b_native_runtime_write_external_probe(event, input);",
+        "#endif",
         "  frame.parent = stage_b_native_active_bridge;",
         "  frame.output = output;",
         "  frame.private_esp = 0U;",
@@ -2901,6 +4516,19 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "      return STAGE_B_CALL_MEMORY_FAULT;",
         "    callback_argument_address =",
         "        input->esp + entry->callback_argument_offset;",
+        "    if (entry->callback_registration == 2U) {",
+        "      if (stage_b_native_fixed_flat_read_u32(",
+        "              callback_argument_address,",
+        "              &callback_container_address) == 0U ||",
+        "          callback_container_address == 0U ||",
+        "          callback_container_address >",
+        "              0xffffffffU - entry->callback_pointee_offset)",
+        "        return STAGE_B_CALL_MEMORY_FAULT;",
+        "      callback_argument_address =",
+        "          callback_container_address + entry->callback_pointee_offset;",
+        "    } else if (entry->callback_registration != 1U) {",
+        "      return STAGE_B_CALL_UNIMPLEMENTED;",
+        "    }",
         "    if (stage_b_native_fixed_flat_read_u32(",
         "            callback_argument_address, &callback_argument_original) == 0U)",
         "      return STAGE_B_CALL_MEMORY_FAULT;",
@@ -2947,6 +4575,10 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "       output->edi != preserved_edi || output->ebp != preserved_ebp)) {",
         "    stage_b_native_diagnostic_reason = 0x1005U;",
         "    frame.status = STAGE_B_CALL_UNIMPLEMENTED;",
+        "  }",
+        "  if (frame.status == STAGE_B_CALL_OK) {",
+        "    output->df = 0U;",
+        "    output->eflags &= ~(1U << 10);",
         "  }",
         *(
             [
@@ -4453,6 +6085,17 @@ def _required_string(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value:
         raise StageAInputError(f"{field} must be a non-empty string")
     return value
+
+
+def _required_portable_identity(value: Any, field: str) -> str:
+    text = _required_string(value, field)
+    try:
+        encoded = text.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise StageAInputError(f"{field} must be printable ASCII") from exc
+    if any(byte < 0x20 or byte > 0x7E for byte in encoded):
+        raise StageAInputError(f"{field} must be printable ASCII")
+    return text
 
 
 def _required_sha256(value: Any, field: str) -> str:

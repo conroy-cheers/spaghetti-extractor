@@ -1,0 +1,178 @@
+{
+  "format": "stage-a-static-machine-import-profile-v1",
+  "id": "pe32-win32-windowing-runtime-v1",
+  "default_callback_effect": "none",
+  "machine_import_signatures": [
+    {
+      "import": {"dll": "user32.dll", "symbol": "LoadIconA"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "user32.dll", "symbol": "LoadIconW"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "user32.dll", "symbol": "LoadCursorA"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "user32.dll", "symbol": "LoadCursorW"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "gdi32.dll", "symbol": "GetStockObject"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "user32.dll", "symbol": "RegisterClassA"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {
+          "access": "read",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 40},
+          "nullable": false
+        }
+      ],
+      "world_effect": "callbackRegistration",
+      "callback_effect": "explicit",
+      "callback_source": {
+        "kind": "argument_pointee",
+        "argument": 0,
+        "offset": 4
+      },
+      "callback_lifetime": "until_class_unregistered_or_process_exit",
+      "callback_abi": {
+        "kind": "generic_callback",
+        "argument_words": 4,
+        "stack_cleanup_bytes": 16,
+        "nullable": false
+      }
+    },
+    {
+      "import": {"dll": "user32.dll", "symbol": "RegisterClassW"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {
+          "access": "read",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 40},
+          "nullable": false
+        }
+      ],
+      "world_effect": "callbackRegistration",
+      "callback_effect": "explicit",
+      "callback_source": {
+        "kind": "argument_pointee",
+        "argument": 0,
+        "offset": 4
+      },
+      "callback_lifetime": "until_class_unregistered_or_process_exit",
+      "callback_abi": {
+        "kind": "generic_callback",
+        "argument_words": 4,
+        "stack_cleanup_bytes": 16,
+        "nullable": false
+      }
+    },
+    {
+      "import": {"dll": "user32.dll", "symbol": "GetCursorPos"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {"access": "write", "base_argument": 0, "offset": 0, "size": {"kind": "fixed", "bytes": 8}, "nullable": false}
+      ],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "user32.dll", "symbol": "PostQuitMessage"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "user32.dll", "symbol": "SetCursor"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "related_word"}],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "user32.dll", "symbol": "SetCursorPos"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "user32.dll", "symbol": "WaitMessage"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 0},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    }
+  ]
+}

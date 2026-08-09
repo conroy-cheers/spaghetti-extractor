@@ -568,8 +568,8 @@ class StageBInterpreterX87ReplayTests(unittest.TestCase):
             self.assertEqual(
                 [action.op for action in transfer.actions],
                 [
-                    "typed_x87", "eval_word", "eval_word", "eval_word",
-                    "set_reg", "sync_eflags", "outcome_fallthrough",
+                    "typed_x87", "eval_word", "set_reg", "sync_eflags",
+                    "outcome_fallthrough",
                 ],
             )
             package = write_stage_b_interpreter_package(

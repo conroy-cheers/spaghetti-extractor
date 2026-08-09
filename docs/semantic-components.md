@@ -54,10 +54,13 @@ sequence is:
 machine transfer -> small component -> procedure -> subsystem -> idiomatic API
 ```
 
-Each step keeps the previous implementation as a candidate-only reference for
-bounded and regression checks. Library recognition can replace many components
-at once when a constellation of functions, data, imports, and call shapes
-matches a pinned catalog. A partial match remains a hypothesis.
+Each step retains a complete machine-IR fallback for every region not yet
+replaced. Component promotion must not reopen rooted control, executable
+semantics, external effects, or implementation coverage. Library recognition
+can replace many components at once when a constellation of functions, data,
+imports, and call shapes matches a pinned catalog. A partial match remains a
+hypothesis.
 
 All Wine-backed checks must use a headless X/Wayland session, such as
-`xvfb-run -a`, and must never execute the original binary.
+`xvfb-run -a`, must never execute the original binary, and must be gated behind
+the complete static hybrid contract.

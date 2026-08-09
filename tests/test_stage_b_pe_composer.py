@@ -20,6 +20,10 @@ from spaghetti_extractor.roundtrip_fuzz.image_contract import (
     build_stage_a_load_image_contract,
     write_stage_a_load_image_contract,
 )
+from spaghetti_extractor.recovered_executable_data import (
+    build_recovered_executable_data_contract,
+)
+from spaghetti_extractor.stage_binary import _parse_stage_a_pe
 from spaghetti_extractor.stage_b_pe_composer import (
     COMPOSITION_MANIFEST_FILENAME,
     EXECUTABLE_ANCHOR_MANIFEST_FORMAT,
@@ -268,6 +272,92 @@ def _directories(pe: pefile.PE) -> list[tuple[int, int]]:
 
 
 class StageBPEComposerTests(unittest.TestCase):
+    def test_preserves_only_checked_executable_data_ranges(self) -> None:
+        table = bytes.fromhex("0010400000104000")
+        remap = bytes.fromhex("0001")
+        original_bytes = pe32_image(
+            b"\xc3" + bytes(15) + table + remap,
+            virtual_size=0x1A,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            original.write_bytes(original_bytes)
+            binary = _parse_stage_a_pe(original)
+            try:
+                recovered = build_recovered_executable_data_contract(
+                    binary=binary,
+                    control={
+                        "roots": [{"kind": "pe_entrypoint", "rva": 0x1000}],
+                        "direct_targets": [],
+                        "reachability": {
+                            "reachable_units": ["semantic-transfer:entry"]
+                        },
+                        "recovered_indirect_targets": [
+                            {
+                                "id": "indirect-exit:fixture",
+                                "source_unit_id": "semantic-transfer:entry",
+                                "status": "recovered",
+                                "closure": "checked_finite_target_inventory",
+                                "target_rvas": [0x1000],
+                                "unit_binding": {"status": "complete"},
+                                "table": {
+                                    "rva_start": 0x1010,
+                                    "rva_end": 0x1018,
+                                    "bytes_sha256": sha256_bytes(table),
+                                },
+                                "index": {
+                                    "remap": {
+                                        "rva_start": 0x1018,
+                                        "rva_end": 0x101A,
+                                        "bytes_sha256": sha256_bytes(remap),
+                                    }
+                                },
+                            }
+                        ],
+                    },
+                    source_map=[
+                        {
+                            "unit_id": "semantic-transfer:entry",
+                            "rva_start": 0x1000,
+                            "rva_end": 0x1001,
+                        }
+                    ],
+                    machine_ir_sha256="a" * 64,
+                )
+            finally:
+                binary.pe.close()
+            payload = _high_rva_payload()
+            result = compose_stage_b_pe(
+                load_image_contract=build_stage_a_load_image_contract(original),
+                payload_pe=payload,
+                anchor_manifest=_anchor_manifest(),
+                payload_relocation_inventory=_empty_relocation_inventory(payload),
+                recovered_executable_data=recovered,
+                out_dir=root / "out",
+            )
+            candidate = pefile.PE(str(root / "out" / "candidate.exe"))
+            text = candidate.sections[0]
+            data = candidate.get_data(0x1000, 0x1A)
+
+            self.assertEqual(data[:5], bytes.fromhex("e9fb2f0000"))
+            self.assertEqual(data[5:0x10], bytes([0xCC]) * 11)
+            self.assertEqual(data[0x10:0x18], table)
+            self.assertEqual(data[0x18:0x1A], remap)
+            self.assertEqual(
+                [
+                    row["kind"]
+                    for row in result["executable_byte_classification"]
+                    if row["rva"] < 0x101A
+                ],
+                ["anchor", "trap", "recovered_data", "recovered_data"],
+            )
+            self.assertEqual(
+                result["inputs"]["recovered_executable_data"]["bytes"], 10
+            )
+            self.assertEqual(int(text.VirtualAddress), 0x1000)
+            candidate.close()
+
     def test_accepts_highlow_fixup_crossing_a_four_kib_page(self) -> None:
         original = _with_larger_headers(
             pe32_import_image(b"\xc3", symbol="ExitProcess")

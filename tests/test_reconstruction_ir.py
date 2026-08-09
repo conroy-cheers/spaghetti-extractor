@@ -17,20 +17,28 @@ from spaghetti_extractor.reconstruction_ir import (
     _Instruction,
     _assert_byte_free,
     _bounded_predecessor_instruction_history,
-    _callback_registration_roots,
+    _callback_root_proposals_from_provenance,
+    _classify_executable_data_before_control,
+    _exceptional_control_inventory,
+    _local_callback_cutpoint_proposals,
     _newly_eligible_callback_roots,
-    _prefer_indirect_recoveries,
+    _recovery_failure_message,
     _recover_unknown_fallthrough,
+    _sanitize_schedule,
     export_machine_ir_package,
     prepare_machine_ir_units_package,
+)
+from spaghetti_extractor.interprocedural_analysis import (
+    _prefer_indirect_recoveries,
 )
 from spaghetti_extractor.stage_b_state_machine import (
     normalize_stage_a_semantic_transfer,
 )
+from spaghetti_extractor.stage_binary import _parse_stage_a_pe
 from spaghetti_extractor.util import sha256_bytes
 from spaghetti_extractor.util import sha256_file
 
-from tests.pe_fixtures import pe32_image, pe32_tls_image
+from tests.pe_fixtures import pe32_image, pe32_import_image, pe32_tls_image
 
 
 _REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
@@ -62,7 +70,10 @@ def _row(
     status: str = "reimplementable",
     external_events: list[dict[str, object]] | None = None,
     ordered_events: list[dict[str, object]] | None = None,
+    faults: list[dict[str, object]] | None = None,
     register_writes: list[dict[str, object]] | None = None,
+    memory_events: list[dict[str, object]] | None = None,
+    edge_conditions: list[dict[str, object]] | None = None,
     fpu_state: dict[str, object] | None = None,
     control_disposition: dict[str, object] | None = None,
 ) -> dict[str, object]:
@@ -71,6 +82,9 @@ def _row(
         b"\xc3": ("ret", ""),
         b"\xc2\x0c\x00": ("ret", "0xc"),
         b"\xd9\x00": ("fld", "dword ptr [eax]"),
+        b"\xeb\xfe": ("jmp", "0x401000"),
+        b"\xff\xe0": ("jmp", "eax"),
+        b"\xff\x15\x40\x20\x40\x00": ("call", "dword ptr [0x402040]"),
     }[encoded]
     transfer = {
         "format": "stage-a-semantic-transfer-contract-v1",
@@ -108,11 +122,11 @@ def _row(
         },
         "register_writes": register_writes or [],
         "flag_writes": [],
-        "memory_events": [],
+        "memory_events": memory_events or [],
         "external_events": external_events or [],
-        "faults": [],
+        "faults": faults or [],
         "ordered_events": ordered_events or [],
-        "edge_conditions": [],
+        "edge_conditions": edge_conditions or [],
         "outcome": outcome,
         "stack_delta": {
             "status": "derived",
@@ -123,11 +137,11 @@ def _row(
         "counts": {
             "register_writes": len(register_writes or []),
             "flag_writes": 0,
-            "memory_events": 0,
+            "memory_events": len(memory_events or []),
             "external_events": len(external_events or []),
-            "faults": 0,
+            "faults": len(faults or []),
             "ordered_events": len(ordered_events or []),
-            "edge_conditions": 0,
+            "edge_conditions": len(edge_conditions or []),
         },
         "acceptance": "test semantic transfer",
         "blocker_category": None if status == "reimplementable" else "x87_typed_lowering_required",
@@ -274,6 +288,139 @@ def _raw_instruction_keys(value: object) -> set[str]:
 
 
 class ReconstructionIRTests(unittest.TestCase):
+    def test_structured_recovery_failure_does_not_require_legacy_message(self) -> None:
+        self.assertEqual(
+            _recovery_failure_message({"code": "value_origin_unresolved"}),
+            "value_origin_unresolved",
+        )
+
+    def test_executable_data_and_instruction_interiors_precede_control_closure(self) -> None:
+        def unit(
+            identity: str,
+            start: int,
+            end: int,
+            *,
+            outcome: dict[str, object],
+            instruction_end: int | None = None,
+        ) -> dict[str, object]:
+            return {
+                "id": identity,
+                "source": {
+                    "original": {"rva_start": start, "rva_end": end},
+                },
+                "source_location": {"block_id": identity},
+                "instructions": [{
+                    "rva_start": start,
+                    "rva_end": instruction_end or end,
+                    "instruction_sha256": "a" * 64,
+                }],
+                "semantics": {
+                    "outcome": outcome,
+                    "external_events": [],
+                    "register_writes": [],
+                },
+                "control": {
+                    "kind": outcome["kind"],
+                    "direct_targets": (
+                        [outcome["target_rva"]]
+                        if isinstance(outcome.get("target_rva"), int)
+                        else []
+                    ),
+                    "has_indirect_target": outcome["kind"] == "indirect_jump",
+                },
+            }
+
+        table_expression = {
+            "op": "load",
+            "width": 4,
+            "address": {
+                "op": "add32",
+                "args": [
+                    {"op": "const", "value": 0x401010, "width": 32},
+                    {
+                        "op": "mul32",
+                        "args": [
+                            {"op": "const", "value": 0, "width": 32},
+                            {"op": "const", "value": 4, "width": 32},
+                        ],
+                    },
+                ],
+            },
+        }
+        units = [
+            unit(
+                "root",
+                0x1000,
+                0x1002,
+                outcome={"kind": "indirect_jump", "target": table_expression},
+            ),
+            unit(
+                "table-decode",
+                0x1010,
+                0x1014,
+                outcome={"kind": "fallthrough", "target_rva": 0x1014},
+            ),
+            unit(
+                "target",
+                0x1020,
+                0x1025,
+                outcome={"kind": "return"},
+            ),
+            unit(
+                "interior-decode",
+                0x1021,
+                0x1023,
+                outcome={"kind": "return"},
+            ),
+        ]
+        image = bytearray(0x30)
+        image[0x10:0x14] = (0x401020).to_bytes(4, "little")
+        with tempfile.TemporaryDirectory() as temporary:
+            original = Path(temporary) / "original.exe"
+            original.write_bytes(pe32_image(bytes(image), virtual_size=len(image)))
+            binary = _parse_stage_a_pe(original)
+            try:
+                retained, classification, issues, recoveries = (
+                    _classify_executable_data_before_control(
+                        binary=binary,
+                        units=units,
+                        reference={"roots": [], "noncode_ranges": []},
+                    )
+                )
+            finally:
+                binary.pe.close()
+
+        self.assertEqual(classification["status"], "complete")
+        self.assertEqual(issues, [])
+        self.assertEqual(len(recoveries), 1)
+        self.assertEqual(recoveries[0]["kind"], "indirect_jump")
+        self.assertEqual(
+            recoveries[0]["recovery_kind"],
+            "pe32_indexed_absolute_jump_table",
+        )
+        self.assertEqual(
+            recoveries[0]["target_set_dependency"]["dependency_kind"],
+            "bounded_selector",
+        )
+        self.assertEqual(
+            [row["id"] for row in retained],
+            ["root", "target"],
+        )
+        self.assertEqual(
+            [
+                (row["rva_start"], row["rva_end"])
+                for row in classification["immutable_data_ranges"]
+            ],
+            [(0x1010, 0x1014)],
+        )
+        self.assertEqual(
+            {row["unit_id"]: row["reason"] for row in classification["excluded_units"]},
+            {
+                "table-decode": "intersects_checked_immutable_executable_data",
+                "interior-decode": "starts_inside_rooted_reachable_instruction",
+            },
+        )
+
     def test_byte_free_boundary_allows_numeric_byte_counts_only(self) -> None:
         _assert_byte_free({"size": {"kind": "fixed", "bytes": 16}})
         for raw in ("90", [0x90], True, -1):
@@ -394,7 +541,7 @@ class ReconstructionIRTests(unittest.TestCase):
         row = _row(
             "semantic-transfer:indirect",
             0x1000,
-            b"\xc3",
+            b"\xff\xe0",
             outcome={"kind": "indirect_jump", "target": _expr_register("eax")},
         )
         profile = {
@@ -415,7 +562,7 @@ class ReconstructionIRTests(unittest.TestCase):
             original = root / "original.exe"
             machine = root / "state-machine.jsonl"
             profile_path = root / "target-profile.json"
-            original.write_bytes(pe32_image(b"\xc3", virtual_size=1))
+            original.write_bytes(pe32_image(b"\xff\xe0", virtual_size=2))
             _write_machine(machine, [row])
             profile_path.write_text(json.dumps(profile), encoding="utf-8")
 
@@ -451,6 +598,7 @@ class ReconstructionIRTests(unittest.TestCase):
         event = {
             "kind": "external_call",
             "instruction_rva": 0x1000,
+            "return_rva": 0x1006,
             "dll": "msvcrt.dll",
             "symbol": "abort",
             "ordinal": None,
@@ -459,13 +607,64 @@ class ReconstructionIRTests(unittest.TestCase):
         row = _row(
             "semantic-transfer:abort",
             0x1000,
-            b"\x90",
-            outcome={"kind": "fallthrough", "target_rva": 0x1001},
+            b"\xff\x15\x40\x20\x40\x00",
+            outcome={"kind": "fallthrough", "target_rva": 0x1006},
             external_events=[event],
+            ordered_events=[{"family": "external", **event}],
             control_disposition={
                 "kind": "terminates_after_external_event",
                 "authority": "external_profile_machine_import_contract",
             },
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            machine = root / "state-machine.jsonl"
+            original.write_bytes(
+                pe32_import_image(
+                    b"\xff\x15\x40\x20\x40\x00",
+                    symbol="abort",
+                    dll="msvcrt.dll",
+                )
+            )
+            _write_machine(machine, [row])
+
+            package = export_machine_ir_package(
+                state_machine=machine, original_pe=original, out=root / "out"
+            )
+            manifest = _read_json(package.manifest)
+            unit = _read_jsonl(package.machine_ir)[0]
+
+            self.assertEqual(package.status, "qualified")
+            self.assertEqual(
+                manifest["authority_bindings"]["binary"]["machine_ir_sha256"],
+                manifest["artifacts"]["machine_ir"]["sha256"],
+            )
+            self.assertEqual(
+                manifest["authority_bindings"]["units"][0]["unit_id"],
+                unit["id"],
+            )
+            self.assertEqual(manifest["control"]["counts"]["direct_targets"], 0)
+            self.assertEqual(unit["control"]["direct_targets"], [])
+            self.assertEqual(
+                unit["control"]["disposition"]["kind"],
+                "terminates_after_external_event",
+            )
+
+    def test_exceptional_control_closes_only_explicit_terminal_faults(self) -> None:
+        terminal_fault = {
+            "kind": "divide_error",
+            "condition": {"op": "true"},
+            "instruction_rva": 0x1000,
+        }
+        row = _row(
+            "semantic-transfer:fault",
+            0x1000,
+            b"\x90",
+            outcome={"kind": "fault", "fault_kind": "divide_error"},
+            faults=[terminal_fault],
+            ordered_events=[{"family": "fault", **terminal_fault}],
         )
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -478,43 +677,117 @@ class ReconstructionIRTests(unittest.TestCase):
             package = export_machine_ir_package(
                 state_machine=machine, original_pe=original, out=root / "out"
             )
-            manifest = _read_json(package.manifest)
-            unit = _read_jsonl(package.machine_ir)[0]
+            inventory = _read_json(package.manifest)["control"][
+                "exceptional_control"
+            ]
+            transition = inventory["transitions"][0]
 
-            self.assertEqual(package.status, "qualified")
-            self.assertEqual(manifest["control"]["counts"]["direct_targets"], 0)
-            self.assertEqual(unit["control"]["direct_targets"], [])
+            self.assertEqual(inventory["status"], "complete")
+            self.assertEqual(transition["status"], "complete")
+            self.assertEqual(transition["disposition"]["kind"], "termination")
+            self.assertTrue(transition["disposition"]["observable"])
             self.assertEqual(
-                unit["control"]["disposition"]["kind"],
-                "terminates_after_external_event",
+                transition["fault_sha256"],
+                sha256_bytes(
+                    json.dumps(
+                        terminal_fault, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8")
+                ),
+            )
+            certificate = transition["disposition"]["evidence"]["certificate"]
+            self.assertEqual(certificate["fault_sha256"], transition["fault_sha256"])
+            self.assertEqual(
+                certificate["source_contract_sha256"], row["contract_sha256"]
             )
 
-    def test_exports_deterministic_full_span_ir_with_exact_effects_and_control(self) -> None:
-        code = b"\x90\xc3"
-        write = {
-            "register": "eax",
-            "value": {
-                "op": "add32",
-                "args": [_expr_register("eax"), {"op": "const", "value": 1, "width": 32}],
-            },
-        }
-        external = {
-            "kind": "external_call",
+    def test_exceptional_control_leaves_conditional_fault_unresolved(self) -> None:
+        conditional_fault = {
+            "kind": "divide_error",
+            "condition": {"op": "flag", "name": "zf"},
             "instruction_rva": 0x1000,
-            "dll": "KERNEL32.dll",
-            "symbol": "GetLastError",
-            "ordinal": None,
-            "arguments": [],
         }
         rows = [
             _row(
-                "semantic-transfer:first",
+                "semantic-transfer:divide",
                 0x1000,
                 b"\x90",
-                outcome={"kind": "jump", "target_rva": 0x1001},
-                register_writes=[write],
-                external_events=[external],
-                ordered_events=[{"family": "external", **external}],
+                outcome={"kind": "fallthrough", "target_rva": 0x1001},
+                faults=[conditional_fault],
+                ordered_events=[{"family": "fault", **conditional_fault}],
+            ),
+            _row(
+                "semantic-transfer:return",
+                0x1001,
+                b"\xc3",
+                outcome={"kind": "return", "value": _expr_register("eax")},
+            ),
+            _row(
+                "semantic-transfer:unreachable-fault",
+                0x1002,
+                b"\x90",
+                outcome={"kind": "fault", "fault_kind": "invalid_opcode"},
+                faults=[{
+                    "kind": "invalid_opcode",
+                    "condition": {"op": "true"},
+                    "instruction_rva": 0x1002,
+                }],
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            machine = root / "state-machine.jsonl"
+            original.write_bytes(pe32_image(b"\x90\xc3\x90", virtual_size=3))
+            _write_machine(machine, rows)
+
+            package = export_machine_ir_package(
+                state_machine=machine, original_pe=original, out=root / "out"
+            )
+            inventory = _read_json(package.manifest)["control"][
+                "exceptional_control"
+            ]
+            transition = inventory["transitions"][0]
+
+            self.assertEqual(inventory["status"], "incomplete")
+            self.assertEqual(len(inventory["transitions"]), 1)
+            self.assertEqual(
+                transition["source_unit_id"], "semantic-transfer:divide"
+            )
+            self.assertEqual(transition["status"], "incomplete")
+            self.assertEqual(transition["disposition"]["kind"], "unresolved")
+            self.assertEqual(
+                transition["disposition"]["evidence"]["status"],
+                "checked_possible",
+            )
+
+    def test_exceptional_control_closes_proved_infeasible_divide_error(self) -> None:
+        condition = {
+            "op": "not",
+            "args": [
+                {
+                    "op": "udiv_valid32",
+                    "args": [
+                        {"op": "const", "value": 0, "width": 32},
+                        {"op": "reg", "name": "eax", "width": 32},
+                        {"op": "const", "value": 15, "width": 32},
+                    ],
+                }
+            ],
+        }
+        fault = {
+            "kind": "divide_error",
+            "condition": condition,
+            "instruction_rva": 0x1000,
+        }
+        rows = [
+            _row(
+                "semantic-transfer:divide",
+                0x1000,
+                b"\x90",
+                outcome={"kind": "fallthrough", "target_rva": 0x1001},
+                faults=[fault],
+                ordered_events=[{"family": "fault", **fault}],
             ),
             _row(
                 "semantic-transfer:return",
@@ -528,7 +801,534 @@ class ReconstructionIRTests(unittest.TestCase):
             root = Path(temporary)
             original = root / "original.exe"
             machine = root / "state-machine.jsonl"
-            original.write_bytes(pe32_image(code, virtual_size=len(code)))
+            original.write_bytes(pe32_image(b"\x90\xc3", virtual_size=2))
+            _write_machine(machine, rows)
+
+            package = export_machine_ir_package(
+                state_machine=machine, original_pe=original, out=root / "out"
+            )
+            inventory = _read_json(package.manifest)["control"][
+                "exceptional_control"
+            ]
+            transition = inventory["transitions"][0]
+
+            self.assertEqual(inventory["status"], "complete")
+            self.assertEqual(transition["status"], "complete")
+            self.assertEqual(transition["disposition"]["kind"], "infeasible")
+            self.assertFalse(transition["disposition"]["observable"])
+            evidence = transition["disposition"]["evidence"]
+            self.assertEqual(evidence["status"], "checked")
+            self.assertEqual(
+                evidence["checker"],
+                "stage-a-machine-ir-qf-bv-fault-infeasibility-v1",
+            )
+            certificate = evidence["certificate"]
+            self.assertEqual(certificate["fault_kind"], "divide_error")
+            self.assertEqual(
+                certificate["predicate_sha256"],
+                sha256_bytes(
+                    json.dumps(
+                        condition, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8")
+                ),
+            )
+            self.assertEqual(
+                certificate["source_contract_sha256"], rows[0]["contract_sha256"]
+            )
+
+    def test_exceptional_control_does_not_close_platform_false_predicates(
+        self,
+    ) -> None:
+        faults = [
+            {
+                "kind": kind,
+                "condition": {"op": "false"},
+                "instruction_rva": 0x1000,
+            }
+            for kind in (
+                "page_fault",
+                "general_protection",
+                "x87_exception",
+            )
+        ]
+        rows = [
+            _row(
+                "semantic-transfer:x87",
+                0x1000,
+                b"\x90",
+                outcome={"kind": "fallthrough", "target_rva": 0x1001},
+                faults=faults,
+                ordered_events=[
+                    {"family": "fault", **fault} for fault in faults
+                ],
+            ),
+            _row(
+                "semantic-transfer:return",
+                0x1001,
+                b"\xc3",
+                outcome={"kind": "return", "value": _expr_register("eax")},
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            machine = root / "state-machine.jsonl"
+            original.write_bytes(pe32_image(b"\x90\xc3", virtual_size=2))
+            _write_machine(machine, rows)
+
+            package = export_machine_ir_package(
+                state_machine=machine, original_pe=original, out=root / "out"
+            )
+            transitions = _read_json(package.manifest)["control"][
+                "exceptional_control"
+            ]["transitions"]
+
+            self.assertEqual(len(transitions), 3)
+            for transition in transitions:
+                self.assertEqual(transition["status"], "incomplete")
+                self.assertEqual(
+                    transition["disposition"]["kind"], "unresolved"
+                )
+                self.assertEqual(
+                    transition["disposition"]["evidence"]["status"],
+                    "unchecked",
+                )
+
+    def test_exceptional_control_abstracts_loads_for_infeasibility_only(self) -> None:
+        loaded_dividend = {
+            "op": "load",
+            "width": 4,
+            "address": {"op": "reg", "name": "esp", "width": 32},
+        }
+        loaded_divisor = {
+            "op": "load",
+            "width": 4,
+            "address": {
+                "op": "add32",
+                "args": [
+                    {"op": "reg", "name": "esp", "width": 32},
+                    {"op": "const", "value": 4, "width": 32},
+                ],
+            },
+        }
+        faults = [
+            {
+                "kind": "divide_error",
+                "condition": {
+                    "op": "not",
+                    "args": [
+                        {
+                            "op": "udiv_valid32",
+                            "args": [
+                                {"op": "const", "value": 0, "width": 32},
+                                loaded_dividend,
+                                {"op": "const", "value": 15, "width": 32},
+                            ],
+                        }
+                    ],
+                },
+                "instruction_rva": 0x1000,
+            },
+            {
+                "kind": "divide_error",
+                "condition": {
+                    "op": "not",
+                    "args": [
+                        {
+                            "op": "udiv_valid32",
+                            "args": [
+                                {"op": "const", "value": 0, "width": 32},
+                                {"op": "reg", "name": "eax", "width": 32},
+                                loaded_divisor,
+                            ],
+                        }
+                    ],
+                },
+                "instruction_rva": 0x1000,
+            },
+        ]
+        rows = [
+            _row(
+                "semantic-transfer:divide",
+                0x1000,
+                b"\x90",
+                outcome={"kind": "fallthrough", "target_rva": 0x1001},
+                faults=faults,
+                ordered_events=[
+                    {"family": "fault", **fault} for fault in faults
+                ],
+            ),
+            _row(
+                "semantic-transfer:return",
+                0x1001,
+                b"\xc3",
+                outcome={"kind": "return", "value": _expr_register("eax")},
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            machine = root / "state-machine.jsonl"
+            original.write_bytes(pe32_image(b"\x90\xc3", virtual_size=2))
+            _write_machine(machine, rows)
+
+            package = export_machine_ir_package(
+                state_machine=machine, original_pe=original, out=root / "out"
+            )
+            transitions = _read_json(package.manifest)["control"][
+                "exceptional_control"
+            ]["transitions"]
+
+            self.assertEqual(transitions[0]["status"], "complete")
+            abstraction = transitions[0]["disposition"]["evidence"][
+                "certificate"
+            ]["stateful_leaf_abstractions"]
+            self.assertEqual(len(abstraction), 1)
+            self.assertEqual(abstraction[0]["source_op"], "load")
+            self.assertEqual(abstraction[0]["width"], 32)
+            self.assertEqual(transitions[1]["status"], "incomplete")
+            self.assertEqual(
+                transitions[1]["disposition"]["evidence"]["status"],
+                "checked_abstract_possible",
+            )
+            analysis = transitions[1]["disposition"]["evidence"]["analysis"]
+            self.assertEqual(
+                analysis["stateful_leaf_abstractions"][0]["source_op"], "load"
+            )
+
+    def test_exceptional_control_requires_scc_invariant_for_branch_fact(self) -> None:
+        zero = {"op": "const", "value": 0, "width": 32}
+        divisor = {"op": "reg", "name": "esi", "width": 32}
+        is_zero = {
+            "op": "eq",
+            "args": [
+                {"op": "and32", "args": [divisor, divisor]},
+                zero,
+            ],
+        }
+        nonzero = {"op": "not", "args": [is_zero]}
+        fault = {
+            "kind": "divide_error",
+            "condition": {
+                "op": "not",
+                "args": [
+                    {
+                        "op": "udiv_valid32",
+                        "args": [zero, _expr_register("eax"), divisor],
+                    }
+                ],
+            },
+            "instruction_rva": 0x1001,
+        }
+        predecessor = _row(
+            "semantic-transfer:guard",
+            0x1000,
+            b"\x90",
+            outcome={
+                "kind": "branch",
+                "condition": is_zero,
+                "true_target_rva": 0x1002,
+                "false_target_rva": 0x1001,
+            },
+            edge_conditions=[
+                {"target_rva": 0x1002, "condition": is_zero},
+                {"target_rva": 0x1001, "condition": nonzero},
+            ],
+        )
+        rows = [
+            predecessor,
+            _row(
+                "semantic-transfer:divide",
+                0x1001,
+                b"\x90",
+                outcome={"kind": "fallthrough", "target_rva": 0x1002},
+                faults=[fault],
+                ordered_events=[{"family": "fault", **fault}],
+            ),
+            _row(
+                "semantic-transfer:return",
+                0x1002,
+                b"\xc3",
+                outcome={"kind": "return", "value": _expr_register("eax")},
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            machine = root / "state-machine.jsonl"
+            original.write_bytes(pe32_image(b"\x90\x90\xc3", virtual_size=3))
+            _write_machine(machine, rows)
+
+            package = export_machine_ir_package(
+                state_machine=machine, original_pe=original, out=root / "out"
+            )
+            transition = _read_json(package.manifest)["control"][
+                "exceptional_control"
+            ]["transitions"][0]
+
+            self.assertEqual(transition["status"], "incomplete")
+            evidence = transition["disposition"]["evidence"]
+            requirement = evidence["scc_invariant_requirement"]
+            self.assertEqual(
+                requirement["format"],
+                "stage-a-scc-exception-invariant-requirement-v2",
+            )
+            self.assertEqual(
+                requirement["reason"],
+                "checked_scc_invariant_certificate_required",
+            )
+            self.assertEqual(requirement["source_unit_id"], rows[1]["id"])
+
+    def test_terminal_fault_without_exact_fault_record_is_incomplete(self) -> None:
+        row = _row(
+            "semantic-transfer:fault",
+            0x1000,
+            b"\x90",
+            outcome={"kind": "fault", "fault_kind": "invalid_opcode"},
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            machine = root / "state-machine.jsonl"
+            original.write_bytes(pe32_image(b"\x90", virtual_size=1))
+            _write_machine(machine, [row])
+
+            package = export_machine_ir_package(
+                state_machine=machine, original_pe=original, out=root / "out"
+            )
+            manifest = _read_json(package.manifest)
+
+            self.assertEqual(package.status, "incomplete")
+            self.assertEqual(
+                manifest["control"]["exceptional_control"]["transitions"], []
+            )
+            self.assertIn(
+                "terminal_fault_missing_fault_record",
+                {issue["category"] for issue in manifest["issues"]},
+            )
+
+    def test_ret_misdeclared_as_jump_self_loop_violates_reconciliation(self) -> None:
+        row = _row(
+            "semantic-transfer:false-loop",
+            0x1000,
+            b"\xc3",
+            outcome={"kind": "jump", "target_rva": 0x1000},
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            machine = root / "state-machine.jsonl"
+            original.write_bytes(pe32_image(b"\xc3", virtual_size=1))
+            _write_machine(machine, [row])
+
+            package = export_machine_ir_package(
+                state_machine=machine, original_pe=original, out=root / "out"
+            )
+            manifest = _read_json(package.manifest)
+            unit = _read_jsonl(package.machine_ir)[0]
+            reconciliation = unit["control"]["decoded_reconciliation"]
+
+            self.assertEqual(package.status, "violated")
+            self.assertEqual(unit["status"], "incomplete")
+            self.assertEqual(reconciliation["status"], "violated")
+            self.assertEqual(
+                reconciliation["terminal_instruction"]["return_class"],
+                "near_return",
+            )
+            self.assertIn(
+                "return_class_mismatch",
+                {check["code"] for check in reconciliation["checks"]},
+            )
+            self.assertIn(
+                "decoded_control_reconciliation",
+                {issue["category"] for issue in manifest["issues"]},
+            )
+
+    def test_decoded_direct_target_mismatch_violates_reconciliation(self) -> None:
+        row = _row(
+            "semantic-transfer:wrong-target",
+            0x1000,
+            b"\xeb\xfe",
+            outcome={"kind": "jump", "target_rva": 0x1001},
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            machine = root / "state-machine.jsonl"
+            original.write_bytes(pe32_image(b"\xeb\xfe", virtual_size=2))
+            _write_machine(machine, [row])
+
+            package = export_machine_ir_package(
+                state_machine=machine, original_pe=original, out=root / "out"
+            )
+            reconciliation = _read_jsonl(package.machine_ir)[0]["control"][
+                "decoded_reconciliation"
+            ]
+
+            self.assertEqual(package.status, "violated")
+            self.assertEqual(reconciliation["status"], "violated")
+            target_check = next(
+                check
+                for check in reconciliation["checks"]
+                if check["code"] == "direct_targets_mismatch"
+            )
+            self.assertEqual(target_check["expected"], [0x1000])
+            self.assertEqual(target_check["actual"], [0x1001])
+
+    def test_decoded_external_call_identity_mismatch_violates_reconciliation(
+        self,
+    ) -> None:
+        call = b"\xff\x15\x40\x20\x40\x00"
+        event = {
+            "kind": "external_call",
+            "instruction_rva": 0x1000,
+            "return_rva": 0x1006,
+            "dll": "KERNEL32.dll",
+            "symbol": "SetLastError",
+            "ordinal": None,
+            "arguments": [],
+        }
+        rows = [
+            _row(
+                "semantic-transfer:call",
+                0x1000,
+                call,
+                outcome={"kind": "fallthrough", "target_rva": 0x1006},
+                external_events=[event],
+                ordered_events=[{"family": "external", **event}],
+            ),
+            _row(
+                "semantic-transfer:return",
+                0x1006,
+                b"\xc3",
+                outcome={"kind": "return"},
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            machine = root / "state-machine.jsonl"
+            original.write_bytes(
+                pe32_import_image(call + b"\xc3", symbol="GetLastError")
+            )
+            _write_machine(machine, rows)
+
+            package = export_machine_ir_package(
+                state_machine=machine, original_pe=original, out=root / "out"
+            )
+            reconciliation = _read_jsonl(package.machine_ir)[0]["control"][
+                "decoded_reconciliation"
+            ]
+
+            self.assertEqual(package.status, "violated")
+            self.assertEqual(reconciliation["status"], "violated")
+            self.assertIn(
+                "call_event_0_import_mismatch",
+                {check["code"] for check in reconciliation["checks"]},
+            )
+
+    def test_checked_decode_site_is_bound_into_canonical_call_event(self) -> None:
+        call = b"\xff\x15\x40\x20\x40\x00"
+        event = {
+            "kind": "external_call",
+            "return_rva": 0x1006,
+            "dll": "KERNEL32.dll",
+            "symbol": "GetLastError",
+            "ordinal": None,
+            "arguments": [],
+        }
+        rows = [
+            _row(
+                "semantic-transfer:call",
+                0x1000,
+                call,
+                outcome={"kind": "fallthrough", "target_rva": 0x1006},
+                external_events=[event],
+                ordered_events=[{
+                    "family": "external",
+                    "instruction_rva": 0x1000,
+                    **event,
+                }],
+            ),
+            _row(
+                "semantic-transfer:return",
+                0x1006,
+                b"\xc3",
+                outcome={"kind": "return"},
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            machine = root / "state-machine.jsonl"
+            original.write_bytes(
+                pe32_import_image(call + b"\xc3", symbol="GetLastError")
+            )
+            _write_machine(machine, rows)
+
+            package = export_machine_ir_package(
+                state_machine=machine, original_pe=original, out=root / "out"
+            )
+            unit = _read_jsonl(package.machine_ir)[0]
+
+            self.assertEqual(package.status, "qualified")
+            self.assertEqual(
+                unit["semantics"]["external_events"][0]["instruction_rva"],
+                0x1000,
+            )
+
+    def test_exports_deterministic_full_span_ir_with_exact_effects_and_control(self) -> None:
+        call = b"\xff\x15\x40\x20\x40\x00"
+        code = call + b"\xc3"
+        write = {
+            "register": "eax",
+            "value": {
+                "op": "add32",
+                "args": [_expr_register("eax"), {"op": "const", "value": 1, "width": 32}],
+            },
+        }
+        external = {
+            "kind": "external_call",
+            "instruction_rva": 0x1000,
+            "return_rva": 0x1006,
+            "dll": "KERNEL32.dll",
+            "symbol": "GetLastError",
+            "ordinal": None,
+            "arguments": [],
+        }
+        rows = [
+            _row(
+                "semantic-transfer:first",
+                0x1000,
+                call,
+                outcome={"kind": "fallthrough", "target_rva": 0x1006},
+                register_writes=[write],
+                external_events=[external],
+                ordered_events=[{"family": "external", **external}],
+            ),
+            _row(
+                "semantic-transfer:return",
+                0x1006,
+                b"\xc3",
+                outcome={"kind": "return", "value": _expr_register("eax")},
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            machine = root / "state-machine.jsonl"
+            original.write_bytes(
+                pe32_import_image(code, symbol="GetLastError")
+            )
             _write_machine(machine, rows)
 
             first = export_machine_ir_package(
@@ -543,12 +1343,16 @@ class ReconstructionIRTests(unittest.TestCase):
             self.assertEqual(first.status, "qualified")
             self.assertEqual(manifest["format"], MACHINE_IR_FORMAT)
             self.assertEqual(manifest["coverage"]["counts"]["unknown_bytes"], 0)
-            self.assertEqual(manifest["control"]["direct_targets"][0]["target_rva"], 0x1001)
+            self.assertEqual(manifest["control"]["direct_targets"][0]["target_rva"], 0x1006)
             self.assertEqual(manifest["external"]["events"][0]["symbol"], "GetLastError")
             self.assertEqual(units[0]["semantics"]["register_writes"], [write])
             self.assertEqual(
                 units[0]["source"]["instruction_bytes_sha256"],
-                sha256_bytes(b"\x90"),
+                sha256_bytes(call),
+            )
+            self.assertEqual(
+                units[0]["control"]["decoded_reconciliation"]["status"],
+                "complete",
             )
             self.assertEqual(
                 (first.machine_ir).read_bytes(), (second.machine_ir).read_bytes()
@@ -694,16 +1498,24 @@ class ReconstructionIRTests(unittest.TestCase):
             0x1000,
             encoded,
             status="incomplete",
-            outcome={"kind": "return"},
+            outcome={"kind": "fallthrough", "target_rva": 0x1002},
             fpu_state=_x87_state(0x1000, encoded),
+        )
+        return_row = _row(
+            "semantic-transfer:return",
+            0x1002,
+            b"\xc3",
+            outcome={"kind": "return"},
         )
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             original = root / "original.exe"
             machine = root / "state-machine.jsonl"
-            original.write_bytes(pe32_image(encoded, virtual_size=len(encoded)))
-            _write_machine(machine, [row])
+            original.write_bytes(
+                pe32_image(encoded + b"\xc3", virtual_size=len(encoded) + 1)
+            )
+            _write_machine(machine, [row, return_row])
 
             package = export_machine_ir_package(
                 state_machine=machine, original_pe=original, out=root / "out"
@@ -732,6 +1544,101 @@ class ReconstructionIRTests(unittest.TestCase):
             self.assertEqual(_raw_instruction_keys(unit), set())
             self.assertNotIn(encoded.hex(), serialized)
             self.assertNotIn("replay", unit["semantics"]["fpu_state"])
+
+    def test_schedule_sanitization_preserves_and_reseals_integrity(self) -> None:
+        record = {
+            "index": 0,
+            "bytes": "90",
+            "bytes_sha256": sha256_bytes(b"\x90"),
+            "effects": {"raw_bytes": "90", "register_writes": []},
+        }
+        record["record_sha256"] = sha256_bytes(
+            json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+        schedule = {
+            "format": "stage-a-instruction-ordered-effect-schedule-v1",
+            "records": [record],
+            "blockers": [],
+        }
+        schedule["schedule_sha256"] = sha256_bytes(
+            json.dumps(schedule, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+
+        sanitized = _sanitize_schedule(schedule, "semantic-transfer:test")
+        sanitized_record = sanitized["records"][0]
+
+        self.assertEqual(
+            sanitized["source_schedule_sha256"], schedule["schedule_sha256"]
+        )
+        self.assertEqual(
+            sanitized_record["source_record_sha256"], record["record_sha256"]
+        )
+        self.assertEqual(_raw_instruction_keys(sanitized), set())
+        record_body = dict(sanitized_record)
+        del record_body["record_sha256"]
+        self.assertEqual(
+            sanitized_record["record_sha256"],
+            sha256_bytes(
+                json.dumps(record_body, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ),
+        )
+        schedule_body = dict(sanitized)
+        del schedule_body["schedule_sha256"]
+        self.assertEqual(
+            sanitized["schedule_sha256"],
+            sha256_bytes(
+                json.dumps(schedule_body, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ),
+        )
+
+        corrupted_record = dict(sanitized_record)
+        corrupted_record["index"] = 1
+        corrupted_record_body = dict(corrupted_record)
+        del corrupted_record_body["record_sha256"]
+        self.assertNotEqual(
+            corrupted_record["record_sha256"],
+            sha256_bytes(
+                json.dumps(
+                    corrupted_record_body, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ),
+        )
+
+    def test_schedule_sanitization_rejects_corrupted_source_digests(self) -> None:
+        record = {"index": 0, "bytes": "90"}
+        record["record_sha256"] = sha256_bytes(
+            json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+        schedule = {"records": [record]}
+        schedule["schedule_sha256"] = sha256_bytes(
+            json.dumps(schedule, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+
+        corrupted_record = json.loads(json.dumps(schedule))
+        corrupted_record["records"][0]["index"] = 1
+        corrupted_record_body = dict(corrupted_record)
+        del corrupted_record_body["schedule_sha256"]
+        corrupted_record["schedule_sha256"] = sha256_bytes(
+            json.dumps(
+                corrupted_record_body, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        )
+        with self.assertRaisesRegex(
+            MachineIRExportError, "source schedule record 0 digest does not match"
+        ):
+            _sanitize_schedule(corrupted_record, "semantic-transfer:test")
+
+        corrupted_schedule = json.loads(json.dumps(schedule))
+        corrupted_schedule["records"].append(dict(record))
+        with self.assertRaisesRegex(
+            MachineIRExportError,
+            "source instruction effect schedule digest does not match",
+        ):
+            _sanitize_schedule(corrupted_schedule, "semantic-transfer:test")
 
     def test_reports_source_mapped_executable_coverage_gap(self) -> None:
         code = b"\xc3\x90"
@@ -1009,69 +1916,53 @@ class ReconstructionIRTests(unittest.TestCase):
             self.assertEqual(roots[0]["block_id"], "return")
             self.assertEqual(roots[1]["kind"], "pe_tls_callback")
 
-    def test_callback_registration_uses_checked_stack_input_as_a_root(self) -> None:
+    def test_checked_callback_provenance_proposes_a_root(self) -> None:
         callback_rva = 0x2200
-        callback_va = 0x400000 + callback_rva
-        units = [
-            {
-                "id": "unit:register",
-                "source": {"original": {"rva_start": 0x1100}},
-                "semantics": {
-                    "external_events": [
-                        {
-                            "kind": "external_call",
-                            "dll": "kernel32.dll",
-                            "symbol": "SetUnhandledExceptionFilter",
-                            "arguments": [
-                                {
-                                    "op": "load",
-                                    "address": _expr_register("esp"),
-                                    "width": 4,
-                                }
-                            ],
-                            "stack_inputs": [
-                                {
-                                    "offset": 0,
-                                    "width": 4,
-                                    "value": {
-                                        "op": "const",
-                                        "value": callback_va,
-                                        "width": 32,
-                                    },
-                                }
-                            ],
-                            "abi_contract": {
-                                "world_effect": "callbackRegistration",
-                                "world_effect_argument": 0,
-                                "callback_abi": {
-                                    "kind": "generic_callback",
-                                    "argument_words": 1,
-                                    "stack_cleanup_bytes": 4,
-                                    "nullable": True,
-                                },
-                            },
-                        }
-                    ]
+        roots = _callback_root_proposals_from_provenance({
+            "callback_registrations": [{
+                "format": "stage-a-callback-registration-provenance-v1",
+                "status": "complete",
+                "unit_id": "unit:register",
+                "event_index": 0,
+                "import": {
+                    "dll": "kernel32.dll",
+                    "symbol": "SetUnhandledExceptionFilter",
+                    "ordinal": None,
                 },
-            },
-            {
-                "id": "unit:callback",
-                "source": {"original": {"rva_start": callback_rva}},
-                "semantics": {"external_events": []},
-            },
-        ]
-
-        roots = _callback_registration_roots(
-            SimpleNamespace(image_base=0x400000), units
-        )
+                "callback_source": {
+                    "kind": "argument_word",
+                    "argument": 0,
+                },
+                "callback_abi": {
+                    "kind": "generic_callback",
+                    "argument_words": 1,
+                    "stack_cleanup_bytes": 4,
+                    "nullable": True,
+                },
+                "target_rvas": [callback_rva],
+            }],
+        })
 
         self.assertEqual(len(roots), 1)
         self.assertEqual(roots[0]["rva"], callback_rva)
         self.assertEqual(roots[0]["source_unit_id"], "unit:register")
 
-    def test_callback_registration_proposes_an_interior_executable_cutpoint(self) -> None:
+    def test_incomplete_callback_provenance_does_not_propose_a_root(self) -> None:
         callback_rva = 0x2203
-        callback_va = 0x400000 + callback_rva
+        roots = _callback_root_proposals_from_provenance({
+            "callback_registrations": [{
+                "format": "stage-a-callback-registration-provenance-v1",
+                "status": "incomplete",
+                "unit_id": "unit:register",
+                "event_index": 0,
+                "target_rvas": [callback_rva],
+                "failure": {"code": "callback_target_not_canonical_code"},
+            }],
+        })
+
+        self.assertEqual(roots, [])
+
+    def test_local_direct_callback_bootstraps_an_interior_cutpoint(self) -> None:
         stack_address = {
             "op": "sub32",
             "args": [
@@ -1079,49 +1970,50 @@ class ReconstructionIRTests(unittest.TestCase):
                 {"op": "const", "value": 4, "width": 32},
             ],
         }
+        callback_rva = 0x2203
+        event = {
+            "kind": "external_call",
+            "dll": "kernel32.dll",
+            "symbol": "SetUnhandledExceptionFilter",
+            "ordinal": None,
+            "return_rva": 0x110B,
+            "stack_inputs": [{
+                "offset": 0,
+                "width": 4,
+                "value": {"op": "load", "address": stack_address, "width": 4},
+            }],
+            "abi_contract": {
+                "argument_words": 1,
+                "world_effect": "callbackRegistration",
+                "callback_source": {
+                    "kind": "argument_word",
+                    "argument": 0,
+                },
+                "callback_abi": {
+                    "kind": "generic_callback",
+                    "argument_words": 1,
+                    "stack_cleanup_bytes": 4,
+                    "nullable": True,
+                },
+            },
+        }
         units = [{
-            "id": "unit:register",
-            "source": {"original": {"rva_start": 0x1100}},
+            "id": "unit:registration",
             "semantics": {
-                "external_events": [{
-                    "kind": "external_call",
-                    "dll": "kernel32.dll",
-                    "symbol": "SetUnhandledExceptionFilter",
-                    "ordinal": None,
-                    "return_rva": 0x110B,
-                    "stack_inputs": [{
-                        "offset": 0,
-                        "width": 4,
-                        "value": {"op": "load", "address": stack_address, "width": 4},
-                    }],
-                    "abi_contract": {
-                        "world_effect": "callbackRegistration",
-                        "world_effect_argument": 0,
-                        "callback_abi": {"kind": "generic_callback"},
-                    },
-                }],
+                "external_events": [event],
                 "ordered_events": [
                     {
-                        "family": "memory",
                         "kind": "write",
                         "instruction_rva": 0x1100,
                         "address": stack_address,
                         "width": 4,
                         "value": {
                             "op": "const",
-                            "value": callback_va,
+                            "value": 0x400000 + callback_rva,
                             "width": 32,
                         },
                     },
-                    {
-                        "family": "external",
-                        "kind": "external_call",
-                        "instruction_rva": 0x1105,
-                        "dll": "kernel32.dll",
-                        "symbol": "SetUnhandledExceptionFilter",
-                        "ordinal": None,
-                        "return_rva": 0x110B,
-                    },
+                    {**event, "instruction_rva": 0x1105},
                 ],
             },
         }]
@@ -1134,9 +2026,10 @@ class ReconstructionIRTests(unittest.TestCase):
             ),),
         )
 
-        roots = _callback_registration_roots(binary, units)
+        roots = _local_callback_cutpoint_proposals(binary, units)
 
         self.assertEqual([root["rva"] for root in roots], [callback_rva])
+        self.assertFalse(roots[0]["proof_authority"])
 
     def test_callback_root_requires_a_reachable_registration_source(self) -> None:
         proposals = [

@@ -68,7 +68,7 @@ def X87LoadFormat.byteWidth : X87LoadFormat -> Nat
   | .float80 => 10
 
 inductive X87StoreFormat where
-  | float32 | float64 | float80 | int32
+  | float32 | float64 | float80 | int32 | int64
 deriving Repr, DecidableEq
 
 inductive X87UnaryOperation where
@@ -1932,6 +1932,7 @@ structure BulkCopyExpr where
   source : Expr
   count : Expr
   direction : BoolExpr
+  elementBytes : Nat
 deriving Repr, DecidableEq
 
 structure BulkFillExpr where
@@ -1939,6 +1940,7 @@ structure BulkFillExpr where
   value : Expr
   count : Expr
   direction : BoolExpr
+  elementBytes : Nat
 deriving Repr, DecidableEq
 
 structure BulkScanExpr where
@@ -1987,8 +1989,10 @@ inductive ConcreteOutcome where
   | call (targetRva returnRva returnAddress : Nat)
   | externalCall (imported : PEImport) (arguments : List Word) (returnRva : Nat)
   | externalJump (imported : PEImport) (arguments : List Word)
-  | bulkCopy (destination source count : Word) (direction : Bool) (continuationRva : Nat)
-  | bulkFill (destination value count : Word) (direction : Bool) (continuationRva : Nat)
+  | bulkCopy (destination source count : Word) (direction : Bool)
+      (elementBytes continuationRva : Nat)
+  | bulkFill (destination value count : Word) (direction : Bool)
+      (elementBytes continuationRva : Nat)
   | bulkScan (accumulator destination count : Word) (direction : Bool)
       (continuationRva : Nat)
   | indirectCall (target : Word) (continuationRva returnAddress : Nat)
@@ -2240,15 +2244,43 @@ def Memory.write32 (memory : Memory) (address value : Word) : Memory :=
     else if query = address + BitVec.ofNat 32 3 then value.extractLsb' 24 8
     else memory query
 
-def Memory.bulkFillDwords (memory : Memory) (destination value : Word)
-    (direction : Bool) : Nat -> Memory
+def Memory.readElement (memory : Memory) (elementBytes : Nat)
+    (address : Word) : Word :=
+  let byte0 := BitVec.zeroExtend 32 (memory address)
+  let byte1 := BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 1))
+  match elementBytes with
+  | 1 => byte0
+  | 2 => byte0 ||| byte1.shiftLeft 8
+  | _ =>
+      let byte2 := BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 2))
+      let byte3 := BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 3))
+      byte0 ||| byte1.shiftLeft 8 ||| byte2.shiftLeft 16 ||| byte3.shiftLeft 24
+
+def Memory.writeElement (memory : Memory) (elementBytes : Nat)
+    (address value : Word) : Memory :=
+  match elementBytes with
+  | 1 => fun query =>
+      if query = address then value.extractLsb' 0 8 else memory query
+  | 2 => fun query =>
+      if query = address then value.extractLsb' 0 8
+      else if query = address + BitVec.ofNat 32 1 then value.extractLsb' 8 8
+      else memory query
+  | _ => memory.write32 address value
+
+def Memory.bulkFillElements (memory : Memory) (elementBytes : Nat)
+    (destination value : Word) (direction : Bool) : Nat -> Memory
   | 0 => memory
   | count + 1 =>
-      let nextMemory := memory.write32 destination value
-      let distance := BitVec.ofNat 32 4
+      let nextMemory := memory.writeElement elementBytes destination value
+      let distance := BitVec.ofNat 32 elementBytes
       let nextDestination :=
         if direction then destination - distance else destination + distance
-      Memory.bulkFillDwords nextMemory nextDestination value direction count
+      Memory.bulkFillElements nextMemory elementBytes nextDestination value
+        direction count
+
+def Memory.bulkFillDwords (memory : Memory) (destination value : Word)
+    (direction : Bool) : Nat -> Memory
+  | count => memory.bulkFillElements 4 destination value direction count
 
 def applyWrites (state : MachineState) (writes : List (Expr × Expr)) : Memory :=
   writes.foldl (fun memory write => memory.write32 (write.1.eval state) (write.2.eval state)) state.memory
@@ -2372,10 +2404,11 @@ def SymbolicBehavior.eval (behavior : SymbolicBehavior)
         .externalJump imported (arguments.map (Expr.eval state))
     | .bulkCopy copy continuationRva =>
         .bulkCopy (copy.destination.eval state) (copy.source.eval state) (copy.count.eval state)
-          (copy.direction.eval state) continuationRva
+          (copy.direction.eval state) copy.elementBytes continuationRva
     | .bulkFill fill continuationRva =>
         .bulkFill (fill.destination.eval state) (fill.value.eval state)
-          (fill.count.eval state) (fill.direction.eval state) continuationRva
+          (fill.count.eval state) (fill.direction.eval state) fill.elementBytes
+          continuationRva
     | .bulkScan scan continuationRva =>
         .bulkScan (scan.accumulator.eval state) (scan.destination.eval state)
           (scan.count.eval state) (scan.direction.eval state) continuationRva
@@ -2602,13 +2635,18 @@ inductive Instruction where
   | x87Initialize
   | x87StoreStatusAx
   | x87Examine
+  | moveBytes (repeated : Bool)
+  | moveWords (repeated : Bool)
   | moveDwords (repeated : Bool)
+  | storeBytes (repeated : Bool)
+  | storeWords (repeated : Bool)
   | storeDwords (repeated : Bool)
   | scanByteNotEqual
   | callIndirect (target : Operand32)
   | jumpIndirect (target : Operand32)
   | pushOperand (source : Operand32)
   | movFs32 (destination : Reg) (source : Addressing)
+  | movToFs32 (destination : Addressing) (source : Reg)
   | divideUnsigned (source : Operand32)
   | divideSigned (source : Operand32)
   | atomicCompareExchange (destination : Addressing) (source : Reg)
@@ -2803,6 +2841,7 @@ def decodeX87MemoryInstruction (opcode : Nat) (bytes : Bytes) : Option DecodedIn
     | 0xdd, .ebx => some (.x87StoreMemory .float64 address true)
     | 0xdd, .esp => some (.x87RestoreState address)
     | 0xdd, .esi => some (.x87SaveState address)
+    | 0xdf, .edi => some (.x87StoreMemory .int64 address true)
     | 0xdb, .eax => some (.x87LoadMemory .int32 address)
     | 0xdb, .edx => some (.x87StoreMemory .int32 address false)
     | 0xdb, .ebx => some (.x87StoreMemory .int32 address true)
@@ -2862,6 +2901,8 @@ def decodeX87RegisterInstruction : Bytes -> Option DecodedInstruction
         decoded (.x87BinaryStack .multiply 0 (modrm - 0xc8) false)
       else if opcode == 0xd8 && 0xf0 <= modrm && modrm <= 0xf7 then
         decoded (.x87BinaryStack .divide 0 (modrm - 0xf0) false)
+      else if opcode == 0xd8 && 0xf8 <= modrm && modrm <= 0xff then
+        decoded (.x87BinaryStack .reverseDivide 0 (modrm - 0xf8) false)
       else if opcode == 0xdc && 0xc8 <= modrm && modrm <= 0xcf then
         decoded (.x87BinaryStack .multiply (modrm - 0xc8) 0 false)
       else if opcode == 0xde && 0xc0 <= modrm && modrm <= 0xc7 then
@@ -3137,6 +3178,10 @@ def decodeGenericInstruction : Bytes -> Option DecodedInstruction
         | 0x39 => decodedModRM (fun parsed => some (.binary .compare parsed.operand (.register parsed.reg))) tail
         | 0x85 => decodedModRM (fun parsed => some (.binary .test parsed.operand (.register parsed.reg))) tail
         | 0x84 => decodedModRM8 (fun parsed => some (.binary8 .test parsed.operand (.register parsed.reg))) tail
+        | 0x00 => decodedModRM8 (fun parsed => some (.binary8 .add parsed.operand (.register parsed.reg))) tail
+        | 0x02 => decodedModRM8 (fun parsed => some (.binary8 .add (.register parsed.reg) parsed.operand)) tail
+        | 0x28 => decodedModRM8 (fun parsed => some (.binary8 .sub parsed.operand (.register parsed.reg))) tail
+        | 0x2a => decodedModRM8 (fun parsed => some (.binary8 .sub (.register parsed.reg) parsed.operand)) tail
         | 0x08 => decodedModRM8 (fun parsed => some (.binary8 .or parsed.operand (.register parsed.reg))) tail
         | 0x3a => decodedModRM8 (fun parsed => some (.binary8 .compare (.register parsed.reg) parsed.operand)) tail
         | 0x38 => decodedModRM8 (fun parsed => some (.binary8 .compare parsed.operand (.register parsed.reg))) tail
@@ -3320,11 +3365,17 @@ def decodeInstructionForProfile
     (profile : X86CPUProfile) : Bytes -> Option DecodedInstruction
   | 0x90 :: tail => some { instruction := .nop, size := 1, trailing := tail }
   | 0x9b :: tail => some { instruction := .x87Wait, size := 1, trailing := tail }
+  | 0xf3 :: 0xa4 :: tail => some { instruction := .moveBytes true, size := 2, trailing := tail }
   | 0xf3 :: 0xa5 :: tail => some { instruction := .moveDwords true, size := 2, trailing := tail }
+  | 0xf3 :: 0xaa :: tail => some { instruction := .storeBytes true, size := 2, trailing := tail }
   | 0xf3 :: 0xab :: tail => some { instruction := .storeDwords true, size := 2, trailing := tail }
   | 0xf2 :: 0xae :: tail => some { instruction := .scanByteNotEqual, size := 2, trailing := tail }
+  | 0xa4 :: tail => some { instruction := .moveBytes false, size := 1, trailing := tail }
   | 0xa5 :: tail => some { instruction := .moveDwords false, size := 1, trailing := tail }
+  | 0xaa :: tail => some { instruction := .storeBytes false, size := 1, trailing := tail }
   | 0xab :: tail => some { instruction := .storeDwords false, size := 1, trailing := tail }
+  | 0x66 :: 0xa5 :: tail => some { instruction := .moveWords false, size := 2, trailing := tail }
+  | 0x66 :: 0xab :: tail => some { instruction := .storeWords false, size := 2, trailing := tail }
   | 0x64 :: 0x8b :: tail => do
       let parsed <- parseModRM tail
       let source <-
@@ -3333,6 +3384,17 @@ def decodeInstructionForProfile
         | .register _ | .immediate _ => none
       pure {
         instruction := .movFs32 parsed.reg source
+        size := 2 + parsed.size
+        trailing := parsed.trailing
+      }
+  | 0x64 :: 0x89 :: tail => do
+      let parsed <- parseModRM tail
+      let destination <-
+        match parsed.operand with
+        | .memory destination => some destination
+        | .register _ | .immediate _ => none
+      pure {
+        instruction := .movToFs32 destination parsed.reg
         size := 2 + parsed.size
         trailing := parsed.trailing
       }
@@ -3950,6 +4012,10 @@ def executeInstructionWithContext (context : SymbolicImageContext)
   | .movFs32 destination source =>
       let address := Expr.addNormalized (.inputFsBase) (source.expression state.registers)
       some (.next { state with registers := state.registers.set destination (symbolicRead32 state address) })
+  | .movToFs32 destination source =>
+      let address := Expr.addNormalized (.inputFsBase)
+        (destination.expression state.registers)
+      some (.next (state.write32 address (state.registers.get source)))
   | .popReg destination =>
       let value := symbolicRead32 state state.registers.esp
       let stack := state.registers.esp.offset 4
@@ -4518,7 +4584,8 @@ def executeInstructionWithContext (context : SymbolicImageContext)
       let next := state.write32 address (.x87Part converted 0)
       let next :=
         match format with
-        | .float64 | .float80 => next.write32 (address.offset 4) (.x87Part converted 1)
+        | .float64 | .float80 | .int64 =>
+            next.write32 (address.offset 4) (.x87Part converted 1)
         | .float32 | .int32 => next
       let destinationHigh : Operand32 := .memory {
         base := destination.base
@@ -4532,6 +4599,7 @@ def executeInstructionWithContext (context : SymbolicImageContext)
         | .float32 => some next
         | .float64 => some next
         | .int32 => some next
+        | .int64 => some next
       let nextX87 <- if pop then next.x87.pop else some next.x87
       some (.next { next with x87 := nextX87 })
   | .x87BinaryMemory operation format source => do
@@ -4565,12 +4633,18 @@ def executeInstructionWithContext (context : SymbolicImageContext)
       some (.next { state with x87 := {
         state.x87 with status := .x87ExamineStatus top state.x87.status
       } })
-  | .moveDwords repeated =>
+  | .moveBytes repeated | .moveWords repeated | .moveDwords repeated =>
+      let elementBytes :=
+        match decoded.instruction with
+        | .moveBytes _ => 1
+        | .moveWords _ => 2
+        | .moveDwords _ => 4
+        | _ => 0
       let destination := state.registers.edi
       let source := state.registers.esi
       let count := if repeated then state.registers.ecx else Expr.constant 1
       let direction := BoolExpr.bit state.eflagsExpression 10
-      let distance := Expr.multiply count (.constant 4)
+      let distance := Expr.multiply count (.constant elementBytes)
       let nextDestination := .ifEqual direction.toWord (.constant 1)
         (Expr.subNormalized destination distance) (Expr.addNormalized destination distance)
       let nextSource := .ifEqual direction.toWord (.constant 1)
@@ -4580,14 +4654,22 @@ def executeInstructionWithContext (context : SymbolicImageContext)
       some (.stop {
         state with
         registers
-        outcome := some (.bulkCopy { destination, source, count, direction } nextRva)
+        outcome := some (.bulkCopy {
+          destination, source, count, direction, elementBytes
+        } nextRva)
       })
-  | .storeDwords repeated =>
+  | .storeBytes repeated | .storeWords repeated | .storeDwords repeated =>
+      let elementBytes :=
+        match decoded.instruction with
+        | .storeBytes _ => 1
+        | .storeWords _ => 2
+        | .storeDwords _ => 4
+        | _ => 0
       let destination := state.registers.edi
       let value := state.registers.eax
       let count := if repeated then state.registers.ecx else Expr.constant 1
       let direction := BoolExpr.bit state.eflagsExpression 10
-      let distance := Expr.multiply count (.constant 4)
+      let distance := Expr.multiply count (.constant elementBytes)
       let nextDestination := .ifEqual direction.toWord (.constant 1)
         (Expr.subNormalized destination distance)
         (Expr.addNormalized destination distance)
@@ -4602,6 +4684,7 @@ def executeInstructionWithContext (context : SymbolicImageContext)
           value
           count
           direction
+          elementBytes
         } nextRva)
       })
   | .scanByteNotEqual =>

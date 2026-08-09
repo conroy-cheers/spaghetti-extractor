@@ -320,7 +320,7 @@ def recover_static_pe32_jump_table_inventory(
         allowed_targets = frozenset(int(value) for value in values)
 
     entries: list[dict[str, Any]] = []
-    table_bytes_by_index: list[tuple[int, bytes]] = []
+    table_bytes_by_index: list[tuple[int, int, bytes]] = []
     for index in index_values:
         entry_address = (table_address + index * 4) & 0xFFFFFFFF
         entry_resolution = _resolve_section_address(
@@ -369,7 +369,7 @@ def recover_static_pe32_jump_table_inventory(
                 "unreadable_table",
                 "jump-table reader did not return one exact entry",
             )
-        table_bytes_by_index.append((index, raw))
+        table_bytes_by_index.append((index, entry_rva, raw))
         target_address = int.from_bytes(raw, "little")
         resolution = _resolve_section_address(
             target_address,
@@ -410,10 +410,17 @@ def recover_static_pe32_jump_table_inventory(
         range(entry_rvas[0], entry_rvas[0] + len(entry_rvas) * 4, 4)
     )
     contiguous_from_zero = index_values == list(range(len(index_values)))
-    table_bytes = b"".join(raw for _index, raw in table_bytes_by_index)
+    # The range hash always follows ascending address order.  The inventory hash
+    # separately preserves semantic index order, including wrapped negative
+    # indices represented as uint32 values.
+    table_bytes = b"".join(
+        raw for _index, _entry_rva, raw in sorted(
+            table_bytes_by_index, key=lambda item: item[1]
+        )
+    )
     table_inventory = b"".join(
         index.to_bytes(4, "little") + raw
-        for index, raw in table_bytes_by_index
+        for index, _entry_rva, raw in table_bytes_by_index
     )
     return {
         "status": "recovered",
@@ -602,6 +609,120 @@ def derive_rooted_reachable_units(
             "unresolved_frontiers": len(frontiers),
         },
     }
+
+
+def classify_overlapping_instruction_starts(
+    *,
+    units: Sequence[Mapping[str, Any]],
+    reachable_unit_ids: Iterable[str],
+    target_sources: Mapping[int, Sequence[str]] | None = None,
+) -> dict[str, Any]:
+    """Classify speculative unit starts inside rooted exact instructions.
+
+    An x86 decoder may propose overlapping views, so overlap alone is not proof
+    that one view is dead.  Only a non-reachable, independently untargeted view
+    may be excluded.  If both views are rooted or a checked control source names
+    the inner start, the ambiguity is retained as a conflict.
+    """
+
+    reached = {str(unit_id) for unit_id in reachable_unit_ids}
+    targets = {
+        int(rva): tuple(sorted({str(source) for source in sources}))
+        for rva, sources in (target_sources or {}).items()
+    }
+    instructions: list[dict[str, Any]] = []
+    for unit in units:
+        unit_id = str(unit.get("id"))
+        if unit_id not in reached:
+            continue
+        for instruction in unit.get("instructions", []):
+            if not isinstance(instruction, Mapping):
+                continue
+            start = instruction.get("rva_start", instruction.get("rva"))
+            end = instruction.get("rva_end")
+            if (
+                end is None
+                and isinstance(start, int)
+                and isinstance(instruction.get("size"), int)
+            ):
+                end = start + int(instruction["size"])
+            if (
+                not isinstance(start, int)
+                or isinstance(start, bool)
+                or not isinstance(end, int)
+                or isinstance(end, bool)
+                or not 0 <= start < end <= 2**32
+            ):
+                continue
+            instructions.append({
+                "owner_unit_id": unit_id,
+                "rva_start": start,
+                "rva_end": end,
+                "instruction_sha256": instruction.get("instruction_sha256"),
+            })
+
+    excluded: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    for unit in units:
+        unit_id = str(unit.get("id"))
+        start = _unit_start_rva(unit)
+        if start is None:
+            continue
+        owners = [
+            instruction
+            for instruction in instructions
+            if instruction["owner_unit_id"] != unit_id
+            and instruction["rva_start"] < start < instruction["rva_end"]
+        ]
+        if not owners:
+            continue
+        evidence = sorted(
+            owners,
+            key=lambda row: (
+                int(row["rva_start"]),
+                int(row["rva_end"]),
+                str(row["owner_unit_id"]),
+            ),
+        )
+        row = {
+            "unit_id": unit_id,
+            "rva": start,
+            "instruction_evidence": evidence,
+        }
+        if unit_id in reached or start in targets:
+            conflicts.append({
+                **row,
+                "code": "independent_target_inside_reachable_instruction",
+                "target_sources": list(targets.get(start, ())),
+            })
+        else:
+            excluded.append({
+                **row,
+                "reason": "starts_inside_rooted_reachable_instruction",
+            })
+    excluded.sort(key=lambda row: (int(row["rva"]), str(row["unit_id"])))
+    conflicts.sort(key=lambda row: (int(row["rva"]), str(row["unit_id"])))
+    return {
+        "format": "stage-a-overlapping-instruction-start-classification-v1",
+        "status": "violated" if conflicts else "complete",
+        "excluded_units": excluded,
+        "conflicts": conflicts,
+        "counts": {
+            "reachable_instructions": len(instructions),
+            "excluded_units": len(excluded),
+            "conflicts": len(conflicts),
+        },
+    }
+
+
+def _unit_start_rva(unit: Mapping[str, Any]) -> int | None:
+    direct = unit.get("rva")
+    if isinstance(direct, int) and not isinstance(direct, bool):
+        return direct
+    source = unit.get("source")
+    original = source.get("original") if isinstance(source, Mapping) else None
+    start = original.get("rva_start") if isinstance(original, Mapping) else None
+    return start if isinstance(start, int) and not isinstance(start, bool) else None
 
 
 def propose_semantic_clusters(
@@ -1315,6 +1436,90 @@ def _indirect_external_targets(
             kind = protocol.get("kind")
             profile_id = protocol.get("profile_id")
             profile_sha256 = protocol.get("profile_sha256")
+            if kind == "pe32-resolved-export":
+                target_id = protocol.get("target_id")
+                transfer_kind = protocol.get("transfer_kind")
+                target = _canonical_import_identity(protocol.get("target"))
+                resolver = _canonical_import_identity(
+                    protocol.get("resolver_import")
+                )
+                loader = _canonical_import_identity(
+                    protocol.get("loader_import")
+                )
+                module = protocol.get("module")
+                name = protocol.get("name")
+                abi = raw.get("abi")
+                argument_words = raw.get("argument_words")
+                contract = protocol.get("machine_contract")
+                expected_abi = (
+                    resolve_machine_call_abi(abi.get("template"))
+                    if isinstance(abi, Mapping)
+                    else None
+                )
+                arity = (
+                    contract.get("arity")
+                    if isinstance(contract, Mapping)
+                    else None
+                )
+                effect = (
+                    contract.get("effect_model")
+                    if isinstance(contract, Mapping)
+                    else None
+                )
+                if (
+                    not _profile_identity(profile_id, profile_sha256)
+                    or not _is_u32(target_id)
+                    or transfer_kind not in {"call", "jump"}
+                    or target is None
+                    or resolver is None
+                    or loader is None
+                    or not isinstance(module, str)
+                    or not module
+                    or not isinstance(name, str)
+                    or not name
+                    or expected_abi is None
+                    or dict(abi) != expected_abi.as_json()
+                    or not isinstance(argument_words, int)
+                    or isinstance(argument_words, bool)
+                    or not 0 <= argument_words <= 64
+                    or not isinstance(contract, Mapping)
+                    or _canonical_import_identity(contract.get("import")) != target
+                    or contract.get("abi_template") != abi.get("template")
+                    or not isinstance(arity, Mapping)
+                    or arity.get("kind") != "fixed"
+                    or arity.get("words") != argument_words
+                    or not isinstance(effect, Mapping)
+                    or effect.get("kind") != "exact_native_dll_callthrough_v1"
+                    or effect.get("prerequisites")
+                    != {
+                        "same_pinned_dll_implementation": True,
+                        "exact_machine_arguments": True,
+                        "candidate_address_space_used_directly": True,
+                    }
+                    or contract.get("memory_effect") != "nativeCallthrough"
+                    or contract.get("world_effect") != "nativeCallthrough"
+                    or contract.get("callback_effect") != "none"
+                    or not isinstance(contract.get("memory_footprints"), list)
+                    or not isinstance(
+                        contract.get("result_register_relations"), list
+                    )
+                    or raw.get("out_interfaces") != []
+                ):
+                    return None
+                result.add((
+                    "resolved_export",
+                    str(profile_id),
+                    str(profile_sha256),
+                    int(target_id),
+                    str(transfer_kind),
+                    target,
+                    resolver,
+                    loader,
+                    module,
+                    name,
+                    json.dumps(contract, sort_keys=True, separators=(",", ":")),
+                ))
+                continue
             if kind == "pe32-operation":
                 operation_id = protocol.get("operation_id")
                 transfer_kind = protocol.get("transfer_kind")
@@ -1431,6 +1636,23 @@ def canonical_indirect_external_targets(
     """Validate and canonicalize every external alternative fail closed."""
 
     return _indirect_external_targets(record)
+
+
+def _canonical_import_identity(value: Any) -> tuple[Any, ...] | None:
+    if not isinstance(value, Mapping):
+        return None
+    dll = value.get("dll")
+    symbol = value.get("symbol")
+    ordinal = value.get("ordinal")
+    has_symbol = isinstance(symbol, str) and bool(symbol)
+    has_ordinal = _is_u32(ordinal)
+    if not isinstance(dll, str) or not dll or has_symbol == has_ordinal:
+        return None
+    return (
+        dll.lower(),
+        "symbol" if has_symbol else "ordinal",
+        str(symbol) if has_symbol else int(ordinal),
+    )
 
 
 def _profile_identity(profile_id: Any, profile_sha256: Any) -> bool:

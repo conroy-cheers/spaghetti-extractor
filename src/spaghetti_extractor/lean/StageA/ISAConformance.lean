@@ -53,9 +53,9 @@ inductive ISAConformanceControl where
   | externalCall (imported : PEImport) (arguments : List Nat) (returnRva : Nat)
   | externalJump (imported : PEImport) (arguments : List Nat)
   | bulkCopy (destination source count : Nat) (direction : Bool)
-      (continuationRva : Nat)
+      (elementBytes continuationRva : Nat)
   | bulkFill (destination value count : Nat) (direction : Bool)
-      (continuationRva : Nat)
+      (elementBytes continuationRva : Nat)
   | bulkScan (accumulator destination count : Nat) (direction : Bool)
       (continuationRva : Nat)
   | indirectCall (target : Nat) (continuationRva returnAddress : Nat)
@@ -285,11 +285,12 @@ def concreteOutcomeToISAConformanceControl :
       .externalCall imported (arguments.map BitVec.toNat) returnRva
   | .externalJump imported arguments =>
       .externalJump imported (arguments.map BitVec.toNat)
-  | .bulkCopy destination source count direction continuationRva =>
-      .bulkCopy destination.toNat source.toNat count.toNat direction continuationRva
-  | .bulkFill destination value count direction continuationRva =>
-      .bulkFill destination.toNat value.toNat count.toNat direction
+  | .bulkCopy destination source count direction elementBytes continuationRva =>
+      .bulkCopy destination.toNat source.toNat count.toNat direction elementBytes
         continuationRva
+  | .bulkFill destination value count direction elementBytes continuationRva =>
+      .bulkFill destination.toNat value.toNat count.toNat direction
+        elementBytes continuationRva
   | .bulkScan accumulator destination count direction continuationRva =>
       .bulkScan accumulator.toNat destination.toNat count.toNat direction
         continuationRva
@@ -318,29 +319,29 @@ def isaConformanceRead32 (memory : Memory) (address : Word) : Word :=
   }
   state.read32 address
 
-def isaConformanceBulkCopyDwords (memory : Memory)
+def isaConformanceBulkCopyElements (memory : Memory) (elementBytes : Nat)
     (destination source : Word) (direction : Bool) : Nat -> Memory
   | 0 => memory
   | count + 1 =>
-      let nextMemory := memory.write32 destination
-        (isaConformanceRead32 memory source)
-      let distance := BitVec.ofNat 32 4
+      let nextMemory := memory.writeElement elementBytes destination
+        (memory.readElement elementBytes source)
+      let distance := BitVec.ofNat 32 elementBytes
       let nextDestination :=
         if direction then destination - distance else destination + distance
       let nextSource :=
         if direction then source - distance else source + distance
-      isaConformanceBulkCopyDwords nextMemory nextDestination nextSource
-        direction count
+      isaConformanceBulkCopyElements nextMemory elementBytes nextDestination
+        nextSource direction count
 
 def ConcreteBehavior.materializedMemory
     (behavior : ConcreteBehavior) : Memory :=
   match behavior.outcome with
-  | some (.bulkCopy destination source count direction _) =>
-      isaConformanceBulkCopyDwords behavior.memory destination source direction
-        count.toNat
-  | some (.bulkFill destination value count direction _) =>
-      Memory.bulkFillDwords behavior.memory destination value direction
-        count.toNat
+  | some (.bulkCopy destination source count direction elementBytes _) =>
+      isaConformanceBulkCopyElements behavior.memory elementBytes destination
+        source direction count.toNat
+  | some (.bulkFill destination value count direction elementBytes _) =>
+      Memory.bulkFillElements behavior.memory elementBytes destination value
+        direction count.toNat
   | _ => behavior.memory
 
 def ConcreteBehavior.materializedRegisters

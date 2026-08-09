@@ -1,0 +1,297 @@
+from __future__ import annotations
+
+import copy
+import hashlib
+import struct
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+
+from spaghetti_extractor.global_slot_authority_v2 import (
+    GLOBAL_SLOT_AUTHORITY_V2_FORMAT,
+    apply_global_slot_authority_v2,
+    build_global_slot_authority_v2,
+)
+from spaghetti_extractor.global_slot_contract_v2 import GlobalSlotInvariant
+from spaghetti_extractor.authority_bindings_v2 import canonical_json_bytes
+from spaghetti_extractor.global_slot_image_v2 import (
+    GlobalSlotImageV2Error,
+    validate_global_slot_invariant_binding_v2,
+)
+from spaghetti_extractor.stage_binary import _parse_stage_a_pe
+from tests.pe_fixtures import pe32_image_with_writable_data
+
+from tests.test_global_slot_analysis_v2 import (
+    IMAGE_BASE,
+    IMAGE_SIZE,
+    SLOT,
+    _analyze,
+    _checked_access_facts,
+    _const,
+    _graph,
+    _read,
+    _reg,
+    _unit,
+    _write,
+)
+
+
+PE_SHA256 = "a" * 64
+
+
+def _provenance(*, slot: int = SLOT) -> dict:
+    return {
+        "format": "stage-a-external-interface-provenance-v1",
+        "proof_authority": False,
+        "static_interface_slots": [{"address": slot}],
+        "rejected_tainted_slots": [],
+        "callback_registrations": [],
+    }
+
+
+class GlobalSlotAuthorityV2Tests(unittest.TestCase):
+    def _writable_data_binary(self, *, relocated: bool = False):
+        raw = bytearray(pe32_image_with_writable_data(
+            b"\xc3",
+            relocation_offsets=[0] if relocated else [],
+            relocation_page_rva=0x2000,
+        ))
+        struct.pack_into("<I", raw, 0x400, 0x401000)
+        temporary = tempfile.TemporaryDirectory()
+        path = Path(temporary.name) / "fixture.exe"
+        path.write_bytes(raw)
+        return temporary, _parse_stage_a_pe(path)
+
+    def test_complete_replay_promotes_one_typed_invariant(self) -> None:
+        units = [_unit("init", 0x1000, [_write(_const(0x401020)), _read()])]
+        analysis = _analyze(units, _graph(units))
+
+        authority = build_global_slot_authority_v2(
+            provenance=_provenance(),
+            global_slot_analysis=analysis,
+            units=units,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+
+        self.assertEqual(authority["format"], GLOBAL_SLOT_AUTHORITY_V2_FORMAT)
+        self.assertEqual(authority["status"], "complete", authority["issues"])
+        self.assertEqual(len(authority["global_slot_invariants"]), 1)
+        self.assertFalse(authority["constraints"]["tainted_slots_exported"])
+        fresh = apply_global_slot_authority_v2(
+            {
+                **_provenance(),
+                "callback_registrations": [{"id": "registration"}],
+            },
+            authority,
+        )
+        self.assertEqual(fresh["callback_registrations"], [{"id": "registration"}])
+        self.assertEqual(len(fresh["static_interface_slots"]), 1)
+
+    def test_incomplete_or_tainted_evidence_is_not_exported(self) -> None:
+        units = [_unit(
+            "entry",
+            0x1000,
+            [_write(_reg("eax")), _read()],
+        )]
+        analysis = _analyze(units, _graph(units))
+        provenance = _provenance()
+        provenance["rejected_tainted_slots"] = [{
+            "kind": "static",
+            "address": SLOT,
+        }]
+
+        authority = build_global_slot_authority_v2(
+            provenance=provenance,
+            global_slot_analysis=analysis,
+            units=units,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+
+        self.assertEqual(authority["status"], "complete")
+        self.assertEqual(authority["global_slot_invariants"], [])
+        self.assertEqual(
+            authority["authoritative_provenance"]["rejected_tainted_slots"], []
+        )
+
+    def test_corrupted_analysis_hash_is_violated(self) -> None:
+        units = [_unit("init", 0x1000, [_write(_const(1)), _read()])]
+        analysis = _analyze(units, _graph(units))
+        corrupted = copy.deepcopy(analysis)
+        corrupted["analysis_sha256"] = "0" * 64
+
+        authority = build_global_slot_authority_v2(
+            provenance=_provenance(),
+            global_slot_analysis=corrupted,
+            units=units,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+
+        self.assertEqual(authority["status"], "violated")
+        self.assertIn(
+            "global_slot_analysis_hash_mismatch",
+            {row["code"] for row in authority["issues"]},
+        )
+
+    def test_recomputed_outer_hash_cannot_hide_stale_memory_event_binding(self) -> None:
+        units = [_unit(
+            "entry",
+            0x1000,
+            [_write(_const(7), address=_reg("eax"))],
+        )]
+        facts = _checked_access_facts(
+            units,
+            origin={"kind": "stack_location", "key": [12]},
+        )
+        analysis = _analyze(
+            units,
+            _graph(units),
+            launch_initial_values={SLOT: 0},
+            checked_access_facts=facts,
+        )
+        corrupted = copy.deepcopy(analysis)
+        corrupted["checked_memory_access_facts"][0]["binding"][
+            "event_sha256"
+        ] = "0" * 64
+        body = dict(corrupted)
+        body.pop("analysis_sha256")
+        corrupted["analysis_sha256"] = hashlib.sha256(
+            canonical_json_bytes(body)
+        ).hexdigest()
+
+        authority = build_global_slot_authority_v2(
+            provenance=_provenance(),
+            global_slot_analysis=corrupted,
+            units=units,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+
+        self.assertEqual(authority["status"], "violated")
+        self.assertIn(
+            "checked_memory_access_binding_invalid",
+            {row["code"] for row in authority["issues"]},
+        )
+
+    def test_launch_initialized_writable_slot_binds_exact_pe_bytes(self) -> None:
+        temporary, binary = self._writable_data_binary()
+        self.addCleanup(temporary.cleanup)
+        self.addCleanup(binary.pe.close)
+        slot = binary.image_base + 0x2000
+        units = [_unit("read", 0x1000, [_read(_const(slot))])]
+        analysis = _analyze(
+            units,
+            _graph(units),
+            launch_initial_values={slot: 0x401000},
+            slot=slot,
+        )
+
+        authority = build_global_slot_authority_v2(
+            provenance=_provenance(slot=slot),
+            global_slot_analysis=analysis,
+            units=units,
+            pe_sha256=binary.sha256,
+            machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+            image_base=binary.image_base,
+            size_of_image=binary.size_of_image,
+            original_binary=binary,
+        )
+
+        self.assertEqual(authority["status"], "complete", authority["issues"])
+        invariant = GlobalSlotInvariant.parse(
+            authority["global_slot_invariants"][0]
+        )
+        self.assertEqual(invariant.binding.to_payload()["kind"], "image_span")
+        validate_global_slot_invariant_binding_v2(
+            invariant,
+            binary=binary,
+            machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+            units=units,
+        )
+
+        corrupted = replace(
+            invariant,
+            binding=replace(invariant.binding, initial_bytes_sha256="0" * 64),
+        )
+        with self.assertRaises(GlobalSlotImageV2Error):
+            validate_global_slot_invariant_binding_v2(
+                corrupted,
+                binary=binary,
+                machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+                units=units,
+            )
+
+    def test_launch_slot_records_highlow_relocation(self) -> None:
+        temporary, binary = self._writable_data_binary(relocated=True)
+        self.addCleanup(temporary.cleanup)
+        self.addCleanup(binary.pe.close)
+        slot = binary.image_base + 0x2000
+        units = [_unit("read", 0x1000, [_read(_const(slot))])]
+        analysis = _analyze(
+            units,
+            _graph(units),
+            launch_initial_values={slot: 0x401000},
+            slot=slot,
+        )
+
+        authority = build_global_slot_authority_v2(
+            provenance=_provenance(slot=slot),
+            global_slot_analysis=analysis,
+            units=units,
+            pe_sha256=binary.sha256,
+            machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+            image_base=binary.image_base,
+            size_of_image=binary.size_of_image,
+            original_binary=binary,
+        )
+
+        self.assertEqual(authority["status"], "complete", authority["issues"])
+        self.assertEqual(
+            authority["global_slot_invariants"][0]["binding"]["relocation_kind"],
+            "pe32_highlow",
+        )
+
+    def test_launch_value_contradicting_pe_bytes_is_violated(self) -> None:
+        temporary, binary = self._writable_data_binary()
+        self.addCleanup(temporary.cleanup)
+        self.addCleanup(binary.pe.close)
+        slot = binary.image_base + 0x2000
+        units = [_unit("read", 0x1000, [_read(_const(slot))])]
+        analysis = _analyze(
+            units,
+            _graph(units),
+            launch_initial_values={slot: 0xDEADBEEF},
+            slot=slot,
+        )
+
+        authority = build_global_slot_authority_v2(
+            provenance=_provenance(slot=slot),
+            global_slot_analysis=analysis,
+            units=units,
+            pe_sha256=binary.sha256,
+            machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+            image_base=binary.image_base,
+            size_of_image=binary.size_of_image,
+            original_binary=binary,
+        )
+
+        self.assertEqual(authority["status"], "violated")
+        self.assertIn(
+            "global_slot_launch_value_contradiction",
+            {row["code"] for row in authority["issues"]},
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

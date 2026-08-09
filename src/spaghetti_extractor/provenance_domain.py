@@ -16,6 +16,8 @@ PROVENANCE_KINDS = frozenset({
     "static_code",
     "static_data",
     "stack_location",
+    "dynamic_range",
+    "dynamic_location",
     "import",
     "resource",
     "resource_view",
@@ -27,8 +29,38 @@ PROVENANCE_KINDS = frozenset({
     "operation_target",
     "guarded_operation_target",
     "callback",
+    "callback_token",
+    "loaded_module",
+    "resolved_export",
+    # Internal analysis witness for an arbitrary 32-bit value expressed as a
+    # canonical affine form over entry-state symbols.  It may establish value
+    # and address equality inside a checked replay, but is never itself a
+    # callable-target or persistent-global fact.
+    "symbolic_affine",
     # Compatibility spellings used while the interface-specific analysis is
     # migrated onto the operation vocabulary.
+    "interface_object",
+    "interface_vtable",
+    "interface_slot",
+    "interface_method",
+})
+
+PERSISTENT_ORIGIN_KINDS = frozenset({
+    "exact",
+    "import",
+    "static_code",
+    "static_data",
+    "dynamic_range",
+    "dynamic_location",
+    "resource",
+    "resource_view",
+    "operation_table",
+    "operation_slot",
+    "operation_target",
+    "callback",
+    "callback_token",
+    "loaded_module",
+    "resolved_export",
     "interface_object",
     "interface_vtable",
     "interface_slot",
@@ -42,16 +74,41 @@ class ValueOrigin:
 
     kind: str
     key: tuple[Any, ...]
+    dependencies: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind not in PROVENANCE_KINDS:
             raise ValueError(f"unsupported value-origin kind {self.kind!r}")
+        if (
+            tuple(sorted(set(self.dependencies))) != self.dependencies
+            or any(not value for value in self.dependencies)
+        ):
+            raise ValueError("value-origin dependencies must be sorted unique IDs")
 
     def as_json(self) -> dict[str, Any]:
-        return {"kind": self.kind, "key": list(self.key)}
+        result = {"kind": self.kind, "key": list(self.key)}
+        if self.dependencies:
+            result["authority_dependencies"] = list(self.dependencies)
+        return result
 
 
 FiniteValue = frozenset[ValueOrigin] | None
+
+
+def is_persistent_origin(origin: ValueOrigin) -> bool:
+    """Whether one origin may be retained as a checked memory fact."""
+
+    return origin.kind in PERSISTENT_ORIGIN_KINDS
+
+
+def origin_concrete_value(origin: ValueOrigin) -> int | None:
+    """Return the exact machine value carried by a concrete origin."""
+
+    if origin.kind == "exact" and len(origin.key) == 1:
+        return int(origin.key[0]) & 0xFFFFFFFF
+    if origin.kind in {"static_code", "static_data"} and len(origin.key) == 2:
+        return int(origin.key[0]) & 0xFFFFFFFF
+    return None
 
 
 def finite_value(origins: Iterable[ValueOrigin], budget: int) -> FiniteValue:
@@ -81,11 +138,43 @@ def origins_json(value: FiniteValue) -> list[dict[str, Any]] | None:
     return None if value is None else [origin.as_json() for origin in sorted(value)]
 
 
+def with_origin_dependencies(
+    origin: ValueOrigin, dependencies: Iterable[str]
+) -> ValueOrigin:
+    combined = tuple(sorted(set(origin.dependencies) | set(dependencies)))
+    return (
+        origin
+        if combined == origin.dependencies
+        else ValueOrigin(origin.kind, origin.key, combined)
+    )
+
+
+def with_value_dependencies(
+    value: FiniteValue, dependencies: Iterable[str]
+) -> FiniteValue:
+    required = tuple(sorted(set(dependencies)))
+    if value is None or not required:
+        return value
+    return frozenset(with_origin_dependencies(origin, required) for origin in value)
+
+
+def value_dependencies(value: FiniteValue) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    return tuple(sorted({item for origin in value for item in origin.dependencies}))
+
+
 __all__ = [
     "FiniteValue",
+    "PERSISTENT_ORIGIN_KINDS",
     "PROVENANCE_KINDS",
     "ValueOrigin",
     "finite_value",
     "join_finite_values",
+    "is_persistent_origin",
+    "origin_concrete_value",
     "origins_json",
+    "value_dependencies",
+    "with_origin_dependencies",
+    "with_value_dependencies",
 ]

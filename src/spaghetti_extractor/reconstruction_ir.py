@@ -19,26 +19,27 @@ from typing import Any, Iterable, Mapping, Sequence
 import capstone
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
-from .external_interface_profiles import (
-    ExternalInterfaceProfile,
-    load_external_interface_profile,
-)
-from .external_operation_profiles import (
-    ExternalOperationProfile,
-    load_external_operation_profile,
-)
+from .callback_contracts import parse_callback_source
+from .authority_bindings_v2 import indirect_exit_id_v2
 from .finite_value_domain import FiniteU32Dataflow
-from .import_abi import SelectedImportABI, load_selected_import_abis
-from .interface_provenance import recover_external_interface_targets
-from .internal_call_summaries import derive_internal_call_preservation_summaries
-from .machine_import_profiles import MachineImportIdentity
-from .operation_provenance import operation_provenance_view
+from .indirect_target_dependency_v2 import (
+    build_bounded_selector_dependency_v2,
+)
+from .machine_ir_authority_v2 import build_machine_ir_authority_bindings
 from .reconstruction_control import (
     canonical_indirect_external_targets,
+    classify_overlapping_instruction_starts,
     derive_rooted_reachable_units,
     pe32_jump_table_index_expression,
     recover_static_pe32_jump_table_inventory,
 )
+from .recovered_executable_data import (
+    RECOVERED_EXECUTABLE_DATA_FILENAME,
+    RECOVERED_EXECUTABLE_DATA_FORMAT,
+    build_recovered_executable_data_contract,
+    recover_executable_data_ranges,
+)
+from .reconstruction_validation import check_straight_line_semantic_claim
 from .stage_b_state_machine import (
     STAGE_A_REFERENCE_CONTRACT_FORMAT,
     STAGE_B_STATE_MACHINE_FORMAT,
@@ -46,8 +47,12 @@ from .stage_b_state_machine import (
     normalize_stage_a_semantic_transfer,
 )
 from .stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
+from .static_indirect_replay_v2 import (
+    bounded_predecessor_instruction_history as _bounded_predecessor_instruction_history,
+    direct_predecessors_by_target as _direct_predecessors_by_target,
+    indirect_predecessor_evidence as _indirect_predecessor_evidence,
+)
 from .util import sha256_bytes, sha256_file, write_json
-from .value_provenance import legacy_value_provenance_view
 
 
 MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
@@ -58,6 +63,9 @@ PREPARED_MACHINE_IR_FILENAME = "prepared-machine-ir.jsonl"
 PREPARED_MACHINE_IR_MANIFEST_FILENAME = "prepared-machine-ir-manifest.json"
 X87_MICRO_OP_FORMAT = "stage-a-x87-micro-op-v1"
 INDIRECT_TARGET_PROFILE_FORMAT = "stage-a-indirect-target-profile-v1"
+DECODED_CONTROL_RECONCILIATION_FORMAT = (
+    "stage-a-decoded-control-reconciliation-v1"
+)
 
 _SEMANTIC_FIELDS = (
     "pre_state",
@@ -190,6 +198,7 @@ class ExportIssue:
 class MachineIRPackage:
     manifest: Path
     machine_ir: Path
+    recovered_executable_data: Path
     status: str
     unit_count: int
     issue_count: int
@@ -319,6 +328,10 @@ def prepare_machine_ir_units_package(
             "prepared_unit_reuse_is_exact_input_hash_bound": True,
         },
     }
+    manifest["authority_bindings"] = build_machine_ir_authority_bindings(
+        prepared,
+        pe_sha256=binary.sha256,
+    )
     _assert_byte_free(manifest)
     output = Path(out)
     output.mkdir(parents=True, exist_ok=True)
@@ -344,9 +357,20 @@ def export_machine_ir_package(
     machine_import_profiles: Sequence[Path] = (),
     external_interface_profiles: Sequence[Path] = (),
     external_operation_profiles: Sequence[Path] = (),
+    callable_external_profiles: Sequence[Path] = (),
+    internal_function_contract_profiles: Sequence[Path] = (),
     prepared_machine_ir: Path | None = None,
+    interprocedural_control: bool = False,
 ) -> MachineIRPackage:
-    """Validate and export a deterministic, byte-free PE32 machine IR package."""
+    """Validate and export a deterministic, byte-free PE32 machine IR package.
+
+    The historical profile arguments remain accepted so older callers can read
+    v1 diagnostics.  They cannot affect this exact extraction artifact; v2
+    interprocedural, external-site, and candidate-authority phases consume them
+    after extraction.
+    """
+
+    _ = interprocedural_control
 
     state_path = _regular_file(state_machine, "canonical state machine")
     original_path = _regular_file(original_pe, "original PE")
@@ -374,25 +398,28 @@ def export_machine_ir_package(
 
     reference = _reference_inventory(reference_payload)
     target_profile = _load_indirect_target_profile(indirect_target_profile)
-    import_profile_paths = tuple(
-        _regular_file(path, "machine import profile")
-        for path in machine_import_profiles
-    )
-    import_abis = load_selected_import_abis(import_profile_paths)
-    interface_profile_paths = tuple(
-        _regular_file(path, "external interface profile")
-        for path in external_interface_profiles
-    )
-    interface_profiles = tuple(
-        load_external_interface_profile(path) for path in interface_profile_paths
-    )
-    operation_profile_paths = tuple(
-        _regular_file(path, "external operation profile")
-        for path in external_operation_profiles
-    )
-    operation_profiles = tuple(
-        load_external_operation_profile(path) for path in operation_profile_paths
-    )
+    diagnostic_profile_paths = {
+        "machine_import_profiles": tuple(
+            _regular_file(path, "machine import profile")
+            for path in machine_import_profiles
+        ),
+        "external_interface_profiles": tuple(
+            _regular_file(path, "external interface profile")
+            for path in external_interface_profiles
+        ),
+        "external_operation_profiles": tuple(
+            _regular_file(path, "external operation profile")
+            for path in external_operation_profiles
+        ),
+        "callable_external_profiles": tuple(
+            _regular_file(path, "callable external profile")
+            for path in callable_external_profiles
+        ),
+        "internal_function_contract_profiles": tuple(
+            _regular_file(path, "internal function contract profile")
+            for path in internal_function_contract_profiles
+        ),
+    }
     rows = _read_canonical_rows(state_path)
     _validate_unique_units(rows)
     reusable = _load_reusable_prepared_units(
@@ -406,20 +433,38 @@ def export_machine_ir_package(
         reference_sha256=reference_sha256,
         reusable=reusable,
     )
-
+    prepared_input_units = len(prepared)
+    (
+        prepared,
+        executable_classification,
+        classification_issues,
+        preclassified_static_recoveries,
+    ) = (
+        _classify_executable_data_before_control(
+            binary=binary,
+            units=prepared,
+            reference=reference,
+        )
+    )
     issues = _unit_issues(prepared)
+    issues.extend(classification_issues)
+    classified_noncode_ranges = [
+        RvaSpan(int(row["rva_start"]), int(row["rva_end"]))
+        for row in executable_classification["immutable_data_ranges"]
+    ]
     coverage, coverage_issues = _coverage_inventory(
-        binary, prepared, reference.get("noncode_ranges", [])
+        binary,
+        prepared,
+        [*reference.get("noncode_ranges", []), *classified_noncode_ranges],
     )
     issues.extend(coverage_issues)
     control, control_issues = _control_inventory(
         binary,
         prepared,
         reference,
+        executable_classification=executable_classification,
+        preclassified_static_recoveries=preclassified_static_recoveries,
         target_profile=target_profile,
-        import_abis=import_abis,
-        interface_profiles=interface_profiles,
-        operation_profiles=operation_profiles,
     )
     issues.extend(control_issues)
     external = _external_inventory(prepared)
@@ -455,6 +500,15 @@ def export_machine_ir_package(
     jsonl_bytes = b"".join(
         _canonical_json(unit) + b"\n" for unit in prepared
     )
+    machine_ir_sha256 = sha256_bytes(jsonl_bytes)
+    executable_data = build_recovered_executable_data_contract(
+        binary=binary,
+        control=control,
+        source_map=source_map,
+        machine_ir_sha256=machine_ir_sha256,
+    )
+    executable_data_payload = executable_data.to_payload()
+    executable_data_bytes = _canonical_json(executable_data_payload) + b"\n"
     manifest = {
         "format": MACHINE_IR_FORMAT,
         "record_kind": "manifest",
@@ -487,33 +541,24 @@ def export_machine_ir_package(
                 else {
                     "path": Path(indirect_target_profile).name,
                     "sha256": sha256_file(Path(indirect_target_profile)),
-                    "id": target_profile["id"],
+                    "id": (
+                        target_profile["id"]
+                        if target_profile is not None
+                        else None
+                    ),
                 }
             ),
-            "machine_import_profiles": [
-                {"path": path.name, "sha256": sha256_file(path)}
-                for path in import_profile_paths
-            ],
-            "external_interface_profiles": [
-                {
-                    "path": path.name,
-                    "sha256": profile.sha256,
-                    "id": profile.profile_id,
-                }
-                for path, profile in zip(
-                    interface_profile_paths, interface_profiles, strict=True
-                )
-            ],
-            "external_operation_profiles": [
-                {
-                    "path": path.name,
-                    "sha256": profile.sha256,
-                    "id": profile.profile_id,
-                }
-                for path, profile in zip(
-                    operation_profile_paths, operation_profiles, strict=True
-                )
-            ],
+            **{
+                name: [
+                    {
+                        "path": path.name,
+                        "sha256": sha256_file(path),
+                        "authority": "diagnostic_only",
+                    }
+                    for path in paths
+                ]
+                for name, paths in diagnostic_profile_paths.items()
+            },
             "prepared_machine_ir": (
                 None
                 if prepared_machine_ir is None
@@ -529,14 +574,31 @@ def export_machine_ir_package(
         "artifacts": {
             "machine_ir": {
                 "path": MACHINE_IR_FILENAME,
-                "sha256": sha256_bytes(jsonl_bytes),
+                "sha256": machine_ir_sha256,
                 "format": MACHINE_IR_FORMAT,
-            }
+            },
+            "recovered_executable_data": {
+                "path": RECOVERED_EXECUTABLE_DATA_FILENAME,
+                "sha256": sha256_bytes(executable_data_bytes),
+                "format": RECOVERED_EXECUTABLE_DATA_FORMAT,
+                "contract_sha256": executable_data_payload["hashes"][
+                    "contract_sha256"
+                ],
+                "ranges": len(executable_data.ranges),
+                "data_size": sum(item.size for item in executable_data.ranges),
+            },
         },
         "coverage": coverage,
         "control": control,
         "trust_assumptions": (
-            [] if target_profile is None else [copy.deepcopy(target_profile["assumption"])]
+            []
+            if target_profile is None
+            else [
+                {
+                    **copy.deepcopy(target_profile["assumption"]),
+                    "authority": "diagnostic_only",
+                }
+            ]
         ),
         "external": external,
         "reference_inventory": reference["public"],
@@ -544,8 +606,12 @@ def export_machine_ir_package(
         "issues": issue_payloads,
         "counts": {
             "units": len(prepared),
+            "prepared_input_units": prepared_input_units,
             "prepared_units_reused": reused_units,
-            "prepared_units_computed": len(prepared) - reused_units,
+            "prepared_units_computed": prepared_input_units - reused_units,
+            "precontrol_excluded_units": executable_classification["counts"][
+                "excluded_units"
+            ],
             "instructions": sum(len(unit["instructions"]) for unit in prepared),
             "x87_micro_ops": sum(len(unit["x87_micro_ops"]) for unit in prepared),
             "external_events": len(external["events"]),
@@ -566,17 +632,24 @@ def export_machine_ir_package(
             "prepared_unit_reuse_is_exact_input_hash_bound": True,
         },
     }
+    manifest["authority_bindings"] = build_machine_ir_authority_bindings(
+        prepared,
+        pe_sha256=binary.sha256,
+    )
     _assert_byte_free(manifest)
 
     out_path = Path(out)
     out_path.mkdir(parents=True, exist_ok=True)
     machine_path = out_path / MACHINE_IR_FILENAME
     manifest_path = out_path / MACHINE_IR_MANIFEST_FILENAME
+    executable_data_path = out_path / RECOVERED_EXECUTABLE_DATA_FILENAME
     machine_path.write_bytes(jsonl_bytes)
+    executable_data_path.write_bytes(executable_data_bytes)
     write_json(manifest_path, manifest)
     return MachineIRPackage(
         manifest=manifest_path.resolve(),
         machine_ir=machine_path.resolve(),
+        recovered_executable_data=executable_data_path.resolve(),
         status=status,
         unit_count=len(prepared),
         issue_count=len(issue_payloads),
@@ -774,6 +847,10 @@ def _prepare_units(
             cached is not None
             and cached.get("preparation", {}).get("input_sha256")
             == preparation_input_sha256
+            and cached.get("preparation", {}).get(
+                "decoded_control_reconciliation"
+            )
+            == DECODED_CONTROL_RECONCILIATION_FORMAT
         ):
             unit = copy.deepcopy(dict(cached))
             unit["reachable"] = False
@@ -898,6 +975,19 @@ def _prepare_unit(
         identity,
         terminating=control_disposition is not None,
     )
+    decoded_control_reconciliation = _decoded_control_reconciliation(
+        binary=binary,
+        instructions=instructions,
+        span=span,
+        outcome=semantics["outcome"],
+        direct_targets=control_targets,
+        external_events=semantics["external_events"],
+        ordered_events=semantics["ordered_events"],
+        control_disposition=control_disposition,
+    )
+    _bind_checked_call_event_sites(
+        semantics["external_events"], decoded_control_reconciliation
+    )
     unit = {
         "format": MACHINE_IR_FORMAT,
         "record_kind": "unit",
@@ -908,12 +998,18 @@ def _prepare_unit(
                 binary_sha256=binary.sha256,
                 reference_sha256=reference_sha256,
             ),
+            "decoded_control_reconciliation": (
+                DECODED_CONTROL_RECONCILIATION_FORMAT
+            ),
         },
         "id": identity,
         "unit_kind": row.get("unit_kind", "semantic_transfer"),
         "status": (
             "qualified"
-            if _semantic_unit_qualified(row, x87_micro_ops)
+            if (
+                _semantic_unit_qualified(row, x87_micro_ops)
+                and decoded_control_reconciliation["status"] == "complete"
+            )
             else "incomplete"
         ),
         # This value is an upstream proposal only.  _control_inventory replaces
@@ -945,6 +1041,7 @@ def _prepare_unit(
             ),
             "disposition": control_disposition,
             "recovery": control_recovery,
+            "decoded_reconciliation": decoded_control_reconciliation,
         },
         "source_status": {
             "reachable": row.get("reachable"),
@@ -956,6 +1053,626 @@ def _prepare_unit(
         },
     }
     return unit
+
+
+def _bind_checked_call_event_sites(
+    external_events: Any,
+    decoded_control_reconciliation: Mapping[str, Any],
+) -> None:
+    """Copy independently checked decode sites into canonical call events."""
+
+    semantic_events = _semantic_call_events(external_events)
+    decoded_sites = decoded_control_reconciliation.get("decoded_call_sites")
+    if (
+        decoded_control_reconciliation.get("status") != "complete"
+        or not isinstance(decoded_sites, list)
+        or len(decoded_sites) != len(semantic_events)
+    ):
+        return
+    for event, decoded in zip(semantic_events, decoded_sites, strict=True):
+        if not isinstance(event, dict) or not isinstance(decoded, Mapping):
+            return
+        instruction_rva = decoded.get("instruction_rva")
+        if not isinstance(instruction_rva, int) or isinstance(
+            instruction_rva, bool
+        ):
+            return
+        event["instruction_rva"] = instruction_rva
+
+
+def _decoded_control_reconciliation(
+    *,
+    binary: StageABinary,
+    instructions: Sequence[_Instruction],
+    span: RvaSpan,
+    outcome: Any,
+    direct_targets: Sequence[int],
+    external_events: Any,
+    ordered_events: Any,
+    control_disposition: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Reconcile semantic control against an independent exact x86 decode."""
+
+    checks: list[dict[str, Any]] = []
+
+    def record(
+        code: str,
+        status: str,
+        message: str,
+        *,
+        expected: Any = None,
+        actual: Any = None,
+    ) -> None:
+        item: dict[str, Any] = {
+            "code": code,
+            "status": status,
+            "message": message,
+        }
+        if expected is not None:
+            item["expected"] = copy.deepcopy(expected)
+        if actual is not None:
+            item["actual"] = copy.deepcopy(actual)
+        checks.append(item)
+
+    terminal = instructions[-1]
+    terminal_effect = _decoded_control_effect(binary, terminal)
+    decoded_call_sites = [
+        effect
+        for instruction in instructions
+        for effect in [_decoded_control_effect(binary, instruction)]
+        if effect["class"]
+        in {"direct_call", "indirect_call", "external_call", "external_jump"}
+    ]
+    semantic_outcome_kind = (
+        str(outcome.get("kind")) if isinstance(outcome, Mapping) else None
+    )
+    expected_outcome_kinds = _decoded_expected_outcome_kinds(terminal_effect)
+
+    if expected_outcome_kinds is None:
+        record(
+            "terminal_outcome_class_unresolved",
+            "incomplete",
+            "the decoded terminal control class has no exact aggregate semantic representation",
+            actual=semantic_outcome_kind,
+        )
+    elif semantic_outcome_kind == "unknown":
+        record(
+            "terminal_outcome_unknown",
+            "incomplete",
+            "the aggregate semantic outcome is unknown",
+            expected=sorted(expected_outcome_kinds),
+            actual=semantic_outcome_kind,
+        )
+    elif semantic_outcome_kind == "fault" and terminal_effect["class"] == "fallthrough":
+        record(
+            "terminal_fault_not_decodable_as_control",
+            "incomplete",
+            "exact decoding alone cannot establish the declared terminal fault",
+            expected="independently checked fault behavior",
+            actual=semantic_outcome_kind,
+        )
+    elif semantic_outcome_kind not in expected_outcome_kinds:
+        record(
+            "terminal_outcome_class_mismatch",
+            "violated",
+            "the decoded terminal instruction disagrees with the aggregate semantic outcome",
+            expected=sorted(expected_outcome_kinds),
+            actual=semantic_outcome_kind,
+        )
+    else:
+        record(
+            "terminal_outcome_class",
+            "complete",
+            "the decoded terminal instruction agrees with the aggregate semantic outcome",
+            expected=sorted(expected_outcome_kinds),
+            actual=semantic_outcome_kind,
+        )
+
+    expected_targets = _decoded_expected_direct_targets(
+        terminal_effect,
+        span=span,
+        terminating=control_disposition is not None,
+    )
+    if semantic_outcome_kind == "fault" and terminal_effect["class"] == "fallthrough":
+        expected_targets = []
+    actual_targets = [int(target) for target in direct_targets]
+    if expected_targets is None:
+        record(
+            "direct_targets_unresolved",
+            "incomplete",
+            "the decoded terminal target cannot be reduced to exact PE RVAs",
+            actual=actual_targets,
+        )
+    elif actual_targets != expected_targets:
+        record(
+            "direct_targets_mismatch",
+            "violated",
+            "decoded control targets disagree with the aggregate direct-target inventory",
+            expected=expected_targets,
+            actual=actual_targets,
+        )
+    else:
+        record(
+            "direct_targets",
+            "complete",
+            "decoded control targets agree with the aggregate direct-target inventory",
+            expected=expected_targets,
+            actual=actual_targets,
+        )
+
+    decoded_return_class = terminal_effect.get("return_class")
+    if decoded_return_class == "interrupt_return":
+        record(
+            "return_class_unrepresented",
+            "incomplete",
+            "the aggregate semantic schema does not represent interrupt-return state restoration",
+            expected=decoded_return_class,
+            actual=semantic_outcome_kind,
+        )
+    elif decoded_return_class == "far_return":
+        record(
+            "return_class_unrepresented",
+            "incomplete",
+            "the aggregate semantic schema does not distinguish far returns",
+            expected=decoded_return_class,
+            actual=semantic_outcome_kind,
+        )
+    elif decoded_return_class == "near_return" and semantic_outcome_kind != "return":
+        record(
+            "return_class_mismatch",
+            "violated",
+            "a decoded near return is not declared as an aggregate return",
+            expected="return",
+            actual=semantic_outcome_kind,
+        )
+    elif decoded_return_class is None and semantic_outcome_kind == "return":
+        record(
+            "return_class_mismatch",
+            "violated",
+            "an aggregate return is not backed by a decoded return instruction",
+            expected="decoded return",
+            actual=terminal_effect["class"],
+        )
+    else:
+        record(
+            "return_class",
+            "complete",
+            "the decoded return class agrees with the aggregate semantic outcome",
+            expected=decoded_return_class or "not_return",
+            actual="return" if semantic_outcome_kind == "return" else "not_return",
+        )
+
+    if control_disposition is not None:
+        terminal_call_site = decoded_call_sites[-1] if decoded_call_sites else None
+        if (
+            terminal_effect["class"] not in {"external_call", "external_jump"}
+            or terminal_call_site is None
+            or terminal_call_site["instruction_rva"] != terminal.rva
+        ):
+            record(
+                "terminating_disposition_site_mismatch",
+                "violated",
+                "the terminating external disposition is not backed by the decoded terminal transfer",
+                expected="terminal PE import call or jump",
+                actual=terminal_effect["class"],
+            )
+        else:
+            record(
+                "terminating_disposition_site",
+                "complete",
+                "the terminating external disposition is bound to the decoded terminal transfer",
+                expected=terminal.rva,
+                actual=terminal_call_site["instruction_rva"],
+            )
+
+    _reconcile_decoded_call_events(
+        decoded_call_sites,
+        external_events=external_events,
+        ordered_events=ordered_events,
+        record=record,
+    )
+
+    status = (
+        "violated"
+        if any(check["status"] == "violated" for check in checks)
+        else (
+            "incomplete"
+            if any(check["status"] == "incomplete" for check in checks)
+            else "complete"
+        )
+    )
+    return {
+        "format": DECODED_CONTROL_RECONCILIATION_FORMAT,
+        "status": status,
+        "authority": "independent_static_x86_pe32_decode",
+        "proof_authority": False,
+        "decoder": "capstone",
+        "terminal_instruction": {
+            "rva": terminal.rva,
+            "rva_end": terminal.end,
+            "instruction_sha256": terminal.digest,
+            "mnemonic": terminal.mnemonic,
+            "decoded_class": terminal_effect["class"],
+            "return_class": decoded_return_class,
+        },
+        "decoded_call_sites": decoded_call_sites,
+        "semantic": {
+            "outcome_kind": semantic_outcome_kind,
+            "direct_targets": actual_targets,
+            "call_event_count": len(
+                _semantic_call_events(external_events)
+            ),
+            "terminating_external_disposition": control_disposition is not None,
+        },
+        "checks": checks,
+    }
+
+
+def _decoded_control_effect(
+    binary: StageABinary, instruction: _Instruction
+) -> dict[str, Any]:
+    groups = frozenset(instruction.groups)
+    mnemonic = instruction.mnemonic.lower()
+    operand = instruction.operands[0] if instruction.operands else None
+    direct_target = _decoded_immediate_target_rva(binary, operand)
+    imported = _decoded_import_identity(binary, instruction, direct_target)
+    result: dict[str, Any] = {
+        "instruction_rva": instruction.rva,
+        "return_rva": instruction.end,
+        "mnemonic": mnemonic,
+        "class": "fallthrough",
+    }
+
+    if "call" in groups:
+        if imported is not None:
+            result["class"] = "external_call"
+            result["import"] = imported
+        elif operand is not None and operand.get("kind") == "immediate":
+            result["class"] = "direct_call"
+            result["target_rva"] = direct_target
+        else:
+            result["class"] = "indirect_call"
+            result["target"] = copy.deepcopy(operand)
+        return result
+    if "iret" in groups:
+        result["class"] = "interrupt_return"
+        result["return_class"] = "interrupt_return"
+        return result
+    if "ret" in groups:
+        result["class"] = "return"
+        result["return_class"] = (
+            "far_return" if mnemonic in {"retf", "lret"} else "near_return"
+        )
+        return result
+    if "jump" in groups or "branch_relative" in groups:
+        if imported is not None and mnemonic in {"jmp", "ljmp"}:
+            result["class"] = "external_jump"
+            result["import"] = imported
+        elif mnemonic in {"jmp", "ljmp"}:
+            result["class"] = (
+                "direct_jump" if direct_target is not None else "indirect_jump"
+            )
+        else:
+            result["class"] = (
+                "direct_branch" if direct_target is not None else "indirect_branch"
+            )
+        if direct_target is not None:
+            result["target_rva"] = direct_target
+        elif operand is not None:
+            result["target"] = copy.deepcopy(operand)
+        return result
+    if "int" in groups or mnemonic in _NON_FALLTHROUGH_MNEMONICS:
+        result["class"] = "terminal_system"
+    return result
+
+
+def _decoded_immediate_target_rva(
+    binary: StageABinary, operand: Mapping[str, Any] | None
+) -> int | None:
+    if operand is None or operand.get("kind") != "immediate":
+        return None
+    value = operand.get("value")
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    return (value - binary.image_base) & 0xFFFFFFFF
+
+
+def _decoded_import_identity(
+    binary: StageABinary,
+    instruction: _Instruction,
+    direct_target_rva: int | None,
+) -> dict[str, Any] | None:
+    if not instruction.operands:
+        return None
+    operand = instruction.operands[0]
+    thunk_rva = _decoded_absolute_memory_rva(binary, operand)
+    if thunk_rva is None and direct_target_rva is not None:
+        thunk_rva = _decoded_direct_import_thunk_rva(binary, direct_target_rva)
+    if thunk_rva is None:
+        return None
+    imported = next(
+        (item for item in binary.imports if item.thunk_rva == thunk_rva),
+        None,
+    )
+    if imported is None:
+        return None
+    return {
+        "dll": imported.dll,
+        "symbol": imported.symbol,
+        "ordinal": imported.ordinal,
+        "thunk_rva": imported.thunk_rva,
+    }
+
+
+def _decoded_absolute_memory_rva(
+    binary: StageABinary, operand: Mapping[str, Any]
+) -> int | None:
+    if (
+        operand.get("kind") != "memory"
+        or operand.get("base") is not None
+        or operand.get("index") is not None
+    ):
+        return None
+    displacement = operand.get("displacement")
+    if not isinstance(displacement, int) or isinstance(displacement, bool):
+        return None
+    address = displacement & 0xFFFFFFFF
+    if binary.image_base <= address < binary.image_base + binary.size_of_image:
+        return address - binary.image_base
+    if 0 <= address < binary.size_of_image:
+        return address
+    return None
+
+
+def _decoded_direct_import_thunk_rva(
+    binary: StageABinary, target_rva: int
+) -> int | None:
+    if not any(
+        section.executable and section.rva_start <= target_rva < section.rva_end
+        for section in binary.sections
+    ):
+        return None
+    encoded = bytes(binary.pe.get_data(target_rva, 15))
+    if not encoded:
+        return None
+    decoder = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    decoder.detail = True
+    decoded = next(
+        iter(decoder.disasm(encoded, binary.image_base + target_rva, count=1)),
+        None,
+    )
+    if decoded is None or not decoded.group(capstone.CS_GRP_JUMP):
+        return None
+    projection = _instruction_projection(
+        decoded, target_rva, bytes(decoded.bytes)
+    )
+    if not projection.operands:
+        return None
+    return _decoded_absolute_memory_rva(binary, projection.operands[0])
+
+
+def _decoded_expected_outcome_kinds(
+    terminal_effect: Mapping[str, Any],
+) -> frozenset[str] | None:
+    effect_class = terminal_effect.get("class")
+    if effect_class in {"fallthrough", "direct_call", "indirect_call", "external_call"}:
+        return frozenset({"fallthrough"})
+    if effect_class == "direct_jump":
+        return frozenset({"jump"})
+    if effect_class == "direct_branch":
+        return frozenset({"branch"})
+    if effect_class in {"indirect_jump", "indirect_branch"}:
+        return frozenset({"indirect_jump", "indirect_jump_table"})
+    if effect_class == "external_jump":
+        return frozenset({"external_jump"})
+    if effect_class == "return":
+        return frozenset({"return"})
+    return None
+
+
+def _decoded_expected_direct_targets(
+    terminal_effect: Mapping[str, Any],
+    *,
+    span: RvaSpan,
+    terminating: bool,
+) -> list[int] | None:
+    effect_class = terminal_effect.get("class")
+    if terminating:
+        return []
+    if effect_class in {"fallthrough", "direct_call", "indirect_call", "external_call"}:
+        return [span.end]
+    if effect_class == "direct_jump":
+        target = terminal_effect.get("target_rva")
+        return [int(target)] if isinstance(target, int) else None
+    if effect_class == "direct_branch":
+        target = terminal_effect.get("target_rva")
+        return [int(target), span.end] if isinstance(target, int) else None
+    if effect_class in {
+        "indirect_jump",
+        "indirect_branch",
+        "external_jump",
+        "return",
+        "interrupt_return",
+        "terminal_system",
+    }:
+        return []
+    return None
+
+
+def _semantic_call_events(value: Any) -> list[Mapping[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [
+        event
+        for event in value
+        if isinstance(event, Mapping)
+        and event.get("kind") in {"external_call", "internal_call", "indirect_call"}
+    ]
+
+
+def _reconcile_decoded_call_events(
+    decoded_sites: Sequence[Mapping[str, Any]],
+    *,
+    external_events: Any,
+    ordered_events: Any,
+    record: Any,
+) -> None:
+    semantic_events = _semantic_call_events(external_events)
+    ordered = [
+        event
+        for event in _semantic_call_events(ordered_events)
+        if event.get("family") in {None, "external"}
+    ]
+    if len(decoded_sites) != len(semantic_events):
+        record(
+            "call_event_count_mismatch",
+            "violated",
+            "decoded call transfers disagree with the aggregate external-event inventory",
+            expected=len(decoded_sites),
+            actual=len(semantic_events),
+        )
+    else:
+        record(
+            "call_event_count",
+            "complete",
+            "decoded call transfers agree with the aggregate external-event count",
+            expected=len(decoded_sites),
+            actual=len(semantic_events),
+        )
+    if ordered and len(ordered) != len(semantic_events):
+        record(
+            "ordered_call_event_count_mismatch",
+            "violated",
+            "ordered call events disagree with the aggregate external-event inventory",
+            expected=len(semantic_events),
+            actual=len(ordered),
+        )
+
+    for index, (decoded, event) in enumerate(
+        zip(decoded_sites, semantic_events, strict=False)
+    ):
+        ordered_event = ordered[index] if index < len(ordered) else None
+        instruction_rva = event.get("instruction_rva")
+        if instruction_rva is None and ordered_event is not None:
+            instruction_rva = ordered_event.get("instruction_rva")
+        if instruction_rva is None:
+            record(
+                f"call_event_{index}_site_missing",
+                "incomplete",
+                "the semantic call event is not bound to an instruction RVA",
+                expected=decoded["instruction_rva"],
+            )
+        elif instruction_rva != decoded["instruction_rva"]:
+            record(
+                f"call_event_{index}_site_mismatch",
+                "violated",
+                "the semantic call event is bound to a different decoded instruction",
+                expected=decoded["instruction_rva"],
+                actual=instruction_rva,
+            )
+        if (
+            ordered_event is not None
+            and ordered_event.get("instruction_rva") != decoded["instruction_rva"]
+        ):
+            record(
+                f"call_event_{index}_ordered_site_mismatch",
+                "violated",
+                "the ordered call event is bound to a different decoded instruction",
+                expected=decoded["instruction_rva"],
+                actual=ordered_event.get("instruction_rva"),
+            )
+
+        expected_kind = {
+            "direct_call": "internal_call",
+            "indirect_call": "indirect_call",
+            "external_call": "external_call",
+            "external_jump": "external_call",
+        }[str(decoded["class"])]
+        if event.get("kind") != expected_kind:
+            record(
+                f"call_event_{index}_kind_mismatch",
+                "violated",
+                "the semantic call event class disagrees with the decoded transfer",
+                expected=expected_kind,
+                actual=event.get("kind"),
+            )
+
+        return_rva = event.get("return_rva")
+        if return_rva is None:
+            record(
+                f"call_event_{index}_return_missing",
+                "incomplete",
+                "the semantic call event omits its decoded return RVA",
+                expected=decoded["return_rva"],
+            )
+        elif return_rva != decoded["return_rva"]:
+            record(
+                f"call_event_{index}_return_mismatch",
+                "violated",
+                "the semantic call event return RVA disagrees with the decoded call",
+                expected=decoded["return_rva"],
+                actual=return_rva,
+            )
+
+        target_rva = decoded.get("target_rva")
+        if decoded["class"] == "direct_call" and event.get("target_rva") != target_rva:
+            record(
+                f"call_event_{index}_target_mismatch",
+                "violated",
+                "the semantic internal-call target disagrees with the decoded target",
+                expected=target_rva,
+                actual=event.get("target_rva"),
+            )
+        imported = decoded.get("import")
+        if isinstance(imported, Mapping):
+            actual_import = {
+                "dll": event.get("dll"),
+                "symbol": event.get("symbol"),
+                "ordinal": event.get("ordinal"),
+            }
+            expected_import = {
+                "dll": imported.get("dll"),
+                "symbol": imported.get("symbol"),
+                "ordinal": imported.get("ordinal"),
+            }
+            if (
+                not isinstance(actual_import["dll"], str)
+                or str(actual_import["dll"]).lower()
+                != str(expected_import["dll"]).lower()
+                or actual_import["symbol"] != expected_import["symbol"]
+                or actual_import["ordinal"] != expected_import["ordinal"]
+            ):
+                record(
+                    f"call_event_{index}_import_mismatch",
+                    "violated",
+                    "the semantic external call identity disagrees with the PE import transfer",
+                    expected=expected_import,
+                    actual=actual_import,
+                )
+
+        if ordered_event is not None:
+            compared_fields = (
+                "kind",
+                "dll",
+                "symbol",
+                "ordinal",
+                "target_rva",
+                "return_rva",
+            )
+            aggregate_projection = {
+                field: event.get(field) for field in compared_fields
+            }
+            ordered_projection = {
+                field: ordered_event.get(field) for field in compared_fields
+            }
+            if aggregate_projection != ordered_projection:
+                record(
+                    f"call_event_{index}_ordered_mismatch",
+                    "violated",
+                    "the ordered call event disagrees with the aggregate event",
+                    expected=aggregate_projection,
+                    actual=ordered_projection,
+                )
 
 
 def _recover_unknown_fallthrough(
@@ -1277,24 +1994,71 @@ def _x87_instruction_indices(
 def _sanitize_schedule(value: Any, identity: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise MachineIRExportError(f"{identity}: instruction effect schedule must be an object")
+    source_schedule_digest = _verified_embedded_digest(
+        value,
+        "schedule_sha256",
+        f"{identity}: source instruction effect schedule",
+    )
     result: dict[str, Any] = {}
     for key, item in value.items():
-        if key in _RAW_INSTRUCTION_FIELDS:
+        if key in _RAW_INSTRUCTION_FIELDS or key == "schedule_sha256":
             continue
         if key == "records":
             if not isinstance(item, list):
                 raise MachineIRExportError(f"{identity}: schedule records must be a list")
-            result[key] = [_sanitize_metadata(record, identity) for record in item]
+            result[key] = [
+                _sanitize_schedule_record(record, identity, index)
+                for index, record in enumerate(item)
+            ]
         elif key == "blockers":
             if not isinstance(item, list):
                 raise MachineIRExportError(f"{identity}: schedule blockers must be a list")
             result[key] = [_sanitize_metadata(record, identity) for record in item]
         else:
             result[key] = _sanitize_metadata(item, identity)
-    if "schedule_sha256" in value:
-        result["source_schedule_sha256"] = value["schedule_sha256"]
-        result.pop("schedule_sha256", None)
+    existing_source_digest = result.get("source_schedule_sha256")
+    if existing_source_digest is not None and existing_source_digest != source_schedule_digest:
+        raise MachineIRExportError(
+            f"{identity}: source instruction effect schedule digest is ambiguous"
+        )
+    result["source_schedule_sha256"] = source_schedule_digest
+    result["schedule_sha256"] = sha256_bytes(_canonical_json(result))
     return result
+
+
+def _sanitize_schedule_record(
+    value: Any, identity: str, index: int
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise MachineIRExportError(f"{identity}: schedule record {index} must be an object")
+    source_record_digest = _verified_embedded_digest(
+        value,
+        "record_sha256",
+        f"{identity}: source schedule record {index}",
+    )
+    sanitized = _sanitize_metadata(value, identity)
+    if not isinstance(sanitized, dict):
+        raise AssertionError("mapping metadata sanitization did not produce an object")
+    sanitized.pop("record_sha256", None)
+    existing_source_digest = sanitized.get("source_record_sha256")
+    if existing_source_digest is not None and existing_source_digest != source_record_digest:
+        raise MachineIRExportError(
+            f"{identity}: source schedule record {index} digest is ambiguous"
+        )
+    sanitized["source_record_sha256"] = source_record_digest
+    sanitized["record_sha256"] = sha256_bytes(_canonical_json(sanitized))
+    return sanitized
+
+
+def _verified_embedded_digest(
+    value: Mapping[str, Any], field: str, label: str
+) -> str:
+    expected = _digest(value.get(field), f"{label} digest")
+    body = dict(value)
+    del body[field]
+    if sha256_bytes(_canonical_json(body)) != expected:
+        raise MachineIRExportError(f"{label} digest does not match its contents")
+    return expected
 
 
 def _sanitize_metadata(value: Any, identity: str) -> Any:
@@ -1335,10 +2099,42 @@ def _assert_semantics_have_no_instruction_bytes(value: Any, field: str, identity
 def _unit_issues(units: Sequence[Mapping[str, Any]]) -> list[ExportIssue]:
     issues: list[ExportIssue] = []
     for unit in units:
-        if unit["status"] == "qualified":
+        reconciliation = unit.get("control", {}).get("decoded_reconciliation")
+        reconciliation_status = (
+            reconciliation.get("status")
+            if isinstance(reconciliation, Mapping)
+            else "incomplete"
+        )
+        if reconciliation_status != "complete":
+            issues.append(
+                ExportIssue(
+                    status=(
+                        "violated"
+                        if reconciliation_status == "violated"
+                        else "incomplete"
+                    ),
+                    category="decoded_control_reconciliation",
+                    message=(
+                        "exact decoded x86 control does not reconcile with the "
+                        "aggregate semantic control contract"
+                        if reconciliation_status == "violated"
+                        else "exact decoded x86 control reconciliation is incomplete"
+                    ),
+                    next_action=(
+                        "regenerate the semantic transfer from the exact PE bytes "
+                        "and reconcile its outcome, targets, call events, and return class"
+                    ),
+                    location=_location_from_unit(
+                        unit, "control.decoded_reconciliation"
+                    ),
+                )
+            )
+        source_status = unit["source_status"]
+        if unit["status"] == "qualified" or _semantic_unit_qualified(
+            source_status, unit.get("x87_micro_ops", [])
+        ):
             continue
         location = _location_from_unit(unit, "source_status")
-        source_status = unit["source_status"]
         issues.append(
             ExportIssue(
                 status="incomplete",
@@ -1432,216 +2228,243 @@ def _coverage_inventory(
     )
 
 
-def _control_provenance_fixed_point(
+def _exact_only_control_inventory(
     *,
     binary: StageABinary,
-    units: Sequence[Mapping[str, Any]],
-    root_unit_ids: Sequence[str],
-    direct_edges: Sequence[Mapping[str, Any]],
+    units: Sequence[dict[str, Any]],
+    roots: Sequence[Mapping[str, Any]],
+    direct: Sequence[Mapping[str, Any]],
+    indirect: Sequence[dict[str, Any]],
+    direct_control_edges: Sequence[Mapping[str, Any]],
     internal_call_edges: Sequence[Mapping[str, Any]],
-    indirect_exits: Sequence[Mapping[str, Any]],
     static_recoveries: Sequence[Mapping[str, Any]],
-    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
-    interface_profiles: Sequence[ExternalInterfaceProfile],
-    operation_profiles: Sequence[ExternalOperationProfile],
-    max_rounds: int = 16,
-) -> tuple[
-    dict[str, Any],
-    dict[str, Any],
-    dict[str, Any],
-    list[dict[str, Any]],
-    int,
-    bool,
-]:
-    imports = [
-        {
-            "dll": imported.dll,
-            "symbol": imported.symbol,
-            "ordinal": imported.ordinal,
-            "thunk_rva": imported.thunk_rva,
-        }
-        for imported in binary.imports
-    ]
-    selected_recoveries = [copy.deepcopy(dict(row)) for row in static_recoveries]
-    previous_signature: str | None = None
-    internal_summaries: dict[str, Any] = {
-        "format": "stage-a-internal-call-preservation-v1",
-        "status": "complete",
-        "proof_authority": False,
-        "summaries": [],
-        "counts": {"call_targets": 0, "complete_summaries": 0},
-    }
-    provenance: dict[str, Any] = {}
-    interface_provenance: dict[str, Any] = {
-        "format": "stage-a-external-interface-provenance-v1",
-        "status": (
-            "complete"
-            if not interface_profiles and not operation_profiles
-            else "incomplete"
-        ),
-        "resolutions": [],
-        "counts": {
-            "recovered_method_exits": 0,
-            "recovered_operation_exits": 0,
-            "recovered_indirect_exits": 0,
-        },
-    }
-    converged = False
-    rounds = 0
-    for rounds in range(1, max_rounds + 1):
-        internal_summaries = derive_internal_call_preservation_summaries(
-            units=units,
-            roots=root_unit_ids,
-            direct_edges=direct_edges,
-            internal_call_edges=internal_call_edges,
-            recovered_indirect_targets=selected_recoveries,
-            indirect_exits=indirect_exits,
-            import_abis=import_abis,
-        )
-        preserved_by_address = {
-            (binary.image_base + int(row["target_rva"])) & 0xFFFFFFFF:
-                frozenset(str(register) for register in row["preserved_registers"])
-            for row in internal_summaries["summaries"]
-            if row.get("status") == "complete"
-            and isinstance(row.get("target_rva"), int)
-            and isinstance(row.get("preserved_registers"), list)
-        }
-        stack_cleanup_by_address = {
-            (binary.image_base + int(row["target_rva"]))
-            & 0xFFFFFFFF: int(row["stack_cleanup"]["stack_delta"])
-            for row in internal_summaries["summaries"]
-            if row.get("status") == "complete"
-            and isinstance(row.get("target_rva"), int)
-            and isinstance(row.get("stack_cleanup"), Mapping)
-            and row["stack_cleanup"].get("status") == "complete"
-            and isinstance(row["stack_cleanup"].get("stack_delta"), int)
-        }
-        interface_provenance = recover_external_interface_targets(
-            units=units,
-            roots=root_unit_ids,
-            direct_edges=direct_edges,
-            internal_call_edges=internal_call_edges,
-            recovered_indirect_edges=selected_recoveries,
-            indirect_exits=indirect_exits,
-            profiles=interface_profiles,
-            operation_profiles=operation_profiles,
-            imports=imports,
-            import_abis=import_abis,
-            internal_call_preserved_registers=preserved_by_address,
-            image_base=binary.image_base,
-            internal_call_stack_cleanup=stack_cleanup_by_address,
-            static_data_reader=_immutable_static_data_reader(binary),
-        )
-        provenance = legacy_value_provenance_view(
-            interface_provenance,
-            finite_target_budget=int(
-                interface_provenance["budgets"]["finite_values"]
-            ),
-        )
-        selected_recoveries = _prefer_indirect_recoveries(
-            static_recoveries,
-            provenance["resolutions"],
-            interface_provenance["resolutions"],
-        )
-        signature = _control_fixed_point_signature(
-            internal_summaries, selected_recoveries
-        )
-        if signature == previous_signature:
-            converged = True
-            break
-        previous_signature = signature
-    return (
-        provenance,
-        interface_provenance,
-        internal_summaries,
-        selected_recoveries,
-        rounds,
-        converged,
-    )
+    executable_classification: Mapping[str, Any],
+    callback_root_proposals: Sequence[Mapping[str, Any]],
+    checked_targets: Sequence[Any],
+    static_rounds: int,
+    static_converged: bool,
+    target_profile: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], list[ExportIssue]]:
+    """Emit exact units/direct control without running superseded provenance."""
 
-
-def _prefer_indirect_recoveries(
-    static_recoveries: Sequence[Mapping[str, Any]],
-    *proposal_sets: Sequence[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
-    proposals_by_id = [
-        {str(row.get("id")): row for row in proposals}
-        for proposals in proposal_sets
+    starts = {
+        int(unit["source"]["original"]["rva_start"]): unit for unit in units
+    }
+    root_unit_ids = [
+        str(starts[rva]["id"])
+        for root in roots
+        for rva in (root.get("rva"),)
+        if isinstance(rva, int) and rva in starts
     ]
-    result: list[dict[str, Any]] = []
-    for static in static_recoveries:
-        candidates = [
-            candidate
-            for candidate in (
-                static,
-                *(
-                    proposals.get(str(static.get("id")))
-                    for proposals in proposals_by_id
-                ),
+    issues: list[ExportIssue] = []
+    recovered: list[dict[str, Any]] = []
+    for exit_record, raw_recovery in zip(
+        indirect, static_recoveries, strict=True
+    ):
+        recovery = copy.deepcopy(dict(raw_recovery))
+        complete = (
+            recovery.get("status") == "recovered"
+            and _indirect_recovery_unit_binding_complete(recovery, starts)
+        )
+        if complete:
+            exit_record["closure"] = "checked_static_target_inventory"
+            exit_record["target_rvas"] = list(recovery.get("target_rvas", ()))
+            exit_record["target_unit_ids"] = list(
+                recovery.get("target_unit_ids", ())
             )
-            if isinstance(candidate, Mapping)
-            and candidate.get("status") == "recovered"
-        ]
-        signatures = {
-            _indirect_recovery_signature(candidate) for candidate in candidates
-        }
-        if len(signatures) > 1:
-            selected = {
-                **dict(static),
-                "status": "incomplete",
-                "closure": "unresolved",
-                "target_rvas": [],
-                "target_unit_ids": [],
-                "external_targets": [],
-                "failure": {
-                    "code": "conflicting_indirect_recovery_evidence",
-                    "message": "independent finite target mechanisms disagree",
-                },
-            }
+            exit_record["external_targets"] = []
         else:
-            selected = candidates[0] if candidates else static
-        result.append(copy.deepcopy(dict(selected)))
-    return result
-
-
-def _indirect_recovery_signature(recovery: Mapping[str, Any]) -> str:
-    return sha256_bytes(json.dumps(
-        {
-            "target_rvas": recovery.get("target_rvas", []),
-            "target_unit_ids": recovery.get("target_unit_ids", []),
-            "external_targets": recovery.get("external_targets", []),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8"))
-
-
-def _control_fixed_point_signature(
-    summaries: Mapping[str, Any], recoveries: Sequence[Mapping[str, Any]]
-) -> str:
-    payload = {
-        "summaries": [
-            {
-                "target_unit_id": row.get("target_unit_id"),
-                "status": row.get("status"),
-                "preserved_registers": row.get("preserved_registers"),
-            }
-            for row in summaries.get("summaries", [])
-            if isinstance(row, Mapping)
-        ],
-        "recoveries": [
-            {
-                "id": row.get("id"),
-                "status": row.get("status"),
-                "target_unit_ids": row.get("target_unit_ids"),
-                "external_targets": row.get("external_targets"),
-            }
-            for row in recoveries
-        ],
-    }
-    return sha256_bytes(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            exit_record["closure"] = (
+                "explicit_trusted_target_profile_without_inventory"
+                if target_profile is not None
+                else "awaiting_interprocedural_v2"
+            )
+            failure = recovery.get("failure")
+            failure = (
+                failure
+                if isinstance(failure, Mapping)
+                else {"code": "static_target_recovery_incomplete"}
+            )
+            exit_record["recovery_failure"] = copy.deepcopy(dict(failure))
+            source = next(
+                unit for unit in units
+                if str(unit["id"]) == str(exit_record["source_unit_id"])
+            )
+            issues.append(ExportIssue(
+                status="incomplete",
+                category="interprocedural_target_certificate_deferred",
+                message=(
+                    "indirect target awaits the v2 SCC analysis: "
+                    + _recovery_failure_message(failure)
+                ),
+                next_action=(
+                    "run the dependency-aware v2 interprocedural phase; "
+                    "machine-IR extraction does not authorize target recovery"
+                ),
+                location=_location_from_unit(source, "control.indirect_target"),
+            ))
+        recovered.append(recovery)
+    reachability = derive_rooted_reachable_units(
+        units=units,
+        roots=root_unit_ids,
+        direct_edges=direct_control_edges,
+        internal_call_edges=internal_call_edges,
+        recovered_indirect_targets=recovered,
+        indirect_exits=indirect,
     )
+    exact_reachable = set(reachability["reachable_units"])
+    potentially_reachable = (
+        set(str(unit["id"]) for unit in units)
+        if reachability["status"] != "complete"
+        else exact_reachable
+    )
+    for unit in units:
+        unit_id = str(unit["id"])
+        unit["reachable"] = unit_id in exact_reachable
+        unit["reachability"] = (
+            "reachable"
+            if unit_id in exact_reachable
+            else "potential" if unit_id in potentially_reachable else "unreachable"
+        )
+    potential = sorted(potentially_reachable - exact_reachable)
+    reachability["potential_units"] = potential
+    reachability["confirmed_unreachable_units"] = (
+        sorted(set(str(unit["id"]) for unit in units) - exact_reachable)
+        if reachability["status"] == "complete"
+        else []
+    )
+    reachability["counts"].update({
+        "potential_units": len(potential),
+        "confirmed_unreachable_units": len(
+            reachability["confirmed_unreachable_units"]
+        ),
+    })
+    call_summaries = {
+        "status": "incomplete",
+        "summaries": [],
+        "reason": "owned_by_interprocedural_v2_phase",
+    }
+    for unit in units:
+        if str(unit["id"]) not in exact_reachable:
+            continue
+        semantics = unit.get("semantics")
+        outcome = semantics.get("outcome") if isinstance(semantics, Mapping) else None
+        faults = semantics.get("faults") if isinstance(semantics, Mapping) else None
+        if (
+            isinstance(outcome, Mapping)
+            and outcome.get("kind") == "fault"
+            and isinstance(faults, list)
+            and not faults
+        ):
+            issues.append(
+                ExportIssue(
+                    status="incomplete",
+                    category="terminal_fault_missing_fault_record",
+                    message=(
+                        "an explicit terminal fault outcome has no exact fault "
+                        "predicate or architectural fault class"
+                    ),
+                    next_action=(
+                        "emit the instruction-bound fault record before treating "
+                        "the outcome as checked exceptional termination"
+                    ),
+                    location=_location_from_unit(unit, "semantics.faults"),
+                )
+            )
+    exceptional = _exceptional_control_inventory(
+        units,
+        root_rvas={
+            int(root["rva"])
+            for root in roots
+            if isinstance(root.get("rva"), int)
+        },
+        indirect_exits=indirect,
+        internal_call_preservation=call_summaries,
+    )
+    provenance = {
+        "format": "stage-a-external-interface-provenance-v1",
+        "status": "incomplete",
+        "resolutions": [],
+        "static_interface_slots": [],
+        "rejected_tainted_slots": [],
+        "callback_registrations": [],
+        "issues": [{
+            "code": "owned_by_interprocedural_v2_phase",
+        }],
+    }
+    control = {
+        "executable_classification": copy.deepcopy(
+            dict(executable_classification)
+        ),
+        "roots": sorted(roots, key=_root_sort_key),
+        "direct_targets": sorted(
+            direct,
+            key=lambda item: (item["source_rva"], item["target_rva"]),
+        ),
+        "indirect_exits": sorted(
+            indirect,
+            key=lambda item: (item["source_rva"], item["source_unit_id"]),
+        ),
+        "recovered_indirect_targets": sorted(
+            recovered,
+            key=lambda item: (item["source_rva"], item["source_unit_id"]),
+        ),
+        "value_provenance": {"status": "incomplete", "resolutions": []},
+        "external_interface_provenance": provenance,
+        "operation_provenance": {
+            "format": "stage-a-operation-provenance-v2",
+            "status": "incomplete",
+            "resolutions": [],
+            "callback_registrations": [],
+            "issues": [{"code": "owned_by_interprocedural_v2_phase"}],
+        },
+        "internal_call_preservation": call_summaries,
+        "exceptional_control": exceptional,
+        "callback_cutpoint_proposals": list(callback_root_proposals),
+        "analysis_fixed_point": {
+            "format": "stage-a-interprocedural-analysis-v2",
+            "status": "incomplete",
+            "rounds": 0,
+            "cold_replay_validated": False,
+            "global_slot_promotion": False,
+            "failure_reasons": ["owned_by_interprocedural_v2_phase"],
+            "static_jump_table_rounds": static_rounds,
+            "static_jump_table_converged": static_converged,
+        },
+        "reachability": reachability,
+        "checked_jump_table_targets": list(checked_targets),
+        "indirect_target_profile": (
+            None
+            if target_profile is None
+            else {
+                "id": target_profile["id"],
+                "authority": "diagnostic_only",
+            }
+        ),
+        "counts": {
+            "roots": len(roots),
+            "direct_targets": len(direct),
+            "unresolved_direct_targets": sum(
+                item["status"] != "resolved" for item in direct
+            ),
+            "indirect_exits": len(indirect),
+            "closed_indirect_exits": sum(
+                item["closure"] == "checked_static_target_inventory"
+                for item in indirect
+            ),
+            "exact_reachable_units": len(exact_reachable),
+            "potential_reachable_units": len(potential),
+            "rooted_frontiers": len(reachability["frontiers"]),
+            "exceptional_transitions": len(exceptional["transitions"]),
+            "complete_exceptional_transitions": sum(
+                transition["status"] == "complete"
+                for transition in exceptional["transitions"]
+            ),
+            "checked_jump_table_targets": len(checked_targets),
+            "callback_cutpoint_proposals": len(callback_root_proposals),
+        },
+    }
+    return control, issues
 
 
 def _immutable_static_data_reader(
@@ -1669,17 +2492,29 @@ def _immutable_static_data_reader(
     return read
 
 
-def _control_inventory(
+def _classify_executable_data_before_control(
+    *,
     binary: StageABinary,
     units: Sequence[Mapping[str, Any]],
     reference: Mapping[str, Any],
-    *,
-    target_profile: Mapping[str, Any] | None,
-    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
-    interface_profiles: Sequence[ExternalInterfaceProfile],
-    operation_profiles: Sequence[ExternalOperationProfile],
-) -> tuple[dict[str, Any], list[ExportIssue]]:
-    starts = {int(unit["source"]["original"]["rva_start"]): unit for unit in units}
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, Any],
+    list[ExportIssue],
+    list[dict[str, Any]],
+]:
+    """Remove checked executable data and false overlapping decodes first.
+
+    Static extraction intentionally over-approximates possible unit starts.  A
+    rooted control graph must not be built over rows that are already proven to
+    be immutable jump-table data, nor over a speculative start in the interior
+    of an instruction reached from a real root.  This prepass has no authority
+    to discard a competing root or incoming edge: those conflicts fail closed.
+    """
+
+    starts = {
+        int(unit["source"]["original"]["rva_start"]): unit for unit in units
+    }
     block_starts = {
         str(unit["source_location"]["block_id"]): int(
             unit["source"]["original"]["rva_start"]
@@ -1687,7 +2522,266 @@ def _control_inventory(
         for unit in units
         if unit["source_location"].get("block_id")
     }
-    submitted_roots = [
+    root_rows = _initial_control_roots(binary, reference, block_starts)
+    root_unit_ids = [
+        str(starts[rva]["id"])
+        for root in root_rows
+        if isinstance((rva := root.get("rva")), int) and rva in starts
+    ]
+    direct_edges, internal_call_edges = _precontrol_direct_edges(units)
+    indirect_exits = _precontrol_indirect_exits(units)
+    static_recoveries, rounds, converged = _static_jump_table_recovery_fixed_point(
+        binary=binary,
+        units=units,
+        starts=starts,
+        indirect_exits=indirect_exits,
+        root_unit_ids=root_unit_ids,
+    )
+    data_ranges = recover_executable_data_ranges(
+        binary=binary,
+        recoveries=static_recoveries,
+        known_code_unit_rvas=set(starts),
+    )
+    data_spans = [RvaSpan(item.rva_start, item.rva_end) for item in data_ranges]
+    issues: list[ExportIssue] = []
+    conflicts: list[dict[str, Any]] = []
+
+    if not converged:
+        issues.append(
+            ExportIssue(
+                status="incomplete",
+                category="precontrol_static_data_fixed_point_budget_exceeded",
+                message="static executable-data recovery did not converge",
+                next_action=(
+                    "increase the generic fixed-point budget or reduce the "
+                    "finite control domain"
+                ),
+                location=SourceLocation(
+                    None,
+                    None,
+                    None,
+                    RvaSpan(binary.entrypoint_rva, binary.entrypoint_rva + 1),
+                    "executable_classification",
+                ),
+            )
+        )
+
+    excluded: dict[str, dict[str, Any]] = {}
+    for unit in units:
+        unit_span = _unit_original_span(unit)
+        overlaps = [
+            item
+            for item in data_ranges
+            if unit_span.start < item.rva_end and item.rva_start < unit_span.end
+        ]
+        if not overlaps:
+            continue
+        excluded[str(unit["id"])] = {
+            "unit_id": str(unit["id"]),
+            "rva_start": unit_span.start,
+            "rva_end": unit_span.end,
+            "reason": "intersects_checked_immutable_executable_data",
+            "evidence_ids": [item.identity for item in overlaps],
+        }
+
+    excluded_ids = set(excluded)
+    for root in root_rows:
+        rva = root.get("rva")
+        if isinstance(rva, int):
+            match = _range_containing(data_ranges, rva)
+            if match is not None:
+                conflicts.append({
+                    "code": "behavioral_root_inside_immutable_executable_data",
+                    "rva": rva,
+                    "evidence_id": match.identity,
+                })
+                issues.append(
+                    _classification_conflict_issue(
+                        category="behavioral_root_inside_immutable_executable_data",
+                        message=(
+                            f"behavioral root 0x{rva:x} lies inside checked "
+                            "immutable executable data"
+                        ),
+                        rva=rva,
+                        field="control.roots",
+                    )
+                )
+
+    for edge in (*direct_edges, *internal_call_edges):
+        source_id = str(edge.get("source_unit_id"))
+        target = edge.get("target_rva")
+        if source_id in excluded_ids or not isinstance(target, int):
+            continue
+        match = _range_containing(data_ranges, target)
+        if match is None:
+            continue
+        conflicts.append({
+            "code": "control_target_inside_immutable_executable_data",
+            "source_unit_id": source_id,
+            "target_rva": target,
+            "evidence_id": match.identity,
+        })
+        issues.append(
+            _classification_conflict_issue(
+                category="control_target_inside_immutable_executable_data",
+                message=(
+                    f"control target 0x{target:x} lies inside checked immutable "
+                    "executable data"
+                ),
+                rva=target,
+                field="control.direct_target",
+                unit_id=source_id,
+            )
+        )
+
+    for recovery in static_recoveries:
+        if str(recovery.get("source_unit_id")) in excluded_ids:
+            continue
+        for target in recovery.get("target_rvas", []):
+            if not isinstance(target, int):
+                continue
+            match = _range_containing(data_ranges, target)
+            if match is None:
+                continue
+            conflicts.append({
+                "code": "recovered_target_inside_immutable_executable_data",
+                "source_unit_id": recovery.get("source_unit_id"),
+                "target_rva": target,
+                "evidence_id": match.identity,
+            })
+            issues.append(
+                _classification_conflict_issue(
+                    category="recovered_target_inside_immutable_executable_data",
+                    message=(
+                        f"finite indirect target 0x{target:x} lies inside checked "
+                        "immutable executable data"
+                    ),
+                    rva=target,
+                    field="control.indirect_target",
+                    unit_id=str(recovery.get("source_unit_id")),
+                )
+            )
+
+    active = [unit for unit in units if str(unit["id"]) not in excluded_ids]
+    active_ids = {str(unit["id"]) for unit in active}
+    reachability = derive_rooted_reachable_units(
+        units=active,
+        roots=(unit_id for unit_id in root_unit_ids if unit_id in active_ids),
+        direct_edges=[
+            edge for edge in direct_edges if edge["source_unit_id"] in active_ids
+        ],
+        internal_call_edges=[
+            edge
+            for edge in internal_call_edges
+            if edge["source_unit_id"] in active_ids
+        ],
+        recovered_indirect_targets=[
+            recovery
+            for recovery in static_recoveries
+            if recovery.get("source_unit_id") in active_ids
+        ],
+        indirect_exits=[
+            exit_record
+            for exit_record in indirect_exits
+            if exit_record.get("source_unit_id") in active_ids
+        ],
+    )
+    reached_ids = set(reachability["reachable_units"])
+    target_sources = _precontrol_target_sources(
+        root_rows=root_rows,
+        direct_edges=direct_edges,
+        internal_call_edges=internal_call_edges,
+        recoveries=static_recoveries,
+        eligible_source_ids=reached_ids,
+    )
+    overlap_classification = classify_overlapping_instruction_starts(
+        units=active,
+        reachable_unit_ids=reached_ids,
+        target_sources=target_sources,
+    )
+    active_by_id = {str(unit["id"]): unit for unit in active}
+    for row in overlap_classification["excluded_units"]:
+        unit_id = str(row["unit_id"])
+        unit = active_by_id[unit_id]
+        excluded[unit_id] = {
+            "unit_id": unit_id,
+            "rva_start": int(unit["source"]["original"]["rva_start"]),
+            "rva_end": int(unit["source"]["original"]["rva_end"]),
+            "reason": row["reason"],
+            "instruction_evidence": copy.deepcopy(row["instruction_evidence"]),
+        }
+    for row in overlap_classification["conflicts"]:
+        conflicts.append(copy.deepcopy(row))
+        start = int(row["rva"])
+        issues.append(
+            _classification_conflict_issue(
+                category="independent_target_inside_reachable_instruction",
+                message=(
+                    f"unit start 0x{start:x} lies inside an instruction on "
+                    "another rooted path"
+                ),
+                rva=start,
+                field="executable_classification.instruction_interiors",
+                unit_id=str(row["unit_id"]),
+            )
+        )
+
+    retained = [
+        copy.deepcopy(dict(unit))
+        for unit in units
+        if str(unit["id"]) not in excluded
+    ]
+    range_rows = [_classification_range_payload(item) for item in data_ranges]
+    excluded_rows = sorted(
+        excluded.values(), key=lambda row: (int(row["rva_start"]), str(row["unit_id"]))
+    )
+    conflicts = sorted(
+        {
+            _canonical_json(row): copy.deepcopy(row) for row in conflicts
+        }.values(),
+        key=lambda row: (
+            int(row.get("rva", row.get("target_rva", -1))),
+            str(row.get("code")),
+            str(row.get("source_unit_id", row.get("unit_id", ""))),
+        ),
+    )
+    status = (
+        "violated"
+        if conflicts
+        else "incomplete"
+        if not converged
+        else "complete"
+    )
+    return retained, {
+        "format": "stage-a-precontrol-executable-classification-v1",
+        "status": status,
+        "proof_authority": False,
+        "ordering": "before_rooted_control_closure",
+        "immutable_data_ranges": range_rows,
+        "excluded_units": excluded_rows,
+        "conflicts": conflicts,
+        "analysis": {
+            "static_jump_table_rounds": rounds,
+            "static_jump_table_converged": converged,
+            "preclassification_reachable_units": sorted(reached_ids),
+        },
+        "counts": {
+            "input_units": len(units),
+            "retained_units": len(retained),
+            "excluded_units": len(excluded_rows),
+            "immutable_data_ranges": len(range_rows),
+            "immutable_data_bytes": sum(item.size for item in data_ranges),
+            "conflicts": len(conflicts),
+        },
+    }, issues, static_recoveries
+
+
+def _initial_control_roots(
+    binary: StageABinary,
+    reference: Mapping[str, Any],
+    block_starts: Mapping[str, int],
+) -> list[dict[str, Any]]:
+    submitted = [
         _resolved_root(root, block_starts)
         for root in reference.get("roots", [])
         if isinstance(root, Mapping)
@@ -1705,14 +2799,197 @@ def _control_inventory(
         for rva in binary.tls_callback_rvas or ()
     )
     roots_by_rva: dict[int, dict[str, Any]] = {}
-    for root in (*binary_roots, *submitted_roots):
+    for root in (*binary_roots, *submitted):
         raw_rva = root.get("rva", root.get("target_rva"))
         if not isinstance(raw_rva, int):
             continue
         canonical = roots_by_rva.setdefault(raw_rva, copy.deepcopy(dict(root)))
         for key, value in root.items():
             canonical.setdefault(key, copy.deepcopy(value))
-    callback_root_proposals = _callback_registration_roots(binary, units)
+    return list(roots_by_rva.values())
+
+
+def _precontrol_direct_edges(
+    units: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    direct: list[dict[str, Any]] = []
+    internal: list[dict[str, Any]] = []
+    for unit in units:
+        source_id = str(unit["id"])
+        source_rva = int(unit["source"]["original"]["rva_start"])
+        for target in unit["control"]["direct_targets"]:
+            direct.append({
+                "kind": "direct_control",
+                "source_unit_id": source_id,
+                "source_rva": source_rva,
+                "target_rva": int(target),
+            })
+        events = unit.get("semantics", {}).get("external_events", [])
+        if not isinstance(events, list):
+            continue
+        for event_index, event in enumerate(events):
+            if (
+                isinstance(event, Mapping)
+                and event.get("kind") == "internal_call"
+                and isinstance(event.get("target_rva"), int)
+            ):
+                internal.append({
+                    "kind": "internal_call",
+                    "source_unit_id": source_id,
+                    "source_rva": source_rva,
+                    "source_event_index": event_index,
+                    "target_rva": int(event["target_rva"]),
+                })
+    return direct, internal
+
+
+def _precontrol_indirect_exits(
+    units: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    exits: list[dict[str, Any]] = []
+    for unit in units:
+        source_id = str(unit["id"])
+        source_rva = int(unit["source"]["original"]["rva_start"])
+        if unit["control"]["has_indirect_target"]:
+            row = {
+                "source_unit_id": source_id,
+                "source_rva": source_rva,
+                "kind": unit["control"]["kind"],
+                "target_expression": copy.deepcopy(
+                    unit["semantics"]["outcome"].get("target")
+                ),
+            }
+            row["id"] = indirect_exit_id_v2(row)
+            exits.append(row)
+        events = unit.get("semantics", {}).get("external_events", [])
+        if not isinstance(events, list):
+            continue
+        for event_index, event in enumerate(events):
+            if not isinstance(event, Mapping) or event.get("kind") not in {
+                "indirect_call",
+                "indirect_jump",
+            }:
+                continue
+            row = {
+                "source_unit_id": source_id,
+                "source_rva": source_rva,
+                "source_event_index": event_index,
+                "kind": event["kind"],
+                "target_expression": copy.deepcopy(event.get("target")),
+            }
+            row["id"] = indirect_exit_id_v2(row)
+            exits.append(row)
+    return exits
+
+
+def _precontrol_target_sources(
+    *,
+    root_rows: Sequence[Mapping[str, Any]],
+    direct_edges: Sequence[Mapping[str, Any]],
+    internal_call_edges: Sequence[Mapping[str, Any]],
+    recoveries: Sequence[Mapping[str, Any]],
+    eligible_source_ids: set[str],
+) -> dict[int, list[str]]:
+    result: dict[int, set[str]] = {}
+    for root in root_rows:
+        if isinstance(root.get("rva"), int):
+            result.setdefault(int(root["rva"]), set()).add("behavioral_root")
+    for edge in (*direct_edges, *internal_call_edges):
+        if (
+            edge.get("source_unit_id") in eligible_source_ids
+            and isinstance(edge.get("target_rva"), int)
+        ):
+            result.setdefault(int(edge["target_rva"]), set()).add(
+                str(edge.get("kind"))
+            )
+    for recovery in recoveries:
+        if recovery.get("source_unit_id") not in eligible_source_ids:
+            continue
+        for target in recovery.get("target_rvas", []):
+            if isinstance(target, int):
+                result.setdefault(target, set()).add("finite_indirect_target")
+    return {rva: sorted(sources) for rva, sources in result.items()}
+
+
+def _unit_original_span(unit: Mapping[str, Any]) -> RvaSpan:
+    source = unit["source"]["original"]
+    return RvaSpan(int(source["rva_start"]), int(source["rva_end"]))
+
+
+def _range_containing(ranges: Sequence[Any], rva: int) -> Any | None:
+    return next(
+        (item for item in ranges if item.rva_start <= rva < item.rva_end),
+        None,
+    )
+
+
+def _classification_range_payload(item: Any) -> dict[str, Any]:
+    return {
+        "id": item.identity,
+        "rva_start": item.rva_start,
+        "rva_end": item.rva_end,
+        "size": item.size,
+        "section_index": item.section_index,
+        "section_name": item.section_name,
+        "bytes_sha256": item.bytes_sha256,
+        "kinds": list(item.kinds),
+        "recovery_ids": list(item.recovery_ids),
+    }
+
+
+def _classification_conflict_issue(
+    *,
+    category: str,
+    message: str,
+    rva: int,
+    field: str,
+    unit_id: str | None = None,
+) -> ExportIssue:
+    return ExportIssue(
+        status="violated",
+        category=category,
+        message=message,
+        next_action=(
+            "repair static code/data classification or provide checked evidence "
+            "for an intentional overlapping-code entry"
+        ),
+        location=SourceLocation(
+            unit_id,
+            None,
+            None,
+            RvaSpan(rva, rva + 1),
+            field,
+        ),
+    )
+
+
+def _control_inventory(
+    binary: StageABinary,
+    units: Sequence[dict[str, Any]],
+    reference: Mapping[str, Any],
+    *,
+    executable_classification: Mapping[str, Any],
+    preclassified_static_recoveries: Sequence[Mapping[str, Any]],
+    target_profile: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], list[ExportIssue]]:
+    starts = {int(unit["source"]["original"]["rva_start"]): unit for unit in units}
+    block_starts = {
+        str(unit["source_location"]["block_id"]): int(
+            unit["source"]["original"]["rva_start"]
+        )
+        for unit in units
+        if unit["source_location"].get("block_id")
+    }
+    initial_roots = _initial_control_roots(binary, reference, block_starts)
+    roots_by_rva: dict[int, dict[str, Any]] = {}
+    for root in initial_roots:
+        raw_rva = root.get("rva", root.get("target_rva"))
+        if not isinstance(raw_rva, int):
+            continue
+        canonical = roots_by_rva.setdefault(raw_rva, copy.deepcopy(dict(root)))
+        for key, value in root.items():
+            canonical.setdefault(key, copy.deepcopy(value))
+    callback_root_proposals = _local_callback_cutpoint_proposals(binary, units)
     roots = list(roots_by_rva.values())
 
     direct: list[dict[str, Any]] = []
@@ -1756,7 +3033,7 @@ def _control_inventory(
                     "kind": control["kind"],
                     "target_expression": copy.deepcopy(unit["semantics"]["outcome"].get("target")),
                 }
-            item["id"] = _indirect_exit_id(item)
+            item["id"] = indirect_exit_id_v2(item)
             indirect.append(item)
         raw_events = unit["semantics"].get("external_events")
         if isinstance(raw_events, list):
@@ -1801,7 +3078,7 @@ def _control_inventory(
                             "kind": kind,
                             "target_expression": copy.deepcopy(event.get("target")),
                         }
-                    item["id"] = _indirect_exit_id(item)
+                    item["id"] = indirect_exit_id_v2(item)
                     indirect.append(item)
     for root in roots:
         rva = root.get("rva", root.get("target_rva")) if isinstance(root, Mapping) else None
@@ -1827,19 +3104,17 @@ def _control_inventory(
     internal_call_edges = [
         item for item in direct if item["kind"] == "internal_call"
     ]
-    static_recoveries: list[dict[str, Any]] = []
-    static_control_rounds = 0
-    static_control_converged = True
-    control_fixed_point_rounds = 0
-    control_fixed_point_converged = True
-    while True:
-        root_unit_ids = [
-            starts[int(root["rva"])]["id"]
-            for root in roots
-            if isinstance(root.get("rva"), int) and int(root["rva"]) in starts
-        ]
+    if preclassified_static_recoveries:
+        exact_static_recoveries = _rebind_preclassified_static_recoveries(
+            indirect_exits=indirect,
+            recoveries=preclassified_static_recoveries,
+            starts=starts,
+        )
+        static_rounds = 0
+        static_converged = True
+    else:
         (
-            static_recoveries,
+            exact_static_recoveries,
             static_rounds,
             static_converged,
         ) = _static_jump_table_recovery_fixed_point(
@@ -1849,249 +3124,448 @@ def _control_inventory(
             indirect_exits=indirect,
             root_unit_ids=root_unit_ids,
         )
-        static_control_rounds += static_rounds
-        static_control_converged &= static_converged
-        (
-            value_provenance,
-            external_interface_provenance,
-            internal_call_preservation,
-            recovered_targets,
-            fixed_point_rounds,
-            fixed_point_converged,
-        ) = _control_provenance_fixed_point(
-            binary=binary,
-            units=units,
-            root_unit_ids=root_unit_ids,
-            direct_edges=direct_control_edges,
-            internal_call_edges=internal_call_edges,
-            indirect_exits=indirect,
-            static_recoveries=static_recoveries,
-            import_abis=import_abis,
-            interface_profiles=interface_profiles,
-            operation_profiles=operation_profiles,
-        )
-        control_fixed_point_rounds += fixed_point_rounds
-        control_fixed_point_converged &= fixed_point_converged
-        reachability = derive_rooted_reachable_units(
-            units=units,
-            roots=root_unit_ids,
-            direct_edges=direct_control_edges,
-            internal_call_edges=internal_call_edges,
-            recovered_indirect_targets=recovered_targets,
-            indirect_exits=indirect,
-        )
-        reachable_sources = set(reachability["reachable_units"])
-        newly_eligible = _newly_eligible_callback_roots(
-            callback_root_proposals, reachable_sources, roots_by_rva
-        )
-        if not newly_eligible:
-            break
-        for proposal in newly_eligible:
-            roots_by_rva[int(proposal["rva"])] = proposal
-        roots = list(roots_by_rva.values())
-
-    if not control_fixed_point_converged:
-        issues.append(
-            ExportIssue(
-                status="incomplete",
-                category="control_provenance_fixed_point_budget_exceeded",
-                message="call preservation and value provenance did not converge",
-                next_action="increase the generic fixed-point budget or reduce the abstract domain",
-                location=SourceLocation(
-                    None, None, None, RvaSpan(binary.entrypoint_rva, binary.entrypoint_rva + 1),
-                    "control.fixed_point",
-                ),
-            )
-        )
-    if not static_control_converged:
-        issues.append(
-            ExportIssue(
-                status="incomplete",
-                category="static_jump_table_fixed_point_budget_exceeded",
-                message="finite index domains and static target inventories did not converge",
-                next_action="increase the generic fixed-point budget or reduce the finite domain",
-                location=SourceLocation(
-                    None,
-                    None,
-                    None,
-                    RvaSpan(binary.entrypoint_rva, binary.entrypoint_rva + 1),
-                    "control.static_jump_tables",
-                ),
-            )
-        )
-
-    for exit_record, static_recovery, selected_recovery in zip(
-        indirect, static_recoveries, recovered_targets, strict=True
-    ):
-        source_unit = next(
-            unit for unit in units if unit["id"] == exit_record["source_unit_id"]
-        )
-        unit_binding_complete = _indirect_recovery_unit_binding_complete(
-            selected_recovery, starts
-        )
-        if selected_recovery["status"] == "recovered" and unit_binding_complete:
-            exit_record["closure"] = "checked_finite_target_inventory"
-            exit_record["target_rvas"] = list(
-                selected_recovery.get("target_rvas", [])
-            )
-            exit_record["target_unit_ids"] = list(
-                selected_recovery.get("target_unit_ids", [])
-            )
-            exit_record["external_targets"] = copy.deepcopy(
-                selected_recovery.get("external_targets", [])
-            )
-            if static_recovery["status"] == "recovered":
-                exit_record["recovery"] = {
-                    "kind": static_recovery["kind"],
-                    "index": static_recovery["index"],
-                    "table": static_recovery["table"],
-                    "entries": static_recovery["entries"],
-                }
-            else:
-                exit_record["recovery"] = {
-                    "kind": (
-                        "bounded_external_interface_provenance"
-                        if selected_recovery.get("closure")
-                        == "checked_profile_interface_method_inventory"
-                        else "bounded_external_operation_provenance"
-                        if selected_recovery.get("closure")
-                        == "checked_external_operation_inventory"
-                        else "bounded_value_provenance"
-                    ),
-                    "closure": selected_recovery["closure"],
-                    "origin_count": selected_recovery.get("origin_count"),
-                }
-            continue
-
-        checked = _indirect_exit_has_checked_targets(
-            exit_record, checked_targets, units
-        )
-        profiled = target_profile is not None
-        exit_record["closure"] = (
-            "checked_target_marker_without_inventory"
-            if checked
-            else "explicit_trusted_target_profile_without_inventory"
-            if profiled
-            else "unresolved"
-        )
-        if selected_recovery.get("status") == "recovered":
-            recovery_failure: Mapping[str, Any] = {
-                "code": "unmaterialized_indirect_target",
-                "message": (
-                    "a checked finite target inventory contains an executable "
-                    "RVA without one exact machine-IR unit"
-                ),
-            }
-        else:
-            recovery_failure = selected_recovery.get("failure")
-        if not isinstance(recovery_failure, Mapping):
-            recovery_failure = static_recovery["failure"]
-        exit_record["recovery_failure"] = copy.deepcopy(recovery_failure)
-        issues.append(
-            ExportIssue(
-                status="incomplete",
-                category="unresolved_indirect_control",
-                message=(
-                    "indirect control exit has no checked finite target inventory: "
-                    + str(recovery_failure["message"])
-                ),
-                next_action=(
-                    "supply path-sensitive bounds and an immutable checked target table; "
-                    "a marker or global target profile does not establish rooted closure"
-                ),
-                location=_location_from_unit(source_unit, "control.indirect_target"),
-            )
-        )
-
-    exact_reachable = set(reachability["reachable_units"])
-    starts_by_id = {str(unit["id"]): unit for unit in units}
-    potentially_reachable = (
-        set(starts_by_id)
-        if reachability["status"] != "complete"
-        else exact_reachable
+    return _exact_only_control_inventory(
+        binary=binary,
+        units=units,
+        roots=roots,
+        direct=direct,
+        indirect=indirect,
+        direct_control_edges=direct_control_edges,
+        internal_call_edges=internal_call_edges,
+        static_recoveries=exact_static_recoveries,
+        executable_classification=executable_classification,
+        callback_root_proposals=callback_root_proposals,
+        checked_targets=checked_targets,
+        static_rounds=static_rounds,
+        static_converged=static_converged,
+        target_profile=target_profile,
     )
+
+
+def _exceptional_control_inventory(
+    units: Sequence[Mapping[str, Any]],
+    *,
+    root_rvas: Iterable[int] = (),
+    indirect_exits: Sequence[Mapping[str, Any]] = (),
+    internal_call_preservation: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Project exact reachable fault sites into fail-closed control records.
+
+    A symbolic fault predicate does not establish whether Windows SEH handles the
+    fault.  A site can close locally only when the semantic outcome explicitly
+    terminates in that fault or the explicit arithmetic predicate is proved false
+    for every machine-IR input.  Every other site remains an unresolved frontier.
+    """
+
+    # v1 retains this projection for diagnostics only. Non-local fault
+    # infeasibility is authoritative only through the v2 SCC invariant checker;
+    # bounded predecessor enumeration cannot establish loop-wide behavior.
+    del root_rvas, indirect_exits, internal_call_preservation
+    transitions: list[dict[str, Any]] = []
     for unit in units:
+        if unit.get("reachable") is not True:
+            continue
         unit_id = str(unit["id"])
-        unit["reachable"] = unit_id in exact_reachable
-        unit["reachability"] = (
-            "reachable"
-            if unit_id in exact_reachable
-            else "potential"
-            if unit_id in potentially_reachable
-            else "unreachable"
-        )
-    reachability["potential_units"] = sorted(potentially_reachable - exact_reachable)
-    reachability["confirmed_unreachable_units"] = (
-        sorted(set(starts_by_id) - exact_reachable)
-        if reachability["status"] == "complete"
-        else []
-    )
-    reachability["counts"].update(
-        {
-            "potential_units": len(potentially_reachable - exact_reachable),
-            "confirmed_unreachable_units": len(
-                reachability["confirmed_unreachable_units"]
-            ),
-        }
-    )
-    return (
-        {
-            "roots": sorted(roots, key=_root_sort_key),
-            "direct_targets": sorted(direct, key=lambda item: (item["source_rva"], item["target_rva"])),
-            "indirect_exits": sorted(indirect, key=lambda item: (item["source_rva"], item["source_unit_id"])),
-            "recovered_indirect_targets": sorted(
-                recovered_targets,
-                key=lambda item: (item["source_rva"], item["source_unit_id"]),
-            ),
-            "value_provenance": value_provenance,
-            "external_interface_provenance": external_interface_provenance,
-            "operation_provenance": operation_provenance_view(
-                external_interface_provenance
-            ),
-            "internal_call_preservation": internal_call_preservation,
-            "callback_cutpoint_proposals": callback_root_proposals,
-            "analysis_fixed_point": {
-                "status": (
-                    "complete"
-                    if control_fixed_point_converged and static_control_converged
-                    else "incomplete"
-                ),
-                "rounds": control_fixed_point_rounds,
-                "static_jump_table_rounds": static_control_rounds,
-                "static_jump_table_converged": static_control_converged,
-                "callback_root_reanalysis": True,
-            },
-            "reachability": reachability,
-            "checked_jump_table_targets": checked_targets,
-            "indirect_target_profile": (
+        source_rva = int(unit["source"]["original"]["rva_start"])
+        source_contract_sha256 = str(unit["source"]["contract_sha256"])
+        semantics = unit.get("semantics")
+        if not isinstance(semantics, Mapping):
+            continue
+        faults = semantics.get("faults")
+        if not isinstance(faults, list):
+            continue
+        outcome = semantics.get("outcome")
+        for fault_index, raw_fault in enumerate(faults):
+            if not isinstance(raw_fault, Mapping):
+                continue
+            fault = copy.deepcopy(dict(raw_fault))
+            fault_sha256 = sha256_bytes(_canonical_json(fault))
+            terminal_fault = _is_explicit_terminal_fault(unit, fault)
+            outcome_sha256 = (
+                sha256_bytes(_canonical_json(outcome)) if terminal_fault else None
+            )
+            infeasibility = (
                 None
-                if target_profile is None
-                else {
-                    "id": target_profile["id"],
-                    "internal_target_domain": target_profile["internal_target_domain"],
-                    "external_target_domain": target_profile["external_target_domain"],
-                    "runtime_rejection_required": True,
+                if terminal_fault
+                else _checked_fault_infeasibility(
+                    unit=unit,
+                    fault=fault,
+                    fault_index=fault_index,
+                    fault_sha256=fault_sha256,
+                )
+            )
+            if (
+                isinstance(infeasibility, Mapping)
+                and infeasibility.get("status") != "complete"
+            ):
+                infeasibility = {
+                    **dict(infeasibility),
+                    "scc_invariant_requirement": {
+                        "format": "stage-a-scc-exception-invariant-requirement-v2",
+                        "status": "incomplete",
+                        "source_unit_id": unit_id,
+                        "source_fault_index": fault_index,
+                        "fault_sha256": fault_sha256,
+                        "reason": "checked_scc_invariant_certificate_required",
+                    },
                 }
+            transition: dict[str, Any] = {
+                "source_unit_id": unit_id,
+                "source_fault_index": fault_index,
+                "source_rva": source_rva,
+                "instruction_rva": fault.get("instruction_rva"),
+                "fault_kind": fault.get("kind"),
+                "fault_sha256": fault_sha256,
+            }
+            if terminal_fault:
+                certificate = {
+                    "format": "stage-a-explicit-terminal-fault-certificate-v1",
+                    "source_unit_id": unit_id,
+                    "source_fault_index": fault_index,
+                    "source_contract_sha256": source_contract_sha256,
+                    "fault_sha256": fault_sha256,
+                    "outcome_sha256": outcome_sha256,
+                }
+                transition.update(
+                    {
+                        "status": "complete",
+                        "disposition": {
+                            "kind": "termination",
+                            "observable": True,
+                            "evidence": {
+                                "status": "checked",
+                                "checker": (
+                                    "stage-a-machine-ir-explicit-terminal-fault-v1"
+                                ),
+                                "certificate_sha256": sha256_bytes(
+                                    _canonical_json(certificate)
+                                ),
+                                "certificate": certificate,
+                            },
+                        },
+                    }
+                )
+            elif infeasibility is not None and infeasibility["status"] == "complete":
+                transition.update(
+                    {
+                        "status": "complete",
+                        "disposition": {
+                            "kind": "infeasible",
+                            "observable": False,
+                            "evidence": infeasibility["evidence"],
+                        },
+                    }
+                )
+            else:
+                feasibility = (
+                    infeasibility.get("feasibility")
+                    if isinstance(infeasibility, Mapping)
+                    else None
+                )
+                analysis = (
+                    infeasibility.get("analysis")
+                    if isinstance(infeasibility, Mapping)
+                    else None
+                )
+                scc_invariant_requirement = (
+                    infeasibility.get("scc_invariant_requirement")
+                    if isinstance(infeasibility, Mapping)
+                    else None
+                )
+                abstract_possible = (
+                    isinstance(analysis, Mapping)
+                    and bool(analysis.get("stateful_leaf_abstractions"))
+                    and isinstance(feasibility, Mapping)
+                    and feasibility.get("status") == "violated"
+                )
+                reason = (
+                    (
+                        "fault predicate is satisfiable in the conservative "
+                        "stateful-leaf over-approximation and has no checked "
+                        "infeasibility or SEH target"
+                    )
+                    if abstract_possible
+                    else "fault predicate is satisfiable and has no checked SEH target"
+                    if isinstance(feasibility, Mapping)
+                    and feasibility.get("status") == "violated"
+                    else (
+                        "fault predicate is outside the checked local "
+                        "infeasibility fragment and has no terminal outcome or "
+                        "SEH target"
+                    )
+                )
+                transition.update(
+                    {
+                        "status": "incomplete",
+                        "disposition": {
+                            "kind": "unresolved",
+                            "reason": reason,
+                            "evidence": {
+                                "status": (
+                                    "checked_abstract_possible"
+                                    if abstract_possible
+                                    else "checked_possible"
+                                    if isinstance(feasibility, Mapping)
+                                    and feasibility.get("status") == "violated"
+                                    else "unchecked"
+                                ),
+                                "checker": (
+                                    "stage-a-machine-ir-exceptional-control-v1"
+                                ),
+                                **(
+                                    {"feasibility": feasibility}
+                                    if isinstance(feasibility, Mapping)
+                                    else {}
+                                ),
+                                **(
+                                    {"analysis": analysis}
+                                    if isinstance(analysis, Mapping)
+                                    else {}
+                                ),
+                                **(
+                                    {
+                                        "scc_invariant_requirement": (
+                                            scc_invariant_requirement
+                                        )
+                                    }
+                                    if isinstance(
+                                        scc_invariant_requirement, Mapping
+                                    )
+                                    else {}
+                                ),
+                            },
+                        },
+                    }
+                )
+            transitions.append(transition)
+    transitions.sort(
+        key=lambda row: (
+            int(row["source_rva"]),
+            str(row["source_unit_id"]),
+            int(row["source_fault_index"]),
+        )
+    )
+    return {
+        "format": "stage-a-exceptional-control-v1",
+        "status": (
+            "complete"
+            if all(row["status"] == "complete" for row in transitions)
+            else "incomplete"
+        ),
+        "transitions": transitions,
+        "counts": {
+            "transitions": len(transitions),
+            "complete": sum(row["status"] == "complete" for row in transitions),
+            "incomplete": sum(
+                row["status"] == "incomplete" for row in transitions
             ),
-            "counts": {
-                "roots": len(roots),
-                "direct_targets": len(direct),
-                "unresolved_direct_targets": sum(item["status"] != "resolved" for item in direct),
-                "indirect_exits": len(indirect),
-                "closed_indirect_exits": sum(
-                    item["closure"] == "checked_finite_target_inventory"
-                    for item in indirect
-                ),
-                "exact_reachable_units": len(exact_reachable),
-                "potential_reachable_units": len(
-                    potentially_reachable - exact_reachable
-                ),
-                "rooted_frontiers": len(reachability["frontiers"]),
-                "checked_jump_table_targets": len(checked_targets),
-                "callback_cutpoint_proposals": len(callback_root_proposals),
-            },
         },
-        issues,
+    }
+
+
+_QF_BV_LOCALLY_DECIDABLE_FAULT_KINDS = frozenset({"divide_error"})
+def _checked_fault_infeasibility(
+    *,
+    unit: Mapping[str, Any],
+    fault: Mapping[str, Any],
+    fault_index: int,
+    fault_sha256: str,
+) -> dict[str, Any] | None:
+    """Prove an explicit, local arithmetic fault predicate is always false.
+
+    The checker intentionally excludes segment-, page-, x87-, and
+    platform-mediated fault classes.  Their absence cannot be established from
+    a straight-line bitvector predicate alone.  Stateful bitvector leaves are
+    over-approximated as independent inputs, so only an unsatisfiable predicate
+    can close the transition.
+    """
+
+    fault_kind = fault.get("kind")
+    condition = fault.get("condition")
+    if (
+        fault_kind not in _QF_BV_LOCALLY_DECIDABLE_FAULT_KINDS
+        or not isinstance(condition, Mapping)
+    ):
+        return None
+
+    abstract_condition, abstractions, input_widths = (
+        _abstract_fault_predicate_stateful_leaves(condition)
+    )
+    result = check_straight_line_semantic_claim(
+        {"fault_condition": abstract_condition},
+        {
+            "fault_condition": {
+                "op": "const",
+                "value": 0,
+                "width": 32,
+            }
+        },
+        input_widths=input_widths,
+        solver_timeout_ms=2_000,
+    )
+    result_payload = result.to_payload()
+    analysis = {
+        "format": "stage-a-qf-bv-fault-predicate-analysis-v1",
+        "fault_sha256": fault_sha256,
+        "predicate_sha256": sha256_bytes(_canonical_json(condition)),
+        "abstract_predicate_sha256": sha256_bytes(
+            _canonical_json(abstract_condition)
+        ),
+        "stateful_leaf_abstractions": abstractions,
+    }
+    if result.status != "qualified":
+        return {
+            "status": "incomplete",
+            "feasibility": result_payload,
+            "analysis": analysis,
+        }
+
+    unit_id = str(unit["id"])
+    source_contract_sha256 = str(unit["source"]["contract_sha256"])
+    predicate_sha256 = sha256_bytes(_canonical_json(condition))
+    certificate = {
+        "format": "stage-a-qf-bv-fault-infeasibility-certificate-v1",
+        "source_unit_id": unit_id,
+        "source_fault_index": fault_index,
+        "source_contract_sha256": source_contract_sha256,
+        "fault_kind": fault_kind,
+        "fault_sha256": fault_sha256,
+        "predicate_sha256": predicate_sha256,
+        "abstract_predicate_sha256": analysis["abstract_predicate_sha256"],
+        "stateful_leaf_abstractions": abstractions,
+        "claim": "fault_condition_is_zero_for_all_machine_ir_inputs",
+        "checked_claims": list(result.checked_claims),
+    }
+    return {
+        "status": "complete",
+        "evidence": {
+            "status": "checked",
+            "checker": "stage-a-machine-ir-qf-bv-fault-infeasibility-v1",
+            "trust_boundary": result.trust_boundary,
+            "certificate_sha256": sha256_bytes(_canonical_json(certificate)),
+            "certificate": certificate,
+        },
+    }
+
+
+_FAULT_PREDICATE_ABSTRACT_LEAF_OPS = frozenset(
+    {
+        "call_flag",
+        "call_response",
+        "load",
+        "undefined_bv",
+        "undefined_flag",
+    }
+)
+
+
+def _abstract_fault_predicate_stateful_leaves(
+    condition: Mapping[str, Any],
+    *,
+    share_identical: bool = False,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, int]]:
+    """Over-approximate stateful bitvector leaves with independent inputs.
+
+    Independence deliberately forgets load aliasing and external-state
+    constraints.  Proving the fault predicate false in this larger state space
+    is sound; a satisfying assignment is diagnostic only and never closes the
+    transition.
+    """
+
+    abstractions: list[dict[str, Any]] = []
+    input_widths: dict[str, int] = {}
+    shared_names: dict[tuple[str, str, int], str] = {}
+
+    def visit(value: Any) -> Any:
+        if isinstance(value, list):
+            return [visit(item) for item in value]
+        if not isinstance(value, Mapping):
+            return copy.deepcopy(value)
+        op = value.get("op")
+        if op in _FAULT_PREDICATE_ABSTRACT_LEAF_OPS:
+            if op == "load":
+                raw_width = value.get("width")
+                width = (
+                    int(raw_width) * 8
+                    if isinstance(raw_width, int)
+                    and not isinstance(raw_width, bool)
+                    and raw_width in {1, 2, 4}
+                    else 32
+                )
+            elif op in {"call_flag", "undefined_flag"}:
+                width = 1
+            else:
+                raw_width = value.get("width", 32)
+                width = (
+                    int(raw_width)
+                    if isinstance(raw_width, int)
+                    and not isinstance(raw_width, bool)
+                    and 1 <= int(raw_width) <= 32
+                    else 32
+                )
+            source_sha256 = sha256_bytes(_canonical_json(value))
+            shared_key = (str(op), source_sha256, width)
+            name = shared_names.get(shared_key) if share_identical else None
+            if name is None:
+                name = f"fault_leaf_{len(abstractions):04d}"
+                abstractions.append(
+                    {
+                        "name": name,
+                        "source_op": op,
+                        "source_sha256": source_sha256,
+                        "width": width,
+                        "relation": (
+                            "identical_expression_shared_arbitrary_value_"
+                            "overapproximation"
+                            if share_identical
+                            else "independent_arbitrary_value_overapproximation"
+                        ),
+                    }
+                )
+                if share_identical:
+                    shared_names[shared_key] = name
+            input_widths[name] = width
+            return {"op": "reg", "name": name, "width": width}
+        return {str(key): visit(item) for key, item in value.items()}
+
+    return visit(condition), abstractions, input_widths
+
+
+def _is_explicit_terminal_fault(
+    unit: Mapping[str, Any], fault: Mapping[str, Any]
+) -> bool:
+    semantics = unit.get("semantics")
+    outcome = semantics.get("outcome") if isinstance(semantics, Mapping) else None
+    if not isinstance(outcome, Mapping) or outcome.get("kind") != "fault":
+        return False
+    fault_kind = fault.get("kind")
+    if not isinstance(fault_kind, str) or not fault_kind or fault_kind == "unknown":
+        return False
+    declared_kind = outcome.get("fault_kind")
+    if declared_kind is not None and declared_kind != fault_kind:
+        return False
+    instruction_rva = fault.get("instruction_rva")
+    source = unit.get("source")
+    original = source.get("original") if isinstance(source, Mapping) else None
+    if (
+        not isinstance(instruction_rva, int)
+        or isinstance(instruction_rva, bool)
+        or not isinstance(original, Mapping)
+        or not isinstance(original.get("rva_start"), int)
+        or not isinstance(original.get("rva_end"), int)
+        or not int(original["rva_start"]) <= instruction_rva < int(original["rva_end"])
+    ):
+        return False
+    condition = fault.get("condition")
+    if not isinstance(condition, Mapping):
+        return False
+    if condition.get("op") == "true":
+        return True
+    return (
+        condition.get("op") == "const"
+        and isinstance(condition.get("value"), int)
+        and not isinstance(condition.get("value"), bool)
+        and condition.get("value") != 0
     )
 
 
@@ -2126,6 +3600,75 @@ def _indirect_recovery_unit_binding_complete(
     return external is not None and bool(target_rvas or external)
 
 
+def _recovery_failure_message(failure: Mapping[str, Any]) -> str:
+    """Render legacy diagnostics without adding prose to v2 authority records."""
+
+    message = failure.get("message")
+    if isinstance(message, str) and message:
+        return message
+    code = failure.get("code")
+    if isinstance(code, str) and code:
+        return code
+    return "indirect target recovery is incomplete"
+
+
+def _rebind_preclassified_static_recoveries(
+    *,
+    indirect_exits: Sequence[Mapping[str, Any]],
+    recoveries: Sequence[Mapping[str, Any]],
+    starts: Mapping[int, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Bind pre-control recovery facts to the filtered canonical unit index."""
+
+    by_id = {
+        str(recovery.get("id")): recovery
+        for recovery in recoveries
+        if isinstance(recovery, Mapping) and isinstance(recovery.get("id"), str)
+    }
+    rebound: list[dict[str, Any]] = []
+    for exit_record in indirect_exits:
+        identity = str(exit_record["id"])
+        source = by_id.get(identity)
+        if source is None:
+            raise MachineIRExportError(
+                f"pre-control recovery inventory omits {identity}",
+                code="precontrol_recovery_inventory_mismatch",
+                unit_id=str(exit_record.get("source_unit_id")),
+                rva=int(exit_record.get("source_rva", 0)),
+            )
+        recovery = copy.deepcopy(dict(source))
+        recovery_kind = recovery.get("recovery_kind")
+        target_rvas = [
+            int(rva)
+            for rva in recovery.get("target_rvas", [])
+            if isinstance(rva, int) and not isinstance(rva, bool)
+        ]
+        resolved = sorted(rva for rva in target_rvas if rva in starts)
+        unresolved = sorted(rva for rva in target_rvas if rva not in starts)
+        recovery["target_unit_ids"] = [starts[rva]["id"] for rva in resolved]
+        recovery["unit_binding"] = {
+            "status": (
+                "complete"
+                if recovery.get("status") == "recovered" and not unresolved
+                else "incomplete"
+            ),
+            "resolved_target_rvas": resolved,
+            "unmaterialized_target_rvas": unresolved,
+        }
+        if (
+            recovery.get("status") == "recovered"
+            and recovery.get("closure") == "checked_finite_target_inventory"
+            and recovery_kind == "pe32_indexed_absolute_jump_table"
+            and recovery.get("failure") is None
+            and _indirect_recovery_unit_binding_complete(recovery, starts)
+        ):
+            recovery["target_set_dependency"] = (
+                build_bounded_selector_dependency_v2(recovery)
+            )
+        rebound.append(recovery)
+    return rebound
+
+
 def _static_jump_table_recovery_fixed_point(
     *,
     binary: StageABinary,
@@ -2136,6 +3679,7 @@ def _static_jump_table_recovery_fixed_point(
     max_rounds: int = 16,
 ) -> tuple[list[dict[str, Any]], int, bool]:
     units_by_id = {str(unit["id"]): unit for unit in units}
+    predecessors_by_target = _direct_predecessors_by_target(units)
     selected: list[dict[str, Any]] = []
     previous_signature: str | None = None
     for round_index in range(1, max_rounds + 1):
@@ -2158,7 +3702,8 @@ def _static_jump_table_recovery_fixed_point(
             recovery = recover_static_pe32_jump_table_inventory(
                 target_expression=target_expression,
                 predecessor_evidence=_indirect_predecessor_evidence(
-                    source_unit, units
+                    source_unit,
+                    predecessors_by_target=predecessors_by_target,
                 ),
                 image_base=binary.image_base,
                 sections=binary.sections,
@@ -2166,6 +3711,7 @@ def _static_jump_table_recovery_fixed_point(
                 finite_index_domain=finite_domain,
                 valid_target_rvas=None,
             )
+            recovery_kind = recovery.get("kind")
             target_rvas = [
                 int(rva)
                 for rva in recovery.get("target_rvas", [])
@@ -2180,6 +3726,7 @@ def _static_jump_table_recovery_fixed_point(
             recovery.update(
                 {
                     "id": exit_record["id"],
+                    "recovery_kind": recovery_kind,
                     "source_unit_id": source_unit_id,
                     "source_rva": exit_record["source_rva"],
                     "source_event_index": exit_record.get("source_event_index"),
@@ -2200,6 +3747,16 @@ def _static_jump_table_recovery_fixed_point(
                     },
                 }
             )
+            if (
+                recovery.get("status") == "recovered"
+                and recovery.get("closure") == "checked_finite_target_inventory"
+                and recovery_kind == "pe32_indexed_absolute_jump_table"
+                and recovery.get("failure") is None
+                and _indirect_recovery_unit_binding_complete(recovery, starts)
+            ):
+                recovery["target_set_dependency"] = (
+                    build_bounded_selector_dependency_v2(recovery)
+                )
             recoveries.append(recovery)
         signature = sha256_bytes(
             json.dumps(
@@ -2229,18 +3786,68 @@ def _static_jump_table_recovery_fixed_point(
     return selected, max_rounds, False
 
 
-def _callback_registration_roots(
-    binary: StageABinary, units: Sequence[Mapping[str, Any]]
+def _callback_root_proposals_from_provenance(
+    provenance: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    starts = {
-        int(unit["source"]["original"]["rva_start"]): unit for unit in units
-    }
+    raw = provenance.get("callback_registrations")
+    if not isinstance(raw, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for registration in raw:
+        if not isinstance(registration, Mapping) or (
+            registration.get("status") != "complete"
+        ):
+            continue
+        targets = registration.get("target_rvas")
+        if not isinstance(targets, list):
+            continue
+        imported = registration.get("import")
+        for target in targets:
+            if not isinstance(target, int) or isinstance(target, bool):
+                continue
+            result.append({
+                "kind": "registered_callback",
+                "rva": target,
+                "source_unit_id": registration.get("unit_id"),
+                "source_event_index": registration.get("event_index"),
+                "dll": (
+                    imported.get("dll")
+                    if isinstance(imported, Mapping)
+                    else None
+                ),
+                "symbol": (
+                    imported.get("symbol")
+                    if isinstance(imported, Mapping)
+                    else None
+                ),
+                "callback_source": copy.deepcopy(
+                    registration.get("callback_source")
+                ),
+                "callback_abi": copy.deepcopy(
+                    registration.get("callback_abi")
+                ),
+                "provenance_format": registration.get("format"),
+            })
+    return result
+
+
+def _local_callback_cutpoint_proposals(
+    binary: StageABinary,
+    units: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Bootstrap exact cutpoints for locally visible direct callback words.
+
+    These proposals are deliberately conservative and have no proof authority.
+    They may add roots but never remove behavior; regenerated provenance must
+    still bind each callback to an exact decoded unit before Stage B can adapt it.
+    """
+
     executable_sections = tuple(
         section
         for section in getattr(binary, "sections", ())
         if getattr(section, "executable", False)
     )
-    result: dict[int, dict[str, Any]] = {}
+    result: dict[tuple[int, str, int], dict[str, Any]] = {}
     for unit in units:
         events = unit.get("semantics", {}).get("external_events", [])
         if not isinstance(events, list):
@@ -2249,18 +3856,30 @@ def _callback_registration_roots(
             if not isinstance(event, Mapping):
                 continue
             abi = event.get("abi_contract")
-            if not isinstance(abi, Mapping) or abi.get("world_effect") != "callbackRegistration":
-                continue
-            argument_index = abi.get("world_effect_argument")
-            arguments = _checked_external_argument_values(event)
             if (
-                not isinstance(argument_index, int)
-                or isinstance(argument_index, bool)
-                or not 0 <= argument_index < len(arguments)
+                not isinstance(abi, Mapping)
+                or abi.get("world_effect") != "callbackRegistration"
             ):
                 continue
-            expression = _forward_callback_argument_expression(
-                arguments[argument_index],
+            argument_words = abi.get("argument_words")
+            if (
+                not isinstance(argument_words, int)
+                or isinstance(argument_words, bool)
+                or not 0 <= argument_words <= 64
+            ):
+                continue
+            source = parse_callback_source(
+                abi,
+                argument_words=argument_words,
+                context=f"{unit.get('id')} callback cutpoint proposal",
+            )
+            if source.kind != "argument_word":
+                continue
+            arguments = _checked_external_argument_values(event)
+            if source.argument_index >= len(arguments):
+                continue
+            expression = _forward_local_callback_expression(
+                arguments[source.argument_index],
                 unit=unit,
                 event=event,
             )
@@ -2272,42 +3891,29 @@ def _callback_registration_roots(
             )
             if not isinstance(value, int) or isinstance(value, bool) or value == 0:
                 continue
-            candidates = [value]
-            if value >= binary.image_base:
-                candidates.insert(0, value - binary.image_base)
-            rva = next(
-                (
-                    candidate
-                    for candidate in candidates
-                    if (
-                        any(
-                            section.rva_start <= candidate < section.rva_end
-                            for section in executable_sections
-                        )
-                        if executable_sections
-                        else candidate in starts
-                    )
-                ),
-                None,
-            )
-            if rva is None:
+            rva = value - binary.image_base if value >= binary.image_base else value
+            if not any(
+                section.rva_start <= rva < section.rva_end
+                for section in executable_sections
+            ):
                 continue
-            result.setdefault(
-                rva,
-                {
-                    "kind": "registered_callback",
-                    "rva": rva,
-                    "source_unit_id": unit["id"],
-                    "source_event_index": event_index,
-                    "dll": event.get("dll"),
-                    "symbol": event.get("symbol"),
-                    "callback_abi": copy.deepcopy(abi.get("callback_abi")),
-                },
-            )
-    return [result[rva] for rva in sorted(result)]
+            key = (rva, str(unit.get("id")), event_index)
+            result[key] = {
+                "kind": "registered_callback",
+                "rva": rva,
+                "source_unit_id": str(unit.get("id")),
+                "source_event_index": event_index,
+                "dll": event.get("dll"),
+                "symbol": event.get("symbol"),
+                "callback_source": source.as_json(),
+                "callback_abi": copy.deepcopy(abi.get("callback_abi")),
+                "proposal_basis": "local_exact_callback_argument",
+                "proof_authority": False,
+            }
+    return [result[key] for key in sorted(result)]
 
 
-def _forward_callback_argument_expression(
+def _forward_local_callback_expression(
     expression: Any,
     *,
     unit: Mapping[str, Any],
@@ -2325,31 +3931,29 @@ def _forward_callback_argument_expression(
     if not isinstance(ordered, list):
         return expression
     if not isinstance(instruction_rva, int):
-        matching_calls = [
+        matching = [
             item
             for item in ordered
             if isinstance(item, Mapping)
-            and item.get("family") == "external"
-            and item.get("kind") == event.get("kind")
-            and item.get("dll") == event.get("dll")
-            and item.get("symbol") == event.get("symbol")
-            and item.get("ordinal") == event.get("ordinal")
-            and item.get("return_rva") == event.get("return_rva")
+            and item.get("kind") in {"external_call", "indirect_call"}
+            and all(
+                item.get(field) == event.get(field)
+                for field in ("kind", "dll", "symbol", "ordinal", "return_rva")
+            )
             and isinstance(item.get("instruction_rva"), int)
         ]
-        if len(matching_calls) != 1:
+        if len(matching) != 1:
             return expression
-        instruction_rva = int(matching_calls[0]["instruction_rva"])
+        instruction_rva = int(matching[0]["instruction_rva"])
     writes = [
         item
         for item in ordered
         if isinstance(item, Mapping)
-        and item.get("family") == "memory"
         and item.get("kind") == "write"
         and item.get("width") == 4
         and item.get("address") == address
         and isinstance(item.get("instruction_rva"), int)
-        and item.get("instruction_rva") < instruction_rva
+        and int(item["instruction_rva"]) < instruction_rva
     ]
     if not writes:
         return expression
@@ -2379,6 +3983,26 @@ def _checked_external_argument_values(event: Mapping[str, Any]) -> list[Any]:
     return list(arguments) if isinstance(arguments, list) else []
 
 
+def _merge_callback_root_proposals(
+    prior: Sequence[Mapping[str, Any]],
+    proposed: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    by_key: dict[tuple[int, str, int], dict[str, Any]] = {}
+    for raw in (*prior, *proposed):
+        rva = raw.get("rva")
+        source = raw.get("source_unit_id")
+        event_index = raw.get("source_event_index")
+        if (
+            isinstance(rva, int)
+            and not isinstance(rva, bool)
+            and isinstance(source, str)
+            and isinstance(event_index, int)
+            and not isinstance(event_index, bool)
+        ):
+            by_key[(rva, source, event_index)] = copy.deepcopy(dict(raw))
+    return [by_key[key] for key in sorted(by_key)]
+
+
 def _newly_eligible_callback_roots(
     proposals: Sequence[Mapping[str, Any]],
     reachable_sources: set[str],
@@ -2390,114 +4014,6 @@ def _newly_eligible_callback_roots(
         if str(proposal["source_unit_id"]) in reachable_sources
         and int(proposal["rva"]) not in existing_roots
     ]
-
-
-def _indirect_predecessor_evidence(
-    source_unit: Mapping[str, Any], units: Sequence[Mapping[str, Any]]
-) -> list[dict[str, Any]]:
-    source_rva = int(source_unit["source"]["original"]["rva_start"])
-    predecessors_by_target: dict[int, list[Mapping[str, Any]]] = {}
-    for candidate in units:
-        control = candidate.get("control")
-        if not isinstance(control, Mapping):
-            continue
-        for target in control.get("direct_targets", []):
-            if isinstance(target, int) and not isinstance(target, bool):
-                predecessors_by_target.setdefault(target, []).append(candidate)
-    result: list[dict[str, Any]] = []
-    for predecessor in predecessors_by_target.get(source_rva, []):
-        outcome = predecessor.get("semantics", {}).get("outcome", {})
-        edge_kind = "fallthrough"
-        if isinstance(outcome, Mapping) and outcome.get("kind") == "branch":
-            edge_kind = (
-                "taken"
-                if outcome.get("true_target_rva") == source_rva
-                else "fallthrough"
-            )
-        guard = None
-        for edge in predecessor.get("semantics", {}).get("edge_conditions", []):
-            if isinstance(edge, Mapping) and edge.get("target_rva") == source_rva:
-                guard = copy.deepcopy(edge.get("condition"))
-                break
-        instructions = _bounded_predecessor_instruction_history(
-            predecessor,
-            predecessors_by_target=predecessors_by_target,
-        )
-        result.append(
-            {
-                "source_unit_id": predecessor["id"],
-                "edge_kind": edge_kind,
-                "guard": guard,
-                "instructions": instructions,
-            }
-        )
-    return sorted(result, key=lambda item: str(item["source_unit_id"]))
-
-
-def _bounded_predecessor_instruction_history(
-    predecessor: Mapping[str, Any],
-    *,
-    predecessors_by_target: Mapping[int, Sequence[Mapping[str, Any]]],
-    max_units: int = 8,
-) -> list[dict[str, Any]]:
-    history = [
-        copy.deepcopy(dict(instruction))
-        for instruction in predecessor.get("instructions", [])
-        if isinstance(instruction, Mapping)
-    ]
-    cursor = predecessor
-    visited = {str(predecessor.get("id"))}
-    for _ in range(max_units - 1):
-        if any(
-            str(instruction.get("mnemonic", "")).lower() == "cmp"
-            for instruction in history
-        ):
-            break
-        source = cursor.get("source", {}).get("original", {})
-        start = source.get("rva_start") if isinstance(source, Mapping) else None
-        if not isinstance(start, int) or isinstance(start, bool):
-            break
-        candidates = []
-        for candidate in predecessors_by_target.get(start, []):
-            candidate_id = str(candidate.get("id"))
-            candidate_source = candidate.get("source", {}).get("original", {})
-            candidate_outcome = candidate.get("semantics", {}).get("outcome", {})
-            candidate_events = candidate.get("semantics", {}).get(
-                "external_events", []
-            )
-            if (
-                candidate_id in visited
-                or not isinstance(candidate_source, Mapping)
-                or candidate_source.get("rva_end") != start
-                or not isinstance(candidate_outcome, Mapping)
-                or candidate_outcome.get("kind") != "fallthrough"
-                or candidate_outcome.get("target_rva") != start
-                or (isinstance(candidate_events, list) and candidate_events)
-            ):
-                continue
-            candidates.append(candidate)
-        if len(candidates) != 1:
-            break
-        cursor = candidates[0]
-        visited.add(str(cursor.get("id")))
-        prefix = [
-            copy.deepcopy(dict(instruction))
-            for instruction in cursor.get("instructions", [])
-            if isinstance(instruction, Mapping)
-        ]
-        history = prefix + history
-    return history
-
-
-def _indirect_exit_id(value: Mapping[str, Any]) -> str:
-    identity = {
-        "source_unit_id": value.get("source_unit_id"),
-        "source_rva": value.get("source_rva"),
-        "source_event_index": value.get("source_event_index"),
-        "kind": value.get("kind"),
-        "target_expression": value.get("target_expression"),
-    }
-    return "indirect-exit:" + sha256_bytes(_canonical_json(identity))[:20]
 
 
 def _load_indirect_target_profile(path: Path | None) -> dict[str, Any] | None:
@@ -2743,7 +4259,7 @@ def _control_disposition(value: Mapping[str, Any], identity: str) -> dict[str, s
             code="malformed_control_disposition",
             unit_id=identity,
         )
-    return result
+    return dict(expected)
 
 
 def _binding_projection(value: Any) -> dict[str, Any] | None:
@@ -3047,6 +4563,7 @@ __all__ = [
     "PREPARED_MACHINE_IR_FILENAME",
     "PREPARED_MACHINE_IR_FORMAT",
     "PREPARED_MACHINE_IR_MANIFEST_FILENAME",
+    "RECOVERED_EXECUTABLE_DATA_FILENAME",
     "MachineIRExportError",
     "MachineIRPackage",
     "PreparedMachineIRPackage",

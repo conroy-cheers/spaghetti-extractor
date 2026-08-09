@@ -127,6 +127,24 @@ class InputPredicate:
 
 
 @dataclass(frozen=True)
+class RegisterInputValue:
+    """A little-endian initial memory value read from an input register slice."""
+
+    location: RegisterLocation
+    width_bits: int
+    kind: str = "register"
+
+
+@dataclass(frozen=True)
+class MemoryReplayControl:
+    """Finite replay strategy for data-dependent repeated memory effects."""
+
+    count_location: RegisterLocation
+    count_width_bits: int
+    stop_value: RegisterInputValue
+
+
+@dataclass(frozen=True)
 class FixedControlTarget:
     target_eip: int
     kind: ControlTargetKind = ControlTargetKind.FIXED
@@ -188,6 +206,7 @@ class MemoryEffect:
     access: AccessMode
     address: AddressExpression
     condition: InputPredicate | None
+    replay_control: MemoryReplayControl | None = None
     effect_class: EffectClass = EffectClass.MEMORY
 
 
@@ -720,6 +739,65 @@ def _parse_divisor(
     raise ISAConformanceError(f"{context}.kind is unsupported")
 
 
+def _parse_input_value(
+    value: Any,
+    context: str,
+    *,
+    width_bits: int,
+) -> RegisterInputValue:
+    payload = _object(value, context)
+    _exact_fields(payload, {"kind", "location", "width_bits"}, context)
+    if payload.get("kind") != "register":
+        raise ISAConformanceError(f"{context}.kind is unsupported")
+    source_width = _memory_width(
+        payload.get("width_bits"), f"{context}.width_bits"
+    )
+    if source_width != width_bits or source_width > 32:
+        raise ISAConformanceError(
+            f"{context}.width_bits must equal the memory effect width and fit a GPR"
+        )
+    return RegisterInputValue(
+        location=_parse_register_location(
+            payload.get("location"),
+            f"{context}.location",
+            width_bits=source_width,
+            allow_legacy_name=False,
+        ),
+        width_bits=source_width,
+    )
+
+
+def _parse_memory_replay_control(
+    value: Any,
+    context: str,
+    *,
+    memory_width_bits: int,
+) -> MemoryReplayControl:
+    payload = _object(value, context)
+    _exact_fields(
+        payload,
+        {"count_location", "count_width_bits", "stop_value"},
+        context,
+    )
+    count_width = _width(
+        payload.get("count_width_bits"), f"{context}.count_width_bits"
+    )
+    return MemoryReplayControl(
+        count_location=_parse_register_location(
+            payload.get("count_location"),
+            f"{context}.count_location",
+            width_bits=count_width,
+            allow_legacy_name=False,
+        ),
+        count_width_bits=count_width,
+        stop_value=_parse_input_value(
+            payload.get("stop_value"),
+            f"{context}.stop_value",
+            width_bits=memory_width_bits,
+        ),
+    )
+
+
 def _parse_effect(
     value: Any,
     context: str,
@@ -778,29 +856,27 @@ def _parse_effect(
         )
     if effect_class is EffectClass.MEMORY:
         has_condition = "condition" in payload
-        if legacy or (allow_legacy_v2 and not has_condition):
-            expected_fields = {"class", "id", "width_bits", "access", "address"}
-        else:
-            expected_fields = {
-                "class",
-                "id",
-                "width_bits",
-                "access",
-                "address",
-                "condition",
-            }
-        _exact_fields(
-            payload, expected_fields, context
+        has_replay_control = "replay_control" in payload
+        expected_fields = {"class", "id", "width_bits", "access", "address"}
+        if not legacy and (has_condition or not allow_legacy_v2):
+            expected_fields.add("condition")
+        if has_replay_control:
+            if legacy:
+                raise ISAConformanceError(
+                    f"{context}.replay_control is unsupported by catalog v1"
+                )
+            expected_fields.add("replay_control")
+        _exact_fields(payload, expected_fields, context)
+        width_bits = (
+            _width(payload.get("width_bits"), f"{context}.width_bits")
+            if legacy
+            else _memory_width(
+                payload.get("width_bits"), f"{context}.width_bits"
+            )
         )
         return MemoryEffect(
             id=effect_id,
-            width_bits=(
-                _width(payload.get("width_bits"), f"{context}.width_bits")
-                if legacy
-                else _memory_width(
-                    payload.get("width_bits"), f"{context}.width_bits"
-                )
-            ),
+            width_bits=width_bits,
             access=_enum(AccessMode, payload.get("access"), f"{context}.access"),
             address=_parse_address(payload.get("address"), f"{context}.address"),
             condition=(
@@ -808,6 +884,15 @@ def _parse_effect(
                 if not has_condition or payload.get("condition") is None
                 else _parse_predicate(
                     payload.get("condition"), f"{context}.condition"
+                )
+            ),
+            replay_control=(
+                None
+                if not has_replay_control
+                else _parse_memory_replay_control(
+                    payload.get("replay_control"),
+                    f"{context}.replay_control",
+                    memory_width_bits=width_bits,
                 )
             ),
         )
@@ -1638,6 +1723,7 @@ def _effect_payload(
     if isinstance(effect, MemoryEffect):
         if legacy and (
             effect.condition is not None
+            or effect.replay_control is not None
             or effect.width_bits not in SUPPORTED_WIDTHS
         ):
             raise ISAConformanceError(
@@ -1656,6 +1742,21 @@ def _effect_payload(
                 if effect.condition is None
                 else _predicate_payload(effect.condition)
             )
+            if effect.replay_control is not None:
+                replay = effect.replay_control
+                payload["replay_control"] = {
+                    "count_location": _register_location_payload(
+                        replay.count_location
+                    ),
+                    "count_width_bits": replay.count_width_bits,
+                    "stop_value": {
+                        "kind": replay.stop_value.kind,
+                        "location": _register_location_payload(
+                            replay.stop_value.location
+                        ),
+                        "width_bits": replay.stop_value.width_bits,
+                    },
+                }
         return payload
     if isinstance(effect, BranchEffect):
         return {
@@ -1782,6 +1883,7 @@ __all__ = [
     "EffectClass",
     "FixedControlTarget",
     "InputPredicate",
+    "RegisterInputValue",
     "ISA_FORM_CATALOG_ENTRY_FORMAT",
     "ISA_FORM_CATALOG_FORMAT",
     "ISA_PROFILE_ID",
@@ -1793,6 +1895,7 @@ __all__ = [
     "MAX_MEMORY_EFFECT_WIDTH_BITS",
     "MemoryControlTarget",
     "MemoryEffect",
+    "MemoryReplayControl",
     "NoOpEffect",
     "PredicateKind",
     "ProfileDisposition",

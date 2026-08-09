@@ -1,0 +1,89 @@
+{
+  "format": "stage-a-internal-function-contract-profile-v1",
+  "id": "dxball-1.09-reviewed-internal-runtime-v1",
+  "binary_sha256": "191c113582e1f31016a158d40372fa21ea68d9348bf847bbfbc8e7c7bdfe195f",
+  "contracts": [
+    {
+      "id": "msvc-static-runtime-malloc-wrapper",
+      "entry_unit_id": "semantic-transfer:original-cutpoint-0000e2f0-0000e2fb",
+      "entry_rva": 58096,
+      "entry_contract_sha256": "f308c436726ef2ebb8d8fcf6665c089b78b9f69807392ebf48b764536b42a005",
+      "entry_instruction_bytes_sha256": "b36fb7f450aa62775bdb0e789771e8e03c2b7f21d97e60c62cf66ecc1fbe6f60",
+      "body_units": [
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e2f0-0000e2fb", "contract_sha256": "f308c436726ef2ebb8d8fcf6665c089b78b9f69807392ebf48b764536b42a005"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e2fb-0000e300", "contract_sha256": "13d4bf1d8105269eae2bae2d4c83af18ba1cab47f36e91482bb52c44c47d16a3"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e300-0000e304", "contract_sha256": "3a184625c1af558f2348ee82c4d32c873df9ce3dc1ed70924b7cb2905165bf3d"}
+      ],
+      "summary": {
+        "preserved_registers": ["ebp", "ebx", "edi", "esi"],
+        "stack_cleanup": 0,
+        "may_return": true,
+        "may_not_return": false,
+        "result_register_origins": {
+          "eax": {"relation": "dynamic_range_base", "nullable": true}
+        }
+      }
+    },
+    {
+      "id": "msvc-static-runtime-heap-allocator",
+      "entry_unit_id": "semantic-transfer:original-cutpoint-0000e310-0000e319",
+      "entry_rva": 58128,
+      "entry_contract_sha256": "27fd530db4ccea4ca9afbb241d89df85e014663f08b1b712c37c7f72be0df7d2",
+      "entry_instruction_bytes_sha256": "ba0cd09e209d41fc056364061256852126dd947e6a2fc69e58832b917fce393c",
+      "body_units": [
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e310-0000e319", "contract_sha256": "27fd530db4ccea4ca9afbb241d89df85e014663f08b1b712c37c7f72be0df7d2"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e319-0000e31b", "contract_sha256": "ef8b3487510c3abd3f6bdb0acff472ad8e64c7a2f9eaa650f41a3f20b02bcd4c"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e31b-0000e31f", "contract_sha256": "e10360e3d4da985810645e5754ac56b65a0e70c8aa50788309809805488f9d47"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e31f-0000e324", "contract_sha256": "92bb0f1110474bca6d41b813f222fa53fbc0054ac59990588ab1675b0b331556"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e324-0000e328", "contract_sha256": "11af72b8aec984b86a0373be473cc7cca5ede42cc536e80cb30bd98d2652e7b0"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e328-0000e32d", "contract_sha256": "6abc37905d36c8274bf2adc3334ba2c4faeb5bd2192dbaac1af3a023a2790480"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e32d-0000e333", "contract_sha256": "4c3bcf19fae241436fc0f6d39e2f2fc542ad7f7eb36302c43d8ff6ae0f3a287a"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e333-0000e338", "contract_sha256": "6e496dc502fd262d6613b2c9d4575e323442c03dbb251484168c25560817764d"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e338-0000e33a", "contract_sha256": "b34158427a8578e0fce5b310db4836a3b662c14b6fd03246113f3b87f321755c"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e33a-0000e33e", "contract_sha256": "c258ad46ef430f3edc58924a24bc267d25971d688c6fa76e17129f2f3a0150ed"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e33e-0000e342", "contract_sha256": "c966c9a73d50b38b54b99d0af306c29b64f9f5fdd72f3a855d1d0b93509b85bb"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e342-0000e348", "contract_sha256": "e5c883d5ef948315d788918711d351367e559ec5d2846d5a34e054209d80391e"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e348-0000e34f", "contract_sha256": "3386a7d2a4e130721b262660e8ed35cd69e5a4e7eb38e401d2845d395c848393"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e34f-0000e351", "contract_sha256": "62f91ea5c0baa850bc6ff4f45a73e7c8022e2bfc1399641c54b6f90140386728"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0000e351-0000e354", "contract_sha256": "c6b73e1181b3180e13d50bb3a1154b5b58232bff12c6e3f8b7083fbb3104884e"}
+      ],
+      "summary": {
+        "preserved_registers": ["ebp", "ebx", "edi", "esi"],
+        "stack_cleanup": 0,
+        "may_return": true,
+        "may_not_return": false,
+        "result_register_origins": {
+          "eax": {"relation": "dynamic_range_base", "nullable": true}
+        }
+      }
+    },
+    {
+      "id": "msvc-static-runtime-stack-probe",
+      "entry_unit_id": "semantic-transfer:original-cutpoint-00014250-0001425c",
+      "entry_rva": 82512,
+      "entry_contract_sha256": "b0c680a2f0926e1d16aa7a9550aa22055a1a9a606ddd7eadb509e453532b3416",
+      "entry_instruction_bytes_sha256": "fb23d20eab410855fe87b7594eebe512aca6998540cd4d408d60d242555f2e26",
+      "body_units": [
+        {"unit_id": "semantic-transfer:original-cutpoint-00014250-0001425c", "contract_sha256": "b0c680a2f0926e1d16aa7a9550aa22055a1a9a606ddd7eadb509e453532b3416"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0001425c-0001426e", "contract_sha256": "50618b8f4df2ba5e0ff7ffc5c1fee366223aa1fd82ac4beeb29857d78b08c3e6"},
+        {"unit_id": "semantic-transfer:original-cutpoint-0001426e-00014270", "contract_sha256": "1fe92cc6b6ad84fee16912c5eefcfc949ba51b538b3481737b584bd95081cf06"},
+        {"unit_id": "semantic-transfer:original-cutpoint-00014270-00014278", "contract_sha256": "0be4f16e045ae0a47cfcbb32c31c7c915d04e028be7842ecbf64e0476d9ffb89"},
+        {"unit_id": "semantic-transfer:original-cutpoint-00014278-0001427f", "contract_sha256": "1130e3ec48dc76a8f5b85462dd7480bc66b544faa70b0ae5687cb76d5a178ab1"}
+      ],
+      "summary": {
+        "preserved_registers": ["ebp", "ebx", "edi", "esi"],
+        "stack_transform": {
+          "format": "stage-a-affine-stack-transform-v1",
+          "constant": 0,
+          "register_terms": [
+            {"register": "eax", "coefficient": -1}
+          ]
+        },
+        "may_return": true,
+        "may_not_return": true,
+        "result_register_origins": {}
+      }
+    }
+  ],
+  "profile_sha256": "98461f72dbd03c16cc6bdb5c35bf047fca367df6edcf470269a0ff25fab37fcd"
+}

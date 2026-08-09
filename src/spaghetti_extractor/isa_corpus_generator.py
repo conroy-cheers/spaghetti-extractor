@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 import hashlib
 import json
+import math
 from typing import Any
 
 from . import isa_conformance as conformance
@@ -31,6 +32,7 @@ from .isa_catalog import (
     ISAFormCatalogEntry,
     MemoryControlTarget,
     MemoryEffect,
+    MemoryReplayControl,
     NoOpEffect,
     PredicateKind,
     RegisterControlTarget,
@@ -85,6 +87,7 @@ SHARED_MEMORY_MIN = 0x00010000
 SHARED_MEMORY_END = 0x01000000
 MAX_SHARED_MEMORY_REGIONS = 32
 MAX_SHARED_MEMORY_BYTES = 65536
+MAX_MATERIALIZED_REPLAY_ITERATIONS = 256
 
 
 class ISACorpusGenerationError(ISAConformanceError):
@@ -634,9 +637,39 @@ def _memory_scenarios(
         and effect.address.index is None
     ):
         scenarios = scenarios[:2]
+    elif effect is not None and not _address_can_touch_page_edge(effect):
+        scenarios = tuple(
+            scenario
+            for scenario in scenarios
+            if scenario is not CoverageScenario.MEMORY_PAGE_EDGE
+        )
     if effect is not None and effect.condition is not None:
         scenarios += (CoverageScenario.MEMORY_CONDITION_FALSE,)
     return scenarios
+
+
+def _address_can_touch_page_edge(effect: MemoryEffect) -> bool:
+    """Decide whether the address expression can start or end on a page edge."""
+
+    coefficients: dict[str, int] = {}
+    if effect.address.base is not None:
+        coefficients[effect.address.base] = 1
+    if effect.address.index is not None:
+        coefficients[effect.address.index] = (
+            coefficients.get(effect.address.index, 0) + effect.address.scale
+        )
+    if not coefficients:
+        return False
+
+    value_gcd = 1 << 32
+    for coefficient in coefficients.values():
+        value_gcd = math.gcd(value_gcd, coefficient)
+    page_gcd = math.gcd(value_gcd, 0x1000)
+    fixed = effect.address.displacement
+    if effect.address.segment is AddressSegment.FS:
+        fixed += FS_BASE
+    size = effect.width_bits // 8
+    return fixed % page_gcd == 0 or (fixed + size) % page_gcd == 0
 
 
 def _divide_scenarios() -> tuple[CoverageScenario, ...]:
@@ -893,6 +926,7 @@ class _MemoryRequest:
     address: AddressExpression
     scenario: CoverageScenario
     data: bytes | None
+    replay_control: MemoryReplayControl | None
     structural_target: bool
 
 
@@ -1015,6 +1049,7 @@ def _build_case(
                 address=effect.address,
                 scenario=scenario,
                 data=None,
+                replay_control=effect.replay_control,
                 structural_target=effect is target_effect,
             )
         )
@@ -1027,6 +1062,7 @@ def _build_case(
                 address=effect.divisor,
                 scenario=CoverageScenario.MEMORY_ALIGNED_ZERO,
                 data=divisor.to_bytes(effect.width_bits // 8, "little"),
+                replay_control=None,
                 structural_target=False,
             )
         )
@@ -1039,6 +1075,7 @@ def _build_case(
                 address=target.address,
                 scenario=CoverageScenario.MEMORY_ALIGNED_ZERO,
                 data=DYNAMIC_TARGET_EIP.to_bytes(4, "little"),
+                replay_control=None,
                 structural_target=False,
             )
         )
@@ -1046,6 +1083,7 @@ def _build_case(
     memory_rows: list[MappedMemoryRegion] = []
     memory_masks: list[MemoryMask] = []
     memory_ranges: list[tuple[int, int, str]] = []
+    resolved_requests: list[tuple[_MemoryRequest, int, int]] = []
     request_ids = [request.id for request in memory_requests]
     if len(request_ids) != len(set(request_ids)):
         raise ISACorpusGenerationError(
@@ -1101,9 +1139,37 @@ def _build_case(
                     f"generated memory effects {prior_id} and {request.id} overlap"
                 )
         memory_ranges.append((address, end, request.id))
+        resolved_requests.append((request, address, request_index))
+
+    for effect in entry.effects:
+        if not isinstance(effect, RegisterEffect) or effect is target_effect:
+            continue
+        for location in effect.reads:
+            assignments.set_default(
+                location, effect.width_bits, 1, f"{effect.id} baseline"
+            )
+
+    for request, address, request_index in resolved_requests:
+        size = request.width_bits // 8
         if request.data is not None:
             data = request.data
+        elif request.replay_control is not None:
+            replay = request.replay_control
+            count = assignments.value(replay.count_location.register)
+            count >>= replay.count_location.lsb
+            count &= _low_mask(replay.count_width_bits)
+            if count > MAX_MATERIALIZED_REPLAY_ITERATIONS:
+                source = replay.stop_value
+                value = assignments.value(source.location.register)
+                value >>= source.location.lsb
+                data = (value & _low_mask(source.width_bits)).to_bytes(
+                    size, "little"
+                )
+            else:
+                data = None
         else:
+            data = None
+        if data is None:
             fill = (
                 0xFF
                 if request.scenario is CoverageScenario.MEMORY_ALIGNED_MAX
@@ -1116,14 +1182,6 @@ def _build_case(
         memory_rows.append(MappedMemoryRegion(address, data, permissions))
         if request.access in {AccessMode.WRITE, AccessMode.READ_WRITE}:
             memory_masks.append(MemoryMask(address, bytes([0xFF]) * size))
-
-    for effect in entry.effects:
-        if not isinstance(effect, RegisterEffect) or effect is target_effect:
-            continue
-        for location in effect.reads:
-            assignments.set_default(
-                location, effect.width_bits, 1, f"{effect.id} baseline"
-            )
 
     x87 = state.x87
     for effect in entry.effects:

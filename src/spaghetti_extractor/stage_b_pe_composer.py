@@ -25,6 +25,11 @@ from .roundtrip_fuzz.image_contract import (
     StageALoadImageContract,
     load_stage_a_load_image_contract,
 )
+from .recovered_executable_data import (
+    RecoveredExecutableDataContract,
+    RecoveredExecutableDataRange,
+    load_recovered_executable_data_contract,
+)
 from .util import sha256_bytes
 
 
@@ -37,6 +42,8 @@ _IMAGE_SCN_CNT_CODE = 0x00000020
 _IMAGE_SCN_CNT_INITIALIZED_DATA = 0x00000040
 _IMAGE_SCN_CNT_UNINITIALIZED_DATA = 0x00000080
 _IMAGE_SCN_MEM_EXECUTE = 0x20000000
+_IMAGE_SCN_MEM_READ = 0x40000000
+_IMAGE_SCN_MEM_WRITE = 0x80000000
 _IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE = 0x0040
 _IMAGE_REL_BASED_ABSOLUTE = 0
 _IMAGE_REL_BASED_HIGHLOW = 3
@@ -380,6 +387,14 @@ class _Section:
     def executable(self) -> bool:
         return bool(self.characteristics & _IMAGE_SCN_MEM_EXECUTE)
 
+    @property
+    def readable(self) -> bool:
+        return bool(self.characteristics & _IMAGE_SCN_MEM_READ)
+
+    @property
+    def writable(self) -> bool:
+        return bool(self.characteristics & _IMAGE_SCN_MEM_WRITE)
+
 
 @dataclass(frozen=True)
 class ByteClassification:
@@ -449,6 +464,7 @@ class PECompositionPlan:
 
     contract: StageALoadImageContract
     anchor_manifest: ExecutableAnchorManifest
+    recovered_executable_data: RecoveredExecutableDataContract | None
     relocation_inventory: PayloadRelocationInventory
     payload_bytes: bytes
     contract_original_sections: tuple[_Section, ...]
@@ -579,6 +595,22 @@ def _load_anchor_manifest(
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise StageBPECompositionError(f"cannot read anchor manifest {path}: {exc}") from exc
     return ExecutableAnchorManifest.parse(_mapping(payload, "executable-anchor manifest"))
+
+
+def _load_recovered_executable_data(
+    source: Path | str | Mapping[str, Any] | RecoveredExecutableDataContract | None,
+) -> RecoveredExecutableDataContract | None:
+    if source is None:
+        return None
+    if isinstance(source, RecoveredExecutableDataContract):
+        return RecoveredExecutableDataContract.parse(source.to_payload())
+    if isinstance(source, Mapping):
+        return RecoveredExecutableDataContract.parse(source)
+    if isinstance(source, (str, Path)):
+        return load_recovered_executable_data_contract(source)
+    raise StageBPECompositionError(
+        "recovered executable-data contract must be a path, object, or contract"
+    )
 
 
 def _load_relocation_inventory(
@@ -924,9 +956,63 @@ def _validate_anchors(
     return indexed
 
 
+def _validate_recovered_executable_data(
+    recovered: RecoveredExecutableDataContract | None,
+    *,
+    contract: StageALoadImageContract,
+    sections: tuple[_Section, ...],
+    indexed_anchors: Mapping[int, tuple[ExecutableAnchor, _Section]],
+) -> tuple[RecoveredExecutableDataRange, ...]:
+    if recovered is None:
+        return ()
+    if recovered.original_pe_sha256 != contract.identity.pe_sha256:
+        raise StageBPECompositionError(
+            "recovered executable-data contract binds a different original PE"
+        )
+    if recovered.image_base != contract.identity.preferred_base:
+        raise StageBPECompositionError(
+            "recovered executable-data image base differs from the load-image contract"
+        )
+    anchors = tuple(anchor for anchor, _section in indexed_anchors.values())
+    for item in recovered.ranges:
+        if item.section_index >= len(sections):
+            raise StageBPECompositionError(
+                f"recovered executable-data range {item.identity} has an invalid section"
+            )
+        section = sections[item.section_index]
+        logical_size = (
+            min(section.virtual_size, section.raw_size)
+            if section.virtual_size
+            else section.raw_size
+        )
+        if (
+            item.section_name != section.name
+            or not section.executable
+            or not section.readable
+            or section.writable
+            or not (
+                section.rva <= item.rva_start
+                and item.rva_end <= section.rva + logical_size
+            )
+        ):
+            raise StageBPECompositionError(
+                f"recovered executable-data range {item.identity} is not immutable "
+                "initialized data in its declared executable section"
+            )
+        if any(
+            item.rva_start < anchor.end_rva and anchor.rva < item.rva_end
+            for anchor in anchors
+        ):
+            raise StageBPECompositionError(
+                f"recovered executable-data range {item.identity} overlaps an anchor"
+            )
+    return recovered.ranges
+
+
 def _classify_executable_bytes(
     sections: tuple[_Section, ...],
     indexed_anchors: Mapping[int, tuple[ExecutableAnchor, _Section]],
+    recovered_data: Sequence[RecoveredExecutableDataRange] = (),
 ) -> tuple[ByteClassification, ...]:
     result: list[ByteClassification] = []
 
@@ -949,14 +1035,17 @@ def _classify_executable_bytes(
     for section in sections:
         if not section.executable or not section.raw_size:
             continue
-        anchors = sorted(
-            (
-                anchor
-                for anchor, anchor_section in indexed_anchors.values()
-                if anchor_section.index == section.index
-            ),
-            key=lambda item: item.rva,
+        classified_ranges = [
+            (anchor.rva, anchor.end_rva, "anchor", anchor.bytes)
+            for anchor, anchor_section in indexed_anchors.values()
+            if anchor_section.index == section.index
+        ]
+        classified_ranges.extend(
+            (item.rva_start, item.rva_end, "recovered_data", item.data)
+            for item in recovered_data
+            if item.section_index == section.index
         )
+        classified_ranges.sort(key=lambda item: item[0])
         logical_end = section.rva + (
             min(section.virtual_size, section.raw_size)
             if section.virtual_size
@@ -983,10 +1072,14 @@ def _classify_executable_bytes(
                 )
 
         cursor = section.rva
-        for anchor in anchors:
-            append_default(cursor, anchor.rva)
-            append_range(section, "anchor", anchor.rva, anchor.bytes)
-            cursor = anchor.end_rva
+        for start, end, kind, data in classified_ranges:
+            if start < cursor or end - start != len(data):
+                raise StageBPECompositionError(
+                    f"executable section {section.index} has overlapping classifications"
+                )
+            append_default(cursor, start)
+            append_range(section, kind, start, data)
+            cursor = end
         append_default(cursor, raw_end)
         classified_size = sum(
             item.size for item in result if item.section_index == section.index
@@ -1518,11 +1611,19 @@ def plan_stage_b_pe_composition(
     payload_relocation_inventory: (
         Path | str | Mapping[str, Any] | PayloadRelocationInventory | None
     ) = None,
+    recovered_executable_data: (
+        Path
+        | str
+        | Mapping[str, Any]
+        | RecoveredExecutableDataContract
+        | None
+    ) = None,
 ) -> PECompositionPlan:
     """Validate all inputs and return a deterministic, write-free plan."""
 
     contract = _load_contract(load_image_contract)
     anchors = _load_anchor_manifest(anchor_manifest)
+    recovered = _load_recovered_executable_data(recovered_executable_data)
     payload = _load_payload(payload_pe)
     (
         original_pe,
@@ -1548,6 +1649,12 @@ def plan_stage_b_pe_composition(
     )
     indexed_anchors = _validate_anchors(
         anchors, contract=contract, sections=contract_original_sections
+    )
+    recovered_ranges = _validate_recovered_executable_data(
+        recovered,
+        contract=contract,
+        sections=contract_original_sections,
+        indexed_anchors=indexed_anchors,
     )
 
     parsed_payload_inventory = _parse_payload_relocation_directory(
@@ -1586,7 +1693,7 @@ def plan_stage_b_pe_composition(
     )
 
     classifications = _classify_executable_bytes(
-        contract_original_sections, indexed_anchors
+        contract_original_sections, indexed_anchors, recovered_ranges
     )
     provisional_payload_sections = tuple(
         _Section(
@@ -1710,6 +1817,7 @@ def plan_stage_b_pe_composition(
     return PECompositionPlan(
         contract=contract,
         anchor_manifest=anchors,
+        recovered_executable_data=recovered,
         relocation_inventory=relocation_inventory,
         payload_bytes=payload,
         contract_original_sections=contract_original_sections,
@@ -1750,6 +1858,12 @@ def _original_section_bytes(
         )
         result = bytearray(bytes([_TRAP_BYTE]) * logical_size)
         result.extend(bytes([_PADDING_BYTE]) * (section.raw_size - logical_size))
+        if plan.recovered_executable_data is not None:
+            for item in plan.recovered_executable_data.ranges:
+                if item.section_index != section.index:
+                    continue
+                offset = item.rva_start - section.rva
+                result[offset : offset + item.size] = item.data
     else:
         typed = typed_sections[section.index]
         if len(typed.initialized) != 1:
@@ -2051,6 +2165,11 @@ def _composition_manifest(
     contract_payload = plan.contract.to_payload()
     anchor_payload = plan.anchor_manifest.to_payload()
     relocation_inventory_payload = plan.relocation_inventory.to_payload()
+    recovered_payload = (
+        None
+        if plan.recovered_executable_data is None
+        else plan.recovered_executable_data.to_payload()
+    )
     core: dict[str, Any] = {
         "format": PE_COMPOSITION_MANIFEST_FORMAT,
         "status": "composed",
@@ -2078,6 +2197,21 @@ def _composition_manifest(
                 "format": plan.anchor_manifest.format,
                 "sha256": sha256_bytes(_canonical_bytes(anchor_payload)),
             },
+            "recovered_executable_data": (
+                None
+                if recovered_payload is None
+                else {
+                    "format": recovered_payload["format"],
+                    "sha256": sha256_bytes(_canonical_bytes(recovered_payload)),
+                    "contract_sha256": recovered_payload["hashes"][
+                        "contract_sha256"
+                    ],
+                    "ranges": len(plan.recovered_executable_data.ranges),
+                    "bytes": sum(
+                        item.size for item in plan.recovered_executable_data.ranges
+                    ),
+                }
+            ),
         },
         "policy": {
             "executable_default_trap_byte_hex": bytes([_TRAP_BYTE]).hex(),
@@ -2195,6 +2329,13 @@ def compose_stage_b_pe(
     payload_relocation_inventory: (
         Path | str | Mapping[str, Any] | PayloadRelocationInventory | None
     ) = None,
+    recovered_executable_data: (
+        Path
+        | str
+        | Mapping[str, Any]
+        | RecoveredExecutableDataContract
+        | None
+    ) = None,
     out_dir: Path | str,
 ) -> dict[str, Any]:
     """Compose and emit ``candidate.exe`` and a non-authoritative manifest."""
@@ -2204,6 +2345,7 @@ def compose_stage_b_pe(
         payload_pe=payload_pe,
         anchor_manifest=anchor_manifest,
         payload_relocation_inventory=payload_relocation_inventory,
+        recovered_executable_data=recovered_executable_data,
     )
     original_raw_end = max(
         plan.new_size_of_headers,

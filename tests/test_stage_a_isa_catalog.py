@@ -194,6 +194,48 @@ class StageAISAFormCatalogTests(unittest.TestCase):
             isa_form_catalog_sha256(parse_isa_form_catalog(reordered)),
         )
 
+    def test_repeated_memory_replay_control_is_typed_and_round_trips(self):
+        effect = {
+            "class": "memory",
+            "id": "memory-source-read-08",
+            "width_bits": 8,
+            "access": "read",
+            "address": {
+                "base": "edi",
+                "index": None,
+                "scale": 1,
+                "displacement": 0,
+                "segment": "flat",
+            },
+            "condition": None,
+            "replay_control": {
+                "count_location": {"register": "ecx", "lsb": 0},
+                "count_width_bits": 32,
+                "stop_value": {
+                    "kind": "register",
+                    "location": {"register": "eax", "lsb": 0},
+                    "width_bits": 8,
+                },
+            },
+        }
+        payload = v2_catalog_payload(v2_entry("form-scan", [effect]))
+        parsed = parse_isa_form_catalog(payload)
+
+        self.assertEqual(serialize_isa_form_catalog(parsed), payload)
+        replay = parsed.entries[0].effects[0].replay_control
+        self.assertIsNotNone(replay)
+        self.assertEqual(replay.count_location.register, "ecx")
+        self.assertEqual(replay.stop_value.location.register, "eax")
+
+        malformed = copy.deepcopy(payload)
+        malformed["entries"][0]["effects"][0]["replay_control"][
+            "stop_value"
+        ]["width_bits"] = 16
+        with self.assertRaisesRegex(
+            ISAConformanceError, "must equal the memory effect width"
+        ):
+            parse_isa_form_catalog(malformed)
+
     def test_effect_union_is_strict_and_unknown_classes_fail_closed(self):
         valid_effects = {
             "register": {
