@@ -50,9 +50,12 @@ from .interface_provenance import recover_external_interface_targets
 from .internal_call_summaries import derive_internal_call_preservation_summaries
 from .machine_import_profiles import MachineImportIdentity
 from .provenance_domain import (
+    FiniteValue,
     PROVENANCE_KINDS,
     ValueOrigin,
     is_persistent_origin,
+    parse_finite_value,
+    parse_value_origin,
 )
 from .value_provenance import legacy_value_provenance_view
 
@@ -985,8 +988,10 @@ def _run_typed_pass(
             ),
             max_value_alternatives=finite_value_budget,
         )
-        preserved, cleanup, results = _call_summary_inputs(
-            summaries, image_base=image_base
+        preserved, cleanup, results, memory_results = _call_summary_inputs(
+            summaries,
+            image_base=image_base,
+            finite_value_budget=finite_value_budget,
         )
         memory_preservation = _call_summary_memory_preservation(
             summaries, image_base=image_base
@@ -1014,6 +1019,7 @@ def _run_typed_pass(
             internal_call_preserved_registers=preserved,
             internal_call_stack_cleanup=cleanup,
             internal_call_result_relations=results,
+            internal_call_memory_result_relations=memory_results,
             internal_call_memory_preservation=memory_preservation,
             image_base=image_base,
             finite_value_budget=finite_value_budget,
@@ -2404,15 +2410,17 @@ def _reachable(root: str, graph: Mapping[str, set[str]]) -> frozenset[str]:
 
 
 def _call_summary_inputs(
-    summaries: Mapping[str, Any], *, image_base: int
+    summaries: Mapping[str, Any], *, image_base: int, finite_value_budget: int = 32
 ) -> tuple[
     dict[int, frozenset[str]],
     dict[int, int],
     dict[int, dict[str, list[Mapping[str, Any]]]],
+    dict[int, dict[ValueOrigin, FiniteValue]],
 ]:
     preserved: dict[int, frozenset[str]] = {}
     cleanup: dict[int, int] = {}
     results: dict[int, dict[str, list[Mapping[str, Any]]]] = {}
+    memory_results: dict[int, dict[ValueOrigin, FiniteValue]] = {}
     for raw in summaries.get("summaries", []):
         if not isinstance(raw, Mapping):
             continue
@@ -2469,7 +2477,51 @@ def _call_summary_inputs(
             }
             if normalized:
                 results[address] = normalized
-    return preserved, cleanup, results
+        memory_inventory = raw.get("result_memory_origins")
+        locations = (
+            memory_inventory.get("locations")
+            if isinstance(memory_inventory, Mapping)
+            and memory_inventory.get("status") == "complete"
+            else None
+        )
+        if isinstance(locations, list):
+            normalized_memory = _summary_memory_results(
+                locations,
+                finite_value_budget=finite_value_budget,
+            )
+            if normalized_memory:
+                memory_results[address] = normalized_memory
+    return preserved, cleanup, results, memory_results
+
+
+def _summary_memory_results(
+    rows: Sequence[Any], *, finite_value_budget: int
+) -> dict[ValueOrigin, FiniteValue]:
+    result: dict[ValueOrigin, FiniteValue] = {}
+    for index, raw in enumerate(rows):
+        if not isinstance(raw, Mapping) or set(raw) != {"location", "value"}:
+            return {}
+        value = raw.get("value")
+        if not isinstance(value, Mapping) or set(value) != {"kind", "origins"}:
+            return {}
+        if value.get("kind") != "typed_origins":
+            continue
+        try:
+            location = parse_value_origin(
+                raw.get("location"),
+                context=f"call summary memory result {index} location",
+            )
+            origins = parse_finite_value(
+                value.get("origins"),
+                finite_value_budget=finite_value_budget,
+                context=f"call summary memory result {index} origins",
+            )
+        except ValueError:
+            return {}
+        if location in result:
+            return {}
+        result[location] = origins
+    return result
 
 
 def _call_summary_memory_preservation(

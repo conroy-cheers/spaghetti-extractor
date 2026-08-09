@@ -6,6 +6,7 @@ from spaghetti_extractor.call_site_effects import (
     CallOutput,
     CallSiteEffect,
     CallSiteId,
+    CallWriteSpan,
 )
 from spaghetti_extractor.internal_call_summaries import (
     derive_internal_call_preservation_summaries,
@@ -29,16 +30,25 @@ def add(left: object, right: object) -> dict[str, object]:
     return {"op": "add32", "args": [left, right]}
 
 
+def load(address: object) -> dict[str, object]:
+    return {"op": "load", "address": address, "width": 4}
+
+
 def unit(
     identifier: str,
     rva: int,
     *,
     outcome: str,
     events: list[dict[str, object]] | None = None,
+    writes: list[dict[str, object]] | None = None,
+    memory: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
-    writes: list[dict[str, object]] = []
+    register_writes = list(writes or [])
     if outcome == "return":
-        writes.append({"register": "esp", "value": add(reg("esp"), const(4))})
+        register_writes.append({
+            "register": "esp",
+            "value": add(reg("esp"), const(4)),
+        })
     return {
         "id": identifier,
         "source": {"original": {"rva_start": rva, "rva_end": rva + 1}},
@@ -49,8 +59,8 @@ def unit(
         ),
         "semantics": {
             "outcome": {"kind": outcome},
-            "register_writes": writes,
-            "memory_events": [],
+            "register_writes": register_writes,
+            "memory_events": memory or [],
             "external_events": events or [],
         },
     }
@@ -61,6 +71,14 @@ def external_call(name: str) -> dict[str, object]:
         "kind": "external_call",
         "dll": "fixture.dll",
         "symbol": name,
+        "register_inputs": {register: reg(register) for register in REGISTERS},
+    }
+
+
+def internal_call(target_rva: int) -> dict[str, object]:
+    return {
+        "kind": "internal_call",
+        "target_rva": target_rva,
         "register_inputs": {register: reg(register) for register in REGISTERS},
     }
 
@@ -94,6 +112,38 @@ def effect(unit_id: str, resource: str) -> dict[str, object]:
         memory_frame_status="complete",
         memory_preserved=True,
         memory_writes=(),
+        abi=abi,
+        argument_words=0,
+        dependencies=(dependency,),
+    ).as_json()
+
+
+def memory_effect(
+    unit_id: str,
+    resource: str,
+    *,
+    address: int = 0x430000,
+) -> dict[str, object]:
+    abi = resolve_machine_call_abi("pe32-cdecl-v1")
+    assert abi is not None
+    dependency = f"checked-external-site:{unit_id}:0"
+    location = ValueOrigin("exact", (address,))
+    return CallSiteEffect(
+        site=CallSiteId(unit_id, 0),
+        transfer_kind="external_call",
+        status="complete",
+        register_frame_status="complete",
+        preserved_registers=frozenset(abi.preserved_registers),
+        stack_frame_status="complete",
+        stack_cleanup_bytes=0,
+        result_status="complete",
+        outputs=(CallOutput(
+            location,
+            frozenset({ValueOrigin("resource", (resource,), (dependency,))}),
+        ),),
+        memory_frame_status="complete",
+        memory_preserved=False,
+        memory_writes=(CallWriteSpan(location, 4),),
         abi=abi,
         argument_words=0,
         dependencies=(dependency,),
@@ -161,6 +211,157 @@ class InternalCallSummaryEffectTests(unittest.TestCase):
             {tuple(origin["key"]) for origin in origins["origins"]},
             {("left",), ("right",)},
         )
+
+    def test_memory_result_composes_through_internal_wrapper(self) -> None:
+        slot = 0x430000
+        result = derive_internal_call_preservation_summaries(
+            units=[
+                unit(
+                    "root",
+                    0x1000,
+                    outcome="fallthrough",
+                    events=[internal_call(0x2000)],
+                ),
+                unit(
+                    "load-result",
+                    0x1001,
+                    outcome="fallthrough",
+                    writes=[{"register": "eax", "value": load(const(slot))}],
+                ),
+                unit("root-return", 0x1002, outcome="return"),
+                unit(
+                    "factory",
+                    0x2000,
+                    outcome="fallthrough",
+                    events=[external_call("Create")],
+                ),
+                unit("factory-return", 0x2001, outcome="return"),
+            ],
+            roots=["root"],
+            direct_edges=[
+                edge("root", "load-result"),
+                edge("load-result", "root-return"),
+                edge("factory", "factory-return"),
+            ],
+            internal_call_edges=[{
+                "source_unit_id": "root",
+                "source_event_index": 0,
+                "target_unit_id": "factory",
+                "status": "resolved",
+            }],
+            recovered_indirect_targets=[],
+            indirect_exits=[],
+            import_abis={},
+            call_site_effects=[memory_effect("factory", "surface")],
+        )
+
+        summaries = {
+            row["target_unit_id"]: row for row in result["summaries"]
+        }
+        factory_memory = summaries["factory"]["result_memory_origins"]
+        self.assertEqual(factory_memory["status"], "complete")
+        self.assertEqual(factory_memory["locations"][0]["location"], {
+            "kind": "exact",
+            "key": [slot],
+        })
+        self.assertEqual(
+            summaries["root"]["result_register_origins"]["registers"]["eax"]
+            ["kind"],
+            "typed_origins",
+        )
+
+    def test_unknown_write_kills_prior_memory_result(self) -> None:
+        slot = 0x430000
+        result = derive_internal_call_preservation_summaries(
+            units=[
+                unit(
+                    "root",
+                    0x1000,
+                    outcome="fallthrough",
+                    events=[external_call("Create")],
+                ),
+                unit(
+                    "unknown-write",
+                    0x1001,
+                    outcome="fallthrough",
+                    memory=[{
+                        "kind": "write",
+                        "width": 4,
+                        "address": reg("ecx"),
+                        "value": const(0),
+                    }],
+                ),
+                unit("return", 0x1002, outcome="return"),
+            ],
+            roots=["root"],
+            direct_edges=[
+                edge("root", "unknown-write"),
+                edge("unknown-write", "return"),
+            ],
+            internal_call_edges=[],
+            recovered_indirect_targets=[],
+            indirect_exits=[],
+            import_abis={},
+            call_site_effects=[memory_effect("root", "surface", address=slot)],
+        )
+
+        summary = result["summaries"][0]
+        self.assertEqual(summary["result_memory_origins"], {
+            "status": "complete",
+            "locations": [],
+        })
+
+    def test_exact_write_preserves_only_disjoint_typed_result(self) -> None:
+        slot = 0x430000
+        for name, write_address, expected_kind in (
+            ("disjoint", slot + 8, "typed_origins"),
+            ("overlap", slot, "exact"),
+        ):
+            with self.subTest(name=name):
+                result = derive_internal_call_preservation_summaries(
+                    units=[
+                        unit(
+                            "root",
+                            0x1000,
+                            outcome="fallthrough",
+                            events=[external_call("Create")],
+                        ),
+                        unit(
+                            "write",
+                            0x1001,
+                            outcome="fallthrough",
+                            memory=[{
+                                "kind": "write",
+                                "width": 4,
+                                "address": const(write_address),
+                                "value": const(0),
+                            }],
+                        ),
+                        unit("return", 0x1002, outcome="return"),
+                    ],
+                    roots=["root"],
+                    direct_edges=[
+                        edge("root", "write"),
+                        edge("write", "return"),
+                    ],
+                    internal_call_edges=[],
+                    recovered_indirect_targets=[],
+                    indirect_exits=[],
+                    import_abis={},
+                    call_site_effects=[
+                        memory_effect("root", "surface", address=slot)
+                    ],
+                )
+
+                locations = result["summaries"][0]["result_memory_origins"][
+                    "locations"
+                ]
+                slot_result = next(
+                    row
+                    for row in locations
+                    if row["location"] == {"kind": "exact", "key": [slot]}
+                )
+                self.assertEqual(slot_result["value"]["kind"], expected_kind)
 
     def test_call_effect_must_bind_exact_machine_event(self) -> None:
         with self.assertRaisesRegex(ValueError, "exact machine-IR call"):

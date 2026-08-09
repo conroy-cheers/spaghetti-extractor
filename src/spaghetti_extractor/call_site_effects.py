@@ -12,7 +12,13 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
 from .machine_abi import MachineCallABI, resolve_machine_call_abi
-from .provenance_domain import FiniteValue, ValueOrigin, origins_json
+from .provenance_domain import (
+    FiniteValue,
+    ValueOrigin,
+    origins_json,
+    parse_finite_value,
+    parse_value_origin,
+)
 
 
 CALL_SITE_EFFECT_FORMAT = "stage-a-call-site-effect-v2"
@@ -354,50 +360,17 @@ def parse_call_site_effects(
 
 
 def _origin_from_json(raw: Any, *, context: str) -> ValueOrigin:
-    payload = _object(raw, context)
-    _require_keys(
-        payload,
-        required={"kind", "key"},
-        optional={"authority_dependencies"},
-        context=context,
-    )
-    kind = payload["kind"]
-    key = payload["key"]
-    if not isinstance(kind, str) or not isinstance(key, list):
-        raise ValueError(f"{context} value origin is invalid")
-    dependencies = _string_tuple(
-        payload.get("authority_dependencies", []),
-        f"{context} authority dependencies",
-    )
-    return ValueOrigin(
-        kind,
-        tuple(_freeze_json(value, context=context) for value in key),
-        dependencies,
-    )
+    return parse_value_origin(raw, context=context)
 
 
 def _finite_value_from_json(
     raw: Any, *, finite_value_budget: int, context: str
 ) -> frozenset[ValueOrigin]:
-    values = _sequence(raw, f"{context} origins")
-    if not values or len(values) > finite_value_budget:
-        raise ValueError(
-            f"{context} origins must contain 1..{finite_value_budget} alternatives"
-        )
-    result = frozenset(
-        _origin_from_json(value, context=f"{context} origin") for value in values
+    return parse_finite_value(
+        raw,
+        finite_value_budget=finite_value_budget,
+        context=f"{context} origins",
     )
-    if len(result) != len(values):
-        raise ValueError(f"{context} origins contain duplicates")
-    return result
-
-
-def _freeze_json(value: Any, *, context: str) -> Any:
-    if value is None or isinstance(value, (str, bool)) or _is_int(value):
-        return value
-    if isinstance(value, (list, tuple)):
-        return tuple(_freeze_json(item, context=context) for item in value)
-    raise ValueError(f"{context} origin key is not canonical JSON data")
 
 
 def _origin_sort_key(origin: ValueOrigin) -> tuple[str, str, tuple[str, ...]]:

@@ -13,18 +13,19 @@ import hashlib
 import heapq
 import json
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from .call_site_effects import (
     CallSiteEffect,
     CallSiteId,
+    CallWriteSpan,
     parse_call_site_effects,
 )
 from .import_abi import SelectedImportABI
 from .machine_abi import resolve_machine_call_abi
 from .machine_import_profiles import MachineImportIdentity
-from .provenance_domain import ValueOrigin
+from .provenance_domain import ValueOrigin, parse_value_origin
 
 
 INTERNAL_CALL_SUMMARY_FORMAT = "stage-a-internal-call-preservation-v1"
@@ -98,6 +99,7 @@ _Value = (
 class _State:
     registers: dict[str, _Value]
     stack_words: dict[int, _Value]
+    memory_words: dict[ValueOrigin, _Value] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -109,6 +111,10 @@ class _CallFrame:
     stack_cleanup: _StackTransform | None
     result_registers: Mapping[str, _Value]
     blocker_codes: frozenset[str] = frozenset()
+    result_memory: Mapping[ValueOrigin, _Value] = field(default_factory=dict)
+    memory_frame_complete: bool = False
+    memory_preserved: bool = False
+    memory_writes: tuple[CallWriteSpan, ...] = ()
 
 
 def derive_internal_call_preservation_summaries(
@@ -124,6 +130,7 @@ def derive_internal_call_preservation_summaries(
     declared_summaries: Mapping[str, Mapping[str, Any]] | None = None,
     max_units_per_summary: int = 4096,
     max_stack_words: int = 256,
+    max_memory_words: int = 256,
     max_fixed_point_rounds: int = 64,
     max_value_alternatives: int = 32,
 ) -> dict[str, Any]:
@@ -132,6 +139,7 @@ def derive_internal_call_preservation_summaries(
     if min(
         max_units_per_summary,
         max_stack_words,
+        max_memory_words,
         max_fixed_point_rounds,
         max_value_alternatives,
     ) <= 0:
@@ -286,6 +294,7 @@ def derive_internal_call_preservation_summaries(
                     call_site_effects=effects_by_site,
                     max_units=max_units_per_summary,
                     max_stack_words=max_stack_words,
+                    max_memory_words=max_memory_words,
                     max_rounds=max_fixed_point_rounds,
                     max_value_alternatives=max_value_alternatives,
                 )
@@ -309,6 +318,7 @@ def derive_internal_call_preservation_summaries(
             call_site_effects=effects_by_site,
             max_units=max_units_per_summary,
             max_stack_words=max_stack_words,
+            max_memory_words=max_memory_words,
             max_value_alternatives=max_value_alternatives,
         )
         forced_blockers = (
@@ -383,6 +393,7 @@ def derive_internal_call_preservation_summaries(
         "budgets": {
             "max_units_per_summary": max_units_per_summary,
             "max_stack_words": max_stack_words,
+            "max_memory_words": max_memory_words,
             "max_fixed_point_rounds": max_fixed_point_rounds,
             "max_value_alternatives": max_value_alternatives,
         },
@@ -732,6 +743,10 @@ def _force_incomplete(
         "status": "incomplete",
         "registers": {},
     }
+    result["result_memory_origins"] = {
+        "status": "incomplete",
+        "locations": [],
+    }
     result["return_behavior"] = {
         "status": "incomplete",
         "may_return": None,
@@ -760,6 +775,7 @@ def _recursive_seed_summary() -> dict[str, Any]:
         "preserved_registers": [],
         "register_preservation": {"status": "complete"},
         "result_register_origins": {"status": "complete", "registers": {}},
+        "result_memory_origins": {"status": "complete", "locations": []},
         "stack_cleanup": {"status": "not_applicable", "stack_delta": None},
         "return_behavior": {
             "status": "complete",
@@ -793,6 +809,7 @@ def _analyze_recursive_component(
     call_site_effects: Mapping[CallSiteId, CallSiteEffect],
     max_units: int,
     max_stack_words: int,
+    max_memory_words: int,
     max_rounds: int,
     max_value_alternatives: int,
 ) -> tuple[dict[str, dict[str, Any]], int, bool]:
@@ -816,6 +833,7 @@ def _analyze_recursive_component(
                 call_site_effects=call_site_effects,
                 max_units=max_units,
                 max_stack_words=max_stack_words,
+                max_memory_words=max_memory_words,
                 max_value_alternatives=max_value_alternatives,
             )
             summary["recursive_induction"] = {
@@ -856,6 +874,7 @@ def _recursive_summary_projection(
             "preserved_registers": summary.get("preserved_registers"),
             "register_preservation": summary.get("register_preservation"),
             "result_register_origins": summary.get("result_register_origins"),
+            "result_memory_origins": summary.get("result_memory_origins"),
             "stack_cleanup": summary.get("stack_cleanup"),
             "return_behavior": summary.get("return_behavior"),
             "memory_effects": summary.get("memory_effects"),
@@ -882,6 +901,7 @@ def _analyze_callee(
     call_site_effects: Mapping[CallSiteId, CallSiteEffect],
     max_units: int,
     max_stack_words: int,
+    max_memory_words: int,
     max_value_alternatives: int,
 ) -> dict[str, Any]:
     initial = _State(
@@ -943,6 +963,7 @@ def _analyze_callee(
             import_abis=import_abis,
             call_site_effects=call_site_effects,
             max_stack_words=max_stack_words,
+            max_memory_words=max_memory_words,
         )
         blockers.update(transfer_blockers)
         kind = _mapping(_mapping(unit.get("semantics")).get("outcome")).get("kind")
@@ -1060,6 +1081,7 @@ def _analyze_callee(
         stack_complete = False
     summary_complete = control_complete and stack_complete
     result_registers: dict[str, dict[str, Any]] = {}
+    result_memory: list[dict[str, Any]] = []
     if control_complete and return_states:
         for register in _REGISTERS:
             values = {state.registers.get(register) for state in return_states}
@@ -1069,6 +1091,16 @@ def _analyze_callee(
             serialized = _serialize_summary_value(value)
             if serialized is not None:
                 result_registers[register] = serialized
+        for location, value in _common_return_memory(
+            return_states,
+            maximum=max_value_alternatives,
+        ).items():
+            serialized = _serialize_summary_value(value)
+            if serialized is not None:
+                result_memory.append({
+                    "location": location.as_json(),
+                    "value": serialized,
+                })
     effect_families = _summary_effect_families(
         reached_unit_ids=states,
         by_id=by_id,
@@ -1085,6 +1117,21 @@ def _analyze_callee(
         "result_register_origins": {
             "status": "complete" if control_complete else "incomplete",
             "registers": result_registers if control_complete else {},
+        },
+        "result_memory_origins": {
+            "status": "complete" if control_complete else "incomplete",
+            "locations": (
+                sorted(
+                    result_memory,
+                    key=lambda row: json.dumps(
+                        row["location"],
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+                if control_complete
+                else []
+            ),
         },
         "stack_cleanup": stack_cleanup,
         "return_behavior": {
@@ -1309,6 +1356,14 @@ def _summary_call_frame(
             if may_return
             else {}
         ),
+        result_memory=(
+            _summary_result_memory(
+                summary,
+                input_registers=input_registers,
+            )
+            if may_return
+            else {}
+        ),
     )
 
 
@@ -1398,6 +1453,10 @@ def _recovered_indirect_call_frame(
     cleanups = {alternative.stack_cleanup for alternative in returning}
     stack_cleanup = next(iter(cleanups)) if len(cleanups) == 1 else None
     result_registers = _common_call_results(returning)
+    result_memory = _common_call_memory(returning)
+    memory_frame_complete = bool(returning) and all(
+        alternative.memory_frame_complete for alternative in returning
+    )
     return _CallFrame(
         behavior_complete=True,
         may_return=bool(returning),
@@ -1408,6 +1467,27 @@ def _recovered_indirect_call_frame(
         stack_cleanup=stack_cleanup,
         result_registers=result_registers,
         blocker_codes=blockers,
+        result_memory=result_memory,
+        memory_frame_complete=memory_frame_complete,
+        memory_preserved=(
+            memory_frame_complete
+            and all(alternative.memory_preserved for alternative in returning)
+        ),
+        memory_writes=(
+            tuple(sorted(
+                {
+                    span
+                    for alternative in returning
+                    for span in alternative.memory_writes
+                },
+                key=lambda span: (
+                    _typed_origin_sort_key(span.base),
+                    -1 if span.size is None else span.size,
+                ),
+            ))
+            if memory_frame_complete
+            else ()
+        ),
     )
 
 
@@ -1416,6 +1496,10 @@ def _returning_abi_frame(
     preserved_registers: Iterable[str],
     stack_cleanup: int | None,
     result_registers: Mapping[str, _Value] | None = None,
+    result_memory: Mapping[ValueOrigin, _Value] | None = None,
+    memory_frame_complete: bool = False,
+    memory_preserved: bool = False,
+    memory_writes: tuple[CallWriteSpan, ...] = (),
 ) -> _CallFrame:
     return _CallFrame(
         behavior_complete=True,
@@ -1428,24 +1512,42 @@ def _returning_abi_frame(
             None if stack_cleanup is None else _StackTransform(stack_cleanup)
         ),
         result_registers=dict(result_registers or {}),
+        result_memory=dict(result_memory or {}),
+        memory_frame_complete=memory_frame_complete,
+        memory_preserved=memory_preserved,
+        memory_writes=memory_writes,
     )
 
 
 def _call_site_effect_frame(effect: CallSiteEffect) -> _CallFrame:
     result_registers: dict[str, _Value] = {}
+    result_memory: dict[ValueOrigin, _Value] = {}
     for output in effect.outputs:
-        if output.location.kind != "register_location" or len(output.location.key) != 1:
-            continue
-        register = output.location.key[0]
-        if register not in _REGISTERS or output.value is None:
-            continue
-        result_registers[str(register)] = _TypedOrigins(
-            tuple(sorted(output.value, key=_typed_origin_sort_key))
+        typed = (
+            None
+            if output.value is None
+            else _TypedOrigins(
+                tuple(sorted(output.value, key=_typed_origin_sort_key))
+            )
         )
+        if typed is None:
+            continue
+        if (
+            output.location.kind == "register_location"
+            and len(output.location.key) == 1
+            and output.location.key[0] in _REGISTERS
+        ):
+            result_registers[str(output.location.key[0])] = typed
+            continue
+        result_memory[output.location] = typed
     return _returning_abi_frame(
         preserved_registers=effect.preserved_registers,
         stack_cleanup=effect.stack_cleanup_bytes,
         result_registers=result_registers,
+        result_memory=result_memory,
+        memory_frame_complete=effect.memory_frame_status == "complete",
+        memory_preserved=effect.memory_preserved,
+        memory_writes=effect.memory_writes,
     )
 
 
@@ -1484,7 +1586,11 @@ def _external_tail_return_state(
     registers["esp"] = _add_stack_cleanup(
         registers.get("esp"), _StackTransform(4), registers
     )
-    return _State(registers=registers, stack_words=dict(output.stack_words))
+    return _State(
+        registers=registers,
+        stack_words=dict(output.stack_words),
+        memory_words=dict(output.memory_words),
+    )
 
 
 def _transfer(
@@ -1498,6 +1604,7 @@ def _transfer(
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     call_site_effects: Mapping[CallSiteId, CallSiteEffect],
     max_stack_words: int,
+    max_memory_words: int,
 ) -> tuple[_State, set[str]]:
     events = _events(unit)
     calls = [
@@ -1539,13 +1646,16 @@ def _transfer(
             evaluated_esp=output_registers["esp"],
             semantics=_mapping(unit.get("semantics")),
         )
+        output_stack, output_memory = _apply_call_memory_frame(
+            event=event,
+            pre_call=pre_call,
+            frame=frame,
+        )
         return (
             _State(
                 registers=output_registers,
-                stack_words=_stack_words_preserved_across_call(
-                    event=event,
-                    pre_call=pre_call,
-                ),
+                stack_words=output_stack,
+                memory_words=output_memory,
             ),
             set(frame.blocker_codes) | stack_blockers,
         )
@@ -1567,9 +1677,11 @@ def _transfer(
     )
 
     stack_words = dict(state.stack_words)
+    memory_words = dict(state.memory_words)
     memory_events = semantics.get("memory_events")
     if not isinstance(memory_events, list):
         stack_words.clear()
+        memory_words.clear()
     else:
         for raw in memory_events:
             event = _mapping(raw)
@@ -1586,8 +1698,22 @@ def _transfer(
                 value = _evaluate(event.get("value"), state)
                 if width == 4 and value is not None:
                     stack_words[address.offset] = value
-            elif not isinstance(address, _Exact):
+            elif isinstance(address, _Exact) and width is not None:
+                location = ValueOrigin("exact", (address.value & 0xFFFFFFFF,))
+                memory_words = {
+                    existing: value
+                    for existing, value in memory_words.items()
+                    if _locations_provably_disjoint(
+                        existing,
+                        CallWriteSpan(location, width),
+                    )
+                }
+                value = _evaluate(event.get("value"), state)
+                if width == 4 and value is not None:
+                    memory_words[location] = value
+            else:
                 stack_words.clear()
+                memory_words.clear()
     schedule = _mapping(semantics.get("instruction_effect_schedule"))
     blockers = schedule.get("blockers")
     if isinstance(blockers, list):
@@ -1602,6 +1728,7 @@ def _transfer(
             ):
                 registers = {register: None for register in _REGISTERS}
                 stack_words.clear()
+                memory_words.clear()
                 continue
             instruction = _mapping(instructions[index])
             written = instruction.get("registers_written")
@@ -1617,9 +1744,16 @@ def _transfer(
                 for operand in operands
             ):
                 stack_words.clear()
+                memory_words.clear()
     if len(stack_words) > max_stack_words:
         stack_words.clear()
-    return _State(registers=registers, stack_words=stack_words), stack_blockers
+    if len(memory_words) > max_memory_words:
+        memory_words.clear()
+    return _State(
+        registers=registers,
+        stack_words=stack_words,
+        memory_words=memory_words,
+    ), stack_blockers
 
 
 def _summary_preserved(summary: Mapping[str, Any] | None) -> frozenset[str]:
@@ -1830,32 +1964,7 @@ def _parse_summary_value(value: Any) -> _Value:
 
 
 def _parse_typed_origin(raw: Any) -> ValueOrigin:
-    row = _mapping(raw)
-    kind = row.get("kind")
-    key = row.get("key")
-    dependencies = row.get("authority_dependencies", [])
-    if (
-        not isinstance(kind, str)
-        or not isinstance(key, list)
-        or not isinstance(dependencies, list)
-        or any(not isinstance(value, str) or not value for value in dependencies)
-        or dependencies != sorted(set(dependencies))
-        or set(row) - {"kind", "key", "authority_dependencies"}
-    ):
-        raise ValueError("typed summary origin is malformed")
-    return ValueOrigin(
-        kind,
-        tuple(_freeze_origin_key(value) for value in key),
-        tuple(dependencies),
-    )
-
-
-def _freeze_origin_key(value: Any) -> Any:
-    if value is None or isinstance(value, (str, bool)) or _integer(value) is not None:
-        return value
-    if isinstance(value, (list, tuple)):
-        return tuple(_freeze_origin_key(item) for item in value)
-    raise ValueError("typed summary origin key is not canonical JSON")
+    return parse_value_origin(raw, context="typed summary origin")
 
 
 def _typed_origin_sort_key(origin: ValueOrigin) -> tuple[str, str, tuple[str, ...]]:
@@ -1883,6 +1992,70 @@ def _summary_result_registers(
         if value is not None:
             result[register] = value
     return result
+
+
+def _summary_result_memory(
+    summary: Mapping[str, Any] | None,
+    *,
+    input_registers: Mapping[str, _Value] | None = None,
+) -> dict[ValueOrigin, _Value]:
+    if summary is None:
+        return {}
+    inventory = _mapping(summary.get("result_memory_origins"))
+    raw_locations = inventory.get("locations")
+    if inventory.get("status") != "complete" or not isinstance(
+        raw_locations, list
+    ):
+        return {}
+    result: dict[ValueOrigin, _Value] = {}
+    for raw in raw_locations:
+        row = _mapping(raw)
+        if set(row) != {"location", "value"}:
+            return {}
+        try:
+            location = _parse_typed_origin(row.get("location"))
+        except ValueError:
+            return {}
+        instantiated_location = _instantiate_summary_location(
+            location,
+            input_registers=input_registers,
+        )
+        value = _instantiate_summary_value(
+            row.get("value"),
+            input_registers=input_registers,
+        )
+        if instantiated_location is None or value is None:
+            return {}
+        if instantiated_location in result:
+            return {}
+        result[instantiated_location] = value
+    return result
+
+
+def _instantiate_summary_location(
+    location: ValueOrigin,
+    *,
+    input_registers: Mapping[str, _Value] | None,
+) -> ValueOrigin | None:
+    if location.kind != "stack_location":
+        return location
+    if len(location.key) != 1 or input_registers is None:
+        return None
+    offset = _integer(location.key[0])
+    if offset is None:
+        return None
+    instantiated = _add_stack_cleanup(
+        input_registers.get("esp"),
+        _StackTransform(offset - 4),
+        input_registers,
+    )
+    if not isinstance(instantiated, _StackAddress) or instantiated.register_terms:
+        return None
+    return ValueOrigin(
+        "stack_location",
+        (instantiated.offset,),
+        location.dependencies,
+    )
 
 
 def _instantiate_summary_value(
@@ -1924,6 +2097,20 @@ def _instantiate_summary_value(
             _StackTransform(offset - 4, _normalize_register_terms(terms)),
             input_registers,
         )
+    if kind == "typed_origins":
+        parsed = _parse_summary_value(raw)
+        if not isinstance(parsed, _TypedOrigins):
+            return None
+        origins: list[ValueOrigin] = []
+        for origin in parsed.origins:
+            instantiated = _instantiate_summary_location(
+                origin,
+                input_registers=input_registers,
+            )
+            if instantiated is None:
+                return None
+            origins.append(instantiated)
+        return _TypedOrigins(tuple(sorted(origins, key=_typed_origin_sort_key)))
     return _parse_summary_value(raw)
 
 
@@ -1937,6 +2124,41 @@ def _common_call_results(alternatives: Sequence[_CallFrame]) -> dict[str, _Value
             for register, value in common.items()
             if alternative.result_registers.get(register) == value
         }
+    return common
+
+
+def _common_call_memory(
+    alternatives: Sequence[_CallFrame],
+) -> dict[ValueOrigin, _Value]:
+    if not alternatives:
+        return {}
+    common = dict(alternatives[0].result_memory)
+    for alternative in alternatives[1:]:
+        common = {
+            location: value
+            for location, value in common.items()
+            if alternative.result_memory.get(location) == value
+        }
+    return common
+
+
+def _common_return_memory(
+    states: Sequence[_State], *, maximum: int
+) -> dict[ValueOrigin, _Value]:
+    if not states:
+        return {}
+    common: dict[ValueOrigin, _Value] = dict(states[0].memory_words)
+    for state in states[1:]:
+        joined_memory: dict[ValueOrigin, _Value] = {}
+        for location, value in common.items():
+            joined = _join_summary_value(
+                value,
+                state.memory_words.get(location),
+                maximum=maximum,
+            )
+            if joined is not None:
+                joined_memory[location] = joined
+        common = joined_memory
     return common
 
 
@@ -1993,7 +2215,11 @@ def _event_state(event: Mapping[str, Any], state: _State) -> _State:
         if isinstance(raw, Mapping)
         else dict(state.registers)
     )
-    return _State(registers=registers, stack_words=dict(state.stack_words))
+    return _State(
+        registers=registers,
+        stack_words=dict(state.stack_words),
+        memory_words=dict(state.memory_words),
+    )
 
 
 def _stack_words_preserved_across_call(
@@ -2047,6 +2273,106 @@ def _stack_words_preserved_across_call(
     }
 
 
+def _apply_call_memory_frame(
+    *,
+    event: Mapping[str, Any],
+    pre_call: _State,
+    frame: _CallFrame,
+) -> tuple[dict[int, _Value], dict[ValueOrigin, _Value]]:
+    stack_words = _stack_words_preserved_across_call(
+        event=event,
+        pre_call=pre_call,
+    )
+    if not frame.memory_frame_complete:
+        memory_words: dict[ValueOrigin, _Value] = {}
+    elif frame.memory_preserved:
+        memory_words = dict(pre_call.memory_words)
+    else:
+        memory_words = {
+            location: value
+            for location, value in pre_call.memory_words.items()
+            if all(
+                _locations_provably_disjoint(location, span)
+                for span in frame.memory_writes
+            )
+        }
+        for span in frame.memory_writes:
+            if span.base.kind != "stack_location" or len(span.base.key) != 1:
+                continue
+            offset = _integer(span.base.key[0])
+            if offset is None or span.size is None:
+                stack_words.clear()
+            else:
+                _invalidate_overlapping(stack_words, offset, span.size)
+
+    for location, value in frame.result_memory.items():
+        if value is None:
+            continue
+        if location.kind == "stack_location" and len(location.key) == 1:
+            offset = _integer(location.key[0])
+            if offset is not None:
+                stack_words[offset] = value
+            continue
+        memory_words[location] = value
+    return stack_words, memory_words
+
+
+def _locations_provably_disjoint(
+    location: ValueOrigin, span: CallWriteSpan
+) -> bool:
+    if span.size is None:
+        return False
+    if (
+        location.kind == span.base.kind == "exact"
+        and len(location.key) == len(span.base.key) == 1
+    ):
+        left = _integer(location.key[0])
+        right = _integer(span.base.key[0])
+        return (
+            left is not None
+            and right is not None
+            and not _ranges_overlap_u32(left, 4, right, span.size)
+        )
+    if (
+        location.kind == span.base.kind == "stack_location"
+        and len(location.key) == len(span.base.key) == 1
+    ):
+        left = _integer(location.key[0])
+        right = _integer(span.base.key[0])
+        return bool(
+            left is not None
+            and right is not None
+            and (left + 4 <= right or right + span.size <= left)
+        )
+    return False
+
+
+def _ranges_overlap_u32(
+    left_start: int,
+    left_size: int,
+    right_start: int,
+    right_size: int,
+) -> bool:
+    if min(left_size, right_size) <= 0:
+        return False
+    modulus = 1 << 32
+    if left_size >= modulus or right_size >= modulus:
+        return True
+
+    def intervals(start: int, size: int) -> tuple[tuple[int, int], ...]:
+        start &= 0xFFFFFFFF
+        end = start + size
+        if end <= modulus:
+            return ((start, end),)
+        return ((start, modulus), (0, end - modulus))
+
+    return any(
+        left < right_end and right < left_end
+        for left, left_end in intervals(left_start, left_size)
+        for right, right_end in intervals(right_start, right_size)
+    )
+
+
 def _evaluate(expression: Any, state: _State) -> _Value:
     if not isinstance(expression, Mapping):
         return None
@@ -2089,11 +2415,13 @@ def _evaluate(expression: Any, state: _State) -> _Value:
         if width not in {4, 32, None}:
             return None
         address = _evaluate(expression.get("address"), state)
-        return (
-            state.stack_words.get(address.offset)
-            if isinstance(address, _StackAddress) and not address.register_terms
-            else None
-        )
+        if isinstance(address, _StackAddress) and not address.register_terms:
+            return state.stack_words.get(address.offset)
+        if isinstance(address, _Exact):
+            return state.memory_words.get(
+                ValueOrigin("exact", (address.value & 0xFFFFFFFF,))
+            )
+        return None
     return None
 
 
@@ -2150,7 +2478,20 @@ def _join_states(
         )
         if joined is not None:
             stack_words[offset] = joined
-    return _State(registers=registers, stack_words=stack_words)
+    memory_words: dict[ValueOrigin, _Value] = {}
+    for location, value in left.memory_words.items():
+        joined = _join_summary_value(
+            value,
+            right.memory_words.get(location),
+            maximum=max_value_alternatives,
+        )
+        if joined is not None:
+            memory_words[location] = joined
+    return _State(
+        registers=registers,
+        stack_words=stack_words,
+        memory_words=memory_words,
+    )
 
 
 def _join_summary_value(

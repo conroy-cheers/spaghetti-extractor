@@ -22,6 +22,7 @@ from spaghetti_extractor.checked_memory_access_v2 import (
 )
 from spaghetti_extractor.machine_ir_authority_v2 import machine_ir_sha256
 from spaghetti_extractor.machine_abi import resolve_machine_call_abi
+from spaghetti_extractor.provenance_domain import ValueOrigin
 from spaghetti_extractor.hybrid_authority_v2 import (
     BinaryBinding,
     EvidenceIssue,
@@ -387,7 +388,7 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         )
 
     def test_partial_summary_families_remain_independently_usable(self) -> None:
-        preserved, cleanup, results = _call_summary_inputs(
+        preserved, cleanup, results, memory_results = _call_summary_inputs(
             {
                 "summaries": [{
                     "target_rva": 0x2000,
@@ -401,6 +402,22 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                             "eax": {"kind": "input_register", "register": "ecx"},
                         },
                     },
+                    "result_memory_origins": {
+                        "status": "complete",
+                        "locations": [{
+                            "location": {
+                                "kind": "exact",
+                                "key": [SLOT],
+                            },
+                            "value": {
+                                "kind": "typed_origins",
+                                "origins": [{
+                                    "kind": "resource",
+                                    "key": ["fixture-resource"],
+                                }],
+                            },
+                        }],
+                    },
                 }],
             },
             image_base=IMAGE_BASE,
@@ -412,6 +429,14 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         self.assertEqual(
             results[address]["eax"],
             [{"kind": "input_register", "register": "ecx"}],
+        )
+        self.assertEqual(
+            memory_results[address],
+            {
+                ValueOrigin("exact", (SLOT,)): frozenset({
+                    ValueOrigin("resource", ("fixture-resource",))
+                })
+            },
         )
 
     def _run(
